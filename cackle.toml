@@ -1,0 +1,122 @@
+[common]
+version = 2
+import_std = [
+    "fs",
+    "net",
+    "process",
+]
+
+[sandbox]
+kind = "Bubblewrap"
+
+[pkg.derive_more]
+allow_proc_macro = true
+
+[pkg.bytemuck_derive]
+allow_proc_macro = true
+allow_unsafe = true
+
+[pkg.static_assertions]
+allow_unsafe = true
+
+[pkg.unicode-ident]
+allow_unsafe = true
+
+[pkg.crc32fast]
+build.allow_apis = [
+    "process",
+]
+allow_unsafe = true
+
+[pkg.proc-macro2]
+build.allow_apis = [
+    "fs",
+    "process",
+]
+allow_unsafe = true
+
+[pkg.byteorder]
+allow_unsafe = true
+
+[pkg.syn]
+build.allow_apis = [
+    "process",
+]
+allow_unsafe = true
+
+[pkg.libc]
+build.allow_apis = [
+    "process",
+]
+allow_unsafe = true
+
+[pkg.crossbeam-utils]
+allow_unsafe = true
+
+[pkg.twox-hash]
+allow_unsafe = true
+
+[pkg.anyhow]
+build.allow_apis = [
+    "fs",
+    "process",
+]
+allow_unsafe = true
+
+[pkg.memchr]
+allow_unsafe = true
+
+[pkg.either]
+allow_unsafe = true
+
+[pkg.crossbeam-epoch]
+allow_unsafe = true
+
+[pkg.crossbeam-queue]
+allow_unsafe = true
+
+[pkg.flate2]
+allow_unsafe = true
+
+[pkg.memmap2]
+allow_unsafe = true
+allow_apis = [
+    "fs",
+]
+
+[pkg.wait-timeout]
+allow_unsafe = true
+from.test.allow_apis = [
+    "process",
+]
+
+[pkg.crossbeam-deque]
+allow_unsafe = true
+
+[pkg.ruzstd]
+allow_unsafe = true
+
+[pkg.rayon-core]
+allow_unsafe = true
+
+[pkg.bytemuck]
+allow_unsafe = true
+
+[pkg.object]
+allow_unsafe = true
+
+[pkg.rayon]
+allow_unsafe = true
+
+[pkg.wild]
+allow_unsafe = true
+test.allow_unsafe = true
+allow_apis = [
+    "fs",
+    "process",
+]
+
+[api.fs]
+no_auto_detect = [
+    "wild",
+]
