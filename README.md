@@ -71,7 +71,7 @@ time.
 
 ### License
 
-Licensed under either of [LICENSE-APACHE](Apache License, Version 2.0) or [LICENSE-MIT](MIT license)
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT)
 at your option.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
