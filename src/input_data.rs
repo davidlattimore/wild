@@ -214,3 +214,9 @@ impl<'data> std::fmt::Debug for InputRef<'data> {
         std::fmt::Display::fmt(self, f)
     }
 }
+
+impl std::fmt::Display for FileId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}

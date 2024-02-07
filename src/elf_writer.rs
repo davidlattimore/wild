@@ -1,6 +1,8 @@
 use crate::elf;
 use crate::elf::DynamicEntry;
 use crate::elf::DynamicTag;
+use crate::elf::EhFrameHdr;
+use crate::elf::EhFrameHdrEntry;
 use crate::elf::FileHeader;
 use crate::elf::ProgramHeader;
 use crate::elf::SectionHeader;
@@ -35,6 +37,7 @@ use crate::timing::Timing;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
+use fxhash::FxHashMap;
 use memmap2::MmapOptions;
 use object::Object;
 use object::ObjectSection;
@@ -54,10 +57,6 @@ struct SectionAllocation {
     id: OutputSectionId,
     offset: usize,
     size: usize,
-}
-
-pub(crate) struct ElfWriter<'out> {
-    section_data: OutputSectionMap<&'out mut [u8]>,
 }
 
 impl Output {
@@ -86,65 +85,78 @@ impl Output {
     }
 }
 
-impl<'out> ElfWriter<'out> {
-    pub(crate) fn open(output: &'out mut Output, layout: &Layout) -> ElfWriter<'out> {
-        let mut section_allocations = Vec::with_capacity(layout.section_layouts.len());
-        layout.section_layouts.for_each(|id, s| {
-            section_allocations.push(SectionAllocation {
-                id,
-                offset: s.file_offset,
-                size: s.file_size,
-            })
-        });
-        section_allocations.sort_by_key(|s| (s.offset, s.offset + s.size));
+fn split_output_into_sections<'out>(
+    layout: &Layout<'_>,
+    output: &'out mut Output,
+) -> OutputSectionMap<&'out mut [u8]> {
+    let mut section_allocations = Vec::with_capacity(layout.section_layouts.len());
+    layout.section_layouts.for_each(|id, s| {
+        section_allocations.push(SectionAllocation {
+            id,
+            offset: s.file_offset,
+            size: s.file_size,
+        })
+    });
+    section_allocations.sort_by_key(|s| (s.offset, s.offset + s.size));
 
-        let mut data = output.mmap.as_mut();
-        // OutputSectionMap is ordered by section ID, which is not the same as output order. We
-        // split the output file by output order, putting the relevant parts of the buffer into the
-        // map.
-        let mut section_data = OutputSectionMap::with_size(section_allocations.len());
-        let mut offset = 0;
-        for a in section_allocations {
-            let Some(padding) = a.offset.checked_sub(offset) else {
-                panic!(
-                    "Offsets went backward when splitting output file {offset} to {}",
-                    a.offset
-                );
-            };
-            slice_take_prefix_mut(&mut data, padding);
-            *section_data.get_mut(a.id) = slice_take_prefix_mut(&mut data, a.size);
-            offset = a.offset + a.size;
-        }
-        ElfWriter { section_data }
+    let mut data = output.mmap.as_mut();
+    // OutputSectionMap is ordered by section ID, which is not the same as output order. We
+    // split the output file by output order, putting the relevant parts of the buffer into the
+    // map.
+    let mut section_data = OutputSectionMap::with_size(section_allocations.len());
+    let mut offset = 0;
+    for a in section_allocations {
+        let Some(padding) = a.offset.checked_sub(offset) else {
+            panic!(
+                "Offsets went backward when splitting output file {offset} to {}",
+                a.offset
+            );
+        };
+        slice_take_prefix_mut(&mut data, padding);
+        *section_data.get_mut(a.id) = slice_take_prefix_mut(&mut data, a.size);
+        offset = a.offset + a.size;
     }
+    section_data
+}
 
-    pub(crate) fn write(&mut self, layout: &Layout, timing: &mut Timing) -> Result {
-        let section_buffers = &mut self.section_data;
-        let mut writable_buckets = split_buffers_by_alignment(section_buffers, layout);
-        let files_and_buffers: Vec<_> = layout
-            .file_layouts
-            .iter()
-            .map(|file| {
-                if let Some(file_sizes) = file.file_sizes(&layout.output_sections) {
-                    (file, writable_buckets.take_mut(&file_sizes))
-                } else {
-                    (
-                        file,
-                        OutputSectionPartMap::with_size(layout.output_sections.len()),
-                    )
-                }
-            })
-            .collect();
-        files_and_buffers
-            .into_par_iter()
-            .map(|(file, buffer)| {
-                file.write(buffer, layout)
-                    .with_context(|| format!("Failed copying from {file} to output file"))
-            })
-            .collect::<Result>()?;
-        timing.complete("Writing ELF file");
-        Ok(())
-    }
+pub(crate) fn write(output: &mut Output, layout: &Layout, timing: &mut Timing) -> Result {
+    let mut section_buffers = split_output_into_sections(layout, output);
+
+    let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
+    let files_and_buffers: Vec<_> = layout
+        .file_layouts
+        .iter()
+        .map(|file| {
+            if let Some(file_sizes) = file.file_sizes(&layout.output_sections) {
+                (file, writable_buckets.take_mut(&file_sizes))
+            } else {
+                (
+                    file,
+                    OutputSectionPartMap::with_size(layout.output_sections.len()),
+                )
+            }
+        })
+        .collect();
+    files_and_buffers
+        .into_par_iter()
+        .map(|(file, buffer)| {
+            file.write(buffer, layout)
+                .with_context(|| format!("Failed copying from {file} to output file"))
+        })
+        .collect::<Result>()?;
+    timing.complete("Writing data to ELF file");
+
+    // We consumed the .eh_frame_hdr section in `split_buffers_by_alignment` above, get a fresh copy.
+    let mut section_buffers = split_output_into_sections(layout, output);
+    sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
+    timing.complete("Sorting .eh_frame_hdr");
+    Ok(())
+}
+
+fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {
+    let entry_bytes = &mut eh_frame_hdr[core::mem::size_of::<elf::EhFrameHdr>()..];
+    let entries: &mut [elf::EhFrameHdrEntry] = bytemuck::cast_slice_mut(entry_bytes);
+    entries.sort_by_key(|e| e.frame_ptr);
 }
 
 /// Splits the writable buffers for each segment further into separate buffers for each alignment.
@@ -408,40 +420,14 @@ impl<'data> ObjectLayout<'data> {
         let start_str_offset = self.strings_offset_start;
         let mut plt_got_writer = PltGotWriter::new(layout, &mut buffers);
         for sec in &self.sections {
-            let SectionSlot::Loaded(sec) = sec else {
-                continue;
-            };
-            if layout
-                .output_sections
-                .has_data_in_file(sec.output_section_id.unwrap())
-            {
-                let section_buffer =
-                    buffers.regular_mut(sec.output_section_id.unwrap(), sec.alignment);
-                let allocation_size = sec.capacity() as usize;
-                if section_buffer.len() < allocation_size {
-                    bail!(
-                        "Insufficient space allocated to section {}. Tried to take {} bytes, but only {} remain",
-                        self.display_section_name(sec.index),
-                        allocation_size, section_buffer.len()
-                    );
+            match sec {
+                SectionSlot::Loaded(sec) => {
+                    self.write_section(layout, sec, &mut buffers, &mut plt_got_writer)?
                 }
-                let out = slice_take_prefix_mut(section_buffer, allocation_size);
-                // Cut off any padding so that our output buffer is the size of our input buffer.
-                let out = &mut out[..sec.data.len()];
-                out.copy_from_slice(sec.data);
-                self.apply_relocations(out, sec, layout).with_context(|| {
-                    format!(
-                        "Failed to apply relocations in section {} of {}",
-                        self.display_section_name(sec.index),
-                        self.input
-                    )
-                })?;
-            }
-            if !matches!(sec.resolution_kind, PltGotFlags::Neither) {
-                let res = self.section_resolutions[sec.index.0]
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("Section requires GOT, but hasn't been resolved"))?;
-                plt_got_writer.process_resolution(res)?;
+                SectionSlot::EhFrameData(section_index) => {
+                    self.write_eh_frame_data(*section_index, &mut buffers, layout)?;
+                }
+                _ => (),
             }
         }
         for rel in &self.plt_relocations {
@@ -457,6 +443,47 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
+    fn write_section(
+        &self,
+        layout: &Layout<'_>,
+        sec: &Section<'_>,
+        buffers: &mut OutputSectionPartMap<&mut [u8]>,
+        plt_got_writer: &mut PltGotWriter<'_, '_>,
+    ) -> Result<(), anyhow::Error> {
+        if layout
+            .output_sections
+            .has_data_in_file(sec.output_section_id.unwrap())
+        {
+            let section_buffer = buffers.regular_mut(sec.output_section_id.unwrap(), sec.alignment);
+            let allocation_size = sec.capacity() as usize;
+            if section_buffer.len() < allocation_size {
+                bail!(
+                    "Insufficient space allocated to section {}. Tried to take {} bytes, but only {} remain",
+                    self.display_section_name(sec.index),
+                    allocation_size, section_buffer.len()
+                );
+            }
+            let out = slice_take_prefix_mut(section_buffer, allocation_size);
+            // Cut off any padding so that our output buffer is the size of our input buffer.
+            let out = &mut out[..sec.data.len()];
+            out.copy_from_slice(sec.data);
+            self.apply_relocations(out, sec, layout).with_context(|| {
+                format!(
+                    "Failed to apply relocations in section {} of {}",
+                    self.display_section_name(sec.index),
+                    self.input
+                )
+            })?;
+        }
+        if !matches!(sec.resolution_kind, PltGotFlags::Neither) {
+            let res = self.section_resolutions[sec.index.0]
+                .as_ref()
+                .ok_or_else(|| anyhow!("Section requires GOT, but hasn't been resolved"))?;
+            plt_got_writer.process_resolution(res)?;
+        };
+        Ok(())
+    }
+
     fn write_symbols(
         &self,
         start_str_offset: u32,
@@ -464,6 +491,8 @@ impl<'data> ObjectLayout<'data> {
         sections: &OutputSections,
         layout: &Layout,
     ) -> Result {
+        // TODO: I think we're copying too many symbols. e.g. lots of symbols like ".text", that
+        // don't add anything useful. Look to filter them.
         let mut symbol_writer =
             SymbolTableWriter::new(start_str_offset, &mut buffers, &self.mem_sizes, sections);
         for sym in self.object.symbols() {
@@ -536,6 +565,154 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
+    fn write_eh_frame_data(
+        &self,
+        eh_frame_section_index: object::SectionIndex,
+        buffers: &mut OutputSectionPartMap<&mut [u8]>,
+        layout: &Layout,
+    ) -> Result {
+        let output_data = &mut buffers.eh_frame[..];
+        let headers_out: &mut [EhFrameHdrEntry] =
+            bytemuck::cast_slice_mut(&mut buffers.eh_frame_hdr[..]);
+        let mut header_offset = 0;
+        let eh_frame_section = self.object.section_by_index(eh_frame_section_index)?;
+        let data = eh_frame_section.data()?;
+        const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
+        let mut relocations = eh_frame_section.relocations().peekable();
+        let mut input_pos = 0;
+        let mut output_pos = 0;
+        //let eh_frame_hdr_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME_HDR);
+        let frame_info_ptr_base = self.eh_frame_start_address; // - eh_frame_hdr_address;
+                                                               // Map from input offset to output offset of each CIE.
+        let mut cies_offset_conversion: FxHashMap<u32, u32> = FxHashMap::default();
+        while input_pos + PREFIX_LEN <= data.len() {
+            let prefix: elf::EhFrameEntryPrefix =
+                bytemuck::pod_read_unaligned(&data[input_pos..input_pos + PREFIX_LEN]);
+            let size = core::mem::size_of_val(&prefix.length) + prefix.length as usize;
+            let next_input_pos = input_pos + size;
+            let next_output_pos = output_pos + size;
+            if next_input_pos > data.len() {
+                bail!("Invalid .eh_frame data");
+            }
+            let mut should_keep = false;
+            let mut output_cie_offset = None;
+            if prefix.cie_id == 0 {
+                // This is a CIE
+                cies_offset_conversion.insert(input_pos as u32, output_pos as u32);
+                should_keep = true;
+            } else {
+                // This is an FDE
+                if let Some((rel_offset, rel)) = relocations.peek() {
+                    if *rel_offset < next_input_pos as u64 {
+                        let is_pc_begin =
+                            (*rel_offset as usize - input_pos) == elf::FDE_PC_BEGIN_OFFSET;
+
+                        if is_pc_begin {
+                            let section_index;
+                            let offset_in_section;
+                            match rel.target() {
+                                object::RelocationTarget::Symbol(index) => {
+                                    let elf_symbol = &self.object.symbol_by_index(index)?;
+                                    if let Some(index) = elf_symbol.section_index() {
+                                        section_index = index;
+                                        offset_in_section = elf_symbol.address();
+                                    } else {
+                                        bail!(".eh_frame pc-begin refers to symbol that's not defined in file");
+                                    }
+                                }
+                                object::RelocationTarget::Section(index) => {
+                                    section_index = index;
+                                    offset_in_section = 0;
+                                }
+                                _ => bail!("Unexpected relocation type in .eh_frame pc-begin"),
+                            };
+                            if let Some(section_resolution) =
+                                &self.section_resolutions[section_index.0]
+                            {
+                                should_keep = true;
+                                let cie_pointer_pos = input_pos as u32 + 4;
+                                let input_cie_pos = cie_pointer_pos
+                                    .checked_sub(prefix.cie_id)
+                                    .with_context(|| {
+                                        format!(
+                                            "CIE pointer is {}, but we're at offset {}",
+                                            prefix.cie_id, cie_pointer_pos
+                                        )
+                                    })?;
+                                let frame_ptr = section_resolution.address + offset_in_section; // .checked_sub(eh_frame_hdr_address).context(".eh_frame_hdr should be before everything that it references")?;
+                                headers_out[header_offset] = EhFrameHdrEntry {
+                                    frame_ptr: u32::try_from(frame_ptr)
+                                        .context("32 bit overflow in frame_ptr")?,
+                                    frame_info_ptr: u32::try_from(
+                                        frame_info_ptr_base + output_pos as u64,
+                                    )
+                                    .context("32 bit overflow when computing frame_info_ptr")?,
+                                };
+                                header_offset += 1;
+                                // TODO: Experiment with skipping this lookup if the `input_cie_pos`
+                                // is the same as the previous entry.
+                                let output_cie_pos = cies_offset_conversion.get(&input_cie_pos).with_context(|| format!("FDE referenced CIE at {input_cie_pos}, but no CIE at that position"))?;
+                                output_cie_offset = Some(output_pos as u32 + 4 - *output_cie_pos);
+                            }
+                        }
+                    }
+                }
+            }
+            if should_keep {
+                if next_output_pos > output_data.len() {
+                    bail!("Insufficient allocation to .eh_frame section. Allocated 0x{:x}, but tried to write up to 0x{:x}",
+                        self.mem_sizes.eh_frame, next_output_pos);
+                }
+                let entry_out = &mut output_data[output_pos..next_output_pos];
+                entry_out.copy_from_slice(&data[input_pos..next_input_pos]);
+                if let Some(output_cie_offset) = output_cie_offset {
+                    entry_out[4..8].copy_from_slice(&output_cie_offset.to_le_bytes());
+                }
+                while let Some((rel_offset, rel)) = relocations.peek() {
+                    if *rel_offset >= next_input_pos as u64 {
+                        // This relocation belongs to the next entry.
+                        break;
+                    }
+                    if let Some(resolution) = self.get_resolution(rel, layout)? {
+                        apply_relocation(
+                            &resolution,
+                            rel_offset - input_pos as u64,
+                            rel,
+                            output_pos as u64 + self.eh_frame_start_address,
+                            layout,
+                            entry_out,
+                        )
+                        .with_context(|| {
+                            format!("Failed to apply {}", self.display_relocation(rel, layout))
+                        })?;
+                    }
+                    relocations.next();
+                }
+                output_pos = next_output_pos;
+            } else {
+                // We're ignoring this entry, skip any relocations for it.
+                while let Some((rel_offset, _rel)) = relocations.peek() {
+                    if *rel_offset < next_input_pos as u64 {
+                        relocations.next();
+                    } else {
+                        break;
+                    }
+                }
+            }
+            input_pos = next_input_pos;
+        }
+
+        // Copy any remaining bytes in .eh_frame that aren't large enough to constitute an actual
+        // entry. crtend.o has a single u32 equal to 0 as an end marker.
+        let remaining = data.len() - input_pos;
+        if remaining > 0 {
+            output_data[output_pos..output_pos + remaining]
+                .copy_from_slice(&data[input_pos..input_pos + remaining]);
+        }
+
+        Ok(())
+    }
+
     fn display_relocation<'a>(
         &'a self,
         rel: &'a object::Relocation,
@@ -576,7 +753,12 @@ impl<'data> ObjectLayout<'data> {
                         }
                     }
                     LocalSymbolResolution::LocalSection(local_index) => {
-                        let mut r = self.section_resolutions[local_index.0].unwrap();
+                        let mut r = self.section_resolutions[local_index.0].with_context(|| {
+                            format!(
+                                "Reference to section that hasn't been resolved {}",
+                                self.display_section_name(local_index)
+                            )
+                        })?;
                         let local_sym = self.object.symbol_by_index(local_symbol_id)?;
                         r.address += local_sym.address();
                         r
@@ -898,6 +1080,8 @@ impl InternalLayout {
             self.write_symbol_table_entries(&mut buffers, layout)?;
         }
 
+        write_eh_frame_hdr(&mut buffers, layout)?;
+
         Ok(())
     }
 
@@ -1021,6 +1205,51 @@ impl InternalLayout {
     fn section_header_offset(&self) -> u64 {
         u64::from(elf::FILE_HEADER_SIZE) + Self::program_headers_size()
     }
+}
+
+fn write_eh_frame_hdr(
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    layout: &Layout<'_>,
+) -> Result {
+    let header: &mut EhFrameHdr = bytemuck::from_bytes_mut(buffers.eh_frame_hdr);
+    header.version = 1;
+
+    // It would be kind of nice to use .eh_frame relative addressing, since it'd make implementing
+    // relocatable outputs easier, but unfortunately when we do, libunwind (or possibly it's some
+    // llvm code) reports that it doesn't support that encoding. This probably means that we'll need
+    // to use PC-relative addressing (assuming that's supported). PC-relative addressing is going to
+    // be a pain though, because we'll need to find an alternative to sorting the header entries.
+
+    header.table_encoding =
+        elf::ExceptionHeaderFormat::U32 as u8 | elf::ExceptionHeaderApplication::Absolute as u8;
+
+    header.frame_pointer_encoding =
+        elf::ExceptionHeaderFormat::U32 as u8 | elf::ExceptionHeaderApplication::Absolute as u8;
+    header.frame_pointer = eh_frame_ptr(layout)?;
+
+    header.count_encoding =
+        elf::ExceptionHeaderFormat::U32 as u8 | elf::ExceptionHeaderApplication::Absolute as u8;
+    header.entry_count = eh_frame_hdr_entry_count(layout)?;
+
+    Ok(())
+}
+
+fn eh_frame_hdr_entry_count(layout: &Layout<'_>) -> Result<u32> {
+    let hdr_sec = layout
+        .section_layouts
+        .built_in(output_section_id::EH_FRAME_HDR);
+    u32::try_from(
+        (hdr_sec.mem_size - core::mem::size_of::<elf::EhFrameHdr>() as u64)
+            / core::mem::size_of::<elf::EhFrameHdrEntry>() as u64,
+    )
+    .context(".eh_frame_hdr entries overflowed 32 bits")
+}
+
+/// Returns the address of .eh_frame.
+fn eh_frame_ptr(layout: &Layout<'_>) -> Result<u32> {
+    let eh_frame_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME);
+    u32::try_from(eh_frame_address)
+        .context(".eh_frame after address 4GB is not currently supported")
 }
 
 pub(crate) const NUM_DYNAMIC_ENTRIES: usize = 11;

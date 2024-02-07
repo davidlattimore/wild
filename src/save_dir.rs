@@ -15,6 +15,8 @@ pub(crate) struct SaveDir {
 
 const SAVE_DIR_ENV: &str = "WILD_SAVE_DIR";
 
+const PRELUDE: &str = include_str!("save-dir-prelude.sh");
+
 impl SaveDir {
     pub(crate) fn new() -> Result<Self> {
         let Ok(dir) = std::env::var(SAVE_DIR_ENV) else {
@@ -54,7 +56,7 @@ impl SaveDir {
         let mut file = std::fs::File::create(run_file)?;
         let mut out = BufWriter::new(&mut file);
         let mut args = std::env::args();
-        out.write_all("#!/bin/bash\nD=$(dirname $BASH_SOURCE)\nexec \"$@\"".as_bytes())?;
+        out.write_all(PRELUDE.as_bytes())?;
         args.next();
         self.write_args(args, &mut out)?;
         drop(out);
@@ -67,7 +69,7 @@ impl SaveDir {
         for arg in args {
             out.write_all(" \\\n  ".as_bytes())?;
             if is_output_file {
-                out.write_all(b"$D/bin")?;
+                out.write_all(b"$OUT")?;
                 is_output_file = false;
                 continue;
             }

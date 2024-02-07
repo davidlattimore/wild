@@ -9,6 +9,7 @@ pub(crate) const LOAD_RO: ProgramSegmentId = ProgramSegmentId(0);
 pub(crate) const LOAD_EXEC: ProgramSegmentId = ProgramSegmentId(1);
 pub(crate) const LOAD_RW: ProgramSegmentId = ProgramSegmentId(2);
 pub(crate) const TLS: ProgramSegmentId = ProgramSegmentId(3);
+pub(crate) const EH_FRAME: ProgramSegmentId = ProgramSegmentId(4);
 
 pub(crate) struct ProgramSegmentDef {
     pub(crate) segment_type: SegmentType,
@@ -34,6 +35,10 @@ const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
     },
     ProgramSegmentDef {
         segment_type: SegmentType::Tls,
+        segment_flags: PF_R,
+    },
+    ProgramSegmentDef {
+        segment_type: SegmentType::EhFrame,
         segment_flags: PF_R,
     },
 ];

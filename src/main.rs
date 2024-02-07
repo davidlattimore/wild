@@ -30,8 +30,7 @@ fn main() -> crate::error::Result {
         resolution::resolve_symbols_and_sections(file_states, &mut symbol_db, &mut timing)?;
     let layout = layout::compute(&symbol_db, resolved_files, output_sections, &mut timing)?;
     let mut output = elf_writer::Output::create(&args.output, &layout, &mut timing)?;
-    let mut writer = elf_writer::ElfWriter::open(&mut output, &layout);
-    writer.write(&layout, &mut timing)?;
+    elf_writer::write(&mut output, &layout, &mut timing)?;
     output.make_executable()?;
     Ok(())
 }

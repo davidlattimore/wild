@@ -3,8 +3,7 @@
 Wild is a linker with the goal of being very fast for iterative development.
 
 It's still very much a work-in-progress and definitely shouldn't be used for linking any production
-binaries. It isn't yet even ready for linking development binaries, mostly since eh_frame sections
-aren't yet handled, which means unwinding (panics / exceptions / backtraces) won't work yet.
+binaries.
 
 ## Q&A
 
@@ -18,7 +17,6 @@ Wild in Rust, it's hoped that the complexity of incremental linking will be achi
 
 Lots of stuff. Here are some of the larger things that aren't yet done:
 
-* eh_frames (support for unwinding)
 * Dynamic linking
 * Debug info
 * Incremental linking
@@ -37,9 +35,9 @@ stand for anything and was just selected based on it giving an interesting word.
 
 ### Benchmarks
 
-Until Wild supports eh_frames (needed for unwinding), it's not really possible to do a fair
-comparison with other linkers, since Wild is doing less work by virtue of discarding eh_frame
-sections.
+Until recently, eh_frames (needed for unwinding) weren't supported, which meant that a fair
+comparison wasn't possible. Now that eh_frames support has been implemented, benchmarking could
+possibly be done, but hasn't yet.
 
 ## Linking Rust code
 

@@ -5,6 +5,7 @@
 use crate::elf::File;
 use crate::error::Error;
 use crate::error::Result;
+use crate::input_data;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::INTERNAL_FILE_ID;
@@ -106,6 +107,7 @@ pub(crate) fn resolve_symbols_and_sections<'data>(
     timing.complete("Process custom section start/stop refs");
 
     resolve_alternative_symbol_definitions(symbol_db, &resolved)?;
+    filter_overridden_internal_symbols(&mut internal, symbol_db);
     timing.complete("Resolve alternative symbol definitions");
 
     resolved[INTERNAL_FILE_ID.as_usize()] = ResolvedFile::Internal(internal);
@@ -176,6 +178,16 @@ fn select_symbol<'data>(
     None
 }
 
+/// Filter out any internally defined symbols that have been overridden by user code.
+fn filter_overridden_internal_symbols(
+    internal: &mut InternalSymbols,
+    symbol_db: &mut SymbolDb<'_>,
+) {
+    internal
+        .defined
+        .retain(|symbol_id| symbol_db.symbol(*symbol_id).file_id == input_data::INTERNAL_FILE_ID);
+}
+
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum SymbolStrength {
     /// The object containing this symbol wasn't loaded, so the definition can be ignored.
@@ -227,6 +239,7 @@ pub(crate) enum SectionSlot<'data> {
     Discard,
     Unloaded(UnloadedSection<'data>),
     Loaded(crate::layout::Section<'data>),
+    EhFrameData(object::SectionIndex),
 }
 
 #[derive(Copy, Clone)]
@@ -488,13 +501,16 @@ fn resolve_sections<'data>(
         .sections()
         .map(|input_section| {
             if let Some(unloaded) = UnloadedSection::from_section(&input_section)? {
-                if let TemporaryOutputSectionId::Custom(_custom_section_id) =
-                    unloaded.output_section_id
-                {
-                    custom_sections.push((input_section.index(), unloaded.details));
+                match unloaded.output_section_id {
+                    TemporaryOutputSectionId::BuiltIn(_) => Ok(SectionSlot::Unloaded(unloaded)),
+                    TemporaryOutputSectionId::Custom(_custom_section_id) => {
+                        custom_sections.push((input_section.index(), unloaded.details));
+                        Ok(SectionSlot::Unloaded(unloaded))
+                    }
+                    TemporaryOutputSectionId::EhFrameData => {
+                        Ok(SectionSlot::EhFrameData(input_section.index()))
+                    }
                 }
-
-                Ok(SectionSlot::Unloaded(unloaded))
             } else {
                 Ok(SectionSlot::Discard)
             }

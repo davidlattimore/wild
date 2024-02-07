@@ -183,7 +183,7 @@ impl Program {
         let link_output = config.link(self.name, &object_paths, variant)?;
         assertions.check(&link_output).with_context(|| {
             format!(
-                "Assertions failed for {}. Relink wiht:\n{}",
+                "Output binary assertions failed for `{}`. Relink with:\n{}",
                 link_output.binary.display(),
                 link_output.command
             )
@@ -534,6 +534,7 @@ fn integration_test() -> Result {
                 "exit.c",
             ],
         )?,
+        Program::new("eh_frame", &["eh_frame.c", "eh_frame_end.c", "exit.c"])?,
     ];
 
     let compilation_configs = [

@@ -6,6 +6,7 @@ static int foo1 __attribute__ ((used, retain, section ("foo"))) = 2;
 static int foo2 __attribute__ ((used, retain, section ("foo"))) = 5;
 
 static int w1a __attribute__ ((used, retain, section ("w1"))) = 88;
+static int w3a __attribute__ ((used, retain, section ("w3"))) = 88;
 
 extern int __start_foo[];
 extern int __stop_foo[];
@@ -18,6 +19,13 @@ extern int __start_w1[] __attribute__ ((weak));
 extern int __stop_w1[] __attribute__ ((weak));
 extern int __start_w2[] __attribute__ ((weak));
 extern int __stop_w2[] __attribute__ ((weak));
+
+// Override a symbol that would normally be created by the custom section.
+int __stop_w3 = 88;
+
+// Not really custom-section related, but also override a symbol that's normally defined by a
+// built-in section.
+int __init_array_start = 89;
 
 int fn1(void);
 
@@ -46,6 +54,12 @@ void _start(void) {
     }
     if (h2(2) != 8) {
         exit_syscall(104);
+    }
+    if (__stop_w3 != 88) {
+        exit_syscall(105);
+    }
+    if (__init_array_start != 89) {
+        exit_syscall(106);
     }
 
     exit_syscall(value);

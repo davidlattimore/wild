@@ -159,6 +159,7 @@ pub(crate) enum SegmentType {
     Shlib = 5,
     Phdr = 6,
     Tls = 7,
+    EhFrame = 0x6474e550,
 }
 
 #[allow(unused)]
@@ -196,12 +197,68 @@ pub(crate) enum DynamicTag {
     FiniArraySize = 28,
 }
 
+/// See https://refspecs.linuxfoundation.org/LSB_1.3.0/gLSB/gLSB/ehframehdr.html
+#[derive(Zeroable, Pod, Clone, Copy)]
+#[repr(C)]
+pub(crate) struct EhFrameHdr {
+    pub(crate) version: u8,
+    pub(crate) frame_pointer_encoding: u8,
+    pub(crate) count_encoding: u8,
+    pub(crate) table_encoding: u8,
+    // For now we just use 32 bit pointer and count because it means that they're aligned. If we
+    // need to upgrade these to u64, then we'd have to write these as unaligned fields.
+    pub(crate) frame_pointer: u32,
+    pub(crate) entry_count: u32,
+}
+
+#[derive(Zeroable, Pod, Clone, Copy)]
+#[repr(C)]
+pub(crate) struct EhFrameHdrEntry {
+    pub(crate) frame_ptr: u32,
+    pub(crate) frame_info_ptr: u32,
+}
+
+#[derive(Zeroable, Pod, Clone, Copy)]
+#[repr(C)]
+pub(crate) struct EhFrameEntryPrefix {
+    pub(crate) length: u32,
+    pub(crate) cie_id: u32,
+}
+
+#[allow(unused)]
+#[repr(u8)]
+pub(crate) enum ExceptionHeaderFormat {
+    Uleb128 = 1,
+    U16 = 2,
+    U32 = 3,
+    U64 = 4,
+    Sleb128 = 9,
+    I16 = 0xa,
+    I32 = 0xb,
+    I64 = 0xc,
+}
+
+#[allow(unused)]
+#[repr(u8)]
+pub(crate) enum ExceptionHeaderApplication {
+    Absolute = 0,
+
+    /// Value is relative to the location of the pointer.
+    Relative = 0x10,
+
+    /// Value is relative to start of the .eh_frame_hdr section.
+    EhFrameHdrRelative = 0x20,
+}
+
 #[allow(unused)]
 #[derive(Clone, Copy)]
 #[repr(u32)]
 pub(crate) enum RelocationType {
     IRelative = 37,
 }
+
+/// The offset of the pc_begin field in an FDE.
+pub(crate) const FDE_PC_BEGIN_OFFSET: usize = 8;
 
 /// Offset in the file where we store the program headers. We always store these straight after the
 /// file header.

@@ -67,8 +67,10 @@ impl Symbol {
     }
 
     pub(crate) fn local_index_for_file(&self, file_id: FileId) -> Result<object::SymbolIndex> {
+        // TODO: If this check fails, then that's a bug, so we should consider only doing this in
+        // debug builds. Could also optionally panic instead of bailing.
         if self.file_id != file_id {
-            bail!("Requested local index for a symbol that didn't define that symbol");
+            bail!("Requested local index for a file ({file_id}) that didn't define that symbol");
         }
         Ok(self.local_index)
     }

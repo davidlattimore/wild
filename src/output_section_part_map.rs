@@ -22,6 +22,8 @@ pub(crate) struct OutputSectionPartMap<T> {
     pub(crate) symtab_strings: T,
     pub(crate) shstrtab: T,
     pub(crate) rela_plt: T,
+    pub(crate) eh_frame: T,
+    pub(crate) eh_frame_hdr: T,
 }
 
 impl<T: Default> OutputSectionPartMap<T> {
@@ -38,6 +40,8 @@ impl<T: Default> OutputSectionPartMap<T> {
             symtab_strings: Default::default(),
             shstrtab: Default::default(),
             rela_plt: Default::default(),
+            eh_frame: Default::default(),
+            eh_frame_hdr: Default::default(),
         }
     }
 }
@@ -77,6 +81,11 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             &self.file_headers,
         );
         self.map_regular(output_section_id::RODATA, &mut cb, &mut regular);
+        let eh_frame_hdr = cb(
+            output_section_id::EH_FRAME_HDR,
+            output_section_id::EH_FRAME_HDR.min_alignment(),
+            &self.eh_frame_hdr,
+        );
         self.map_regular(output_section_id::INIT_ARRAY, &mut cb, &mut regular);
         self.map_regular(output_section_id::FINI_ARRAY, &mut cb, &mut regular);
         self.map_regular(output_section_id::PREINIT_ARRAY, &mut cb, &mut regular);
@@ -125,6 +134,11 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             &self.got,
         );
         self.map_regular(output_section_id::DATA, &mut cb, &mut regular);
+        let eh_frame = cb(
+            output_section_id::EH_FRAME,
+            output_section_id::EH_FRAME.min_alignment(),
+            &self.eh_frame,
+        );
         output_sections.data_custom.iter().for_each(|id| {
             self.map_regular(*id, &mut cb, &mut regular);
         });
@@ -145,6 +159,8 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             symtab_strings,
             shstrtab,
             rela_plt,
+            eh_frame,
+            eh_frame_hdr,
         }
     }
 
@@ -201,6 +217,8 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             symtab_strings: cb(&mut self.symtab_strings, &other.symtab_strings),
             shstrtab: cb(&mut self.shstrtab, &other.shstrtab),
             rela_plt: cb(&mut self.rela_plt, &other.rela_plt),
+            eh_frame: cb(&mut self.eh_frame, &other.eh_frame),
+            eh_frame_hdr: cb(&mut self.eh_frame_hdr, &other.eh_frame_hdr),
         }
     }
 }
@@ -252,16 +270,18 @@ impl<T: Copy> OutputSectionPartMap<T> {
             debug_assert_eq!(output_section_id.as_usize(), values_out.len());
             values_out.push(cb(values));
         };
-        (update)(output_section_id::HEADERS, &[self.file_headers]);
-        (update)(output_section_id::SHSTRTAB, &[self.shstrtab]);
-        (update)(
+        update(output_section_id::HEADERS, &[self.file_headers]);
+        update(output_section_id::SHSTRTAB, &[self.shstrtab]);
+        update(
             output_section_id::SYMTAB,
             &[self.symtab_locals, self.symtab_globals],
         );
-        (update)(output_section_id::STRTAB, &[self.symtab_strings]);
-        (update)(output_section_id::GOT, &[self.got]);
-        (update)(output_section_id::PLT, &[self.plt]);
-        (update)(output_section_id::RELA_PLT, &[self.rela_plt]);
+        update(output_section_id::STRTAB, &[self.symtab_strings]);
+        update(output_section_id::GOT, &[self.got]);
+        update(output_section_id::PLT, &[self.plt]);
+        update(output_section_id::RELA_PLT, &[self.rela_plt]);
+        update(output_section_id::EH_FRAME, &[self.eh_frame]);
+        update(output_section_id::EH_FRAME_HDR, &[self.eh_frame_hdr]);
         values_out.extend(self.regular.iter().map(|parts| cb(parts.raw_values())));
         OutputSectionMap::from_values(values_out)
     }
@@ -283,6 +303,8 @@ impl<T: AddAssign + Copy + Default> OutputSectionPartMap<T> {
         self.symtab_strings += rhs.symtab_strings;
         self.shstrtab += rhs.shstrtab;
         self.rela_plt += rhs.rela_plt;
+        self.eh_frame += rhs.eh_frame;
+        self.eh_frame_hdr += rhs.eh_frame_hdr;
     }
 }
 

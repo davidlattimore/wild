@@ -18,6 +18,7 @@ impl<T: Default> OutputSectionMap<T> {
         Self { values }
     }
 
+    // TODO: This seems to be the same as `get`. Get rid of it?
     pub(crate) fn built_in(&self, index: OutputSectionId) -> &T {
         &self.values[index.as_usize()]
     }
