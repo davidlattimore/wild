@@ -368,6 +368,10 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         section: &Section,
         section_address: u64,
     ) -> Result {
+        let name = sym.name_bytes()?;
+        if !crate::layout::should_copy_symbol(name) {
+            return Ok(());
+        }
         let is_local = sym.is_local();
         let object::SymbolFlags::Elf { st_info, st_other } = sym.flags() else {
             unreachable!()
@@ -378,7 +382,6 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
             .output_index;
         let value = section_address + sym.address();
         let size = sym.size();
-        let name = sym.name_bytes()?;
         let entry = self.define_symbol(is_local, shndx, value, size, name)?;
         entry.info = st_info;
         entry.other = st_other;

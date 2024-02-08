@@ -618,3 +618,9 @@ impl<'data> std::fmt::Display for ResolvedFile<'data> {
         }
     }
 }
+
+impl<'data> SectionSlot<'data> {
+    pub(crate) fn is_loaded(&self) -> bool {
+        matches!(self, SectionSlot::Loaded(_))
+    }
+}

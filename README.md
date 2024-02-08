@@ -3,7 +3,8 @@
 Wild is a linker with the goal of being very fast for iterative development.
 
 It's still very much a work-in-progress and definitely shouldn't be used for linking any production
-binaries.
+binaries. It's probably not really ready for development purposes yet, since there's a bunch of
+important stuff it can't yet do like debug info and dynamic linking.
 
 ## Q&A
 
@@ -15,17 +16,18 @@ Wild in Rust, it's hoped that the complexity of incremental linking will be achi
 
 ### What isn't yet supported?
 
-Lots of stuff. Here are some of the larger things that aren't yet done:
+Lots of stuff. Here are some of the larger things that aren't yet done, roughly sorted by current
+priority:
 
-* Dynamic linking
 * Debug info
-* Incremental linking
 * Support for position-independent static executables
+* Dynamic linking
+* Incremental linking
 * Mac support
 * Windows support
-* Linker scripts
 * Support for a wider range of linker flags
-* LTO - although it's not clear that this is practical to be done incrementally
+* Linker scripts
+* LTO
 
 ### Where did the name come from?
 

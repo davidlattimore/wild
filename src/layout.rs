@@ -1697,25 +1697,32 @@ impl<'data> ObjectLayoutState<'data> {
         let mut num_globals = 0;
         let mut strings_size = 0;
         for sym in self.object.symbols() {
-            if let object::SymbolSection::Section(section_index) = sym.section() {
-                if matches!(self.state.sections[section_index.0], SectionSlot::Loaded(_)) {
-                    if sym.is_local() {
-                        num_locals += 1;
-                    } else {
-                        num_globals += 1;
-                    }
-                    strings_size += sym.name_bytes()?.len() + 1;
-                }
-            } else if sym.is_common() {
-                if let Some(symbol_id) =
-                    self.state.local_symbol_resolutions[sym.index().0].global_symbol_id()
-                {
-                    let symbol = symbol_db.symbol(symbol_id);
-                    if symbol.file_id == self.state.common.file_id {
-                        num_globals += 1;
-                        strings_size += sym.name_bytes()?.len() + 1;
+            match sym.section() {
+                object::SymbolSection::Section(section_index) => {
+                    if self.state.sections[section_index.0].is_loaded() {
+                        let name = &sym.name_bytes()?;
+                        if should_copy_symbol(name) {
+                            if sym.is_global() {
+                                num_globals += 1;
+                            } else {
+                                num_locals += 1;
+                            }
+                            strings_size += name.len() + 1;
+                        }
                     }
                 }
+                object::SymbolSection::Common => {
+                    if let Some(symbol_id) =
+                        self.state.local_symbol_resolutions[sym.index().0].global_symbol_id()
+                    {
+                        let symbol = symbol_db.symbol(symbol_id);
+                        if symbol.file_id == self.state.common.file_id {
+                            num_globals += 1;
+                            strings_size += sym.name_bytes()?.len() + 1;
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
@@ -1834,6 +1841,12 @@ impl<'data> ObjectLayoutState<'data> {
             eh_frame_start_address: memory_offsets.eh_frame,
         })
     }
+}
+
+/// Returns whether we should copy a symbol with the specified name into the output symbol table.
+/// Symbols with empty names and those starting with '.' aren't copied.
+pub(crate) fn should_copy_symbol(name: &[u8]) -> bool {
+    !name.is_empty() && !name.starts_with(b".")
 }
 
 fn process_eh_frame_data<'data>(
