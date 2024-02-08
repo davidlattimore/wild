@@ -9,6 +9,7 @@ use crate::args::Args;
 use crate::elf::File;
 use crate::error::Result;
 use crate::file_kind::FileKind;
+use crate::hash::PassThroughHashMap;
 use crate::input_data;
 use crate::input_data::FileId;
 use crate::input_data::InputData;
@@ -34,10 +35,7 @@ use std::path::Path;
 
 pub(crate) struct SymbolDb<'data> {
     pub(crate) args: &'data Args,
-    // TODO: Investigate what hash function performs the best here. Even better, can we do the
-    // hashing in the per-file threads so that the main thread doesn't need to hash at all? The
-    // prehash crate might help with that.
-    pub(crate) symbol_ids: FxHashMap<SymbolName<'data>, GlobalSymbolId>,
+    pub(crate) symbol_ids: PassThroughHashMap<SymbolName<'data>, GlobalSymbolId>,
     symbols: Vec<Symbol>,
     symbol_names: Vec<SymbolName<'data>>,
     pub(crate) alternate_definitions: FxHashMap<GlobalSymbolId, Vec<Symbol>>,

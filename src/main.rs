@@ -6,6 +6,7 @@ mod elf_writer;
 mod error;
 mod file_kind;
 mod fs;
+mod hash;
 mod input_data;
 mod layout;
 mod linker_script;
