@@ -116,6 +116,26 @@ allow_apis = [
     "process",
 ]
 
+[pkg.zerocopy-derive]
+allow_proc_macro = true
+
+[pkg.once_cell]
+allow_unsafe = true
+
+[pkg.version_check]
+from.build.allow_apis = [
+    "process",
+]
+
+[pkg.zerocopy]
+allow_unsafe = true
+
+[pkg.smallvec]
+allow_unsafe = true
+
+[pkg.ahash]
+allow_unsafe = true
+
 [api.fs]
 no_auto_detect = [
     "wild",

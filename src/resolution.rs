@@ -24,12 +24,12 @@ use crate::symbol_db::LocalIndexUpdate;
 use crate::symbol_db::PendingSymbol;
 use crate::symbol_db::SymbolDb;
 use crate::timing::Timing;
+use ahash::AHashMap;
 use anyhow::bail;
 use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use crossbeam_utils::atomic::AtomicCell;
-use fxhash::FxHashMap;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
@@ -126,7 +126,9 @@ fn resolve_alternative_symbol_definitions<'data>(
     // For now, we do this from a single thread since we don't expect a lot of symbols will have
     // multiple definitions. If it turns out that there are cases where it's actually taking
     // significant time, then we could parallelise this without too much work.
-    for (symbol_id, alternatives) in core::mem::take(&mut symbol_db.alternate_definitions) {
+    let alternate_definitions =
+        core::mem::replace(&mut symbol_db.alternate_definitions, AHashMap::new());
+    for (symbol_id, alternatives) in alternate_definitions {
         if let Some(selected) = select_symbol(symbol_db, symbol_id, resolved, &alternatives) {
             symbol_db.replace_symbol(symbol_id, selected);
         }
@@ -376,7 +378,7 @@ fn crate_local_index_updates(
 
 struct StartStopSet<'data> {
     file_id: FileId,
-    start_stop_refs: FxHashMap<&'data [u8], Vec<object::SymbolIndex>>,
+    start_stop_refs: AHashMap<&'data [u8], Vec<object::SymbolIndex>>,
 }
 
 fn allocate_start_stop_symbol_ids<'data>(
@@ -525,8 +527,7 @@ fn resolve_symbols<'data>(
     mut request_file_id: impl FnMut(FileId),
     start_stop_sets: &SegQueue<StartStopSet<'data>>,
 ) -> Result<Vec<LocalSymbolResolution>> {
-    let mut start_stop_refs: FxHashMap<&'data [u8], Vec<object::SymbolIndex>> =
-        FxHashMap::default();
+    let mut start_stop_refs: AHashMap<&'data [u8], Vec<object::SymbolIndex>> = AHashMap::new();
     let local_symbol_resolutions = obj
         .object
         .symbols()

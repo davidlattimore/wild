@@ -45,7 +45,7 @@ impl<'data> SymbolName<'data> {
     pub(crate) fn new(bytes: &'data [u8]) -> SymbolName<'data> {
         Self {
             bytes,
-            hash: fxhash::hash64(bytes),
+            hash: crate::hash::hash_bytes(bytes),
         }
     }
 

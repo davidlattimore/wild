@@ -21,9 +21,9 @@ use crate::symbol;
 use crate::symbol::Symbol;
 use crate::symbol::SymbolName;
 use crate::timing::Timing;
+use ahash::AHashMap;
 use anyhow::bail;
 use anyhow::Context;
-use fxhash::FxHashMap;
 use object::Object;
 use object::ObjectSymbol;
 use rayon::prelude::IntoParallelIterator;
@@ -38,7 +38,7 @@ pub(crate) struct SymbolDb<'data> {
     pub(crate) symbol_ids: PassThroughHashMap<SymbolName<'data>, GlobalSymbolId>,
     symbols: Vec<Symbol>,
     symbol_names: Vec<SymbolName<'data>>,
-    pub(crate) alternate_definitions: FxHashMap<GlobalSymbolId, Vec<Symbol>>,
+    pub(crate) alternate_definitions: AHashMap<GlobalSymbolId, Vec<Symbol>>,
 }
 
 /// A symbol that hasn't been given an ID yet.
@@ -204,7 +204,7 @@ impl<'data> SymbolDb<'data> {
             symbol_ids: Default::default(),
             symbols,
             symbol_names,
-            alternate_definitions: Default::default(),
+            alternate_definitions: AHashMap::new(),
         };
         let readers = input_data
             .files

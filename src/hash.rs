@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::hash::Hasher;
 use std::hash::BuildHasher;
+use std::hash::Hasher;
 
 pub(crate) type PassThroughHashMap<K, V> = HashMap<K, V, PassThroughHasher>;
 
@@ -29,4 +29,10 @@ impl BuildHasher for PassThroughHasher {
     fn build_hasher(&self) -> Self::Hasher {
         PassThroughHasher::default()
     }
+}
+
+pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hasher = ahash::AHasher::default();
+    hasher.write(bytes);
+    hasher.finish()
 }

@@ -34,10 +34,10 @@ use crate::slice::slice_take_prefix_mut;
 use crate::symbol_db::GlobalSymbolId;
 use crate::symbol_db::SymbolDb;
 use crate::timing::Timing;
+use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
-use fxhash::FxHashMap;
 use memmap2::MmapOptions;
 use object::Object;
 use object::ObjectSection;
@@ -584,10 +584,11 @@ impl<'data> ObjectLayout<'data> {
         let mut relocations = eh_frame_section.relocations().peekable();
         let mut input_pos = 0;
         let mut output_pos = 0;
-        //let eh_frame_hdr_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME_HDR);
-        let frame_info_ptr_base = self.eh_frame_start_address; // - eh_frame_hdr_address;
-                                                               // Map from input offset to output offset of each CIE.
-        let mut cies_offset_conversion: FxHashMap<u32, u32> = FxHashMap::default();
+        let frame_info_ptr_base = self.eh_frame_start_address;
+
+        // Map from input offset to output offset of each CIE.
+        let mut cies_offset_conversion: AHashMap<u32, u32> = AHashMap::new();
+
         while input_pos + PREFIX_LEN <= data.len() {
             let prefix: elf::EhFrameEntryPrefix =
                 bytemuck::pod_read_unaligned(&data[input_pos..input_pos + PREFIX_LEN]);

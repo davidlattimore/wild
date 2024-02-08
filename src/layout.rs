@@ -31,11 +31,11 @@ use crate::symbol_db::GlobalSymbolId;
 use crate::symbol_db::InternalSymDefInfo;
 use crate::symbol_db::SymbolDb;
 use crate::timing::Timing;
+use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
-use fxhash::FxHashMap;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
@@ -729,7 +729,7 @@ fn compute_segment_layout(
 
     use output_section_id::OrderEvent;
     let mut complete = Vec::with_capacity(crate::program_segments::NUM_SEGMENTS);
-    let mut active_records = FxHashMap::default();
+    let mut active_records = AHashMap::new();
     output_sections.sections_and_segments_do(|event| match event {
         OrderEvent::SegmentStart(segment_id) => {
             active_records.insert(

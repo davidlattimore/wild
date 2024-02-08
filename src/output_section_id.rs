@@ -5,10 +5,10 @@ use crate::elf::Section;
 use crate::error::Result;
 use crate::layout::Layout;
 use crate::program_segments::ProgramSegmentId;
+use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::bail;
 use core::mem::size_of;
-use fxhash::FxHashMap;
 use object::ObjectSection;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -85,7 +85,7 @@ pub(crate) const NUM_BUILT_IN_SECTIONS: usize = NUM_GENERATED_SECTIONS + 11;
 
 pub(crate) struct OutputSections<'data> {
     pub(crate) section_infos: Vec<SectionOutputInfo<'data>>,
-    custom_by_name: FxHashMap<&'data [u8], OutputSectionId>,
+    custom_by_name: AHashMap<&'data [u8], OutputSectionId>,
     pub(crate) ro_custom: Vec<OutputSectionId>,
     pub(crate) exec_custom: Vec<OutputSectionId>,
     pub(crate) data_custom: Vec<OutputSectionId>,

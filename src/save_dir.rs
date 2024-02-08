@@ -1,8 +1,8 @@
 //! Support for saving inputs for later use.
 
 use crate::error::Result;
+use ahash::AHashMap;
 use anyhow::Context;
-use fxhash::FxHashMap;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::Path;
@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 pub(crate) struct SaveDir {
     dir: Option<PathBuf>,
-    copied_paths: FxHashMap<String, String>,
+    copied_paths: AHashMap<String, String>,
 }
 
 const SAVE_DIR_ENV: &str = "WILD_SAVE_DIR";
@@ -39,7 +39,7 @@ impl SaveDir {
     fn with_dir(dir: Option<PathBuf>) -> Self {
         SaveDir {
             dir,
-            copied_paths: Default::default(),
+            copied_paths: AHashMap::new(),
         }
     }
 
