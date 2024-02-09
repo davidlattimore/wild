@@ -78,7 +78,7 @@ impl<'data> ArchiveIterator<'data> {
         Ok(Self { data })
     }
 
-    /// Create an iterator from part of an arhive. The supplied bytes should start with an archive
+    /// Create an iterator from part of an archive. The supplied bytes should start with an archive
     /// entry header, however this is not validated until next_result is called.
     pub(crate) fn from_entry_bytes(data: &'data [u8]) -> Self {
         Self { data }

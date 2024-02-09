@@ -342,15 +342,18 @@ fn process_archive_entry<'scope, 'data: 'scope>(
     s: &rayon::Scope<'scope>,
     outputs: &'scope Outputs<'data>,
 ) -> Result {
-    let (entry_obj, symbols) = match entry {
-        ArchivedObject::Unloaded(u) => u.load()?,
+    let entry_obj = match entry {
+        ArchivedObject::Unloaded(u) => {
+            let (entry_obj, symbols) = u.load()?;
+            outputs.local_index_updates.push(crate_local_index_updates(
+                entry_obj.file_id,
+                symbols,
+                symbol_db,
+            ));
+            entry_obj
+        }
+        ArchivedObject::Loaded(o) => o,
     };
-
-    outputs.local_index_updates.push(crate_local_index_updates(
-        entry_obj.file_id,
-        symbols,
-        symbol_db,
-    ));
     process_object(entry_obj, symbol_db, archive_entries, s, outputs)
 }
 
