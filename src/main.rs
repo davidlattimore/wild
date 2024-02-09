@@ -25,13 +25,18 @@ fn main() -> crate::error::Result {
     let args = args::Args::from_env()?;
     args.setup_thread_pool()?;
     let mut timing = args.timing();
+    let mut output = elf_writer::Output::new(&args);
     let input_data = input_data::InputData::from_args(&args, &mut timing)?;
     let (mut symbol_db, file_states) = symbol_db::SymbolDb::build(&input_data, &mut timing)?;
     let (resolved_files, output_sections) =
         resolution::resolve_symbols_and_sections(file_states, &mut symbol_db, &mut timing)?;
-    let layout = layout::compute(&symbol_db, resolved_files, output_sections, &mut timing)?;
-    let mut output = elf_writer::Output::create(&args.output, &layout, &mut timing)?;
-    elf_writer::write(&mut output, &layout, &mut timing)?;
-    output.make_executable()?;
+    let layout = layout::compute(
+        &symbol_db,
+        resolved_files,
+        output_sections,
+        &mut output,
+        &mut timing,
+    )?;
+    output.write(&layout, &mut timing)?;
     Ok(())
 }

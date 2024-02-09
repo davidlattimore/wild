@@ -8,6 +8,7 @@ use crate::args::Args;
 use crate::elf;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
+use crate::elf_writer;
 use crate::error::Error;
 use crate::error::Result;
 use crate::input_data::FileId;
@@ -54,6 +55,7 @@ pub(crate) fn compute<'data>(
     symbol_db: &'data SymbolDb<'data>,
     file_states: Vec<resolution::ResolvedFile<'data>>,
     output_sections: OutputSections<'data>,
+    output: &mut elf_writer::Output,
     timing: &mut Timing,
 ) -> Result<Layout<'data>> {
     let tls_mode = determine_tls_mode(symbol_db);
@@ -71,6 +73,7 @@ pub(crate) fn compute<'data>(
     timing.complete("Sum section sizes");
     let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections);
     let section_layouts = layout_sections(&section_part_layouts);
+    output.set_size(compute_total_file_size(&section_layouts));
     let segment_layouts = compute_segment_layout(&section_layouts, &output_sections);
     let mem_offsets: OutputSectionPartMap<u64> =
         starting_memory_offsets(&section_part_layouts, &output_sections);
@@ -107,6 +110,12 @@ pub(crate) fn compute<'data>(
         output_sections,
         tls_mode,
     })
+}
+
+fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout>) -> u64 {
+    let mut file_size = 0;
+    section_layouts.for_each(|_, s| file_size = file_size.max(s.file_offset + s.file_size));
+    file_size as u64
 }
 
 /// Information about what goes where. Also includes relocation data, since that's computed at the

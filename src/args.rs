@@ -10,11 +10,12 @@ use anyhow::Context;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 pub(crate) struct Args {
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) inputs: Vec<Input>,
-    pub(crate) output: Box<Path>,
+    pub(crate) output: Arc<Path>,
     pub(crate) dynamic_linker: Option<Box<Path>>,
     pub(crate) link_static: bool,
     pub(crate) num_threads: NonZeroUsize,
@@ -127,7 +128,7 @@ impl Args {
             } else if arg == "-static" {
                 link_static = true;
             } else if arg == "-o" {
-                output = input.next().map(|a| Box::from(Path::new(a.as_ref())));
+                output = input.next().map(|a| Arc::from(Path::new(a.as_ref())));
             } else if arg == "-dynamic-linker" {
                 dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
             } else if arg.starts_with("--hash-style=") {

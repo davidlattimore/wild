@@ -2,3 +2,6 @@
 /target2
 sample-link*
 *.strace
+flamegraph.svg
+perf.data
+dhat.out.*

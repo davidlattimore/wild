@@ -1,3 +1,4 @@
+use crate::args::Args;
 use crate::elf;
 use crate::elf::DynamicEntry;
 use crate::elf::DynamicTag;
@@ -46,10 +47,29 @@ use rayon::prelude::*;
 use std::fmt::Display;
 use std::ops::Range;
 use std::path::Path;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
 
 pub(crate) struct Output {
+    path: Arc<Path>,
+    creator: FileCreator,
+}
+
+enum FileCreator {
+    Background {
+        sized_output_sender: Option<Sender<Result<SizedOutput>>>,
+        sized_output_recv: Receiver<Result<SizedOutput>>,
+    },
+    Regular {
+        file_size: Option<u64>,
+    },
+}
+
+struct SizedOutput {
     file: std::fs::File,
     mmap: memmap2::MmapMut,
+    path: Arc<Path>,
 }
 
 #[derive(Debug)]
@@ -60,34 +80,119 @@ struct SectionAllocation {
 }
 
 impl Output {
-    pub(crate) fn create(path: &Path, layout: &Layout, timing: &mut Timing) -> Result<Output> {
-        let _ = std::fs::remove_file(path)
-            .with_context(|| format!("Failed to delete `{}`", path.display()));
+    pub(crate) fn new(args: &Args) -> Output {
+        if args.num_threads.get() > 1 {
+            let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
+            Output {
+                path: args.output.clone(),
+                creator: FileCreator::Background {
+                    sized_output_sender: Some(sized_output_sender),
+                    sized_output_recv,
+                },
+            }
+        } else {
+            Output {
+                path: args.output.clone(),
+                creator: FileCreator::Regular { file_size: None },
+            }
+        }
+    }
+
+    pub(crate) fn set_size(&mut self, size: u64) {
+        match &mut self.creator {
+            FileCreator::Background {
+                sized_output_sender,
+                sized_output_recv: _,
+            } => {
+                let sender = sized_output_sender
+                    .take()
+                    .expect("set_size must only be called once");
+                let path = self.path.clone();
+                rayon::spawn(move || {
+                    let _ = sender.send(SizedOutput::new(path, size));
+                });
+            }
+            FileCreator::Regular { file_size } => *file_size = Some(size),
+        }
+    }
+
+    pub(crate) fn write(&mut self, layout: &Layout, timing: &mut Timing) -> Result {
+        let mut sized_output = match &self.creator {
+            FileCreator::Background {
+                sized_output_sender,
+                sized_output_recv,
+            } => {
+                assert!(sized_output_sender.is_none(), "set_size was never called");
+                let s = sized_output_recv.recv()??;
+                timing.complete("Wait for output file creation");
+                s
+            }
+            FileCreator::Regular { file_size } => {
+                let file_size = file_size.context("set_size was never called")?;
+                let s = SizedOutput::new(self.path.clone(), file_size)?;
+                timing.complete("Output file creation");
+                s
+            }
+        };
+        sized_output.write(layout, timing)
+    }
+}
+
+impl SizedOutput {
+    fn new(path: Arc<Path>, file_size: u64) -> Result<SizedOutput> {
+        let _ = std::fs::remove_file(&path);
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
-            .open(path)
+            .open(&path)
             .with_context(|| format!("Failed to open `{}`", path.display()))?;
-        let mut file_size = 0;
-        layout
-            .section_layouts
-            .for_each(|_, s| file_size = file_size.max(s.file_offset + s.file_size));
-        file.set_len(file_size as u64)?;
+        file.set_len(file_size)?;
         let mmap = unsafe { MmapOptions::new().map_mut(&file) }
             .with_context(|| format!("Failed to mmap output file `{}`", path.display()))?;
-        timing.complete("Create output file");
-        Ok(Output { file, mmap })
+        Ok(SizedOutput { file, mmap, path })
     }
 
-    pub(crate) fn make_executable(&mut self) -> Result {
+    pub(crate) fn write(&mut self, layout: &Layout, timing: &mut Timing) -> Result {
+        let mut section_buffers = split_output_into_sections(layout, &mut self.mmap);
+
+        let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
+        let files_and_buffers: Vec<_> = layout
+            .file_layouts
+            .iter()
+            .map(|file| {
+                if let Some(file_sizes) = file.file_sizes(&layout.output_sections) {
+                    (file, writable_buckets.take_mut(&file_sizes))
+                } else {
+                    (
+                        file,
+                        OutputSectionPartMap::with_size(layout.output_sections.len()),
+                    )
+                }
+            })
+            .collect();
+        files_and_buffers
+            .into_par_iter()
+            .map(|(file, buffer)| {
+                file.write(buffer, layout)
+                    .with_context(|| format!("Failed copying from {file} to output file"))
+            })
+            .collect::<Result>()?;
+        timing.complete("Writing data to ELF file");
+
+        // We consumed the .eh_frame_hdr section in `split_buffers_by_alignment` above, get a fresh copy.
+        let mut section_buffers = split_output_into_sections(layout, &mut self.mmap);
+        sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
+        timing.complete("Sorting .eh_frame_hdr");
         crate::fs::make_executable(&self.file)
+            .with_context(|| format!("Failed to make `{}` executable", self.path.display()))?;
+        Ok(())
     }
 }
 
 fn split_output_into_sections<'out>(
     layout: &Layout<'_>,
-    output: &'out mut Output,
+    mmap: &'out mut memmap2::MmapMut,
 ) -> OutputSectionMap<&'out mut [u8]> {
     let mut section_allocations = Vec::with_capacity(layout.section_layouts.len());
     layout.section_layouts.for_each(|id, s| {
@@ -99,7 +204,7 @@ fn split_output_into_sections<'out>(
     });
     section_allocations.sort_by_key(|s| (s.offset, s.offset + s.size));
 
-    let mut data = output.mmap.as_mut();
+    let mut data = mmap.as_mut();
     // OutputSectionMap is ordered by section ID, which is not the same as output order. We
     // split the output file by output order, putting the relevant parts of the buffer into the
     // map.
@@ -117,40 +222,6 @@ fn split_output_into_sections<'out>(
         offset = a.offset + a.size;
     }
     section_data
-}
-
-pub(crate) fn write(output: &mut Output, layout: &Layout, timing: &mut Timing) -> Result {
-    let mut section_buffers = split_output_into_sections(layout, output);
-
-    let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
-    let files_and_buffers: Vec<_> = layout
-        .file_layouts
-        .iter()
-        .map(|file| {
-            if let Some(file_sizes) = file.file_sizes(&layout.output_sections) {
-                (file, writable_buckets.take_mut(&file_sizes))
-            } else {
-                (
-                    file,
-                    OutputSectionPartMap::with_size(layout.output_sections.len()),
-                )
-            }
-        })
-        .collect();
-    files_and_buffers
-        .into_par_iter()
-        .map(|(file, buffer)| {
-            file.write(buffer, layout)
-                .with_context(|| format!("Failed copying from {file} to output file"))
-        })
-        .collect::<Result>()?;
-    timing.complete("Writing data to ELF file");
-
-    // We consumed the .eh_frame_hdr section in `split_buffers_by_alignment` above, get a fresh copy.
-    let mut section_buffers = split_output_into_sections(layout, output);
-    sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
-    timing.complete("Sorting .eh_frame_hdr");
-    Ok(())
 }
 
 fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {
