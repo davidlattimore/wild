@@ -1699,9 +1699,18 @@ impl<'data> ObjectLayoutState<'data> {
 
     fn finalise_sizes(&mut self, symbol_db: &SymbolDb, output_sections: &OutputSections) -> Result {
         self.state.common.mem_sizes.resize(output_sections.len());
-        if symbol_db.args.strip_all {
-            return Ok(());
+        if !symbol_db.args.strip_all {
+            self.allocate_symtab_space(symbol_db)?;
         }
+        // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
+        // that we "won".
+        for cie in &self.state.cies {
+            self.state.common.mem_sizes.eh_frame += cie.cie.bytes.len() as u64;
+        }
+        Ok(())
+    }
+
+    fn allocate_symtab_space(&mut self, symbol_db: &SymbolDb<'_>) -> Result {
         let mut num_locals = 0;
         let mut num_globals = 0;
         let mut strings_size = 0;
@@ -1733,11 +1742,6 @@ impl<'data> ObjectLayoutState<'data> {
                 }
                 _ => {}
             }
-        }
-        // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
-        // that we "won".
-        for cie in &self.state.cies {
-            self.state.common.mem_sizes.eh_frame += cie.cie.bytes.len() as u64;
         }
         let entry_size = size_of::<elf::SymtabEntry>() as u64;
         self.state.common.mem_sizes.symtab_locals += num_locals * entry_size;

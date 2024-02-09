@@ -72,6 +72,7 @@ struct TestParameters {
     variant_nums: Vec<u32>,
     tls_models: Vec<String>,
     assertions: Assertions,
+    linker_args: Vec<LinkerArgs>,
 }
 
 struct Assertions {
@@ -83,6 +84,7 @@ struct Variant {
     link_kind: LinkKind,
     variant_num: u32,
     tls_model: String,
+    linker_args: LinkerArgs,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -101,6 +103,37 @@ impl LinkKind {
     }
 }
 
+#[derive(Clone, Debug)]
+struct LinkerArgs {
+    name: String,
+    args: Vec<String>,
+}
+
+impl LinkerArgs {
+    fn parse(s: &str) -> Result<LinkerArgs> {
+        let (name, rest) = s
+            .split_once(':')
+            .with_context(|| format!("Missing ':' in LinkArg `{s}`"))?;
+        Ok(LinkerArgs {
+            name: name.to_owned(),
+            args: rest
+                .split(' ')
+                .map(str::to_owned)
+                .filter(|s| !s.is_empty())
+                .collect(),
+        })
+    }
+}
+
+impl Default for LinkerArgs {
+    fn default() -> Self {
+        Self {
+            name: "default".to_owned(),
+            args: Vec::new(),
+        }
+    }
+}
+
 impl TestParameters {
     fn from_source(src_filename: &Path) -> Result<TestParameters> {
         let source = std::fs::read_to_string(src_filename)
@@ -109,12 +142,12 @@ impl TestParameters {
         let mut link_kind = Vec::new();
         let mut tls_models = Vec::new();
         let mut variants = Vec::new();
+        let mut linker_args = Vec::new();
         let mut expected_symtab_entries = Vec::new();
         for line in source.lines() {
             if let Some(rest) = line.trim().strip_prefix("//#") {
-                let mut parts = rest.split(':');
-                let directive = parts.next().unwrap_or("");
-                let arg = parts.next().ok_or_else(|| anyhow!("Missing arg"))?.trim();
+                let (directive, arg) = rest.split_once(':').context("Missing arg")?;
+                let arg = arg.trim();
                 match directive {
                     "LinkKind" => {
                         for p in arg.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()) {
@@ -130,10 +163,14 @@ impl TestParameters {
                         arg.parse()
                             .with_context(|| format!("Failed to parse '{arg}'"))?,
                     ),
+                    "LinkArgs" => linker_args.push(LinkerArgs::parse(arg)?),
                     "ExpectSym" => expected_symtab_entries.push(arg.trim().to_owned()),
                     other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
                 }
             }
+        }
+        if linker_args.is_empty() {
+            linker_args.push(LinkerArgs::default());
         }
         if variants.is_empty() {
             variants.push(0);
@@ -151,6 +188,7 @@ impl TestParameters {
             assertions: Assertions {
                 expected_symtab_entries,
             },
+            linker_args,
         })
     }
 }
@@ -358,6 +396,7 @@ impl LinkCommand {
         command
             .arg("--gc-sections")
             .arg("-static")
+            .args(&variant.linker_args.args)
             .arg("-o")
             .arg(&output_path);
         for obj in object_paths {
@@ -474,6 +513,8 @@ impl Display for Variant {
         Display::fmt(&self.tls_model, f)?;
         Display::fmt(&'-', f)?;
         Display::fmt(&self.variant_num, f)?;
+        Display::fmt(&'-', f)?;
+        Display::fmt(&self.linker_args.name, f)?;
         Ok(())
     }
 }
@@ -486,6 +527,7 @@ fn integration_test() -> Result {
     // the most basic test that failed.
     let programs = [
         Program::new("trivial", &["trivial.c", "exit.c"])?,
+        Program::new("link_args", &["link_args.c", "exit.c"])?,
         Program::new(
             "global_vars",
             &["global_definitions.c", "global_references.c", "exit.c"],
@@ -561,27 +603,31 @@ fn integration_test() -> Result {
     ];
 
     for program in &programs {
-        let instructions =
-            TestParameters::from_source(&src_path(program.source_files.first().unwrap()))?;
+        let filename = program.source_files.first().unwrap();
+        let instructions = TestParameters::from_source(&src_path(filename))
+            .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
         for link_cfg in linker_configs {
             for &link_kind in &instructions.link_kind {
                 for tls_model in &instructions.tls_models {
-                    for &variant_num in &instructions.variant_nums {
-                        let variant = Variant {
-                            link_kind,
-                            variant_num,
-                            tls_model: tls_model.clone(),
-                        };
-                        for comp_cfg in compilation_configs {
-                            let config = Config {
-                                compilation: comp_cfg,
-                                linker: link_cfg,
+                    for link_args in &instructions.linker_args {
+                        for &variant_num in &instructions.variant_nums {
+                            let variant = Variant {
+                                link_kind,
+                                variant_num,
+                                tls_model: tls_model.clone(),
+                                linker_args: link_args.clone(),
                             };
-                            program
+                            for comp_cfg in compilation_configs {
+                                let config = Config {
+                                    compilation: comp_cfg,
+                                    linker: link_cfg,
+                                };
+                                program
                         .run(&config, &variant, &instructions.assertions)
                         .with_context(|| {
                             format!("Failed to run program `{program}` with config `{config}` variant #{variant}")
                         })?;
+                            }
                         }
                     }
                 }
