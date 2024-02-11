@@ -25,6 +25,7 @@ priority:
 * Incremental linking
 * Mac support
 * Windows support
+* Support for architectures other than x86-64
 * Support for a wider range of linker flags
 * Linker scripts
 * LTO
@@ -39,7 +40,12 @@ stand for anything and was just selected based on it giving an interesting word.
 
 Until recently, eh_frames (needed for unwinding) weren't supported, which meant that a fair
 comparison wasn't possible. Now that eh_frames support has been implemented, benchmarking could
-possibly be done, but hasn't yet.
+possibly be done, but hasn't yet. If you do decide to benchmark Wild against other linkers, in order
+to make it a fair comparison, you should ensure that the other linkers aren't doing work on
+something that Wild doesn't support. In particular:
+
+* No debug info should be linked. e.g. pass --strip-debug to all linkers
+* A non-PIE binary should be produced. i.e. pass --no-pie
 
 ## Linking Rust code
 

@@ -565,8 +565,6 @@ impl<'data> ObjectLayout<'data> {
         sections: &OutputSections,
         layout: &Layout,
     ) -> Result {
-        // TODO: I think we're copying too many symbols. e.g. lots of symbols like ".text", that
-        // don't add anything useful. Look to filter them.
         let mut symbol_writer =
             SymbolTableWriter::new(start_str_offset, &mut buffers, &self.mem_sizes, sections);
         for sym in self.object.symbols() {

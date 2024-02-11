@@ -5,3 +5,4 @@ sample-link*
 flamegraph.svg
 perf.data
 dhat.out.*
+heaptrack*.zst
