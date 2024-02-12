@@ -58,14 +58,50 @@ stand for anything and was just selected based on it giving an interesting word.
 
 ### Benchmarks
 
-Until recently, eh_frames (needed for unwinding) weren't supported, which meant that a fair
-comparison wasn't possible. Now that eh_frames support has been implemented, benchmarking could
-possibly be done, but hasn't yet. If you do decide to benchmark Wild against other linkers, in order
-to make it a fair comparison, you should ensure that the other linkers aren't doing work on
-something that Wild doesn't support. In particular:
+There are lots of features that Wild doesn't yet support, so I'm not sure benchmarking is super
+useful at this stage. That said, I have done some very preliminary comparisons. I've tried linking
+the binary in my [warm build benchmark
+repository](https://github.com/davidlattimore/warm-build-benchmark), which is an ~80MB, non-PIE,
+statically linked binary with symbol tables, eh-frames and no debug info. On my laptop, I get the
+following times:
+
+| Linker   | Time (ms) | ± Standard deviation (ms) | File size (MiB)
+|----------|-----------|---------------------------|----------------
+| GNU ld   | 12452     | 97                        | 80.3
+| gold     | 3384      | 32                        | 83.3
+| lld      | 903       | 10.6                      | 84.8
+| mold     | 457       | 7.2                       | 81.1
+| wild     | 365       | 4.9                       | 84.5
+
+I want to stress that this is only one benchmark. Many unknowns remain:
+
+* Will the results be significantly different for other benchmarks?
+* How will Wild scale up when linking much larger binaries and/or on systems with many CPU cores?
+* Will implementing the missing features require changes to Wild's design that might slow it down?
+
+All we can really conclude from this benchmark is that Wild is currently reasonably efficient at
+non-incremental linking and reasonable at taking advantage of a few threads. I don't think that
+adding the missing features should change this benchmark significantly. i.e. adding support for
+debug info really shouldn't change our speed when linking with no debug info. I can't be sure
+however until I implement these missing features.
+
+The size difference in the binaries is interesting. I'm pretty sure the larger size produced by Wild
+is mostly due to Wild not yet performing various code model optimisations, which means it ends up
+with large GOT and PLT sections (3.5 MiB). This is fixable with time. I have no idea what the
+performance cost of fixing it would be. I'd be surprised if it was especially expensive, however if
+it is then I'll put it behind a flag. The goal of Wild is to be fast for development, which means
+we're probably happy to trade a slightly larger binary and slightly slower execution for faster
+build times. I haven't as yet found any such flag for other linkers.
+
+If you decide to benchmark Wild against other linkers, in order to make it a fair comparison, you
+should ensure that the other linkers aren't doing work on something that Wild doesn't support. In
+particular:
 
 * No debug info should be linked. e.g. pass --strip-debug to all linkers
 * A non-PIE binary should be produced. i.e. pass --no-pie
+
+There might be other flags that speed up the other linkers by letting them avoid some work that
+they're currently doing. If you know of such flags, please let me know.
 
 ## Linking Rust code
 
