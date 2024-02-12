@@ -81,6 +81,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             &self.file_headers,
         );
         self.map_regular(output_section_id::RODATA, &mut cb, &mut regular);
+        self.map_regular(output_section_id::COMMENT, &mut cb, &mut regular);
         let eh_frame_hdr = cb(
             output_section_id::EH_FRAME_HDR,
             output_section_id::EH_FRAME_HDR.min_alignment(),
@@ -180,6 +181,11 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
         output_section_id: OutputSectionId,
         alignment: Alignment,
     ) -> &mut T {
+        debug_assert!(
+            output_section_id.as_usize() >= NUM_GENERATED_SECTIONS,
+            "regular_mut called with non-regular section ID `{}`",
+            output_section_id.built_in_details().name()
+        );
         &mut self.regular[output_section_id.as_usize() - NUM_GENERATED_SECTIONS][alignment]
     }
 
@@ -382,6 +388,24 @@ fn test_output_order_map_consistent() {
     let output_sections = output_section_id::OutputSections::for_testing();
     let mut part_map = OutputSectionPartMap::<u32>::with_size(output_sections.len());
     part_map.resize(output_sections.len());
+
+    // First, make sure that all our built-in sections are here. If they're not, we'd fail anyway,
+    // but we can give a much better failure message if we check first.
+    let mut missing: std::collections::HashSet<OutputSectionId> =
+        output_section_id::built_in_section_ids().collect();
+    part_map.output_order_map(&output_sections, |output_section_id, _, _| {
+        missing.remove(&output_section_id);
+    });
+    assert!(
+        missing.is_empty(),
+        "Built-in sections missing from output_order_map: {}",
+        missing
+            .iter()
+            .map(|id| String::from_utf8_lossy(output_sections.name(*id)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
     let mut ordering_a = Vec::new();
     part_map.output_order_map(&output_sections, |output_section_id, _, _| {
         if ordering_a.last() != Some(&output_section_id.as_usize()) {

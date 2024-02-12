@@ -155,9 +155,9 @@ impl<'data> SymbolDb<'data> {
             .iter()
             .map(|f| FileSymbolReader::new(f, input_data.config))
             .collect::<Result<Vec<FileSymbolReader>>>()?;
-        let file_symbols = index.load_symbols(readers, timing)?;
+        let per_file_symbols = index.load_symbols(readers, timing)?;
         timing.complete("Building symbol DB");
-        Ok((index, file_symbols))
+        Ok((index, per_file_symbols))
     }
 
     fn load_symbols(

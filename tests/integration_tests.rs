@@ -1,7 +1,23 @@
+//! Tests that build and run various test programs then link them and run them. Each test is linked
+//! with both the system linker (ld) and with wild.
+//!
+//! The test files can contain directives that affect compilation and linking as well as assertions
+//! that are tested by examining the resulting binaries. Directives have the format '//#Directive:
+//! Args'.
+//!
+//! ExpectComment: Checks that the the next comment in the .comment section is equal to the supplied
+//! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
+//! end with '*' which matches anything. The last ExpectComment directive may start with '?' to
+//! indicate that the comment if present should match the rest of the argument, but that it's OK for
+//! it to be absent.
+//!
+//! TODO: Document the rest of the directives.
+
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
 use object::Object;
+use object::ObjectSection;
 use object::ObjectSymbol;
 use std::fmt::Display;
 use std::path::Path;
@@ -72,19 +88,27 @@ struct TestParameters {
     variant_nums: Vec<u32>,
     tls_models: Vec<String>,
     assertions: Assertions,
-    linker_args: Vec<LinkerArgs>,
+    linker_args: Vec<ArgumentSet>,
+    compiler_args: Vec<ArgumentSet>,
 }
 
 struct Assertions {
     expected_symtab_entries: Vec<String>,
+    expected_comments: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+struct CompilationVariant {
+    variant_num: u32,
+    tls_model: String,
+    compiler_args: ArgumentSet,
 }
 
 #[derive(Clone, Debug)]
 struct Variant {
     link_kind: LinkKind,
-    variant_num: u32,
-    tls_model: String,
-    linker_args: LinkerArgs,
+    compilation: CompilationVariant,
+    linker_args: ArgumentSet,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -104,17 +128,17 @@ impl LinkKind {
 }
 
 #[derive(Clone, Debug)]
-struct LinkerArgs {
+struct ArgumentSet {
     name: String,
     args: Vec<String>,
 }
 
-impl LinkerArgs {
-    fn parse(s: &str) -> Result<LinkerArgs> {
+impl ArgumentSet {
+    fn parse(s: &str) -> Result<ArgumentSet> {
         let (name, rest) = s
             .split_once(':')
             .with_context(|| format!("Missing ':' in LinkArg `{s}`"))?;
-        Ok(LinkerArgs {
+        Ok(ArgumentSet {
             name: name.to_owned(),
             args: rest
                 .split(' ')
@@ -125,7 +149,7 @@ impl LinkerArgs {
     }
 }
 
-impl Default for LinkerArgs {
+impl Default for ArgumentSet {
     fn default() -> Self {
         Self {
             name: "default".to_owned(),
@@ -143,7 +167,9 @@ impl TestParameters {
         let mut tls_models = Vec::new();
         let mut variants = Vec::new();
         let mut linker_args = Vec::new();
+        let mut compiler_args = Vec::new();
         let mut expected_symtab_entries = Vec::new();
+        let mut expected_comments = Vec::new();
         for line in source.lines() {
             if let Some(rest) = line.trim().strip_prefix("//#") {
                 let (directive, arg) = rest.split_once(':').context("Missing arg")?;
@@ -163,14 +189,19 @@ impl TestParameters {
                         arg.parse()
                             .with_context(|| format!("Failed to parse '{arg}'"))?,
                     ),
-                    "LinkArgs" => linker_args.push(LinkerArgs::parse(arg)?),
+                    "LinkArgs" => linker_args.push(ArgumentSet::parse(arg)?),
+                    "CompArgs" => compiler_args.push(ArgumentSet::parse(arg)?),
                     "ExpectSym" => expected_symtab_entries.push(arg.trim().to_owned()),
+                    "ExpectComment" => expected_comments.push(arg.trim().to_owned()),
                     other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
                 }
             }
         }
         if linker_args.is_empty() {
-            linker_args.push(LinkerArgs::default());
+            linker_args.push(ArgumentSet::default());
+        }
+        if compiler_args.is_empty() {
+            compiler_args.push(ArgumentSet::default());
         }
         if variants.is_empty() {
             variants.push(0);
@@ -187,8 +218,10 @@ impl TestParameters {
             variant_nums: variants,
             assertions: Assertions {
                 expected_symtab_entries,
+                expected_comments,
             },
             linker_args,
+            compiler_args,
         })
     }
 }
@@ -279,12 +312,12 @@ impl CompilationConfig {
 
     /// Builds some C source and returns the path to the object file.
     fn build_obj(&self, filename: &str, variant: &Variant) -> Result<PathBuf> {
-        let variant_num = variant.variant_num;
-        let tls_model = &variant.tls_model;
+        let variant_num = variant.compilation.variant_num;
+        let tls_model = &variant.compilation.tls_model;
         let src_path = src_path(filename);
         let extension = src_path.extension().context("Missing extension")?;
         let output_path = build_dir().join(
-            Path::new(filename).with_extension(format!("{}-{tls_model}-{variant_num}.o", self)),
+            Path::new(filename).with_extension(format!("{}-{}.o", self, variant.compilation)),
         );
         // Skip rebuilding if our output already exists and is newer than our source.
         if is_newer(&output_path, &src_path) {
@@ -309,6 +342,7 @@ impl CompilationConfig {
         command.arg(format!("-O{}", self.opt_level));
         command.arg("-c").arg(src_path).arg("-o").arg(&output_path);
         command.arg(format!("-DVARIANT={variant_num}"));
+        command.args(&variant.compilation.compiler_args.args);
         let status = command.status()?;
         if !status.success() {
             bail!("Compilation failed");
@@ -414,6 +448,15 @@ impl Assertions {
     fn check(&self, link_output: &LinkOutput) -> Result {
         let bytes = std::fs::read(&link_output.binary)?;
         let obj = object::File::parse(bytes.as_slice())?;
+
+        self.verify_symbol_assertions(&obj)?;
+
+        self.verify_comment_section(obj)?;
+
+        Ok(())
+    }
+
+    fn verify_symbol_assertions(&self, obj: &object::File<'_>) -> Result<(), anyhow::Error> {
         let symbols = obj
             .symbols()
             .filter(|sym| sym.is_definition())
@@ -427,6 +470,43 @@ impl Assertions {
             .collect::<Vec<_>>();
         if !missing.is_empty() {
             bail!("Missing expected symbol(s): {}", missing.join(", "));
+        };
+        Ok(())
+    }
+
+    fn verify_comment_section(&self, obj: object::File<'_>) -> Result {
+        if self.expected_comments.is_empty() {
+            return Ok(());
+        }
+        let comment_section = obj
+            .section_by_name(".comment")
+            .context("Missing .comment section")?;
+        let data = comment_section.data()?;
+        let mut actual_comments = data
+            .split(|b| *b == 0)
+            .map(|c| String::from_utf8_lossy(c))
+            .filter(|c| !c.is_empty());
+        let mut expected_comments = self.expected_comments.iter();
+        loop {
+            match (expected_comments.next(), actual_comments.next()) {
+                (None, None) => break,
+                (None, Some(a)) => bail!("Unexpected .comment `{a}`"),
+                (Some(e), None) => {
+                    if !e.starts_with('?') {
+                        bail!("Missing expected .comment `{e}`")
+                    }
+                }
+                (Some(e), Some(a)) => {
+                    let e = e.strip_prefix('?').unwrap_or(e.as_str());
+                    if let Some(prefix) = e.strip_suffix('*') {
+                        if !a.starts_with(prefix) {
+                            bail!("Expected .comment starting with `{prefix}`, got `{a}`");
+                        }
+                    } else if e != a {
+                        bail!("Expected .comment `{e}`, got `{a}`");
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -508,13 +588,22 @@ impl Display for LinkKind {
 
 impl Display for Variant {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.compilation, f)?;
+        Display::fmt(&'-', f)?;
         Display::fmt(&self.link_kind, f)?;
         Display::fmt(&'-', f)?;
+        Display::fmt(&self.linker_args.name, f)?;
+        Ok(())
+    }
+}
+
+impl Display for CompilationVariant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.tls_model, f)?;
         Display::fmt(&'-', f)?;
         Display::fmt(&self.variant_num, f)?;
         Display::fmt(&'-', f)?;
-        Display::fmt(&self.linker_args.name, f)?;
+        Display::fmt(&self.compiler_args.name, f)?;
         Ok(())
     }
 }
@@ -576,6 +665,19 @@ fn integration_test() -> Result {
                 "exit.c",
             ],
         )?,
+        Program::new(
+            "string_merging",
+            &[
+                "string_merging.c",
+                "string_merging1.s",
+                "string_merging2.s",
+                "exit.c",
+            ],
+        )?,
+        Program::new(
+            "comments",
+            &["comments.c", "comments0.c", "comments1.c", "exit.c"],
+        )?,
         Program::new("eh_frame", &["eh_frame.c", "eh_frame_end.c", "exit.c"])?,
     ];
 
@@ -610,23 +712,28 @@ fn integration_test() -> Result {
             for &link_kind in &instructions.link_kind {
                 for tls_model in &instructions.tls_models {
                     for link_args in &instructions.linker_args {
-                        for &variant_num in &instructions.variant_nums {
-                            let variant = Variant {
-                                link_kind,
-                                variant_num,
-                                tls_model: tls_model.clone(),
-                                linker_args: link_args.clone(),
-                            };
-                            for comp_cfg in compilation_configs {
-                                let config = Config {
-                                    compilation: comp_cfg,
-                                    linker: link_cfg,
+                        for compiler_args in &instructions.compiler_args {
+                            for &variant_num in &instructions.variant_nums {
+                                let variant = Variant {
+                                    link_kind,
+                                    linker_args: link_args.clone(),
+                                    compilation: CompilationVariant {
+                                        variant_num,
+                                        tls_model: tls_model.clone(),
+                                        compiler_args: compiler_args.clone(),
+                                    },
                                 };
-                                program
+                                for comp_cfg in compilation_configs {
+                                    let config = Config {
+                                        compilation: comp_cfg,
+                                        linker: link_cfg,
+                                    };
+                                    program
                         .run(&config, &variant, &instructions.assertions)
                         .with_context(|| {
                             format!("Failed to run program `{program}` with config `{config}` variant #{variant}")
                         })?;
+                                }
                             }
                         }
                     }

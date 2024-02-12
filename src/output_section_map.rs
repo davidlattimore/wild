@@ -13,7 +13,9 @@ impl<T: Default> OutputSectionMap<T> {
         values.resize_with(len, T::default);
         Self { values }
     }
+}
 
+impl<T> OutputSectionMap<T> {
     pub(crate) fn from_values(values: Vec<T>) -> Self {
         Self { values }
     }
@@ -40,5 +42,11 @@ impl<T: Default> OutputSectionMap<T> {
 
     pub(crate) fn len(&self) -> usize {
         self.values.len()
+    }
+
+    pub(crate) fn into_map<U>(self, cb: impl FnMut(T) -> U) -> OutputSectionMap<U> {
+        OutputSectionMap {
+            values: self.values.into_iter().map(cb).collect(),
+        }
     }
 }

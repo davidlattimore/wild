@@ -10,6 +10,7 @@ use anyhow::anyhow;
 use anyhow::bail;
 use core::mem::size_of;
 use object::ObjectSection;
+use object::SectionFlags;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 
@@ -18,9 +19,10 @@ pub(crate) enum TemporaryOutputSectionId<'data> {
     BuiltIn(OutputSectionId),
     Custom(CustomSectionId<'data>),
     EhFrameData,
+    StringMerge(OutputSectionId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct OutputSectionId(u16);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -75,13 +77,16 @@ pub(crate) const DATA: OutputSectionId = OutputSectionId::regular(7);
 pub(crate) const TDATA: OutputSectionId = OutputSectionId::regular(8);
 pub(crate) const TBSS: OutputSectionId = OutputSectionId::regular(9);
 pub(crate) const BSS: OutputSectionId = OutputSectionId::regular(10);
+pub(crate) const COMMENT: OutputSectionId = OutputSectionId::regular(11);
+
+pub(crate) const NUM_REGULAR_SECTIONS: usize = 12;
 
 // pub(crate) const DYNAMIC: BuiltInId = BuiltInId(13);
 // pub(crate) const DYNSTR: BuiltInId = BuiltInId(14);
 
 /// How many built-in sections we define. These are regular sections plus sections that we generate
 /// like GOT, PLT, STRTAB etc. This doesn't include custom sections.
-pub(crate) const NUM_BUILT_IN_SECTIONS: usize = NUM_GENERATED_SECTIONS + 11;
+pub(crate) const NUM_BUILT_IN_SECTIONS: usize = NUM_GENERATED_SECTIONS + NUM_REGULAR_SECTIONS;
 
 pub(crate) struct OutputSections<'data> {
     pub(crate) section_infos: Vec<SectionOutputInfo<'data>>,
@@ -105,6 +110,13 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) end_symbol_name: Option<&'static str>,
     pub(crate) min_alignment: Alignment,
     info_fn: Option<fn(&Layout) -> u32>,
+}
+
+impl BuiltInSectionDetails {
+    pub(crate) fn name(&self) -> &str {
+        core::str::from_utf8(self.details.name)
+            .expect("All built-in sections should have UTF-8 names")
+    }
 }
 
 impl SectionDetails<'static> {
@@ -334,6 +346,16 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         end_symbol_name: Some("_end"),
         ..DEFAULT_DEFS
     },
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: ".comment".as_bytes(),
+            ty: elf::Sht::Progbits,
+            retain: true,
+            section_flags: 0,
+            ..SectionDetails::default()
+        },
+        ..DEFAULT_DEFS
+    },
     // OutputSectionDef {
     //     name: ".dynamic",
     //     ty: elf::Sht::Dynamic,
@@ -355,6 +377,9 @@ impl<'data> UnloadedSection<'data> {
         // Ideally we support reading an actual linker script to make these decisions, but for now
         // we just hard code stuff.
         let section_name = section.name_bytes().unwrap_or_default();
+        let SectionFlags::Elf { sh_flags } = section.flags() else {
+            unreachable!();
+        };
         let built_in_id = if section_name.starts_with(b".rodata") {
             Some(RODATA)
         } else if section_name.starts_with(b".text") {
@@ -377,24 +402,22 @@ impl<'data> UnloadedSection<'data> {
             Some(TDATA)
         } else if section_name.starts_with(b".tbss") {
             Some(TBSS)
+        } else if section_name == b".comment" {
+            Some(COMMENT)
         } else if section_name == b".eh_frame" {
             return Ok(Some(UnloadedSection {
                 output_section_id: TemporaryOutputSectionId::EhFrameData,
                 details: EH_FRAME.built_in_details().details,
             }));
         } else {
-            let mut retain = false;
-            let mut section_flags = 0;
             let ty = match section.kind() {
                 object::SectionKind::UninitializedData | object::SectionKind::UninitializedTls => {
                     crate::elf::Sht::Nobits
                 }
                 _ => crate::elf::Sht::Progbits,
             };
-            if let object::SectionFlags::Elf { sh_flags } = section.flags() {
-                retain = sh_flags & crate::elf::shf::GNU_RETAIN != 0;
-                section_flags = sh_flags;
-            }
+            let retain = sh_flags & crate::elf::shf::GNU_RETAIN != 0;
+            let section_flags = sh_flags;
             if !section_name.is_empty() && !section_name.starts_with(b".") {
                 return Ok(Some(UnloadedSection {
                     output_section_id: TemporaryOutputSectionId::Custom(CustomSectionId {
@@ -427,11 +450,29 @@ impl<'data> UnloadedSection<'data> {
         let Some(built_in_id) = built_in_id else {
             return Ok(None);
         };
+        if should_merge_strings(section) {
+            return Ok(Some(UnloadedSection {
+                output_section_id: TemporaryOutputSectionId::StringMerge(built_in_id),
+                details: built_in_id.built_in_details().details,
+            }));
+        }
         Ok(Some(UnloadedSection {
             output_section_id: TemporaryOutputSectionId::BuiltIn(built_in_id),
             details: built_in_id.built_in_details().details,
         }))
     }
+}
+
+/// Returns whether the supplied section meets our criteria for string merging. String merging is
+/// optional, so there are cases where we might be able to merge, but don't currently. For example
+/// if alignment is > 1.
+fn should_merge_strings(section: &Section) -> bool {
+    let SectionFlags::Elf { sh_flags } = section.flags() else {
+        unreachable!();
+    };
+    (sh_flags & crate::elf::shf::MERGE) != 0
+        && (sh_flags & crate::elf::shf::STRINGS) != 0
+        && section.align() <= 1
 }
 
 pub(crate) fn built_in_section_ids(
@@ -607,6 +648,7 @@ impl<'data> OutputSections<'data> {
         cb(OrderEvent::SegmentStart(crate::program_segments::LOAD_RO));
         cb(HEADERS.event());
         cb(RODATA.event());
+        cb(COMMENT.event());
         cb(OrderEvent::SegmentStart(crate::program_segments::EH_FRAME));
         cb(EH_FRAME_HDR.event());
         cb(OrderEvent::SegmentEnd(crate::program_segments::EH_FRAME));
@@ -778,6 +820,7 @@ fn test_constant_ids() {
         (INIT, ".init"),
         (FINI, ".fini"),
         (RELA_PLT, ".rela.plt"),
+        (COMMENT, ".comment"),
     ];
     for (id, name) in check {
         assert_eq!(
@@ -813,6 +856,14 @@ impl<'data> std::fmt::Display for TemporaryOutputSectionId<'data> {
                 )
             }
             TemporaryOutputSectionId::EhFrameData => write!(f, "eh_frame data"),
+            TemporaryOutputSectionId::StringMerge(id) => {
+                write!(
+                    f,
+                    "string-merge section #{} ({})",
+                    id.as_usize(),
+                    String::from_utf8_lossy(SECTION_DEFINITIONS[id.as_usize()].details.name)
+                )
+            }
         }
     }
 }

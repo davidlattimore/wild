@@ -33,7 +33,6 @@ use crate::symbol_db::InternalSymDefInfo;
 use crate::symbol_db::SymbolDb;
 use crate::timing::Timing;
 use ahash::AHashMap;
-use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
@@ -141,7 +140,7 @@ pub(crate) struct SymbolResolutions {
 }
 
 pub(crate) enum FileLayout<'data> {
-    Internal(InternalLayout),
+    Internal(InternalLayout<'data>),
     Object(ObjectLayout<'data>),
     Dynamic(DynamicLayout<'data>),
 }
@@ -172,7 +171,7 @@ pub(crate) enum TlsMode {
 }
 
 enum FileLayoutState<'data> {
-    Internal(Box<InternalLayoutState>),
+    Internal(Box<InternalLayoutState<'data>>),
     Object(Box<ObjectLayoutState<'data>>),
     #[allow(dead_code)]
     Dynamic(Box<DynamicLayoutState<'data>>),
@@ -180,12 +179,14 @@ enum FileLayoutState<'data> {
 }
 
 /// Data that doesn't come from any input files, but needs to be written by the linker.
-struct InternalLayoutState {
+struct InternalLayoutState<'data> {
     common: CommonLayoutState,
     defined: Vec<GlobalSymbolId>,
     symbol_definitions: Vec<InternalSymDefInfo>,
     entry_symbol_id: Option<GlobalSymbolId>,
     needs_tlsld_got_entry: bool,
+    merged_strings: OutputSectionMap<resolution::MergedStringsSection<'data>>,
+    identity: String,
 }
 
 pub(crate) struct ObjectLayout<'data> {
@@ -203,7 +204,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) eh_frame_start_address: u64,
 }
 
-pub(crate) struct InternalLayout {
+pub(crate) struct InternalLayout<'data> {
     pub(crate) mem_sizes: OutputSectionPartMap<u64>,
     pub(crate) undefined_symbol_resolution: Resolution,
     pub(crate) defined: Vec<GlobalSymbolId>,
@@ -211,6 +212,8 @@ pub(crate) struct InternalLayout {
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
     pub(crate) entry_symbol_id: GlobalSymbolId,
     pub(crate) tlsld_got_entry: Option<NonZeroU64>,
+    pub(crate) merged_strings: OutputSectionMap<resolution::MergedStringsSection<'data>>,
+    pub(crate) identity: String,
 }
 
 pub(crate) struct DynamicLayout<'data> {
@@ -362,7 +365,7 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
     }
 }
 
-impl<'data> SymbolRequestHandler<'data> for InternalLayoutState {
+impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
     fn common_mut(&mut self) -> &mut CommonLayoutState {
         &mut self.common
     }
@@ -710,7 +713,7 @@ fn compute_symbols_and_layouts<'data>(
     layout_states: Vec<FileLayoutState<'data>>,
     starting_mem_offsets_by_file: Vec<Option<OutputSectionPartMap<u64>>>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    symbol_db: &SymbolDb<'_>,
+    symbol_db: &SymbolDb<'data>,
 ) -> Result<Vec<(Vec<GlobalSymbolAddress>, FileLayout<'data>)>> {
     layout_states
         .into_par_iter()
@@ -1147,7 +1150,7 @@ impl<'data> FileLayout<'data> {
     }
 }
 
-impl std::fmt::Display for InternalLayoutState {
+impl<'data> std::fmt::Display for InternalLayoutState<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt("<internal>", f)
     }
@@ -1397,8 +1400,11 @@ impl PltGotFlags {
     }
 }
 
-impl InternalLayoutState {
-    fn new(input_state: resolution::ResolvedInternal, output_sections: &OutputSections) -> Self {
+impl<'data> InternalLayoutState<'data> {
+    fn new(
+        input_state: resolution::ResolvedInternal<'data>,
+        output_sections: &OutputSections,
+    ) -> Self {
         let mut layout = Self {
             common: CommonLayoutState::new(
                 input_state.file_id,
@@ -1409,7 +1415,24 @@ impl InternalLayoutState {
             symbol_definitions: input_state.symbol_definitions,
             entry_symbol_id: None,
             needs_tlsld_got_entry: false,
+            merged_strings: input_state.merged_strings,
+            identity: crate::identity::linker_identity(),
         };
+
+        layout.merged_strings.for_each(|section_id, merged| {
+            if merged.len > 0 {
+                *layout
+                    .common
+                    .mem_sizes
+                    .regular_mut(section_id, alignment::MIN) += merged.len;
+            }
+        });
+
+        *layout
+            .common
+            .mem_sizes
+            .regular_mut(output_section_id::COMMENT, alignment::MIN) +=
+            layout.identity.len() as u64;
 
         // The first entry in the symbol table must be null. Similarly, the first string in the
         // strings table must be empty.
@@ -1495,7 +1518,7 @@ impl InternalLayoutState {
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
         global_addresses_out: &mut Vec<GlobalSymbolAddress>,
         symbol_db: &SymbolDb,
-    ) -> Result<InternalLayout> {
+    ) -> Result<InternalLayout<'data>> {
         let header_layout = section_layouts.built_in(output_section_id::HEADERS);
         assert_eq!(header_layout.file_offset, 0);
         assert_eq!(header_layout.mem_offset, elf::START_MEM_ADDRESS);
@@ -1558,11 +1581,13 @@ impl InternalLayoutState {
             strings_offset_start,
             entry_symbol_id: self.entry_symbol_id.unwrap(),
             tlsld_got_entry,
+            merged_strings: self.merged_strings,
+            identity: self.identity,
         })
     }
 }
 
-impl InternalLayout {
+impl<'data> InternalLayout<'data> {
     pub(crate) fn program_headers_size() -> u64 {
         u64::from(elf::PROGRAM_HEADER_SIZE) * program_segments::NUM_SEGMENTS as u64
     }
@@ -1658,6 +1683,7 @@ impl<'data> ObjectLayoutState<'data> {
                         TemporaryOutputSectionId::EhFrameData => {
                             unreachable!("Expected SectionSlot::EhFrameData")
                         }
+                        TemporaryOutputSectionId::StringMerge(_sec_id) => continue,
                     };
                     let allocation = self
                         .state
@@ -1688,6 +1714,10 @@ impl<'data> ObjectLayoutState<'data> {
                     );
                 }
                 SectionSlot::Loaded(_) | SectionSlot::EhFrameData(..) => {}
+                SectionSlot::MergeStrings(_) => {
+                    // We currently always load everything in merge-string sections. i.e. we don't
+                    // GC unreferenced data. So there's nothing to do here.
+                }
             }
             if let SectionSlot::Loaded(section) = &mut self.state.sections[section_id.0] {
                 section_request
@@ -1816,14 +1846,21 @@ impl<'data> ObjectLayoutState<'data> {
             let local_symbol = self.object.symbol_by_index(local_index)?;
             let mut address = local_symbol.address();
             if let Some(section_index) = local_symbol.section_index() {
-                let section_resolution =
-                    section_resolutions[section_index.0]
-                        .as_ref()
-                        .ok_or_else(|| {
-                            let symbol_name = symbol_db.symbol_name(*symbol_id);
-                            anyhow!("Symbol `{symbol_name}` is in a section that we didn't load")
-                        })?;
-                address += section_resolution.address;
+                if let Some(section_resolution) = section_resolutions[section_index.0].as_ref() {
+                    address += section_resolution.address;
+                } else {
+                    let merged_string_address = merged_string_address(
+                        &self.state.local_symbol_resolutions,
+                        local_index,
+                        section_layouts,
+                    );
+                    if let Some(a) = merged_string_address {
+                        address = a;
+                    } else {
+                        let symbol_name = symbol_db.symbol_name(*symbol_id);
+                        bail!("Symbol `{symbol_name}` is in a section that we didn't load")
+                    }
+                }
             } else if let Some(common) = CommonSymbol::new(&local_symbol)? {
                 let offset = memory_offsets.regular_mut(output_section_id::BSS, common.alignment);
                 address = *offset;
@@ -1853,6 +1890,20 @@ impl<'data> ObjectLayoutState<'data> {
             loaded_symbols: self.state.loaded_symbols,
             eh_frame_start_address: memory_offsets.eh_frame,
         })
+    }
+}
+
+/// Returns the address of `local_symbol_index` if it points to a merged string, or None if not.
+fn merged_string_address(
+    local_symbol_resolutions: &[LocalSymbolResolution],
+    local_symbol_index: object::SymbolIndex,
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+) -> Option<u64> {
+    if let LocalSymbolResolution::MergedString(res) = local_symbol_resolutions[local_symbol_index.0]
+    {
+        Some(section_layouts.get(res.output_section_id).mem_offset + res.offset)
+    } else {
+        None
     }
 }
 

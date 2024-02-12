@@ -848,6 +848,13 @@ impl<'data> ObjectLayout<'data> {
                         );
                     }
                     LocalSymbolResolution::Null => bail!("Reference to null symbol"),
+                    LocalSymbolResolution::MergedString(res) => Resolution {
+                        address: layout.section_layouts.get(res.output_section_id).mem_offset
+                            + res.offset,
+                        got_address: None,
+                        plt_address: None,
+                        kind: TargetResolutionKind::Address,
+                    },
                 }
             }
             object::RelocationTarget::Section(local_index) => {
@@ -910,6 +917,11 @@ impl<'a> Display for DisplayRelocation<'a> {
                     }
                     LocalSymbolResolution::UndefinedSymbol => writeln!(f, "undefined section")?,
                     LocalSymbolResolution::Null => writeln!(f, "null symbol")?,
+                    LocalSymbolResolution::MergedString(res) => write!(
+                        f,
+                        "Merged string in section {} at offset {}",
+                        res.output_section_id, res.offset
+                    )?,
                 }
             }
             object::RelocationTarget::Section(section_index) => write!(
@@ -1127,7 +1139,7 @@ fn make_rex_got_instruction_absolute(offset: usize, place: u64, out: &mut [u8]) 
     Ok(())
 }
 
-impl InternalLayout {
+impl<'data> InternalLayout<'data> {
     fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
         let (file_header_bytes, rest) = buffers
             .file_headers
@@ -1155,7 +1167,26 @@ impl InternalLayout {
 
         write_eh_frame_hdr(&mut buffers, layout)?;
 
+        self.write_merged_strings(&mut buffers);
+
         Ok(())
+    }
+
+    fn write_merged_strings(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>) {
+        self.merged_strings.for_each(|section_id, merged| {
+            if merged.len > 0 {
+                let buffer = buffers.regular_mut(section_id, crate::alignment::MIN);
+                for string in &merged.strings {
+                    let dest = crate::slice::slice_take_prefix_mut(buffer, string.len());
+                    dest.copy_from_slice(string)
+                }
+            }
+        });
+
+        // Write linker identity into .comment section.
+        let comment_buffer = buffers.regular_mut(output_section_id::COMMENT, crate::alignment::MIN);
+        crate::slice::slice_take_prefix_mut(comment_buffer, self.identity.len())
+            .copy_from_slice(self.identity.as_bytes());
     }
 
     fn write_plt_got_entries(

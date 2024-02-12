@@ -30,6 +30,26 @@ priority:
 * Linker scripts
 * LTO
 
+### How can I verify that Wild was used to link a binary?
+
+Install `readelf`, then run:
+
+```sh
+readelf  -p .comment my-executable
+```
+
+Look for a line like:
+
+```
+Linker: Wild version 0.1.0
+```
+
+Or if you don't want to install readelf, you can probably get away with:
+
+```sh
+strings my-executable | grep Linker
+```
+
 ### Where did the name come from?
 
 It's somewhat of a tradition for linkers to end with the letters "ld". e.g. "GNU ld, "gold", "lld",
