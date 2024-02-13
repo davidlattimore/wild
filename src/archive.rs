@@ -31,23 +31,14 @@ pub(crate) struct ArchiveContent<'data> {
     pub(crate) entry_data: &'data [u8],
 }
 
+// TODO: Consider if we want to keep this.
+#[allow(dead_code)]
 pub(crate) struct SymbolTable<'data> {
     pub(crate) data: &'data [u8],
 }
 
-pub(crate) struct Symbol<'data> {
-    pub(crate) name: &'data [u8],
-    /// The offset within the archive of the start of the header for this symbol.
-    pub(crate) header_offset: u32,
-}
-
 pub(crate) struct ArchiveIterator<'data> {
     data: &'data [u8],
-}
-
-pub(crate) struct Symbols<'data> {
-    offsets: &'data [u8],
-    names: &'data [u8],
 }
 
 #[derive(Zeroable, Pod, Clone, Copy)]
@@ -76,12 +67,6 @@ impl<'data> ArchiveIterator<'data> {
             bail!("Missing header");
         };
         Ok(Self { data })
-    }
-
-    /// Create an iterator from part of an archive. The supplied bytes should start with an archive
-    /// entry header, however this is not validated until next_result is called.
-    pub(crate) fn from_entry_bytes(data: &'data [u8]) -> Self {
-        Self { data }
     }
 
     fn next_result(&mut self) -> Result<Option<ArchiveEntry<'data>>> {
@@ -128,47 +113,6 @@ fn parse_decimal_int(bytes: &[u8]) -> usize {
         value = value * 10 + ((byte - b'0') as usize);
     }
     value
-}
-
-impl<'data> SymbolTable<'data> {
-    pub(crate) fn num_symbols(&self) -> u32 {
-        let mut data = self.data;
-        take_be_u32(&mut data).unwrap_or(0)
-    }
-
-    pub(crate) fn symbols(&self) -> Symbols<'data> {
-        let mut data = self.data;
-        let num_symbols = take_be_u32(&mut data).unwrap_or(0);
-        let offsets_len = (num_symbols as usize * 4).min(data.len());
-        let offsets = &data[..offsets_len];
-        let names = &data[offsets_len..];
-        Symbols { offsets, names }
-    }
-}
-
-impl<'data> Iterator for Symbols<'data> {
-    type Item = Symbol<'data>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let header_offset = take_be_u32(&mut self.offsets)?;
-        let end = self.names.iter().position(|b| *b == 0)?;
-        let name = &self.names[..end];
-        self.names = &self.names[end + 1..];
-        Some(Symbol {
-            name,
-            header_offset,
-        })
-    }
-}
-
-fn take_be_u32(data: &mut &[u8]) -> Option<u32> {
-    if data.len() < 4 {
-        return None;
-    }
-    let mut bytes = [0u8; 4];
-    bytes.copy_from_slice(&data[..4]);
-    *data = &data[4..];
-    Some(u32::from_be_bytes(bytes))
 }
 
 impl<'data> ArchiveContent<'data> {
@@ -269,7 +213,6 @@ mod tests {
                 if let Ok(ar_summary) = ar_read_entries(path) {
                     let data = std::fs::read(path)?;
                     let mut our_entries = Vec::new();
-                    let mut our_symbols = Vec::new();
                     let mut filenames = None;
                     for entry in ArchiveIterator::from_archive_bytes(&data)? {
                         let entry = entry?;
@@ -277,26 +220,8 @@ mod tests {
                             ArchiveEntry::Regular(content) => {
                                 our_entries.push(content);
                             }
-                            ArchiveEntry::Symbols(symbol_table) => {
-                                our_symbols.extend(symbol_table.symbols());
-                            }
+                            ArchiveEntry::Symbols(_symbol_table) => {}
                             ArchiveEntry::Filenames(table) => filenames = Some(table),
-                        }
-                    }
-                    if ar_summary.symbols.len() != our_symbols.len() {
-                        bail!(
-                            "ar read {} symbols, but we read {}",
-                            ar_summary.symbols.len(),
-                            our_symbols.len()
-                        );
-                    }
-                    for (a, b) in ar_summary.symbols.iter().zip(our_symbols.iter()) {
-                        if a != b.name {
-                            bail!(
-                                "Different symbol name `{}` vs `{}`",
-                                String::from_utf8_lossy(a),
-                                String::from_utf8_lossy(b.name)
-                            );
                         }
                     }
                     if ar_summary.entries.len() != our_entries.len() {

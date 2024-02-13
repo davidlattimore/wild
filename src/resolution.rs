@@ -16,12 +16,11 @@ use crate::output_section_id::TemporaryOutputSectionId;
 use crate::output_section_id::UnloadedSection;
 use crate::symbol::SymbolName;
 use crate::symbol_db;
-use crate::symbol_db::ArchivedObject;
 use crate::symbol_db::FileSymbols;
 use crate::symbol_db::GlobalSymbolId;
 use crate::symbol_db::InternalSymbols;
 use crate::symbol_db::LocalIndexUpdate;
-use crate::symbol_db::PendingSymbol;
+use crate::symbol_db::ObjectSymbols;
 use crate::symbol_db::SymbolDb;
 use crate::timing::Timing;
 use ahash::AHashMap;
@@ -42,7 +41,7 @@ pub(crate) fn resolve_symbols_and_sections<'data>(
 ) -> Result<(Vec<ResolvedFile<'data>>, OutputSections<'data>)> {
     let num_objects = file_states.len();
     let mut objects = Vec::new();
-    type ArchiveEntryCell<'data> = AtomicCell<Option<Box<ArchivedObject<'data>>>>;
+    type ArchiveEntryCell<'data> = AtomicCell<Option<Box<ObjectSymbols<'data>>>>;
     let mut archive_entries: Vec<ArchiveEntryCell> = Vec::new();
     // We use a Box so that lock-free operation is possible. Verify that our cells are actually
     // lock-free.
@@ -61,10 +60,9 @@ pub(crate) fn resolve_symbols_and_sections<'data>(
                 ResolvedFile::NotLoaded
             }
             FileSymbols::ArchiveEntry(s) => {
-                let file_id = s.file_id();
                 // TODO: If we're going to box these, we might as well box them earlier (in
                 // symbol_db).
-                archive_entries[file_id.as_usize()].store(Some(Box::new(s)));
+                archive_entries[s.file_id.as_usize()].store(Some(Box::new(s)));
                 ResolvedFile::NotLoaded
             }
         })
@@ -316,14 +314,14 @@ impl<'data> Outputs<'data> {
 fn process_object<'scope, 'data: 'scope>(
     obj: symbol_db::ObjectSymbols<'data>,
     symbol_db: &'scope SymbolDb<'data>,
-    archive_entries: &'scope [AtomicCell<Option<Box<ArchivedObject<'data>>>>],
+    archive_entries: &'scope [AtomicCell<Option<Box<ObjectSymbols<'data>>>>],
     s: &rayon::Scope<'scope>,
     outputs: &'scope Outputs<'data>,
 ) -> Result {
     let request_file_id = |file_id: FileId| {
         if let Some(entry) = archive_entries[file_id.as_usize()].take() {
             s.spawn(|s| {
-                let r = process_archive_entry(*entry, symbol_db, archive_entries, s, outputs);
+                let r = process_object(*entry, symbol_db, archive_entries, s, outputs);
                 if let Err(error) = r {
                     let _ = outputs.errors.push(error);
                 }
@@ -333,50 +331,6 @@ fn process_object<'scope, 'data: 'scope>(
     let res = ResolvedObject::new(obj, symbol_db, request_file_id, &outputs.start_stop_sets)?;
     let _ = outputs.loaded.push(res);
     Ok(())
-}
-
-fn process_archive_entry<'scope, 'data: 'scope>(
-    entry: ArchivedObject<'data>,
-    symbol_db: &'scope SymbolDb<'data>,
-    archive_entries: &'scope [AtomicCell<Option<Box<ArchivedObject<'data>>>>],
-    s: &rayon::Scope<'scope>,
-    outputs: &'scope Outputs<'data>,
-) -> Result {
-    let entry_obj = match entry {
-        ArchivedObject::Unloaded(u) => {
-            let (entry_obj, symbols) = u.load()?;
-            outputs.local_index_updates.push(crate_local_index_updates(
-                entry_obj.file_id,
-                symbols,
-                symbol_db,
-            ));
-            entry_obj
-        }
-        ArchivedObject::Loaded(o) => o,
-    };
-    process_object(entry_obj, symbol_db, archive_entries, s, outputs)
-}
-
-/// Returns a list of updates that we need to make to the global symbol DB now that we have loaded
-/// an archive entry and know the local indexes of each of the symbols that it defines.
-fn crate_local_index_updates(
-    file_id: FileId,
-    symbols: Vec<PendingSymbol>,
-    symbol_db: &SymbolDb<'_>,
-) -> Vec<LocalIndexUpdate> {
-    symbols
-        .into_iter()
-        .filter_map(|sym| {
-            symbol_db
-                .symbol_ids
-                .get(&sym.name)
-                .map(|symbol_id| LocalIndexUpdate {
-                    file_id,
-                    symbol_id: *symbol_id,
-                    local_index: sym.symbol.local_index_without_checking_file_id(),
-                })
-        })
-        .collect()
 }
 
 struct StartStopSet<'data> {

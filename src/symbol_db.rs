@@ -1,10 +1,8 @@
 //! Reads global symbols for each input file and builds a map from symbol names to IDs together with
 //! information about where each symbol can be obtained.
 
-use crate::archive;
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
-use crate::archive::ExtendedFilenames;
 use crate::args::Args;
 use crate::elf::File;
 use crate::error::Result;
@@ -75,7 +73,7 @@ pub(crate) enum InternalSymDefInfo {
 pub(crate) enum FileSymbols<'data> {
     Internal(InternalSymbols),
     Object(ObjectSymbols<'data>),
-    ArchiveEntry(ArchivedObject<'data>),
+    ArchiveEntry(ObjectSymbols<'data>),
 }
 
 pub(crate) struct InternalSymbols {
@@ -93,19 +91,6 @@ pub(crate) struct ObjectSymbols<'data> {
     pub(crate) file_id: FileId,
 }
 
-pub(crate) enum ArchivedObject<'data> {
-    Loaded(ObjectSymbols<'data>),
-    Unloaded(UnloadedArchivedObject<'data>),
-}
-
-pub(crate) struct UnloadedArchivedObject<'data> {
-    file_id: FileId,
-    /// The offset in the archive of the start of the headers for the object.
-    header_offset: u32,
-    pub(crate) input_file: &'data InputFile,
-    filenames: Option<ExtendedFilenames<'data>>,
-}
-
 /// A record indicating an update that we should make to the local index for a symbol. This is
 /// necessary for archives, since we don't know the local indexes until we actually load the object,
 /// which we don't do unless we know we're going to use that archive entry.
@@ -113,45 +98,6 @@ pub(crate) struct LocalIndexUpdate {
     pub(crate) file_id: FileId,
     pub(crate) symbol_id: GlobalSymbolId,
     pub(crate) local_index: object::SymbolIndex,
-}
-
-impl<'data> UnloadedArchivedObject<'data> {
-    pub(crate) fn load(&self) -> Result<(ObjectSymbols<'data>, Vec<PendingSymbol<'data>>)> {
-        let data = self.input_file.data();
-        let Some(ArchiveEntry::Regular(archive_entry)) =
-            archive::ArchiveIterator::from_entry_bytes(&data[self.header_offset as usize..])
-                .next()
-                .transpose()?
-        else {
-            bail!("Archive symbol table referenced invalid entry");
-        };
-        let input_file = self.input_file;
-        let file_id = self.file_id;
-        let extended_filenames = self.filenames;
-        load_object_from_archive_entry(archive_entry, input_file, file_id, extended_filenames)
-    }
-}
-
-fn load_object_from_archive_entry<'data>(
-    archive_entry: archive::ArchiveContent<'data>,
-    input_file: &'data InputFile,
-    file_id: FileId,
-    extended_filenames: Option<ExtendedFilenames<'data>>,
-) -> Result<(ObjectSymbols<'data>, Vec<PendingSymbol<'data>>)> {
-    let object = Box::new(File::parse(archive_entry.entry_data)?);
-    let mut reader = ObjectSymbolReader { input_file, object };
-    let pending = reader.pending_symbols()?;
-    Ok((
-        ObjectSymbols {
-            file_id,
-            input: InputRef {
-                file: input_file,
-                entry_filename: Some(archive_entry.identifier(extended_filenames)),
-            },
-            object: reader.object,
-        },
-        pending,
-    ))
 }
 
 enum FileSymbolReader<'data> {
@@ -167,7 +113,7 @@ struct InternalSymbolReader {
 }
 
 struct ObjectSymbolReader<'data> {
-    input_file: &'data InputFile,
+    input: InputRef<'data>,
     object: Box<File<'data>>,
 }
 
@@ -176,16 +122,8 @@ struct ArchiveSymbolReader<'data> {
     data: &'data [u8],
 }
 
-struct UnloadedArchivedObjectSymbolReader<'data> {
-    /// The offset in the archive of the start of the headers for the object.
-    header_offset: u32,
-    input_file: &'data InputFile,
-    filenames: Option<ExtendedFilenames<'data>>,
-}
-
 enum SymbolReader<'data> {
     Object(ObjectSymbolReader<'data>),
-    UnloadedArchiveEntry(UnloadedArchivedObjectSymbolReader<'data>),
     LoadedArchiveEntry(ObjectSymbolReader<'data>),
     Internal(InternalSymbolReader),
 }
@@ -249,12 +187,9 @@ impl<'data> SymbolDb<'data> {
                     SymbolReader::Object(state) => {
                         FileSymbols::Object(state.symbols_defined(file_id))
                     }
-                    SymbolReader::UnloadedArchiveEntry(state) => {
+                    SymbolReader::LoadedArchiveEntry(state) => {
                         FileSymbols::ArchiveEntry(state.symbols_defined(file_id))
                     }
-                    SymbolReader::LoadedArchiveEntry(state) => FileSymbols::ArchiveEntry(
-                        ArchivedObject::Loaded(state.symbols_defined(file_id)),
-                    ),
                     SymbolReader::Internal(state) => {
                         FileSymbols::Internal(state.symbols_defined(defined, file_id))
                     }
@@ -407,10 +342,7 @@ impl<'data> ObjectSymbolReader<'data> {
     fn symbols_defined(self, file_id: FileId) -> ObjectSymbols<'data> {
         ObjectSymbols {
             file_id,
-            input: InputRef {
-                file: self.input_file,
-                entry_filename: None,
-            },
+            input: self.input,
             object: self.object,
         }
     }
@@ -418,9 +350,7 @@ impl<'data> ObjectSymbolReader<'data> {
 
 impl<'data> ArchiveSymbolReader<'data> {
     fn load_symbols(self) -> Result<Vec<SymbolLoadOutputs<'data>>> {
-        let mut symbol_table = None;
-        let mut filenames = None;
-        let mut num_entries = 0;
+        let mut extended_filenames = None;
         // If we end up loading most of the objects with our archives, then it's faster if we just
         // the objects up-front rather than first loading the archive symbol table then later
         // loading the object anyway. TODO: Determine if it's actually worthwhile keeping the code
@@ -429,15 +359,21 @@ impl<'data> ArchiveSymbolReader<'data> {
         let mut outputs = Vec::new();
         for entry in ArchiveIterator::from_archive_bytes(self.data)? {
             let entry = entry?;
-            num_entries += 1;
             match entry {
-                ArchiveEntry::Symbols(t) => symbol_table = Some(t),
-                ArchiveEntry::Filenames(t) => filenames = Some(t),
+                ArchiveEntry::Symbols(_) => {
+                    // We used to read the symbol table from the archive, but when you're linking
+                    // lots of archives and discarding very few, it turns out it's faster to just
+                    // ignore the symbol table and eagerly read the objects.
+                }
+                ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
                 ArchiveEntry::Regular(archive_entry) => {
                     if always_load_archive_entries {
                         let object = Box::new(File::parse(archive_entry.entry_data)?);
                         let mut reader = ObjectSymbolReader {
-                            input_file: self.input_file,
+                            input: InputRef {
+                                file: self.input_file,
+                                entry_filename: Some(archive_entry.identifier(extended_filenames)),
+                            },
                             object,
                         };
                         let pending_symbols = reader.pending_symbols()?;
@@ -450,83 +386,7 @@ impl<'data> ArchiveSymbolReader<'data> {
                 }
             }
         }
-        if !outputs.is_empty() {
-            return Ok(outputs);
-        }
-        // Allow completely empty archives without reporting an error due to not not containing a
-        // symbol table.
-        if num_entries == 0 {
-            return Ok(Vec::new());
-        }
-        let symbol_table =
-            symbol_table.context("Archives without symbol tables are not currently supported")?;
-        self.load_from_symbol_table(symbol_table, filenames)
-    }
-
-    fn load_from_symbol_table(
-        self,
-        symbol_table: archive::SymbolTable<'data>,
-        filenames: Option<ExtendedFilenames<'data>>,
-    ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
-        let mut symbols = Vec::with_capacity(symbol_table.num_symbols() as usize);
-        symbols.extend(symbol_table.symbols().map(|s| {
-            PendingSymbol::new(
-                FileId::placeholder(),
-                // We misuse the local index to temporarily store the header offset. We'll populate
-                // the actual local index when/if we load the object file.
-                object::SymbolIndex(s.header_offset as usize),
-                s.name,
-            )
-        }));
-        symbols.sort_by_key(|s| s.symbol.local_index_without_checking_file_id().0);
-        let mut objects = Vec::new();
-        let mut object_symbols = Vec::new();
-        let mut header_offset = 0;
-        for mut symbol in symbols {
-            if symbol.symbol.local_index_without_checking_file_id().0 as u32 != header_offset {
-                if !object_symbols.is_empty() {
-                    objects.push(SymbolLoadOutputs {
-                        pending_symbols: core::mem::take(&mut object_symbols),
-                        reader: SymbolReader::UnloadedArchiveEntry(
-                            UnloadedArchivedObjectSymbolReader {
-                                header_offset,
-                                input_file: self.input_file,
-                                filenames,
-                            },
-                        ),
-                    });
-                }
-                header_offset = symbol.symbol.local_index_without_checking_file_id().0 as u32;
-            }
-            // We don't know the local index until we load the object file contained within the
-            // archive entry. We put a large distinctive value here so that if we try to use it
-            // prior to putting the actual index here, we'll crash in a way that will be easier to
-            // diagnose.
-            symbol.symbol.set_local_index(object::SymbolIndex(999999));
-            object_symbols.push(symbol);
-        }
-        if !object_symbols.is_empty() {
-            objects.push(SymbolLoadOutputs {
-                pending_symbols: core::mem::take(&mut object_symbols),
-                reader: SymbolReader::UnloadedArchiveEntry(UnloadedArchivedObjectSymbolReader {
-                    header_offset,
-                    input_file: self.input_file,
-                    filenames,
-                }),
-            });
-        }
-        Ok(objects)
-    }
-}
-
-impl<'data> UnloadedArchivedObjectSymbolReader<'data> {
-    fn symbols_defined(self, file_id: FileId) -> ArchivedObject<'data> {
-        ArchivedObject::Unloaded(UnloadedArchivedObject {
-            file_id,
-            header_offset: self.header_offset,
-            input_file: self.input_file,
-            filenames: self.filenames,
-        })
+        Ok(outputs)
     }
 }
 
@@ -647,11 +507,17 @@ impl<'data> ObjectSymbolReader<'data> {
                 input_file.filename.display()
             )
         })?);
-        Ok(Self { input_file, object })
+        Ok(Self {
+            input: InputRef {
+                file: input_file,
+                entry_filename: None,
+            },
+            object,
+        })
     }
 
     fn filename(&self) -> &'data Path {
-        &self.input_file.filename
+        &self.input.file.filename
     }
 }
 
@@ -685,15 +551,6 @@ impl InternalSymDefInfo {
         match self {
             InternalSymDefInfo::SectionStart(i) => i,
             InternalSymDefInfo::SectionEnd(i) => i,
-        }
-    }
-}
-
-impl<'data> ArchivedObject<'data> {
-    pub(crate) fn file_id(&self) -> FileId {
-        match self {
-            ArchivedObject::Loaded(s) => s.file_id,
-            ArchivedObject::Unloaded(s) => s.file_id,
         }
     }
 }
