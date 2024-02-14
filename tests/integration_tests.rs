@@ -549,14 +549,14 @@ fn integration_test() -> Result {
         Program::new("tls", &["tls.c", "tls1.c", "init_tls.c", "exit.c"])?,
         Program::new(
             "old_init",
-            &["old_init.c", "old_init0.S", "old_init1.S", "exit.c"],
+            &["old_init.c", "old_init0.s", "old_init1.s", "exit.c"],
         )?,
         Program::new(
             "custom_section",
             &["custom_section.c", "custom_section0.c", "exit.c"],
         )?,
-        Program::new("stack_alignment", &["stack_alignment.S", "exit.c"])?,
-        Program::new("local_symbol_refs", &["local_symbol_refs.S", "exit.c"])?,
+        Program::new("stack_alignment", &["stack_alignment.s", "exit.c"])?,
+        Program::new("local_symbol_refs", &["local_symbol_refs.s", "exit.c"])?,
         Program::new(
             "archive_activation",
             &[
