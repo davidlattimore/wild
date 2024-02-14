@@ -60,14 +60,14 @@ struct LinkerConfig {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LinkerKind {
     Wild,
-    Ld,
+    ThirdParty(&'static str),
 }
 
 impl LinkerKind {
     fn path(&self) -> PathBuf {
         match self {
             LinkerKind::Wild => base_dir().join("target/debug/wild"),
-            LinkerKind::Ld => PathBuf::from("ld"),
+            LinkerKind::ThirdParty(cmd) => PathBuf::from(cmd),
         }
     }
 }
@@ -572,7 +572,7 @@ impl Display for LinkerKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LinkerKind::Wild => Display::fmt(&"wild", f),
-            LinkerKind::Ld => Display::fmt(&"ld", f),
+            LinkerKind::ThirdParty(cmd) => Display::fmt(cmd, f),
         }
     }
 }
@@ -697,7 +697,7 @@ fn integration_test() -> Result {
     ];
     let linker_configs = [
         LinkerConfig {
-            kind: LinkerKind::Ld,
+            kind: LinkerKind::ThirdParty("ld"),
         },
         LinkerConfig {
             kind: LinkerKind::Wild,
