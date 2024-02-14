@@ -35,6 +35,7 @@ pub(crate) struct InputFile {
 
 /// Identifies an input object that may not be a regular file on disk, or may be an entry in an
 /// archive.
+#[derive(Clone, Copy)]
 pub(crate) struct InputRef<'data> {
     pub(crate) file: &'data InputFile,
     pub(crate) entry_filename: Option<archive::Identifier<'data>>,

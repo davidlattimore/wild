@@ -7,9 +7,6 @@ s2w: .ascii "World\0"
 .globl s2h
 s2h: .ascii "Hello\0"
 
-.globl s2nz
-s2nz: .ascii "Non-terminated"
-
 // Define a string-merge section containing a local then make sure we can reference it.
 
 .section .rodata.loc1, "aSM", @progbits, 1

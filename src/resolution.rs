@@ -455,7 +455,9 @@ fn process_object<'scope, 'data: 'scope>(
             });
         }
     };
-    let res = ResolvedObject::new(obj, symbol_db, request_file_id, &outputs.start_stop_sets)?;
+    let input = obj.input;
+    let res = ResolvedObject::new(obj, symbol_db, request_file_id, &outputs.start_stop_sets)
+        .with_context(|| format!("Failed to process {input}"))?;
     let _ = outputs.loaded.push(res);
     Ok(())
 }
@@ -752,7 +754,12 @@ impl<'data> MergeStringsFileSection<'data> {
         while !remaining.is_empty() {
             let len = memchr::memchr(0, remaining)
                 .map(|i| i + 1)
-                .unwrap_or(remaining.len());
+                .with_context(|| {
+                    format!(
+                        "String in section `{}` is not null-terminated",
+                        input_section.name().unwrap_or("??")
+                    )
+                })?;
             let (bytes, rest) = remaining.split_at(len);
             let hash = crate::hash::hash_bytes(bytes);
             strings.push(StringToMerge { bytes, hash });

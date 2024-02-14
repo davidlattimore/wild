@@ -6,6 +6,3 @@ s1h: .ascii "Hello\0"
 
 .globl s1w
 s1w: .ascii "World\0"
-
-.globl s1nz
-s1nz: .ascii "Non-terminated"
