@@ -485,7 +485,7 @@ pub(crate) fn built_in_section_ids(
 }
 
 impl OutputSectionId {
-    const fn regular(offset: u16) -> OutputSectionId {
+    pub(crate) const fn regular(offset: u16) -> OutputSectionId {
         OutputSectionId(NUM_GENERATED_SECTIONS as u16 + offset)
     }
 
@@ -709,6 +709,11 @@ impl<'data> OutputSections<'data> {
     #[must_use]
     pub(crate) fn len(&self) -> usize {
         self.section_infos.len()
+    }
+
+    #[must_use]
+    pub(crate) fn num_regular_sections(&self) -> usize {
+        self.section_infos.len() - NUM_GENERATED_SECTIONS
     }
 
     pub(crate) fn has_data_in_file(&self, id: OutputSectionId) -> bool {

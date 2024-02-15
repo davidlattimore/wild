@@ -78,12 +78,15 @@ pub(crate) fn compute<'data>(
         starting_memory_offsets(&section_part_layouts, &output_sections);
     timing.complete("Section/segment sizing");
     let starting_mem_offsets_by_file = compute_start_offsets_by_file(&layout_states, mem_offsets);
+    let merged_string_start_addresses =
+        MergedStringStartAddresses::compute(&output_sections, &starting_mem_offsets_by_file);
     timing.complete("Allocate sizes to files");
     let symbols_and_layouts = compute_symbols_and_layouts(
         layout_states,
         starting_mem_offsets_by_file,
         &section_layouts,
         symbol_db,
+        &merged_string_start_addresses,
     )?;
     timing.complete("Assign symbol addresses");
 
@@ -106,6 +109,7 @@ pub(crate) fn compute<'data>(
         section_part_layouts,
         section_layouts,
         file_layouts,
+        merged_string_start_addresses,
         output_sections,
         tls_mode,
     })
@@ -128,6 +132,7 @@ pub(crate) struct Layout<'data> {
     pub(crate) segment_layouts: Vec<SegmentLayout>,
     pub(crate) output_sections: OutputSections<'data>,
     pub(crate) tls_mode: TlsMode,
+    pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
 }
 
 #[derive(Default, Clone)]
@@ -149,6 +154,11 @@ pub(crate) enum FileLayout<'data> {
 pub(crate) enum SymbolResolution {
     Resolved(Resolution),
     Dynamic,
+}
+
+/// The addresses of the start of the merged strings for each output section.
+pub(crate) struct MergedStringStartAddresses {
+    addresses: OutputSectionMap<u64>,
 }
 
 /// Address information for a symbol or section.
@@ -714,13 +724,19 @@ fn compute_symbols_and_layouts<'data>(
     starting_mem_offsets_by_file: Vec<Option<OutputSectionPartMap<u64>>>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     symbol_db: &SymbolDb<'data>,
+    merged_string_start_addresses: &MergedStringStartAddresses,
 ) -> Result<Vec<(Vec<GlobalSymbolAddress>, FileLayout<'data>)>> {
     layout_states
         .into_par_iter()
         .zip(starting_mem_offsets_by_file)
         .filter_map(|(state, mut memory_offsets)| {
             state
-                .finalise_layout(memory_offsets.as_mut(), section_layouts, symbol_db)
+                .finalise_layout(
+                    memory_offsets.as_mut(),
+                    section_layouts,
+                    symbol_db,
+                    merged_string_start_addresses,
+                )
                 .transpose()
         })
         .collect()
@@ -1101,6 +1117,7 @@ impl<'data> FileLayoutState<'data> {
         memory_offsets: Option<&mut OutputSectionPartMap<u64>>,
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
         symbol_db: &SymbolDb,
+        merged_string_start_addresses: &MergedStringStartAddresses,
     ) -> Result<Option<(Vec<GlobalSymbolAddress>, FileLayout<'data>)>> {
         let mut addresses_out = Vec::new();
         let file_layout = match self {
@@ -1115,6 +1132,7 @@ impl<'data> FileLayoutState<'data> {
                 &mut addresses_out,
                 section_layouts,
                 symbol_db,
+                merged_string_start_addresses,
             )?),
             Self::Dynamic(s) => FileLayout::Dynamic(s.finalise_layout(&mut addresses_out)),
             Self::NotLoaded => {
@@ -1786,6 +1804,7 @@ impl<'data> ObjectLayoutState<'data> {
         global_addresses_out: &mut Vec<GlobalSymbolAddress>,
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
         symbol_db: &SymbolDb,
+        merged_string_start_addresses: &MergedStringStartAddresses,
     ) -> Result<ObjectLayout<'data>> {
         // Sort in order to ensure deterministic allocation of PLT/GOT entries as well as output
         // order.
@@ -1849,11 +1868,8 @@ impl<'data> ObjectLayoutState<'data> {
                 if let Some(section_resolution) = section_resolutions[section_index.0].as_ref() {
                     address += section_resolution.address;
                 } else {
-                    let merged_string_address = merged_string_address(
-                        &self.state.local_symbol_resolutions,
-                        local_index,
-                        section_layouts,
-                    );
+                    let merged_string_address = merged_string_start_addresses
+                        .try_resolve_local(&self.state.local_symbol_resolutions, local_index);
                     if let Some(a) = merged_string_address {
                         address = a;
                     } else {
@@ -1893,17 +1909,41 @@ impl<'data> ObjectLayoutState<'data> {
     }
 }
 
-/// Returns the address of `local_symbol_index` if it points to a merged string, or None if not.
-fn merged_string_address(
-    local_symbol_resolutions: &[LocalSymbolResolution],
-    local_symbol_index: object::SymbolIndex,
-    section_layouts: &OutputSectionMap<OutputRecordLayout>,
-) -> Option<u64> {
-    if let LocalSymbolResolution::MergedString(res) = local_symbol_resolutions[local_symbol_index.0]
-    {
-        Some(section_layouts.get(res.output_section_id).mem_offset + res.offset)
-    } else {
-        None
+impl MergedStringStartAddresses {
+    fn compute(
+        output_sections: &OutputSections<'_>,
+        starting_mem_offsets_by_file: &[Option<OutputSectionPartMap<u64>>],
+    ) -> Self {
+        let mut addresses = OutputSectionMap::with_size(output_sections.len());
+        if let Some(internal_start_offsets) =
+            &starting_mem_offsets_by_file[crate::input_data::INTERNAL_FILE_ID.as_usize()]
+        {
+            for i in 0..output_sections.num_regular_sections() {
+                let section_id = OutputSectionId::regular(i as u16);
+                *addresses.get_mut(section_id) =
+                    *internal_start_offsets.regular(section_id, alignment::MIN);
+            }
+        }
+        Self { addresses }
+    }
+
+    /// Returns the address of `local_symbol_index` if it points to a merged string, or None if not.
+    fn try_resolve_local(
+        &self,
+        local_symbol_resolutions: &[LocalSymbolResolution],
+        local_symbol_index: object::SymbolIndex,
+    ) -> Option<u64> {
+        if let LocalSymbolResolution::MergedString(res) =
+            local_symbol_resolutions[local_symbol_index.0]
+        {
+            Some(self.resolve(res))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn resolve(&self, res: resolution::MergedStringResolution) -> u64 {
+        self.addresses.get(res.output_section_id) + res.offset
     }
 }
 

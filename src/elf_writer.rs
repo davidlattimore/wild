@@ -849,8 +849,7 @@ impl<'data> ObjectLayout<'data> {
                     }
                     LocalSymbolResolution::Null => bail!("Reference to null symbol"),
                     LocalSymbolResolution::MergedString(res) => Resolution {
-                        address: layout.section_layouts.get(res.output_section_id).mem_offset
-                            + res.offset,
+                        address: layout.merged_string_start_addresses.resolve(res),
                         got_address: None,
                         plt_address: None,
                         kind: TargetResolutionKind::Address,
