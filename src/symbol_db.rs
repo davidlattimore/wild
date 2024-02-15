@@ -91,15 +91,6 @@ pub(crate) struct ObjectSymbols<'data> {
     pub(crate) file_id: FileId,
 }
 
-/// A record indicating an update that we should make to the local index for a symbol. This is
-/// necessary for archives, since we don't know the local indexes until we actually load the object,
-/// which we don't do unless we know we're going to use that archive entry.
-pub(crate) struct LocalIndexUpdate {
-    pub(crate) file_id: FileId,
-    pub(crate) symbol_id: GlobalSymbolId,
-    pub(crate) local_index: object::SymbolIndex,
-}
-
 enum FileSymbolReader<'data> {
     Internal(InternalSymbolReader),
     Object(ObjectSymbolReader<'data>),
@@ -251,27 +242,9 @@ impl<'data> SymbolDb<'data> {
         &self.symbols[symbol_id.as_usize()]
     }
 
-    fn symbol_mut(&mut self, symbol_id: GlobalSymbolId, file_id: FileId) -> Option<&mut Symbol> {
-        let symbol = &mut self.symbols[symbol_id.as_usize()];
-        if symbol.file_id == file_id {
-            return Some(symbol);
-        }
-        (self.alternate_definitions.get_mut(&symbol_id)?)
-            .iter_mut()
-            .find(|symbol| symbol.file_id == file_id)
-    }
-
     pub(crate) fn symbol_name(&self, symbol_id: GlobalSymbolId) -> SymbolName {
         debug_assert_eq!(self.symbol_names.len(), self.symbols.len());
         self.symbol_names[symbol_id.as_usize()]
-    }
-
-    pub(crate) fn apply_update(&mut self, update: LocalIndexUpdate) -> Result {
-        let symbol = self
-            .symbol_mut(update.symbol_id, update.file_id)
-            .context("Tried to update symbol for a file that didn't define that symbol")?;
-        symbol.set_local_index(update.local_index);
-        Ok(())
     }
 
     pub(crate) fn replace_symbol(&mut self, symbol_id: GlobalSymbolId, replacement: Symbol) {

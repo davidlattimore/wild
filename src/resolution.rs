@@ -23,7 +23,6 @@ use crate::symbol_db::FileSymbols;
 use crate::symbol_db::GlobalSymbolId;
 use crate::symbol_db::InternalSymDefInfo;
 use crate::symbol_db::InternalSymbols;
-use crate::symbol_db::LocalIndexUpdate;
 use crate::symbol_db::ObjectSymbols;
 use crate::symbol_db::SymbolDb;
 use crate::timing::Timing;
@@ -93,9 +92,6 @@ pub(crate) fn resolve_symbols_and_sections<'data>(
         resolved[file_id.as_usize()] = ResolvedFile::Object(obj);
     }
     timing.complete("Resolve symbols");
-
-    update_archive_local_indexes(symbol_db, outputs.local_index_updates)?;
-    timing.complete("Update archive local symbol indexes");
 
     let output_sections = assign_section_ids(&resolved)?;
     timing.complete("Assign section IDs");
@@ -395,16 +391,6 @@ fn merge_strings<'data>(
     }))
 }
 
-fn update_archive_local_indexes(
-    symbol_db: &mut SymbolDb<'_>,
-    local_index_updates: SegQueue<Vec<LocalIndexUpdate>>,
-) -> Result {
-    for update in local_index_updates.into_iter().flatten() {
-        symbol_db.apply_update(update)?;
-    }
-    Ok(())
-}
-
 fn assign_section_ids<'data>(resolved: &[ResolvedFile<'data>]) -> Result<OutputSections<'data>> {
     let mut output_sections_builder = OutputSectionsBuilder::default();
     for s in resolved {
@@ -424,8 +410,6 @@ struct Outputs<'data> {
 
     /// Start/stop references to custom sections.
     start_stop_sets: SegQueue<StartStopSet<'data>>,
-
-    local_index_updates: SegQueue<Vec<LocalIndexUpdate>>,
 }
 
 impl<'data> Outputs<'data> {
@@ -434,7 +418,6 @@ impl<'data> Outputs<'data> {
             loaded: ArrayQueue::new(num_objects),
             errors: ArrayQueue::new(1),
             start_stop_sets: SegQueue::new(),
-            local_index_updates: SegQueue::new(),
         }
     }
 }

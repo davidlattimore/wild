@@ -80,10 +80,6 @@ impl Symbol {
     pub(crate) fn local_index_without_checking_file_id(&self) -> object::SymbolIndex {
         self.local_index
     }
-
-    pub(crate) fn set_local_index(&mut self, local_index: object::SymbolIndex) {
-        self.local_index = local_index;
-    }
 }
 
 impl<'data> Display for SymbolName<'data> {
