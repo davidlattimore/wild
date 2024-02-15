@@ -34,6 +34,7 @@ impl Timing {
 impl Drop for Timing {
     fn drop(&mut self) {
         if self.active {
+            self.complete("Free resources");
             println!(
                 "Total: {:0.2} ms",
                 self.start.elapsed().as_secs_f64() * 1000.0
