@@ -61,17 +61,24 @@ stand for anything and was just selected based on it giving an interesting word.
 There are lots of features that Wild doesn't yet support, so I'm not sure benchmarking is super
 useful at this stage. That said, I have done some very preliminary comparisons. I've tried linking
 the binary in my [warm build benchmark
-repository](https://github.com/davidlattimore/warm-build-benchmark), which is an ~80MB, non-PIE,
+repository](https://github.com/davidlattimore/warm-build-benchmark), which builds an ~80MB, non-PIE,
 statically linked binary with symbol tables, eh-frames and no debug info. On my laptop, I get the
 following times:
 
-| Linker   | Time (ms) | ± Standard deviation (ms) | File size (MiB)
-|----------|-----------|---------------------------|----------------
-| GNU ld   | 12452     | 97                        | 80.3
-| gold     | 3384      | 32                        | 83.3
-| lld      | 903       | 10.6                      | 84.8
-| mold     | 457       | 7.2                       | 81.1
-| wild     | 365       | 4.9                       | 84.5
+| Linker   | Time (ms) | ± Standard deviation (ms) | CPU time (ms) | File size (MiB)
+|----------|-----------|---------------------------|---------------|----------------
+| GNU ld   | 12300     | 150                       | 12299         | 80.3
+| gold     | 3365      | 30                        | 3362          | 83.3
+| lld      | 905       | 5.6                       | 1222          | 84.8
+| mold     | 457       | 7.2                       | 2834          | 81.1
+| wild     | 363       | 6.6                       | 1585          | 84.5
+
+Notes about these results:
+* CPU time is user + system CPU time as reported by hyperfine.
+* Mold by default forks, which lets the user not wait for the mold process that does the work to
+  shutdown. This is a neat optimisation. In the above benchmarks, the time column is with this
+  optimisation enabled. The CPU time however is with this optimisation disabled (--no-fork), since
+  when forking is enabled, we can't easily measure the CPU time.
 
 I want to stress that this is only one benchmark. Many unknowns remain:
 
