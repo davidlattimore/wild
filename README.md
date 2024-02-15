@@ -107,18 +107,14 @@ they're currently doing. If you know of such flags, please let me know.
 
 Currently Wild only works with somewhat specific compilation and linking options. The following is a
 `cargo test` command-line that can be used to build and test a crate using Wild. This has been run
-successfully on a few popular crates (e.g. ripgrep, serde). It assumes that the "wild" binary is on
-your path.
+successfully on a few popular crates (e.g. ripgrep, serde, tokio, rand, bitflags). It assumes that
+the "wild" binary is on your path.
 
 ```sh
 cargo test --target x86_64-unknown-linux-musl --config 'target.x86_64-unknown-linux-musl.linker="/usr/bin/clang-15"' --config 'target.x86_64-unknown-linux-musl.rustflags="-C relocation-model=static -C target-feature=+crt-static -C debuginfo=0 -C link-arg=--ld-path=wild"'
 ```
 
-### Filing issues / contributing
-
-There are lots of known things that aren't yet implemented, so for now, I'd ask that you not file
-issues like "Crate X does Y when linked with Wild". The time to investigate such issues is probably
-better spent implementing known missing features.
+### Contributing
 
 If you'd like to work on something specific, please reach out either by filing an issue or via email
 so that we can avoid any wasted work. For synchronous communication, I like video chat, so if you'd
