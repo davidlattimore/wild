@@ -14,26 +14,50 @@ pub(crate) struct SaveDir {
 }
 
 const SAVE_DIR_ENV: &str = "WILD_SAVE_DIR";
+const SAVE_BASE_ENV: &str = "WILD_SAVE_BASE";
 
 const PRELUDE: &str = include_str!("save-dir-prelude.sh");
 
 impl SaveDir {
     pub(crate) fn new() -> Result<Self> {
-        let Ok(dir) = std::env::var(SAVE_DIR_ENV) else {
-            return Ok(Self::with_dir(None));
-        };
-        let dir = PathBuf::from(dir);
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir)
-                .with_context(|| format!("Failed to delete `{}`", dir.display()))?;
+        if let Ok(dir) = std::env::var(SAVE_DIR_ENV) {
+            let dir = PathBuf::from(dir);
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir).with_context(|| {
+                    format!(
+                        "Failed to delete `{}`. If you're running multiple link commands \
+                         concurrently, try using {} instead.",
+                        dir.display(),
+                        SAVE_BASE_ENV
+                    )
+                })?;
+            }
+            std::fs::create_dir_all(&dir).with_context(|| {
+                format!(
+                    "Failed to create directory `{}` specified by {SAVE_DIR_ENV}",
+                    dir.display()
+                )
+            })?;
+            return Ok(Self::with_dir(Some(dir)));
         }
-        std::fs::create_dir_all(&dir).with_context(|| {
-            format!(
-                "Failed to create directory `{}` specified by {SAVE_DIR_ENV}",
-                dir.display()
-            )
-        })?;
-        Ok(Self::with_dir(Some(dir)))
+        if let Ok(dir) = std::env::var(SAVE_BASE_ENV) {
+            let dir = PathBuf::from(dir);
+            std::fs::create_dir_all(&dir).with_context(|| {
+                format!(
+                    "Failed to create directory `{}` specified by {SAVE_BASE_ENV}",
+                    dir.display()
+                )
+            })?;
+            let mut counter = 0;
+            loop {
+                let subdir = dir.join(counter.to_string());
+                if std::fs::create_dir(&subdir).is_ok() {
+                    return Ok(Self::with_dir(Some(subdir)));
+                }
+                counter += 1;
+            }
+        }
+        Ok(Self::with_dir(None))
     }
 
     fn with_dir(dir: Option<PathBuf>) -> Self {
@@ -66,11 +90,13 @@ impl SaveDir {
 
     fn write_args(&self, args: std::env::Args, out: &mut BufWriter<&mut std::fs::File>) -> Result {
         let mut is_output_file = false;
+        let mut original_output_file = None;
         for arg in args {
             out.write_all(" \\\n  ".as_bytes())?;
             if is_output_file {
                 out.write_all(b"$OUT")?;
                 is_output_file = false;
+                original_output_file = Some(arg);
                 continue;
             }
             is_output_file = arg == "-o";
@@ -81,6 +107,10 @@ impl SaveDir {
                 out.write_all(arg.as_bytes())?;
             }
         }
+        if let Some(orig) = original_output_file {
+            out.write_all(b"\n# Original output file: ")?;
+            out.write_all(orig.as_bytes())?;
+        }
         Ok(())
     }
 
@@ -90,13 +120,17 @@ impl SaveDir {
         };
         let source_path = Path::new(arg);
         if let Some(dest_path) = unique_dest_path(dir, source_path) {
-            std::fs::copy(source_path, &dest_path).with_context(|| {
-                format!(
-                    "Failed to copy `{}` to `{}`",
-                    source_path.display(),
-                    dest_path.display()
-                )
-            })?;
+            // To save disk space, we first attempt to hard link the file. If that fails, then just
+            // copy it.
+            if std::fs::hard_link(source_path, &dest_path).is_err() {
+                std::fs::copy(source_path, &dest_path).with_context(|| {
+                    format!(
+                        "Failed to copy `{}` to `{}`",
+                        source_path.display(),
+                        dest_path.display()
+                    )
+                })?;
+            }
             self.copied_paths.insert(
                 arg.to_owned(),
                 dest_path
