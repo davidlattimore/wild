@@ -10,6 +10,7 @@ use anyhow::Context;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
 
 pub(crate) struct Args {
@@ -23,6 +24,7 @@ pub(crate) struct Args {
     pub(crate) prepopulate_maps: bool,
     pub(crate) sym_info: Option<String>,
     pub(crate) merge_strings: bool,
+    pub(crate) debug_fuel: Option<AtomicI64>,
     time_phases: bool,
 }
 
@@ -110,6 +112,7 @@ impl Args {
         let mut save_dir = SaveDir::new()?;
         let mut sym_info = None;
         let mut merge_strings = true;
+        let mut debug_fuel = None;
         // Skip program name
         input.next();
         while let Some(arg) = input.next() {
@@ -151,6 +154,11 @@ impl Args {
                 sym_info = input.next().map(|a| a.as_ref().to_owned());
             } else if arg == "--no-string-merge" {
                 merge_strings = false;
+            } else if let Some(rest) = arg.strip_prefix("--debug-fuel=") {
+                debug_fuel = Some(AtomicI64::new(rest.parse()?));
+                // Using debug fuel with more than one thread would likely give non-deterministic
+                // results.
+                num_threads = Some(NonZeroUsize::new(1).unwrap());
             } else if arg == "--help" {
                 bail!("Sorry, help isn't implemented yet");
             } else if IGNORED_FLAGS.contains(&arg) {
@@ -180,6 +188,7 @@ impl Args {
             prepopulate_maps,
             sym_info,
             merge_strings,
+            debug_fuel,
         })
     }
 
@@ -192,6 +201,31 @@ impl Args {
             .num_threads(self.num_threads.get())
             .build_global()?;
         Ok(())
+    }
+
+    /// Uses 1 debug fuel, returning how much fuel remains. Debug fuel is intended to be used when
+    /// debugging certain kinds of bugs, so this function isn't normally referenced. To use it, the
+    /// caller should take a different branch depending on whether the value is still positive. You
+    /// can then do a binary search.
+    pub(crate) fn use_debug_fuel(&self) -> i64 {
+        let Some(fuel) = self.debug_fuel.as_ref() else {
+            return i64::MAX;
+        };
+        fuel.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) - 1
+    }
+
+    /// Returns whether there was sufficient fuel. If the last bit of fuel was used, then calls
+    /// `last_cb`.
+    #[allow(unused)]
+    pub(crate) fn use_debug_fuel_on_last(&self, last_cb: impl FnOnce()) -> bool {
+        match self.use_debug_fuel() {
+            1.. => true,
+            0 => {
+                last_cb();
+                true
+            }
+            _ => false,
+        }
     }
 }
 
