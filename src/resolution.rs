@@ -2,6 +2,7 @@
 //! entries are needed. We also resolve which output section, if any, each input section should be
 //! assigned to.
 
+use crate::args::Args;
 use crate::elf::File;
 use crate::error::Error;
 use crate::error::Result;
@@ -563,7 +564,7 @@ impl<'data> ResolvedObject<'data> {
         start_stop_sets: &SegQueue<StartStopSet<'data>>,
     ) -> Result<Self> {
         let mut custom_sections = Vec::new();
-        let mut sections = resolve_sections(&obj, &mut custom_sections)?;
+        let mut sections = resolve_sections(&obj, &mut custom_sections, symbol_db.args)?;
 
         let local_symbol_resolutions = resolve_symbols(
             &obj,
@@ -600,12 +601,13 @@ impl<'data> ResolvedObject<'data> {
 fn resolve_sections<'data>(
     obj: &symbol_db::ObjectSymbols<'data>,
     custom_sections: &mut Vec<(object::SectionIndex, SectionDetails<'data>)>,
+    args: &Args,
 ) -> Result<Vec<SectionSlot<'data>>> {
     let sections = obj
         .object
         .sections()
         .map(|input_section| {
-            if let Some(unloaded) = UnloadedSection::from_section(&input_section)? {
+            if let Some(unloaded) = UnloadedSection::from_section(&input_section, args)? {
                 match unloaded.output_section_id {
                     TemporaryOutputSectionId::BuiltIn(_) => Ok(SectionSlot::Unloaded(unloaded)),
                     TemporaryOutputSectionId::Custom(_custom_section_id) => {

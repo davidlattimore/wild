@@ -1,5 +1,6 @@
 use crate::alignment;
 use crate::alignment::Alignment;
+use crate::args::Args;
 use crate::elf;
 use crate::elf::Section;
 use crate::error::Result;
@@ -373,7 +374,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
 ];
 
 impl<'data> UnloadedSection<'data> {
-    pub(crate) fn from_section(section: &Section<'data, '_>) -> Result<Option<Self>> {
+    pub(crate) fn from_section(section: &Section<'data, '_>, args: &Args) -> Result<Option<Self>> {
         // Ideally we support reading an actual linker script to make these decisions, but for now
         // we just hard code stuff.
         let section_name = section.name_bytes().unwrap_or_default();
@@ -450,7 +451,7 @@ impl<'data> UnloadedSection<'data> {
         let Some(built_in_id) = built_in_id else {
             return Ok(None);
         };
-        if should_merge_strings(section) {
+        if should_merge_strings(section, args) {
             return Ok(Some(UnloadedSection {
                 output_section_id: TemporaryOutputSectionId::StringMerge(built_in_id),
                 details: built_in_id.built_in_details().details,
@@ -466,7 +467,10 @@ impl<'data> UnloadedSection<'data> {
 /// Returns whether the supplied section meets our criteria for string merging. String merging is
 /// optional, so there are cases where we might be able to merge, but don't currently. For example
 /// if alignment is > 1.
-fn should_merge_strings(section: &Section) -> bool {
+fn should_merge_strings(section: &Section, args: &Args) -> bool {
+    if !args.merge_strings {
+        return false;
+    }
     let SectionFlags::Elf { sh_flags } = section.flags() else {
         unreachable!();
     };

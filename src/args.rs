@@ -22,6 +22,7 @@ pub(crate) struct Args {
     pub(crate) strip_all: bool,
     pub(crate) prepopulate_maps: bool,
     pub(crate) sym_info: Option<String>,
+    pub(crate) merge_strings: bool,
     time_phases: bool,
 }
 
@@ -108,6 +109,7 @@ impl Args {
         let mut prepopulate_maps = false;
         let mut save_dir = SaveDir::new()?;
         let mut sym_info = None;
+        let mut merge_strings = true;
         // Skip program name
         input.next();
         while let Some(arg) = input.next() {
@@ -147,6 +149,8 @@ impl Args {
                 prepopulate_maps = true;
             } else if arg == "--sym-info" {
                 sym_info = input.next().map(|a| a.as_ref().to_owned());
+            } else if arg == "--no-string-merge" {
+                merge_strings = false;
             } else if arg == "--help" {
                 bail!("Sorry, help isn't implemented yet");
             } else if IGNORED_FLAGS.contains(&arg) {
@@ -175,6 +179,7 @@ impl Args {
             strip_all,
             prepopulate_maps,
             sym_info,
+            merge_strings,
         })
     }
 
