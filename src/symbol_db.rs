@@ -23,6 +23,7 @@ use anyhow::bail;
 use anyhow::Context;
 use object::Object;
 use object::ObjectSymbol;
+use rayon::iter::IntoParallelRefIterator;
 use rayon::prelude::IntoParallelIterator;
 use rayon::prelude::ParallelIterator;
 use std::collections::hash_map;
@@ -140,7 +141,7 @@ impl<'data> SymbolDb<'data> {
         };
         let readers = input_data
             .files
-            .iter()
+            .par_iter()
             .map(|f| FileSymbolReader::new(f, input_data.config))
             .collect::<Result<Vec<FileSymbolReader>>>()?;
         let per_file_symbols = index.load_symbols(readers)?;
