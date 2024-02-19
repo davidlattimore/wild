@@ -7,7 +7,6 @@ use crate::args::InputSpec;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::linker_script::linker_script_to_inputs;
-use crate::timing::Timing;
 use anyhow::bail;
 use anyhow::Context;
 use memmap2::Mmap;
@@ -48,7 +47,8 @@ impl InputFile {
 }
 
 impl<'config> InputData<'config> {
-    pub(crate) fn from_args(config: &'config Args, timing: &mut Timing) -> Result<Self> {
+    #[tracing::instrument(skip_all, name = "Open input files")]
+    pub(crate) fn from_args(config: &'config Args) -> Result<Self> {
         let files = vec![
             // Our first "file" is a special input that we use internally to emit various symbols
             // and other things that don't come from any actual file.
@@ -66,7 +66,6 @@ impl<'config> InputData<'config> {
         for input in &config.inputs {
             input_data.register_input(input)?;
         }
-        timing.complete("Opening input files");
         Ok(input_data)
     }
 

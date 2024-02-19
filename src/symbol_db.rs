@@ -18,7 +18,6 @@ use crate::output_section_id::OutputSectionId;
 use crate::symbol;
 use crate::symbol::Symbol;
 use crate::symbol::SymbolName;
-use crate::timing::Timing;
 use ahash::AHashMap;
 use anyhow::bail;
 use anyhow::Context;
@@ -125,10 +124,8 @@ struct SymbolLoadOutputs<'data> {
 }
 
 impl<'data> SymbolDb<'data> {
-    pub(crate) fn build(
-        input_data: &'data InputData,
-        timing: &mut Timing,
-    ) -> Result<(Self, Vec<FileSymbols<'data>>)> {
+    #[tracing::instrument(skip_all, name = "Build symbol DB")]
+    pub(crate) fn build(input_data: &'data InputData) -> Result<(Self, Vec<FileSymbols<'data>>)> {
         // Reserve IDs for our reserved symbols, plus symbol 0, which is never used, but allows us
         // to represent symbols with a NonZeroU32.
         let symbols = vec![symbol::PLACEHOLDER; NUM_RESERVED_SYMBOL_IDS + 1];
@@ -146,27 +143,23 @@ impl<'data> SymbolDb<'data> {
             .iter()
             .map(|f| FileSymbolReader::new(f, input_data.config))
             .collect::<Result<Vec<FileSymbolReader>>>()?;
-        let per_file_symbols = index.load_symbols(readers, timing)?;
-        timing.complete("Building symbol DB");
+        let per_file_symbols = index.load_symbols(readers)?;
         Ok((index, per_file_symbols))
     }
 
     fn load_symbols(
         &mut self,
         readers: Vec<FileSymbolReader<'data>>,
-        timing: &mut Timing,
     ) -> Result<Vec<FileSymbols<'data>>> {
-        let symbol_per_file = readers
-            .into_par_iter()
-            .map(|reader| {
-                let filename = reader.filename();
-                load_symbols_from_file(reader).with_context(|| {
-                    format!("Failed to load symbols from `{}`", filename.display())
-                })
-            })
-            .collect::<Result<Vec<Vec<SymbolLoadOutputs>>>>()?;
-        timing.complete("Reading symbols");
+        let symbol_per_file = read_symbols(readers)?;
+        self.populate_symbol_db(symbol_per_file)
+    }
 
+    #[tracing::instrument(skip_all, name = "Populate symbol map")]
+    fn populate_symbol_db(
+        &mut self,
+        symbol_per_file: Vec<Vec<SymbolLoadOutputs<'data>>>,
+    ) -> Result<Vec<FileSymbols<'data>>> {
         symbol_per_file
             .into_iter()
             .flatten()
@@ -254,6 +247,21 @@ impl<'data> SymbolDb<'data> {
     pub(crate) fn num_symbols(&self) -> usize {
         self.symbols.len()
     }
+}
+
+#[tracing::instrument(skip_all, name = "Read symbols")]
+fn read_symbols(
+    readers: Vec<FileSymbolReader<'_>>,
+) -> Result<Vec<Vec<SymbolLoadOutputs<'_>>>, anyhow::Error> {
+    let symbol_per_file = readers
+        .into_par_iter()
+        .map(|reader| {
+            let filename = reader.filename();
+            load_symbols_from_file(reader)
+                .with_context(|| format!("Failed to load symbols from `{}`", filename.display()))
+        })
+        .collect::<Result<Vec<Vec<SymbolLoadOutputs>>>>()?;
+    Ok(symbol_per_file)
 }
 
 fn load_symbols_from_file(reader: FileSymbolReader) -> Result<Vec<SymbolLoadOutputs>> {

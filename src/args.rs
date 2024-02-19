@@ -25,7 +25,7 @@ pub(crate) struct Args {
     pub(crate) sym_info: Option<String>,
     pub(crate) merge_strings: bool,
     pub(crate) debug_fuel: Option<AtomicI64>,
-    time_phases: bool,
+    pub(crate) time_phases: bool,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -190,10 +190,6 @@ impl Args {
             merge_strings,
             debug_fuel,
         })
-    }
-
-    pub(crate) fn timing(&self) -> crate::timing::Timing {
-        crate::timing::Timing::new(self.time_phases)
     }
 
     pub(crate) fn setup_thread_pool(&self) -> Result {

@@ -34,7 +34,6 @@ use crate::resolution::SectionSlot;
 use crate::slice::slice_take_prefix_mut;
 use crate::symbol_db::GlobalSymbolId;
 use crate::symbol_db::SymbolDb;
-use crate::timing::Timing;
 use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -116,26 +115,33 @@ impl Output {
         }
     }
 
-    pub(crate) fn write(&mut self, layout: &Layout, timing: &mut Timing) -> Result {
+    #[tracing::instrument(skip_all, name = "Write output file")]
+    pub(crate) fn write(&mut self, layout: &Layout) -> Result {
         let mut sized_output = match &self.creator {
             FileCreator::Background {
                 sized_output_sender,
                 sized_output_recv,
             } => {
                 assert!(sized_output_sender.is_none(), "set_size was never called");
-                let s = sized_output_recv.recv()??;
-                timing.complete("Wait for output file creation");
-                s
+                wait_for_sized_output(sized_output_recv)?
             }
             FileCreator::Regular { file_size } => {
                 let file_size = file_size.context("set_size was never called")?;
-                let s = SizedOutput::new(self.path.clone(), file_size)?;
-                timing.complete("Output file creation");
-                s
+                self.create_file_non_lazily(file_size)?
             }
         };
-        sized_output.write(layout, timing)
+        sized_output.write(layout)
     }
+
+    #[tracing::instrument(skip_all, name = "Create output file")]
+    fn create_file_non_lazily(&mut self, file_size: u64) -> Result<SizedOutput> {
+        SizedOutput::new(self.path.clone(), file_size)
+    }
+}
+
+#[tracing::instrument(skip_all, name = "Wait for output file creation")]
+fn wait_for_sized_output(sized_output_recv: &Receiver<Result<SizedOutput>>) -> Result<SizedOutput> {
+    sized_output_recv.recv()?
 }
 
 impl SizedOutput {
@@ -153,7 +159,19 @@ impl SizedOutput {
         Ok(SizedOutput { file, mmap, path })
     }
 
-    pub(crate) fn write(&mut self, layout: &Layout, timing: &mut Timing) -> Result {
+    pub(crate) fn write(&mut self, layout: &Layout) -> Result {
+        self.write_file_contents(layout)?;
+
+        // We consumed the .eh_frame_hdr section in `split_buffers_by_alignment` above, get a fresh copy.
+        let mut section_buffers = split_output_into_sections(layout, &mut self.mmap);
+        sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
+        crate::fs::make_executable(&self.file)
+            .with_context(|| format!("Failed to make `{}` executable", self.path.display()))?;
+        Ok(())
+    }
+
+    #[tracing::instrument(skip_all, name = "Write data to file")]
+    pub(crate) fn write_file_contents(&mut self, layout: &Layout) -> Result {
         let mut section_buffers = split_output_into_sections(layout, &mut self.mmap);
 
         let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
@@ -178,14 +196,6 @@ impl SizedOutput {
                     .with_context(|| format!("Failed copying from {file} to output file"))
             })
             .collect::<Result>()?;
-        timing.complete("Writing data to ELF file");
-
-        // We consumed the .eh_frame_hdr section in `split_buffers_by_alignment` above, get a fresh copy.
-        let mut section_buffers = split_output_into_sections(layout, &mut self.mmap);
-        sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
-        timing.complete("Sorting .eh_frame_hdr");
-        crate::fs::make_executable(&self.file)
-            .with_context(|| format!("Failed to make `{}` executable", self.path.display()))?;
         Ok(())
     }
 }
@@ -224,6 +234,7 @@ fn split_output_into_sections<'out>(
     section_data
 }
 
+#[tracing::instrument(skip_all, name = "Sort .eh_frame_hdr")]
 fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {
     let entry_bytes = &mut eh_frame_hdr[core::mem::size_of::<elf::EhFrameHdr>()..];
     let entries: &mut [elf::EhFrameHdrEntry] = bytemuck::cast_slice_mut(entry_bytes);

@@ -25,7 +25,6 @@ use crate::symbol_db::InternalSymDefInfo;
 use crate::symbol_db::InternalSymbols;
 use crate::symbol_db::ObjectSymbols;
 use crate::symbol_db::SymbolDb;
-use crate::timing::Timing;
 use ahash::AHashMap;
 use anyhow::bail;
 use anyhow::Context;
@@ -38,11 +37,48 @@ use object::ObjectSymbol;
 use std::collections::BTreeMap;
 use std::ffi::CString;
 
+#[tracing::instrument(skip_all, name = "Symbol resolution")]
 pub(crate) fn resolve_symbols_and_sections<'data>(
     file_states: Vec<FileSymbols<'data>>,
     symbol_db: &mut SymbolDb<'data>,
-    timing: &mut Timing,
 ) -> Result<(Vec<ResolvedFile<'data>>, OutputSections<'data>)> {
+    let (mut resolved, start_stop_sets, mut internal) =
+        resolve_symbols_in_files(file_states, symbol_db)?;
+
+    let output_sections = assign_section_ids(&resolved)?;
+
+    let merged_strings = merge_strings(&mut resolved, &output_sections)?;
+
+    allocate_start_stop_symbol_ids(
+        start_stop_sets,
+        &mut internal,
+        &mut resolved,
+        &output_sections,
+        symbol_db,
+    )?;
+
+    resolve_alternative_symbol_definitions(symbol_db, &resolved)?;
+    filter_overridden_internal_symbols(&mut internal, symbol_db);
+
+    resolved[INTERNAL_FILE_ID.as_usize()] = ResolvedFile::Internal(ResolvedInternal {
+        dynamic_linker: internal.dynamic_linker,
+        symbol_definitions: internal.symbol_definitions,
+        defined: internal.defined,
+        file_id: internal.file_id,
+        merged_strings,
+    });
+    Ok((resolved, output_sections))
+}
+
+#[tracing::instrument(skip_all, name = "Resolve symbols")]
+pub(crate) fn resolve_symbols_in_files<'data>(
+    file_states: Vec<FileSymbols<'data>>,
+    symbol_db: &mut SymbolDb<'data>,
+) -> Result<(
+    Vec<ResolvedFile<'data>>,
+    SegQueue<StartStopSet<'data>>,
+    InternalSymbols,
+)> {
     let num_objects = file_states.len();
     let mut objects = Vec::new();
     type ArchiveEntryCell<'data> = AtomicCell<Option<Box<ObjectSymbols<'data>>>>;
@@ -71,7 +107,7 @@ pub(crate) fn resolve_symbols_and_sections<'data>(
             }
         })
         .collect();
-    let mut internal = internal.unwrap();
+    let internal = internal.unwrap();
     let outputs = Outputs::new(num_objects);
     rayon::scope(|s| {
         for obj in objects {
@@ -91,35 +127,7 @@ pub(crate) fn resolve_symbols_and_sections<'data>(
         let file_id = obj.file_id;
         resolved[file_id.as_usize()] = ResolvedFile::Object(obj);
     }
-    timing.complete("Resolve symbols");
-
-    let output_sections = assign_section_ids(&resolved)?;
-    timing.complete("Assign section IDs");
-
-    let merged_strings = merge_strings(&mut resolved, &output_sections)?;
-    timing.complete("Merge strings");
-
-    allocate_start_stop_symbol_ids(
-        outputs.start_stop_sets,
-        &mut internal,
-        &mut resolved,
-        &output_sections,
-        symbol_db,
-    )?;
-    timing.complete("Process custom section start/stop refs");
-
-    resolve_alternative_symbol_definitions(symbol_db, &resolved)?;
-    filter_overridden_internal_symbols(&mut internal, symbol_db);
-    timing.complete("Resolve alternative symbol definitions");
-
-    resolved[INTERNAL_FILE_ID.as_usize()] = ResolvedFile::Internal(ResolvedInternal {
-        dynamic_linker: internal.dynamic_linker,
-        symbol_definitions: internal.symbol_definitions,
-        defined: internal.defined,
-        file_id: internal.file_id,
-        merged_strings,
-    });
-    Ok((resolved, output_sections))
+    Ok((resolved, outputs.start_stop_sets, internal))
 }
 
 /// For each symbol that has multiple definitions, some of which may be weak, some strong, some
@@ -127,6 +135,7 @@ pub(crate) fn resolve_symbols_and_sections<'data>(
 /// symbol we're using. The symbol we select will be the first strongly defined symbol in a loaded
 /// object, or if there are no strong definitions, then the first definition in a loaded object. If
 /// a symbol definition is a common symbol, then the largest definition will be used.
+#[tracing::instrument(skip_all, name = "Resolve alternative symbol definitions")]
 fn resolve_alternative_symbol_definitions<'data>(
     symbol_db: &mut SymbolDb<'data>,
     resolved: &[ResolvedFile<'data>],
@@ -189,6 +198,7 @@ fn select_symbol<'data>(
 }
 
 /// Filter out any internally defined symbols that have been overridden by user code.
+#[tracing::instrument(skip_all, name = "Filter overridden internal symbols")]
 fn filter_overridden_internal_symbols(
     internal: &mut InternalSymbols,
     symbol_db: &mut SymbolDb<'_>,
@@ -347,6 +357,7 @@ impl<'data> MergeStringsSection<'data> {
 
 /// Merges identical strings from all loaded objects where those strings are from input sections
 /// that are marked with both the SHF_MERGE and SHF_STRINGS flags.
+#[tracing::instrument(skip_all, name = "Resolve symbols")]
 fn merge_strings<'data>(
     resolved: &mut [ResolvedFile<'data>],
     output_sections: &OutputSections,
@@ -391,6 +402,7 @@ fn merge_strings<'data>(
     }))
 }
 
+#[tracing::instrument(skip_all, name = "Assign section IDs")]
 fn assign_section_ids<'data>(resolved: &[ResolvedFile<'data>]) -> Result<OutputSections<'data>> {
     let mut output_sections_builder = OutputSectionsBuilder::default();
     for s in resolved {
@@ -451,6 +463,7 @@ struct StartStopSet<'data> {
     start_stop_refs: AHashMap<&'data [u8], Vec<object::SymbolIndex>>,
 }
 
+#[tracing::instrument(skip_all, name = "Process custom section start/stop refs")]
 fn allocate_start_stop_symbol_ids<'data>(
     start_stop_sets: SegQueue<StartStopSet<'data>>,
     internal: &mut InternalSymbols,

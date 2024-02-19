@@ -136,6 +136,30 @@ allow_unsafe = true
 [pkg.ahash]
 allow_unsafe = true
 
+[pkg.tracing-attributes]
+allow_proc_macro = true
+
+[pkg.lazy_static]
+allow_unsafe = true
+
+[pkg.tracing-core]
+allow_unsafe = true
+
+[pkg.thread_local]
+allow_unsafe = true
+
+[pkg.pin-project-lite]
+allow_unsafe = true
+
+[pkg.sharded-slab]
+allow_unsafe = true
+
+[pkg.tracing]
+allow_unsafe = true
+
+[pkg.tracing-subscriber]
+allow_unsafe = true
+
 [api.fs]
 no_auto_detect = [
     "wild",

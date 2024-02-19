@@ -31,7 +31,6 @@ use crate::symbol_db;
 use crate::symbol_db::GlobalSymbolId;
 use crate::symbol_db::InternalSymDefInfo;
 use crate::symbol_db::SymbolDb;
-use crate::timing::Timing;
 use ahash::AHashMap;
 use anyhow::bail;
 use anyhow::Context;
@@ -50,12 +49,12 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
+#[tracing::instrument(skip_all, name = "Layout")]
 pub(crate) fn compute<'data>(
     symbol_db: &'data SymbolDb<'data>,
     file_states: Vec<resolution::ResolvedFile<'data>>,
     output_sections: OutputSections<'data>,
     output: &mut elf_writer::Output,
-    timing: &mut Timing,
 ) -> Result<Layout<'data>> {
     let tls_mode = determine_tls_mode(symbol_db);
     if let Some(sym_info) = symbol_db.args.sym_info.as_deref() {
@@ -63,24 +62,17 @@ pub(crate) fn compute<'data>(
     }
     let mut layout_states =
         find_required_sections(file_states, symbol_db, &output_sections, tls_mode)?;
-    timing.complete("Find required sections");
-    layout_states
-        .par_iter_mut()
-        .try_for_each(|state| state.finalise_sizes(symbol_db, &output_sections))?;
-    timing.complete("Finalise sizes");
+    finalise_all_sizes(symbol_db, &output_sections, &mut layout_states)?;
     let section_part_sizes = compute_total_section_part_sizes(&layout_states, &output_sections);
-    timing.complete("Sum section sizes");
     let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections);
     let section_layouts = layout_sections(&section_part_layouts);
     output.set_size(compute_total_file_size(&section_layouts));
     let segment_layouts = compute_segment_layout(&section_layouts, &output_sections);
     let mem_offsets: OutputSectionPartMap<u64> =
         starting_memory_offsets(&section_part_layouts, &output_sections);
-    timing.complete("Section/segment sizing");
     let starting_mem_offsets_by_file = compute_start_offsets_by_file(&layout_states, mem_offsets);
     let merged_string_start_addresses =
         MergedStringStartAddresses::compute(&output_sections, &starting_mem_offsets_by_file);
-    timing.complete("Allocate sizes to files");
     let symbols_and_layouts = compute_symbols_and_layouts(
         layout_states,
         starting_mem_offsets_by_file,
@@ -88,8 +80,37 @@ pub(crate) fn compute<'data>(
         symbol_db,
         &merged_string_start_addresses,
     )?;
-    timing.complete("Assign symbol addresses");
 
+    let (symbol_addresses, file_layouts) = merge_symbol_addresses(symbol_db, symbols_and_layouts);
+    Ok(Layout {
+        symbol_db,
+        symbol_addresses,
+        segment_layouts,
+        section_part_layouts,
+        section_layouts,
+        file_layouts,
+        merged_string_start_addresses,
+        output_sections,
+        tls_mode,
+    })
+}
+
+#[tracing::instrument(skip_all, name = "Finalise per-object sizes")]
+fn finalise_all_sizes(
+    symbol_db: &SymbolDb,
+    output_sections: &OutputSections,
+    layout_states: &mut [FileLayoutState],
+) -> Result {
+    layout_states
+        .par_iter_mut()
+        .try_for_each(|state| state.finalise_sizes(symbol_db, output_sections))
+}
+
+#[tracing::instrument(skip_all, name = "Merge symbol addresses")]
+fn merge_symbol_addresses<'data>(
+    symbol_db: &'data SymbolDb<'data>,
+    symbols_and_layouts: Vec<(Vec<GlobalSymbolAddress>, FileLayout<'data>)>,
+) -> (SymbolResolutions, Vec<FileLayout<'data>>) {
     // Merge global symbol addresses emitted by all files into a single table.
     let mut symbol_addresses = vec![None; symbol_db.num_symbols()];
     let mut file_layouts = Vec::with_capacity(symbols_and_layouts.len());
@@ -99,20 +120,10 @@ pub(crate) fn compute<'data>(
             symbol_addresses[global.symbol_id.as_usize()] = Some(global.resolution);
         }
     }
-    timing.complete("Merge symbol addresses");
-    Ok(Layout {
-        symbol_db,
-        symbol_addresses: SymbolResolutions {
-            resolutions: symbol_addresses,
-        },
-        segment_layouts,
-        section_part_layouts,
-        section_layouts,
-        file_layouts,
-        merged_string_start_addresses,
-        output_sections,
-        tls_mode,
-    })
+    let symbol_addresses = SymbolResolutions {
+        resolutions: symbol_addresses,
+    };
+    (symbol_addresses, file_layouts)
 }
 
 fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout>) -> u64 {
@@ -701,6 +712,7 @@ fn layout_sections(
     })
 }
 
+#[tracing::instrument(skip_all, name = "Compute per-file start offsets")]
 fn compute_start_offsets_by_file(
     layout_states: &[FileLayoutState<'_>],
     mut mem_offsets: OutputSectionPartMap<u64>,
@@ -719,6 +731,7 @@ fn compute_start_offsets_by_file(
         .collect::<Vec<_>>()
 }
 
+#[tracing::instrument(skip_all, name = "Assign symbol addresses")]
 fn compute_symbols_and_layouts<'data>(
     layout_states: Vec<FileLayoutState<'data>>,
     starting_mem_offsets_by_file: Vec<Option<OutputSectionPartMap<u64>>>,
@@ -742,6 +755,7 @@ fn compute_symbols_and_layouts<'data>(
         .collect()
 }
 
+#[tracing::instrument(skip_all, name = "Compute segment layouts")]
 fn compute_segment_layout(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections,
@@ -804,6 +818,7 @@ fn compute_segment_layout(
         .collect()
 }
 
+#[tracing::instrument(skip_all, name = "Compute total section sizes")]
 fn compute_total_section_part_sizes(
     layout_states: &Vec<FileLayoutState>,
     output_sections: &OutputSections,
@@ -819,6 +834,7 @@ fn compute_total_section_part_sizes(
 }
 
 /// Returns the starting memory address for each alignment within each segment.
+#[tracing::instrument(skip_all, name = "Compute per-alignment offsets")]
 fn starting_memory_offsets(
     section_layouts: &OutputSectionPartMap<OutputRecordLayout>,
     output_sections: &OutputSections,
@@ -832,6 +848,7 @@ struct WorkerSlot<'data> {
     worker: Option<FileWorker<'data>>,
 }
 
+#[tracing::instrument(skip_all, name = "Find required sections")]
 fn find_required_sections<'data>(
     file_states: Vec<resolution::ResolvedFile<'data>>,
     symbol_db: &SymbolDb<'data>,
@@ -1910,6 +1927,7 @@ impl<'data> ObjectLayoutState<'data> {
 }
 
 impl MergedStringStartAddresses {
+    #[tracing::instrument(skip_all, name = "Compute merged string section start addresses")]
     fn compute(
         output_sections: &OutputSections<'_>,
         starting_mem_offsets_by_file: &[Option<OutputSectionPartMap<u64>>],

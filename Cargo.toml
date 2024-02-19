@@ -14,6 +14,10 @@ memmap2 = "0.9.0"
 object = { version = "0.32.1" }
 rayon = "1.8.0"
 smallvec = "1.13.1"
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", default-features = false, features = [
+    "registry",
+] }
 
 [dev-dependencies]
 ar = "0.9.0"
