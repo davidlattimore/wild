@@ -1,8 +1,7 @@
 //! Reads global symbols for each input file and builds a map from symbol names to IDs together with
 //! information about where each symbol can be obtained.
 
-use crate::archive::ArchiveEntry;
-use crate::archive::ArchiveIterator;
+use crate::archive_splitter::InputBytes;
 use crate::args::Args;
 use crate::elf::File;
 use crate::error::Result;
@@ -10,8 +9,6 @@ use crate::file_kind::FileKind;
 use crate::hash::PassThroughHashMap;
 use crate::input_data;
 use crate::input_data::FileId;
-use crate::input_data::InputData;
-use crate::input_data::InputFile;
 use crate::input_data::InputRef;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
@@ -94,7 +91,6 @@ pub(crate) struct ObjectSymbols<'data> {
 enum FileSymbolReader<'data> {
     Internal(InternalSymbolReader),
     Object(ObjectSymbolReader<'data>),
-    Archive(ArchiveSymbolReader<'data>),
     Dynamic(ObjectSymbolReader<'data>),
 }
 
@@ -108,14 +104,8 @@ struct ObjectSymbolReader<'data> {
     object: Box<File<'data>>,
 }
 
-struct ArchiveSymbolReader<'data> {
-    input_file: &'data InputFile,
-    data: &'data [u8],
-}
-
 enum SymbolReader<'data> {
     Object(ObjectSymbolReader<'data>),
-    LoadedArchiveEntry(ObjectSymbolReader<'data>),
     Internal(InternalSymbolReader),
 }
 
@@ -126,23 +116,25 @@ struct SymbolLoadOutputs<'data> {
 
 impl<'data> SymbolDb<'data> {
     #[tracing::instrument(skip_all, name = "Build symbol DB")]
-    pub(crate) fn build(input_data: &'data InputData) -> Result<(Self, Vec<FileSymbols<'data>>)> {
+    pub(crate) fn build(
+        inputs: &'data [InputBytes],
+        args: &'data Args,
+    ) -> Result<(Self, Vec<FileSymbols<'data>>)> {
         // Reserve IDs for our reserved symbols, plus symbol 0, which is never used, but allows us
         // to represent symbols with a NonZeroU32.
         let symbols = vec![symbol::PLACEHOLDER; NUM_RESERVED_SYMBOL_IDS + 1];
         let mut symbol_names = Vec::new();
         symbol_names.resize_with(NUM_RESERVED_SYMBOL_IDS + 1, SymbolName::placeholder);
         let mut index = Self {
-            args: input_data.config,
+            args,
             symbol_ids: Default::default(),
             symbols,
             symbol_names,
             alternate_definitions: AHashMap::new(),
         };
-        let readers = input_data
-            .files
+        let readers = inputs
             .par_iter()
-            .map(|f| FileSymbolReader::new(f, input_data.config))
+            .map(|f| FileSymbolReader::new(f, args))
             .collect::<Result<Vec<FileSymbolReader>>>()?;
         let per_file_symbols = index.load_symbols(readers)?;
         Ok((index, per_file_symbols))
@@ -170,10 +162,11 @@ impl<'data> SymbolDb<'data> {
                 let defined = self.add_symbols(pending.pending_symbols, file_id)?;
                 Ok(match pending.reader {
                     SymbolReader::Object(state) => {
-                        FileSymbols::Object(state.symbols_defined(file_id))
-                    }
-                    SymbolReader::LoadedArchiveEntry(state) => {
-                        FileSymbols::ArchiveEntry(state.symbols_defined(file_id))
+                        if state.is_from_archive() {
+                            FileSymbols::ArchiveEntry(state.symbols_defined(file_id))
+                        } else {
+                            FileSymbols::Object(state.symbols_defined(file_id))
+                        }
                     }
                     SymbolReader::Internal(state) => {
                         FileSymbols::Internal(state.symbols_defined(defined, file_id))
@@ -269,12 +262,30 @@ fn load_symbols_from_file(reader: FileSymbolReader) -> Result<Vec<SymbolLoadOutp
     Ok(match reader {
         FileSymbolReader::Internal(s) => vec![s.load_symbols()?],
         FileSymbolReader::Object(s) => vec![s.load_symbols()?],
-        FileSymbolReader::Archive(s) => s.load_symbols()?,
         FileSymbolReader::Dynamic(s) => vec![s.load_dynamic_symbols()?],
     })
 }
 
 impl<'data> ObjectSymbolReader<'data> {
+    fn new(input: &'data InputBytes) -> Result<Self> {
+        let object = Box::new(
+            File::parse(input.data)
+                .with_context(|| format!("Failed to parse object file `{input}`"))?,
+        );
+        Ok(Self {
+            input: input.input,
+            object,
+        })
+    }
+
+    fn is_from_archive(&self) -> bool {
+        self.input.entry_filename.is_some()
+    }
+
+    fn filename(&self) -> &'data Path {
+        &self.input.file.filename
+    }
+
     fn load_symbols(mut self) -> Result<SymbolLoadOutputs<'data>> {
         let pending_symbols = self.pending_symbols()?;
         Ok(SymbolLoadOutputs {
@@ -327,48 +338,6 @@ impl<'data> ObjectSymbolReader<'data> {
             input: self.input,
             object: self.object,
         }
-    }
-}
-
-impl<'data> ArchiveSymbolReader<'data> {
-    fn load_symbols(self) -> Result<Vec<SymbolLoadOutputs<'data>>> {
-        let mut extended_filenames = None;
-        // If we end up loading most of the objects with our archives, then it's faster if we just
-        // the objects up-front rather than first loading the archive symbol table then later
-        // loading the object anyway. TODO: Determine if it's actually worthwhile keeping the code
-        // for handling archive symbol tables and if not, delete it.
-        let always_load_archive_entries = true;
-        let mut outputs = Vec::new();
-        for entry in ArchiveIterator::from_archive_bytes(self.data)? {
-            let entry = entry?;
-            match entry {
-                ArchiveEntry::Symbols(_) => {
-                    // We used to read the symbol table from the archive, but when you're linking
-                    // lots of archives and discarding very few, it turns out it's faster to just
-                    // ignore the symbol table and eagerly read the objects.
-                }
-                ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
-                ArchiveEntry::Regular(archive_entry) => {
-                    if always_load_archive_entries {
-                        let object = Box::new(File::parse(archive_entry.entry_data)?);
-                        let mut reader = ObjectSymbolReader {
-                            input: InputRef {
-                                file: self.input_file,
-                                entry_filename: Some(archive_entry.identifier(extended_filenames)),
-                            },
-                            object,
-                        };
-                        let pending_symbols = reader.pending_symbols()?;
-
-                        outputs.push(SymbolLoadOutputs {
-                            pending_symbols,
-                            reader: SymbolReader::LoadedArchiveEntry(reader),
-                        });
-                    }
-                }
-            }
-        }
-        Ok(outputs)
     }
 }
 
@@ -439,16 +408,17 @@ impl TryFrom<usize> for GlobalSymbolId {
 }
 
 impl<'data> FileSymbolReader<'data> {
-    fn new(input_file: &'data InputFile, args: &'data Args) -> Result<Self> {
-        Ok(match input_file.kind {
+    fn new(input: &'data InputBytes, args: &'data Args) -> Result<Self> {
+        Ok(match input.kind {
+            FileKind::ElfObject | FileKind::Archive => {
+                Self::Object(ObjectSymbolReader::new(input)?)
+            }
             FileKind::Internal => Self::Internal(InternalSymbolReader::new(args)?),
-            FileKind::Archive => Self::Archive(ArchiveSymbolReader::new(input_file)),
-            FileKind::ElfObject => Self::Object(ObjectSymbolReader::new(input_file)?),
             FileKind::ElfDynamic => {
                 if true {
                     bail!("Dynamic linking is not yet implemented");
                 }
-                Self::Dynamic(ObjectSymbolReader::new(input_file)?)
+                Self::Dynamic(ObjectSymbolReader::new(input)?)
             }
             FileKind::Text => unreachable!("Should have been handled earlier"),
         })
@@ -458,7 +428,6 @@ impl<'data> FileSymbolReader<'data> {
         match self {
             Self::Internal(s) => s.filename(),
             Self::Object(s) => s.filename(),
-            Self::Archive(s) => s.filename(),
             Self::Dynamic(s) => s.filename(),
         }
     }
@@ -478,41 +447,6 @@ impl InternalSymbolReader {
 
     fn filename(&self) -> &'static Path {
         Path::new("<internal>")
-    }
-}
-
-impl<'data> ObjectSymbolReader<'data> {
-    fn new(input_file: &'data InputFile) -> Result<Self> {
-        let object = Box::new(File::parse(input_file.data()).with_context(|| {
-            format!(
-                "Failed to parse object file `{}`",
-                input_file.filename.display()
-            )
-        })?);
-        Ok(Self {
-            input: InputRef {
-                file: input_file,
-                entry_filename: None,
-            },
-            object,
-        })
-    }
-
-    fn filename(&self) -> &'data Path {
-        &self.input.file.filename
-    }
-}
-
-impl<'data> ArchiveSymbolReader<'data> {
-    fn new(input_file: &'data InputFile) -> Self {
-        Self {
-            input_file,
-            data: input_file.data(),
-        }
-    }
-
-    fn filename(&self) -> &'data Path {
-        &self.input_file.filename
     }
 }
 

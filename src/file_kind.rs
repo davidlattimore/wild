@@ -4,7 +4,7 @@ use crate::elf;
 use crate::error::Result;
 use anyhow::bail;
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum FileKind {
     Internal,
     ElfObject,

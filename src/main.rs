@@ -1,5 +1,6 @@
 mod alignment;
 mod archive;
+mod archive_splitter;
 mod args;
 mod elf;
 mod elf_writer;
@@ -34,7 +35,8 @@ fn link(args: &args::Args) -> crate::error::Result {
     args.setup_thread_pool()?;
     let mut output = elf_writer::Output::new(args);
     let input_data = input_data::InputData::from_args(args)?;
-    let (mut symbol_db, file_states) = symbol_db::SymbolDb::build(&input_data)?;
+    let inputs = archive_splitter::split_archives(&input_data)?;
+    let (mut symbol_db, file_states) = symbol_db::SymbolDb::build(&inputs, args)?;
     let (resolved_files, output_sections) =
         resolution::resolve_symbols_and_sections(file_states, &mut symbol_db)?;
     let layout = layout::compute(&symbol_db, resolved_files, output_sections, &mut output)?;

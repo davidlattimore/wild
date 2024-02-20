@@ -1212,6 +1212,12 @@ impl<'data> std::fmt::Display for FileLayout<'data> {
     }
 }
 
+impl<'data> std::fmt::Debug for FileLayout<'data> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self, f)
+    }
+}
+
 impl<'data> std::fmt::Display for ObjectLayoutState<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
