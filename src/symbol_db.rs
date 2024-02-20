@@ -153,6 +153,10 @@ impl<'data> SymbolDb<'data> {
         &mut self,
         symbol_per_file: Vec<Vec<SymbolLoadOutputs<'data>>>,
     ) -> Result<Vec<FileSymbols<'data>>> {
+        let approx_num_symbols = symbol_per_file.iter().map(|s| s.len()).sum();
+        self.symbol_names.reserve(approx_num_symbols);
+        self.symbol_ids.reserve(approx_num_symbols);
+        self.symbols.reserve(approx_num_symbols);
         symbol_per_file
             .into_iter()
             .flatten()
