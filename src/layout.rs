@@ -1368,6 +1368,9 @@ fn process_relocation(
                 LocalSymbolResolution::LocalSection(local_section_index) => {
                     section_to_load = Some(local_section_index);
                 }
+                LocalSymbolResolution::MergedString(merge) => {
+                    symbol_to_load = merge.symbol_id;
+                }
                 _ => {}
             }
         }

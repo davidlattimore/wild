@@ -277,6 +277,7 @@ pub(crate) enum LocalSymbolResolution {
 
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct MergedStringResolution {
+    pub(crate) symbol_id: Option<GlobalSymbolId>,
     pub(crate) output_section_id: OutputSectionId,
     pub(crate) offset: u64,
 }
@@ -322,6 +323,8 @@ struct RefToMergeString {
     offset: u64,
 
     symbol_index: object::SymbolIndex,
+
+    global_symbol_id: Option<GlobalSymbolId>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -387,6 +390,7 @@ fn merge_strings<'data>(
                     }
                     obj.local_symbol_resolutions[merge_ref.symbol_index.0] =
                         LocalSymbolResolution::MergedString(MergedStringResolution {
+                            symbol_id: merge_ref.global_symbol_id,
                             output_section_id: sec.output_section_id,
                             offset: output_offset + offset_into_string,
                         });
@@ -641,14 +645,7 @@ fn resolve_symbols<'data>(
         .symbols()
         .map(|local_symbol| {
             let name_bytes = local_symbol.name_bytes()?;
-            if let Some(local_section_index) = local_symbol.section_index() {
-                if let SectionSlot::MergeStrings(merge) = &mut sections[local_section_index.0] {
-                    merge.references.push(RefToMergeString {
-                        offset: local_symbol.address(),
-                        symbol_index: local_symbol.index(),
-                    });
-                }
-            }
+            let mut global_symbol_id = None;
             let symbol_state = if name_bytes.is_empty() || local_symbol.is_local() {
                 if let Some(local_section_index) = local_symbol.section_index() {
                     LocalSymbolResolution::LocalSection(local_section_index)
@@ -658,6 +655,7 @@ fn resolve_symbols<'data>(
             } else {
                 match symbol_db.symbol_ids.get(&SymbolName::new(name_bytes)) {
                     Some(&symbol_id) => {
+                        global_symbol_id = Some(symbol_id);
                         let symbol = symbol_db.symbol(symbol_id);
                         if symbol.file_id != obj.file_id && !local_symbol.is_weak() {
                             request_file_id(symbol.file_id);
@@ -698,6 +696,15 @@ fn resolve_symbols<'data>(
                     }
                 }
             };
+            if let Some(local_section_index) = local_symbol.section_index() {
+                if let SectionSlot::MergeStrings(merge) = &mut sections[local_section_index.0] {
+                    merge.references.push(RefToMergeString {
+                        global_symbol_id,
+                        offset: local_symbol.address(),
+                        symbol_index: local_symbol.index(),
+                    });
+                }
+            }
             Ok(symbol_state)
         })
         .collect::<Result<Vec<_>>>()?;

@@ -859,12 +859,27 @@ impl<'data> ObjectLayout<'data> {
                         );
                     }
                     LocalSymbolResolution::Null => bail!("Reference to null symbol"),
-                    LocalSymbolResolution::MergedString(res) => Resolution {
-                        address: layout.merged_string_start_addresses.resolve(res),
-                        got_address: None,
-                        plt_address: None,
-                        kind: TargetResolutionKind::Address,
-                    },
+                    LocalSymbolResolution::MergedString(res) => {
+                        if let Some(symbol_id) = res.symbol_id {
+                            match layout.global_symbol_resolution(symbol_id) {
+                                Some(SymbolResolution::Resolved(resolution)) => *resolution,
+                                Some(SymbolResolution::Dynamic) => todo!(),
+                                None => {
+                                    bail!(
+                                        "Missing resolution for global string-merge symbol {}",
+                                        layout.symbol_db.symbol_name(symbol_id)
+                                    )
+                                }
+                            }
+                        } else {
+                            Resolution {
+                                address: layout.merged_string_start_addresses.resolve(res),
+                                got_address: None,
+                                plt_address: None,
+                                kind: TargetResolutionKind::Address,
+                            }
+                        }
+                    }
                 }
             }
             object::RelocationTarget::Section(local_index) => {

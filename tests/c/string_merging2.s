@@ -14,8 +14,25 @@ s2h: .ascii "Hello\0"
 .loc1: .ascii "Local1\0"
 
 .section .text, "ax", @progbits
+
 .globl get_loc1
 get_loc1:
     endbr64
     lea .loc1(%rip), %rax
+    ret
+
+// Define a getter that uses a GOT relocation to access a symbol defined in a different object file.
+
+.globl get_s1w
+get_s1w:
+    endbr64
+    movq s1w@GOTPCREL(%rip),%rax
+    ret
+
+// Define a getter that uses a GOT relocation to access a symbol defined in this object file.
+
+.globl get_s2w
+get_s2w:
+    endbr64
+    movq s2w@GOTPCREL(%rip),%rax
     ret
