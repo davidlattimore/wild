@@ -609,6 +609,7 @@ fn integration_test() -> Result {
             &["comments.c", "comments0.c", "comments1.c", "exit.c"],
         )?,
         Program::new("eh_frame", &["eh_frame.c", "eh_frame_end.c", "exit.c"])?,
+        Program::new("pie", &["pie.c", "exit.c"])?,
     ];
 
     let linkers = [Linker::ThirdParty("ld"), Linker::Wild];

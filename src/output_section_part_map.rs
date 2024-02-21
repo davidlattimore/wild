@@ -24,6 +24,7 @@ pub(crate) struct OutputSectionPartMap<T> {
     pub(crate) rela_plt: T,
     pub(crate) eh_frame: T,
     pub(crate) eh_frame_hdr: T,
+    pub(crate) dynamic: T,
 }
 
 impl<T: Default> OutputSectionPartMap<T> {
@@ -42,6 +43,7 @@ impl<T: Default> OutputSectionPartMap<T> {
             rela_plt: Default::default(),
             eh_frame: Default::default(),
             eh_frame_hdr: Default::default(),
+            dynamic: Default::default(),
         }
     }
 }
@@ -139,6 +141,11 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             output_section_id::EH_FRAME.min_alignment(),
             &self.eh_frame,
         );
+        let dynamic = cb(
+            output_section_id::DYNAMIC,
+            output_section_id::DYNAMIC.min_alignment(),
+            &self.dynamic,
+        );
         output_sections.data_custom.iter().for_each(|id| {
             self.map_regular(*id, &mut cb, &mut regular);
         });
@@ -162,6 +169,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             rela_plt,
             eh_frame,
             eh_frame_hdr,
+            dynamic,
         }
     }
 
@@ -225,6 +233,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             rela_plt: cb(&mut self.rela_plt, &other.rela_plt),
             eh_frame: cb(&mut self.eh_frame, &other.eh_frame),
             eh_frame_hdr: cb(&mut self.eh_frame_hdr, &other.eh_frame_hdr),
+            dynamic: cb(&mut self.dynamic, &other.dynamic),
         }
     }
 }
@@ -288,6 +297,7 @@ impl<T: Copy> OutputSectionPartMap<T> {
         update(output_section_id::RELA_PLT, &[self.rela_plt]);
         update(output_section_id::EH_FRAME, &[self.eh_frame]);
         update(output_section_id::EH_FRAME_HDR, &[self.eh_frame_hdr]);
+        update(output_section_id::DYNAMIC, &[self.dynamic]);
         values_out.extend(self.regular.iter().map(|parts| cb(parts.raw_values())));
         OutputSectionMap::from_values(values_out)
     }
@@ -311,6 +321,7 @@ impl<T: AddAssign + Copy + Default> OutputSectionPartMap<T> {
         self.rela_plt += rhs.rela_plt;
         self.eh_frame += rhs.eh_frame;
         self.eh_frame_hdr += rhs.eh_frame_hdr;
+        self.dynamic += rhs.dynamic;
     }
 }
 

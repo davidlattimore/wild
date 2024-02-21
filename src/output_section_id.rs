@@ -61,9 +61,10 @@ pub(crate) const PLT: OutputSectionId = OutputSectionId(5);
 pub(crate) const RELA_PLT: OutputSectionId = OutputSectionId(6);
 pub(crate) const EH_FRAME: OutputSectionId = OutputSectionId(7);
 pub(crate) const EH_FRAME_HDR: OutputSectionId = OutputSectionId(8);
+pub(crate) const DYNAMIC: OutputSectionId = OutputSectionId(9);
 
 /// Regular sections are sections that come from input files and can contain a mix of alignments.
-pub(crate) const NUM_GENERATED_SECTIONS: usize = 9;
+pub(crate) const NUM_GENERATED_SECTIONS: usize = 10;
 
 // Sections that need to be referenced from code. When adding new sections here, be sure to update
 // `test_constant_ids`.
@@ -82,7 +83,6 @@ pub(crate) const COMMENT: OutputSectionId = OutputSectionId::regular(11);
 
 pub(crate) const NUM_REGULAR_SECTIONS: usize = 12;
 
-// pub(crate) const DYNAMIC: BuiltInId = BuiltInId(13);
 // pub(crate) const DYNSTR: BuiltInId = BuiltInId(14);
 
 /// How many built-in sections we define. These are regular sections plus sections that we generate
@@ -235,6 +235,17 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             ..SectionDetails::default()
         },
         min_alignment: alignment::USIZE,
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: ".dynamic".as_bytes(),
+            ty: elf::Sht::Progbits,
+            section_flags: elf::shf::ALLOC,
+            ..SectionDetails::default()
+        },
+        min_alignment: alignment::USIZE,
+        start_symbol_name: Some("_DYNAMIC"),
         ..DEFAULT_DEFS
     },
     // Start of regular sections
@@ -676,6 +687,9 @@ impl<'data> OutputSections<'data> {
         cb(GOT.event());
         cb(DATA.event());
         cb(EH_FRAME.event());
+        cb(OrderEvent::SegmentStart(crate::program_segments::DYNAMIC));
+        cb(DYNAMIC.event());
+        cb(OrderEvent::SegmentEnd(crate::program_segments::DYNAMIC));
         self.ids_do(&self.data_custom, &mut cb);
         cb(OrderEvent::SegmentStart(crate::program_segments::TLS));
         cb(TDATA.event());
@@ -830,6 +844,7 @@ fn test_constant_ids() {
         (FINI, ".fini"),
         (RELA_PLT, ".rela.plt"),
         (COMMENT, ".comment"),
+        (DYNAMIC, ".dynamic"),
     ];
     for (id, name) in check {
         assert_eq!(

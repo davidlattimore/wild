@@ -10,6 +10,7 @@ pub(crate) const LOAD_EXEC: ProgramSegmentId = ProgramSegmentId(1);
 pub(crate) const LOAD_RW: ProgramSegmentId = ProgramSegmentId(2);
 pub(crate) const TLS: ProgramSegmentId = ProgramSegmentId(3);
 pub(crate) const EH_FRAME: ProgramSegmentId = ProgramSegmentId(4);
+pub(crate) const DYNAMIC: ProgramSegmentId = ProgramSegmentId(5);
 
 pub(crate) struct ProgramSegmentDef {
     pub(crate) segment_type: SegmentType,
@@ -40,6 +41,10 @@ const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
     ProgramSegmentDef {
         segment_type: SegmentType::EhFrame,
         segment_flags: PF_R,
+    },
+    ProgramSegmentDef {
+        segment_type: SegmentType::Dynamic,
+        segment_flags: PF_R | PF_W,
     },
 ];
 
@@ -122,5 +127,9 @@ fn test_constant_segment_ids() {
     assert_eq!(
         PROGRAM_SEGMENT_DEFS[TLS.as_usize()].segment_type,
         SegmentType::Tls
+    );
+    assert_eq!(
+        PROGRAM_SEGMENT_DEFS[DYNAMIC.as_usize()].segment_type,
+        SegmentType::Dynamic
     );
 }
