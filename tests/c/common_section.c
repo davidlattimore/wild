@@ -1,3 +1,5 @@
+//#CompArgs:common:-fcommon
+
 #include "exit.h"
 
 int a;

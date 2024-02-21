@@ -1,4 +1,5 @@
-//#LinkKind: Archive
+//#CompArgs:sections:-ffunction-sections
+//#InputType: Archive
 
 #include "exit.h"
 

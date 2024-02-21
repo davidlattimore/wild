@@ -1,4 +1,5 @@
-//#LinkKind: Object
+//#CompArgs:no-stack-protector:-fno-stack-protector
+//#InputType: Object
 
 #include "exit.h"
 

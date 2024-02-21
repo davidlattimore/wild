@@ -40,34 +40,17 @@ struct Program {
     source_files: Vec<String>,
 }
 
-#[derive(Clone)]
-struct Config {
-    compilation: CompilationConfig,
-    linker: LinkerConfig,
-}
-
-#[derive(Clone, Copy)]
-struct CompilationConfig {
-    pie: bool,
-    opt_level: u8,
-}
-
-#[derive(Clone, Copy)]
-struct LinkerConfig {
-    kind: LinkerKind,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum LinkerKind {
+enum Linker {
     Wild,
     ThirdParty(&'static str),
 }
 
-impl LinkerKind {
+impl Linker {
     fn path(&self) -> PathBuf {
         match self {
-            LinkerKind::Wild => base_dir().join("target/debug/wild"),
-            LinkerKind::ThirdParty(cmd) => PathBuf::from(cmd),
+            Linker::Wild => base_dir().join("target/debug/wild"),
+            Linker::ThirdParty(cmd) => PathBuf::from(cmd),
         }
     }
 }
@@ -79,12 +62,12 @@ struct LinkOutput {
 
 struct LinkCommand {
     command: Command,
-    linker_kind: LinkerKind,
+    linker: Linker,
     can_skip: bool,
 }
 
 struct TestParameters {
-    link_kind: Vec<LinkKind>,
+    input_type: Vec<InputType>,
     variant_nums: Vec<u32>,
     assertions: Assertions,
     linker_args: Vec<ArgumentSet>,
@@ -104,18 +87,18 @@ struct CompilationVariant {
 
 #[derive(Clone, Debug)]
 struct Variant {
-    link_kind: LinkKind,
+    input_type: InputType,
     compilation: CompilationVariant,
     linker_args: ArgumentSet,
 }
 
 #[derive(Copy, Clone, Debug)]
-enum LinkKind {
+enum InputType {
     Object,
     Archive,
 }
 
-impl LinkKind {
+impl InputType {
     fn parse(arg: &str) -> Result<Self> {
         Ok(match arg {
             "Object" => Self::Object,
@@ -145,10 +128,15 @@ impl ArgumentSet {
                 .collect(),
         })
     }
-}
 
-impl Default for ArgumentSet {
-    fn default() -> Self {
+    fn default_for_linking() -> Self {
+        Self {
+            name: "default".to_owned(),
+            args: Vec::new(),
+        }
+    }
+
+    fn default_for_compiling() -> Self {
         Self {
             name: "default".to_owned(),
             args: Vec::new(),
@@ -161,7 +149,7 @@ impl TestParameters {
         let source = std::fs::read_to_string(src_filename)
             .with_context(|| format!("Failed to read {}", src_filename.display()))?;
 
-        let mut link_kind = Vec::new();
+        let mut input_type = Vec::new();
         let mut tls_models = Vec::new();
         let mut variants = Vec::new();
         let mut linker_args = Vec::new();
@@ -173,9 +161,9 @@ impl TestParameters {
                 let (directive, arg) = rest.split_once(':').context("Missing arg")?;
                 let arg = arg.trim();
                 match directive {
-                    "LinkKind" => {
+                    "InputType" => {
                         for p in arg.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()) {
-                            link_kind.push(LinkKind::parse(p)?);
+                            input_type.push(InputType::parse(p)?);
                         }
                     }
                     "Variant" => variants.push(
@@ -191,22 +179,22 @@ impl TestParameters {
             }
         }
         if linker_args.is_empty() {
-            linker_args.push(ArgumentSet::default());
+            linker_args.push(ArgumentSet::default_for_linking());
         }
         if compiler_args.is_empty() {
-            compiler_args.push(ArgumentSet::default());
+            compiler_args.push(ArgumentSet::default_for_compiling());
         }
         if variants.is_empty() {
             variants.push(0);
         }
-        if link_kind.is_empty() {
-            link_kind.push(LinkKind::Object);
+        if input_type.is_empty() {
+            input_type.push(InputType::Object);
         }
         if tls_models.is_empty() {
             tls_models.push(String::new());
         }
         Ok(TestParameters {
-            link_kind,
+            input_type,
             variant_nums: variants,
             assertions: Assertions {
                 expected_symtab_entries,
@@ -227,7 +215,7 @@ impl Program {
         })
     }
 
-    fn run(&self, config: &Config, variant: &Variant, assertions: &Assertions) -> Result {
+    fn run(&self, linker: Linker, variant: &Variant, assertions: &Assertions) -> Result {
         let object_paths = self
             .source_files
             .iter()
@@ -236,14 +224,12 @@ impl Program {
                 // For the first input file, we always compile as an object, never an archive.
                 let mut variant_for_file = variant.clone();
                 if i == 0 {
-                    variant_for_file.link_kind = LinkKind::Object
+                    variant_for_file.input_type = InputType::Object
                 }
-                config
-                    .compilation
-                    .build_linker_input(source, &variant_for_file)
+                build_linker_input(source, &variant_for_file)
             })
             .collect::<Result<Vec<PathBuf>>>()?;
-        let link_output = config.link(self.name, &object_paths, variant)?;
+        let link_output = linker.link(self.name, &object_paths, variant)?;
         assertions.check(&link_output).with_context(|| {
             format!(
                 "Output binary assertions failed for `{}`. Relink with:\n{}",
@@ -282,61 +268,46 @@ impl Program {
     }
 }
 
-impl CompilationConfig {
-    /// Creates a linker input from a source file. This will be either an object file or an archive.
-    fn build_linker_input(&self, filename: &str, variant: &Variant) -> Result<PathBuf> {
-        if filename.ends_with(".a") {
-            return Ok(src_path(filename));
-        }
-        let obj_path = self.build_obj(filename, variant)?;
+/// Creates a linker input from a source file. This will be either an object file or an archive.
+fn build_linker_input(filename: &str, variant: &Variant) -> Result<PathBuf> {
+    if filename.ends_with(".a") {
+        return Ok(src_path(filename));
+    }
+    let obj_path = build_obj(filename, variant)?;
 
-        match variant.link_kind {
-            LinkKind::Archive => {
-                let archive_path = obj_path.with_extension("a");
-                if !is_newer(&archive_path, &obj_path) {
-                    make_archive(&archive_path, &obj_path)?;
-                }
-                Ok(archive_path)
+    match variant.input_type {
+        InputType::Archive => {
+            let archive_path = obj_path.with_extension("a");
+            if !is_newer(&archive_path, &obj_path) {
+                make_archive(&archive_path, &obj_path)?;
             }
-            LinkKind::Object => Ok(obj_path),
+            Ok(archive_path)
         }
+        InputType::Object => Ok(obj_path),
     }
+}
 
-    /// Builds some C source and returns the path to the object file.
-    fn build_obj(&self, filename: &str, variant: &Variant) -> Result<PathBuf> {
-        let variant_num = variant.compilation.variant_num;
-        let src_path = src_path(filename);
-        let extension = src_path.extension().context("Missing extension")?;
-        let output_path = build_dir().join(
-            Path::new(filename).with_extension(format!("{}-{}.o", self, variant.compilation)),
-        );
-        // Skip rebuilding if our output already exists and is newer than our source.
-        if is_newer(&output_path, &src_path) {
-            return Ok(output_path);
-        }
-        let compiler = if extension == "cpp" { "g++" } else { "gcc" };
-        let mut command = Command::new(compiler);
-        command.arg("-fpic");
-        if self.pie {
-            command.arg("-pie");
-        } else {
-            command.arg("-no-pie");
-        }
-        command.arg("-fcommon");
-        command.arg("-fno-stack-protector");
-        command.arg("-fno-omit-frame-pointer");
-        command.arg("-ffunction-sections");
-        command.arg("-fdata-sections");
-        command.arg(format!("-O{}", self.opt_level));
-        command.arg("-c").arg(src_path).arg("-o").arg(&output_path);
-        command.arg(format!("-DVARIANT={variant_num}"));
-        command.args(&variant.compilation.compiler_args.args);
-        let status = command.status()?;
-        if !status.success() {
-            bail!("Compilation failed");
-        }
-        Ok(output_path)
+/// Builds some C source and returns the path to the object file.
+fn build_obj(filename: &str, variant: &Variant) -> Result<PathBuf> {
+    let variant_num = variant.compilation.variant_num;
+    let src_path = src_path(filename);
+    let extension = src_path.extension().context("Missing extension")?;
+    let output_path =
+        build_dir().join(Path::new(filename).with_extension(format!("{}.o", variant.compilation)));
+    // Skip rebuilding if our output already exists and is newer than our source.
+    if is_newer(&output_path, &src_path) {
+        return Ok(output_path);
     }
+    let compiler = if extension == "cpp" { "g++" } else { "gcc" };
+    let mut command = Command::new(compiler);
+    command.arg("-c").arg(src_path).arg("-o").arg(&output_path);
+    command.arg(format!("-DVARIANT={variant_num}"));
+    command.args(&variant.compilation.compiler_args.args);
+    let status = command.status()?;
+    if !status.success() {
+        bail!("Compilation failed");
+    }
+    Ok(output_path)
 }
 
 fn src_path(filename: &str) -> PathBuf {
@@ -359,11 +330,11 @@ fn is_newer(output_path: &Path, src_path: &Path) -> bool {
     mod_out >= mod_src
 }
 
-impl Config {
+impl Linker {
     /// Links the supplied object files with this configuration and returns the path to the
     /// resulting binary.
     fn link(
-        &self,
+        self,
         basename: &str,
         object_paths: &[PathBuf],
         variant: &Variant,
@@ -403,18 +374,18 @@ fn make_archive(archive_path: &Path, path: &Path) -> Result {
 
 impl LinkCommand {
     fn new(
-        config: &Config,
+        linker: Linker,
         basename: &str,
         object_paths: &[PathBuf],
         variant: &Variant,
     ) -> LinkCommand {
-        let mut command = Command::new(config.linker.kind.path());
-        let output_path = config.output_path(basename, variant);
+        let mut command = Command::new(linker.path());
+        let output_path = linker.output_path(basename, variant);
         // We allow skipping linking if all the object files are the unchanged and are older than
         // our output file, but not if we're linking with our linker, since we're always changing
         // that.
-        let can_skip = config.linker.kind != LinkerKind::Wild
-            && object_paths.iter().all(|obj| is_newer(&output_path, obj));
+        let can_skip =
+            linker != Linker::Wild && object_paths.iter().all(|obj| is_newer(&output_path, obj));
         command
             .arg("--gc-sections")
             .arg("-static")
@@ -426,7 +397,7 @@ impl LinkCommand {
         }
         LinkCommand {
             command,
-            linker_kind: config.linker.kind,
+            linker,
             can_skip,
         }
     }
@@ -507,8 +478,8 @@ impl Display for LinkCommand {
             .get_args()
             .map(|a| a.to_string_lossy())
             .collect();
-        match self.linker_kind {
-            LinkerKind::Wild => {
+        match self.linker {
+            Linker::Wild => {
                 write!(f, "cargo run -- {}", args.join(" "))
             }
             _ => {
@@ -523,53 +494,26 @@ impl Display for LinkCommand {
     }
 }
 
-impl Display for CompilationConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.pie {
-            write!(f, "pie")?;
-        } else {
-            write!(f, "no-pie")?;
-        }
-        write!(f, "-opt{}", self.opt_level)?;
-        Ok(())
-    }
-}
-
 impl Display for Program {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.name, f)
     }
 }
 
-impl Display for LinkerConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(&self.kind, f)
-    }
-}
-
-impl Display for Config {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(&self.compilation, f)?;
-        Display::fmt(&'-', f)?;
-        Display::fmt(&self.linker, f)?;
-        Ok(())
-    }
-}
-
-impl Display for LinkerKind {
+impl Display for Linker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LinkerKind::Wild => Display::fmt(&"wild", f),
-            LinkerKind::ThirdParty(cmd) => Display::fmt(cmd, f),
+            Linker::Wild => Display::fmt(&"wild", f),
+            Linker::ThirdParty(cmd) => Display::fmt(cmd, f),
         }
     }
 }
 
-impl Display for LinkKind {
+impl Display for InputType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LinkKind::Object => write!(f, "object"),
-            LinkKind::Archive => write!(f, "archive"),
+            InputType::Object => write!(f, "object"),
+            InputType::Archive => write!(f, "archive"),
         }
     }
 }
@@ -578,7 +522,7 @@ impl Display for Variant {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.compilation, f)?;
         Display::fmt(&'-', f)?;
-        Display::fmt(&self.link_kind, f)?;
+        Display::fmt(&self.input_type, f)?;
         Display::fmt(&'-', f)?;
         Display::fmt(&self.linker_args.name, f)?;
         Ok(())
@@ -667,57 +611,30 @@ fn integration_test() -> Result {
         Program::new("eh_frame", &["eh_frame.c", "eh_frame_end.c", "exit.c"])?,
     ];
 
-    let compilation_configs = [
-        CompilationConfig {
-            pie: false,
-            opt_level: 0,
-        },
-        CompilationConfig {
-            pie: true,
-            opt_level: 0,
-        },
-        CompilationConfig {
-            pie: false,
-            opt_level: 2,
-        },
-    ];
-    let linker_configs = [
-        LinkerConfig {
-            kind: LinkerKind::ThirdParty("ld"),
-        },
-        LinkerConfig {
-            kind: LinkerKind::Wild,
-        },
-    ];
+    let linkers = [Linker::ThirdParty("ld"), Linker::Wild];
 
     for program in &programs {
         let filename = program.source_files.first().unwrap();
         let instructions = TestParameters::from_source(&src_path(filename))
             .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
-        for link_cfg in linker_configs {
-            for &link_kind in &instructions.link_kind {
+        for linker in linkers {
+            for &link_kind in &instructions.input_type {
                 for link_args in &instructions.linker_args {
                     for compiler_args in &instructions.compiler_args {
                         for &variant_num in &instructions.variant_nums {
                             let variant = Variant {
-                                link_kind,
+                                input_type: link_kind,
                                 linker_args: link_args.clone(),
                                 compilation: CompilationVariant {
                                     variant_num,
                                     compiler_args: compiler_args.clone(),
                                 },
                             };
-                            for comp_cfg in compilation_configs {
-                                let config = Config {
-                                    compilation: comp_cfg,
-                                    linker: link_cfg,
-                                };
-                                program
-                        .run(&config, &variant, &instructions.assertions)
+                            program
+                        .run(linker, &variant, &instructions.assertions)
                         .with_context(|| {
-                            format!("Failed to run program `{program}` with config `{config}` variant #{variant}")
+                            format!("Failed to run program `{program}` with linker `{linker}` variant #{variant}")
                         })?;
-                            }
                         }
                     }
                 }

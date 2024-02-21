@@ -1,4 +1,5 @@
-//#LinkKind: Archive
+//#CompArgs:no-stack-protector:-fno-stack-protector
+//#InputType: Archive
 
 #include "exit.h"
 

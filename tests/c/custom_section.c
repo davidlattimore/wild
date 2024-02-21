@@ -1,4 +1,4 @@
-//#LinkKind: Object, Archive
+//#InputType: Object, Archive
 
 #include "exit.h"
 
