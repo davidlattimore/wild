@@ -1,4 +1,7 @@
-//#TlsModel: global-dynamic, local-dynamic, initial-exec, local-exec
+//#CompArgs:global-dynamic:-ftls-model=global-dynamic
+//#CompArgs:local-dynamic:-ftls-model=local-dynamic
+//#CompArgs:initial-exec:-ftls-model=initial-exec
+//#CompArgs:local-exec:-ftls-model=local-exec
 
 #include "exit.h"
 #include "init_tls.h"

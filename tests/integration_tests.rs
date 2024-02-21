@@ -86,7 +86,6 @@ struct LinkCommand {
 struct TestParameters {
     link_kind: Vec<LinkKind>,
     variant_nums: Vec<u32>,
-    tls_models: Vec<String>,
     assertions: Assertions,
     linker_args: Vec<ArgumentSet>,
     compiler_args: Vec<ArgumentSet>,
@@ -100,7 +99,6 @@ struct Assertions {
 #[derive(Clone, Debug)]
 struct CompilationVariant {
     variant_num: u32,
-    tls_model: String,
     compiler_args: ArgumentSet,
 }
 
@@ -180,11 +178,6 @@ impl TestParameters {
                             link_kind.push(LinkKind::parse(p)?);
                         }
                     }
-                    "TlsModel" => {
-                        for p in arg.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()) {
-                            tls_models.push(p.to_owned());
-                        }
-                    }
                     "Variant" => variants.push(
                         arg.parse()
                             .with_context(|| format!("Failed to parse '{arg}'"))?,
@@ -213,7 +206,6 @@ impl TestParameters {
             tls_models.push(String::new());
         }
         Ok(TestParameters {
-            tls_models,
             link_kind,
             variant_nums: variants,
             assertions: Assertions {
@@ -313,7 +305,6 @@ impl CompilationConfig {
     /// Builds some C source and returns the path to the object file.
     fn build_obj(&self, filename: &str, variant: &Variant) -> Result<PathBuf> {
         let variant_num = variant.compilation.variant_num;
-        let tls_model = &variant.compilation.tls_model;
         let src_path = src_path(filename);
         let extension = src_path.extension().context("Missing extension")?;
         let output_path = build_dir().join(
@@ -330,9 +321,6 @@ impl CompilationConfig {
             command.arg("-pie");
         } else {
             command.arg("-no-pie");
-        }
-        if !tls_model.is_empty() {
-            command.arg(format!("-ftls-model={tls_model}"));
         }
         command.arg("-fcommon");
         command.arg("-fno-stack-protector");
@@ -599,8 +587,6 @@ impl Display for Variant {
 
 impl Display for CompilationVariant {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(&self.tls_model, f)?;
-        Display::fmt(&'-', f)?;
         Display::fmt(&self.variant_num, f)?;
         Display::fmt(&'-', f)?;
         Display::fmt(&self.compiler_args.name, f)?;
@@ -710,30 +696,27 @@ fn integration_test() -> Result {
             .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
         for link_cfg in linker_configs {
             for &link_kind in &instructions.link_kind {
-                for tls_model in &instructions.tls_models {
-                    for link_args in &instructions.linker_args {
-                        for compiler_args in &instructions.compiler_args {
-                            for &variant_num in &instructions.variant_nums {
-                                let variant = Variant {
-                                    link_kind,
-                                    linker_args: link_args.clone(),
-                                    compilation: CompilationVariant {
-                                        variant_num,
-                                        tls_model: tls_model.clone(),
-                                        compiler_args: compiler_args.clone(),
-                                    },
+                for link_args in &instructions.linker_args {
+                    for compiler_args in &instructions.compiler_args {
+                        for &variant_num in &instructions.variant_nums {
+                            let variant = Variant {
+                                link_kind,
+                                linker_args: link_args.clone(),
+                                compilation: CompilationVariant {
+                                    variant_num,
+                                    compiler_args: compiler_args.clone(),
+                                },
+                            };
+                            for comp_cfg in compilation_configs {
+                                let config = Config {
+                                    compilation: comp_cfg,
+                                    linker: link_cfg,
                                 };
-                                for comp_cfg in compilation_configs {
-                                    let config = Config {
-                                        compilation: comp_cfg,
-                                        linker: link_cfg,
-                                    };
-                                    program
+                                program
                         .run(&config, &variant, &instructions.assertions)
                         .with_context(|| {
                             format!("Failed to run program `{program}` with config `{config}` variant #{variant}")
                         })?;
-                                }
                             }
                         }
                     }
