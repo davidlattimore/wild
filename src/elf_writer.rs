@@ -309,8 +309,8 @@ impl FileHeader {
 impl<'data> FileLayout<'data> {
     fn write(&self, buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
         match self {
-            Self::Internal(s) => s.write(buffers, layout)?,
             Self::Object(s) => s.write(buffers, layout)?,
+            Self::Internal(s) => s.write(buffers, layout)?,
             Self::Dynamic(_) => {}
         }
         Ok(())

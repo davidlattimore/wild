@@ -264,8 +264,8 @@ fn read_symbols(
 
 fn load_symbols_from_file(reader: FileSymbolReader) -> Result<Vec<SymbolLoadOutputs>> {
     Ok(match reader {
-        FileSymbolReader::Internal(s) => vec![s.load_symbols()?],
         FileSymbolReader::Object(s) => vec![s.load_symbols()?],
+        FileSymbolReader::Internal(s) => vec![s.load_symbols()?],
         FileSymbolReader::Dynamic(s) => vec![s.load_dynamic_symbols()?],
     })
 }
@@ -430,8 +430,8 @@ impl<'data> FileSymbolReader<'data> {
 
     fn filename(&self) -> &'data Path {
         match self {
-            Self::Internal(s) => s.filename(),
             Self::Object(s) => s.filename(),
+            Self::Internal(s) => s.filename(),
             Self::Dynamic(s) => s.filename(),
         }
     }

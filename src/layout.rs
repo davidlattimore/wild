@@ -990,8 +990,8 @@ impl<'data> FileWorker<'data> {
 
     fn activate(&mut self, resources: &GraphResources<'data, '_>) -> Result {
         match &mut self.state {
-            FileLayoutState::Internal(s) => s.activate(resources),
             FileLayoutState::Object(s) => s.activate(resources, &mut self.queue),
+            FileLayoutState::Internal(s) => s.activate(resources),
             FileLayoutState::Dynamic(_) => todo!(),
             FileLayoutState::NotLoaded => Ok(()),
         }
@@ -1108,10 +1108,10 @@ impl<'data> FileLayoutState<'data> {
         queue: &mut LocalWorkQueue,
     ) -> Result {
         match self {
-            FileLayoutState::Internal(state) => {
+            FileLayoutState::Object(state) => {
                 state.handle_symbol_request(symbol_request, resources, queue)?;
             }
-            FileLayoutState::Object(state) => {
+            FileLayoutState::Internal(state) => {
                 state.handle_symbol_request(symbol_request, resources, queue)?;
             }
             FileLayoutState::Dynamic(state) => state.load_symbol(symbol_request, resources)?,
@@ -1122,8 +1122,8 @@ impl<'data> FileLayoutState<'data> {
 
     pub(crate) fn mem_sizes(&self) -> Option<&OutputSectionPartMap<u64>> {
         match self {
-            Self::Internal(s) => Some(&s.common.mem_sizes),
             Self::Object(s) => Some(&s.state.common.mem_sizes),
+            Self::Internal(s) => Some(&s.common.mem_sizes),
             Self::Dynamic(_) => None,
             Self::NotLoaded => None,
         }
@@ -1138,18 +1138,18 @@ impl<'data> FileLayoutState<'data> {
     ) -> Result<Option<(Vec<GlobalSymbolAddress>, FileLayout<'data>)>> {
         let mut addresses_out = Vec::new();
         let file_layout = match self {
-            Self::Internal(s) => FileLayout::Internal(s.finalise_layout(
-                memory_offsets.unwrap(),
-                section_layouts,
-                &mut addresses_out,
-                symbol_db,
-            )?),
             Self::Object(s) => FileLayout::Object(s.finalise_layout(
                 memory_offsets.unwrap(),
                 &mut addresses_out,
                 section_layouts,
                 symbol_db,
                 merged_string_start_addresses,
+            )?),
+            Self::Internal(s) => FileLayout::Internal(s.finalise_layout(
+                memory_offsets.unwrap(),
+                section_layouts,
+                &mut addresses_out,
+                symbol_db,
             )?),
             Self::Dynamic(s) => FileLayout::Dynamic(s.finalise_layout(&mut addresses_out)),
             Self::NotLoaded => {
@@ -1163,8 +1163,8 @@ impl<'data> FileLayoutState<'data> {
 impl<'data> FileLayout<'data> {
     pub(crate) fn mem_sizes(&self) -> Option<&OutputSectionPartMap<u64>> {
         match self {
-            Self::Internal(s) => Some(&s.mem_sizes),
             Self::Object(s) => Some(&s.mem_sizes),
+            Self::Internal(s) => Some(&s.mem_sizes),
             Self::Dynamic(_) => None,
         }
     }
@@ -1194,8 +1194,8 @@ impl<'data> std::fmt::Display for InternalLayoutState<'data> {
 impl<'data> std::fmt::Display for FileLayoutState<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Internal(_) => std::fmt::Display::fmt("<internal>", f),
             Self::Object(s) => std::fmt::Display::fmt(s, f),
+            Self::Internal(_) => std::fmt::Display::fmt("<internal>", f),
             Self::Dynamic(_) => todo!(),
             Self::NotLoaded => std::fmt::Display::fmt("<not-loaded>", f),
         }
@@ -1205,8 +1205,8 @@ impl<'data> std::fmt::Display for FileLayoutState<'data> {
 impl<'data> std::fmt::Display for FileLayout<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Internal(_) => std::fmt::Display::fmt("<internal>", f),
             Self::Object(s) => std::fmt::Display::fmt(s, f),
+            Self::Internal(_) => std::fmt::Display::fmt("<internal>", f),
             Self::Dynamic(_) => todo!(),
         }
     }
@@ -2199,11 +2199,11 @@ impl<'state> GlobalAddressEmitter<'state> {
 impl<'data> resolution::ResolvedFile<'data> {
     fn create_layout_state(self, output_sections: &OutputSections) -> FileLayoutState<'data> {
         match self {
-            resolution::ResolvedFile::Internal(s) => {
-                FileLayoutState::Internal(Box::new(InternalLayoutState::new(s, output_sections)))
-            }
             resolution::ResolvedFile::Object(s) => {
                 FileLayoutState::Object(Box::new(ObjectLayoutState::new(s, output_sections)))
+            }
+            resolution::ResolvedFile::Internal(s) => {
+                FileLayoutState::Internal(Box::new(InternalLayoutState::new(s, output_sections)))
             }
             resolution::ResolvedFile::NotLoaded => FileLayoutState::NotLoaded,
         }
@@ -2324,8 +2324,8 @@ impl<'data> Layout<'data> {
 impl<'data> std::fmt::Debug for FileLayoutState<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Internal(_) => f.debug_tuple("Internal").finish(),
             Self::Object(s) => f.debug_tuple("Object").field(&s.input).finish(),
+            Self::Internal(_) => f.debug_tuple("Internal").finish(),
             Self::Dynamic(_) => f.debug_tuple("Dynamic").finish(),
             Self::NotLoaded => "<not loaded>".fmt(f),
         }
