@@ -1472,6 +1472,7 @@ impl<'data> InternalLayoutState<'data> {
             }
         });
 
+        // Allocate space to store the identify of the linker in the .comment section.
         *layout
             .common
             .mem_sizes
@@ -2240,9 +2241,9 @@ fn layout_section_parts(
             file_offset = section_alignment.align_up_usize(file_offset);
             mem_offset = section_alignment.align_up(mem_offset);
             let seg_id = output_sections.loadable_segment_id_for(section_id);
-            if current_seg_id != Some(seg_id) {
-                current_seg_id = Some(seg_id);
-                let segment_alignment = section_alignment.max(seg_id.alignment());
+            if current_seg_id != seg_id {
+                current_seg_id = seg_id;
+                let segment_alignment = seg_id.map(|s| s.alignment()).unwrap_or(alignment::MIN);
                 mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
             }
             let file_size = if defs.has_data_in_file() {

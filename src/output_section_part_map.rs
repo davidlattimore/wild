@@ -81,7 +81,6 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             &self.file_headers,
         );
         self.map_regular(output_section_id::RODATA, &mut cb, &mut regular);
-        self.map_regular(output_section_id::COMMENT, &mut cb, &mut regular);
         let eh_frame_hdr = cb(
             output_section_id::EH_FRAME_HDR,
             output_section_id::EH_FRAME_HDR.min_alignment(),
@@ -149,6 +148,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
         output_sections.bss_custom.iter().for_each(|id| {
             self.map_regular(*id, &mut cb, &mut regular);
         });
+        self.map_regular(output_section_id::COMMENT, &mut cb, &mut regular);
 
         OutputSectionPartMap {
             regular,

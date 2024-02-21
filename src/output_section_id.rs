@@ -100,7 +100,7 @@ pub(crate) struct OutputSections<'data> {
 
 pub(crate) struct SectionOutputInfo<'data> {
     pub(crate) output_index: u16,
-    pub(crate) loadable_segment_id: ProgramSegmentId,
+    pub(crate) loadable_segment_id: Option<ProgramSegmentId>,
     pub(crate) details: SectionDetails<'data>,
 }
 
@@ -541,7 +541,7 @@ impl<'data> OutputSectionsBuilder<'data> {
             .map(|d| SectionOutputInfo {
                 details: d.details,
                 output_index: 0,
-                loadable_segment_id: crate::program_segments::LOAD_RO,
+                loadable_segment_id: Some(crate::program_segments::LOAD_RO),
             })
             .collect();
         let mut ro_custom = Vec::new();
@@ -557,7 +557,7 @@ impl<'data> OutputSectionsBuilder<'data> {
                     details: *details,
                     // We'll fill in the following fields properly below.
                     output_index: 0,
-                    loadable_segment_id: crate::program_segments::LOAD_RO,
+                    loadable_segment_id: None,
                 });
                 let id = OutputSectionId::from_usize(offset + NUM_BUILT_IN_SECTIONS);
                 if (details.section_flags & crate::elf::shf::EXECINSTR) != 0 {
@@ -610,8 +610,7 @@ impl<'data> OutputSectionsBuilder<'data> {
                         String::from_utf8_lossy(info.details.name),
                     )
                 })?;
-                info.loadable_segment_id = load_seg_id
-                    .ok_or_else(|| anyhow!("A section is not allocated to any loadable segment"))?;
+                info.loadable_segment_id = load_seg_id;
                 info.output_index = output_index;
                 Ok(())
             })?;
@@ -652,7 +651,6 @@ impl<'data> OutputSections<'data> {
         cb(OrderEvent::SegmentStart(crate::program_segments::LOAD_RO));
         cb(HEADERS.event());
         cb(RODATA.event());
-        cb(COMMENT.event());
         cb(OrderEvent::SegmentStart(crate::program_segments::EH_FRAME));
         cb(EH_FRAME_HDR.event());
         cb(OrderEvent::SegmentEnd(crate::program_segments::EH_FRAME));
@@ -686,6 +684,8 @@ impl<'data> OutputSections<'data> {
         cb(BSS.event());
         self.ids_do(&self.bss_custom, &mut cb);
         cb(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RW));
+
+        cb(COMMENT.event());
     }
 
     fn ids_do(&self, ids: &Vec<OutputSectionId>, cb: &mut impl FnMut(OrderEvent<'_>)) {
@@ -729,7 +729,7 @@ impl<'data> OutputSections<'data> {
         self.section_infos[id.as_usize()].output_index
     }
 
-    pub(crate) fn loadable_segment_id_for(&self, id: OutputSectionId) -> ProgramSegmentId {
+    pub(crate) fn loadable_segment_id_for(&self, id: OutputSectionId) -> Option<ProgramSegmentId> {
         self.output_info(id).loadable_segment_id
     }
 
