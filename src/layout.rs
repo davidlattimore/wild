@@ -13,6 +13,7 @@ use crate::error::Error;
 use crate::error::Result;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
+use crate::input_data::INTERNAL_FILE_ID;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
@@ -21,7 +22,6 @@ use crate::output_section_id::UnloadedSection;
 use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
-use crate::program_segments;
 use crate::program_segments::ProgramSegmentId;
 use crate::resolution;
 use crate::resolution::LocalSymbolResolution;
@@ -53,7 +53,7 @@ use std::sync::Mutex;
 pub(crate) fn compute<'data>(
     symbol_db: &'data SymbolDb<'data>,
     file_states: Vec<resolution::ResolvedFile<'data>>,
-    output_sections: OutputSections<'data>,
+    mut output_sections: OutputSections<'data>,
     output: &mut elf_writer::Output,
 ) -> Result<Layout<'data>> {
     if let Some(sym_info) = symbol_db.args.sym_info.as_deref() {
@@ -61,7 +61,8 @@ pub(crate) fn compute<'data>(
     }
     let mut layout_states = find_required_sections(file_states, symbol_db, &output_sections)?;
     finalise_all_sizes(symbol_db, &output_sections, &mut layout_states)?;
-    let section_part_sizes = compute_total_section_part_sizes(&layout_states, &output_sections);
+    let section_part_sizes =
+        compute_total_section_part_sizes(&mut layout_states, &mut output_sections);
     let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections);
     let section_layouts = layout_sections(&section_part_layouts);
     output.set_size(compute_total_file_size(&section_layouts));
@@ -137,13 +138,20 @@ pub(crate) struct Layout<'data> {
     pub(crate) section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
     pub(crate) section_layouts: OutputSectionMap<OutputRecordLayout>,
     pub(crate) file_layouts: Vec<FileLayout<'data>>,
-    pub(crate) segment_layouts: Vec<SegmentLayout>,
+    pub(crate) segment_layouts: SegmentLayouts,
     pub(crate) output_sections: OutputSections<'data>,
     pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
 }
 
+pub(crate) struct SegmentLayouts {
+    /// The layout of each of our segments. Empty segments will have been filtered, so don't try to
+    /// index this by our internal segment IDs.
+    pub(crate) segments: Vec<SegmentLayout>,
+}
+
 #[derive(Default, Clone)]
 pub(crate) struct SegmentLayout {
+    pub(crate) id: ProgramSegmentId,
     pub(crate) sizes: OutputRecordLayout,
 }
 
@@ -204,6 +212,7 @@ struct InternalLayoutState<'data> {
     needs_tlsld_got_entry: bool,
     merged_strings: OutputSectionMap<resolution::MergedStringsSection<'data>>,
     identity: String,
+    header_info: Option<HeaderInfo>,
 }
 
 pub(crate) struct ObjectLayout<'data> {
@@ -231,6 +240,7 @@ pub(crate) struct InternalLayout<'data> {
     pub(crate) tlsld_got_entry: Option<NonZeroU64>,
     pub(crate) merged_strings: OutputSectionMap<resolution::MergedStringsSection<'data>>,
     pub(crate) identity: String,
+    pub(crate) header_info: HeaderInfo,
 }
 
 pub(crate) struct DynamicLayout<'data> {
@@ -754,7 +764,7 @@ fn compute_symbols_and_layouts<'data>(
 fn compute_segment_layout(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections,
-) -> Vec<SegmentLayout> {
+) -> SegmentLayouts {
     struct Record {
         segment_id: ProgramSegmentId,
         file_start: usize,
@@ -765,7 +775,7 @@ fn compute_segment_layout(
     }
 
     use output_section_id::OrderEvent;
-    let mut complete = Vec::with_capacity(crate::program_segments::NUM_SEGMENTS);
+    let mut complete = Vec::with_capacity(crate::program_segments::MAX_SEGMENTS);
     let mut active_records = AHashMap::new();
     output_sections.sections_and_segments_do(|event| match event {
         OrderEvent::SegmentStart(segment_id) => {
@@ -799,9 +809,11 @@ fn compute_segment_layout(
         }
     });
     complete.sort_by_key(|r| r.segment_id);
-    complete
+    let segments = complete
         .into_iter()
-        .map(|r| SegmentLayout {
+        .enumerate()
+        .map(|(id, r)| SegmentLayout {
+            id: ProgramSegmentId::new(id),
             sizes: OutputRecordLayout {
                 file_size: r.file_end - r.file_start,
                 mem_size: r.mem_end - r.mem_start,
@@ -810,21 +822,29 @@ fn compute_segment_layout(
                 mem_offset: r.mem_start,
             },
         })
-        .collect()
+        .filter(|segment| segment.sizes.mem_size != 0)
+        .collect();
+    SegmentLayouts { segments }
 }
 
 #[tracing::instrument(skip_all, name = "Compute total section sizes")]
 fn compute_total_section_part_sizes(
-    layout_states: &Vec<FileLayoutState>,
-    output_sections: &OutputSections,
+    layout_states: &mut [FileLayoutState],
+    output_sections: &mut OutputSections,
 ) -> OutputSectionPartMap<u64> {
     let mut total_sizes: OutputSectionPartMap<u64> =
         OutputSectionPartMap::with_size(output_sections.len());
-    for file_state in layout_states {
+    for file_state in layout_states.iter() {
         if let Some(sizes) = file_state.mem_sizes() {
             total_sizes.merge(sizes);
         }
     }
+    let FileLayoutState::Internal(internal_layout) =
+        &mut layout_states[INTERNAL_FILE_ID.as_usize()]
+    else {
+        unreachable!();
+    };
+    internal_layout.determine_header_sizes(&mut total_sizes, output_sections);
     total_sizes
 }
 
@@ -1072,7 +1092,7 @@ impl<'data> FileLayoutState<'data> {
             FileLayoutState::Object(s) => s
                 .finalise_sizes(symbol_db, output_sections)
                 .with_context(|| format!("finalise_sizes failed for {s}"))?,
-            FileLayoutState::Internal(s) => s.finalise_sizes(symbol_db, output_sections)?,
+            FileLayoutState::Internal(s) => s.finalise_sizes(symbol_db)?,
             _ => (),
         }
         Ok(())
@@ -1465,6 +1485,7 @@ impl<'data> InternalLayoutState<'data> {
             needs_tlsld_got_entry: false,
             merged_strings: input_state.merged_strings,
             identity: crate::identity::linker_identity(),
+            header_info: None,
         };
 
         layout.merged_strings.for_each(|section_id, merged| {
@@ -1517,17 +1538,7 @@ impl<'data> InternalLayoutState<'data> {
         Ok(())
     }
 
-    fn finalise_sizes(&mut self, symbol_db: &SymbolDb, output_sections: &OutputSections) -> Result {
-        self.common.mem_sizes.file_headers = u64::from(elf::FILE_HEADER_SIZE)
-            + InternalLayout::program_headers_size()
-            + InternalLayout::section_headers_size(output_sections);
-
-        self.common.mem_sizes.shstrtab += output_sections
-            .section_infos
-            .iter()
-            .map(|s| s.details.name.len() as u64 + 1)
-            .sum::<u64>();
-
+    fn finalise_sizes(&mut self, symbol_db: &SymbolDb) -> Result {
         if !symbol_db.args.strip_all {
             self.allocate_symbol_table_sizes(symbol_db)?;
         }
@@ -1540,6 +1551,96 @@ impl<'data> InternalLayoutState<'data> {
 
         self.common.mem_sizes.eh_frame_hdr += core::mem::size_of::<elf::EhFrameHdr>() as u64;
         Ok(())
+    }
+
+    fn determine_header_sizes(
+        &mut self,
+        total_sizes: &mut OutputSectionPartMap<u64>,
+        output_sections: &mut OutputSections,
+    ) {
+        use output_section_id::OrderEvent;
+
+        // Determine which sections to keep. To start with, we keep all sections that have content
+        // (size > 0).
+        let mut keep_sections = vec![false; output_sections.len()];
+        total_sizes.output_order_map(output_sections, |section_id, _alignment, size| {
+            if *size > 0 {
+                keep_sections[section_id.as_usize()] = true;
+            }
+        });
+        // Keep any sections that we've said we want to keep regardless.
+        for section_id in output_section_id::built_in_section_ids() {
+            if section_id.built_in_details().keep_if_empty {
+                keep_sections[section_id.as_usize()] = true;
+            }
+        }
+        // Keep any sections that have a start/stop symbol which is referenced.
+        self.common
+            .symbol_states
+            .iter()
+            .zip(self.symbol_definitions.iter())
+            .for_each(|(symbol_state, definition)| {
+                if *symbol_state != TargetResolutionKind::None {
+                    keep_sections[definition.section_id().as_usize()] = true;
+                }
+            });
+        let num_sections = keep_sections.iter().filter(|p| **p).count();
+
+        // Compute output indexes of each of section.
+        let mut next_output_index = 0;
+        let mut output_section_indexes = vec![None; output_sections.len()];
+        output_sections.sections_and_segments_do(|event| {
+            if let OrderEvent::Section(id, _) = event {
+                if keep_sections[id.as_usize()] {
+                    output_section_indexes[id.as_usize()] = Some(next_output_index);
+                    next_output_index += 1;
+                }
+            }
+        });
+        output_sections.output_section_indexes = output_section_indexes;
+
+        // Determine how many program segments have non-zero size.
+        let mut keep_segment = [false; crate::program_segments::MAX_SEGMENTS];
+        let mut active_segments = Vec::with_capacity(4);
+        output_sections.sections_and_segments_do(|event| match event {
+            OrderEvent::SegmentStart(segment_id) => active_segments.push(segment_id),
+            OrderEvent::SegmentEnd(segment_id) => active_segments.retain(|a| *a != segment_id),
+            OrderEvent::Section(section_id, _) => {
+                if keep_sections[section_id.as_usize()] {
+                    for segment_id in &active_segments {
+                        keep_segment[segment_id.as_usize()] = true;
+                    }
+                    active_segments.clear();
+                }
+            }
+        });
+        let num_segments = keep_segment.iter().filter(|p| **p).count();
+
+        let header_info = HeaderInfo {
+            num_output_sections_with_content: num_sections
+                .try_into()
+                .expect("output section count must fit in a u16"),
+
+            num_segments_with_content: num_segments
+                .try_into()
+                .expect("output segment count must fit in a u16"),
+        };
+
+        // Allocate space for headers based on segment and section counts. We need to allocate both
+        // our own size record and the file totals, since they've already been computed.
+        self.common.mem_sizes.file_headers = u64::from(elf::FILE_HEADER_SIZE)
+            + header_info.program_headers_size()
+            + header_info.section_headers_size();
+        total_sizes.file_headers += self.common.mem_sizes.file_headers;
+
+        self.common.mem_sizes.shstrtab = output_sections
+            .ids_with_info()
+            .filter(|(id, _info)| output_sections.output_index_of_section(*id).is_some())
+            .map(|(_id, info)| info.details.name.len() as u64 + 1)
+            .sum::<u64>();
+        total_sizes.shstrtab += self.common.mem_sizes.shstrtab;
+
+        self.header_info = Some(header_info);
     }
 
     fn allocate_symbol_table_sizes(&mut self, symbol_db: &SymbolDb<'_>) -> Result {
@@ -1637,17 +1738,25 @@ impl<'data> InternalLayoutState<'data> {
             tlsld_got_entry,
             merged_strings: self.merged_strings,
             identity: self.identity,
+            header_info: self
+                .header_info
+                .expect("we should have computed header info by now"),
         })
     }
 }
 
-impl<'data> InternalLayout<'data> {
-    pub(crate) fn program_headers_size() -> u64 {
-        u64::from(elf::PROGRAM_HEADER_SIZE) * program_segments::NUM_SEGMENTS as u64
+pub(crate) struct HeaderInfo {
+    pub(crate) num_output_sections_with_content: u16,
+    pub(crate) num_segments_with_content: u16,
+}
+
+impl HeaderInfo {
+    pub(crate) fn program_headers_size(&self) -> u64 {
+        u64::from(elf::PROGRAM_HEADER_SIZE) * self.num_segments_with_content as u64
     }
 
-    pub(crate) fn section_headers_size(output_sections: &OutputSections) -> u64 {
-        u64::from(elf::SECTION_HEADER_SIZE) * output_sections.len() as u64
+    pub(crate) fn section_headers_size(&self) -> u64 {
+        u64::from(elf::SECTION_HEADER_SIZE) * self.num_output_sections_with_content as u64
     }
 }
 
@@ -2395,7 +2504,8 @@ fn test_no_disallowed_overlaps() {
     // Make sure loadable segments don't overlap in memory or in the file.
     let mut last_file = 0;
     let mut last_mem = 0;
-    for (seg_id, seg_layout) in program_segments::segment_ids().zip(segment_layouts.iter()) {
+    for seg_layout in segment_layouts.segments.iter() {
+        let seg_id = seg_layout.id;
         if seg_id.segment_type() != elf::SegmentType::Load {
             continue;
         }

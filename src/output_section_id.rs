@@ -93,6 +93,13 @@ pub(crate) struct OutputSections<'data> {
     /// The base address for our output binary.
     pub(crate) base_address: u64,
     pub(crate) section_infos: Vec<SectionOutputInfo<'data>>,
+
+    // TODO: Consider moving this to Layout. We can't populate this until we know which output
+    // sections have content, which we don't know until half way through the layout phase.
+    /// Mapping from internal section IDs to output section indexes. None, if the section isn't
+    /// being output.
+    pub(crate) output_section_indexes: Vec<Option<u16>>,
+
     custom_by_name: AHashMap<&'data [u8], OutputSectionId>,
     pub(crate) ro_custom: Vec<OutputSectionId>,
     pub(crate) exec_custom: Vec<OutputSectionId>,
@@ -100,8 +107,19 @@ pub(crate) struct OutputSections<'data> {
     pub(crate) bss_custom: Vec<OutputSectionId>,
 }
 
+impl<'data> OutputSections<'data> {
+    /// Returns an iterator that emits all section IDs and their info.
+    pub(crate) fn ids_with_info(
+        &self,
+    ) -> impl Iterator<Item = (OutputSectionId, &SectionOutputInfo)> {
+        self.section_infos
+            .iter()
+            .enumerate()
+            .map(|(raw, info)| (OutputSectionId::from_usize(raw), info))
+    }
+}
+
 pub(crate) struct SectionOutputInfo<'data> {
-    pub(crate) output_index: u16,
     pub(crate) loadable_segment_id: Option<ProgramSegmentId>,
     pub(crate) details: SectionDetails<'data>,
 }
@@ -113,6 +131,7 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) end_symbol_name: Option<&'static str>,
     pub(crate) min_alignment: Alignment,
     info_fn: Option<fn(&Layout) -> u32>,
+    pub(crate) keep_if_empty: bool,
 }
 
 impl BuiltInSectionDetails {
@@ -146,6 +165,7 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     end_symbol_name: None,
     min_alignment: alignment::MIN,
     info_fn: None,
+    keep_if_empty: false,
 };
 
 const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
@@ -157,6 +177,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             ..SectionDetails::default()
         },
         start_symbol_name: Some("__ehdr_start"),
+        keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -166,6 +187,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             section_flags: elf::shf::STRINGS,
             ..SectionDetails::default()
         },
+        keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -357,6 +379,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             ..SectionDetails::default()
         },
+        keep_if_empty: true,
         end_symbol_name: Some("_end"),
         ..DEFAULT_DEFS
     },
@@ -553,7 +576,6 @@ impl<'data> OutputSectionsBuilder<'data> {
             .iter()
             .map(|d| SectionOutputInfo {
                 details: d.details,
-                output_index: 0,
                 loadable_segment_id: Some(crate::program_segments::LOAD_RO),
             })
             .collect();
@@ -568,8 +590,7 @@ impl<'data> OutputSectionsBuilder<'data> {
             .map(|(offset, (name, details))| {
                 section_infos.push(SectionOutputInfo {
                     details: *details,
-                    // We'll fill in the following fields properly below.
-                    output_index: 0,
+                    // We'll fill this in properly below.
                     loadable_segment_id: None,
                 });
                 let id = OutputSectionId::from_usize(offset + NUM_BUILT_IN_SECTIONS);
@@ -594,10 +615,10 @@ impl<'data> OutputSectionsBuilder<'data> {
             exec_custom,
             data_custom,
             bss_custom,
+            output_section_indexes: Default::default(),
         };
         let mut extra = vec![None; output_sections.section_infos.len()];
         let mut load_seg_id = None;
-        let mut output_index = 0;
         output_sections.sections_and_segments_do(|event| match event {
             OrderEvent::SegmentStart(seg_id) => {
                 if seg_id.segment_type() == crate::elf::SegmentType::Load {
@@ -610,22 +631,20 @@ impl<'data> OutputSectionsBuilder<'data> {
                 }
             }
             OrderEvent::Section(section_id, _section_details) => {
-                extra[section_id.as_usize()] = Some((output_index, load_seg_id));
-                output_index += 1;
+                extra[section_id.as_usize()] = Some(load_seg_id);
             }
         });
         extra
             .iter()
             .zip(output_sections.section_infos.iter_mut())
             .try_for_each(|(ext, info)| -> Result {
-                let (output_index, load_seg_id) = ext.ok_or_else(|| {
+                let load_seg_id = ext.ok_or_else(|| {
                     anyhow!(
                         "Section `{}` is missing from output order (update sections_and_segments_do)",
                         String::from_utf8_lossy(info.details.name),
                     )
                 })?;
                 info.loadable_segment_id = load_seg_id;
-                info.output_index = output_index;
                 Ok(())
             })?;
         Ok(output_sections)
@@ -748,9 +767,13 @@ impl<'data> OutputSections<'data> {
         &self.section_infos[id.as_usize()]
     }
 
-    /// Returns the output index of the built-in-section `id`.
-    pub(crate) fn index_of_built_in(&self, id: OutputSectionId) -> u16 {
-        self.section_infos[id.as_usize()].output_index
+    /// Returns the output index of the built-in-section `id` or None if the section isn't being
+    /// output.
+    pub(crate) fn output_index_of_section(&self, id: OutputSectionId) -> Option<u16> {
+        self.output_section_indexes
+            .get(id.as_usize())
+            .copied()
+            .flatten()
     }
 
     pub(crate) fn loadable_segment_id_for(&self, id: OutputSectionId) -> Option<ProgramSegmentId> {

@@ -13,6 +13,7 @@ use crate::elf::PLT_ENTRY_TEMPLATE;
 use crate::error::Result;
 use crate::input_data::INTERNAL_FILE_ID;
 use crate::layout::FileLayout;
+use crate::layout::HeaderInfo;
 use crate::layout::InternalLayout;
 use crate::layout::Layout;
 use crate::layout::ObjectLayout;
@@ -27,8 +28,6 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
-use crate::program_segments::ProgramSegmentId;
-use crate::program_segments::NUM_SEGMENTS;
 use crate::resolution::LocalSymbolResolution;
 use crate::resolution::SectionSlot;
 use crate::slice::slice_take_prefix_mut;
@@ -254,9 +253,9 @@ fn split_buffers_by_alignment<'out>(
 }
 
 fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: &Layout) -> Result {
-    for (segment_id, segment_layout) in layout.segment_layouts.iter().enumerate() {
+    for segment_layout in layout.segment_layouts.segments.iter() {
         let segment_sizes = &segment_layout.sizes;
-        let segment_id = ProgramSegmentId::new(segment_id);
+        let segment_id = segment_layout.id;
         let segment_header = program_headers_out.take_header()?;
         let mut alignment = segment_sizes.alignment;
         if segment_id.segment_type() == SegmentType::Load {
@@ -277,7 +276,7 @@ fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: 
 }
 
 impl FileHeader {
-    fn build(layout: &Layout) -> Result<Self> {
+    fn build(layout: &Layout, header_info: &HeaderInfo) -> Result<Self> {
         let args = layout.args();
         let ty = if args.pie {
             elf::FileType::SharedObject
@@ -298,16 +297,18 @@ impl FileHeader {
             entry_point: layout.entry_symbol_address()?,
 
             program_header_offset: elf::PHEADER_OFFSET,
-            section_header_offset: 0,
+            section_header_offset: u64::from(elf::FILE_HEADER_SIZE)
+                + header_info.program_headers_size(),
             flags: 0,
             ehsize: elf::FILE_HEADER_SIZE,
             program_header_entry_size: elf::PROGRAM_HEADER_SIZE,
-            program_header_num: NUM_SEGMENTS.try_into().unwrap(),
+            program_header_num: header_info.num_segments_with_content,
             section_header_entry_size: elf::SECTION_HEADER_SIZE,
-            section_header_num: layout.output_sections.len() as u16,
+            section_header_num: header_info.num_output_sections_with_content,
             section_names_index: layout
                 .output_sections
-                .index_of_built_in(crate::output_section_id::SHSTRTAB),
+                .output_index_of_section(crate::output_section_id::SHSTRTAB)
+                .expect("we always write .shstrtab"),
         })
     }
 }
@@ -466,8 +467,10 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         };
         let shndx = self
             .output_sections
-            .output_info(section.output_section_id.unwrap())
-            .output_index;
+            .output_index_of_section(section.output_section_id.unwrap())
+            .context(
+                "internal error: tried to copy symbol that in a section that's not being output",
+            )?;
         let value = section_address + sym.address();
         let size = sym.size();
         let entry = self.define_symbol(is_local, shndx, value, size, name)?;
@@ -607,7 +610,8 @@ impl<'data> ObjectLayout<'data> {
                             {
                                 let shndx = layout
                                     .output_sections
-                                    .index_of_built_in(output_section_id::BSS);
+                                    .output_index_of_section(output_section_id::BSS)
+                                    .expect("we always keep .bss");
                                 symbol_writer.define_symbol(
                                     sym.is_local(),
                                     shndx,
@@ -1182,16 +1186,15 @@ impl<'data> InternalLayout<'data> {
             .file_headers
             .split_at_mut(usize::from(elf::FILE_HEADER_SIZE));
         let header: &mut FileHeader = bytemuck::from_bytes_mut(file_header_bytes);
-        *header = FileHeader::build(layout)?;
-        header.section_header_offset = self.section_header_offset();
+        *header = FileHeader::build(layout, &self.header_info)?;
 
         let (program_headers_bytes, rest) =
-            rest.split_at_mut(Self::program_headers_size() as usize);
+            rest.split_at_mut(self.header_info.program_headers_size() as usize);
         let mut program_headers = ProgramHeaderWriter::new(program_headers_bytes);
         write_program_headers(&mut program_headers, layout)?;
 
         let (section_headers_bytes, _rest) =
-            rest.split_at_mut(Self::section_headers_size(&layout.output_sections) as usize);
+            rest.split_at_mut(self.header_info.section_headers_size() as usize);
         write_section_headers(section_headers_bytes, layout);
 
         write_section_header_strings(buffers.shstrtab, &layout.output_sections);
@@ -1282,30 +1285,35 @@ impl<'data> InternalLayout<'data> {
         symbol_writer.define_symbol(true, 0, 0, 0, &[])?;
 
         for &symbol_id in &self.defined {
+            let Some(resolution) = layout.global_symbol_resolution(symbol_id) else {
+                continue;
+            };
             let symbol = layout.symbol_db.symbol(symbol_id);
             let local_index = symbol.local_index_for_file(INTERNAL_FILE_ID)?;
             let def_info = &self.symbol_definitions[local_index.0];
             let shndx = layout
                 .output_sections
-                .index_of_built_in(def_info.section_id());
-            if let Some(resolution) = layout.global_symbol_resolution(symbol_id) {
-                let address = match resolution {
-                    SymbolResolution::Resolved(res) => res.address,
-                    SymbolResolution::Dynamic => unreachable!(),
-                };
-                // We don't emit a section header for our headers section, so don't emit symbols that
-                // are in that section, otherwise they'll show up as undefined.
-                if shndx != 0 {
-                    let symbol_name = layout.symbol_db.symbol_name(symbol_id);
-                    let entry = symbol_writer.define_symbol(
-                        false,
-                        shndx,
-                        address,
-                        0,
-                        symbol_name.bytes(),
-                    )?;
-                    entry.info = (elf::Binding::Global as u8) << 4;
-                }
+                .output_index_of_section(def_info.section_id())
+                .with_context(|| {
+                    format!(
+                        "symbol `{}` in section `{}` that we're not going to output",
+                        layout.symbol_db.symbol_name(symbol_id),
+                        String::from_utf8_lossy(
+                            layout.output_sections.details(def_info.section_id()).name
+                        )
+                    )
+                })?;
+            let address = match resolution {
+                SymbolResolution::Resolved(res) => res.address,
+                SymbolResolution::Dynamic => unreachable!(),
+            };
+            // We don't emit a section header for our headers section, so don't emit symbols that
+            // are in that section, otherwise they'll show up as undefined.
+            if shndx != 0 {
+                let symbol_name = layout.symbol_db.symbol_name(symbol_id);
+                let entry =
+                    symbol_writer.define_symbol(false, shndx, address, 0, symbol_name.bytes())?;
+                entry.info = (elf::Binding::Global as u8) << 4;
             }
         }
         Ok(())
@@ -1349,10 +1357,6 @@ impl<'data> InternalLayout<'data> {
         // write_dynamic_entry(&mut entries, DynamicTag::RelSize, todo)?;
         write_dynamic_entry(&mut entries, DynamicTag::Null, 0)?;
         Ok(())
-    }
-
-    fn section_header_offset(&self) -> u64 {
-        u64::from(elf::FILE_HEADER_SIZE) + Self::program_headers_size()
     }
 }
 
@@ -1414,11 +1418,16 @@ fn write_dynamic_entry(out: &mut &mut [DynamicEntry], tag: DynamicTag, value: u6
 fn write_section_headers(out: &mut [u8], layout: &Layout) {
     let entries: &mut [SectionHeader] = bytemuck::cast_slice_mut(out);
     let output_sections = &layout.output_sections;
-    assert_eq!(entries.len(), output_sections.len());
     let mut entries = entries.iter_mut();
     let mut name_offset = 0;
     output_sections.sections_do(|section_id, section_details| {
         let section_layout = layout.section_layouts.get(section_id);
+        if output_sections
+            .output_index_of_section(section_id)
+            .is_none()
+        {
+            return;
+        }
         let entsize = section_details.element_size;
         let size;
         let alignment;
@@ -1431,7 +1440,9 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         };
         let mut link = 0;
         if let Some(link_id) = layout.output_sections.link_id(section_id) {
-            link = output_sections.index_of_built_in(link_id);
+            link = output_sections
+                .output_index_of_section(link_id)
+                .unwrap_or(0);
         }
         *entries.next().unwrap() = SectionHeader {
             name: name_offset,
@@ -1447,14 +1458,20 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         };
         name_offset += layout.output_sections.name(section_id).len() as u32 + 1;
     });
+    assert!(
+        entries.next().is_none(),
+        "Allocated section entries that weren't used"
+    );
 }
 
 fn write_section_header_strings(mut out: &mut [u8], sections: &OutputSections) {
     sections.sections_do(|id, _details| {
-        let name = sections.name(id);
-        let name_out = crate::slice::slice_take_prefix_mut(&mut out, name.len() + 1);
-        name_out[..name.len()].copy_from_slice(name);
-        name_out[name.len()] = 0;
+        if sections.output_index_of_section(id).is_some() {
+            let name = sections.name(id);
+            let name_out = crate::slice::slice_take_prefix_mut(&mut out, name.len() + 1);
+            name_out[..name.len()].copy_from_slice(name);
+            name_out[name.len()] = 0;
+        }
     });
 }
 

@@ -1,6 +1,6 @@
 use crate::elf::SegmentType;
 
-pub(crate) const NUM_SEGMENTS: usize = PROGRAM_SEGMENT_DEFS.len();
+pub(crate) const MAX_SEGMENTS: usize = PROGRAM_SEGMENT_DEFS.len();
 
 #[derive(Default, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, Debug)]
 pub(crate) struct ProgramSegmentId(u8);
@@ -47,11 +47,6 @@ const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
         segment_flags: PF_R | PF_W,
     },
 ];
-
-#[cfg(test)]
-pub(crate) fn segment_ids() -> impl Iterator<Item = ProgramSegmentId> {
-    (0..NUM_SEGMENTS).map(|i| ProgramSegmentId(i as u8))
-}
 
 impl ProgramSegmentId {
     pub(crate) fn as_usize(self) -> usize {
