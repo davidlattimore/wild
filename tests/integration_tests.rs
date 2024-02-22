@@ -35,9 +35,14 @@ fn build_dir() -> PathBuf {
     base_dir().join("tests/build")
 }
 
-struct Program {
+struct ProgramInputs {
     name: &'static str,
     source_files: Vec<String>,
+}
+
+struct Program<'a> {
+    link_output: LinkOutput,
+    assertions: &'a Assertions,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -206,7 +211,7 @@ impl TestParameters {
     }
 }
 
-impl Program {
+impl ProgramInputs {
     fn new(name: &'static str, sources: &[&str]) -> Result<Self> {
         std::fs::create_dir_all(build_dir())?;
         Ok(Self {
@@ -215,7 +220,12 @@ impl Program {
         })
     }
 
-    fn run(&self, linker: Linker, variant: &Variant, assertions: &Assertions) -> Result {
+    fn build<'a>(
+        &self,
+        linker: Linker,
+        variant: &Variant,
+        assertions: &'a Assertions,
+    ) -> Result<Program<'a>> {
         let object_paths = self
             .source_files
             .iter()
@@ -230,41 +240,45 @@ impl Program {
             })
             .collect::<Result<Vec<PathBuf>>>()?;
         let link_output = linker.link(self.name, &object_paths, variant)?;
-        assertions.check(&link_output).with_context(|| {
-            format!(
-                "Output binary assertions failed for `{}`. Relink with:\n{}",
-                link_output.binary.display(),
-                link_output.command
-            )
-        })?;
-        let mut child = Command::new(&link_output.binary).spawn()?;
+        Ok(Program {
+            link_output,
+            assertions,
+        })
+    }
+}
+
+impl<'a> Program<'a> {
+    fn run(&self) -> Result {
+        self.assertions
+            .check(&self.link_output)
+            .context("Output binary assertions failed")?;
+        let mut child = Command::new(&self.link_output.binary).spawn()?;
         let status = match child.wait_timeout(std::time::Duration::from_millis(500))? {
             Some(s) => s,
             None => {
                 child.kill()?;
-                bail!(
-                    "Binary `{}` ran for too long. Relink with:\n{}",
-                    link_output.binary.display(),
-                    link_output.command,
-                );
+                bail!("Binary ran for too long");
             }
         };
-        let exit_code = status.code().ok_or_else(|| {
-            anyhow!(
-                "Binary `{}` exited with signal. Relink with:\n{}",
-                link_output.binary.display(),
-                link_output.command,
-            )
-        })?;
+        let exit_code = status
+            .code()
+            .ok_or_else(|| anyhow!("Binary exited with signal"))?;
         if exit_code != 42 {
-            bail!(
-                "Binary `{}` exited with unexpected exit code {exit_code}. Relink with:\n{}",
-                link_output.binary.display(),
-                link_output.command
-            );
+            bail!("Binary exited with unexpected exit code {exit_code}");
         }
 
         Ok(())
+    }
+}
+
+impl<'a> Display for Program<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Binary `{}`. Relink with:\n{}",
+            self.link_output.binary.display(),
+            self.link_output.command
+        )
     }
 }
 
@@ -494,7 +508,7 @@ impl Display for LinkCommand {
     }
 }
 
-impl Display for Program {
+impl Display for ProgramInputs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.name, f)
     }
@@ -545,38 +559,38 @@ fn integration_test() -> Result {
     // ordering here, since we can put more basic tests earlier such that when we fail, we report
     // the most basic test that failed.
     let programs = [
-        Program::new("trivial", &["trivial.c", "exit.c"])?,
-        Program::new("link_args", &["link_args.c", "exit.c"])?,
-        Program::new(
+        ProgramInputs::new("trivial", &["trivial.c", "exit.c"])?,
+        ProgramInputs::new("link_args", &["link_args.c", "exit.c"])?,
+        ProgramInputs::new(
             "global_vars",
             &["global_definitions.c", "global_references.c", "exit.c"],
         )?,
-        Program::new("data", &["data.c", "exit.c"])?,
-        Program::new("weak-vars", &["weak-vars.c", "weak-vars1.c", "exit.c"])?,
-        Program::new(
+        ProgramInputs::new("data", &["data.c", "exit.c"])?,
+        ProgramInputs::new("weak-vars", &["weak-vars.c", "weak-vars1.c", "exit.c"])?,
+        ProgramInputs::new(
             "weak-vars-archive",
             &["weak-vars-archive.c", "weak-vars1.c", "exit.c"],
         )?,
-        Program::new("weak-fns", &["weak-fns.c", "weak-fns1.c", "exit.c"])?,
-        Program::new(
+        ProgramInputs::new("weak-fns", &["weak-fns.c", "weak-fns1.c", "exit.c"])?,
+        ProgramInputs::new(
             "weak-fns-archive",
             &["weak-fns-archive.c", "weak-fns1.c", "exit.c"],
         )?,
-        Program::new("init_test", &["init_test.c", "init.c", "exit.c"])?,
-        Program::new("ifunc", &["ifunc.c", "ifunc1.c", "exit.c"])?,
-        Program::new("internal-syms", &["internal-syms.c", "exit.c"])?,
-        Program::new("tls", &["tls.c", "tls1.c", "init_tls.c", "exit.c"])?,
-        Program::new(
+        ProgramInputs::new("init_test", &["init_test.c", "init.c", "exit.c"])?,
+        ProgramInputs::new("ifunc", &["ifunc.c", "ifunc1.c", "exit.c"])?,
+        ProgramInputs::new("internal-syms", &["internal-syms.c", "exit.c"])?,
+        ProgramInputs::new("tls", &["tls.c", "tls1.c", "init_tls.c", "exit.c"])?,
+        ProgramInputs::new(
             "old_init",
             &["old_init.c", "old_init0.s", "old_init1.s", "exit.c"],
         )?,
-        Program::new(
+        ProgramInputs::new(
             "custom_section",
             &["custom_section.c", "custom_section0.c", "exit.c"],
         )?,
-        Program::new("stack_alignment", &["stack_alignment.s", "exit.c"])?,
-        Program::new("local_symbol_refs", &["local_symbol_refs.s", "exit.c"])?,
-        Program::new(
+        ProgramInputs::new("stack_alignment", &["stack_alignment.s", "exit.c"])?,
+        ProgramInputs::new("local_symbol_refs", &["local_symbol_refs.s", "exit.c"])?,
+        ProgramInputs::new(
             "archive_activation",
             &[
                 "archive_activation.c",
@@ -586,7 +600,7 @@ fn integration_test() -> Result {
                 "empty.a",
             ],
         )?,
-        Program::new(
+        ProgramInputs::new(
             "common_section",
             &[
                 "common_section.c",
@@ -595,7 +609,7 @@ fn integration_test() -> Result {
                 "exit.c",
             ],
         )?,
-        Program::new(
+        ProgramInputs::new(
             "string_merging",
             &[
                 "string_merging.c",
@@ -604,18 +618,18 @@ fn integration_test() -> Result {
                 "exit.c",
             ],
         )?,
-        Program::new(
+        ProgramInputs::new(
             "comments",
             &["comments.c", "comments0.c", "comments1.c", "exit.c"],
         )?,
-        Program::new("eh_frame", &["eh_frame.c", "eh_frame_end.c", "exit.c"])?,
-        Program::new("pie", &["pie.c", "exit.c"])?,
+        ProgramInputs::new("eh_frame", &["eh_frame.c", "eh_frame_end.c", "exit.c"])?,
+        ProgramInputs::new("pie", &["pie.c", "exit.c"])?,
     ];
 
     let linkers = [Linker::ThirdParty("ld"), Linker::Wild];
 
-    for program in &programs {
-        let filename = program.source_files.first().unwrap();
+    for program_inputs in &programs {
+        let filename = program_inputs.source_files.first().unwrap();
         let instructions = TestParameters::from_source(&src_path(filename))
             .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
         for linker in linkers {
@@ -631,11 +645,12 @@ fn integration_test() -> Result {
                                     compiler_args: compiler_args.clone(),
                                 },
                             };
+                            let program = program_inputs.build(linker, &variant, &instructions.assertions).with_context(|| {
+                                format!("Failed to build program `{program_inputs}` with linker `{linker}` variant #{variant}")
+                            })?;
                             program
-                        .run(linker, &variant, &instructions.assertions)
-                        .with_context(|| {
-                            format!("Failed to run program `{program}` with linker `{linker}` variant #{variant}")
-                        })?;
+                                .run()
+                                .with_context(|| format!("Failed to run program. {program}"))?;
                         }
                     }
                 }
