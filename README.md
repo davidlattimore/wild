@@ -71,7 +71,7 @@ following times:
 | gold     | 3365      | 30                        | 3362          | 83.3
 | lld      | 905       | 5.6                       | 1222          | 84.8
 | mold     | 457       | 7.2                       | 2834          | 81.1
-| wild     | 363       | 6.6                       | 1585          | 84.5
+| wild     | 363       | 6.6                       | 1585          | 80.9
 
 Notes about these results:
 * CPU time is user + system CPU time as reported by hyperfine.
@@ -91,14 +91,6 @@ non-incremental linking and reasonable at taking advantage of a few threads. I d
 adding the missing features should change this benchmark significantly. i.e. adding support for
 debug info really shouldn't change our speed when linking with no debug info. I can't be sure
 however until I implement these missing features.
-
-The size difference in the binaries is interesting. I'm pretty sure the larger size produced by Wild
-is mostly due to Wild not yet performing various code model optimisations, which means it ends up
-with large GOT and PLT sections (3.5 MiB). This is fixable with time. I have no idea what the
-performance cost of fixing it would be. I'd be surprised if it was especially expensive, however if
-it is then I'll put it behind a flag. The goal of Wild is to be fast for development, which means
-we're probably happy to trade a slightly larger binary and slightly slower execution for faster
-build times. I haven't as yet found any such flag for other linkers.
 
 If you decide to benchmark Wild against other linkers, in order to make it a fair comparison, you
 should ensure that the other linkers aren't doing work on something that Wild doesn't support. In

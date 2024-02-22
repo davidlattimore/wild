@@ -223,6 +223,15 @@ impl Args {
             _ => false,
         }
     }
+
+    /// Returns how we should handle TLS relocations like TLSLD and TLSGD.
+    pub(crate) fn tls_mode(&self) -> crate::layout::TlsMode {
+        if self.link_static {
+            crate::layout::TlsMode::LocalExec
+        } else {
+            crate::layout::TlsMode::Preserve
+        }
+    }
 }
 
 #[cfg(test)]

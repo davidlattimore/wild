@@ -995,14 +995,20 @@ fn apply_relocation(
             .got_address()?
             .wrapping_add(addend)
             .wrapping_sub(place),
-        (object::RelocationKind::PltRelative, _) => resolution
-            .plt_address()?
-            .wrapping_add(addend)
-            .wrapping_sub(place),
+        (object::RelocationKind::PltRelative, _) => {
+            if layout.args().link_static {
+                resolution.address.wrapping_add(addend).wrapping_sub(place)
+            } else {
+                resolution
+                    .plt_address()?
+                    .wrapping_add(addend)
+                    .wrapping_sub(place)
+            }
+        }
         (object::RelocationKind::Unknown, object::RelocationFlags::Elf { r_type: 19 }) => {
             // R_X86_64_TLSGD
             byte_size = 4;
-            match layout.tls_mode {
+            match layout.args().tls_mode() {
                 TlsMode::LocalExec => {
                     // Transform GD (general dynamic) into LE (local exec). We can make this
                     // transformation because we're producing a statically linked executable.
@@ -1026,7 +1032,7 @@ fn apply_relocation(
         (object::RelocationKind::Unknown, object::RelocationFlags::Elf { r_type: 20 }) => {
             // R_X86_64_TLSLD
             byte_size = 4;
-            match layout.tls_mode {
+            match layout.args().tls_mode() {
                 TlsMode::LocalExec => {
                     // Transform LD (local dynamic) into LE (local exec). We can make this
                     // transformation because we're producing a statically linked executable.
@@ -1049,7 +1055,7 @@ fn apply_relocation(
         }
         (object::RelocationKind::Unknown, object::RelocationFlags::Elf { r_type: 21 }) => {
             // R_X86_64_DTPOFF32
-            if layout.config().link_static {
+            if layout.args().link_static {
                 byte_size = 4;
                 address
                     .wrapping_sub(layout.tls_end_address())
@@ -1084,7 +1090,7 @@ fn apply_relocation(
         (object::RelocationKind::Unknown, object::RelocationFlags::Elf { r_type: 42 }) => {
             // R_X86_64_REX_GOTPCRELX
             byte_size = 4;
-            if layout.config().link_static {
+            if layout.args().link_static {
                 if false {
                     make_rex_got_instruction_absolute(offset, place, out)?;
                     address.wrapping_add(addend).wrapping_add(byte_size as u64)
@@ -1186,7 +1192,7 @@ impl<'data> InternalLayout<'data> {
 
         self.write_plt_got_entries(&mut buffers, layout)?;
 
-        if !layout.symbol_db.args.strip_all {
+        if !layout.args().strip_all {
             self.write_symbol_table_entries(&mut buffers, layout)?;
         }
 

@@ -56,12 +56,10 @@ pub(crate) fn compute<'data>(
     output_sections: OutputSections<'data>,
     output: &mut elf_writer::Output,
 ) -> Result<Layout<'data>> {
-    let tls_mode = determine_tls_mode(symbol_db);
     if let Some(sym_info) = symbol_db.args.sym_info.as_deref() {
         print_symbol_info(symbol_db, &file_states, sym_info);
     }
-    let mut layout_states =
-        find_required_sections(file_states, symbol_db, &output_sections, tls_mode)?;
+    let mut layout_states = find_required_sections(file_states, symbol_db, &output_sections)?;
     finalise_all_sizes(symbol_db, &output_sections, &mut layout_states)?;
     let section_part_sizes = compute_total_section_part_sizes(&layout_states, &output_sections);
     let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections);
@@ -91,7 +89,6 @@ pub(crate) fn compute<'data>(
         file_layouts,
         merged_string_start_addresses,
         output_sections,
-        tls_mode,
     })
 }
 
@@ -142,7 +139,6 @@ pub(crate) struct Layout<'data> {
     pub(crate) file_layouts: Vec<FileLayout<'data>>,
     pub(crate) segment_layouts: Vec<SegmentLayout>,
     pub(crate) output_sections: OutputSections<'data>,
-    pub(crate) tls_mode: TlsMode,
     pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
 }
 
@@ -613,7 +609,6 @@ struct GraphResources<'data, 'scope> {
 
     done: AtomicBool,
     output_sections: &'scope OutputSections<'data>,
-    tls_mode: TlsMode,
 }
 
 // TODO: Consider flattening this if we're sure that we're not going to need other kinds of work
@@ -642,7 +637,7 @@ impl<'data> Layout<'data> {
         i
     }
 
-    pub(crate) fn config(&self) -> &'data Args {
+    pub(crate) fn args(&self) -> &'data Args {
         self.symbol_db.args
     }
 
@@ -853,7 +848,6 @@ fn find_required_sections<'data>(
     file_states: Vec<resolution::ResolvedFile<'data>>,
     symbol_db: &SymbolDb<'data>,
     output_sections: &OutputSections<'data>,
-    tls_mode: TlsMode,
 ) -> Result<Vec<FileLayoutState<'data>>> {
     let num_workers = file_states.len();
     let (worker_slots, workers) = create_worker_slots(file_states, output_sections);
@@ -871,7 +865,6 @@ fn find_required_sections<'data>(
         idle_threads,
         done: AtomicBool::new(false),
         output_sections,
-        tls_mode,
     };
 
     workers
@@ -1323,7 +1316,7 @@ impl RelInfo {
     fn new(rel: &object::Relocation, resources: &GraphResources<'_, '_>) -> Self {
         Self {
             target: rel.target(),
-            plt_got_flags: PltGotFlags::from_rel(rel, resources.tls_mode),
+            plt_got_flags: PltGotFlags::from_rel(rel, resources.symbol_db.args),
         }
     }
 }
@@ -1411,11 +1404,20 @@ pub(crate) enum PltGotFlags {
 }
 
 impl PltGotFlags {
-    fn from_rel(rel: &object::Relocation, tls_mode: TlsMode) -> PltGotFlags {
+    fn from_rel(rel: &object::Relocation, args: &Args) -> PltGotFlags {
+        let tls_mode = args.tls_mode();
         // TODO: This could probably be more efficiently implemented as lookup table indexed by the
         // raw relocation type. We can then select which lookup table to use based on tls_mode.
         match rel.kind() {
-            object::RelocationKind::PltRelative => PltGotFlags::Plt,
+            object::RelocationKind::PltRelative => {
+                if args.link_static {
+                    // When statically linking, we transform PLT relocations into references to the
+                    // actual function.
+                    PltGotFlags::Neither
+                } else {
+                    PltGotFlags::Plt
+                }
+            }
             object::RelocationKind::Got
             | object::RelocationKind::GotRelative
             | object::RelocationKind::GotBaseRelative
@@ -1505,7 +1507,7 @@ impl<'data> InternalLayoutState<'data> {
                 flags: Default::default(),
             }),
         );
-        if resources.tls_mode == TlsMode::Preserve {
+        if resources.symbol_db.args.tls_mode() == TlsMode::Preserve {
             // Allocate space for a TLS module number and offset for use with TLSLD relocations.
             self.common.mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
             self.needs_tlsld_got_entry = true;
@@ -2264,15 +2266,6 @@ fn layout_section_parts(
             section_layout
         },
     )
-}
-
-/// Returns how we should handle TLS relocations like TLSLD and TLSGD.
-fn determine_tls_mode(symbol_db: &SymbolDb<'_>) -> TlsMode {
-    if symbol_db.args.link_static {
-        TlsMode::LocalExec
-    } else {
-        TlsMode::Preserve
-    }
 }
 
 #[allow(dead_code)]
