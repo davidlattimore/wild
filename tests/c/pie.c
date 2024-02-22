@@ -3,11 +3,31 @@
 
 #include "exit.h"
 
-extern void* _DYNAMIC;
+#include <stdint.h>
+
+struct Dyn {
+    uint64_t tag;
+    uint64_t value;
+};
+
+extern struct Dyn _DYNAMIC[];
 
 void _start(void) {
-    if (!_DYNAMIC) {
+    struct Dyn* d = _DYNAMIC;
+    if (!d) {
         exit_syscall(100);
     }
+    int got_flags1 = 0;
+    while (d->tag != 0) {
+        if (d->tag == 0x000000006ffffffb) {
+            got_flags1 = 1;
+        }
+        d++;
+    }
+
+    if (!got_flags1) {
+        exit_syscall(101);
+    }
+
     exit_syscall(42);
 }

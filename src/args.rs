@@ -26,6 +26,7 @@ pub(crate) struct Args {
     pub(crate) merge_strings: bool,
     pub(crate) debug_fuel: Option<AtomicI64>,
     pub(crate) time_phases: bool,
+    pub(crate) pie: bool,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -47,8 +48,6 @@ pub(crate) enum InputSpec {
 // other linkers. On the other, we should perhaps somehow let the user know that we don't support a
 // feature.
 const IGNORED_FLAGS: &[&str] = &[
-    // TODO: Support position-independent executables.
-    "-pie",
     // TODO: Support eh_frame and eh_frame_hdr
     "--eh-frame-hdr",
     // TODO: Support build-ids
@@ -113,6 +112,7 @@ impl Args {
         let mut sym_info = None;
         let mut merge_strings = true;
         let mut debug_fuel = None;
+        let mut pie = false;
         // Skip program name
         input.next();
         while let Some(arg) = input.next() {
@@ -154,6 +154,8 @@ impl Args {
                 sym_info = input.next().map(|a| a.as_ref().to_owned());
             } else if arg == "--no-string-merge" {
                 merge_strings = false;
+            } else if arg == "-pie" {
+                pie = true;
             } else if let Some(rest) = arg.strip_prefix("--debug-fuel=") {
                 debug_fuel = Some(AtomicI64::new(rest.parse()?));
                 // Using debug fuel with more than one thread would likely give non-deterministic
@@ -189,6 +191,7 @@ impl Args {
             sym_info,
             merge_strings,
             debug_fuel,
+            pie,
         })
     }
 
@@ -197,6 +200,14 @@ impl Args {
             .num_threads(self.num_threads.get())
             .build_global()?;
         Ok(())
+    }
+
+    pub(crate) fn base_address(&self) -> u64 {
+        if self.pie {
+            0
+        } else {
+            crate::elf::NON_PIE_START_MEM_ADDRESS
+        }
     }
 
     /// Uses 1 debug fuel, returning how much fuel remains. Debug fuel is intended to be used when

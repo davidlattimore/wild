@@ -278,15 +278,21 @@ fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: 
 
 impl FileHeader {
     fn build(layout: &Layout) -> Result<Self> {
+        let args = layout.args();
+        let ty = if args.pie {
+            elf::FileType::SharedObject
+        } else {
+            elf::FileType::Executable
+        };
         Ok(Self {
             magic: [0x7f, b'E', b'L', b'F'],
             class: 2, // 64 bit
             data: 1,  // Little endian
             ei_version: 1,
-            os_abi: 3, // Linux
+            os_abi: 1, // SYSV
             abi_version: 0,
             padding: [0; 7],
-            ty: 2,         // Executable
+            ty: ty as u16,
             machine: 0x3e, // x86-64
             e_version: 1,
             entry_point: layout.entry_symbol_address()?,
@@ -521,7 +527,7 @@ impl<'data> ObjectLayout<'data> {
         for symbol_id in &self.loaded_symbols {
             plt_got_writer.process_symbol(*symbol_id)?;
         }
-        if !layout.symbol_db.args.strip_all {
+        if !layout.args().strip_all {
             self.write_symbols(start_str_offset, buffers, &layout.output_sections, layout)?;
         }
         plt_got_writer.validate_empty()?;
@@ -1200,6 +1206,10 @@ impl<'data> InternalLayout<'data> {
 
         self.write_merged_strings(&mut buffers);
 
+        if layout.args().pie {
+            self.write_dynamic_entries(buffers.dynamic, layout)?;
+        }
+
         Ok(())
     }
 
@@ -1301,11 +1311,9 @@ impl<'data> InternalLayout<'data> {
         Ok(())
     }
 
-    // TODO
-    #[allow(dead_code)]
     fn write_dynamic_entries(&self, out: &mut [u8], layout: &Layout) -> Result {
         let mut entries: &mut [DynamicEntry] = bytemuck::cast_slice_mut(out);
-        assert!(entries.len() == NUM_DYNAMIC_ENTRIES);
+        assert_eq!(entries.len(), NUM_DYNAMIC_ENTRIES);
         // When adding/removing entries, don't forget to update NUM_DYNAMIC_ENTRIES
         write_dynamic_entry(
             &mut entries,
@@ -1324,13 +1332,19 @@ impl<'data> InternalLayout<'data> {
                 .file_offset as u64,
         )?;
 
+        write_dynamic_entry(&mut entries, DynamicTag::Flags1, elf::flags_1::PIE)?;
+        write_dynamic_entry(
+            &mut entries,
+            DynamicTag::SymEnt,
+            core::mem::size_of::<elf::SymtabEntry>() as u64,
+        )?;
+
         //write_dynamic_entry(&mut entries, DynamicTag::Hash, todo)?;
         //write_dynamic_entry(&mut entries, DynamicTag::StrTab, todo)?;
         // write_dynamic_entry(&mut entries, DynamicTag::Rela, todo)?;
         // write_dynamic_entry(&mut entries, DynamicTag::RelaSize, todo)?;
         // write_dynamic_entry(&mut entries, DynamicTag::RelEnt, todo)?;
         // write_dynamic_entry(&mut entries, DynamicTag::StrSize, todo)?;
-        // write_dynamic_entry(&mut entries, DynamicTag::SymEnt, todo)?;
         // write_dynamic_entry(&mut entries, DynamicTag::Rel, todo)?;
         // write_dynamic_entry(&mut entries, DynamicTag::RelSize, todo)?;
         write_dynamic_entry(&mut entries, DynamicTag::Null, 0)?;

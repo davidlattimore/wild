@@ -90,6 +90,8 @@ pub(crate) const NUM_REGULAR_SECTIONS: usize = 12;
 pub(crate) const NUM_BUILT_IN_SECTIONS: usize = NUM_GENERATED_SECTIONS + NUM_REGULAR_SECTIONS;
 
 pub(crate) struct OutputSections<'data> {
+    /// The base address for our output binary.
+    pub(crate) base_address: u64,
     pub(crate) section_infos: Vec<SectionOutputInfo<'data>>,
     custom_by_name: AHashMap<&'data [u8], OutputSectionId>,
     pub(crate) ro_custom: Vec<OutputSectionId>,
@@ -540,8 +542,8 @@ pub(crate) enum OrderEvent<'data> {
     Section(OutputSectionId, &'data SectionDetails<'data>),
 }
 
-#[derive(Default)]
 pub(crate) struct OutputSectionsBuilder<'data> {
+    base_address: u64,
     custom: BTreeMap<&'data [u8], SectionDetails<'data>>,
 }
 
@@ -585,6 +587,7 @@ impl<'data> OutputSectionsBuilder<'data> {
             .collect();
 
         let mut output_sections = OutputSections {
+            base_address: self.base_address,
             section_infos,
             custom_by_name,
             ro_custom,
@@ -652,6 +655,13 @@ impl<'data> OutputSectionsBuilder<'data> {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn with_base_address(base_address: u64) -> Self {
+        Self {
+            base_address,
+            custom: Default::default(),
+        }
     }
 }
 
@@ -767,7 +777,7 @@ impl<'data> OutputSections<'data> {
 
     #[cfg(test)]
     pub(crate) fn for_testing() -> OutputSections<'static> {
-        let mut builder = OutputSectionsBuilder::default();
+        let mut builder = OutputSectionsBuilder::with_base_address(0x1000);
         let section_details = SectionDetails {
             name: b"ro",
             ty: crate::elf::Sht::Progbits,

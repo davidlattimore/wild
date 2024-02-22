@@ -45,7 +45,7 @@ pub(crate) fn resolve_symbols_and_sections<'data>(
     let (mut resolved, start_stop_sets, mut internal) =
         resolve_symbols_in_files(file_states, symbol_db)?;
 
-    let output_sections = assign_section_ids(&resolved)?;
+    let output_sections = assign_section_ids(&resolved, symbol_db.args)?;
 
     let merged_strings = merge_strings(&mut resolved, &output_sections)?;
 
@@ -407,8 +407,11 @@ fn merge_strings<'data>(
 }
 
 #[tracing::instrument(skip_all, name = "Assign section IDs")]
-fn assign_section_ids<'data>(resolved: &[ResolvedFile<'data>]) -> Result<OutputSections<'data>> {
-    let mut output_sections_builder = OutputSectionsBuilder::default();
+fn assign_section_ids<'data>(
+    resolved: &[ResolvedFile<'data>],
+    args: &Args,
+) -> Result<OutputSections<'data>> {
+    let mut output_sections_builder = OutputSectionsBuilder::with_base_address(args.base_address());
     for s in resolved {
         if let ResolvedFile::Object(s) = s {
             output_sections_builder.add_sections(&s.custom_sections)?;

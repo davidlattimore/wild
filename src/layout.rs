@@ -1069,7 +1069,9 @@ impl<'data, 'scope> GraphResources<'data, 'scope> {
 impl<'data> FileLayoutState<'data> {
     fn finalise_sizes(&mut self, symbol_db: &SymbolDb, output_sections: &OutputSections) -> Result {
         match self {
-            FileLayoutState::Object(s) => s.finalise_sizes(symbol_db, output_sections)?,
+            FileLayoutState::Object(s) => s
+                .finalise_sizes(symbol_db, output_sections)
+                .with_context(|| format!("finalise_sizes failed for {s}"))?,
             FileLayoutState::Internal(s) => s.finalise_sizes(symbol_db, output_sections)?,
             _ => (),
         }
@@ -1530,6 +1532,12 @@ impl<'data> InternalLayoutState<'data> {
             self.allocate_symbol_table_sizes(symbol_db)?;
         }
 
+        if symbol_db.args.pie {
+            self.common.mem_sizes.dynamic += (elf_writer::NUM_DYNAMIC_ENTRIES
+                * core::mem::size_of::<crate::elf::DynamicEntry>())
+                as u64;
+        }
+
         self.common.mem_sizes.eh_frame_hdr += core::mem::size_of::<elf::EhFrameHdr>() as u64;
         Ok(())
     }
@@ -1568,7 +1576,6 @@ impl<'data> InternalLayoutState<'data> {
     ) -> Result<InternalLayout<'data>> {
         let header_layout = section_layouts.built_in(output_section_id::HEADERS);
         assert_eq!(header_layout.file_offset, 0);
-        assert_eq!(header_layout.mem_offset, elf::START_MEM_ADDRESS);
 
         // We need a GOT address to use for any relocations that point to undefined weak symbols.
         let undefined_symbol_resolution = Resolution {
@@ -1775,6 +1782,11 @@ impl<'data> ObjectLayoutState<'data> {
     }
 
     fn finalise_sizes(&mut self, symbol_db: &SymbolDb, output_sections: &OutputSections) -> Result {
+        let args = symbol_db.args;
+        if args.pie && self.state.common.mem_sizes.got > 0 {
+            bail!("We don't yet support -pie with GOT entries");
+        }
+
         self.state.common.mem_sizes.resize(output_sections.len());
         if !symbol_db.args.strip_all {
             self.allocate_symtab_space(symbol_db)?;
@@ -2231,7 +2243,7 @@ fn layout_section_parts(
     output_sections: &OutputSections,
 ) -> OutputSectionPartMap<OutputRecordLayout> {
     let mut file_offset = 0;
-    let mut mem_offset = elf::START_MEM_ADDRESS;
+    let mut mem_offset = output_sections.base_address;
     let mut current_seg_id = None;
     sizes.output_order_map(
         output_sections,
@@ -2342,9 +2354,10 @@ fn print_symbol_info(symbol_db: &SymbolDb, files: &[resolution::ResolvedFile], n
 /// overlap and that sections don't overlap.
 #[test]
 fn test_no_disallowed_overlaps() {
-    let output_sections = crate::output_section_id::OutputSectionsBuilder::default()
-        .build()
-        .unwrap();
+    let output_sections =
+        crate::output_section_id::OutputSectionsBuilder::with_base_address(0x1000)
+            .build()
+            .unwrap();
     let section_part_sizes = OutputSectionPartMap::<u64>::with_size(output_sections.len())
         .output_order_map(&output_sections, |_, _, _| 7);
     let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections);

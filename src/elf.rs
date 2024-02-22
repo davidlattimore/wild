@@ -2,10 +2,11 @@ use bytemuck::Pod;
 use bytemuck::Zeroable;
 use object::LittleEndian;
 
-/// Our starting address in memory. We can start memory addresses wherever we like, even from 0. We
-/// pick 400k because it's the same as what ld does and because picking a distinctive non-zero
-/// values makes it more obvious what's happening if we mix up file and memory offsets.
-pub const START_MEM_ADDRESS: u64 = 0x400_000;
+/// Our starting address in memory when linking non-relocatable executables. We can start memory
+/// addresses wherever we like, even from 0. We pick 400k because it's the same as what ld does and
+/// because picking a distinctive non-zero values makes it more obvious what's happening if we mix
+/// up file and memory offsets.
+pub const NON_PIE_START_MEM_ADDRESS: u64 = 0x400_000;
 
 pub(crate) type File<'data> = object::read::elf::ElfFile64<'data, LittleEndian, &'data [u8]>;
 pub(crate) type Section<'data, 'file> =
@@ -68,6 +69,16 @@ pub(crate) mod shf {
     pub(crate) const GROUP: u64 = 0x200;
     pub(crate) const TLS: u64 = 0x400;
     pub(crate) const GNU_RETAIN: u64 = 0x200_000;
+}
+
+#[allow(unused)]
+#[repr(u16)]
+pub(crate) enum FileType {
+    Unknown = 0,
+    Relocatable = 0x1,
+    Executable = 0x2,
+    SharedObject = 0x3,
+    CoreFile = 0x4,
 }
 
 /// Section types
@@ -195,6 +206,11 @@ pub(crate) enum DynamicTag {
     FiniArray = 26,
     InitArraySize = 27,
     FiniArraySize = 28,
+    Flags1 = 0x6ffffffb,
+}
+
+pub(crate) mod flags_1 {
+    pub(crate) const PIE: u64 = 0x08000000;
 }
 
 /// See https://refspecs.linuxfoundation.org/LSB_1.3.0/gLSB/gLSB/ehframehdr.html
