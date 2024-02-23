@@ -62,9 +62,12 @@ pub(crate) const RELA_PLT: OutputSectionId = OutputSectionId(6);
 pub(crate) const EH_FRAME: OutputSectionId = OutputSectionId(7);
 pub(crate) const EH_FRAME_HDR: OutputSectionId = OutputSectionId(8);
 pub(crate) const DYNAMIC: OutputSectionId = OutputSectionId(9);
+pub(crate) const DYNSYM: OutputSectionId = OutputSectionId(10);
+pub(crate) const DYNSTR: OutputSectionId = OutputSectionId(11);
+pub(crate) const RELA_DYN: OutputSectionId = OutputSectionId(12);
 
 /// Regular sections are sections that come from input files and can contain a mix of alignments.
-pub(crate) const NUM_GENERATED_SECTIONS: usize = 10;
+pub(crate) const NUM_GENERATED_SECTIONS: usize = 13;
 
 // Sections that need to be referenced from code. When adding new sections here, be sure to update
 // `test_constant_ids`.
@@ -272,6 +275,41 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         start_symbol_name: Some("_DYNAMIC"),
         ..DEFAULT_DEFS
     },
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: ".dynsym".as_bytes(),
+            ty: elf::Sht::DynSym,
+            section_flags: elf::shf::ALLOC,
+            element_size: size_of::<elf::SymtabEntry>() as u64,
+            ..SectionDetails::default()
+        },
+        link: Some(DYNSTR),
+        min_alignment: alignment::SYMTAB_ENTRY,
+        info_fn: Some(dynsym_info),
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: ".dynstr".as_bytes(),
+            ty: elf::Sht::Strtab,
+            section_flags: elf::shf::ALLOC,
+            ..SectionDetails::default()
+        },
+        min_alignment: alignment::MIN,
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: ".rela.dyn".as_bytes(),
+            ty: elf::Sht::Rela,
+            section_flags: elf::shf::ALLOC,
+            element_size: elf::RELA_ENTRY_SIZE,
+            ..SectionDetails::default()
+        },
+        min_alignment: alignment::RELA_ENTRY,
+        link: Some(DYNSYM),
+        ..DEFAULT_DEFS
+    },
     // Start of regular sections
     BuiltInSectionDetails {
         details: SectionDetails {
@@ -285,6 +323,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: ".init_array".as_bytes(),
             ty: elf::Sht::InitArray,
+            section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             retain: true,
             ..SectionDetails::default()
         },
@@ -296,6 +335,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: ".fini_array".as_bytes(),
             ty: elf::Sht::FiniArray,
+            section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             retain: true,
             ..SectionDetails::default()
         },
@@ -690,12 +730,13 @@ impl<'data> OutputSections<'data> {
     pub(crate) fn sections_and_segments_do(&self, mut cb: impl FnMut(OrderEvent)) {
         cb(OrderEvent::SegmentStart(crate::program_segments::LOAD_RO));
         cb(HEADERS.event());
+        cb(DYNSYM.event());
+        cb(DYNSTR.event());
+        cb(RELA_DYN.event());
         cb(RODATA.event());
         cb(OrderEvent::SegmentStart(crate::program_segments::EH_FRAME));
         cb(EH_FRAME_HDR.event());
         cb(OrderEvent::SegmentEnd(crate::program_segments::EH_FRAME));
-        cb(INIT_ARRAY.event());
-        cb(FINI_ARRAY.event());
         cb(PREINIT_ARRAY.event());
         cb(SHSTRTAB.event());
         cb(SYMTAB.event());
@@ -714,6 +755,8 @@ impl<'data> OutputSections<'data> {
 
         cb(OrderEvent::SegmentStart(crate::program_segments::LOAD_RW));
         cb(GOT.event());
+        cb(INIT_ARRAY.event());
+        cb(FINI_ARRAY.event());
         cb(DATA.event());
         cb(EH_FRAME.event());
         cb(OrderEvent::SegmentStart(crate::program_segments::DYNAMIC));
@@ -853,6 +896,11 @@ fn symtab_info(layout: &Layout) -> u32 {
     (layout.section_part_layouts.symtab_locals.file_size / size_of::<elf::SymtabEntry>()) as u32
 }
 
+fn dynsym_info(_layout: &Layout) -> u32 {
+    // For now, we're not putting anything in dynstr, so the only "local" is the null symbol.
+    1
+}
+
 #[test]
 fn test_constant_ids() {
     let check = &[
@@ -878,6 +926,9 @@ fn test_constant_ids() {
         (RELA_PLT, ".rela.plt"),
         (COMMENT, ".comment"),
         (DYNAMIC, ".dynamic"),
+        (DYNSYM, ".dynsym"),
+        (DYNSTR, ".dynstr"),
+        (RELA_DYN, ".rela.dyn"),
     ];
     for (id, name) in check {
         assert_eq!(

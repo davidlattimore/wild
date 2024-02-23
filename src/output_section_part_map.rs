@@ -25,6 +25,9 @@ pub(crate) struct OutputSectionPartMap<T> {
     pub(crate) eh_frame: T,
     pub(crate) eh_frame_hdr: T,
     pub(crate) dynamic: T,
+    pub(crate) dynsym: T,
+    pub(crate) dynstr: T,
+    pub(crate) rela_dyn: T,
 }
 
 impl<T: Default> OutputSectionPartMap<T> {
@@ -44,6 +47,9 @@ impl<T: Default> OutputSectionPartMap<T> {
             eh_frame: Default::default(),
             eh_frame_hdr: Default::default(),
             dynamic: Default::default(),
+            dynsym: Default::default(),
+            dynstr: Default::default(),
+            rela_dyn: Default::default(),
         }
     }
 }
@@ -82,14 +88,27 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             output_section_id::HEADERS.min_alignment(),
             &self.file_headers,
         );
+        let dynsym = cb(
+            output_section_id::DYNSYM,
+            output_section_id::DYNSYM.min_alignment(),
+            &self.dynsym,
+        );
+        let dynstr = cb(
+            output_section_id::DYNSTR,
+            output_section_id::DYNSTR.min_alignment(),
+            &self.dynstr,
+        );
+        let rela_dyn = cb(
+            output_section_id::RELA_DYN,
+            output_section_id::RELA_DYN.min_alignment(),
+            &self.rela_dyn,
+        );
         self.map_regular(output_section_id::RODATA, &mut cb, &mut regular);
         let eh_frame_hdr = cb(
             output_section_id::EH_FRAME_HDR,
             output_section_id::EH_FRAME_HDR.min_alignment(),
             &self.eh_frame_hdr,
         );
-        self.map_regular(output_section_id::INIT_ARRAY, &mut cb, &mut regular);
-        self.map_regular(output_section_id::FINI_ARRAY, &mut cb, &mut regular);
         self.map_regular(output_section_id::PREINIT_ARRAY, &mut cb, &mut regular);
         let shstrtab = cb(
             output_section_id::SHSTRTAB,
@@ -135,6 +154,8 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             output_section_id::GOT.min_alignment(),
             &self.got,
         );
+        self.map_regular(output_section_id::INIT_ARRAY, &mut cb, &mut regular);
+        self.map_regular(output_section_id::FINI_ARRAY, &mut cb, &mut regular);
         self.map_regular(output_section_id::DATA, &mut cb, &mut regular);
         let eh_frame = cb(
             output_section_id::EH_FRAME,
@@ -170,6 +191,9 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             eh_frame,
             eh_frame_hdr,
             dynamic,
+            dynsym,
+            dynstr,
+            rela_dyn,
         }
     }
 
@@ -234,6 +258,9 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             eh_frame: cb(&mut self.eh_frame, &other.eh_frame),
             eh_frame_hdr: cb(&mut self.eh_frame_hdr, &other.eh_frame_hdr),
             dynamic: cb(&mut self.dynamic, &other.dynamic),
+            dynsym: cb(&mut self.dynsym, &other.dynsym),
+            dynstr: cb(&mut self.dynstr, &other.dynstr),
+            rela_dyn: cb(&mut self.rela_dyn, &other.rela_dyn),
         }
     }
 }
@@ -298,7 +325,15 @@ impl<T: Copy> OutputSectionPartMap<T> {
         update(output_section_id::EH_FRAME, &[self.eh_frame]);
         update(output_section_id::EH_FRAME_HDR, &[self.eh_frame_hdr]);
         update(output_section_id::DYNAMIC, &[self.dynamic]);
+        update(output_section_id::DYNSYM, &[self.dynsym]);
+        update(output_section_id::DYNSTR, &[self.dynstr]);
+        update(output_section_id::RELA_DYN, &[self.rela_dyn]);
         values_out.extend(self.regular.iter().map(|parts| cb(parts.raw_values())));
+        debug_assert!(
+            values_out.len() == values_out.capacity(),
+            "merge_parts didn't merge {} section(s)",
+            values_out.capacity() - values_out.len()
+        );
         OutputSectionMap::from_values(values_out)
     }
 }
@@ -322,6 +357,9 @@ impl<T: AddAssign + Copy + Default> OutputSectionPartMap<T> {
         self.eh_frame += rhs.eh_frame;
         self.eh_frame_hdr += rhs.eh_frame_hdr;
         self.dynamic += rhs.dynamic;
+        self.dynsym += rhs.dynsym;
+        self.dynstr += rhs.dynstr;
+        self.rela_dyn += rhs.rela_dyn;
     }
 }
 

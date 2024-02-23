@@ -802,6 +802,17 @@ fn integration_test() -> Result {
             &["comments.c", "comments0.c", "comments1.c", "exit.c"],
         )?,
         ProgramInputs::new("eh_frame", &["eh_frame.c", "eh_frame_end.c", "exit.c"])?,
+        ProgramInputs::new(
+            "pie",
+            &[
+                "pie.c",
+                "pie0.s",
+                "pie1.c",
+                "init.c",
+                "init_tls.c",
+                "exit.c",
+            ],
+        )?,
         ProgramInputs::new("trivial-libc", &["trivial-libc.c"])?,
         ProgramInputs::new("trivial-rust", &["trivial-rust.rs"])?,
     ];

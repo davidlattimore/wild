@@ -206,11 +206,18 @@ pub(crate) enum DynamicTag {
     FiniArray = 26,
     InitArraySize = 27,
     FiniArraySize = 28,
+    Flags = 30,
     Flags1 = 0x6ffffffb,
+    RelaCount = 0x6ffffff9,
 }
 
 pub(crate) mod flags_1 {
+    pub(crate) const NOW: u64 = 0x1;
     pub(crate) const PIE: u64 = 0x08000000;
+}
+
+pub(crate) mod flags {
+    pub(crate) const BIND_NOW: u64 = 0x8;
 }
 
 /// See https://refspecs.linuxfoundation.org/LSB_1.3.0/gLSB/gLSB/ehframehdr.html
@@ -303,3 +310,5 @@ const _ASSERTS: () = {
     assert!(PROGRAM_HEADER_SIZE as usize == std::mem::size_of::<ProgramHeader>());
     assert!(SECTION_HEADER_SIZE as usize == std::mem::size_of::<SectionHeader>());
 };
+
+pub(crate) const R_X86_64_RELATIVE: u64 = 8;

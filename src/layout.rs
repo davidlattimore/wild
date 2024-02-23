@@ -300,32 +300,39 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 common.symbol_states[local_index] = TargetResolutionKind::Address;
             }
         }
-        if symbol_request.flags.needs_got()
-            && common.symbol_states[local_index] < TargetResolutionKind::Got
-        {
-            common.symbol_states[local_index] = TargetResolutionKind::Got;
-            common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
-        }
-        if matches!(symbol_request.flags, PltGotFlags::TlsGot) {
-            match &common.symbol_states[local_index] {
+        match symbol_request.flags {
+            PltGotFlags::Got | PltGotFlags::Plt => {
+                if common.symbol_states[local_index] < TargetResolutionKind::Got {
+                    common.symbol_states[local_index] = TargetResolutionKind::Got;
+                    common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
+                    if resources.symbol_db.args.is_relocatable() {
+                        common.mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
+                    }
+                }
+                if matches!(symbol_request.flags, PltGotFlags::Plt)
+                    && common.symbol_states[local_index] < TargetResolutionKind::Plt
+                {
+                    common.symbol_states[local_index] = TargetResolutionKind::Plt;
+                    common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
+                }
+            }
+            PltGotFlags::GotTlsOffset => {
+                if common.symbol_states[local_index] < TargetResolutionKind::Got {
+                    common.symbol_states[local_index] = TargetResolutionKind::GotTlsOffset;
+                    common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
+                }
+            }
+            PltGotFlags::GotTlsDouble => match &common.symbol_states[local_index] {
                 TargetResolutionKind::Address => {
-                    common.symbol_states[local_index] = TargetResolutionKind::TlsGot;
+                    common.symbol_states[local_index] = TargetResolutionKind::GotTlsDouble;
                     common.mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
                 }
-                TargetResolutionKind::TlsGot => {}
+                TargetResolutionKind::GotTlsDouble => {}
                 other => {
                     bail!("Invalid state transition {other:?} -> TlsGot");
                 }
-            }
-        }
-        if symbol_request.flags.needs_plt()
-            && common.symbol_states[local_index] < TargetResolutionKind::Plt
-        {
-            if !symbol_request.flags.needs_got() {
-                bail!("Invalid request: needs_plt was set, but needs_got wasn't");
-            }
-            common.symbol_states[local_index] = TargetResolutionKind::Plt;
-            common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
+            },
+            _ => {}
         }
         Ok(())
     }
@@ -553,6 +560,9 @@ pub(crate) enum TargetResolutionKind {
     /// An address in the global offset table.
     Got,
 
+    /// A TLS offset in the global offset table.
+    GotTlsOffset,
+
     /// A PLT entry and a GOT entry.
     Plt,
 
@@ -562,7 +572,7 @@ pub(crate) enum TargetResolutionKind {
 
     /// A double-entry in the global offset table. Used to store the module number and offset for a
     /// TLS variable.
-    TlsGot,
+    GotTlsDouble,
 }
 
 struct DynamicLayoutState<'data> {
@@ -693,6 +703,14 @@ impl<'data> Layout<'data> {
         // If the end of the TLS segment isn't usize-aligned, then padding will be inserted so
         // that the TCB is properly aligned.
         alignment::USIZE.align_up(tls_end)
+    }
+
+    pub(crate) fn offset_of_section(&self, section_id: OutputSectionId) -> u64 {
+        self.section_layouts.get(section_id).file_offset as u64
+    }
+
+    pub(crate) fn size_of_section(&self, section_id: OutputSectionId) -> u64 {
+        self.section_layouts.get(section_id).file_size as u64
     }
 }
 
@@ -1273,12 +1291,19 @@ impl SectionRequest {
         &self,
         section: &mut Section,
         mem_sizes: &mut OutputSectionPartMap<u64>,
+        args: &Args,
     ) -> Result<()> {
         if section.resolution_kind == self.flags {
             return Ok(());
         }
         match (section.resolution_kind, self.flags) {
             (PltGotFlags::Neither, PltGotFlags::Got) => {
+                mem_sizes.got += elf::GOT_ENTRY_SIZE;
+                if args.is_relocatable() {
+                    mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
+                }
+            }
+            (PltGotFlags::Neither, PltGotFlags::GotTlsOffset) => {
                 mem_sizes.got += elf::GOT_ENTRY_SIZE;
             }
             (PltGotFlags::Neither, PltGotFlags::Plt) => {
@@ -1288,7 +1313,7 @@ impl SectionRequest {
             (PltGotFlags::Got, PltGotFlags::Plt) => {
                 mem_sizes.plt += elf::PLT_ENTRY_SIZE;
             }
-            (PltGotFlags::Neither, PltGotFlags::TlsGot) => {
+            (PltGotFlags::Neither, PltGotFlags::GotTlsDouble) => {
                 mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
             }
             (_, PltGotFlags::Neither) | (PltGotFlags::Plt, PltGotFlags::Got) => {
@@ -1313,9 +1338,13 @@ impl<'data> Section<'data> {
         let alignment = Alignment::new(object_section.align())?;
         let size = object_section.size();
         let section_data = object_section.data()?;
+        let is_relocatable = resources.symbol_db.args.is_relocatable();
         for (_, rel) in object_section.relocations() {
             let rel_info = RelInfo::new(&rel, resources);
-            process_relocation(&rel_info, resources, &mut worker.state, queue)
+            process_relocation(&rel_info, resources, &mut worker.state, queue);
+            if is_relocatable && is_relocation_position_dependent(&rel) {
+                worker.state.common.mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
+            }
         }
         let section = Section {
             index: section_id,
@@ -1352,6 +1381,12 @@ impl RelInfo {
             plt_got_flags: PltGotFlags::from_rel(rel, resources.symbol_db.args),
         }
     }
+}
+
+fn is_relocation_position_dependent(rel: &object::Relocation) -> bool {
+    // TODO: We probably need to return true here for object::RelocationKind::Got as well, but we
+    // don't yet support writing those.
+    matches!(rel.kind(), object::RelocationKind::Absolute)
 }
 
 fn process_relocation(
@@ -1425,15 +1460,18 @@ pub(crate) enum PltGotFlags {
     #[default]
     Neither,
 
-    /// A single GOT entry is required.
+    /// A single GOT entry containing an absolute address is required.
     Got,
+
+    /// A single GOT entry containing a TLS offset is required.
+    GotTlsOffset,
 
     /// A PLT and a GOT entry are required.
     Plt,
 
     /// A double-GOT entry is required for a TLS variable. The first entry contains the module index
     /// and the second the offset within the module.
-    TlsGot,
+    GotTlsDouble,
 }
 
 impl PltGotFlags {
@@ -1457,10 +1495,14 @@ impl PltGotFlags {
             | object::RelocationKind::GotBaseOffset => PltGotFlags::Got,
             object::RelocationKind::Unknown => match rel.flags() {
                 object::RelocationFlags::Elf { r_type } => match r_type {
-                    22 | 41 | 42 => PltGotFlags::Got,
+                    // R_X86_64_GOTPCRELX, R_X86_64_REX_GOTPCRELX
+                    41 | 42 => PltGotFlags::Got,
+                    // R_X86_64_GOTTPOFF
+                    22 => PltGotFlags::GotTlsOffset,
+                    // R_X86_64_TLSGD, R_X86_64_TLSLD
                     19 | 20 => match tls_mode {
                         TlsMode::LocalExec => PltGotFlags::Neither,
-                        TlsMode::Preserve => PltGotFlags::TlsGot,
+                        TlsMode::Preserve => PltGotFlags::GotTlsDouble,
                     },
                     _ => PltGotFlags::Neither,
                 },
@@ -1468,14 +1510,6 @@ impl PltGotFlags {
             },
             _ => PltGotFlags::Neither,
         }
-    }
-
-    fn needs_got(&self) -> bool {
-        matches!(self, Self::Got | Self::Plt)
-    }
-
-    fn needs_plt(&self) -> bool {
-        matches!(self, Self::Plt)
     }
 }
 
@@ -1545,6 +1579,11 @@ impl<'data> InternalLayoutState<'data> {
             // Allocate space for a TLS module number and offset for use with TLSLD relocations.
             self.common.mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
             self.needs_tlsld_got_entry = true;
+        }
+
+        if resources.symbol_db.args.is_relocatable() {
+            self.common.mem_sizes.dynstr += 1;
+            self.common.mem_sizes.dynsym += size_of::<elf::SymtabEntry>() as u64;
         }
         Ok(())
     }
@@ -1895,19 +1934,17 @@ impl<'data> ObjectLayoutState<'data> {
                 }
             }
             if let SectionSlot::Loaded(section) = &mut self.state.sections[section_id.0] {
-                section_request
-                    .allocate_required_entries(section, &mut self.state.common.mem_sizes)?;
+                section_request.allocate_required_entries(
+                    section,
+                    &mut self.state.common.mem_sizes,
+                    resources.symbol_db.args,
+                )?;
             };
         }
         Ok(())
     }
 
     fn finalise_sizes(&mut self, symbol_db: &SymbolDb, output_sections: &OutputSections) -> Result {
-        let args = symbol_db.args;
-        if args.pie && self.state.common.mem_sizes.got > 0 {
-            bail!("We don't yet support -pie with GOT entries");
-        }
-
         self.state.common.mem_sizes.resize(output_sections.len());
         if !symbol_db.args.strip_all {
             self.allocate_symtab_space(symbol_db)?;
@@ -2002,8 +2039,9 @@ impl<'data> ObjectLayoutState<'data> {
                     let target_resolution = match sec.resolution_kind {
                         PltGotFlags::Neither => TargetResolutionKind::Address,
                         PltGotFlags::Got => TargetResolutionKind::Got,
+                        PltGotFlags::GotTlsOffset => TargetResolutionKind::GotTlsOffset,
                         PltGotFlags::Plt => TargetResolutionKind::Plt,
-                        PltGotFlags::TlsGot => TargetResolutionKind::TlsGot,
+                        PltGotFlags::GotTlsDouble => TargetResolutionKind::GotTlsDouble,
                     };
                     section_resolutions
                         .push(Some(emitter.create_resolution(target_resolution, *offset)?));
@@ -2295,7 +2333,7 @@ impl<'state> GlobalAddressEmitter<'state> {
         };
         match res_kind {
             TargetResolutionKind::None | TargetResolutionKind::Address => {}
-            TargetResolutionKind::Got => {
+            TargetResolutionKind::Got | TargetResolutionKind::GotTlsOffset => {
                 resolution.got_address = Some(self.allocate_got());
             }
             TargetResolutionKind::Plt => {
@@ -2315,7 +2353,7 @@ impl<'state> GlobalAddressEmitter<'state> {
                 resolution.address = plt_address.get();
                 resolution.plt_address = Some(plt_address);
             }
-            TargetResolutionKind::TlsGot => {
+            TargetResolutionKind::GotTlsDouble => {
                 // Allocate two GOT entries, storing a pointer to the first. This double-entry is
                 // the structure expected by __tls_get_addr.
                 resolution.got_address = Some(self.allocate_got());
