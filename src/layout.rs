@@ -1944,7 +1944,10 @@ impl<'data> ObjectLayoutState<'data> {
                         self.state.local_symbol_resolutions[sym.index().0].global_symbol_id()
                     {
                         let symbol = symbol_db.symbol(symbol_id);
-                        if symbol.file_id == self.state.common.file_id {
+                        if symbol.file_id == self.state.common.file_id
+                            && self.state.common.symbol_states[sym.index().0]
+                                != TargetResolutionKind::None
+                        {
                             num_globals += 1;
                             strings_size += sym.name_bytes()?.len() + 1;
                         }
