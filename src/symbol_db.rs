@@ -144,7 +144,7 @@ impl<'data> SymbolDb<'data> {
         &mut self,
         readers: Vec<FileSymbolReader<'data>>,
     ) -> Result<Vec<FileSymbols<'data>>> {
-        let symbol_per_file = read_symbols(readers)?;
+        let symbol_per_file = read_symbols(readers, self.args)?;
         self.populate_symbol_db(symbol_per_file)
     }
 
@@ -248,24 +248,28 @@ impl<'data> SymbolDb<'data> {
 }
 
 #[tracing::instrument(skip_all, name = "Read symbols")]
-fn read_symbols(
-    readers: Vec<FileSymbolReader<'_>>,
-) -> Result<Vec<Vec<SymbolLoadOutputs<'_>>>, anyhow::Error> {
+fn read_symbols<'data>(
+    readers: Vec<FileSymbolReader<'data>>,
+    args: &Args,
+) -> Result<Vec<Vec<SymbolLoadOutputs<'data>>>, anyhow::Error> {
     let symbol_per_file = readers
         .into_par_iter()
         .map(|reader| {
             let filename = reader.filename();
-            load_symbols_from_file(reader)
+            load_symbols_from_file(reader, args)
                 .with_context(|| format!("Failed to load symbols from `{}`", filename.display()))
         })
         .collect::<Result<Vec<Vec<SymbolLoadOutputs>>>>()?;
     Ok(symbol_per_file)
 }
 
-fn load_symbols_from_file(reader: FileSymbolReader) -> Result<Vec<SymbolLoadOutputs>> {
+fn load_symbols_from_file<'data>(
+    reader: FileSymbolReader<'data>,
+    args: &Args,
+) -> Result<Vec<SymbolLoadOutputs<'data>>> {
     Ok(match reader {
         FileSymbolReader::Object(s) => vec![s.load_symbols()?],
-        FileSymbolReader::Internal(s) => vec![s.load_symbols()?],
+        FileSymbolReader::Internal(s) => vec![s.load_symbols(args)?],
         FileSymbolReader::Dynamic(s) => vec![s.load_dynamic_symbols()?],
     })
 }
@@ -346,9 +350,14 @@ impl<'data> ObjectSymbolReader<'data> {
 }
 
 impl InternalSymbolReader {
-    fn load_symbols(mut self) -> Result<SymbolLoadOutputs<'static>> {
+    fn load_symbols(mut self, args: &Args) -> Result<SymbolLoadOutputs<'static>> {
         let mut symbols = Vec::new();
         for section_id in output_section_id::built_in_section_ids() {
+            // If we're not producing a relocatable output, then don't define any symbols for the
+            // .dynamic section.
+            if section_id == output_section_id::DYNAMIC && !args.is_relocatable() {
+                continue;
+            }
             let def = section_id.built_in_details();
             if let Some(name) = def.start_symbol_name {
                 symbols.push(PendingSymbol::new(

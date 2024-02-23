@@ -360,7 +360,7 @@ impl<'data> MergeStringsSection<'data> {
 
 /// Merges identical strings from all loaded objects where those strings are from input sections
 /// that are marked with both the SHF_MERGE and SHF_STRINGS flags.
-#[tracing::instrument(skip_all, name = "Resolve symbols")]
+#[tracing::instrument(skip_all, name = "Merge strings")]
 fn merge_strings<'data>(
     resolved: &mut [ResolvedFile<'data>],
     output_sections: &OutputSections,

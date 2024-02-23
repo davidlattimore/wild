@@ -23,6 +23,7 @@ use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::program_segments::ProgramSegmentId;
+use crate::program_segments::MAX_SEGMENTS;
 use crate::resolution;
 use crate::resolution::LocalSymbolResolution;
 use crate::resolution::SectionSlot;
@@ -66,7 +67,13 @@ pub(crate) fn compute<'data>(
     let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections);
     let section_layouts = layout_sections(&section_part_layouts);
     output.set_size(compute_total_file_size(&section_layouts));
-    let segment_layouts = compute_segment_layout(&section_layouts, &output_sections);
+
+    let FileLayoutState::Internal(internal) = &layout_states[INTERNAL_FILE_ID.as_usize()] else {
+        unreachable!();
+    };
+    let header_info = internal.header_info.as_ref().unwrap();
+    let segment_layouts = compute_segment_layout(&section_layouts, &output_sections, header_info);
+
     let mem_offsets: OutputSectionPartMap<u64> =
         starting_memory_offsets(&section_part_layouts, &output_sections);
     let starting_mem_offsets_by_file = compute_start_offsets_by_file(&layout_states, mem_offsets);
@@ -144,8 +151,8 @@ pub(crate) struct Layout<'data> {
 }
 
 pub(crate) struct SegmentLayouts {
-    /// The layout of each of our segments. Empty segments will have been filtered, so don't try to
-    /// index this by our internal segment IDs.
+    /// The layout of each of our segments. Segments containing no active output sections will have
+    /// been filtered, so don't try to index this by our internal segment IDs.
     pub(crate) segments: Vec<SegmentLayout>,
 }
 
@@ -764,6 +771,7 @@ fn compute_symbols_and_layouts<'data>(
 fn compute_segment_layout(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections,
+    header_info: &HeaderInfo,
 ) -> SegmentLayouts {
     struct Record {
         segment_id: ProgramSegmentId,
@@ -809,20 +817,23 @@ fn compute_segment_layout(
         }
     });
     complete.sort_by_key(|r| r.segment_id);
-    let segments = complete
-        .into_iter()
-        .enumerate()
-        .map(|(id, r)| SegmentLayout {
-            id: ProgramSegmentId::new(id),
-            sizes: OutputRecordLayout {
-                file_size: r.file_end - r.file_start,
-                mem_size: r.mem_end - r.mem_start,
-                alignment: r.alignment,
-                file_offset: r.file_start,
-                mem_offset: r.mem_start,
-            },
+    assert_eq!(complete.len(), MAX_SEGMENTS);
+    let segments = header_info
+        .active_segment_ids
+        .iter()
+        .map(|&id| {
+            let r = &complete[id.as_usize()];
+            SegmentLayout {
+                id,
+                sizes: OutputRecordLayout {
+                    file_size: r.file_end - r.file_start,
+                    mem_size: r.mem_end - r.mem_start,
+                    alignment: r.alignment,
+                    file_offset: r.file_start,
+                    mem_offset: r.mem_start,
+                },
+            }
         })
-        .filter(|segment| segment.sizes.mem_size != 0)
         .collect();
     SegmentLayouts { segments }
 }
@@ -1599,8 +1610,8 @@ impl<'data> InternalLayoutState<'data> {
         });
         output_sections.output_section_indexes = output_section_indexes;
 
-        // Determine how many program segments have non-zero size.
-        let mut keep_segment = [false; crate::program_segments::MAX_SEGMENTS];
+        // Determine which program segments contain sections that we're keeping.
+        let mut keep_segments = [false; crate::program_segments::MAX_SEGMENTS];
         let mut active_segments = Vec::with_capacity(4);
         output_sections.sections_and_segments_do(|event| match event {
             OrderEvent::SegmentStart(segment_id) => active_segments.push(segment_id),
@@ -1608,22 +1619,23 @@ impl<'data> InternalLayoutState<'data> {
             OrderEvent::Section(section_id, _) => {
                 if keep_sections[section_id.as_usize()] {
                     for segment_id in &active_segments {
-                        keep_segment[segment_id.as_usize()] = true;
+                        keep_segments[segment_id.as_usize()] = true;
                     }
                     active_segments.clear();
                 }
             }
         });
-        let num_segments = keep_segment.iter().filter(|p| **p).count();
+        let active_segment_ids = (0..crate::program_segments::MAX_SEGMENTS)
+            .filter(|i| keep_segments[*i])
+            .map(ProgramSegmentId::new)
+            .collect();
 
         let header_info = HeaderInfo {
             num_output_sections_with_content: num_sections
                 .try_into()
                 .expect("output section count must fit in a u16"),
 
-            num_segments_with_content: num_segments
-                .try_into()
-                .expect("output segment count must fit in a u16"),
+            active_segment_ids,
         };
 
         // Allocate space for headers based on segment and section counts. We need to allocate both
@@ -1747,12 +1759,12 @@ impl<'data> InternalLayoutState<'data> {
 
 pub(crate) struct HeaderInfo {
     pub(crate) num_output_sections_with_content: u16,
-    pub(crate) num_segments_with_content: u16,
+    pub(crate) active_segment_ids: Vec<ProgramSegmentId>,
 }
 
 impl HeaderInfo {
     pub(crate) fn program_headers_size(&self) -> u64 {
-        u64::from(elf::PROGRAM_HEADER_SIZE) * self.num_segments_with_content as u64
+        u64::from(elf::PROGRAM_HEADER_SIZE) * self.active_segment_ids.len() as u64
     }
 
     pub(crate) fn section_headers_size(&self) -> u64 {
@@ -2498,8 +2510,12 @@ fn test_no_disallowed_overlaps() {
         last_file_end = file_end;
         last_section_id = section_id;
     });
+    let header_info = HeaderInfo {
+        num_output_sections_with_content: 0,
+        active_segment_ids: (0..MAX_SEGMENTS).map(ProgramSegmentId::new).collect(),
+    };
 
-    let segment_layouts = compute_segment_layout(&section_layouts, &output_sections);
+    let segment_layouts = compute_segment_layout(&section_layouts, &output_sections, &header_info);
 
     // Make sure loadable segments don't overlap in memory or in the file.
     let mut last_file = 0;

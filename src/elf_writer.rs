@@ -302,7 +302,7 @@ impl FileHeader {
             flags: 0,
             ehsize: elf::FILE_HEADER_SIZE,
             program_header_entry_size: elf::PROGRAM_HEADER_SIZE,
-            program_header_num: header_info.num_segments_with_content,
+            program_header_num: header_info.active_segment_ids.len() as u16,
             section_header_entry_size: elf::SECTION_HEADER_SIZE,
             section_header_num: header_info.num_output_sections_with_content,
             section_names_index: layout

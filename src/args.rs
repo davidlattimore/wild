@@ -243,6 +243,10 @@ impl Args {
             crate::layout::TlsMode::Preserve
         }
     }
+
+    pub(crate) fn is_relocatable(&self) -> bool {
+        self.pie
+    }
 }
 
 #[cfg(test)]
