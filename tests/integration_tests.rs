@@ -423,13 +423,12 @@ impl Assertions {
         let obj = object::File::parse(bytes.as_slice())?;
 
         self.verify_symbol_assertions(&obj)?;
-
         self.verify_comment_section(obj)?;
 
         Ok(())
     }
 
-    fn verify_symbol_assertions(&self, obj: &object::File<'_>) -> Result<(), anyhow::Error> {
+    fn verify_symbol_assertions(&self, obj: &object::File<'_>) -> Result {
         let symbols = obj
             .symbols()
             .filter(|sym| sym.is_definition())

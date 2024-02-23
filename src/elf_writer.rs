@@ -454,7 +454,7 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
     fn copy_symbol(
         &mut self,
         sym: &crate::elf::Symbol,
-        section: &Section,
+        output_section_id: OutputSectionId,
         section_address: u64,
     ) -> Result {
         let name = sym.name_bytes()?;
@@ -467,7 +467,7 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         };
         let shndx = self
             .output_sections
-            .output_index_of_section(section.output_section_id.unwrap())
+            .output_index_of_section(output_section_id)
             .context(
                 "internal error: tried to copy symbol that in a section that's not being output",
             )?;
@@ -591,9 +591,10 @@ impl<'data> ObjectLayout<'data> {
             match object::ObjectSymbol::section(&sym) {
                 object::SymbolSection::Section(section_index) => {
                     if let SectionSlot::Loaded(section) = &self.sections[section_index.0] {
+                        let output_section_id = section.output_section_id.unwrap();
                         symbol_writer.copy_symbol(
                             &sym,
-                            section,
+                            output_section_id,
                             self.section_resolutions[section_index.0]
                                 .as_ref()
                                 .unwrap()
@@ -608,16 +609,10 @@ impl<'data> ObjectLayout<'data> {
                             if let Some(SymbolResolution::Resolved(res)) =
                                 layout.global_symbol_resolution(symbol_id)
                             {
-                                let shndx = layout
-                                    .output_sections
-                                    .output_index_of_section(output_section_id::BSS)
-                                    .expect("we always keep .bss");
-                                symbol_writer.define_symbol(
-                                    sym.is_local(),
-                                    shndx,
+                                symbol_writer.copy_symbol(
+                                    &sym,
+                                    output_section_id::BSS,
                                     res.address,
-                                    sym.size(),
-                                    sym.name_bytes()?,
                                 )?;
                             }
                         }
@@ -1291,30 +1286,32 @@ impl<'data> InternalLayout<'data> {
             let symbol = layout.symbol_db.symbol(symbol_id);
             let local_index = symbol.local_index_for_file(INTERNAL_FILE_ID)?;
             let def_info = &self.symbol_definitions[local_index.0];
+            let section_id = def_info.section_id();
+
+            // We don't emit a section header for our headers section, so don't emit symbols that
+            // are in that section, otherwise they'll show up as undefined.
+            if section_id == output_section_id::HEADERS {
+                continue;
+            }
+
             let shndx = layout
                 .output_sections
-                .output_index_of_section(def_info.section_id())
+                .output_index_of_section(section_id)
                 .with_context(|| {
                     format!(
                         "symbol `{}` in section `{}` that we're not going to output",
                         layout.symbol_db.symbol_name(symbol_id),
-                        String::from_utf8_lossy(
-                            layout.output_sections.details(def_info.section_id()).name
-                        )
+                        String::from_utf8_lossy(layout.output_sections.details(section_id).name)
                     )
                 })?;
             let address = match resolution {
                 SymbolResolution::Resolved(res) => res.address,
                 SymbolResolution::Dynamic => unreachable!(),
             };
-            // We don't emit a section header for our headers section, so don't emit symbols that
-            // are in that section, otherwise they'll show up as undefined.
-            if shndx != 0 {
-                let symbol_name = layout.symbol_db.symbol_name(symbol_id);
-                let entry =
-                    symbol_writer.define_symbol(false, shndx, address, 0, symbol_name.bytes())?;
-                entry.info = (elf::Binding::Global as u8) << 4;
-            }
+            let symbol_name = layout.symbol_db.symbol_name(symbol_id);
+            let entry =
+                symbol_writer.define_symbol(false, shndx, address, 0, symbol_name.bytes())?;
+            entry.info = (elf::Binding::Global as u8) << 4;
         }
         Ok(())
     }
