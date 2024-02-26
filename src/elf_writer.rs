@@ -670,6 +670,7 @@ impl<'data> ObjectLayout<'data> {
         let mut input_pos = 0;
         let mut output_pos = 0;
         let frame_info_ptr_base = self.eh_frame_start_address;
+        let eh_frame_hdr_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME_HDR);
 
         // Map from input offset to output offset of each CIE.
         let mut cies_offset_conversion: AHashMap<u32, u32> = AHashMap::new();
@@ -728,11 +729,13 @@ impl<'data> ObjectLayout<'data> {
                                             prefix.cie_id, cie_pointer_pos
                                         )
                                     })?;
-                                let frame_ptr = section_resolution.address + offset_in_section; // .checked_sub(eh_frame_hdr_address).context(".eh_frame_hdr should be before everything that it references")?;
+                                let frame_ptr = (section_resolution.address + offset_in_section)
+                                    as i64
+                                    - eh_frame_hdr_address as i64;
                                 headers_out[header_offset] = EhFrameHdrEntry {
-                                    frame_ptr: u32::try_from(frame_ptr)
+                                    frame_ptr: i32::try_from(frame_ptr)
                                         .context("32 bit overflow in frame_ptr")?,
-                                    frame_info_ptr: u32::try_from(
+                                    frame_info_ptr: i32::try_from(
                                         frame_info_ptr_base + output_pos as u64,
                                     )
                                     .context("32 bit overflow when computing frame_info_ptr")?,
@@ -1364,17 +1367,11 @@ fn write_eh_frame_hdr(
     let header: &mut EhFrameHdr = bytemuck::from_bytes_mut(buffers.eh_frame_hdr);
     header.version = 1;
 
-    // It would be kind of nice to use .eh_frame relative addressing, since it'd make implementing
-    // relocatable outputs easier, but unfortunately when we do, libunwind (or possibly it's some
-    // llvm code) reports that it doesn't support that encoding. This probably means that we'll need
-    // to use PC-relative addressing (assuming that's supported). PC-relative addressing is going to
-    // be a pain though, because we'll need to find an alternative to sorting the header entries.
-
-    header.table_encoding =
-        elf::ExceptionHeaderFormat::U32 as u8 | elf::ExceptionHeaderApplication::Absolute as u8;
+    header.table_encoding = elf::ExceptionHeaderFormat::I32 as u8
+        | elf::ExceptionHeaderApplication::EhFrameHdrRelative as u8;
 
     header.frame_pointer_encoding =
-        elf::ExceptionHeaderFormat::U32 as u8 | elf::ExceptionHeaderApplication::Absolute as u8;
+        elf::ExceptionHeaderFormat::I32 as u8 | elf::ExceptionHeaderApplication::Relative as u8;
     header.frame_pointer = eh_frame_ptr(layout)?;
 
     header.count_encoding =
@@ -1395,11 +1392,15 @@ fn eh_frame_hdr_entry_count(layout: &Layout<'_>) -> Result<u32> {
     .context(".eh_frame_hdr entries overflowed 32 bits")
 }
 
-/// Returns the address of .eh_frame.
-fn eh_frame_ptr(layout: &Layout<'_>) -> Result<u32> {
+/// Returns the address of .eh_frame relative to the location in .eh_frame_hdr where the frame
+/// pointer is stored.
+fn eh_frame_ptr(layout: &Layout<'_>) -> Result<i32> {
     let eh_frame_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME);
-    u32::try_from(eh_frame_address)
-        .context(".eh_frame after address 4GB is not currently supported")
+    let eh_frame_hdr_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME_HDR);
+    i32::try_from(
+        eh_frame_address - (eh_frame_hdr_address + elf::FRAME_POINTER_FIELD_OFFSET as u64),
+    )
+    .context(".eh_frame more than 2GB away from .eh_frame_hdr")
 }
 
 pub(crate) const NUM_DYNAMIC_ENTRIES: usize = 11;

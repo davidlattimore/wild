@@ -223,15 +223,18 @@ pub(crate) struct EhFrameHdr {
     pub(crate) table_encoding: u8,
     // For now we just use 32 bit pointer and count because it means that they're aligned. If we
     // need to upgrade these to u64, then we'd have to write these as unaligned fields.
-    pub(crate) frame_pointer: u32,
+    pub(crate) frame_pointer: i32,
     pub(crate) entry_count: u32,
 }
+
+// TODO: Use offset-of once it's stable.
+pub(crate) const FRAME_POINTER_FIELD_OFFSET: usize = 4;
 
 #[derive(Zeroable, Pod, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct EhFrameHdrEntry {
-    pub(crate) frame_ptr: u32,
-    pub(crate) frame_info_ptr: u32,
+    pub(crate) frame_ptr: i32,
+    pub(crate) frame_info_ptr: i32,
 }
 
 #[derive(Zeroable, Pod, Clone, Copy)]
@@ -263,7 +266,7 @@ pub(crate) enum ExceptionHeaderApplication {
     Relative = 0x10,
 
     /// Value is relative to start of the .eh_frame_hdr section.
-    EhFrameHdrRelative = 0x20,
+    EhFrameHdrRelative = 0x30,
 }
 
 #[allow(unused)]
