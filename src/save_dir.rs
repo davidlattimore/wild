@@ -15,6 +15,7 @@ pub(crate) struct SaveDir {
 
 const SAVE_DIR_ENV: &str = "WILD_SAVE_DIR";
 const SAVE_BASE_ENV: &str = "WILD_SAVE_BASE";
+const SKIP_LINKING_ENV: &str = "WILD_SAVE_SKIP_LINKING";
 
 const PRELUDE: &str = include_str!("save-dir-prelude.sh");
 
@@ -73,7 +74,11 @@ impl SaveDir {
         };
         let run_with_file = dir.join("run-with");
         self.write_args_file(&run_with_file)
-            .with_context(|| format!("Failed to write `{}`", run_with_file.display()))
+            .with_context(|| format!("Failed to write `{}`", run_with_file.display()))?;
+        if std::env::var(SKIP_LINKING_ENV).is_ok() {
+            std::process::exit(0);
+        }
+        Ok(())
     }
 
     fn write_args_file(&self, run_file: &Path) -> Result {

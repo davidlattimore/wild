@@ -23,7 +23,7 @@ static __thread int tvar5 = 0;
 __thread char tvar6 = 0;
 
 void _start(void) {
-    int ret = init_tls();
+    int ret = init_tls(0);
     if (ret != 0) {
         exit_syscall(ret);
     }

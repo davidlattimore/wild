@@ -60,7 +60,7 @@ u8*** get_tcb(void) {
     return tcb;
 }
 
-int init_tls(void) {
+int init_tls(uint64_t base_address) {
     // A buffer to hold our TLS storage.
     static u8 tls_area[1024] __attribute__ ((aligned (8)));
 
@@ -72,7 +72,7 @@ int init_tls(void) {
     for (int i; i < num_headers; i++) {
         struct ProgramHeader *h = &headers[i];
         if (h->segment_type == SHT_TLS) {
-            u8 *t_in = (u8*)h->virtual_addr;
+            u8 *t_in = (u8*)h->virtual_addr + base_address;
             for (int j = 0; j < h->mem_size; j++) {
                 if (j < h->file_size) {
                     *t_out = *t_in;

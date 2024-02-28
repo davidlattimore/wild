@@ -11,7 +11,7 @@ void _start(void) {
     if (data1[0] != 'Q') {
         exit_syscall(1);
     }
-    if ((size_t)data2 & 63 != 0) {
+    if (((size_t)data2 & 63) != 0) {
         exit_syscall(2);
     }
     if (data2[0] != 'a' || data2[sizeof(data2) - 2] != 'z') {

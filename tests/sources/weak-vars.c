@@ -1,4 +1,4 @@
-//#CompArgs:no-stack-protector:-fno-stack-protector
+//#CompArgs:freestanding:-ffreestanding -fno-builtin
 //#InputType: Object
 
 #include "exit.h"

@@ -48,16 +48,26 @@ struct Program<'a> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Linker {
     Wild,
-    ThirdParty(&'static str),
+    ThirdParty(ThirdPartyLinker),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ThirdPartyLinker {
+    name: &'static str,
+    path: &'static str,
 }
 
 impl Linker {
     fn path(&self) -> PathBuf {
         match self {
-            Linker::Wild => base_dir().join("target/debug/wild"),
-            Linker::ThirdParty(cmd) => PathBuf::from(cmd),
+            Linker::Wild => wild_path(),
+            Linker::ThirdParty(info) => PathBuf::from(info.path),
         }
     }
+}
+
+fn wild_path() -> PathBuf {
+    base_dir().join("target/debug/wild")
 }
 
 struct LinkOutput {
@@ -69,6 +79,21 @@ struct LinkCommand {
     command: Command,
     linker: Linker,
     can_skip: bool,
+    invocation_mode: LinkerInvocationMode,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum LinkerInvocationMode {
+    /// We just call the linker directly. This means that we won't be linking against libc.
+    Direct,
+
+    /// We invoke the linker by calling the C compiler and getting it to call the linker. The C
+    /// compiler will by default add linker arguments to cause libc to be linked.
+    Cc,
+
+    /// We invoke a shell script which invokes the linker. The shell script will have been written
+    /// by previously running wild with WILD_SAVE_DIR set.
+    Script,
 }
 
 struct TestParameters {
@@ -211,6 +236,47 @@ impl TestParameters {
     }
 }
 
+#[derive(Default)]
+struct FileOverrides {
+    compiler_args: Option<Vec<String>>,
+}
+
+impl FileOverrides {
+    fn from_source(src_filename: &Path, placement: FilePlacement) -> Result<Self> {
+        if matches!(placement, FilePlacement::Primary) {
+            return Ok(Default::default());
+        }
+        let source = std::fs::read_to_string(src_filename)
+            .with_context(|| format!("Failed to read {}", src_filename.display()))?;
+
+        let mut compiler_args = None;
+        for line in source.lines() {
+            if let Some(rest) = line.trim().strip_prefix("//#") {
+                let (directive, arg) = rest.split_once(':').context("Missing arg")?;
+                let arg = arg.trim();
+                match directive {
+                    "OverrideCompArgs" => {
+                        compiler_args = Some(
+                            arg.split(' ')
+                                .filter(|a| !a.is_empty())
+                                .map(str::to_owned)
+                                .collect(),
+                        )
+                    }
+                    other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
+                }
+            }
+        }
+        Ok(Self { compiler_args })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum FilePlacement {
+    Primary,
+    Secondary,
+}
+
 impl ProgramInputs {
     fn new(name: &'static str, sources: &[&str]) -> Result<Self> {
         std::fs::create_dir_all(build_dir())?;
@@ -231,12 +297,15 @@ impl ProgramInputs {
             .iter()
             .enumerate()
             .map(|(i, source)| {
-                // For the first input file, we always compile as an object, never an archive.
                 let mut variant_for_file = variant.clone();
-                if i == 0 {
-                    variant_for_file.input_type = InputType::Object
-                }
-                build_linker_input(source, &variant_for_file)
+                let placement = if i == 0 {
+                    // For the first input file, we always compile as an object, never an archive.
+                    variant_for_file.input_type = InputType::Object;
+                    FilePlacement::Primary
+                } else {
+                    FilePlacement::Secondary
+                };
+                build_linker_input(source, &variant_for_file, placement)
             })
             .collect::<Result<Vec<PathBuf>>>()?;
         let link_output = linker.link(self.name, &object_paths, variant)?;
@@ -283,11 +352,15 @@ impl<'a> Display for Program<'a> {
 }
 
 /// Creates a linker input from a source file. This will be either an object file or an archive.
-fn build_linker_input(filename: &str, variant: &Variant) -> Result<PathBuf> {
+fn build_linker_input(
+    filename: &str,
+    variant: &Variant,
+    placement: FilePlacement,
+) -> Result<PathBuf> {
     if filename.ends_with(".a") {
         return Ok(src_path(filename));
     }
-    let obj_path = build_obj(filename, variant)?;
+    let obj_path = build_obj(filename, variant, placement)?;
 
     match variant.input_type {
         InputType::Archive => {
@@ -301,22 +374,70 @@ fn build_linker_input(filename: &str, variant: &Variant) -> Result<PathBuf> {
     }
 }
 
+enum CompilerKind {
+    C,
+    Rust,
+}
+
 /// Builds some C source and returns the path to the object file.
-fn build_obj(filename: &str, variant: &Variant) -> Result<PathBuf> {
+fn build_obj(filename: &str, variant: &Variant, placement: FilePlacement) -> Result<PathBuf> {
     let variant_num = variant.compilation.variant_num;
     let src_path = src_path(filename);
-    let extension = src_path.extension().context("Missing extension")?;
-    let output_path =
-        build_dir().join(Path::new(filename).with_extension(format!("{}.o", variant.compilation)));
+    let extension = src_path
+        .extension()
+        .context("Missing extension")?
+        .to_str()
+        .context("Extension isn't valid UTF-8")?;
+    let (compiler, compiler_kind) = match extension {
+        "cpp" => ("g++", CompilerKind::C),
+        "c" => ("gcc", CompilerKind::C),
+        "s" => ("gcc", CompilerKind::C),
+        "rs" => ("rustc", CompilerKind::Rust),
+        _ => bail!("Don't know how to compile {extension} files"),
+    };
+    // For Rust programs, we don't have an easy way to separate compilation from linking, so we
+    // output Rust compilation to a directory containing copies of the object files and a script to
+    // perform the link step.
+    let suffix = match compiler_kind {
+        CompilerKind::C => ".o",
+        CompilerKind::Rust => "",
+    };
+    let output_path = build_dir()
+        .join(Path::new(filename).with_extension(format!("{}{suffix}", variant.compilation)));
     // Skip rebuilding if our output already exists and is newer than our source.
     if is_newer(&output_path, &src_path) {
         return Ok(output_path);
     }
-    let compiler = if extension == "cpp" { "g++" } else { "gcc" };
     let mut command = Command::new(compiler);
-    command.arg("-c").arg(src_path).arg("-o").arg(&output_path);
-    command.arg(format!("-DVARIANT={variant_num}"));
-    command.args(&variant.compilation.compiler_args.args);
+    match compiler_kind {
+        CompilerKind::C => {
+            command
+                .arg("-c")
+                .arg(format!("-DVARIANT={variant_num}"))
+                .arg("-o")
+                .arg(&output_path);
+        }
+        CompilerKind::Rust => {
+            let wild = wild_path().to_str().context("Need UTF-8 path")?.to_owned();
+            command
+                .env("WILD_SAVE_DIR", &output_path)
+                .env("WILD_SAVE_SKIP_LINKING", "1")
+                .args(["--target", "x86_64-unknown-linux-musl"])
+                .args(["-C", "linker=/usr/bin/clang-15"])
+                .args(["-C", "relocation-model=static"])
+                .args(["-C", "target-feature=+crt-static"])
+                .args(["-C", "debuginfo=0"])
+                .args(["-C", &format!("link-arg=--ld-path={wild}")])
+                .args(["-o", "/dev/null"]);
+        }
+    }
+    command.arg(&src_path);
+    let override_parameters = FileOverrides::from_source(&src_path, placement)?;
+    if let Some(args) = override_parameters.compiler_args.as_ref() {
+        command.args(args);
+    } else {
+        command.args(&variant.compilation.compiler_args.args);
+    }
     let status = command.status()?;
     if !status.success() {
         bail!("Compilation failed");
@@ -326,7 +447,7 @@ fn build_obj(filename: &str, variant: &Variant) -> Result<PathBuf> {
 
 fn src_path(filename: &str) -> PathBuf {
     let filename = Path::new(filename);
-    base_dir().join("tests").join("c").join(filename)
+    base_dir().join("tests").join("sources").join(filename)
 }
 
 /// Returns whether both `output_path` and `src_path` exist and `output_path` has a modification
@@ -393,28 +514,64 @@ impl LinkCommand {
         object_paths: &[PathBuf],
         variant: &Variant,
     ) -> LinkCommand {
-        let mut command = Command::new(linker.path());
         let output_path = linker.output_path(basename, variant);
         // We allow skipping linking if all the object files are the unchanged and are older than
         // our output file, but not if we're linking with our linker, since we're always changing
         // that.
         let can_skip =
             linker != Linker::Wild && object_paths.iter().all(|obj| is_newer(&output_path, obj));
-        command
-            .arg("--gc-sections")
-            .arg("-static")
-            .args(&variant.linker_args.args)
-            .arg("-o")
-            .arg(&output_path);
-        for obj in object_paths {
-            command.arg(obj);
+        let mut command;
+        let mut invocation_mode = LinkerInvocationMode::Direct;
+        if let Some(script) = get_script(object_paths) {
+            command = Command::new(script);
+            command.env("OUT", &output_path);
+            command.arg(linker.path());
+            invocation_mode = LinkerInvocationMode::Script;
+        } else {
+            let linker_path = linker.path();
+            if let Some(cc) = variant
+                .linker_args
+                .args
+                .first()
+                .and_then(|a| a.strip_prefix("--cc="))
+            {
+                invocation_mode = LinkerInvocationMode::Cc;
+                command = Command::new(cc);
+                command.arg(format!(
+                    "--ld-path={}",
+                    linker_path
+                        .to_str()
+                        .expect("Linker path must be valid UTF-8")
+                ));
+                command.args(&variant.linker_args.args[1..]);
+            } else {
+                command = Command::new(linker_path);
+                command.arg("--gc-sections").arg("-static");
+                command.args(&variant.linker_args.args);
+            }
+            command.arg("-o").arg(&output_path);
+            for obj in object_paths {
+                command.arg(obj);
+            }
         }
         LinkCommand {
             command,
             linker,
             can_skip,
+            invocation_mode,
         }
     }
+}
+
+fn get_script(object_paths: &[PathBuf]) -> Option<PathBuf> {
+    if object_paths.len() != 1 {
+        return None;
+    }
+    let path = &object_paths[0];
+    if path.is_dir() {
+        return Some(path.join("run-with"));
+    }
+    None
 }
 
 impl Assertions {
@@ -491,9 +648,32 @@ impl Display for LinkCommand {
             .get_args()
             .map(|a| a.to_string_lossy())
             .collect();
-        match self.linker {
-            Linker::Wild => {
+        match (self.invocation_mode, self.linker) {
+            (LinkerInvocationMode::Cc, Linker::Wild) => {
+                write!(
+                    f,
+                    "cargo build; {} {}",
+                    self.command.get_program().to_string_lossy(),
+                    args.join(" ")
+                )
+            }
+            (LinkerInvocationMode::Direct, Linker::Wild) => {
                 write!(f, "cargo run -- {}", args.join(" "))
+            }
+            (LinkerInvocationMode::Script, Linker::Wild) => {
+                for (k, v) in self.command.get_envs() {
+                    write!(
+                        f,
+                        "{}={} ",
+                        k.to_str().unwrap_or("??"),
+                        v.and_then(|v| v.to_str()).unwrap_or_default(),
+                    )?;
+                }
+                write!(
+                    f,
+                    "{} cargo run --",
+                    self.command.get_program().to_string_lossy(),
+                )
             }
             _ => {
                 write!(
@@ -517,7 +697,7 @@ impl Display for Linker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Linker::Wild => Display::fmt(&"wild", f),
-            Linker::ThirdParty(cmd) => Display::fmt(cmd, f),
+            Linker::ThirdParty(info) => Display::fmt(info.name, f),
         }
     }
 }
@@ -576,7 +756,7 @@ fn integration_test() -> Result {
             &["weak-fns-archive.c", "weak-fns1.c", "exit.c"],
         )?,
         ProgramInputs::new("init_test", &["init_test.c", "init.c", "exit.c"])?,
-        ProgramInputs::new("ifunc", &["ifunc.c", "ifunc1.c", "exit.c"])?,
+        ProgramInputs::new("ifunc", &["ifunc.c", "ifunc1.c", "ifunc_init.c", "exit.c"])?,
         ProgramInputs::new("internal-syms", &["internal-syms.c", "exit.c"])?,
         ProgramInputs::new("tls", &["tls.c", "tls1.c", "init_tls.c", "exit.c"])?,
         ProgramInputs::new(
@@ -622,10 +802,17 @@ fn integration_test() -> Result {
             &["comments.c", "comments0.c", "comments1.c", "exit.c"],
         )?,
         ProgramInputs::new("eh_frame", &["eh_frame.c", "eh_frame_end.c", "exit.c"])?,
-        ProgramInputs::new("pie", &["pie.c", "exit.c"])?,
+        ProgramInputs::new("trivial-libc", &["trivial-libc.c"])?,
+        ProgramInputs::new("trivial-rust", &["trivial-rust.rs"])?,
     ];
 
-    let linkers = [Linker::ThirdParty("ld"), Linker::Wild];
+    let linkers = [
+        Linker::ThirdParty(ThirdPartyLinker {
+            name: "ld",
+            path: "/usr/bin/ld",
+        }),
+        Linker::Wild,
+    ];
 
     for program_inputs in &programs {
         let filename = program_inputs.source_files.first().unwrap();

@@ -1,3 +1,6 @@
+//#CompArgs:default:
+//#CompArgs:static-pie:-static -pie
+
 #include "exit.h"
 #include "init.h"
 
