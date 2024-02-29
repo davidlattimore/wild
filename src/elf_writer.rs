@@ -6,6 +6,8 @@ use crate::elf::EhFrameHdr;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::FileHeader;
 use crate::elf::ProgramHeader;
+use crate::elf::RelocationKind;
+use crate::elf::RelocationKindInfo;
 use crate::elf::SectionHeader;
 use crate::elf::SegmentType;
 use crate::elf::SymtabEntry;
@@ -1077,7 +1079,7 @@ impl<'out> RelocationWriter<'out> {
             .context("insufficient allocation to .rela.dyn")?;
         rela.address = place;
         rela.addend = address;
-        rela.info = elf::R_X86_64_RELATIVE;
+        rela.info = elf::rel::R_X86_64_RELATIVE.into();
         Ok(())
     }
 
@@ -1105,10 +1107,11 @@ fn apply_relocation(
     let mut offset = offset_in_section as usize;
     let place = section_address + offset_in_section;
     let addend = rel.addend() as u64;
-    let mut byte_size: usize = usize::from(rel.size()) / 8;
     let mut next_modifier = RelocationModifier::Normal;
-    let value = match (rel.kind(), rel.flags()) {
-        (object::RelocationKind::Absolute, _) => {
+    let rel_info = RelocationKindInfo::from_rel(rel)?;
+    debug_assert!(rel.size() == 0 || rel.size() as usize / 8 == rel_info.byte_size);
+    let value = match rel_info.kind {
+        RelocationKind::Absolute => {
             if relocation_writer.is_active {
                 relocation_writer.write_relocation(place, address)?;
                 0
@@ -1116,12 +1119,12 @@ fn apply_relocation(
                 address.wrapping_add(addend)
             }
         }
-        (object::RelocationKind::Relative, _) => address.wrapping_add(addend).wrapping_sub(place),
-        (object::RelocationKind::GotRelative, _) => resolution
+        RelocationKind::Relative => address.wrapping_add(addend).wrapping_sub(place),
+        RelocationKind::GotRelative => resolution
             .got_address()?
             .wrapping_add(addend)
             .wrapping_sub(place),
-        (object::RelocationKind::PltRelative, _) => {
+        RelocationKind::PltRelative => {
             if layout.args().link_static {
                 resolution.address.wrapping_add(addend).wrapping_sub(place)
             } else {
@@ -1131,9 +1134,7 @@ fn apply_relocation(
                     .wrapping_sub(place)
             }
         }
-        (object::RelocationKind::Unknown, object::RelocationFlags::Elf { r_type: 19 }) => {
-            // R_X86_64_TLSGD
-            byte_size = 4;
+        RelocationKind::TlsGd => {
             match layout.args().tls_mode() {
                 TlsMode::LocalExec => {
                     // Transform GD (general dynamic) into LE (local exec). We can make this
@@ -1155,9 +1156,7 @@ fn apply_relocation(
                     .wrapping_sub(place),
             }
         }
-        (object::RelocationKind::Unknown, object::RelocationFlags::Elf { r_type: 20 }) => {
-            // R_X86_64_TLSLD
-            byte_size = 4;
+        RelocationKind::TlsLd => {
             match layout.args().tls_mode() {
                 TlsMode::LocalExec => {
                     // Transform LD (local dynamic) into LE (local exec). We can make this
@@ -1179,10 +1178,8 @@ fn apply_relocation(
                     .wrapping_sub(place),
             }
         }
-        (object::RelocationKind::Unknown, object::RelocationFlags::Elf { r_type: 21 }) => {
-            // R_X86_64_DTPOFF32
+        RelocationKind::DtpOff => {
             if layout.args().link_static {
-                byte_size = 4;
                 address
                     .wrapping_sub(layout.tls_end_address())
                     .wrapping_add(addend)
@@ -1190,54 +1187,19 @@ fn apply_relocation(
                 todo!()
             }
         }
-        (object::RelocationKind::Unknown, object::RelocationFlags::Elf { r_type: 22 }) => {
-            // R_X86_64_GOTTPOFF
-            byte_size = 4;
-            // TODO: If we're statically linking, we can adjust the instruction to be an
-            // absolute move.
-            resolution
-                .got_address()?
-                .wrapping_add(addend)
-                .wrapping_sub(place)
-        }
-        (object::RelocationKind::Unknown, object::RelocationFlags::Elf { r_type: 23 }) => {
-            // R_X86_64_TPOFF32
-            byte_size = 4;
-            address.wrapping_sub(layout.tls_end_address())
-        }
-        (object::RelocationKind::Unknown, object::RelocationFlags::Elf { r_type: 41 }) => {
-            // R_X86_64_GOTPCRELX
-            byte_size = 4;
-            resolution
-                .got_address()?
-                .wrapping_add(addend)
-                .wrapping_sub(place)
-        }
-        (object::RelocationKind::Unknown, object::RelocationFlags::Elf { r_type: 42 }) => {
-            // R_X86_64_REX_GOTPCRELX
-            byte_size = 4;
-            if layout.args().link_static {
-                if false {
-                    make_rex_got_instruction_absolute(offset, place, out)?;
-                    address.wrapping_add(addend).wrapping_add(byte_size as u64)
-                } else {
-                    resolution
-                        .got_address()?
-                        .wrapping_add(addend)
-                        .wrapping_sub(place)
-                }
-            } else {
-                todo!()
-            }
-        }
+        RelocationKind::GotTpOff => resolution
+            .got_address()?
+            .wrapping_add(addend)
+            .wrapping_sub(place),
+        RelocationKind::TpOff => address.wrapping_sub(layout.tls_end_address()),
         other => bail!("Unsupported relocation kind {other:?}"),
     };
     let value_bytes = value.to_le_bytes();
-    let end = offset + byte_size;
+    let end = offset + rel_info.byte_size;
     if out.len() < end {
         bail!("Relocation outside of bounds of section");
     }
-    out[offset..end].copy_from_slice(&value_bytes[..byte_size]);
+    out[offset..end].copy_from_slice(&value_bytes[..rel_info.byte_size]);
     Ok(next_modifier)
 }
 
@@ -1250,49 +1212,6 @@ fn expect_bytes_before_offset(bytes: &[u8], offset: usize, expected: &[u8]) -> R
     if actual != expected {
         bail!("Expected bytes {expected:x?}, got {actual:x?}");
     }
-    Ok(())
-}
-
-/// Changes the REX instruction from a relative GOT reference to an absolute instruction. This is
-/// incomplete and probably wrong in places.
-fn make_rex_got_instruction_absolute(offset: usize, place: u64, out: &mut [u8]) -> Result {
-    if offset < 3 {
-        bail!("Insufficient instruction bytes for R_X86_64_REX_GOTPCRELX");
-    }
-    let istart = place - 3;
-
-    let rex = match out[offset - 3] {
-        0x48 | 0x49 => 0x48,
-        0x4c => 0x49,
-        o => {
-            bail!("Unsupported REX byte for R_X86_64_REX_GOTPCRELX 0x{o:x} at {istart:x}");
-        }
-    };
-    let ins = match out[offset - 2] {
-        0x8b => 0xc7, // mov
-        0x2b => 0x81, // sub
-        0x3b => 0x81, // cmp
-        o => {
-            bail!("Unsupported instruction byte for R_X86_64_REX_GOTPCRELX 0x{o:x} at {istart:x}");
-        }
-    };
-    // TODO: Figure out if these operand bytes need to be different depending on the
-    // instruction.
-    out[offset - 1] = match out[offset - 1] {
-        0x05 => 0xc0,
-        0x15 => 0xc2,
-        0x1d => 0xc3,
-        0x25 => 0xc4,
-        0x2d => 0xc5,
-        0x3d => 0xc7,
-        0x35 => 0xee,
-        0x0d => 0xe9,
-        o => {
-            bail!("Unsupported operand byte for R_X86_64_REX_GOTPCRELX 0x{o:x} at {istart:x}");
-        }
-    };
-    out[offset - 3] = rex;
-    out[offset - 2] = ins;
     Ok(())
 }
 

@@ -8,6 +8,8 @@ use crate::args::Args;
 use crate::elf;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
+use crate::elf::RelocationKind;
+use crate::elf::RelocationKindInfo;
 use crate::elf_writer;
 use crate::error::Error;
 use crate::error::Result;
@@ -1116,6 +1118,10 @@ impl<'data, 'scope> GraphResources<'data, 'scope> {
             }
         }
     }
+
+    fn args(&self) -> &Args {
+        self.symbol_db.args
+    }
 }
 
 impl<'data> FileLayoutState<'data> {
@@ -1305,7 +1311,7 @@ impl<'data> Section<'data> {
         let section_data = object_section.data()?;
         let is_relocatable = resources.symbol_db.args.is_relocatable();
         for (_, rel) in object_section.relocations() {
-            let rel_info = RelInfo::new(&rel, resources);
+            let rel_info = RelInfo::new(&rel, resources.args())?;
             process_relocation(&rel_info, resources, &mut worker.state, queue);
             if is_relocatable && is_relocation_position_dependent(&rel) {
                 worker.state.common.mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
@@ -1381,15 +1387,16 @@ impl<'data> Section<'data> {
 
 struct RelInfo {
     target: object::RelocationTarget,
-    plt_got_flags: TargetResolutionKind,
+    resolution_kind: TargetResolutionKind,
 }
 
 impl RelInfo {
-    fn new(rel: &object::Relocation, resources: &GraphResources<'_, '_>) -> Self {
-        Self {
+    fn new(rel: &object::Relocation, args: &Args) -> Result<Self> {
+        let rel_info = RelocationKindInfo::from_rel(rel)?;
+        Ok(Self {
             target: rel.target(),
-            plt_got_flags: TargetResolutionKind::from_rel(rel, resources.symbol_db.args),
-        }
+            resolution_kind: TargetResolutionKind::new(rel_info, args)?,
+        })
     }
 }
 
@@ -1407,7 +1414,7 @@ fn process_relocation(
 ) {
     let mut section_to_load = None;
     let mut symbol_to_load = None;
-    let plt_got_flags = rel.plt_got_flags;
+    let plt_got_flags = rel.resolution_kind;
     match rel.target {
         object::RelocationTarget::Symbol(local_sym_index) => {
             match &state.local_symbol_states[local_sym_index.0] {
@@ -1464,12 +1471,12 @@ fn process_relocation(
 }
 
 impl TargetResolutionKind {
-    fn from_rel(rel: &object::Relocation, args: &Args) -> Self {
+    fn new(rel_info: RelocationKindInfo, args: &Args) -> Result<Self> {
         let tls_mode = args.tls_mode();
         // TODO: This could probably be more efficiently implemented as lookup table indexed by the
         // raw relocation type. We can then select which lookup table to use based on tls_mode.
-        match rel.kind() {
-            object::RelocationKind::PltRelative => {
+        Ok(match rel_info.kind {
+            RelocationKind::PltRelative => {
                 if args.link_static {
                     // When statically linking, we transform PLT relocations into references to the
                     // actual function.
@@ -1478,27 +1485,17 @@ impl TargetResolutionKind {
                     Self::Plt
                 }
             }
-            object::RelocationKind::Got
-            | object::RelocationKind::GotRelative
-            | object::RelocationKind::GotBaseRelative
-            | object::RelocationKind::GotBaseOffset => Self::Got,
-            object::RelocationKind::Unknown => match rel.flags() {
-                object::RelocationFlags::Elf { r_type } => match r_type {
-                    // R_X86_64_GOTPCRELX, R_X86_64_REX_GOTPCRELX
-                    41 | 42 => Self::Got,
-                    // R_X86_64_GOTTPOFF
-                    22 => Self::GotTlsOffset,
-                    // R_X86_64_TLSGD, R_X86_64_TLSLD
-                    19 | 20 => match tls_mode {
-                        TlsMode::LocalExec => Self::Address,
-                        TlsMode::Preserve => Self::GotTlsDouble,
-                    },
-                    _ => Self::Address,
-                },
-                _ => unimplemented!(),
+            RelocationKind::Got | RelocationKind::GotRelative => Self::Got,
+            RelocationKind::GotTpOff => Self::GotTlsOffset,
+            RelocationKind::TlsGd | RelocationKind::TlsLd => match tls_mode {
+                TlsMode::LocalExec => Self::Address,
+                TlsMode::Preserve => Self::GotTlsDouble,
             },
-            _ => Self::Address,
-        }
+            RelocationKind::Absolute
+            | RelocationKind::Relative
+            | RelocationKind::DtpOff
+            | RelocationKind::TpOff => Self::Address,
+        })
     }
 
     pub(crate) fn needs_got_entry(&self) -> bool {
@@ -2180,7 +2177,7 @@ fn process_eh_frame_data<'data>(
                 }
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                let rel_info = RelInfo::new(rel, resources);
+                let rel_info = RelInfo::new(rel, resources.args())?;
                 process_relocation(&rel_info, resources, state, queue);
                 if let object::RelocationTarget::Symbol(local_sym_index) = rel.target() {
                     let symbol_res = state.local_symbol_resolutions[local_sym_index.0];
@@ -2223,7 +2220,7 @@ fn process_eh_frame_data<'data>(
                             _ => {}
                         };
                     } else {
-                        refs.push(RelInfo::new(rel, resources));
+                        refs.push(RelInfo::new(rel, resources.args())?);
                     }
                     relocations.next();
                 } else {

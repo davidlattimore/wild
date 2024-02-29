@@ -1,3 +1,5 @@
+use crate::error::Result;
+use anyhow::bail;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
 use object::LittleEndian;
@@ -311,4 +313,103 @@ const _ASSERTS: () = {
     assert!(SECTION_HEADER_SIZE as usize == std::mem::size_of::<SectionHeader>());
 };
 
-pub(crate) const R_X86_64_RELATIVE: u64 = 8;
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RelocationKind {
+    Absolute,
+    Relative,
+    Got,
+    PltRelative,
+    GotRelative,
+    TlsGd,
+    TlsLd,
+    DtpOff,
+    GotTpOff,
+    TpOff,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RelocationKindInfo {
+    pub(crate) kind: RelocationKind,
+    pub(crate) byte_size: usize,
+}
+
+impl RelocationKindInfo {
+    pub(crate) fn from_rel(rel: &object::Relocation) -> Result<Self> {
+        let object::RelocationFlags::Elf { r_type } = rel.flags() else {
+            unreachable!();
+        };
+        Self::from_raw(r_type)
+    }
+
+    pub(crate) fn from_raw(r_type: u32) -> Result<Self> {
+        let (kind, size) = match r_type {
+            rel::R_X86_64_64 => (RelocationKind::Absolute, 8),
+            rel::R_X86_64_PC32 => (RelocationKind::Relative, 4),
+            rel::R_X86_64_GOT32 => (RelocationKind::Got, 4),
+            rel::R_X86_64_PLT32 => (RelocationKind::PltRelative, 4),
+            rel::R_X86_64_GOTPCREL => (RelocationKind::GotRelative, 4),
+            rel::R_X86_64_32 | rel::R_X86_64_32S => (RelocationKind::Absolute, 4),
+            rel::R_X86_64_16 => (RelocationKind::Absolute, 2),
+            rel::R_X86_64_PC16 => (RelocationKind::Relative, 2),
+            rel::R_X86_64_8 => (RelocationKind::Absolute, 1),
+            rel::R_X86_64_PC8 => (RelocationKind::Relative, 1),
+            rel::R_X86_64_TLSGD => (RelocationKind::TlsGd, 4),
+            rel::R_X86_64_TLSLD => (RelocationKind::TlsLd, 4),
+            rel::R_X86_64_DTPOFF32 => (RelocationKind::DtpOff, 4),
+            rel::R_X86_64_GOTTPOFF => (RelocationKind::GotTpOff, 4),
+            rel::R_X86_64_GOTPCRELX | rel::R_X86_64_REX_GOTPCRELX => {
+                (RelocationKind::GotRelative, 4)
+            }
+            rel::R_X86_64_TPOFF32 => (RelocationKind::TpOff, 4),
+            _ => bail!("Unsupported relocation type {r_type}"),
+        };
+        Ok(Self {
+            kind,
+            byte_size: size,
+        })
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) mod rel {
+    pub(crate) const R_X86_64_64: u32 = 1;
+    pub(crate) const R_X86_64_PC32: u32 = 2;
+    pub(crate) const R_X86_64_GOT32: u32 = 3;
+    pub(crate) const R_X86_64_PLT32: u32 = 4;
+    pub(crate) const R_X86_64_COPY: u32 = 5;
+    pub(crate) const R_X86_64_GLOB_DAT: u32 = 6;
+    pub(crate) const R_X86_64_JUMP_SLOT: u32 = 7;
+    pub(crate) const R_X86_64_RELATIVE: u32 = 8;
+    pub(crate) const R_X86_64_GOTPCREL: u32 = 9;
+    pub(crate) const R_X86_64_32: u32 = 10;
+    pub(crate) const R_X86_64_32S: u32 = 11;
+    pub(crate) const R_X86_64_16: u32 = 12;
+    pub(crate) const R_X86_64_PC16: u32 = 13;
+    pub(crate) const R_X86_64_8: u32 = 14;
+    pub(crate) const R_X86_64_PC8: u32 = 15;
+    pub(crate) const R_X86_64_DTPMOD64: u32 = 16;
+    pub(crate) const R_X86_64_DTPOFF64: u32 = 17;
+    pub(crate) const R_X86_64_TPOFF64: u32 = 18;
+    pub(crate) const R_X86_64_TLSGD: u32 = 19;
+    pub(crate) const R_X86_64_TLSLD: u32 = 20;
+    pub(crate) const R_X86_64_DTPOFF32: u32 = 21;
+    pub(crate) const R_X86_64_GOTTPOFF: u32 = 22;
+    pub(crate) const R_X86_64_TPOFF32: u32 = 23;
+    pub(crate) const R_X86_64_PC64: u32 = 24;
+    pub(crate) const R_X86_64_GOTOFF64: u32 = 25;
+    pub(crate) const R_X86_64_GOTPC32: u32 = 26;
+    pub(crate) const R_X86_64_GOT64: u32 = 27;
+    pub(crate) const R_X86_64_GOTPCREL64: u32 = 28;
+    pub(crate) const R_X86_64_GOTPC64: u32 = 29;
+    pub(crate) const R_X86_64_GOTPLT64: u32 = 30;
+    pub(crate) const R_X86_64_PLTOFF64: u32 = 31;
+    pub(crate) const R_X86_64_SIZE32: u32 = 32;
+    pub(crate) const R_X86_64_SIZE64: u32 = 33;
+    pub(crate) const R_X86_64_GOTPC32_TLSDESC: u32 = 34;
+    pub(crate) const R_X86_64_TLSDESC_CALL: u32 = 35;
+    pub(crate) const R_X86_64_TLSDESC: u32 = 36;
+    pub(crate) const R_X86_64_IRELATIVE: u32 = 37;
+    pub(crate) const R_X86_64_RELATIVE64: u32 = 38;
+    pub(crate) const R_X86_64_GOTPCRELX: u32 = 41;
+    pub(crate) const R_X86_64_REX_GOTPCRELX: u32 = 42;
+}
