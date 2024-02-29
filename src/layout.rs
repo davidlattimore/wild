@@ -1289,48 +1289,6 @@ impl SectionRequest {
             resolution_kind: Default::default(),
         }
     }
-
-    fn allocate_required_entries(
-        &self,
-        section: &mut Section,
-        mem_sizes: &mut OutputSectionPartMap<u64>,
-        args: &Args,
-    ) -> Result<()> {
-        if section.resolution_kind >= self.resolution_kind {
-            return Ok(());
-        }
-        match (section.resolution_kind, self.resolution_kind) {
-            (_, TargetResolutionKind::Got) => {
-                mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                if args.is_relocatable() {
-                    mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
-                }
-            }
-            (
-                TargetResolutionKind::Address | TargetResolutionKind::None,
-                TargetResolutionKind::GotTlsOffset,
-            ) => {
-                mem_sizes.got += elf::GOT_ENTRY_SIZE;
-            }
-            (TargetResolutionKind::Got, TargetResolutionKind::Plt) => {
-                mem_sizes.plt += elf::PLT_ENTRY_SIZE;
-            }
-            (_, TargetResolutionKind::Plt) => {
-                mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                mem_sizes.plt += elf::PLT_ENTRY_SIZE;
-            }
-            (
-                TargetResolutionKind::Address | TargetResolutionKind::None,
-                TargetResolutionKind::GotTlsDouble,
-            ) => {
-                mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
-            }
-            (_, TargetResolutionKind::Address) => {}
-            (a, b) => bail!("Unexpected state transition {a:?} {b:?}"),
-        }
-        section.resolution_kind = self.resolution_kind;
-        Ok(())
-    }
 }
 
 impl<'data> Section<'data> {
@@ -1363,6 +1321,51 @@ impl<'data> Section<'data> {
             packed: unloaded.details.packed,
         };
         Ok(section)
+    }
+
+    fn allocate_required_entries(
+        &mut self,
+        request: &SectionRequest,
+        mem_sizes: &mut OutputSectionPartMap<u64>,
+        args: &Args,
+    ) -> Result<()> {
+        if self.resolution_kind >= request.resolution_kind {
+            return Ok(());
+        }
+        match (self.resolution_kind, request.resolution_kind) {
+            (_, TargetResolutionKind::Got) => {
+                mem_sizes.got += elf::GOT_ENTRY_SIZE;
+                if args.is_relocatable() {
+                    mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
+                }
+            }
+            (
+                TargetResolutionKind::Address | TargetResolutionKind::None,
+                TargetResolutionKind::GotTlsOffset,
+            ) => {
+                mem_sizes.got += elf::GOT_ENTRY_SIZE;
+            }
+            (TargetResolutionKind::Got, TargetResolutionKind::Plt) => {
+                mem_sizes.plt += elf::PLT_ENTRY_SIZE;
+            }
+            (_, TargetResolutionKind::Plt) => {
+                mem_sizes.got += elf::GOT_ENTRY_SIZE;
+                if args.is_relocatable() {
+                    mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
+                }
+                mem_sizes.plt += elf::PLT_ENTRY_SIZE;
+            }
+            (
+                TargetResolutionKind::Address | TargetResolutionKind::None,
+                TargetResolutionKind::GotTlsDouble,
+            ) => {
+                mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
+            }
+            (_, TargetResolutionKind::Address) => {}
+            (a, b) => bail!("Unexpected state transition {a:?} {b:?}"),
+        }
+        self.resolution_kind = request.resolution_kind;
+        Ok(())
     }
 
     // How much space we take up. This is our size rounded up to the next multiple of our alignment,
@@ -1924,8 +1927,8 @@ impl<'data> ObjectLayoutState<'data> {
                 }
             }
             if let SectionSlot::Loaded(section) = &mut self.state.sections[section_id.0] {
-                section_request.allocate_required_entries(
-                    section,
+                section.allocate_required_entries(
+                    &section_request,
                     &mut self.state.common.mem_sizes,
                     resources.symbol_db.args,
                 )?;
