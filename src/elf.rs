@@ -334,13 +334,6 @@ pub(crate) struct RelocationKindInfo {
 }
 
 impl RelocationKindInfo {
-    pub(crate) fn from_rel(rel: &object::Relocation) -> Result<Self> {
-        let object::RelocationFlags::Elf { r_type } = rel.flags() else {
-            unreachable!();
-        };
-        Self::from_raw(r_type)
-    }
-
     pub(crate) fn from_raw(r_type: u32) -> Result<Self> {
         let (kind, size) = match r_type {
             rel::R_X86_64_64 => (RelocationKind::Absolute, 8),

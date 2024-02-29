@@ -29,6 +29,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
+use crate::relaxation::Relaxation;
 use crate::resolution::LocalSymbolResolution;
 use crate::resolution::SectionSlot;
 use crate::slice::slice_take_prefix_mut;
@@ -1005,7 +1006,15 @@ impl<'a> Display for DisplayRelocation<'a> {
                     LocalSymbolResolution::Global(symbol_id) => {
                         write!(f, "global `{}`", self.symbol_db.symbol_name(*symbol_id))?;
                     }
-                    LocalSymbolResolution::UnresolvedWeak => write!(f, "unresolved weak")?,
+                    LocalSymbolResolution::UnresolvedWeak => write!(
+                        f,
+                        "unresolved weak symbol `{}`",
+                        self.object
+                            .object
+                            .symbol_by_index(local_symbol_id)
+                            .and_then(|s| s.name())
+                            .unwrap_or("??")
+                    )?,
                     LocalSymbolResolution::TlsGetAddr => write!(f, "TlsGetAddr")?,
                     LocalSymbolResolution::WeakRefToGlobal(symbol_id) => {
                         write!(
@@ -1106,13 +1115,24 @@ fn apply_relocation(
     let address = resolution.address;
     let mut offset = offset_in_section as usize;
     let place = section_address + offset_in_section;
-    let addend = rel.addend() as u64;
+    let mut addend = rel.addend() as u64;
     let mut next_modifier = RelocationModifier::Normal;
-    let rel_info = RelocationKindInfo::from_rel(rel)?;
+    let object::RelocationFlags::Elf { mut r_type } = rel.flags() else {
+        unreachable!();
+    };
+    if let Some(relaxation) = Relaxation::new(r_type, out, offset_in_section as usize) {
+        let value_is_relocatable = address != 0 && layout.args().is_relocatable();
+        r_type = relaxation.new_relocation_kind(value_is_relocatable);
+        relaxation.apply(out, offset_in_section as usize, value_is_relocatable);
+        if !value_is_relocatable {
+            addend = 0;
+        }
+    }
+    let rel_info = RelocationKindInfo::from_raw(r_type)?;
     debug_assert!(rel.size() == 0 || rel.size() as usize / 8 == rel_info.byte_size);
     let value = match rel_info.kind {
         RelocationKind::Absolute => {
-            if relocation_writer.is_active {
+            if relocation_writer.is_active && address != 0 {
                 relocation_writer.write_relocation(place, address)?;
                 0
             } else {
@@ -1135,6 +1155,7 @@ fn apply_relocation(
             }
         }
         RelocationKind::TlsGd => {
+            // TODO: Move this logic, or something equivalent into the relaxation module.
             match layout.args().tls_mode() {
                 TlsMode::LocalExec => {
                     // Transform GD (general dynamic) into LE (local exec). We can make this

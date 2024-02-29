@@ -26,6 +26,7 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::MAX_SEGMENTS;
+use crate::relaxation::Relaxation;
 use crate::resolution;
 use crate::resolution::LocalSymbolResolution;
 use crate::resolution::SectionSlot;
@@ -1310,8 +1311,8 @@ impl<'data> Section<'data> {
         let size = object_section.size();
         let section_data = object_section.data()?;
         let is_relocatable = resources.symbol_db.args.is_relocatable();
-        for (_, rel) in object_section.relocations() {
-            let rel_info = RelInfo::new(&rel, resources.args())?;
+        for (rel_offset, rel) in object_section.relocations() {
+            let rel_info = RelInfo::new(&rel, rel_offset, &object_section, resources.args())?;
             process_relocation(&rel_info, resources, &mut worker.state, queue);
             if is_relocatable && is_relocation_position_dependent(&rel) {
                 worker.state.common.mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
@@ -1391,8 +1392,19 @@ struct RelInfo {
 }
 
 impl RelInfo {
-    fn new(rel: &object::Relocation, args: &Args) -> Result<Self> {
-        let rel_info = RelocationKindInfo::from_rel(rel)?;
+    fn new(
+        rel: &object::Relocation,
+        rel_offset: u64,
+        section: &elf::Section,
+        args: &Args,
+    ) -> Result<Self> {
+        let object::RelocationFlags::Elf { mut r_type } = rel.flags() else {
+            unreachable!();
+        };
+        if let Some(relaxation) = Relaxation::new(r_type, section.data()?, rel_offset as usize) {
+            r_type = relaxation.new_relocation_kind(true);
+        }
+        let rel_info = RelocationKindInfo::from_raw(r_type)?;
         Ok(Self {
             target: rel.target(),
             resolution_kind: TargetResolutionKind::new(rel_info, args)?,
@@ -2177,7 +2189,7 @@ fn process_eh_frame_data<'data>(
                 }
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                let rel_info = RelInfo::new(rel, resources.args())?;
+                let rel_info = RelInfo::new(rel, *rel_offset, &eh_frame_section, resources.args())?;
                 process_relocation(&rel_info, resources, state, queue);
                 if let object::RelocationTarget::Symbol(local_sym_index) = rel.target() {
                     let symbol_res = state.local_symbol_resolutions[local_sym_index.0];
@@ -2220,7 +2232,12 @@ fn process_eh_frame_data<'data>(
                             _ => {}
                         };
                     } else {
-                        refs.push(RelInfo::new(rel, resources.args())?);
+                        refs.push(RelInfo::new(
+                            rel,
+                            *rel_offset,
+                            &eh_frame_section,
+                            resources.args(),
+                        )?);
                     }
                     relocations.next();
                 } else {

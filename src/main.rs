@@ -16,6 +16,7 @@ mod output_section_id;
 mod output_section_map;
 mod output_section_part_map;
 mod program_segments;
+mod relaxation;
 mod resolution;
 mod save_dir;
 mod shutdown;
