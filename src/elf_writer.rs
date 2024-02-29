@@ -17,7 +17,6 @@ use crate::layout::HeaderInfo;
 use crate::layout::InternalLayout;
 use crate::layout::Layout;
 use crate::layout::ObjectLayout;
-use crate::layout::PltGotFlags;
 use crate::layout::Resolution;
 use crate::layout::Section;
 use crate::layout::SymbolResolution;
@@ -635,7 +634,7 @@ impl<'data> ObjectLayout<'data> {
                     )
                 })?;
         }
-        if !matches!(sec.resolution_kind, PltGotFlags::Neither) {
+        if sec.resolution_kind.needs_got_entry() {
             let res = self.section_resolutions[sec.index.0]
                 .as_ref()
                 .ok_or_else(|| anyhow!("Section requires GOT, but hasn't been resolved"))?;
