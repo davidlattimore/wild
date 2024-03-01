@@ -600,6 +600,7 @@ impl<'data> ObjectLayout<'data> {
             self.write_symbols(start_str_offset, buffers, &layout.output_sections, layout)?;
         }
         plt_got_writer.validate_empty()?;
+        relocation_writer.validate_empty()?;
         Ok(())
     }
 
@@ -1098,6 +1099,16 @@ impl<'out> RelocationWriter<'out> {
             rela_dyn: Default::default(),
         }
     }
+
+    fn validate_empty(&self) -> Result {
+        if self.rela_dyn.is_empty() {
+            return Ok(());
+        }
+        bail!(
+            "Allocated too much space in .rela.dyn. {} unused entries remain.",
+            self.rela_dyn.len()
+        );
+    }
 }
 
 /// Applies the relocation `rel` at `offset_in_section`, where the section bytes are `out`. See "ELF
@@ -1271,6 +1282,8 @@ impl<'data> InternalLayout<'data> {
         if layout.args().pie {
             self.write_dynamic_entries(buffers.dynamic, layout)?;
         }
+
+        relocation_writer.validate_empty()?;
 
         Ok(())
     }

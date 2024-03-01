@@ -1274,13 +1274,19 @@ impl<'data> std::fmt::Debug for FileLayout<'data> {
 
 impl<'data> std::fmt::Display for ObjectLayoutState<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.input, f)
+        std::fmt::Display::fmt(&self.input, f)?;
+        // TODO: This is mostly for debugging use. Consider only showing this if some environment
+        // variable is set, or only in debug builds.
+        write!(f, " ({})", self.file_id())
     }
 }
 
 impl<'data> std::fmt::Display for ObjectLayout<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.input, f)
+        std::fmt::Display::fmt(&self.input, f)?;
+        // TODO: This is mostly for debugging use. Consider only showing this if some environment
+        // variable is set, or only in debug builds.
+        write!(f, " ({})", self.file_id)
     }
 }
 
@@ -1314,7 +1320,7 @@ impl<'data> Section<'data> {
         for (rel_offset, rel) in object_section.relocations() {
             let rel_info = RelInfo::new(&rel, rel_offset, &object_section, resources.args())?;
             process_relocation(&rel_info, resources, &mut worker.state, queue);
-            if is_relocatable && is_relocation_position_dependent(&rel) {
+            if is_relocatable && rel_info.is_relocation_position_dependent() {
                 worker.state.common.mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
             }
         }
@@ -1389,6 +1395,7 @@ impl<'data> Section<'data> {
 struct RelInfo {
     target: object::RelocationTarget,
     resolution_kind: TargetResolutionKind,
+    relocation_kind: RelocationKind,
 }
 
 impl RelInfo {
@@ -1408,14 +1415,13 @@ impl RelInfo {
         Ok(Self {
             target: rel.target(),
             resolution_kind: TargetResolutionKind::new(rel_info, args)?,
+            relocation_kind: rel_info.kind,
         })
     }
-}
 
-fn is_relocation_position_dependent(rel: &object::Relocation) -> bool {
-    // TODO: We probably need to return true here for object::RelocationKind::Got as well, but we
-    // don't yet support writing those.
-    matches!(rel.kind(), object::RelocationKind::Absolute)
+    fn is_relocation_position_dependent(&self) -> bool {
+        matches!(self.relocation_kind, RelocationKind::Absolute)
+    }
 }
 
 fn process_relocation(
