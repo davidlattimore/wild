@@ -12,6 +12,7 @@ use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
+use crate::resolution::ValueKind;
 use crate::symbol;
 use crate::symbol::Symbol;
 use crate::symbol::SymbolName;
@@ -224,7 +225,11 @@ impl<'data> SymbolDb<'data> {
         local_index: object::SymbolIndex,
     ) -> Result<GlobalSymbolId> {
         self.add_symbol(PendingSymbol {
-            symbol: Symbol::new(input_data::INTERNAL_FILE_ID, local_index),
+            symbol: Symbol::new(
+                input_data::INTERNAL_FILE_ID,
+                local_index,
+                ValueKind::Address,
+            ),
             name: SymbolName::new(symbol_name),
         })
     }
@@ -314,6 +319,7 @@ impl<'data> ObjectSymbolReader<'data> {
                 // many objects in each archive until then.
                 FileId::placeholder(),
                 symbol.index(),
+                symbol_kind(&symbol),
                 name,
             );
             pending_symbols.push(pending);
@@ -331,6 +337,7 @@ impl<'data> ObjectSymbolReader<'data> {
             symbols.push(PendingSymbol::new(
                 FileId::placeholder(),
                 symbol.index(),
+                symbol_kind(&symbol),
                 name,
             ));
         }
@@ -349,6 +356,13 @@ impl<'data> ObjectSymbolReader<'data> {
     }
 }
 
+fn symbol_kind(symbol: &crate::elf::Symbol) -> ValueKind {
+    match symbol.section() {
+        object::SymbolSection::Absolute => ValueKind::Absolute,
+        _ => ValueKind::Address,
+    }
+}
+
 impl InternalSymbolReader {
     fn load_symbols(mut self, args: &Args) -> Result<SymbolLoadOutputs<'static>> {
         let mut symbols = Vec::new();
@@ -363,6 +377,7 @@ impl InternalSymbolReader {
                 symbols.push(PendingSymbol::new(
                     input_data::INTERNAL_FILE_ID,
                     object::SymbolIndex(self.symbol_definitions.len()),
+                    ValueKind::Address,
                     name.as_bytes(),
                 ));
                 self.symbol_definitions
@@ -372,6 +387,7 @@ impl InternalSymbolReader {
                 symbols.push(PendingSymbol::new(
                     input_data::INTERNAL_FILE_ID,
                     object::SymbolIndex(self.symbol_definitions.len()),
+                    ValueKind::Address,
                     name.as_bytes(),
                 ));
                 self.symbol_definitions
@@ -488,10 +504,11 @@ impl<'data> PendingSymbol<'data> {
     fn new(
         file_id: FileId,
         local_index: object::SymbolIndex,
+        kind: ValueKind,
         name: &'data [u8],
     ) -> PendingSymbol<'data> {
         PendingSymbol {
-            symbol: Symbol::new(file_id, local_index),
+            symbol: Symbol::new(file_id, local_index, kind),
             name: SymbolName::new(name),
         }
     }

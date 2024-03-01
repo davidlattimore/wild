@@ -796,3 +796,20 @@ impl<'data> std::hash::Hash for StringToMerge<'data> {
         state.write_u64(self.hash);
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValueKind {
+    /// Something with an address. e.g. a regular symbol, a section etc.
+    Address,
+
+    /// An absolute value that won't be change depending on load address. This could be a symbol
+    /// with an absolute value or an undefined symbol, which needs to always resolve to 0 regardless
+    /// of load address.
+    Absolute,
+}
+
+impl ValueKind {
+    pub(crate) fn is_address(self) -> bool {
+        self == ValueKind::Address
+    }
+}

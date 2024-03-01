@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::input_data::FileId;
+use crate::resolution::ValueKind;
 use anyhow::bail;
 use std::fmt::Display;
 use std::hash::Hasher;
@@ -7,6 +8,7 @@ use std::hash::Hasher;
 pub(crate) const PLACEHOLDER: Symbol = Symbol {
     file_id: FileId::placeholder(),
     local_index: object::SymbolIndex(0),
+    value_kind: ValueKind::Absolute,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -18,6 +20,8 @@ pub(crate) struct Symbol {
     /// to use this field incorrectly and have it work most of the time. For this reason this field
     /// should remain private.
     local_index: object::SymbolIndex,
+
+    pub(crate) value_kind: ValueKind,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -59,10 +63,11 @@ impl<'data> SymbolName<'data> {
 }
 
 impl Symbol {
-    pub(crate) fn new(file_id: FileId, local_index: object::SymbolIndex) -> Self {
+    pub(crate) fn new(file_id: FileId, local_index: object::SymbolIndex, kind: ValueKind) -> Self {
         Self {
             file_id,
             local_index,
+            value_kind: kind,
         }
     }
 
