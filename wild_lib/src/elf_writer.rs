@@ -32,6 +32,7 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::relaxation::Relaxation;
 use crate::resolution::LocalSymbolResolution;
 use crate::resolution::SectionSlot;
+use crate::resolution::ValueKind;
 use crate::slice::slice_take_prefix_mut;
 use crate::symbol_db::GlobalSymbolId;
 use crate::symbol_db::SymbolDb;
@@ -381,26 +382,30 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
                     let offset_entry = slice_take_prefix_mut(&mut self.got, 1);
                     // Convert the address to an offset relative to the TCB which is the end of the TLS
                     // segment.
-                    offset_entry[0] = res.address.wrapping_sub(self.tls.end);
+                    offset_entry[0] = res.value.wrapping_sub(self.tls.end);
                     return Ok(());
                 }
                 TargetResolutionKind::GotTlsOffset => {
                     needs_relocation = false;
                     // Convert the address to an offset relative to the TCB which is the end of the TLS
                     // segment.
-                    if !self.tls.contains(&res.address) {
+                    if !self.tls.contains(&res.value) {
                         bail!(
                             "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
-                            res.address
+                            res.value
                         );
                     }
-                    res.address.wrapping_sub(self.tls.end)
+                    res.value.wrapping_sub(self.tls.end)
                 }
                 TargetResolutionKind::IFunc => {
                     needs_relocation = false;
                     0
                 }
-                _ => res.address,
+                TargetResolutionKind::Value => {
+                    needs_relocation = false;
+                    res.value
+                }
+                _ => res.value,
             };
             let got_entry = slice_take_prefix_mut(&mut self.got, 1);
             if needs_relocation {
@@ -600,7 +605,7 @@ impl<'data> ObjectLayout<'data> {
             self.write_symbols(start_str_offset, buffers, &layout.output_sections, layout)?;
         }
         plt_got_writer.validate_empty()?;
-        relocation_writer.validate_empty()?;
+        relocation_writer.validate_empty(&self.mem_sizes)?;
         Ok(())
     }
 
@@ -611,7 +616,7 @@ impl<'data> ObjectLayout<'data> {
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         plt_got_writer: &mut PltGotWriter<'_, '_>,
         relocation_writer: &mut RelocationWriter,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result {
         if layout
             .output_sections
             .has_data_in_file(sec.output_section_id.unwrap())
@@ -667,7 +672,7 @@ impl<'data> ObjectLayout<'data> {
                             self.section_resolutions[section_index.0]
                                 .as_ref()
                                 .unwrap()
-                                .address,
+                                .value,
                         )?;
                     }
                 }
@@ -681,7 +686,7 @@ impl<'data> ObjectLayout<'data> {
                                 symbol_writer.copy_symbol(
                                     &sym,
                                     output_section_id::BSS,
-                                    res.address,
+                                    res.value,
                                 )?;
                             }
                         }
@@ -704,7 +709,7 @@ impl<'data> ObjectLayout<'data> {
         let section_address = self.section_resolutions[section.index.0]
             .as_ref()
             .unwrap()
-            .address;
+            .value;
         let elf_section = &self.object.section_by_index(section.index)?;
         let mut modifier = RelocationModifier::Normal;
         for (offset_in_section, rel) in elf_section.relocations() {
@@ -712,20 +717,18 @@ impl<'data> ObjectLayout<'data> {
                 modifier = RelocationModifier::Normal;
                 continue;
             }
-            if let Some(resolution) = self.get_resolution(&rel, layout)? {
-                modifier = apply_relocation(
-                    &resolution,
-                    offset_in_section,
-                    &rel,
-                    section_address,
-                    layout,
-                    out,
-                    relocation_writer,
-                )
-                .with_context(|| {
-                    format!("Failed to apply {}", self.display_relocation(&rel, layout))
-                })?;
-            }
+            modifier = apply_relocation(
+                self,
+                offset_in_section,
+                &rel,
+                section_address,
+                layout,
+                out,
+                relocation_writer,
+            )
+            .with_context(|| {
+                format!("Failed to apply {}", self.display_relocation(&rel, layout))
+            })?;
         }
         Ok(())
     }
@@ -807,7 +810,7 @@ impl<'data> ObjectLayout<'data> {
                                             prefix.cie_id, cie_pointer_pos
                                         )
                                     })?;
-                                let frame_ptr = (section_resolution.address + offset_in_section)
+                                let frame_ptr = (section_resolution.value + offset_in_section)
                                     as i64
                                     - eh_frame_hdr_address as i64;
                                 headers_out[header_offset] = EhFrameHdrEntry {
@@ -843,20 +846,18 @@ impl<'data> ObjectLayout<'data> {
                         // This relocation belongs to the next entry.
                         break;
                     }
-                    if let Some(resolution) = self.get_resolution(rel, layout)? {
-                        apply_relocation(
-                            &resolution,
-                            rel_offset - input_pos as u64,
-                            rel,
-                            output_pos as u64 + self.eh_frame_start_address,
-                            layout,
-                            entry_out,
-                            relocation_writer,
-                        )
-                        .with_context(|| {
-                            format!("Failed to apply {}", self.display_relocation(rel, layout))
-                        })?;
-                    }
+                    apply_relocation(
+                        self,
+                        rel_offset - input_pos as u64,
+                        rel,
+                        output_pos as u64 + self.eh_frame_start_address,
+                        layout,
+                        entry_out,
+                        relocation_writer,
+                    )
+                    .with_context(|| {
+                        format!("Failed to apply {}", self.display_relocation(rel, layout))
+                    })?;
                     relocations.next();
                 }
                 output_pos = next_output_pos;
@@ -931,7 +932,7 @@ impl<'data> ObjectLayout<'data> {
                             )
                         })?;
                         let local_sym = self.object.symbol_by_index(local_symbol_id)?;
-                        r.address += local_sym.address();
+                        r.value += local_sym.address();
                         r
                     }
                     LocalSymbolResolution::UnresolvedWeak => {
@@ -960,7 +961,8 @@ impl<'data> ObjectLayout<'data> {
                             }
                         } else {
                             Resolution {
-                                address: layout.merged_string_start_addresses.resolve(res),
+                                value: layout.merged_string_start_addresses.resolve(res),
+                                value_kind: ValueKind::Address,
                                 got_address: None,
                                 plt_address: None,
                                 kind: TargetResolutionKind::Address,
@@ -1005,7 +1007,12 @@ impl<'a> Display for DisplayRelocation<'a> {
             object::RelocationTarget::Symbol(local_symbol_id) => {
                 match &self.object.local_symbol_resolutions[local_symbol_id.0] {
                     LocalSymbolResolution::Global(symbol_id) => {
-                        write!(f, "global `{}`", self.symbol_db.symbol_name(*symbol_id))?;
+                        write!(
+                            f,
+                            "global `{}` ({:?})",
+                            self.symbol_db.symbol_name(*symbol_id),
+                            self.symbol_db.symbol(*symbol_id).value_kind,
+                        )?;
                     }
                     LocalSymbolResolution::UnresolvedWeak => write!(
                         f,
@@ -1020,8 +1027,9 @@ impl<'a> Display for DisplayRelocation<'a> {
                     LocalSymbolResolution::WeakRefToGlobal(symbol_id) => {
                         write!(
                             f,
-                            "weak ref to global `{}`",
-                            self.symbol_db.symbol_name(*symbol_id)
+                            "weak ref to global `{}` ({:?})",
+                            self.symbol_db.symbol_name(*symbol_id),
+                            self.symbol_db.symbol(*symbol_id).value_kind,
                         )?;
                     }
                     LocalSymbolResolution::LocalSection(section_index) => {
@@ -1100,13 +1108,14 @@ impl<'out> RelocationWriter<'out> {
         }
     }
 
-    fn validate_empty(&self) -> Result {
+    fn validate_empty(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
         if self.rela_dyn.is_empty() {
             return Ok(());
         }
         bail!(
-            "Allocated too much space in .rela.dyn. {} unused entries remain.",
-            self.rela_dyn.len()
+            "Allocated too much space in .rela.dyn. {} of {} entries remain unused.",
+            self.rela_dyn.len(),
+            mem_sizes.rela_dyn / elf::RELA_ENTRY_SIZE,
         );
     }
 }
@@ -1115,7 +1124,7 @@ impl<'out> RelocationWriter<'out> {
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
 fn apply_relocation(
-    resolution: &Resolution,
+    object_layout: &ObjectLayout,
     offset_in_section: u64,
     rel: &object::Relocation,
     section_address: u64,
@@ -1123,7 +1132,10 @@ fn apply_relocation(
     out: &mut [u8],
     relocation_writer: &mut RelocationWriter,
 ) -> Result<RelocationModifier> {
-    let address = resolution.address;
+    let Some(resolution) = object_layout.get_resolution(rel, layout)? else {
+        return Ok(RelocationModifier::Normal);
+    };
+    let address = resolution.value;
     let mut offset = offset_in_section as usize;
     let place = section_address + offset_in_section;
     let mut addend = rel.addend() as u64;
@@ -1131,19 +1143,23 @@ fn apply_relocation(
     let object::RelocationFlags::Elf { mut r_type } = rel.flags() else {
         unreachable!();
     };
-    if let Some(relaxation) = Relaxation::new(r_type, out, offset_in_section as usize) {
-        let value_is_relocatable = address != 0 && layout.args().is_relocatable();
-        r_type = relaxation.new_relocation_kind(value_is_relocatable);
-        relaxation.apply(out, offset_in_section as usize, value_is_relocatable);
-        if !value_is_relocatable {
-            addend = 0;
-        }
+    let rel_info;
+    if let Some(relaxation) = Relaxation::new(
+        r_type,
+        out,
+        offset_in_section as usize,
+        resolution.value_kind,
+    ) {
+        r_type = relaxation.new_relocation_kind();
+        rel_info = RelocationKindInfo::from_raw(r_type)?;
+        relaxation.apply(out, offset_in_section as usize, &mut addend);
+    } else {
+        rel_info = RelocationKindInfo::from_raw(r_type)?;
     }
-    let rel_info = RelocationKindInfo::from_raw(r_type)?;
     debug_assert!(rel.size() == 0 || rel.size() as usize / 8 == rel_info.byte_size);
     let value = match rel_info.kind {
         RelocationKind::Absolute => {
-            if relocation_writer.is_active && address != 0 {
+            if relocation_writer.is_active && resolution.value_kind.is_address() {
                 relocation_writer.write_relocation(place, address)?;
                 0
             } else {
@@ -1157,7 +1173,7 @@ fn apply_relocation(
             .wrapping_sub(place),
         RelocationKind::PltRelative => {
             if layout.args().link_static {
-                resolution.address.wrapping_add(addend).wrapping_sub(place)
+                resolution.value.wrapping_add(addend).wrapping_sub(place)
             } else {
                 resolution
                     .plt_address()?
@@ -1283,7 +1299,7 @@ impl<'data> InternalLayout<'data> {
             self.write_dynamic_entries(buffers.dynamic, layout)?;
         }
 
-        relocation_writer.validate_empty()?;
+        relocation_writer.validate_empty(&self.mem_sizes)?;
 
         Ok(())
     }
@@ -1325,10 +1341,13 @@ impl<'data> InternalLayout<'data> {
                 &mut RelocationWriter::disabled(),
             )
             .context("undefined symbol resolution")?;
+
+        // Write a pair of GOT entries for use by any TLSLD or TLSGD relocations.
         if let Some(got_address) = self.tlsld_got_entry {
             plt_got_writer.process_resolution(
                 &Resolution {
-                    address: 1,
+                    value: 1,
+                    value_kind: ValueKind::Absolute,
                     got_address: Some(got_address),
                     plt_address: None,
                     kind: TargetResolutionKind::Got,
@@ -1337,7 +1356,8 @@ impl<'data> InternalLayout<'data> {
             )?;
             plt_got_writer.process_resolution(
                 &Resolution {
-                    address: 0,
+                    value: 0,
+                    value_kind: ValueKind::Absolute,
                     got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
                     plt_address: None,
                     kind: TargetResolutionKind::Got,
@@ -1401,7 +1421,7 @@ impl<'data> InternalLayout<'data> {
                     )
                 })?;
             let address = match resolution {
-                SymbolResolution::Resolved(res) => res.address,
+                SymbolResolution::Resolved(res) => res.value,
                 SymbolResolution::Dynamic => unreachable!(),
             };
             let symbol_name = layout.symbol_db.symbol_name(symbol_id);

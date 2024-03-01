@@ -30,6 +30,7 @@ use crate::relaxation::Relaxation;
 use crate::resolution;
 use crate::resolution::LocalSymbolResolution;
 use crate::resolution::SectionSlot;
+use crate::resolution::ValueKind;
 use crate::symbol::SymbolName;
 use crate::symbol_db;
 use crate::symbol_db::GlobalSymbolId;
@@ -190,7 +191,9 @@ pub(crate) struct MergedStringStartAddresses {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Resolution {
     // TODO: Experiment with putting these in separate vectors.
-    pub(crate) address: u64,
+    pub(crate) value: u64,
+    pub(crate) value_kind: ValueKind,
+
     pub(crate) got_address: Option<NonZeroU64>,
     pub(crate) plt_address: Option<NonZeroU64>,
     pub(crate) kind: TargetResolutionKind,
@@ -529,7 +532,7 @@ struct SectionFrameData {
     /// (excluding the reference to the symbol that the FDE is for). This is usually an exception
     /// table. Since we expect that there's often 0 or 1 references, we avoid a separate allocation
     /// for those cases.
-    refs: SmallVec<[RelInfo; 1]>,
+    relocation_actions: SmallVec<[RelocationLayoutAction; 1]>,
 
     /// Number of FDEs associated with symbols in this section.
     num_fdes: u32,
@@ -560,7 +563,10 @@ pub(crate) enum TargetResolutionKind {
     #[default]
     None,
 
-    /// Just an address.
+    /// An absolute value.
+    Value,
+
+    /// An regular address.
     Address,
 
     /// An address in the global offset table.
@@ -684,7 +690,7 @@ impl<'data> Layout<'data> {
     pub(crate) fn entry_symbol_address(&self) -> Result<u64> {
         let symbol_id = self.internal().entry_symbol_id;
         match self.global_symbol_resolution(symbol_id) {
-            Some(SymbolResolution::Resolved(resolution)) => Ok(resolution.address),
+            Some(SymbolResolution::Resolved(resolution)) => Ok(resolution.value),
             Some(SymbolResolution::Dynamic) => {
                 let symbol_name = self.symbol_db.symbol_name(symbol_id);
                 bail!("{symbol_name} can't be from a dynamic library",)
@@ -1119,10 +1125,6 @@ impl<'data, 'scope> GraphResources<'data, 'scope> {
             }
         }
     }
-
-    fn args(&self) -> &Args {
-        self.symbol_db.args
-    }
 }
 
 impl<'data> FileLayoutState<'data> {
@@ -1316,12 +1318,15 @@ impl<'data> Section<'data> {
         let alignment = Alignment::new(object_section.align())?;
         let size = object_section.size();
         let section_data = object_section.data()?;
-        let is_relocatable = resources.symbol_db.args.is_relocatable();
         for (rel_offset, rel) in object_section.relocations() {
-            let rel_info = RelInfo::new(&rel, rel_offset, &object_section, resources.args())?;
-            process_relocation(&rel_info, resources, &mut worker.state, queue);
-            if is_relocatable && rel_info.is_relocation_position_dependent() {
-                worker.state.common.mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
+            if let Some(action) = RelocationLayoutAction::new(
+                &rel,
+                &object_section,
+                rel_offset,
+                &worker.state,
+                resources.symbol_db,
+            )? {
+                action.apply(resources, &mut worker.state, queue);
             }
         }
         let section = Section {
@@ -1374,8 +1379,8 @@ impl<'data> Section<'data> {
             ) => {
                 mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
             }
-            (_, TargetResolutionKind::Address) => {}
-            (a, b) => bail!("Unexpected state transition {a:?} {b:?}"),
+            (_, TargetResolutionKind::Address | TargetResolutionKind::Value) => {}
+            (a, b) => bail!("Unexpected state transition {a:?} -> {b:?}"),
         }
         self.resolution_kind = request.resolution_kind;
         Ok(())
@@ -1392,108 +1397,201 @@ impl<'data> Section<'data> {
     }
 }
 
-struct RelInfo {
-    target: object::RelocationTarget,
-    resolution_kind: TargetResolutionKind,
-    relocation_kind: RelocationKind,
+/// Represents an action that we need to perform during layout if we decide that we need to apply a
+/// relocation. For regular sections we always create the action then apply it straight away,
+/// however for FDEs (frame description entries), we create them, store them and only later decide
+/// if we're going to apply them.
+#[derive(Clone, Copy, Debug)]
+struct RelocationLayoutAction {
+    kind: RelocationLayoutActionKind,
+    dynamic_relocation_required: bool,
 }
 
-impl RelInfo {
+/// An action that we need to perform if we decide to use a particular relocation.
+#[derive(Clone, Copy, Debug)]
+enum RelocationLayoutActionKind {
+    LoadSymbol(GlobalSymbolId, object::SymbolIndex, TargetResolutionKind),
+    LoadSection(object::SectionIndex, TargetResolutionKind),
+
+    /// The relocation can't be done at link time and needs to be done at runtime, so if we use the
+    /// relocation, all we need to do during the layout phase is allocate space in .rela_dyn for the
+    /// runtime relocation.
+    DynamicOnly,
+}
+
+impl RelocationLayoutAction {
     fn new(
+        rel: &object::Relocation,
+        section: &elf::Section,
+        rel_offset: u64,
+        state: &ObjectLayoutMutableState<'_>,
+        symbol_db: &SymbolDb,
+    ) -> Result<Option<Self>> {
+        let args = symbol_db.args;
+        match rel.target() {
+            object::RelocationTarget::Symbol(local_sym_index) => {
+                let local_symbol_resolution = state.local_symbol_resolutions[local_sym_index.0];
+                match local_symbol_resolution {
+                    LocalSymbolResolution::Global(symbol_id)
+                    | LocalSymbolResolution::WeakRefToGlobal(symbol_id) => {
+                        return Ok(Some(Self::for_symbol(
+                            rel,
+                            rel_offset,
+                            section,
+                            symbol_db,
+                            symbol_id,
+                            args,
+                            local_sym_index,
+                        )?));
+                    }
+                    LocalSymbolResolution::MergedString(_merge) => {
+                        if args.is_relocatable()
+                            && matches!(rel.kind(), object::RelocationKind::Absolute)
+                        {
+                            // We currently always load merged-string sections, so no load action is
+                            // required for the section, however in this case, we need to allocation
+                            // dynamic relocation.
+                            return Ok(Some(RelocationLayoutAction {
+                                kind: RelocationLayoutActionKind::DynamicOnly,
+                                dynamic_relocation_required: true,
+                            }));
+                        }
+                    }
+                    LocalSymbolResolution::LocalSection(local_section_index) => {
+                        return Ok(Some(Self::for_section(
+                            rel,
+                            rel_offset,
+                            section,
+                            args,
+                            local_section_index,
+                        )?));
+                    }
+                    _ => {}
+                }
+            }
+            object::RelocationTarget::Section(local_section_index) => {
+                return Ok(Some(Self::for_section(
+                    rel,
+                    rel_offset,
+                    section,
+                    args,
+                    local_section_index,
+                )?));
+            }
+            _ => {}
+        };
+        Ok(None)
+    }
+
+    fn for_symbol(
+        rel: &object::Relocation,
+        rel_offset: u64,
+        section: &elf::Section,
+        symbol_db: &SymbolDb<'_>,
+        symbol_id: GlobalSymbolId,
+        args: &Args,
+        local_sym_index: object::SymbolIndex,
+    ) -> Result<RelocationLayoutAction> {
+        let symbol = symbol_db.symbol(symbol_id);
+        let object::RelocationFlags::Elf { mut r_type } = rel.flags() else {
+            unreachable!();
+        };
+        if let Some(relaxation) = Relaxation::new(
+            r_type,
+            section.data()?,
+            rel_offset as usize,
+            symbol.value_kind,
+        ) {
+            r_type = relaxation.new_relocation_kind();
+        }
+        let rel_info = RelocationKindInfo::from_raw(r_type)?;
+        let resolution_kind = TargetResolutionKind::new(rel_info.kind, symbol.value_kind, args)?;
+        let dynamic_relocation_required = args.is_relocatable()
+            && matches!(rel_info.kind, RelocationKind::Absolute)
+            && !matches!(resolution_kind, TargetResolutionKind::Value);
+        let relocation_layout_action = RelocationLayoutAction {
+            kind: RelocationLayoutActionKind::LoadSymbol(
+                symbol_id,
+                local_sym_index,
+                resolution_kind,
+            ),
+            dynamic_relocation_required,
+        };
+        Ok(relocation_layout_action)
+    }
+
+    fn for_section(
         rel: &object::Relocation,
         rel_offset: u64,
         section: &elf::Section,
         args: &Args,
-    ) -> Result<Self> {
+        local_section_index: object::SectionIndex,
+    ) -> Result<RelocationLayoutAction, Error> {
         let object::RelocationFlags::Elf { mut r_type } = rel.flags() else {
             unreachable!();
         };
-        if let Some(relaxation) = Relaxation::new(r_type, section.data()?, rel_offset as usize) {
-            r_type = relaxation.new_relocation_kind(true);
+        if let Some(relaxation) = Relaxation::new(
+            r_type,
+            section.data()?,
+            rel_offset as usize,
+            ValueKind::Address,
+        ) {
+            r_type = relaxation.new_relocation_kind();
         }
         let rel_info = RelocationKindInfo::from_raw(r_type)?;
-        Ok(Self {
-            target: rel.target(),
-            resolution_kind: TargetResolutionKind::new(rel_info, args)?,
-            relocation_kind: rel_info.kind,
+        let resolution_kind = TargetResolutionKind::new(rel_info.kind, ValueKind::Address, args)?;
+        Ok(RelocationLayoutAction {
+            kind: RelocationLayoutActionKind::LoadSection(local_section_index, resolution_kind),
+            dynamic_relocation_required: args.is_relocatable()
+                && matches!(rel_info.kind, RelocationKind::Absolute),
         })
     }
 
-    fn is_relocation_position_dependent(&self) -> bool {
-        matches!(self.relocation_kind, RelocationKind::Absolute)
-    }
-}
-
-fn process_relocation(
-    rel: &RelInfo,
-    resources: &GraphResources<'_, '_>,
-    state: &mut ObjectLayoutMutableState<'_>,
-    queue: &mut LocalWorkQueue,
-) {
-    let mut section_to_load = None;
-    let mut symbol_to_load = None;
-    let plt_got_flags = rel.resolution_kind;
-    match rel.target {
-        object::RelocationTarget::Symbol(local_sym_index) => {
-            match &state.local_symbol_states[local_sym_index.0] {
-                LocalSymbolState::Unloaded => {
-                    state.local_symbol_states[local_sym_index.0] = LocalSymbolState::Loaded;
-                    state.plt_got_flags[local_sym_index.0] = plt_got_flags;
-                }
-                _ => {
-                    if state.plt_got_flags[local_sym_index.0] >= plt_got_flags {
-                        // We've already processed a relocation to this symbol and the
-                        // PLT/GOT flags haven't changed (or are weaker), nothing more to do
-                        // for this relocation.
-                        return;
-                    } else {
-                        // We've processed this symbol before, but the PLT/GOT requirements
-                        // just got stronger, so we'll still need to send a symbol request.
-                        state.plt_got_flags[local_sym_index.0] = plt_got_flags;
+    fn apply(
+        &self,
+        resources: &GraphResources<'_, '_>,
+        state: &mut ObjectLayoutMutableState<'_>,
+        queue: &mut LocalWorkQueue,
+    ) {
+        match self.kind {
+            RelocationLayoutActionKind::LoadSymbol(symbol_id, local_sym_index, resolution_kind) => {
+                match &state.local_symbol_states[local_sym_index.0] {
+                    LocalSymbolState::Unloaded => {
+                        state.local_symbol_states[local_sym_index.0] = LocalSymbolState::Loaded;
+                        state.plt_got_flags[local_sym_index.0] = resolution_kind;
+                        queue.send_symbol_request(symbol_id, resolution_kind, resources);
+                    }
+                    LocalSymbolState::Loaded => {
+                        if state.plt_got_flags[local_sym_index.0] < resolution_kind {
+                            // We've processed this symbol before, but the PLT/GOT requirements
+                            // just got stronger, so we'll still need to send a symbol request.
+                            state.plt_got_flags[local_sym_index.0] = resolution_kind;
+                            queue.send_symbol_request(symbol_id, resolution_kind, resources);
+                        }
                     }
                 }
             }
-            let symbol_res = state.local_symbol_resolutions[local_sym_index.0];
-            match symbol_res {
-                LocalSymbolResolution::Global(symbol_id) => {
-                    symbol_to_load = Some(symbol_id);
-                }
-                LocalSymbolResolution::WeakRefToGlobal(symbol_id) => {
-                    symbol_to_load = Some(symbol_id);
-                }
-                LocalSymbolResolution::LocalSection(local_section_index) => {
-                    section_to_load = Some(local_section_index);
-                }
-                LocalSymbolResolution::MergedString(merge) => {
-                    symbol_to_load = merge.symbol_id;
-                }
-                _ => {}
+            RelocationLayoutActionKind::LoadSection(local_section_index, resolution_kind) => {
+                // TODO: See if it's worthwhile checking if we've already loaded the section.
+                state.sections_required.push(SectionRequest {
+                    id: local_section_index,
+                    resolution_kind,
+                });
             }
+            RelocationLayoutActionKind::DynamicOnly => {}
         }
-        object::RelocationTarget::Section(local_section_index) => {
-            section_to_load = Some(local_section_index);
+        if self.dynamic_relocation_required {
+            state.common.mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
         }
-        _ => {}
-    };
-    if let Some(local_section_index) = section_to_load {
-        // TODO: See if it's worthwhile checking if we've already loaded the section.
-        state.sections_required.push(SectionRequest {
-            id: local_section_index,
-            resolution_kind: plt_got_flags,
-        });
-    }
-
-    if let Some(symbol_id) = symbol_to_load {
-        queue.send_symbol_request(symbol_id, plt_got_flags, resources);
     }
 }
 
 impl TargetResolutionKind {
-    fn new(rel_info: RelocationKindInfo, args: &Args) -> Result<Self> {
+    fn new(rel_kind: RelocationKind, target_kind: ValueKind, args: &Args) -> Result<Self> {
         let tls_mode = args.tls_mode();
         // TODO: This could probably be more efficiently implemented as lookup table indexed by the
         // raw relocation type. We can then select which lookup table to use based on tls_mode.
-        Ok(match rel_info.kind {
+        Ok(match rel_kind {
             RelocationKind::PltRelative => {
                 if args.link_static {
                     // When statically linking, we transform PLT relocations into references to the
@@ -1509,10 +1607,15 @@ impl TargetResolutionKind {
                 TlsMode::LocalExec => Self::Address,
                 TlsMode::Preserve => Self::GotTlsDouble,
             },
-            RelocationKind::Absolute
-            | RelocationKind::Relative
-            | RelocationKind::DtpOff
-            | RelocationKind::TpOff => Self::Address,
+            RelocationKind::Absolute => {
+                if target_kind == ValueKind::Address {
+                    Self::Address
+                } else {
+                    Self::Value
+                }
+            }
+            RelocationKind::Relative => Self::Address,
+            RelocationKind::DtpOff | RelocationKind::TpOff => Self::Value,
         })
     }
 
@@ -1739,7 +1842,8 @@ impl<'data> InternalLayoutState<'data> {
 
         // We need a GOT address to use for any relocations that point to undefined weak symbols.
         let undefined_symbol_resolution = Resolution {
-            address: 0,
+            value: 0,
+            value_kind: ValueKind::Absolute,
             got_address: Some(
                 NonZeroU64::new(memory_offsets.got).expect("GOT address must never be zero"),
             ),
@@ -1922,8 +2026,8 @@ impl<'data> ObjectLayoutState<'data> {
                                 * u64::from(frame_data.num_fdes);
                         // Request loading of any sections/symbols referenced by the FDEs for our
                         // section.
-                        for rel in &frame_data.refs {
-                            process_relocation(rel, resources, &mut self.state, queue)
+                        for action in &frame_data.relocation_actions {
+                            action.apply(resources, &mut self.state, queue);
                         }
                     }
                     self.state.sections[section_id.0] = SectionSlot::Loaded(section);
@@ -2044,9 +2148,11 @@ impl<'data> ObjectLayoutState<'data> {
                     let offset = memory_offsets.regular_mut(output_section_id, sec.alignment);
                     // TODO: We probably need to be able to handle sections that are ifuncs and sections
                     // that need a TLS GOT struct.
-                    section_resolutions.push(Some(
-                        emitter.create_resolution(sec.resolution_kind, *offset)?,
-                    ));
+                    section_resolutions.push(Some(emitter.create_resolution(
+                        ValueKind::Address,
+                        sec.resolution_kind,
+                        *offset,
+                    )?));
                     *offset += sec.capacity();
                 }
                 SectionSlot::EhFrameData(..) => {
@@ -2054,6 +2160,7 @@ impl<'data> ObjectLayoutState<'data> {
                     // section where we're GCing stuff, but crtbegin.o and crtend.o use them in
                     // order to find the start and end of the whole .eh_frame section.
                     section_resolutions.push(Some(emitter.create_resolution(
+                        ValueKind::Address,
                         TargetResolutionKind::Address,
                         memory_offsets.eh_frame,
                     )?));
@@ -2071,7 +2178,7 @@ impl<'data> ObjectLayoutState<'data> {
             let mut address = local_symbol.address();
             if let Some(section_index) = local_symbol.section_index() {
                 if let Some(section_resolution) = section_resolutions[section_index.0].as_ref() {
-                    address += section_resolution.address;
+                    address += section_resolution.value;
                 } else {
                     let merged_string_address = merged_string_start_addresses
                         .try_resolve_local(&self.state.local_symbol_resolutions, local_index);
@@ -2195,8 +2302,15 @@ fn process_eh_frame_data<'data>(
                 }
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                let rel_info = RelInfo::new(rel, *rel_offset, &eh_frame_section, resources.args())?;
-                process_relocation(&rel_info, resources, state, queue);
+                if let Some(action) = RelocationLayoutAction::new(
+                    rel,
+                    &eh_frame_section,
+                    *rel_offset,
+                    state,
+                    resources.symbol_db,
+                )? {
+                    action.apply(resources, state, queue);
+                }
                 if let object::RelocationTarget::Symbol(local_sym_index) = rel.target() {
                     let symbol_res = state.local_symbol_resolutions[local_sym_index.0];
                     match symbol_res {
@@ -2220,7 +2334,7 @@ fn process_eh_frame_data<'data>(
         } else {
             // This is an FDE
             let mut section_index = None;
-            let mut refs: SmallVec<[RelInfo; 1]> = Default::default();
+            let mut actions: SmallVec<[RelocationLayoutAction; 1]> = Default::default();
 
             while let Some((rel_offset, rel)) = relocations.peek() {
                 if *rel_offset < next_offset as u64 {
@@ -2237,13 +2351,14 @@ fn process_eh_frame_data<'data>(
                             }
                             _ => {}
                         };
-                    } else {
-                        refs.push(RelInfo::new(
-                            rel,
-                            *rel_offset,
-                            &eh_frame_section,
-                            resources.args(),
-                        )?);
+                    } else if let Some(action) = RelocationLayoutAction::new(
+                        rel,
+                        &eh_frame_section,
+                        *rel_offset,
+                        state,
+                        resources.symbol_db,
+                    )? {
+                        actions.push(action);
                     }
                     relocations.next();
                 } else {
@@ -2252,7 +2367,7 @@ fn process_eh_frame_data<'data>(
             }
             if let Some(section_index) = section_index {
                 let section_frame_data = &mut section_frame_data[section_index.0];
-                section_frame_data.refs = refs;
+                section_frame_data.relocation_actions = actions;
                 section_frame_data.num_fdes += 1;
                 section_frame_data.total_fde_size += size as u32;
             }
@@ -2315,12 +2430,13 @@ impl<'state> GlobalAddressEmitter<'state> {
         symbol_id: GlobalSymbolId,
         address: u64,
     ) -> Result<Option<GlobalSymbolAddress>> {
-        let local_symbol_index = self
-            .symbol_db
-            .symbol(symbol_id)
-            .local_index_for_file(self.file_id)?;
-        let resolution =
-            self.create_resolution(self.symbol_states[local_symbol_index.0], address)?;
+        let symbol = &self.symbol_db.symbol(symbol_id);
+        let local_symbol_index = symbol.local_index_for_file(self.file_id)?;
+        let resolution = self.create_resolution(
+            symbol.value_kind,
+            self.symbol_states[local_symbol_index.0],
+            address,
+        )?;
         Ok(Some(GlobalSymbolAddress {
             symbol_id,
             resolution: SymbolResolution::Resolved(resolution),
@@ -2329,17 +2445,21 @@ impl<'state> GlobalAddressEmitter<'state> {
 
     fn create_resolution(
         &mut self,
+        value_kind: ValueKind,
         res_kind: TargetResolutionKind,
         address: u64,
     ) -> Result<Resolution> {
         let mut resolution = Resolution {
-            address,
+            value: address,
+            value_kind,
             got_address: None,
             plt_address: None,
             kind: res_kind,
         };
         match res_kind {
-            TargetResolutionKind::None | TargetResolutionKind::Address => {}
+            TargetResolutionKind::None
+            | TargetResolutionKind::Address
+            | TargetResolutionKind::Value => {}
             TargetResolutionKind::Got | TargetResolutionKind::GotTlsOffset => {
                 resolution.got_address = Some(self.allocate_got());
             }
@@ -2357,7 +2477,7 @@ impl<'state> GlobalAddressEmitter<'state> {
                     got_address: got_address.get(),
                 });
                 // If a symbol refers to an ifunc, then all access needs to go via the PLT.
-                resolution.address = plt_address.get();
+                resolution.value = plt_address.get();
                 resolution.plt_address = Some(plt_address);
             }
             TargetResolutionKind::GotTlsDouble => {
