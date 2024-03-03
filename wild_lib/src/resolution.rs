@@ -282,7 +282,7 @@ pub(crate) struct MergedStringResolution {
     pub(crate) offset: u64,
 }
 
-pub(crate) struct ResolvedInternal<'data> {
+pub struct ResolvedInternal<'data> {
     // TODO: Use this - when we implement dynamic linking
     #[allow(dead_code)]
     pub(crate) dynamic_linker: Option<CString>,
@@ -292,7 +292,7 @@ pub(crate) struct ResolvedInternal<'data> {
     pub(crate) merged_strings: OutputSectionMap<MergedStringsSection<'data>>,
 }
 
-pub(crate) struct ResolvedObject<'data> {
+pub struct ResolvedObject<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) object: Box<File<'data>>,
     pub(crate) file_id: FileId,

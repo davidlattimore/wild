@@ -144,13 +144,13 @@ fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout
 /// same time.
 pub struct Layout<'data> {
     pub symbol_db: &'data SymbolDb<'data>,
-    pub symbol_addresses: SymbolResolutions,
-    pub section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
-    pub section_layouts: OutputSectionMap<OutputRecordLayout>,
-    pub file_layouts: Vec<FileLayout<'data>>,
-    pub segment_layouts: SegmentLayouts,
+    pub(crate) symbol_addresses: SymbolResolutions,
+    pub(crate) section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
+    pub(crate) section_layouts: OutputSectionMap<OutputRecordLayout>,
+    pub(crate) file_layouts: Vec<FileLayout<'data>>,
+    pub(crate) segment_layouts: SegmentLayouts,
     pub output_sections: OutputSections<'data>,
-    pub merged_string_start_addresses: MergedStringStartAddresses,
+    pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
 }
 
 pub(crate) struct SegmentLayouts {

@@ -33,15 +33,15 @@ pub struct Args {
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) struct Input {
-    pub(crate) spec: InputSpec,
+pub struct Input {
+    pub spec: InputSpec,
     /// A directory to search first. Only present when the input came from a linker script, in which
     /// case this is the directory containing the linker script.
-    pub(crate) search_first: Option<PathBuf>,
+    pub search_first: Option<PathBuf>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
-pub(crate) enum InputSpec {
+pub enum InputSpec {
     File(Box<Path>),
     Lib(Box<str>),
 }
