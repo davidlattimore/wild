@@ -17,7 +17,7 @@ use std::path::PathBuf;
 pub struct InputData<'config> {
     pub config: &'config Args,
     pub filenames: HashSet<PathBuf>,
-    pub files: Vec<InputFile>,
+    pub(crate) files: Vec<InputFile>,
 }
 
 /// Identifies an input file. IDs start from 0 which is reserved for our "internal" state file.

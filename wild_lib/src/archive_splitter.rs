@@ -9,8 +9,8 @@ use rayon::iter::ParallelIterator;
 use std::fmt::Display;
 
 pub struct InputBytes<'data> {
-    pub input: InputRef<'data>,
-    pub kind: FileKind,
+    pub(crate) input: InputRef<'data>,
+    pub(crate) kind: FileKind,
     pub data: &'data [u8],
 }
 

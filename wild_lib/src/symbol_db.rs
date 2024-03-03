@@ -30,10 +30,10 @@ use std::path::Path;
 
 pub struct SymbolDb<'data> {
     pub args: &'data Args,
-    pub symbol_ids: PassThroughHashMap<SymbolName<'data>, GlobalSymbolId>,
-    pub symbols: Vec<Symbol>,
-    pub symbol_names: Vec<SymbolName<'data>>,
-    pub alternate_definitions: AHashMap<GlobalSymbolId, Vec<Symbol>>,
+    pub(crate) symbol_ids: PassThroughHashMap<SymbolName<'data>, GlobalSymbolId>,
+    pub(crate) symbols: Vec<Symbol>,
+    pub(crate) symbol_names: Vec<SymbolName<'data>>,
+    pub(crate) alternate_definitions: AHashMap<GlobalSymbolId, Vec<Symbol>>,
 }
 
 /// A symbol that hasn't been given an ID yet.
@@ -73,7 +73,7 @@ pub enum FileSymbols<'data> {
     ArchiveEntry(ObjectSymbols<'data>),
 }
 
-pub(crate) struct InternalSymbols {
+pub struct InternalSymbols {
     // TODO: Use this - when we implement dynamic linking
     #[allow(dead_code)]
     pub(crate) dynamic_linker: Option<CString>,
@@ -82,7 +82,7 @@ pub(crate) struct InternalSymbols {
     pub(crate) file_id: FileId,
 }
 
-pub(crate) struct ObjectSymbols<'data> {
+pub struct ObjectSymbols<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) object: Box<File<'data>>,
     pub(crate) file_id: FileId,
