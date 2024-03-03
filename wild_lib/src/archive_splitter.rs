@@ -8,14 +8,14 @@ use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use std::fmt::Display;
 
-pub(crate) struct InputBytes<'data> {
-    pub(crate) input: InputRef<'data>,
-    pub(crate) kind: FileKind,
-    pub(crate) data: &'data [u8],
+pub struct InputBytes<'data> {
+    pub input: InputRef<'data>,
+    pub kind: FileKind,
+    pub data: &'data [u8],
 }
 
 #[tracing::instrument(skip_all, name = "Split archives")]
-pub(crate) fn split_archives<'data>(
+pub fn split_archives<'data>(
     input_data: &'data InputData,
 ) -> Result<Vec<InputBytes<'data>>> {
     let split_output = input_data

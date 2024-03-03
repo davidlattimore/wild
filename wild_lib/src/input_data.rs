@@ -14,10 +14,10 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
-pub(crate) struct InputData<'config> {
-    pub(crate) config: &'config Args,
-    filenames: HashSet<PathBuf>,
-    pub(crate) files: Vec<InputFile>,
+pub struct InputData<'config> {
+    pub config: &'config Args,
+    pub filenames: HashSet<PathBuf>,
+    pub files: Vec<InputFile>,
 }
 
 /// Identifies an input file. IDs start from 0 which is reserved for our "internal" state file.
@@ -48,7 +48,7 @@ impl InputFile {
 
 impl<'config> InputData<'config> {
     #[tracing::instrument(skip_all, name = "Open input files")]
-    pub(crate) fn from_args(config: &'config Args) -> Result<Self> {
+    pub fn from_args(config: &'config Args) -> Result<Self> {
         let files = vec![
             // Our first "file" is a special input that we use internally to emit various symbols
             // and other things that don't come from any actual file.

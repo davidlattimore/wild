@@ -99,7 +99,7 @@ where
     }
 }
 
-pub(crate) fn init_tracing(args: &crate::args::Args) {
+pub fn init_tracing(args: &crate::args::Args) {
     use tracing_subscriber::prelude::*;
 
     if args.time_phases {

@@ -1,38 +1,13 @@
-mod alignment;
-mod archive;
-mod archive_splitter;
-mod args;
-mod elf;
-mod elf_writer;
-mod error;
-mod file_kind;
-mod fs;
-mod hash;
-mod identity;
-mod input_data;
-mod layout;
-mod linker_script;
-mod output_section_id;
-mod output_section_map;
-mod output_section_part_map;
-mod program_segments;
-mod relaxation;
-mod resolution;
-mod save_dir;
-mod shutdown;
-mod slice;
-mod symbol;
-mod symbol_db;
-mod timing;
+use wild_lib::*;
 
-fn main() -> crate::error::Result {
+fn main() -> wild_lib::error::Result {
     let args = args::Args::from_env()?;
     timing::init_tracing(&args);
     link(&args)
 }
 
 #[tracing::instrument(skip_all, name = "Link")]
-fn link(args: &args::Args) -> crate::error::Result {
+fn link(args: &args::Args) -> wild_lib::error::Result {
     args.setup_thread_pool()?;
     let mut output = elf_writer::Output::new(args);
     let input_data = input_data::InputData::from_args(args)?;

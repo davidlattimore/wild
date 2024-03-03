@@ -28,12 +28,12 @@ use std::ffi::CString;
 use std::num::NonZeroU32;
 use std::path::Path;
 
-pub(crate) struct SymbolDb<'data> {
-    pub(crate) args: &'data Args,
-    pub(crate) symbol_ids: PassThroughHashMap<SymbolName<'data>, GlobalSymbolId>,
-    symbols: Vec<Symbol>,
-    symbol_names: Vec<SymbolName<'data>>,
-    pub(crate) alternate_definitions: AHashMap<GlobalSymbolId, Vec<Symbol>>,
+pub struct SymbolDb<'data> {
+    pub args: &'data Args,
+    pub symbol_ids: PassThroughHashMap<SymbolName<'data>, GlobalSymbolId>,
+    pub symbols: Vec<Symbol>,
+    pub symbol_names: Vec<SymbolName<'data>>,
+    pub alternate_definitions: AHashMap<GlobalSymbolId, Vec<Symbol>>,
 }
 
 /// A symbol that hasn't been given an ID yet.
@@ -67,7 +67,7 @@ pub(crate) enum InternalSymDefInfo {
     SectionEnd(OutputSectionId),
 }
 
-pub(crate) enum FileSymbols<'data> {
+pub enum FileSymbols<'data> {
     Internal(InternalSymbols),
     Object(ObjectSymbols<'data>),
     ArchiveEntry(ObjectSymbols<'data>),
@@ -116,7 +116,7 @@ struct SymbolLoadOutputs<'data> {
 
 impl<'data> SymbolDb<'data> {
     #[tracing::instrument(skip_all, name = "Build symbol DB")]
-    pub(crate) fn build(
+    pub fn build(
         inputs: &'data [InputBytes],
         args: &'data Args,
     ) -> Result<(Self, Vec<FileSymbols<'data>>)> {

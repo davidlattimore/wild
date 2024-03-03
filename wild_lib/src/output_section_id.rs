@@ -92,7 +92,7 @@ pub(crate) const NUM_REGULAR_SECTIONS: usize = 12;
 /// like GOT, PLT, STRTAB etc. This doesn't include custom sections.
 pub(crate) const NUM_BUILT_IN_SECTIONS: usize = NUM_GENERATED_SECTIONS + NUM_REGULAR_SECTIONS;
 
-pub(crate) struct OutputSections<'data> {
+pub struct OutputSections<'data> {
     /// The base address for our output binary.
     pub(crate) base_address: u64,
     pub(crate) section_infos: Vec<SectionOutputInfo<'data>>,
