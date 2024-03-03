@@ -58,16 +58,16 @@ struct ThirdPartyLinker {
 }
 
 impl Linker {
-    fn path(&self) -> PathBuf {
+    fn path(&self) -> &Path {
         match self {
             Linker::Wild => wild_path(),
-            Linker::ThirdParty(info) => PathBuf::from(info.path),
+            Linker::ThirdParty(info) => Path::new(info.path),
         }
     }
 }
 
-fn wild_path() -> PathBuf {
-    base_dir().join("target/debug/wild")
+fn wild_path() -> &'static Path {
+    Path::new(env!("CARGO_BIN_EXE_wild"))
 }
 
 struct LinkOutput {
@@ -476,7 +476,10 @@ impl Linker {
     ) -> Result<LinkOutput> {
         let mut command = LinkCommand::new(self, basename, object_paths, variant);
         if !command.can_skip {
-            let status = command.command.status()?;
+            let status = command
+                .command
+                .status()
+                .with_context(|| format!("Failed to run command: {:?}", command.command))?;
             if !status.success() {
                 bail!("Linker failed. Relink with:\n{command}");
             }
