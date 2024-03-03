@@ -1,8 +1,9 @@
 [target.x86_64-unknown-linux-gnu]
-linker = "/usr/bin/clang-15"
+#use cc from path which is usually linked to the favored one ?
+#linker = "/usr/bin/clang-15"
 # Might as well use the fastest available linker until we can self-link. Actually, we can now
 # self-link, however until unwinding works, it's probably best to use a more mature linker.
-rustflags = ["-C", "link-arg=--ld-path=/usr/local/bin/mold"]
+#rustflags = ["-C", "link-arg=--ld-path=/usr/local/bin/mold"]
 
 
 [target.x86_64-unknown-linux-musl]

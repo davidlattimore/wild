@@ -173,6 +173,7 @@ dependencies = [
 [[package]]
 name = "object"
 version = "0.32.2"
+source = "git+https://github.com/gimli-rs/object#1119a2a1fe8e089328c9634a01669a1da3383921"
 dependencies = [
  "flate2",
  "memchr",
@@ -368,6 +369,27 @@ dependencies = [
 
 [[package]]
 name = "wild"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "ar",
+ "bytemuck",
+ "crossbeam-queue",
+ "crossbeam-utils",
+ "memchr",
+ "memmap2",
+ "object",
+ "rayon",
+ "smallvec",
+ "tracing",
+ "tracing-subscriber",
+ "wait-timeout",
+ "wild_lib",
+]
+
+[[package]]
+name = "wild_lib"
 version = "0.1.0"
 dependencies = [
  "ahash",
