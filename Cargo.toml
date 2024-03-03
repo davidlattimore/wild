@@ -11,4 +11,5 @@ inherits = "release"
 debug = true
 
 [patch.crates-io]
-object = { git = "https://github.com/gimli-rs/object" }
+# TODO: Remove patch once version newer than 0.32.2 is released.
+object = { git = "https://github.com/gimli-rs/object", rev = "1119a2a1fe8e089328c9634a01669a1da3383921" }

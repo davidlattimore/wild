@@ -173,7 +173,7 @@ dependencies = [
 [[package]]
 name = "object"
 version = "0.32.2"
-source = "git+https://github.com/gimli-rs/object#1119a2a1fe8e089328c9634a01669a1da3383921"
+source = "git+https://github.com/gimli-rs/object?rev=1119a2a1fe8e089328c9634a01669a1da3383921#1119a2a1fe8e089328c9634a01669a1da3383921"
 dependencies = [
  "flate2",
  "memchr",
