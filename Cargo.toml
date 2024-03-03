@@ -1,0 +1,14 @@
+[workspace]
+members = ["wild", "wild_lib"]
+
+resolver = "2"
+
+[profile.dev]
+debug = false
+
+[profile.opt-debug]
+inherits = "release"
+debug = true
+
+[patch.crates-io]
+object = { git = "https://github.com/gimli-rs/object" }
