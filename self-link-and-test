@@ -1,5 +1,5 @@
 #!/bin/bash
 set -e
 cargo build --release
-touch src/main.rs
+touch wild/src/main.rs
 WILD_SAVE_DIR=$HOME/tmp/ws1 CARGO_TARGET_DIR=target2 cargo test --target x86_64-unknown-linux-musl --bin wild

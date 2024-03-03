@@ -54,7 +54,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 #[tracing::instrument(skip_all, name = "Layout")]
-pub(crate) fn compute<'data>(
+pub fn compute<'data>(
     symbol_db: &'data SymbolDb<'data>,
     file_states: Vec<resolution::ResolvedFile<'data>>,
     mut output_sections: OutputSections<'data>,
@@ -142,15 +142,15 @@ fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout
 
 /// Information about what goes where. Also includes relocation data, since that's computed at the
 /// same time.
-pub(crate) struct Layout<'data> {
-    pub(crate) symbol_db: &'data SymbolDb<'data>,
-    pub(crate) symbol_addresses: SymbolResolutions,
-    pub(crate) section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
-    pub(crate) section_layouts: OutputSectionMap<OutputRecordLayout>,
-    pub(crate) file_layouts: Vec<FileLayout<'data>>,
-    pub(crate) segment_layouts: SegmentLayouts,
-    pub(crate) output_sections: OutputSections<'data>,
-    pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
+pub struct Layout<'data> {
+    pub symbol_db: &'data SymbolDb<'data>,
+    pub symbol_addresses: SymbolResolutions,
+    pub section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
+    pub section_layouts: OutputSectionMap<OutputRecordLayout>,
+    pub file_layouts: Vec<FileLayout<'data>>,
+    pub segment_layouts: SegmentLayouts,
+    pub output_sections: OutputSections<'data>,
+    pub merged_string_start_addresses: MergedStringStartAddresses,
 }
 
 pub(crate) struct SegmentLayouts {

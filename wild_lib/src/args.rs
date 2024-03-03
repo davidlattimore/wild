@@ -2,6 +2,9 @@
 //! order is important for some arguments and it's not clear how easy it would be to get that
 //! correct with something like clap.
 
+// TODO: Move this to bin and de-couple trait based argument resolver as lib entity.
+// For now this is just exposed from lib to enable workspace move
+
 use crate::error::Result;
 use crate::save_dir::SaveDir;
 use anyhow::anyhow;
@@ -13,20 +16,20 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
 
-pub(crate) struct Args {
-    pub(crate) lib_search_path: Vec<Box<Path>>,
-    pub(crate) inputs: Vec<Input>,
-    pub(crate) output: Arc<Path>,
-    pub(crate) dynamic_linker: Option<Box<Path>>,
-    pub(crate) link_static: bool,
-    pub(crate) num_threads: NonZeroUsize,
-    pub(crate) strip_all: bool,
-    pub(crate) prepopulate_maps: bool,
-    pub(crate) sym_info: Option<String>,
-    pub(crate) merge_strings: bool,
-    pub(crate) debug_fuel: Option<AtomicI64>,
-    pub(crate) time_phases: bool,
-    pub(crate) pie: bool,
+pub struct Args {
+    pub lib_search_path: Vec<Box<Path>>,
+    pub inputs: Vec<Input>,
+    pub output: Arc<Path>,
+    pub dynamic_linker: Option<Box<Path>>,
+    pub link_static: bool,
+    pub num_threads: NonZeroUsize,
+    pub strip_all: bool,
+    pub prepopulate_maps: bool,
+    pub sym_info: Option<String>,
+    pub merge_strings: bool,
+    pub debug_fuel: Option<AtomicI64>,
+    pub time_phases: bool,
+    pub pie: bool,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -74,7 +77,7 @@ const IGNORED_FLAGS: &[&str] = &[
 ];
 
 impl Args {
-    pub(crate) fn from_env() -> Result<Self> {
+    pub fn from_env() -> Result<Self> {
         let r = Self::parse(std::env::args());
 
         // We want to be able to use our linker to link Rust programs, but we don't yet support
@@ -195,7 +198,7 @@ impl Args {
         })
     }
 
-    pub(crate) fn setup_thread_pool(&self) -> Result {
+    pub fn setup_thread_pool(&self) -> Result {
         rayon::ThreadPoolBuilder::new()
             .num_threads(self.num_threads.get())
             .build_global()?;

@@ -51,7 +51,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-pub(crate) struct Output {
+pub struct Output {
     path: Arc<Path>,
     creator: FileCreator,
 }
@@ -80,7 +80,7 @@ struct SectionAllocation {
 }
 
 impl Output {
-    pub(crate) fn new(args: &Args) -> Output {
+    pub fn new(args: &Args) -> Output {
         if args.num_threads.get() > 1 {
             let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
             Output {
@@ -117,7 +117,7 @@ impl Output {
     }
 
     #[tracing::instrument(skip_all, name = "Write output file")]
-    pub(crate) fn write(&mut self, layout: &Layout) -> Result {
+    pub fn write(&mut self, layout: &Layout) -> Result {
         let mut sized_output = match &self.creator {
             FileCreator::Background {
                 sized_output_sender,

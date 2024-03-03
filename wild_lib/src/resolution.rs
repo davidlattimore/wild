@@ -38,7 +38,7 @@ use std::collections::BTreeMap;
 use std::ffi::CString;
 
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
-pub(crate) fn resolve_symbols_and_sections<'data>(
+pub fn resolve_symbols_and_sections<'data>(
     file_states: Vec<FileSymbols<'data>>,
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result<(Vec<ResolvedFile<'data>>, OutputSections<'data>)> {
@@ -247,7 +247,7 @@ impl SymbolStrength {
     }
 }
 
-pub(crate) enum ResolvedFile<'data> {
+pub enum ResolvedFile<'data> {
     NotLoaded,
     Internal(ResolvedInternal<'data>),
     Object(ResolvedObject<'data>),
