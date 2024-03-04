@@ -236,7 +236,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) sections: Vec<SectionSlot<'data>>,
     pub(crate) section_resolutions: Vec<Option<Resolution>>,
     pub(crate) strings_offset_start: u32,
-    pub(crate) plt_relocations: Vec<PltRelocation>,
+    pub(crate) plt_relocations: Vec<IfuncRelocation>,
     pub(crate) loaded_symbols: Vec<GlobalSymbolId>,
     pub(crate) local_symbol_resolutions: Vec<LocalSymbolResolution>,
     /// The memory address of the start of this object's allocation within .eh_frame.
@@ -262,9 +262,13 @@ pub(crate) struct DynamicLayout<'data> {
 }
 
 #[derive(Debug)]
-pub(crate) struct PltRelocation {
+pub(crate) struct IfuncRelocation {
     pub(crate) resolver: u64,
     pub(crate) got_address: u64,
+
+    /// The address of the RELA entry. If we're writing a relocatable binary then we need to apply a
+    /// relocation to the relocation!
+    pub(crate) relocation_address: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -300,6 +304,9 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
                 common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
                 common.mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
+                if resources.symbol_db.args.is_relocatable() {
+                    common.mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE * 2;
+                }
                 common.symbol_states[local_index] = TargetResolutionKind::IFunc;
             } else {
                 common = self.common_mut();
@@ -485,6 +492,7 @@ impl CommonLayoutState {
         GlobalAddressEmitter {
             next_got_address: memory_offsets.got,
             next_plt_address: memory_offsets.plt,
+            next_rela_plt_address: memory_offsets.rela_plt,
             symbol_states: &self.symbol_states,
             symbol_db,
             file_id: self.file_id,
@@ -2418,10 +2426,11 @@ impl CommonSymbol {
 struct GlobalAddressEmitter<'state> {
     next_got_address: u64,
     next_plt_address: u64,
+    next_rela_plt_address: u64,
     symbol_states: &'state [TargetResolutionKind],
     symbol_db: &'state SymbolDb<'state>,
     file_id: FileId,
-    plt_relocations: Vec<PltRelocation>,
+    plt_relocations: Vec<IfuncRelocation>,
 }
 
 impl<'state> GlobalAddressEmitter<'state> {
@@ -2472,10 +2481,14 @@ impl<'state> GlobalAddressEmitter<'state> {
                 resolution.got_address = Some(got_address);
                 let plt_address = self.allocate_plt();
                 // An ifunc is always resolved at runtime, so we need a relocation for it.
-                self.plt_relocations.push(PltRelocation {
+                self.plt_relocations.push(IfuncRelocation {
                     resolver: address,
                     got_address: got_address.get(),
+                    relocation_address: self.next_rela_plt_address,
                 });
+                if self.symbol_db.args.is_relocatable() {
+                    self.next_rela_plt_address += elf::RELA_ENTRY_SIZE;
+                }
                 // If a symbol refers to an ifunc, then all access needs to go via the PLT.
                 resolution.value = plt_address.get();
                 resolution.plt_address = Some(plt_address);

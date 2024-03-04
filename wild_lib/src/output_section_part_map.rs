@@ -130,11 +130,6 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             output_section_id::STRTAB.min_alignment(),
             &self.symtab_strings,
         );
-        let rela_plt = cb(
-            output_section_id::RELA_PLT,
-            output_section_id::RELA_PLT.min_alignment(),
-            &self.rela_plt,
-        );
         output_sections.ro_custom.iter().for_each(|id| {
             self.map_regular(*id, &mut cb, &mut regular);
         });
@@ -153,6 +148,11 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             output_section_id::GOT,
             output_section_id::GOT.min_alignment(),
             &self.got,
+        );
+        let rela_plt = cb(
+            output_section_id::RELA_PLT,
+            output_section_id::RELA_PLT.min_alignment(),
+            &self.rela_plt,
         );
         self.map_regular(output_section_id::INIT_ARRAY, &mut cb, &mut regular);
         self.map_regular(output_section_id::FINI_ARRAY, &mut cb, &mut regular);

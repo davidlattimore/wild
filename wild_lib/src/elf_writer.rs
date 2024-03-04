@@ -441,11 +441,26 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         Ok(())
     }
 
-    fn apply_relocation(&mut self, rel: &crate::layout::PltRelocation) -> Result {
+    fn write_ifunc_relocation(
+        &mut self,
+        rel: &crate::layout::IfuncRelocation,
+        relocation_writer: &mut RelocationWriter,
+    ) -> Result {
         let out = slice_take_prefix_mut(&mut self.rela_plt, 1);
         let out = &mut out[0];
-        out.addend = rel.resolver;
-        out.address = rel.got_address;
+        if relocation_writer.is_active {
+            relocation_writer.write_relocation(
+                rel.relocation_address + elf::RELA_ADDEND_OFFSET as u64,
+                rel.resolver,
+            )?;
+            relocation_writer.write_relocation(
+                rel.relocation_address + elf::RELA_ADDRESS_OFFSET as u64,
+                rel.got_address,
+            )?;
+        } else {
+            out.addend = rel.resolver;
+            out.address = rel.got_address;
+        }
         out.info = elf::RelocationType::IRelative as u32 as u64;
         Ok(())
     }
@@ -589,7 +604,7 @@ impl<'data> ObjectLayout<'data> {
             }
         }
         for rel in &self.plt_relocations {
-            plt_got_writer.apply_relocation(rel)?;
+            plt_got_writer.write_ifunc_relocation(rel, &mut relocation_writer)?;
         }
         for symbol_id in &self.loaded_symbols {
             plt_got_writer

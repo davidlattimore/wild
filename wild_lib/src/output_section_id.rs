@@ -236,7 +236,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: ".rela.plt".as_bytes(),
             ty: elf::Sht::Rela,
-            section_flags: elf::shf::ALLOC,
+            section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             element_size: elf::RELA_ENTRY_SIZE,
             ..SectionDetails::default()
         },
@@ -741,7 +741,6 @@ impl<'data> OutputSections<'data> {
         cb(SHSTRTAB.event());
         cb(SYMTAB.event());
         cb(STRTAB.event());
-        cb(RELA_PLT.event());
         self.ids_do(&self.ro_custom, &mut cb);
         cb(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RO));
 
@@ -755,6 +754,7 @@ impl<'data> OutputSections<'data> {
 
         cb(OrderEvent::SegmentStart(crate::program_segments::LOAD_RW));
         cb(GOT.event());
+        cb(RELA_PLT.event());
         cb(INIT_ARRAY.event());
         cb(FINI_ARRAY.event());
         cb(DATA.event());
