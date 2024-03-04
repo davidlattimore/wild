@@ -116,9 +116,10 @@ cargo test --target x86_64-unknown-linux-musl --config 'target.x86_64-unknown-li
 ### Contributing
 
 If you'd like to work on something specific, please reach out either by filing an issue or via email
-so that we can avoid any wasted work. For synchronous communication, I like video chat, so if you'd
-like to discuss Wild by video chat, do let me know. Usually I just use Google Meet, but open to
-other options. I'm in Sydney - GMT+10 or GMT+11.
+so that we can avoid any wasted work. I like talking to people about Rust by video chat. If you'd
+like to discuss Wild, Rust compile times etc, you can book a slot in my
+[calendar](https://calendar.app.google/MBYQeATMNBvuK8AZ6). If you can't find anything at a time that
+suits, email me and I'll see if we can find a time that works.
 
 ### Sponsorship
 
