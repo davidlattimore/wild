@@ -173,11 +173,23 @@ dependencies = [
 [[package]]
 name = "object"
 version = "0.32.2"
-source = "git+https://github.com/gimli-rs/object?rev=1119a2a1fe8e089328c9634a01669a1da3383921#1119a2a1fe8e089328c9634a01669a1da3383921"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6a622008b6e321afc04970976f62ee297fdbaa6f95318ca343e3eebb9648441"
 dependencies = [
  "flate2",
  "memchr",
- "ruzstd",
+ "ruzstd 0.5.0",
+]
+
+[[package]]
+name = "object"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8dd6c0cdf9429bce006e1362bfce61fa1bfd8c898a643ed8d2b471934701d3d"
+dependencies = [
+ "flate2",
+ "memchr",
+ "ruzstd 0.6.0",
 ]
 
 [[package]]
@@ -235,6 +247,17 @@ name = "ruzstd"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "58c4eb8a81997cf040a091d1f7e1938aeab6749d3a0dfa73af43cdc32393483d"
+dependencies = [
+ "byteorder",
+ "derive_more",
+ "twox-hash",
+]
+
+[[package]]
+name = "ruzstd"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5174a470eeb535a721ae9fdd6e291c2411a906b96592182d05217591d5c5cf7b"
 dependencies = [
  "byteorder",
  "derive_more",
@@ -379,7 +402,7 @@ dependencies = [
  "crossbeam-utils",
  "memchr",
  "memmap2",
- "object",
+ "object 0.32.2",
  "rayon",
  "smallvec",
  "tracing",
@@ -400,7 +423,7 @@ dependencies = [
  "crossbeam-utils",
  "memchr",
  "memmap2",
- "object",
+ "object 0.33.0",
  "rayon",
  "smallvec",
  "tracing",
