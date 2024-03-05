@@ -110,7 +110,6 @@ allow_unsafe = true
 
 [pkg.wild]
 allow_unsafe = true
-test.allow_unsafe = true
 allow_apis = [
     "fs",
     "process",
@@ -160,7 +159,18 @@ allow_unsafe = true
 [pkg.tracing-subscriber]
 allow_unsafe = true
 
+[pkg.wild_lib]
+allow_unsafe = true
+test.allow_unsafe = true
+allow_apis = [
+    "fs",
+    "process",
+]
+
 [api.fs]
 no_auto_detect = [
     "wild",
+]
+include = [
+    "wild_lib::fs",
 ]
