@@ -742,7 +742,10 @@ impl<'data> ObjectLayout<'data> {
                 relocation_writer,
             )
             .with_context(|| {
-                format!("Failed to apply {}", self.display_relocation(&rel, layout))
+                format!(
+                    "Failed to apply {} at offset 0x{offset_in_section:x}",
+                    self.display_relocation(&rel, layout)
+                )
             })?;
         }
         Ok(())
@@ -1175,7 +1178,7 @@ fn apply_relocation(
     let value = match rel_info.kind {
         RelocationKind::Absolute => {
             if relocation_writer.is_active && resolution.value_kind.is_address() {
-                relocation_writer.write_relocation(place, address)?;
+                relocation_writer.write_relocation(place, address.wrapping_add(addend))?;
                 0
             } else {
                 address.wrapping_add(addend)
