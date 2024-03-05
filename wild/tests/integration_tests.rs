@@ -74,6 +74,7 @@ fn wild_path() -> &'static Path {
 struct LinkOutput {
     binary: PathBuf,
     command: LinkCommand,
+    linker_used: Linker,
 }
 
 struct LinkCommand {
@@ -488,6 +489,7 @@ impl Linker {
         Ok(LinkOutput {
             binary: self.output_path(basename, variant),
             command,
+            linker_used: self,
         })
     }
 
@@ -606,7 +608,7 @@ impl Assertions {
         let obj = object::File::parse(bytes.as_slice())?;
 
         self.verify_symbol_assertions(&obj)?;
-        self.verify_comment_section(obj)?;
+        self.verify_comment_section(obj, link_output.linker_used)?;
 
         Ok(())
     }
@@ -629,21 +631,30 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_comment_section(&self, obj: object::File<'_>) -> Result {
+    fn verify_comment_section(&self, obj: object::File<'_>, linker_used: Linker) -> Result {
         if self.expected_comments.is_empty() {
+            match linker_used {
+                Linker::Wild => {
+                    if !was_linked_with_wild(&obj) {
+                        bail!("Object was supposed to be linked with wild, but is missing comment");
+                    }
+                }
+                Linker::ThirdParty(linker) => {
+                    if was_linked_with_wild(&obj) {
+                        bail!(
+                            "Object was supposed to be linked with {linker}, but .comment \
+                             indicates it was linked with Wild"
+                        );
+                    }
+                }
+            }
             return Ok(());
         }
-        let comment_section = obj
-            .section_by_name(".comment")
-            .context("Missing .comment section")?;
-        let data = comment_section.data()?;
-        let mut actual_comments = data
-            .split(|b| *b == 0)
-            .map(|c| String::from_utf8_lossy(c))
-            .filter(|c| !c.is_empty());
+        let actual_comments = read_comments(&obj)?;
+        let mut actual_comments_iter = actual_comments.iter();
         let mut expected_comments = self.expected_comments.iter();
         loop {
-            match (expected_comments.next(), actual_comments.next()) {
+            match (expected_comments.next(), actual_comments_iter.next()) {
                 (None, None) => break,
                 (None, Some(a)) => bail!("Unexpected .comment `{a}`"),
                 (Some(e), None) => {
@@ -665,6 +676,28 @@ impl Assertions {
         }
         Ok(())
     }
+}
+
+/// Returns whether the supplied object indicates that it was linked with wild.
+fn was_linked_with_wild(obj: &object::File<'_>) -> bool {
+    let Ok(actual_comments) = read_comments(obj) else {
+        return false;
+    };
+    actual_comments
+        .iter()
+        .any(|comment| comment.starts_with("Linker: Wild version"))
+}
+
+fn read_comments<'data>(obj: &object::File<'data>) -> Result<Vec<std::borrow::Cow<'data, str>>> {
+    let comment_section = obj
+        .section_by_name(".comment")
+        .context("Missing .comment section")?;
+    let data = comment_section.data()?;
+    Ok(data
+        .split(|b| *b == 0)
+        .map(|c| String::from_utf8_lossy(c))
+        .filter(|c| !c.is_empty())
+        .collect())
 }
 
 impl Display for LinkCommand {
@@ -754,6 +787,12 @@ impl Display for CompilationVariant {
         Display::fmt(&'-', f)?;
         Display::fmt(&self.compiler_args.name, f)?;
         Ok(())
+    }
+}
+
+impl Display for ThirdPartyLinker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self.name, f)
     }
 }
 
