@@ -54,6 +54,7 @@ enum Linker {
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ThirdPartyLinker {
     name: &'static str,
+    gcc_name: &'static str,
     path: &'static str,
 }
 
@@ -540,12 +541,34 @@ impl LinkCommand {
             {
                 invocation_mode = LinkerInvocationMode::Cc;
                 command = Command::new(cc);
-                command.arg(format!(
-                    "--ld-path={}",
-                    linker_path
-                        .to_str()
-                        .expect("Linker path must be valid UTF-8")
-                ));
+                match cc {
+                    "clang" => {
+                        command.arg(format!(
+                            "--ld-path={}",
+                            linker_path
+                                .to_str()
+                                .expect("Linker path must be valid UTF-8")
+                        ));
+                    }
+                    "gcc" => {
+                        match linker {
+                            Linker::Wild => {
+                                // GCC unfortunately doesn't provide any way to use a custom linker.
+                                // Their flag for switching linkers only accepts a hard-coded list
+                                // of alternatives and the developers don't seem to want any
+                                // equivalent to clang's --ld-path. The closest we can get is to put
+                                // a file called "ld" in a directory, then pass "-B" and that
+                                // directory.
+                                let bin_dir = wild_path().parent().unwrap();
+                                command.arg("-B").arg(bin_dir);
+                            }
+                            Linker::ThirdParty(third_party_linker) => {
+                                command.arg(format!("-fuse-ld={}", third_party_linker.gcc_name));
+                            }
+                        }
+                    }
+                    _ => panic!("Unsupported cc={cc}"),
+                }
                 command.args(&variant.linker_args.args[1..]);
             } else {
                 command = Command::new(linker_path);
@@ -823,10 +846,13 @@ fn integration_test() -> Result {
     let linkers = [
         Linker::ThirdParty(ThirdPartyLinker {
             name: "ld",
+            gcc_name: "bfd",
             path: "/usr/bin/ld",
         }),
         Linker::Wild,
     ];
+
+    setup_wild_ld_symlink()?;
 
     for program_inputs in &programs {
         let filename = program_inputs.source_files.first().unwrap();
@@ -858,5 +884,20 @@ fn integration_test() -> Result {
         }
     }
 
+    Ok(())
+}
+
+fn setup_wild_ld_symlink() -> Result {
+    let wild = wild_path();
+    let wild_ld_path = wild.with_file_name("ld");
+    if !wild_ld_path.exists() {
+        std::os::unix::fs::symlink(wild, &wild_ld_path).with_context(|| {
+            format!(
+                "Failed to symlink `{}` to `{}`",
+                wild_ld_path.display(),
+                wild.display()
+            )
+        })?;
+    }
     Ok(())
 }

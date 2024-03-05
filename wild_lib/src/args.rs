@@ -159,6 +159,10 @@ impl Args {
                 merge_strings = false;
             } else if arg == "-pie" {
                 pie = true;
+            } else if arg.starts_with("-plugin-opt=") {
+                // TODO: Implement support for linker plugins.
+            } else if arg == "-plugin" {
+                input.next();
             } else if let Some(rest) = arg.strip_prefix("--debug-fuel=") {
                 debug_fuel = Some(AtomicI64::new(rest.parse()?));
                 // Using debug fuel with more than one thread would likely give non-deterministic
