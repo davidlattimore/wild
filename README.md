@@ -110,7 +110,7 @@ successfully on a few popular crates (e.g. ripgrep, serde, tokio, rand, bitflags
 the "wild" binary is on your path.
 
 ```sh
-cargo test --target x86_64-unknown-linux-musl --config 'target.x86_64-unknown-linux-musl.linker="/usr/bin/clang-15"' --config 'target.x86_64-unknown-linux-musl.rustflags="-C relocation-model=static -C target-feature=+crt-static -C debuginfo=0 -C link-arg=--ld-path=wild"'
+cargo test --target x86_64-unknown-linux-musl --config 'target.x86_64-unknown-linux-musl.linker="/usr/bin/clang-15"' --config 'target.x86_64-unknown-linux-musl.rustflags=["-C", "relocation-model=static", "-C", "target-feature=+crt-static", "-C", "debuginfo=0", "-C", "link-arg=--ld-path=wild"]'
 ```
 
 ### Contributing
