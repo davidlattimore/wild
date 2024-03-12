@@ -19,7 +19,6 @@ use crate::input_data::INTERNAL_FILE_ID;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
-use crate::output_section_id::TemporaryOutputSectionId;
 use crate::output_section_id::UnloadedSection;
 use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
 use crate::output_section_map::OutputSectionMap;
@@ -2039,19 +2038,16 @@ impl<'data> ObjectLayoutState<'data> {
             match &self.state.sections[section_id.0] {
                 SectionSlot::Unloaded(unloaded) => {
                     let unloaded = *unloaded;
+                    if unloaded.is_string_merge {
+                        // We currently always load all string-merge data regardless of whether it's
+                        // referenced.
+                        continue;
+                    }
                     let mut section =
                         Section::create(self, queue, &unloaded, section_id, resources)?;
-                    let sec_id = match unloaded.output_section_id {
-                        TemporaryOutputSectionId::BuiltIn(sec_id) => sec_id,
-                        TemporaryOutputSectionId::Custom(custom_section_id) => resources
-                            .output_sections
-                            .custom_name_to_id(custom_section_id.name)
-                            .context("Internal error: Didn't allocate ID for a custom section")?,
-                        TemporaryOutputSectionId::EhFrameData => {
-                            unreachable!("Expected SectionSlot::EhFrameData")
-                        }
-                        TemporaryOutputSectionId::StringMerge(_sec_id) => continue,
-                    };
+                    let sec_id = resources
+                        .output_sections
+                        .output_section_id(unloaded.output_section_id)?;
                     let allocation = self
                         .state
                         .common

@@ -8,6 +8,7 @@ use crate::layout::Layout;
 use crate::program_segments::ProgramSegmentId;
 use ahash::AHashMap;
 use anyhow::anyhow;
+use anyhow::Context as _;
 use core::mem::size_of;
 use object::ObjectSection;
 use object::SectionFlags;
@@ -19,7 +20,6 @@ pub(crate) enum TemporaryOutputSectionId<'data> {
     BuiltIn(OutputSectionId),
     Custom(CustomSectionId<'data>),
     EhFrameData,
-    StringMerge(OutputSectionId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -34,6 +34,7 @@ pub(crate) struct CustomSectionId<'data> {
 pub(crate) struct UnloadedSection<'data> {
     pub(crate) output_section_id: TemporaryOutputSectionId<'data>,
     pub(crate) details: SectionDetails<'data>,
+    pub(crate) is_string_merge: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +120,24 @@ impl<'data> OutputSections<'data> {
             .iter()
             .enumerate()
             .map(|(raw, info)| (OutputSectionId::from_usize(raw), info))
+    }
+
+    pub(crate) fn output_section_id(
+        &self,
+        temporary_id: TemporaryOutputSectionId<'_>,
+    ) -> Result<OutputSectionId> {
+        Ok(match temporary_id {
+            TemporaryOutputSectionId::BuiltIn(sec_id) => sec_id,
+            TemporaryOutputSectionId::Custom(custom_section_id) => self
+                .custom_name_to_id(custom_section_id.name)
+                .with_context(|| {
+                    format!(
+                        "Internal error: Didn't allocate ID for custom section `{}`",
+                        String::from_utf8_lossy(custom_section_id.name)
+                    )
+                })?,
+            TemporaryOutputSectionId::EhFrameData => EH_FRAME,
+        })
     }
 }
 
@@ -494,6 +513,7 @@ impl<'data> UnloadedSection<'data> {
             return Ok(Some(UnloadedSection {
                 output_section_id: TemporaryOutputSectionId::EhFrameData,
                 details: EH_FRAME.built_in_details().details,
+                is_string_merge: false,
             }));
         } else if section_name.starts_with(b".gcc_except_table") {
             Some(GCC_EXCEPT_TABLE)
@@ -516,18 +536,19 @@ impl<'data> UnloadedSection<'data> {
             let retain = sh_flags & crate::elf::shf::GNU_RETAIN != 0;
             let section_flags = sh_flags;
             if !section_name.is_empty() {
+                let custom_section_id = CustomSectionId { name: section_name };
+                let details = SectionDetails {
+                    name: section_name,
+                    ty,
+                    section_flags,
+                    element_size: 0,
+                    retain,
+                    packed: false,
+                };
                 return Ok(Some(UnloadedSection {
-                    output_section_id: TemporaryOutputSectionId::Custom(CustomSectionId {
-                        name: section_name,
-                    }),
-                    details: SectionDetails {
-                        name: section_name,
-                        ty,
-                        section_flags,
-                        element_size: 0,
-                        retain,
-                        packed: false,
-                    },
+                    output_section_id: TemporaryOutputSectionId::Custom(custom_section_id),
+                    details,
+                    is_string_merge: should_merge_strings(section, args),
                 }));
             }
             match section.kind() {
@@ -547,15 +568,10 @@ impl<'data> UnloadedSection<'data> {
         let Some(built_in_id) = built_in_id else {
             return Ok(None);
         };
-        if should_merge_strings(section, args) {
-            return Ok(Some(UnloadedSection {
-                output_section_id: TemporaryOutputSectionId::StringMerge(built_in_id),
-                details: built_in_id.built_in_details().details,
-            }));
-        }
         Ok(Some(UnloadedSection {
             output_section_id: TemporaryOutputSectionId::BuiltIn(built_in_id),
             details: built_in_id.built_in_details().details,
+            is_string_merge: should_merge_strings(section, args),
         }))
     }
 }
@@ -985,14 +1001,6 @@ impl<'data> std::fmt::Display for TemporaryOutputSectionId<'data> {
                 )
             }
             TemporaryOutputSectionId::EhFrameData => write!(f, "eh_frame data"),
-            TemporaryOutputSectionId::StringMerge(id) => {
-                write!(
-                    f,
-                    "string-merge section #{} ({})",
-                    id.as_usize(),
-                    String::from_utf8_lossy(SECTION_DEFINITIONS[id.as_usize()].details.name)
-                )
-            }
         }
     }
 }
