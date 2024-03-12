@@ -5,6 +5,8 @@
 
 extern const char s1h[];
 extern const char s2h[];
+extern const char s3h[];
+extern const char s4h[];
 extern const char s1w[];
 extern const char s2w[];
 extern const char a1[];
@@ -37,6 +39,17 @@ void _start(void) {
     }
     if (get_s1w() != s1w) {
         exit_syscall(107);
+    }
+    if (s3h != s4h) {
+        // Identical strings in the same custom section didn't get merged.
+        exit_syscall(108);
+    }
+    if (s3h == s1h) {
+        // Identical strings in different sections got merged when they shouldn't have been.
+        exit_syscall(109);
+    }
+    if (s3h[0] != 'H') {
+        exit_syscall(110);
     }
     exit_syscall(42);
 }

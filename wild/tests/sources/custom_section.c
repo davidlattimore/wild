@@ -20,6 +20,9 @@ extern int __stop_w1[] __attribute__ ((weak));
 extern int __start_w2[] __attribute__ ((weak));
 extern int __stop_w2[] __attribute__ ((weak));
 
+static int dot1 __attribute__ ((used, retain, section (".dot"))) = 7;
+static int dot2 __attribute__ ((used, retain, section (".dot.2"))) = 8;
+
 // Override a symbol that would normally be created by the custom section.
 int __stop_w3 = 88;
 
@@ -61,6 +64,15 @@ void _start(void) {
     if (__init_array_start != 89) {
         exit_syscall(106);
     }
+    if (dot1 != 7) {
+        exit_syscall(107);
+    }
+    if (dot2 != 8) {
+        exit_syscall(108);
+    }
 
     exit_syscall(value);
 }
+
+//#ExpectSym: dot1 .dot
+//#ExpectSym: dot2 .dot.2

@@ -307,7 +307,7 @@ pub struct ResolvedObject<'data> {
 
 #[derive(Debug)]
 pub(crate) struct MergeStringsFileSection<'data> {
-    output_section_id: OutputSectionId,
+    temporary_section_id: TemporaryOutputSectionId<'data>,
 
     /// The strings from this section. Only present temporarily during resolution.
     strings: Vec<StringToMerge<'data>>,
@@ -372,7 +372,8 @@ fn merge_strings<'data>(
             continue;
         };
         for sec in &mut obj.merge_strings_sections {
-            let string_to_offset = strings_by_section.get_mut(sec.output_section_id);
+            let output_section_id = output_sections.output_section_id(sec.temporary_section_id)?;
+            let string_to_offset = strings_by_section.get_mut(output_section_id);
             let mut symbols = sec.references.iter().peekable();
             // The offset within the input section of the current string.
             let mut input_offset = 0;
@@ -391,7 +392,7 @@ fn merge_strings<'data>(
                     obj.local_symbol_resolutions[merge_ref.symbol_index.0] =
                         LocalSymbolResolution::MergedString(MergedStringResolution {
                             symbol_id: merge_ref.global_symbol_id,
-                            output_section_id: sec.output_section_id,
+                            output_section_id,
                             offset: output_offset + offset_into_string,
                         });
                     symbols.next();
@@ -414,7 +415,9 @@ fn assign_section_ids<'data>(
     let mut output_sections_builder = OutputSectionsBuilder::with_base_address(args.base_address());
     for s in resolved {
         if let ResolvedFile::Object(s) = s {
-            output_sections_builder.add_sections(&s.custom_sections)?;
+            output_sections_builder
+                .add_sections(&s.custom_sections)
+                .with_context(|| format!("Failed to process custom sections for {s}"))?;
         }
     }
     output_sections_builder.build()
@@ -611,20 +614,26 @@ fn resolve_sections<'data>(
         .sections()
         .map(|input_section| {
             if let Some(unloaded) = UnloadedSection::from_section(&input_section, args)? {
-                match unloaded.output_section_id {
-                    TemporaryOutputSectionId::BuiltIn(_) => Ok(SectionSlot::Unloaded(unloaded)),
-                    TemporaryOutputSectionId::Custom(_custom_section_id) => {
+                if unloaded.is_string_merge {
+                    if let TemporaryOutputSectionId::Custom(_custom_section_id) =
+                        unloaded.output_section_id
+                    {
                         custom_sections.push((input_section.index(), unloaded.details));
-                        Ok(SectionSlot::Unloaded(unloaded))
                     }
-                    TemporaryOutputSectionId::EhFrameData => {
-                        Ok(SectionSlot::EhFrameData(input_section.index()))
-                    }
-                    TemporaryOutputSectionId::StringMerge(output_section_id) => {
-                        Ok(SectionSlot::MergeStrings(MergeStringsFileSection::new(
-                            input_section,
-                            output_section_id,
-                        )?))
+                    Ok(SectionSlot::MergeStrings(MergeStringsFileSection::new(
+                        input_section,
+                        unloaded.output_section_id,
+                    )?))
+                } else {
+                    match unloaded.output_section_id {
+                        TemporaryOutputSectionId::BuiltIn(_) => Ok(SectionSlot::Unloaded(unloaded)),
+                        TemporaryOutputSectionId::Custom(_custom_section_id) => {
+                            custom_sections.push((input_section.index(), unloaded.details));
+                            Ok(SectionSlot::Unloaded(unloaded))
+                        }
+                        TemporaryOutputSectionId::EhFrameData => {
+                            Ok(SectionSlot::EhFrameData(input_section.index()))
+                        }
                     }
                 }
             } else {
@@ -755,7 +764,7 @@ impl<'data> SectionSlot<'data> {
 impl<'data> MergeStringsFileSection<'data> {
     fn new(
         input_section: crate::elf::Section<'data, '_>,
-        output_section_id: OutputSectionId,
+        section_id: TemporaryOutputSectionId<'data>,
     ) -> Result<MergeStringsFileSection<'data>> {
         let mut remaining = input_section.data()?;
         let mut strings = Vec::new();
@@ -774,7 +783,7 @@ impl<'data> MergeStringsFileSection<'data> {
             remaining = rest;
         }
         Ok(MergeStringsFileSection {
-            output_section_id,
+            temporary_section_id: section_id,
             strings,
             // This will get filled in when we read the symbol table.
             references: Default::default(),
@@ -784,7 +793,7 @@ impl<'data> MergeStringsFileSection<'data> {
     /// Returns an owned version of `self` with the heap-allocated parts of `self` cleared.
     fn take(&mut self) -> MergeStringsFileSection<'data> {
         MergeStringsFileSection {
-            output_section_id: self.output_section_id,
+            temporary_section_id: self.temporary_section_id,
             strings: core::mem::take(&mut self.strings),
             references: core::mem::take(&mut self.references),
         }

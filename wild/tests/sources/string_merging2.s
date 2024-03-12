@@ -36,3 +36,11 @@ get_s2w:
     endbr64
     movq s2w@GOTPCREL(%rip),%rax
     ret
+
+// String in custom section
+
+.section .custom1, "aSM", @progbits, 1
+.align 1
+
+.globl s4h
+s4h: .ascii "Hello\0"
