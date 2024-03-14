@@ -566,7 +566,7 @@ impl OutputSectionId {
     }
 
     pub(crate) fn from_usize(raw: usize) -> Self {
-        OutputSectionId(raw as u16)
+        OutputSectionId(u16::try_from(raw).expect("Section IDs overflowed 16 bits"))
     }
 
     pub(crate) fn as_usize(self) -> usize {
@@ -835,6 +835,10 @@ impl<'data> OutputSections<'data> {
 
     pub(crate) fn name(&self, section_id: OutputSectionId) -> &[u8] {
         self.section_infos[section_id.as_usize()].details.name
+    }
+
+    pub(crate) fn display_name(&self, section_id: OutputSectionId) -> std::borrow::Cow<str> {
+        String::from_utf8_lossy(self.name(section_id))
     }
 
     pub(crate) fn custom_name_to_id(&self, name: &[u8]) -> Option<OutputSectionId> {

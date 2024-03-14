@@ -450,7 +450,7 @@ fn test_output_order_map_consistent() {
         "Built-in sections missing from output_order_map: {}",
         missing
             .iter()
-            .map(|id| String::from_utf8_lossy(output_sections.name(*id)))
+            .map(|id| output_sections.display_name(*id))
             .collect::<Vec<_>>()
             .join(", ")
     );
