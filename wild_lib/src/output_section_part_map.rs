@@ -130,6 +130,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             output_section_id::STRTAB.min_alignment(),
             &self.symtab_strings,
         );
+        self.map_regular(output_section_id::GCC_EXCEPT_TABLE, &mut cb, &mut regular);
         output_sections.ro_custom.iter().for_each(|id| {
             self.map_regular(*id, &mut cb, &mut regular);
         });
