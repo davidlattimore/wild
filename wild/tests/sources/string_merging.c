@@ -53,3 +53,5 @@ void _start(void) {
     }
     exit_syscall(42);
 }
+
+//#Contains:No reference to this string

@@ -36,6 +36,7 @@ use crate::symbol_db::GlobalSymbolId;
 use crate::symbol_db::InternalSymDefInfo;
 use crate::symbol_db::SymbolDb;
 use ahash::AHashMap;
+use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
@@ -1477,13 +1478,23 @@ impl RelocationLayoutAction {
                             local_sym_index,
                         )?));
                     }
-                    LocalSymbolResolution::MergedString(_merge) => {
-                        if args.is_relocatable()
+                    LocalSymbolResolution::MergedString(merge) => {
+                        // Even though we always load all the strings in a merge-string section, we
+                        // still need to send a request in order to ensure that the symbol is marked
+                        // as loaded.
+                        if let Some(symbol_id) = merge.symbol_id {
+                            return Ok(Some(Self::for_symbol(
+                                rel,
+                                rel_offset,
+                                section,
+                                symbol_db,
+                                symbol_id,
+                                args,
+                                local_sym_index,
+                            )?));
+                        } else if args.is_relocatable()
                             && matches!(rel.kind(), object::RelocationKind::Absolute)
                         {
-                            // We currently always load merged-string sections, so no load action is
-                            // required for the section, however in this case, we need to allocation
-                            // dynamic relocation.
                             return Ok(Some(RelocationLayoutAction {
                                 kind: RelocationLayoutActionKind::DynamicOnly,
                                 dynamic_relocation_required: true,
@@ -2218,14 +2229,12 @@ impl<'data> ObjectLayoutState<'data> {
                 if let Some(section_resolution) = section_resolutions[section_index.0].as_ref() {
                     address += section_resolution.value;
                 } else {
-                    let merged_string_address = merged_string_start_addresses
-                        .try_resolve_local(&self.state.local_symbol_resolutions, local_index);
-                    if let Some(a) = merged_string_address {
-                        address = a;
-                    } else {
-                        let symbol_name = symbol_db.symbol_name(*symbol_id);
-                        bail!("Symbol `{symbol_name}` is in a section that we didn't load")
-                    }
+                    address = merged_string_start_addresses
+                        .try_resolve_local(&self.state.local_symbol_resolutions, local_index)
+                        .ok_or_else(|| {
+                            let symbol_name = symbol_db.symbol_name(*symbol_id);
+                            anyhow!("Symbol `{symbol_name}` is in a section that we didn't load")
+                        })?;
                 }
             } else if let Some(common) = CommonSymbol::new(&local_symbol)? {
                 let offset = memory_offsets.regular_mut(output_section_id::BSS, common.alignment);
