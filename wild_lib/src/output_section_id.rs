@@ -83,8 +83,9 @@ pub(crate) const TDATA: OutputSectionId = OutputSectionId::regular(8);
 pub(crate) const TBSS: OutputSectionId = OutputSectionId::regular(9);
 pub(crate) const BSS: OutputSectionId = OutputSectionId::regular(10);
 pub(crate) const COMMENT: OutputSectionId = OutputSectionId::regular(11);
+pub(crate) const GCC_EXCEPT_TABLE: OutputSectionId = OutputSectionId::regular(12);
 
-pub(crate) const NUM_REGULAR_SECTIONS: usize = 12;
+pub(crate) const NUM_REGULAR_SECTIONS: usize = 13;
 
 // pub(crate) const DYNSTR: BuiltInId = BuiltInId(14);
 
@@ -433,6 +434,15 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         },
         ..DEFAULT_DEFS
     },
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: ".gcc_except_table".as_bytes(),
+            ty: elf::Sht::Progbits,
+            section_flags: elf::shf::ALLOC,
+            ..SectionDetails::default()
+        },
+        ..DEFAULT_DEFS
+    },
     // OutputSectionDef {
     //     name: ".dynamic",
     //     ty: elf::Sht::Dynamic,
@@ -486,6 +496,8 @@ impl<'data> UnloadedSection<'data> {
                 output_section_id: TemporaryOutputSectionId::EhFrameData,
                 details: EH_FRAME.built_in_details().details,
             }));
+        } else if section_name.starts_with(b".gcc_except_table") {
+            Some(GCC_EXCEPT_TABLE)
         } else {
             let ty = match section.kind() {
                 object::SectionKind::UninitializedData | object::SectionKind::UninitializedTls => {
@@ -741,6 +753,7 @@ impl<'data> OutputSections<'data> {
         cb(SHSTRTAB.event());
         cb(SYMTAB.event());
         cb(STRTAB.event());
+        cb(GCC_EXCEPT_TABLE.event());
         self.ids_do(&self.ro_custom, &mut cb);
         cb(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RO));
 
@@ -933,6 +946,7 @@ fn test_constant_ids() {
         (DYNSYM, ".dynsym"),
         (DYNSTR, ".dynstr"),
         (RELA_DYN, ".rela.dyn"),
+        (GCC_EXCEPT_TABLE, ".gcc_except_table"),
     ];
     for (id, name) in check {
         assert_eq!(
