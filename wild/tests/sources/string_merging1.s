@@ -27,3 +27,6 @@ a1:
 
 .globl s3h
 s3h: .ascii "Hello\0"
+
+.globl noref
+noref: .ascii "No reference to this string\0"

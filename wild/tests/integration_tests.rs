@@ -110,6 +110,8 @@ struct TestParameters {
 struct Assertions {
     expected_symtab_entries: Vec<ExpectedSymtabEntry>,
     expected_comments: Vec<String>,
+    does_not_contain: Vec<String>,
+    contains_strings: Vec<String>,
 }
 
 struct ExpectedSymtabEntry {
@@ -207,6 +209,8 @@ impl TestParameters {
         let mut compiler_args = Vec::new();
         let mut expected_symtab_entries = Vec::new();
         let mut expected_comments = Vec::new();
+        let mut does_not_contain = Vec::new();
+        let mut contains_strings = Vec::new();
         for line in source.lines() {
             if let Some(rest) = line.trim().strip_prefix("//#") {
                 let (directive, arg) = rest.split_once(':').context("Missing arg")?;
@@ -227,6 +231,8 @@ impl TestParameters {
                         expected_symtab_entries.push(ExpectedSymtabEntry::parse(arg.trim())?)
                     }
                     "ExpectComment" => expected_comments.push(arg.trim().to_owned()),
+                    "DoesNotContain" => does_not_contain.push(arg.trim().to_owned()),
+                    "Contains" => contains_strings.push(arg.trim().to_owned()),
                     other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
                 }
             }
@@ -252,6 +258,8 @@ impl TestParameters {
             assertions: Assertions {
                 expected_symtab_entries,
                 expected_comments,
+                does_not_contain,
+                contains_strings,
             },
             linker_args,
             compiler_args,
@@ -449,7 +457,7 @@ fn build_obj(filename: &str, variant: &Variant, placement: FilePlacement) -> Res
                 .args(["-C", "linker=/usr/bin/clang-15"])
                 .args(["-C", "relocation-model=static"])
                 .args(["-C", "target-feature=+crt-static"])
-                .args(["-C", "debuginfo=0"])
+                .args(["-C", "debuginfo=2"])
                 .args(["-C", &format!("link-arg=--ld-path={wild}")])
                 .args(["-o", "/dev/null"]);
         }
@@ -630,6 +638,7 @@ impl Assertions {
 
         self.verify_symbol_assertions(&obj)?;
         self.verify_comment_section(obj, link_output.linker_used)?;
+        self.verify_strings(&bytes)?;
 
         Ok(())
     }
@@ -705,6 +714,20 @@ impl Assertions {
                         bail!("Expected .comment `{e}`, got `{a}`");
                     }
                 }
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_strings(&self, bytes: &[u8]) -> Result {
+        for needle in &self.does_not_contain {
+            if bytes.windows(needle.len()).any(|w| w == needle.as_bytes()) {
+                bail!("Binary contains `{needle}` when it shouldn't");
+            }
+        }
+        for needle in &self.contains_strings {
+            if !bytes.windows(needle.len()).any(|w| w == needle.as_bytes()) {
+                bail!("Binary doesn't contain `{needle}` when it should");
             }
         }
         Ok(())
