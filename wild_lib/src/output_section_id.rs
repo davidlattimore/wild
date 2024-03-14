@@ -498,6 +498,15 @@ impl<'data> UnloadedSection<'data> {
             }));
         } else if section_name.starts_with(b".gcc_except_table") {
             Some(GCC_EXCEPT_TABLE)
+        } else if section_name.starts_with(b".rela")
+            || b".strtab" == section_name
+            || b".symtab" == section_name
+            || b".shstrtab" == section_name
+            || b".group" == section_name
+        {
+            // We don't currently allow references to these sections, discard them so that we avoid
+            // allocating output section IDs.
+            None
         } else {
             let ty = match section.kind() {
                 object::SectionKind::UninitializedData | object::SectionKind::UninitializedTls => {
@@ -507,7 +516,7 @@ impl<'data> UnloadedSection<'data> {
             };
             let retain = sh_flags & crate::elf::shf::GNU_RETAIN != 0;
             let section_flags = sh_flags;
-            if !section_name.is_empty() && !section_name.starts_with(b".") {
+            if !section_name.is_empty() {
                 return Ok(Some(UnloadedSection {
                     output_section_id: TemporaryOutputSectionId::Custom(CustomSectionId {
                         name: section_name,

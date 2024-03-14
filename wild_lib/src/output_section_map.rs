@@ -13,6 +13,10 @@ impl<T: Default> OutputSectionMap<T> {
         values.resize_with(len, T::default);
         Self { values }
     }
+
+    pub(crate) fn into_raw_values(self) -> Vec<T> {
+        self.values
+    }
 }
 
 impl<T> OutputSectionMap<T> {
@@ -48,5 +52,19 @@ impl<T> OutputSectionMap<T> {
         OutputSectionMap {
             values: self.values.into_iter().map(cb).collect(),
         }
+    }
+}
+
+impl<T> OutputSectionMap<T>
+where
+    T: Copy,
+{
+    pub(crate) fn merge(&mut self, other: &Self, cb: impl Fn(T, T) -> T) {
+        self.values
+            .iter_mut()
+            .zip(other.values.iter())
+            .for_each(|(a, b)| {
+                *a = cb(*a, *b);
+            });
     }
 }
