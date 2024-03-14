@@ -8,7 +8,6 @@ use crate::layout::Layout;
 use crate::program_segments::ProgramSegmentId;
 use ahash::AHashMap;
 use anyhow::anyhow;
-use anyhow::bail;
 use core::mem::size_of;
 use object::ObjectSection;
 use object::SectionFlags;
@@ -719,15 +718,10 @@ impl<'data> OutputSectionsBuilder<'data> {
 
         for (_, details) in custom_sections {
             match self.custom.entry(details.name) {
-                Entry::Occupied(e) => {
-                    if e.get() != details {
-                        bail!(
-                            "Inconsistent attributes for {}: {:?} vs {:?}",
-                            String::from_utf8_lossy(details.name),
-                            e.get(),
-                            details,
-                        );
-                    }
+                Entry::Occupied(mut e) => {
+                    // Section flags are sometimes different, take the union of everything we're
+                    // given.
+                    e.get_mut().section_flags |= details.section_flags;
                 }
                 Entry::Vacant(e) => {
                     e.insert(*details);
