@@ -519,9 +519,14 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         let shndx = self
             .output_sections
             .output_index_of_section(output_section_id)
-            .context(
-                "internal error: tried to copy symbol that in a section that's not being output",
-            )?;
+            .with_context(|| {
+                format!(
+                    "internal error: tried to copy symbol `{}` that's in section {} \
+                     which is not being output",
+                    String::from_utf8_lossy(name),
+                    output_section_id,
+                )
+            })?;
         let value = section_address + sym.address();
         let size = sym.size();
         let entry = self.define_symbol(is_local, shndx, value, size, name)?;
@@ -1435,7 +1440,7 @@ impl<'data> InternalLayout<'data> {
                     format!(
                         "symbol `{}` in section `{}` that we're not going to output",
                         layout.symbol_db.symbol_name(symbol_id),
-                        String::from_utf8_lossy(layout.output_sections.details(section_id).name)
+                        layout.output_sections.display_name(section_id)
                     )
                 })?;
             let address = match resolution {
