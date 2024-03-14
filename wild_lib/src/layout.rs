@@ -449,6 +449,13 @@ impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
 struct CommonLayoutState {
     file_id: FileId,
     mem_sizes: OutputSectionPartMap<u64>,
+
+    /// Which sections have we loaded an input section into. This is not the same as checking
+    /// whether the mem sizes for that section are non-zero because we can load an input section
+    /// with size 0. If we do that, we still need to produce the output section so that we have
+    /// something to refer to in the symtab.
+    sections_with_content: OutputSectionMap<bool>,
+
     /// States of each global symbol that we defined. Indexed as by Symbol::local_index.
     symbol_states: Vec<TargetResolutionKind>,
 }
@@ -458,6 +465,7 @@ impl CommonLayoutState {
         Self {
             file_id,
             mem_sizes: OutputSectionPartMap::with_size(output_sections.len()),
+            sections_with_content: OutputSectionMap::with_size(output_sections.len()),
             symbol_states: vec![TargetResolutionKind::None; num_symbols],
         }
     }
@@ -883,9 +891,14 @@ fn compute_total_section_part_sizes(
 ) -> OutputSectionPartMap<u64> {
     let mut total_sizes: OutputSectionPartMap<u64> =
         OutputSectionPartMap::with_size(output_sections.len());
+    let mut sections_with_content: OutputSectionMap<bool> =
+        OutputSectionMap::with_size(output_sections.len());
     for file_state in layout_states.iter() {
         if let Some(sizes) = file_state.mem_sizes() {
             total_sizes.merge(sizes);
+        }
+        if let Some(common) = file_state.common() {
+            sections_with_content.merge(&common.sections_with_content, |a, b| a | b);
         }
     }
     let FileLayoutState::Internal(internal_layout) =
@@ -893,7 +906,11 @@ fn compute_total_section_part_sizes(
     else {
         unreachable!();
     };
-    internal_layout.determine_header_sizes(&mut total_sizes, output_sections);
+    internal_layout.determine_header_sizes(
+        &mut total_sizes,
+        sections_with_content,
+        output_sections,
+    );
     total_sizes
 }
 
@@ -1188,6 +1205,15 @@ impl<'data> FileLayoutState<'data> {
         match self {
             Self::Object(s) => Some(&s.state.common.mem_sizes),
             Self::Internal(s) => Some(&s.common.mem_sizes),
+            Self::Dynamic(_) => None,
+            Self::NotLoaded => None,
+        }
+    }
+
+    pub(crate) fn common(&self) -> Option<&CommonLayoutState> {
+        match self {
+            Self::Object(s) => Some(&s.state.common),
+            Self::Internal(s) => Some(&s.common),
             Self::Dynamic(_) => None,
             Self::NotLoaded => None,
         }
@@ -1725,24 +1751,31 @@ impl<'data> InternalLayoutState<'data> {
     fn determine_header_sizes(
         &mut self,
         total_sizes: &mut OutputSectionPartMap<u64>,
+        sections_with_content: OutputSectionMap<bool>,
         output_sections: &mut OutputSections,
     ) {
         use output_section_id::OrderEvent;
 
-        // Determine which sections to keep. To start with, we keep all sections that have content
-        // (size > 0).
-        let mut keep_sections = vec![false; output_sections.len()];
+        // Determine which sections to keep. To start with, we keep all sections into which we've
+        // loaded an input section. Note, this includes where the input section and even the output
+        // section is empty. We still need the output section as it may contain symbols.
+        let mut keep_sections = sections_with_content.into_raw_values();
+
+        // Next, keep any sections for which we've recorded a non-zero size, even if we didn't
+        // record the loading of an input section. This covers sections where we generate content.
         total_sizes.output_order_map(output_sections, |section_id, _alignment, size| {
             if *size > 0 {
                 keep_sections[section_id.as_usize()] = true;
             }
         });
+
         // Keep any sections that we've said we want to keep regardless.
         for section_id in output_section_id::built_in_section_ids() {
             if section_id.built_in_details().keep_if_empty {
                 keep_sections[section_id.as_usize()] = true;
             }
         }
+
         // Keep any sections that have a start/stop symbol which is referenced.
         self.common
             .symbol_states
@@ -2025,6 +2058,7 @@ impl<'data> ObjectLayoutState<'data> {
                         .mem_sizes
                         .regular_mut(sec_id, section.alignment);
                     *allocation += section.capacity();
+                    *self.state.common.sections_with_content.get_mut(sec_id) = true;
                     section.output_section_id = Some(sec_id);
                     if let Some(frame_data) = self.section_frame_data.get(section_id.0) {
                         self.state.common.mem_sizes.eh_frame +=
