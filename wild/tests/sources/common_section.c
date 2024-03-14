@@ -26,7 +26,7 @@ void _start(void) {
     exit_syscall(42);
 }
 
-//#ExpectSym: a
-//#ExpectSym: data
-//#ExpectSym: q
-//#ExpectSym: z
+//#ExpectSym: a .bss
+//#ExpectSym: data .bss
+//#ExpectSym: q .bss
+//#ExpectSym: z .bss

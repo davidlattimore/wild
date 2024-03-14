@@ -4,5 +4,5 @@ void _start(void) {
     exit_syscall(42);
 }
 
-//#ExpectSym: _start
-//#ExpectSym: exit_syscall
+//#ExpectSym: _start .text
+//#ExpectSym: exit_syscall .text

@@ -19,6 +19,7 @@ use anyhow::Context;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::path::Path;
 use std::path::PathBuf;
@@ -107,8 +108,26 @@ struct TestParameters {
 }
 
 struct Assertions {
-    expected_symtab_entries: Vec<String>,
+    expected_symtab_entries: Vec<ExpectedSymtabEntry>,
     expected_comments: Vec<String>,
+}
+
+struct ExpectedSymtabEntry {
+    name: String,
+    section_name: String,
+}
+
+impl ExpectedSymtabEntry {
+    fn parse(s: &str) -> Result<Self> {
+        let mut parts = s.split(' ').map(str::to_owned);
+        let (Some(name), Some(section), None) = (parts.next(), parts.next(), parts.next()) else {
+            bail!("ExpectSym requires {{symbol name}}, {{symbol section}}");
+        };
+        Ok(Self {
+            name,
+            section_name: section,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -204,7 +223,9 @@ impl TestParameters {
                     ),
                     "LinkArgs" => linker_args.push(ArgumentSet::parse(arg)?),
                     "CompArgs" => compiler_args.push(ArgumentSet::parse(arg)?),
-                    "ExpectSym" => expected_symtab_entries.push(arg.trim().to_owned()),
+                    "ExpectSym" => {
+                        expected_symtab_entries.push(ExpectedSymtabEntry::parse(arg.trim())?)
+                    }
                     "ExpectComment" => expected_comments.push(arg.trim().to_owned()),
                     other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
                 }
@@ -614,17 +635,29 @@ impl Assertions {
     }
 
     fn verify_symbol_assertions(&self, obj: &object::File<'_>) -> Result {
-        let symbols = obj
-            .symbols()
-            .filter(|sym| sym.is_definition())
-            .map(|sym| sym.name().context("Non-UTF-8 name"))
-            .collect::<Result<std::collections::HashSet<&str>>>()?;
-        let missing = self
+        let mut missing = self
             .expected_symtab_entries
             .iter()
-            .map(|s| s.as_str())
-            .filter(|expected_symbol| !symbols.contains(expected_symbol))
-            .collect::<Vec<_>>();
+            .map(|exp| (exp.name.as_str(), exp))
+            .collect::<HashMap<_, _>>();
+        for sym in obj.symbols() {
+            if let Ok(name) = sym.name() {
+                if let Some(exp) = missing.remove(name) {
+                    if let object::SymbolSection::Section(index) = sym.section() {
+                        let section = obj.section_by_index(index)?;
+                        let section_name = section.name()?;
+                        let exp_name = &exp.section_name;
+                        if section_name != exp_name {
+                            bail!(
+                                "Expected symbol `{name}` to be in section `{exp_name}`, but it was in \
+                                 `{section_name}`"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        let missing: Vec<&str> = missing.into_keys().collect();
         if !missing.is_empty() {
             bail!("Missing expected symbol(s): {}", missing.join(", "));
         };
