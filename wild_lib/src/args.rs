@@ -24,6 +24,7 @@ pub struct Args {
     pub link_static: bool,
     pub num_threads: NonZeroUsize,
     pub strip_all: bool,
+    pub strip_debug: bool,
     pub prepopulate_maps: bool,
     pub sym_info: Option<String>,
     pub merge_strings: bool,
@@ -72,8 +73,6 @@ const IGNORED_FLAGS: &[&str] = &[
     "-nostdlib",
     // TODO: Implement
     "--no-dynamic-linker",
-    // TODO: Once we support linking debug info, make this flag skip linking it.
-    "--strip-debug",
 ];
 
 impl Args {
@@ -110,6 +109,7 @@ impl Args {
         let mut time_phases = false;
         let mut num_threads = None;
         let mut strip_all = false;
+        let mut strip_debug = false;
         let mut prepopulate_maps = false;
         let mut save_dir = SaveDir::new()?;
         let mut sym_info = None;
@@ -146,6 +146,9 @@ impl Args {
                 num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
             } else if arg == "--strip-all" {
                 strip_all = true;
+                strip_debug = true;
+            } else if arg == "--strip-debug" {
+                strip_debug = true;
             } else if arg == "-z" || arg == "-m" {
                 // Ignore this argument and the next thing that comes after it.
                 input.next();
@@ -194,6 +197,7 @@ impl Args {
             time_phases,
             num_threads,
             strip_all,
+            strip_debug,
             prepopulate_maps,
             sym_info,
             merge_strings,

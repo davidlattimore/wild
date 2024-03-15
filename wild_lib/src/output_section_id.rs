@@ -478,6 +478,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
 ];
 
 impl<'data> UnloadedSection<'data> {
+    #[allow(clippy::if_same_then_else)]
     pub(crate) fn from_section(section: &Section<'data, '_>, args: &Args) -> Result<Option<Self>> {
         // Ideally we support reading an actual linker script to make these decisions, but for now
         // we just hard code stuff.
@@ -525,6 +526,8 @@ impl<'data> UnloadedSection<'data> {
         {
             // We don't currently allow references to these sections, discard them so that we avoid
             // allocating output section IDs.
+            None
+        } else if args.strip_debug && section_name.starts_with(b".debug_") {
             None
         } else {
             let ty = match section.kind() {

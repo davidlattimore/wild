@@ -1,9 +1,10 @@
 // This test links against libc and checks that various things work as expected.
 
-//#LinkArgs:clang-static:--cc=clang -static
-//#LinkArgs:clang-static-pie:--cc=clang -static-pie
-//#LinkArgs:gcc-static:--cc=gcc -static
-//#LinkArgs:gcc-static-pie:--cc=gcc -static-pie
+//#CompArgs:debug:-g
+//#LinkArgs:clang-static:--cc=clang -static -Wl,--strip-debug
+//#LinkArgs:clang-static-pie:--cc=clang -static-pie -Wl,--strip-debug
+//#LinkArgs:gcc-static:--cc=gcc -static -Wl,--strip-debug
+//#LinkArgs:gcc-static-pie:--cc=gcc -static-pie -Wl,--strip-debug
 
 #include <stdlib.h>
 #include <string.h>
@@ -55,3 +56,5 @@ int main() {
 
     return 42;
 }
+
+//#DoesNotContain:.debug_str
