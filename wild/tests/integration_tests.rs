@@ -934,7 +934,7 @@ fn integration_test() -> Result {
                 "exit.c",
             ],
         )?,
-        ProgramInputs::new("trivial-libc", &["trivial-libc.c"])?,
+        ProgramInputs::new("libc-integration", &["libc-integration.c"])?,
         ProgramInputs::new("trivial-rust", &["trivial-rust.rs"])?,
     ];
 

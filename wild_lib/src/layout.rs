@@ -1392,7 +1392,9 @@ impl<'data> Section<'data> {
                 }
             }
             (
-                TargetResolutionKind::Address | TargetResolutionKind::None,
+                TargetResolutionKind::Address
+                | TargetResolutionKind::Value
+                | TargetResolutionKind::None,
                 TargetResolutionKind::GotTlsOffset,
             ) => {
                 mem_sizes.got += elf::GOT_ENTRY_SIZE;
@@ -1540,13 +1542,13 @@ impl RelocationLayoutAction {
         let object::RelocationFlags::Elf { mut r_type } = rel.flags() else {
             unreachable!();
         };
-        if let Some(relaxation) = Relaxation::new(
+        if let Some((_relaxation, new_r_type)) = Relaxation::new(
             r_type,
             section.data()?,
             rel_offset as usize,
             symbol.value_kind,
         ) {
-            r_type = relaxation.new_relocation_kind();
+            r_type = new_r_type;
         }
         let rel_info = RelocationKindInfo::from_raw(r_type)?;
         let resolution_kind = TargetResolutionKind::new(rel_info.kind, symbol.value_kind, args)?;
@@ -1574,13 +1576,13 @@ impl RelocationLayoutAction {
         let object::RelocationFlags::Elf { mut r_type } = rel.flags() else {
             unreachable!();
         };
-        if let Some(relaxation) = Relaxation::new(
+        if let Some((_relaxation, new_r_type)) = Relaxation::new(
             r_type,
             section.data()?,
             rel_offset as usize,
             ValueKind::Address,
         ) {
-            r_type = relaxation.new_relocation_kind();
+            r_type = new_r_type;
         }
         let rel_info = RelocationKindInfo::from_raw(r_type)?;
         let resolution_kind = TargetResolutionKind::new(rel_info.kind, ValueKind::Address, args)?;

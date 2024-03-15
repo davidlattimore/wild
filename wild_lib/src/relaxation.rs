@@ -30,11 +30,11 @@ impl Relaxation {
         section_bytes: &[u8],
         offset: usize,
         value_kind: ValueKind,
-    ) -> Option<Self> {
+    ) -> Option<(Self, u32)> {
         // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
         // because fetching it contains potential error paths, the optimiser probably can't optimise
         // away fetching it.
-        match relocation_kind {
+        let (kind, new_rel) = match relocation_kind {
             rel::R_X86_64_REX_GOTPCRELX => {
                 if offset < 3 {
                     return None;
@@ -44,8 +44,12 @@ impl Relaxation {
                     return None;
                 }
                 let kind = match (b1, value_kind) {
-                    (0x8b, ValueKind::Address) => Relaxation::MovIndirectToLea,
-                    (0x8b, ValueKind::Absolute) => Relaxation::MovIndirectToAbsolute,
+                    (0x8b, ValueKind::Address) => {
+                        (Relaxation::MovIndirectToLea, rel::R_X86_64_PC32)
+                    }
+                    (0x8b, ValueKind::Absolute) => {
+                        (Relaxation::MovIndirectToAbsolute, rel::R_X86_64_32)
+                    }
                     _ => return None,
                 };
                 return Some(kind);
@@ -54,23 +58,23 @@ impl Relaxation {
                 if offset < 2 {
                     return None;
                 }
-                let kind = match section_bytes[offset - 2..offset] {
-                    [0xff, 0x15] => Relaxation::CallIndirectToAbsolute,
+                match section_bytes[offset - 2..offset] {
+                    [0xff, 0x15] => (Relaxation::CallIndirectToAbsolute, rel::R_X86_64_PC32),
                     _ => return None,
-                };
-                return Some(kind);
+                }
             }
-            _ => {}
-        }
-        None
-    }
-
-    pub(crate) fn new_relocation_kind(&self) -> u32 {
-        match self {
-            Relaxation::MovIndirectToLea => rel::R_X86_64_PC32,
-            Relaxation::MovIndirectToAbsolute => rel::R_X86_64_32,
-            Relaxation::CallIndirectToAbsolute => rel::R_X86_64_PC32,
-        }
+            rel::R_X86_64_GOTTPOFF => {
+                if offset < 3 {
+                    return None;
+                }
+                match section_bytes[offset - 3..offset - 1] {
+                    [0x48, 0x8b] => (Relaxation::MovIndirectToAbsolute, rel::R_X86_64_DTPOFF32),
+                    _ => return None,
+                }
+            }
+            _ => return None,
+        };
+        Some((kind, new_rel))
     }
 
     pub(crate) fn apply(&self, section_bytes: &mut [u8], offset: usize, addend: &mut u64) {
@@ -101,7 +105,8 @@ fn test_relaxation() {
     fn check(relocation_kind: u32, bytes_in: &[u8], address: &[u8], absolute: &[u8]) {
         let mut out = bytes_in.to_owned();
         let offset = bytes_in.len();
-        if let Some(r) = Relaxation::new(relocation_kind, bytes_in, offset, ValueKind::Address) {
+        if let Some((r, _)) = Relaxation::new(relocation_kind, bytes_in, offset, ValueKind::Address)
+        {
             r.apply(&mut out, offset, &mut 0);
 
             assert_eq!(
@@ -109,7 +114,9 @@ fn test_relaxation() {
                 "resolved: Expected {address:x?}, got {out:x?}"
             );
         }
-        if let Some(r) = Relaxation::new(relocation_kind, bytes_in, offset, ValueKind::Absolute) {
+        if let Some((r, _)) =
+            Relaxation::new(relocation_kind, bytes_in, offset, ValueKind::Absolute)
+        {
             out.copy_from_slice(bytes_in);
             r.apply(&mut out, offset, &mut 0);
             assert_eq!(
