@@ -1163,17 +1163,16 @@ fn apply_relocation(
     let place = section_address + offset_in_section;
     let mut addend = rel.addend() as u64;
     let mut next_modifier = RelocationModifier::Normal;
-    let object::RelocationFlags::Elf { mut r_type } = rel.flags() else {
+    let object::RelocationFlags::Elf { r_type } = rel.flags() else {
         unreachable!();
     };
     let rel_info;
-    if let Some(relaxation) = Relaxation::new(
+    if let Some((relaxation, r_type)) = Relaxation::new(
         r_type,
         out,
         offset_in_section as usize,
         resolution.value_kind,
     ) {
-        r_type = relaxation.new_relocation_kind();
         rel_info = RelocationKindInfo::from_raw(r_type)?;
         relaxation.apply(out, offset_in_section as usize, &mut addend);
     } else {
