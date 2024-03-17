@@ -100,6 +100,7 @@ impl Args {
     }
 
     // Parse the supplied input arguments, which should not include the program name.
+    #[allow(clippy::if_same_then_else)]
     pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Result<Self> {
         let mut lib_search_path = Vec::new();
         let mut inputs = Vec::new();
@@ -140,6 +141,7 @@ impl Args {
             } else if arg == "-dynamic-linker" {
                 dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
             } else if arg.starts_with("--hash-style=") {
+            } else if arg.starts_with("--build-id=") {
             } else if arg == "--time" {
                 time_phases = true;
             } else if let Some(rest) = arg.strip_prefix("--threads=") {
