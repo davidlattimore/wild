@@ -5,21 +5,14 @@ edition = "2021"
 
 [dependencies]
 wild_lib = { version = "0.2.0", path = "../wild_lib" }
-ahash = { version = "0.8.7", default-features = false, features = ["std"] }
 anyhow = "1.0.75"
-bytemuck = { version = "1.14.0", features = ["derive"] }
-crossbeam-queue = "0.3.8"
-crossbeam-utils = "0.8.18"
-memchr = "2.7.1"
-memmap2 = "0.9.0"
-object = { version = "0.32.2" }
-rayon = "1.8.0"
-smallvec = "1.13.1"
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", default-features = false, features = [
-    "registry",
-] }
 
 [dev-dependencies]
-ar = "0.9.0"
 wait-timeout = "0.2.0"
+object = { version = "0.34.0", default-features = false, features = [
+    "elf",
+    "read_core",
+    "std",
+    "unaligned",
+] }
