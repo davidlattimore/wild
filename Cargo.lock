@@ -379,7 +379,7 @@ dependencies = [
 
 [[package]]
 name = "wild"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "wild_lib"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ahash",
  "anyhow",

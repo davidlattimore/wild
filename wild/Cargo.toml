@@ -1,10 +1,10 @@
 [package]
 name = "wild"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
-wild_lib = { version = "0.1.0", path = "../wild_lib" }
+wild_lib = { version = "0.2.0", path = "../wild_lib" }
 ahash = { version = "0.8.7", default-features = false, features = ["std"] }
 anyhow = "1.0.75"
 bytemuck = { version = "1.14.0", features = ["derive"] }
