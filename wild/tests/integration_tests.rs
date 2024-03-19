@@ -606,6 +606,7 @@ impl LinkCommand {
                 command.arg("--gc-sections").arg("-static");
                 command.args(&variant.linker_args.args);
             }
+            command.env(wild_lib::args::VALIDATE_ENV, "1");
             command.arg("-o").arg(&output_path);
             for obj in object_paths {
                 command.arg(obj);
