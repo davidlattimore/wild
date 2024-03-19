@@ -24,3 +24,4 @@ pub mod slice;
 pub mod symbol;
 pub mod symbol_db;
 pub mod timing;
+pub mod validation;

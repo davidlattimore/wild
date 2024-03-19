@@ -30,6 +30,7 @@ pub struct Args {
     pub merge_strings: bool,
     pub debug_fuel: Option<AtomicI64>,
     pub time_phases: bool,
+    pub validate_output: bool,
     pub pie: bool,
 }
 
@@ -46,6 +47,8 @@ pub enum InputSpec {
     File(Box<Path>),
     Lib(Box<str>),
 }
+
+pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
 
 // These flags don't currently affect our behaviour. TODO: Assess whether we should error or warn if
 // these are given. This is tricky though. On the one hand we want to be a drop-in replacement for
@@ -116,6 +119,7 @@ impl Args {
         let mut sym_info = None;
         let mut merge_strings = true;
         let mut debug_fuel = None;
+        let mut validate_output = std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1");
         let mut pie = false;
         // Skip program name
         input.next();
@@ -168,6 +172,8 @@ impl Args {
                 // TODO: Implement support for linker plugins.
             } else if arg == "-plugin" {
                 input.next();
+            } else if arg == "--validate-output" {
+                validate_output = true;
             } else if let Some(rest) = arg.strip_prefix("--debug-fuel=") {
                 debug_fuel = Some(AtomicI64::new(rest.parse()?));
                 // Using debug fuel with more than one thread would likely give non-deterministic
@@ -205,6 +211,7 @@ impl Args {
             merge_strings,
             debug_fuel,
             pie,
+            validate_output,
         })
     }
 

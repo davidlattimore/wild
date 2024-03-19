@@ -163,6 +163,9 @@ impl SizedOutput {
 
     pub(crate) fn write(&mut self, layout: &Layout) -> Result {
         self.write_file_contents(layout)?;
+        if layout.args().validate_output {
+            crate::validation::validate_bytes(layout, &self.mmap)?;
+        }
 
         // We consumed the .eh_frame_hdr section in `split_buffers_by_alignment` above, get a fresh copy.
         let mut section_buffers = split_output_into_sections(layout, &mut self.mmap);
