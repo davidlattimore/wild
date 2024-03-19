@@ -453,6 +453,7 @@ fn build_obj(filename: &str, variant: &Variant, placement: FilePlacement) -> Res
             command
                 .env("WILD_SAVE_DIR", &output_path)
                 .env("WILD_SAVE_SKIP_LINKING", "1")
+                .arg("+nightly")
                 .args(["--target", "x86_64-unknown-linux-musl"])
                 .args(["-C", "linker=/usr/bin/clang-15"])
                 .args(["-C", "relocation-model=static"])
