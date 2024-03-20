@@ -587,7 +587,7 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
 
 impl<'data> ObjectLayout<'data> {
     fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
-        let start_str_offset = self.strings_offset_start;
+        let start_str_offset = self.strtab_offset_start;
         let mut plt_got_writer = PltGotWriter::new(layout, &mut buffers);
         let mut relocation_writer =
             RelocationWriter::new(layout.args().is_relocatable(), &mut buffers);
