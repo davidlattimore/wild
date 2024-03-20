@@ -890,6 +890,10 @@ fn integration_test() -> Result {
             &["custom_section.c", "custom_section0.c", "exit.c"],
         )?,
         ProgramInputs::new("stack_alignment", &["stack_alignment.s", "exit.c"])?,
+        ProgramInputs::new(
+            "got_ref_to_local",
+            &["got_ref_to_local.c", "got_ref_to_local-1.s", "exit.c"],
+        )?,
         ProgramInputs::new("local_symbol_refs", &["local_symbol_refs.s", "exit.c"])?,
         ProgramInputs::new(
             "archive_activation",
