@@ -133,10 +133,7 @@ impl<'data> SymbolDb<'data> {
             symbol_names,
             alternate_definitions: AHashMap::new(),
         };
-        let readers = inputs
-            .par_iter()
-            .map(|f| FileSymbolReader::new(f, args))
-            .collect::<Result<Vec<FileSymbolReader>>>()?;
+        let readers = parse_input_files(inputs, args)?;
         let files = index.load_symbols(readers)?;
         Ok((index, files))
     }
@@ -250,6 +247,17 @@ impl<'data> SymbolDb<'data> {
     pub(crate) fn num_symbols(&self) -> usize {
         self.symbols.len()
     }
+}
+
+#[tracing::instrument(skip_all, name = "Parse input files")]
+fn parse_input_files<'data>(
+    inputs: &'data [InputBytes],
+    args: &'data Args,
+) -> Result<Vec<FileSymbolReader<'data>>> {
+    inputs
+        .par_iter()
+        .map(|f| FileSymbolReader::new(f, args))
+        .collect()
 }
 
 #[tracing::instrument(skip_all, name = "Read symbols")]
