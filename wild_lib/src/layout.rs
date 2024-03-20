@@ -235,7 +235,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) mem_sizes: OutputSectionPartMap<u64>,
     pub(crate) sections: Vec<SectionSlot<'data>>,
     pub(crate) section_resolutions: Vec<Option<Resolution>>,
-    pub(crate) strings_offset_start: u32,
+    pub(crate) strtab_offset_start: u32,
     pub(crate) plt_relocations: Vec<IfuncRelocation>,
     pub(crate) loaded_symbols: Vec<GlobalSymbolId>,
     pub(crate) local_symbol_resolutions: Vec<LocalSymbolResolution>,
@@ -477,7 +477,7 @@ impl CommonLayoutState {
     ) -> u32 {
         // strtab
         let offset = &mut memory_offsets.symtab_strings;
-        let strings_offset_start = (*offset
+        let strtab_offset_start = (*offset
             - section_layouts
                 .built_in(output_section_id::STRTAB)
                 .mem_offset)
@@ -489,7 +489,7 @@ impl CommonLayoutState {
         memory_offsets.symtab_locals += self.mem_sizes.symtab_locals;
         memory_offsets.symtab_globals += self.mem_sizes.symtab_globals;
 
-        strings_offset_start
+        strtab_offset_start
     }
 
     fn create_global_address_emitter<'state>(
@@ -2249,7 +2249,7 @@ impl<'data> ObjectLayoutState<'data> {
         }
 
         let plt_relocations = emitter.plt_relocations;
-        let strings_offset_start = self
+        let strtab_offset_start = self
             .state
             .common
             .finalise_layout(memory_offsets, section_layouts);
@@ -2262,7 +2262,7 @@ impl<'data> ObjectLayoutState<'data> {
             local_symbol_resolutions: self.state.local_symbol_resolutions,
             sections,
             section_resolutions,
-            strings_offset_start,
+            strtab_offset_start,
             plt_relocations,
             loaded_symbols: self.state.loaded_symbols,
             eh_frame_start_address: memory_offsets.eh_frame,

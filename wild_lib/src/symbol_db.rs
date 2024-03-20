@@ -137,8 +137,8 @@ impl<'data> SymbolDb<'data> {
             .par_iter()
             .map(|f| FileSymbolReader::new(f, args))
             .collect::<Result<Vec<FileSymbolReader>>>()?;
-        let per_file_symbols = index.load_symbols(readers)?;
-        Ok((index, per_file_symbols))
+        let files = index.load_symbols(readers)?;
+        Ok((index, files))
     }
 
     fn load_symbols(
