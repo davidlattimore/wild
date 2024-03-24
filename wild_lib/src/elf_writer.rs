@@ -153,6 +153,7 @@ impl SizedOutput {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(true)
             .open(&path)
             .with_context(|| format!("Failed to open `{}`", path.display()))?;
         file.set_len(file_size)?;
