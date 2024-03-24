@@ -15,10 +15,12 @@ pub(crate) mod linker_script;
 pub(crate) mod output_section_id;
 pub(crate) mod output_section_map;
 pub(crate) mod output_section_part_map;
+pub(crate) mod parsing;
 pub(crate) mod program_segments;
 pub(crate) mod relaxation;
 pub(crate) mod resolution;
 pub(crate) mod save_dir;
+pub(crate) mod sharding;
 pub(crate) mod shutdown;
 pub(crate) mod slice;
 pub(crate) mod symbol;
@@ -48,9 +50,10 @@ impl Linker {
         let mut output = elf_writer::Output::new(&self.args);
         let input_data = input_data::InputData::from_args(&self.args)?;
         let inputs = archive_splitter::split_archives(&input_data)?;
-        let (mut symbol_db, files) = symbol_db::SymbolDb::build(&inputs, &self.args)?;
+        let files = parsing::parse_input_files(&inputs, &self.args)?;
+        let mut symbol_db = symbol_db::SymbolDb::build(&files, &self.args)?;
         let (resolved_files, output_sections) =
-            resolution::resolve_symbols_and_sections(files, &mut symbol_db)?;
+            resolution::resolve_symbols_and_sections(&files, &mut symbol_db)?;
         let layout = layout::compute(&symbol_db, resolved_files, output_sections, &mut output)?;
         output.write(&layout)?;
 

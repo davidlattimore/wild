@@ -3,10 +3,12 @@
 //! assigned to.
 
 use crate::args::Args;
+use crate::debug_assert_bail;
 use crate::elf::File;
 use crate::error::Error;
 use crate::error::Result;
-use crate::input_data;
+use crate::hash::PassThroughHashMap;
+use crate::hash::PreHashed;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::INTERNAL_FILE_ID;
@@ -17,14 +19,15 @@ use crate::output_section_id::SectionDetails;
 use crate::output_section_id::TemporaryOutputSectionId;
 use crate::output_section_id::UnloadedSection;
 use crate::output_section_map::OutputSectionMap;
+use crate::parsing::InputObject;
+use crate::parsing::InternalInputObject;
+use crate::parsing::InternalSymDefInfo;
+use crate::parsing::RegularInputObject;
+use crate::sharding::split_slice;
+use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
-use crate::symbol_db;
-use crate::symbol_db::FileSymbols;
-use crate::symbol_db::GlobalSymbolId;
-use crate::symbol_db::InternalSymDefInfo;
-use crate::symbol_db::InternalSymbols;
-use crate::symbol_db::ObjectSymbols;
 use crate::symbol_db::SymbolDb;
+use crate::symbol_db::SymbolId;
 use ahash::AHashMap;
 use anyhow::bail;
 use anyhow::Context;
@@ -39,87 +42,107 @@ use std::ffi::CString;
 
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
 pub fn resolve_symbols_and_sections<'data>(
-    file_states: Vec<FileSymbols<'data>>,
+    file_states: &'data [InputObject<'data>],
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result<(Vec<ResolvedFile<'data>>, OutputSections<'data>)> {
-    let (mut resolved, start_stop_sets, mut internal) =
+    let (mut resolved, start_stop_sets, internal) =
         resolve_symbols_in_files(file_states, symbol_db)?;
 
     let output_sections = assign_section_ids(&resolved, symbol_db.args)?;
 
     let merged_strings = merge_strings(&mut resolved, &output_sections)?;
 
+    let Some(ResolvedFile::Epilogue(mut custom)) = resolved.pop() else {
+        panic!("Epilogue must be the last input");
+    };
+
     allocate_start_stop_symbol_ids(
         start_stop_sets,
-        &mut internal,
+        &mut custom,
         &mut resolved,
         &output_sections,
         symbol_db,
     )?;
 
+    resolved.push(ResolvedFile::Epilogue(custom));
+
     resolve_alternative_symbol_definitions(symbol_db, &resolved)?;
-    filter_overridden_internal_symbols(&mut internal, symbol_db);
 
     resolved[INTERNAL_FILE_ID.as_usize()] = ResolvedFile::Internal(ResolvedInternal {
-        dynamic_linker: internal.dynamic_linker,
-        symbol_definitions: internal.symbol_definitions,
-        defined: internal.defined,
-        file_id: internal.file_id,
+        dynamic_linker: internal.dynamic_linker.clone(),
+        symbol_definitions: &internal.symbol_definitions,
         merged_strings,
     });
     Ok((resolved, output_sections))
 }
 
+/// A cell that holds mutable reference to the symbol definitions for one of our input objects. We
+/// unfortunately need to box these mutable slices, otherwise the cell isn't lock-free.
+type DefinitionsCell<'definitions> = AtomicCell<Option<Box<&'definitions mut [SymbolId]>>>;
+
 #[tracing::instrument(skip_all, name = "Resolve symbols")]
 pub(crate) fn resolve_symbols_in_files<'data>(
-    file_states: Vec<FileSymbols<'data>>,
+    file_states: &'data [InputObject<'data>],
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result<(
     Vec<ResolvedFile<'data>>,
     SegQueue<StartStopSet<'data>>,
-    InternalSymbols,
+    &'data InternalInputObject,
 )> {
     let num_objects = file_states.len();
     let mut objects = Vec::new();
-    type ArchiveEntryCell<'data> = AtomicCell<Option<Box<ObjectSymbols<'data>>>>;
-    let mut archive_entries: Vec<ArchiveEntryCell> = Vec::new();
-    // We use a Box so that lock-free operation is possible. Verify that our cells are actually
-    // lock-free.
-    assert!(ArchiveEntryCell::is_lock_free());
-    archive_entries.resize_with(num_objects, || AtomicCell::new(None));
+    assert!(DefinitionsCell::is_lock_free());
+    let mut symbol_definitions = symbol_db.take_definitions();
+    let definitions_per_file: Vec<DefinitionsCell> =
+        split_slice(&mut symbol_definitions, &symbol_db.num_symbols_per_file)
+            .into_iter()
+            .map(|defs| DefinitionsCell::new(Some(Box::new(defs))))
+            .collect();
     let mut internal = None;
     let mut resolved: Vec<ResolvedFile<'_>> = file_states
-        .into_iter()
-        .map(|f| match f {
-            FileSymbols::Internal(s) => {
+        .iter()
+        .map(|file| match file {
+            InputObject::Internal(s) => {
+                // We don't yet have all the information we need to construct ResolvedInternal, so
+                // we stash away our input for now and let the caller construct it later.
                 internal = Some(s);
                 ResolvedFile::NotLoaded
             }
-            FileSymbols::Object(s) => {
-                objects.push(s);
+            InputObject::Object(s) => {
+                if !s.is_from_archive() {
+                    let definitions = definitions_per_file[s.file_id.as_usize()].take().unwrap();
+                    objects.push((s, definitions));
+                }
                 ResolvedFile::NotLoaded
             }
-            FileSymbols::ArchiveEntry(s) => {
-                // TODO: If we're going to box these, we might as well box them earlier (in
-                // symbol_db).
-                archive_entries[s.file_id.as_usize()].store(Some(Box::new(s)));
-                ResolvedFile::NotLoaded
-            }
+            InputObject::Dynamic(_) => todo!(),
+            InputObject::Epilogue(s) => ResolvedFile::Epilogue(ResolvedEpilogue {
+                file_id: s.file_id,
+                start_symbol_id: s.start_symbol_id,
+                symbol_definitions: vec![],
+            }),
         })
         .collect();
-    let internal = internal.unwrap();
     let outputs = Outputs::new(num_objects);
+    let resources = ResolutionResources {
+        file_states,
+        definitions_per_file: &definitions_per_file,
+        symbol_db,
+        outputs: &outputs,
+    };
     rayon::scope(|s| {
-        for obj in objects {
+        for (obj, definitions) in objects {
             s.spawn(|s| {
-                let r = process_object(obj, symbol_db, &archive_entries, s, &outputs);
+                let r = process_object(obj, *definitions, s, &resources);
                 if let Err(e) = r {
                     // We currently only store the first error.
-                    let _ = outputs.errors.push(e);
+                    let _ = resources.outputs.errors.push(e);
                 }
             })
         }
     });
+    drop(definitions_per_file);
+    symbol_db.restore_definitions(symbol_definitions);
     if let Some(e) = outputs.errors.pop() {
         return Err(e);
     }
@@ -127,7 +150,15 @@ pub(crate) fn resolve_symbols_in_files<'data>(
         let file_id = obj.file_id;
         resolved[file_id.as_usize()] = ResolvedFile::Object(obj);
     }
+    let internal = internal.unwrap();
     Ok((resolved, outputs.start_stop_sets, internal))
+}
+
+struct ResolutionResources<'data, 'definitions, 'outer_scope> {
+    file_states: &'data [InputObject<'data>],
+    definitions_per_file: &'outer_scope Vec<DefinitionsCell<'definitions>>,
+    symbol_db: &'outer_scope SymbolDb<'data>,
+    outputs: &'outer_scope Outputs<'data>,
 }
 
 /// For each symbol that has multiple definitions, some of which may be weak, some strong, some
@@ -138,7 +169,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
 #[tracing::instrument(skip_all, name = "Resolve alternative symbol definitions")]
 fn resolve_alternative_symbol_definitions<'data>(
     symbol_db: &mut SymbolDb<'data>,
-    resolved: &[ResolvedFile<'data>],
+    resolved: &[ResolvedFile],
 ) -> Result {
     // For now, we do this from a single thread since we don't expect a lot of symbols will have
     // multiple definitions. If it turns out that there are cases where it's actually taking
@@ -146,31 +177,34 @@ fn resolve_alternative_symbol_definitions<'data>(
     let alternate_definitions =
         core::mem::replace(&mut symbol_db.alternate_definitions, AHashMap::new());
     for (symbol_id, alternatives) in alternate_definitions {
-        if let Some(selected) = select_symbol(symbol_db, symbol_id, resolved, &alternatives) {
-            symbol_db.replace_symbol(symbol_id, selected);
+        if alternatives.is_empty() {
+            continue;
+        }
+        let selected = select_symbol(symbol_db, symbol_id, &alternatives, resolved);
+        symbol_db.replace_definition(symbol_id, selected);
+        for alt in alternatives {
+            symbol_db.replace_definition(alt, selected);
         }
     }
     Ok(())
 }
 
-/// Selects which version of the symbol to use. Returns None if we should leave things alone and
-/// continue using the first definition of the symbol.
-fn select_symbol<'data>(
-    symbol_db: &SymbolDb<'data>,
-    symbol_id: GlobalSymbolId,
-    objects: &[ResolvedFile<'data>],
-    alternatives: &[crate::symbol::Symbol],
-) -> Option<crate::symbol::Symbol> {
-    let first_symbol = symbol_db.symbol(symbol_id);
-    let first_strength = SymbolStrength::determine(objects, first_symbol);
+/// Selects which version of the symbol to use.
+fn select_symbol(
+    symbol_db: &SymbolDb,
+    symbol_id: SymbolId,
+    alternatives: &[SymbolId],
+    resolved: &[ResolvedFile],
+) -> SymbolId {
+    let first_strength = symbol_db.symbol_strength(symbol_id, resolved);
     if first_strength == SymbolStrength::Strong {
-        return None;
+        return symbol_id;
     }
     let mut max_common = None;
-    for alt in alternatives {
-        let strength = SymbolStrength::determine(objects, alt);
+    for &alt in alternatives {
+        let strength = symbol_db.symbol_strength(alt, resolved);
         match strength {
-            SymbolStrength::Strong => return Some(*alt),
+            SymbolStrength::Strong => return alt,
             SymbolStrength::Common(size) => {
                 if let Some((previous_size, _)) = max_common {
                     if size <= previous_size {
@@ -183,29 +217,18 @@ fn select_symbol<'data>(
         }
     }
     if let Some((_, alt)) = max_common {
-        return Some(*alt);
+        return alt;
     }
     if first_strength != SymbolStrength::Undefined {
-        return None;
+        return symbol_id;
     }
-    for alt in alternatives {
-        let strength = SymbolStrength::determine(objects, alt);
+    for &alt in alternatives {
+        let strength = symbol_db.symbol_strength(alt, resolved);
         if strength != SymbolStrength::Undefined {
-            return Some(*alt);
+            return alt;
         }
     }
-    None
-}
-
-/// Filter out any internally defined symbols that have been overridden by user code.
-#[tracing::instrument(skip_all, name = "Filter overridden internal symbols")]
-fn filter_overridden_internal_symbols(
-    internal: &mut InternalSymbols,
-    symbol_db: &mut SymbolDb<'_>,
-) {
-    internal
-        .defined
-        .retain(|symbol_id| symbol_db.symbol(*symbol_id).file_id == input_data::INTERNAL_FILE_ID);
+    symbol_id
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -224,37 +247,14 @@ enum SymbolStrength {
     Common(u64),
 }
 
-impl SymbolStrength {
-    fn determine(objects: &[ResolvedFile<'_>], symbol: &crate::symbol::Symbol) -> SymbolStrength {
-        if let ResolvedFile::Object(obj) = &objects[symbol.file_id.as_usize()] {
-            let Ok(obj_symbol) = obj
-                .object
-                .symbol_by_index(symbol.local_index_without_checking_file_id())
-            else {
-                // Errors from this function should have been reported elsewhere.
-                return SymbolStrength::Undefined;
-            };
-            if obj_symbol.is_weak() {
-                SymbolStrength::Weak
-            } else if obj_symbol.is_common() {
-                SymbolStrength::Common(obj_symbol.size())
-            } else {
-                SymbolStrength::Strong
-            }
-        } else {
-            SymbolStrength::Undefined
-        }
-    }
-}
-
 pub enum ResolvedFile<'data> {
     NotLoaded,
     Internal(ResolvedInternal<'data>),
     Object(ResolvedObject<'data>),
+    Epilogue(ResolvedEpilogue),
 }
 
 /// A section, but where we may or may not yet have decided to load it.
-#[derive(Debug)]
 pub(crate) enum SectionSlot<'data> {
     Discard,
     Unloaded(UnloadedSection<'data>),
@@ -264,20 +264,7 @@ pub(crate) enum SectionSlot<'data> {
 }
 
 #[derive(Copy, Clone, Debug)]
-pub(crate) enum LocalSymbolResolution {
-    UnresolvedWeak,
-    TlsGetAddr,
-    WeakRefToGlobal(GlobalSymbolId),
-    Global(GlobalSymbolId),
-    LocalSection(object::SectionIndex),
-    MergedString(MergedStringResolution),
-    UndefinedSymbol,
-    Null,
-}
-
-#[derive(Copy, Clone, Debug)]
 pub(crate) struct MergedStringResolution {
-    pub(crate) symbol_id: Option<GlobalSymbolId>,
     pub(crate) output_section_id: OutputSectionId,
     pub(crate) offset: u64,
 }
@@ -286,31 +273,36 @@ pub struct ResolvedInternal<'data> {
     // TODO: Use this - when we implement dynamic linking
     #[allow(dead_code)]
     pub(crate) dynamic_linker: Option<CString>,
-    pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
-    pub(crate) defined: Vec<GlobalSymbolId>,
-    pub(crate) file_id: FileId,
+    pub(crate) symbol_definitions: &'data [InternalSymDefInfo],
     pub(crate) merged_strings: OutputSectionMap<MergedStringsSection<'data>>,
 }
 
 pub struct ResolvedObject<'data> {
     pub(crate) input: InputRef<'data>,
-    pub(crate) object: Box<File<'data>>,
+    pub(crate) object: &'data File<'data>,
     pub(crate) file_id: FileId,
-    pub(crate) local_symbol_resolutions: Vec<LocalSymbolResolution>,
+    pub(crate) merged_string_resolutions: Vec<Option<MergedStringResolution>>,
+    pub(crate) num_symbols: usize,
     pub(crate) sections: Vec<SectionSlot<'data>>,
     merge_strings_sections: Vec<MergeStringsFileSection<'data>>,
+    pub(crate) start_symbol_id: SymbolId,
 
     /// Details about each custom section that is defined in this object. The index is an index into
     /// self.sections.
     custom_sections: Vec<(object::SectionIndex, SectionDetails<'data>)>,
 }
 
-#[derive(Debug)]
+pub struct ResolvedEpilogue {
+    pub(crate) file_id: FileId,
+    pub(crate) start_symbol_id: SymbolId,
+    pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
+}
+
 pub(crate) struct MergeStringsFileSection<'data> {
     temporary_section_id: TemporaryOutputSectionId<'data>,
 
     /// The strings from this section. Only present temporarily during resolution.
-    strings: Vec<StringToMerge<'data>>,
+    strings: Vec<PreHashed<StringToMerge<'data>>>,
 
     /// References into this section. Only present temporarily during resolution.
     references: Vec<RefToMergeString>,
@@ -323,21 +315,18 @@ struct RefToMergeString {
     offset: u64,
 
     symbol_index: object::SymbolIndex,
-
-    global_symbol_id: Option<GlobalSymbolId>,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 struct StringToMerge<'data> {
     bytes: &'data [u8],
-    hash: u64,
 }
 
 #[derive(Default)]
 struct MergeStringsSection<'data> {
     strings: Vec<&'data [u8]>,
     next_offset: u64,
-    string_offsets: crate::hash::PassThroughHashMap<StringToMerge<'data>, u64>,
+    string_offsets: PassThroughHashMap<StringToMerge<'data>, u64>,
 }
 
 pub(crate) struct MergedStringsSection<'data> {
@@ -348,7 +337,7 @@ pub(crate) struct MergedStringsSection<'data> {
 impl<'data> MergeStringsSection<'data> {
     /// Adds `string`, deduplicating with an existing string if an identical string is already
     /// present. Returns the offset into the section.
-    fn add_string(&mut self, string: StringToMerge<'data>) -> u64 {
+    fn add_string(&mut self, string: PreHashed<StringToMerge<'data>>) -> u64 {
         *self.string_offsets.entry(string).or_insert_with(|| {
             let offset = self.next_offset;
             self.next_offset += string.bytes.len() as u64;
@@ -389,9 +378,8 @@ fn merge_strings<'data>(
                         // This reference belongs to a subsequent string.
                         break;
                     }
-                    obj.local_symbol_resolutions[merge_ref.symbol_index.0] =
-                        LocalSymbolResolution::MergedString(MergedStringResolution {
-                            symbol_id: merge_ref.global_symbol_id,
+                    obj.merged_string_resolutions[merge_ref.symbol_index.0] =
+                        Some(MergedStringResolution {
                             output_section_id,
                             offset: output_offset + offset_into_string,
                         });
@@ -444,39 +432,47 @@ impl<'data> Outputs<'data> {
     }
 }
 
-fn process_object<'scope, 'data: 'scope>(
-    obj: symbol_db::ObjectSymbols<'data>,
-    symbol_db: &'scope SymbolDb<'data>,
-    archive_entries: &'scope [AtomicCell<Option<Box<ObjectSymbols<'data>>>>],
+fn process_object<'scope, 'data: 'scope, 'definitions>(
+    obj: &'data RegularInputObject<'data>,
+    definitions_out: &mut [SymbolId],
     s: &rayon::Scope<'scope>,
-    outputs: &'scope Outputs<'data>,
+    resources: &'scope ResolutionResources<'data, 'definitions, 'scope>,
 ) -> Result {
     let request_file_id = |file_id: FileId| {
-        if let Some(entry) = archive_entries[file_id.as_usize()].take() {
-            s.spawn(|s| {
-                let r = process_object(*entry, symbol_db, archive_entries, s, outputs);
-                if let Err(error) = r {
-                    let _ = outputs.errors.push(error);
+        if let Some(definitions) = resources.definitions_per_file[file_id.as_usize()].take() {
+            s.spawn(move |s| {
+                if let InputObject::Object(obj) = &resources.file_states[file_id.as_usize()] {
+                    let r = process_object(obj, *definitions, s, resources);
+                    if let Err(error) = r {
+                        let _ = resources.outputs.errors.push(error);
+                    }
                 }
             });
         }
     };
     let input = obj.input;
-    let res = ResolvedObject::new(obj, symbol_db, request_file_id, &outputs.start_stop_sets)
-        .with_context(|| format!("Failed to process {input}"))?;
-    let _ = outputs.loaded.push(res);
+    let res = ResolvedObject::new(
+        obj,
+        resources.symbol_db,
+        request_file_id,
+        definitions_out,
+        &resources.outputs.start_stop_sets,
+    )
+    .with_context(|| format!("Failed to process {input}"))?;
+    let _ = resources.outputs.loaded.push(res);
     Ok(())
 }
 
 struct StartStopSet<'data> {
     file_id: FileId,
+    // TODO: We should be able to switch to storing SymbolIds instead of FileId and SymbolIndex.
     start_stop_refs: AHashMap<&'data [u8], Vec<object::SymbolIndex>>,
 }
 
 #[tracing::instrument(skip_all, name = "Process custom section start/stop refs")]
 fn allocate_start_stop_symbol_ids<'data>(
     start_stop_sets: SegQueue<StartStopSet<'data>>,
-    internal: &mut InternalSymbols,
+    epilogue: &mut ResolvedEpilogue,
     objects: &mut [ResolvedFile],
     output_sections: &OutputSections,
     symbol_db: &mut SymbolDb<'data>,
@@ -492,8 +488,6 @@ fn allocate_start_stop_symbol_ids<'data>(
         }
     }
     for (symbol_name, refs) in names.into_iter() {
-        let local_index = object::SymbolIndex(internal.symbol_definitions.len());
-
         let (section_name, is_start) = if let Some(s) = symbol_name.strip_prefix(b"__start_") {
             (s, true)
         } else if let Some(s) = symbol_name.strip_prefix(b"__stop_") {
@@ -519,26 +513,17 @@ fn allocate_start_stop_symbol_ids<'data>(
             )
         };
 
-        let global_symbol_id = symbol_db.add_start_stop_symbol(symbol_name, local_index)?;
+        let symbol_id = symbol_db.add_start_stop_symbol(symbol_name);
         let def_info = if is_start {
-            symbol_db::InternalSymDefInfo::SectionStart(section_id)
+            InternalSymDefInfo::SectionStart(section_id)
         } else {
-            symbol_db::InternalSymDefInfo::SectionEnd(section_id)
+            InternalSymDefInfo::SectionEnd(section_id)
         };
-        internal.symbol_definitions.push(def_info);
-        internal.defined.push(global_symbol_id);
+        epilogue.symbol_definitions.push(def_info);
         for (file_id, sym_index) in refs {
             if let ResolvedFile::Object(obj) = &mut objects[file_id.as_usize()] {
-                let res = &mut obj.local_symbol_resolutions[sym_index.0];
-                *res = match *res {
-                    LocalSymbolResolution::UndefinedSymbol => {
-                        LocalSymbolResolution::Global(global_symbol_id)
-                    }
-                    LocalSymbolResolution::UnresolvedWeak => {
-                        LocalSymbolResolution::WeakRefToGlobal(global_symbol_id)
-                    }
-                    _ => unreachable!(),
-                }
+                let local_symbol_id = obj.start_symbol_id.add_usize(sym_index.0);
+                symbol_db.replace_definition(local_symbol_id, symbol_id);
             }
         }
     }
@@ -552,10 +537,10 @@ fn all_unresolved_weak(
 ) -> bool {
     refs.iter().all(|(file_id, sym_index)| {
         if let ResolvedFile::Object(obj) = &objects[file_id.as_usize()] {
-            matches!(
-                obj.local_symbol_resolutions[sym_index.0],
-                LocalSymbolResolution::UnresolvedWeak
-            )
+            obj.object
+                .symbol_by_index(*sym_index)
+                .ok()
+                .is_some_and(|sym| sym.is_undefined() && sym.is_weak())
         } else {
             unreachable!();
         }
@@ -564,19 +549,21 @@ fn all_unresolved_weak(
 
 impl<'data> ResolvedObject<'data> {
     fn new(
-        obj: symbol_db::ObjectSymbols<'data>,
+        obj: &'data RegularInputObject<'data>,
         symbol_db: &SymbolDb<'data>,
         request_file_id: impl FnMut(FileId),
+        definitions_out: &mut [SymbolId],
         start_stop_sets: &SegQueue<StartStopSet<'data>>,
     ) -> Result<Self> {
         let mut custom_sections = Vec::new();
-        let mut sections = resolve_sections(&obj, &mut custom_sections, symbol_db.args)?;
+        let mut sections = resolve_sections(obj, &mut custom_sections, symbol_db.args)?;
 
-        let local_symbol_resolutions = resolve_symbols(
-            &obj,
+        resolve_symbols(
+            obj,
             symbol_db,
             request_file_id,
             start_stop_sets,
+            definitions_out,
             &mut sections,
         )
         .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
@@ -594,18 +581,20 @@ impl<'data> ResolvedObject<'data> {
 
         Ok(Self {
             input: obj.input,
-            object: obj.object,
+            object: &obj.object,
             file_id: obj.file_id,
-            local_symbol_resolutions,
+            num_symbols: obj.num_symbols,
+            merged_string_resolutions: vec![None; obj.num_symbols],
             sections,
             custom_sections,
             merge_strings_sections,
+            start_symbol_id: obj.start_symbol_id,
         })
     }
 }
 
 fn resolve_sections<'data>(
-    obj: &symbol_db::ObjectSymbols<'data>,
+    obj: &RegularInputObject<'data>,
     custom_sections: &mut Vec<(object::SectionIndex, SectionDetails<'data>)>,
     args: &Args,
 ) -> Result<Vec<SectionSlot<'data>>> {
@@ -645,38 +634,35 @@ fn resolve_sections<'data>(
 }
 
 fn resolve_symbols<'data>(
-    obj: &symbol_db::ObjectSymbols<'data>,
+    obj: &RegularInputObject<'data>,
     symbol_db: &SymbolDb<'data>,
     mut request_file_id: impl FnMut(FileId),
     start_stop_sets: &SegQueue<StartStopSet<'data>>,
+    definitions_out: &mut [SymbolId],
     sections: &mut [SectionSlot<'data>],
-) -> Result<Vec<LocalSymbolResolution>> {
+) -> Result {
     let mut start_stop_refs: AHashMap<&'data [u8], Vec<object::SymbolIndex>> = AHashMap::new();
-    let local_symbol_resolutions = obj
-        .object
+    obj.object
         .symbols()
-        .map(|local_symbol| {
+        .zip(definitions_out)
+        .try_for_each(|(local_symbol, definition)| {
             let name_bytes = local_symbol.name_bytes()?;
-            let mut global_symbol_id = None;
-            let symbol_state = if name_bytes.is_empty() || local_symbol.is_local() {
-                if let Some(local_section_index) = local_symbol.section_index() {
-                    LocalSymbolResolution::LocalSection(local_section_index)
-                } else {
-                    LocalSymbolResolution::Null
-                }
-            } else {
-                match symbol_db.symbol_ids.get(&SymbolName::new(name_bytes)) {
+            if definition.is_undefined() && local_symbol.index().0 != 0 {
+                debug_assert_bail!(
+                    local_symbol.is_global(),
+                    "Only globals should be undefined, found symbol `{}`",
+                    String::from_utf8_lossy(name_bytes)
+                );
+                assert!(!local_symbol.is_definition());
+                match symbol_db
+                    .global_names
+                    .get(&SymbolName::prehashed(name_bytes))
+                {
                     Some(&symbol_id) => {
-                        global_symbol_id = Some(symbol_id);
-                        let symbol = symbol_db.symbol(symbol_id);
-                        if symbol.file_id != obj.file_id && !local_symbol.is_weak() {
-                            request_file_id(symbol.file_id);
-                        }
-
-                        if local_symbol.is_weak() {
-                            LocalSymbolResolution::WeakRefToGlobal(symbol_id)
-                        } else {
-                            LocalSymbolResolution::Global(symbol_id)
+                        *definition = symbol_id;
+                        let symbol_file_id = symbol_db.file_id_for_symbol(symbol_id);
+                        if symbol_file_id != obj.file_id && !local_symbol.is_weak() {
+                            request_file_id(symbol_file_id);
                         }
                     }
                     None => {
@@ -686,57 +672,28 @@ fn resolve_symbols<'data>(
                                 .entry(name_bytes)
                                 .or_default()
                                 .push(local_symbol.index());
-                            // We'll allocate a GlobalSymbolId for this after graph traversal is complete,
-                            // then fix this up to point to that instead.
-                            if local_symbol.is_weak() {
-                                LocalSymbolResolution::UnresolvedWeak
-                            } else {
-                                LocalSymbolResolution::UndefinedSymbol
-                            }
-                        } else if local_symbol.is_weak() {
-                            LocalSymbolResolution::UnresolvedWeak
-                        } else if symbol_db.args.link_static
-                            && name_bytes == "__tls_get_addr".as_bytes()
-                        {
-                            // This is normally provided by the dynamic linker. However we're statically
-                            // linking. We'll fix up references to this when we apply relocations by
-                            // rewriting the instructions to directly access the appropriate TLS variable.
-                            LocalSymbolResolution::TlsGetAddr
-                        } else {
-                            LocalSymbolResolution::UndefinedSymbol
                         }
                     }
                 }
-            };
+            }
+
             if let Some(local_section_index) = local_symbol.section_index() {
                 if let SectionSlot::MergeStrings(merge) = &mut sections[local_section_index.0] {
                     merge.references.push(RefToMergeString {
-                        global_symbol_id,
                         offset: local_symbol.address(),
                         symbol_index: local_symbol.index(),
                     });
                 }
             }
-            Ok(symbol_state)
-        })
-        .collect::<Result<Vec<_>>>()?;
+            Ok(())
+        })?;
     if !start_stop_refs.is_empty() {
         start_stop_sets.push(StartStopSet {
             file_id: obj.file_id,
             start_stop_refs,
         });
     }
-    Ok(local_symbol_resolutions)
-}
-
-impl LocalSymbolResolution {
-    pub(crate) fn global_symbol_id(self) -> Option<GlobalSymbolId> {
-        match self {
-            LocalSymbolResolution::WeakRefToGlobal(id) => Some(id),
-            LocalSymbolResolution::Global(id) => Some(id),
-            _ => None,
-        }
-    }
+    Ok(())
 }
 
 impl<'data> std::fmt::Display for ResolvedObject<'data> {
@@ -751,6 +708,7 @@ impl<'data> std::fmt::Display for ResolvedFile<'data> {
             ResolvedFile::NotLoaded => std::fmt::Display::fmt("<not loaded>", f),
             ResolvedFile::Internal(_) => std::fmt::Display::fmt("<internal>", f),
             ResolvedFile::Object(o) => std::fmt::Display::fmt(o, f),
+            ResolvedFile::Epilogue(_) => std::fmt::Display::fmt("<custom sections>", f),
         }
     }
 }
@@ -779,7 +737,7 @@ impl<'data> MergeStringsFileSection<'data> {
                 })?;
             let (bytes, rest) = remaining.split_at(len);
             let hash = crate::hash::hash_bytes(bytes);
-            strings.push(StringToMerge { bytes, hash });
+            strings.push(PreHashed::new(StringToMerge { bytes }, hash));
             remaining = rest;
         }
         Ok(MergeStringsFileSection {
@@ -800,12 +758,6 @@ impl<'data> MergeStringsFileSection<'data> {
     }
 }
 
-impl<'data> std::hash::Hash for StringToMerge<'data> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(self.hash);
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ValueKind {
     /// Something with an address. e.g. a regular symbol, a section etc.
@@ -820,5 +772,27 @@ pub(crate) enum ValueKind {
 impl ValueKind {
     pub(crate) fn is_address(self) -> bool {
         self == ValueKind::Address
+    }
+}
+
+impl<'data> SymbolDb<'data> {
+    fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedFile]) -> SymbolStrength {
+        let file_id = self.file_id_for_symbol(symbol_id);
+        if let ResolvedFile::Object(obj) = &resolved[file_id.as_usize()] {
+            let local_index = object::SymbolIndex(symbol_id.offset_from(obj.start_symbol_id));
+            let Ok(obj_symbol) = obj.object.symbol_by_index(local_index) else {
+                // Errors from this function should have been reported elsewhere.
+                return SymbolStrength::Undefined;
+            };
+            if obj_symbol.is_weak() {
+                SymbolStrength::Weak
+            } else if obj_symbol.is_common() {
+                SymbolStrength::Common(obj_symbol.size())
+            } else {
+                SymbolStrength::Strong
+            }
+        } else {
+            SymbolStrength::Undefined
+        }
     }
 }

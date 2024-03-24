@@ -183,12 +183,12 @@ fn search_for_file(
 }
 
 impl FileId {
-    pub(crate) const fn placeholder() -> Self {
-        Self::new(99999)
-    }
-
     pub(crate) const fn new(value: u32) -> Self {
         Self(value)
+    }
+
+    pub(crate) fn from_usize(value: usize) -> Result<Self> {
+        Ok(Self::new(value.try_into().context("Too many input files")?))
     }
 }
 
