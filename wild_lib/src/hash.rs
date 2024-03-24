@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::hash::Hasher;
+use std::ops::Deref;
 
-pub(crate) type PassThroughHashMap<K, V> = HashMap<K, V, PassThroughHasher>;
+pub(crate) type PassThroughHashMap<K, V> = HashMap<PreHashed<K>, V, PassThroughHasher>;
 
 #[derive(Default)]
 pub(crate) struct PassThroughHasher {
@@ -35,4 +36,30 @@ pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
     let mut hasher = ahash::AHasher::default();
     hasher.write(bytes);
     hasher.finish()
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub(crate) struct PreHashed<T> {
+    value: T,
+    hash: u64,
+}
+
+impl<T> PreHashed<T> {
+    pub(crate) fn new(value: T, hash: u64) -> Self {
+        Self { value, hash }
+    }
+}
+
+impl<T> std::hash::Hash for PreHashed<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.hash.hash(state);
+    }
+}
+
+impl<T> Deref for PreHashed<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.value
+    }
 }

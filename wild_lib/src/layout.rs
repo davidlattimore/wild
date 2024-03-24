@@ -5,6 +5,7 @@
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::args::Args;
+use crate::debug_assert_bail;
 use crate::elf;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
@@ -22,18 +23,21 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_id::UnloadedSection;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
+use crate::parsing::InternalSymDefInfo;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::MAX_SEGMENTS;
 use crate::relaxation::Relaxation;
 use crate::resolution;
-use crate::resolution::LocalSymbolResolution;
+use crate::resolution::MergedStringResolution;
+use crate::resolution::ResolvedEpilogue;
 use crate::resolution::SectionSlot;
 use crate::resolution::ValueKind;
+use crate::sharding::split_slice;
+use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
-use crate::symbol_db;
-use crate::symbol_db::GlobalSymbolId;
-use crate::symbol_db::InternalSymDefInfo;
 use crate::symbol_db::SymbolDb;
+use crate::symbol_db::SymbolDebug;
+use crate::symbol_db::SymbolId;
 use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -47,6 +51,7 @@ use rayon::prelude::IntoParallelIterator;
 use rayon::prelude::IntoParallelRefMutIterator;
 use rayon::prelude::ParallelIterator;
 use smallvec::SmallVec;
+use std::fmt::Display;
 use std::mem::size_of;
 use std::num::NonZeroU64;
 use std::sync::atomic;
@@ -82,23 +87,29 @@ pub fn compute<'data>(
     let starting_mem_offsets_by_file = compute_start_offsets_by_file(&layout_states, mem_offsets);
     let merged_string_start_addresses =
         MergedStringStartAddresses::compute(&output_sections, &starting_mem_offsets_by_file);
-    let symbols_and_layouts = compute_symbols_and_layouts(
+    let mut symbol_resolutions = SymbolResolutions {
+        resolutions: vec![None; symbol_db.num_symbols()],
+    };
+    let mut resolutions_by_file = split_slice(
+        &mut symbol_resolutions.resolutions,
+        &symbol_db.num_symbols_per_file,
+    );
+    let file_layouts = compute_symbols_and_layouts(
         layout_states,
         starting_mem_offsets_by_file,
         &section_layouts,
         symbol_db,
         &merged_string_start_addresses,
+        &mut resolutions_by_file,
     )?;
 
-    let (symbol_addresses, file_layouts) = merge_symbol_addresses(symbol_db, symbols_and_layouts);
     Ok(Layout {
         symbol_db,
-        symbol_addresses,
+        symbol_resolutions,
         segment_layouts,
         section_part_layouts,
         section_layouts,
         file_layouts,
-        merged_string_start_addresses,
         output_sections,
     })
 }
@@ -114,26 +125,6 @@ fn finalise_all_sizes(
         .try_for_each(|state| state.finalise_sizes(symbol_db, output_sections))
 }
 
-#[tracing::instrument(skip_all, name = "Merge symbol addresses")]
-fn merge_symbol_addresses<'data>(
-    symbol_db: &'data SymbolDb<'data>,
-    symbols_and_layouts: Vec<(Vec<GlobalSymbolAddress>, FileLayout<'data>)>,
-) -> (SymbolResolutions, Vec<FileLayout<'data>>) {
-    // Merge global symbol addresses emitted by all files into a single table.
-    let mut symbol_addresses = vec![None; symbol_db.num_symbols()];
-    let mut file_layouts = Vec::with_capacity(symbols_and_layouts.len());
-    for (symbols, file_layout) in symbols_and_layouts {
-        file_layouts.push(file_layout);
-        for global in symbols {
-            symbol_addresses[global.symbol_id.as_usize()] = Some(global.resolution);
-        }
-    }
-    let symbol_addresses = SymbolResolutions {
-        resolutions: symbol_addresses,
-    };
-    (symbol_addresses, file_layouts)
-}
-
 fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout>) -> u64 {
     let mut file_size = 0;
     section_layouts.for_each(|_, s| file_size = file_size.max(s.file_offset + s.file_size));
@@ -144,13 +135,12 @@ fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout
 /// same time.
 pub struct Layout<'data> {
     pub symbol_db: &'data SymbolDb<'data>,
-    pub(crate) symbol_addresses: SymbolResolutions,
+    pub(crate) symbol_resolutions: SymbolResolutions,
     pub(crate) section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
     pub(crate) section_layouts: OutputSectionMap<OutputRecordLayout>,
     pub(crate) file_layouts: Vec<FileLayout<'data>>,
     pub(crate) segment_layouts: SegmentLayouts,
     pub output_sections: OutputSections<'data>,
-    pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
 }
 
 pub(crate) struct SegmentLayouts {
@@ -174,11 +164,14 @@ pub(crate) enum FileLayout<'data> {
     Object(ObjectLayout<'data>),
     #[allow(dead_code)]
     Dynamic(DynamicLayout<'data>),
+    Epilogue(EpilogueLayout),
+    NotLoaded,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum SymbolResolution {
     Resolved(Resolution),
+    #[allow(dead_code)]
     Dynamic,
 }
 
@@ -188,7 +181,7 @@ pub(crate) struct MergedStringStartAddresses {
 }
 
 /// Address information for a symbol or section.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) struct Resolution {
     // TODO: Experiment with putting these in separate vectors.
     pub(crate) value: u64,
@@ -196,6 +189,7 @@ pub(crate) struct Resolution {
 
     pub(crate) got_address: Option<NonZeroU64>,
     pub(crate) plt_address: Option<NonZeroU64>,
+    // TODO: Try to remove this.
     pub(crate) kind: TargetResolutionKind,
 }
 
@@ -214,46 +208,69 @@ enum FileLayoutState<'data> {
     #[allow(dead_code)]
     Dynamic(Box<DynamicLayoutState<'data>>),
     NotLoaded,
+    Epilogue(Box<EpilogueLayoutState>),
 }
 
 /// Data that doesn't come from any input files, but needs to be written by the linker.
 struct InternalLayoutState<'data> {
     common: CommonLayoutState,
-    defined: Vec<GlobalSymbolId>,
-    symbol_definitions: Vec<InternalSymDefInfo>,
-    entry_symbol_id: Option<GlobalSymbolId>,
+    internal_symbols: InternalSymbols,
+    entry_symbol_id: Option<SymbolId>,
     needs_tlsld_got_entry: bool,
     merged_strings: OutputSectionMap<resolution::MergedStringsSection<'data>>,
     identity: String,
     header_info: Option<HeaderInfo>,
 }
 
+pub(crate) struct EpilogueLayoutState {
+    common: CommonLayoutState,
+    internal_symbols: InternalSymbols,
+}
+
+pub(crate) struct EpilogueLayout {
+    pub(crate) mem_sizes: OutputSectionPartMap<u64>,
+    pub(crate) internal_symbols: InternalSymbols,
+    pub(crate) strings_offset_start: u32,
+}
+
 pub(crate) struct ObjectLayout<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) file_id: FileId,
-    pub(crate) object: Box<File<'data>>,
+    pub(crate) object: &'data File<'data>,
     pub(crate) mem_sizes: OutputSectionPartMap<u64>,
     pub(crate) sections: Vec<SectionSlot<'data>>,
     pub(crate) section_resolutions: Vec<Option<Resolution>>,
     pub(crate) strtab_offset_start: u32,
     pub(crate) plt_relocations: Vec<IfuncRelocation>,
-    pub(crate) loaded_symbols: Vec<GlobalSymbolId>,
-    pub(crate) local_symbol_resolutions: Vec<LocalSymbolResolution>,
     /// The memory address of the start of this object's allocation within .eh_frame.
     pub(crate) eh_frame_start_address: u64,
+    pub(crate) start_symbol_id: SymbolId,
+    pub(crate) num_symbols: usize,
 }
 
 pub(crate) struct InternalLayout<'data> {
     pub(crate) mem_sizes: OutputSectionPartMap<u64>,
+    // TODO: Investigate if we should get rid of this. Right now, any weak symbols that are
+    // undefined use this resolution, which means they all share the same GOT entry. However the
+    // whole point of a GOT entry is generally that it can be overridden at runtime, so probably
+    // each undefined weak symbol should have a separate GOT entry. If the GOT entries can be
+    // overridden at runtime, then PLT entries might also be needed, since calling the function at
+    // runtime might now not be undefined behaviour. However, it's possible that we may still want
+    // this. Especially for statically linked executables in case we encounter GOT relocations that
+    // we can't optimise away.
     pub(crate) undefined_symbol_resolution: Resolution,
-    pub(crate) defined: Vec<GlobalSymbolId>,
     pub(crate) strings_offset_start: u32,
-    pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
-    pub(crate) entry_symbol_id: GlobalSymbolId,
+    pub(crate) entry_symbol_id: SymbolId,
     pub(crate) tlsld_got_entry: Option<NonZeroU64>,
     pub(crate) merged_strings: OutputSectionMap<resolution::MergedStringsSection<'data>>,
     pub(crate) identity: String,
     pub(crate) header_info: HeaderInfo,
+    pub(crate) internal_symbols: InternalSymbols,
+}
+
+pub(crate) struct InternalSymbols {
+    pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
+    pub(crate) start_symbol_id: SymbolId,
 }
 
 pub(crate) struct DynamicLayout<'data> {
@@ -286,15 +303,13 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         queue: &mut LocalWorkQueue,
     ) -> Result {
         let symbol_id = symbol_request.symbol_id;
-        let symbol = resources.symbol_db.symbol(symbol_id);
-        debug_assert_eq!(symbol.file_id, self.file_id());
-        let local_index = symbol.local_index_without_checking_file_id().0;
+        let local_index = symbol_request.symbol_id.offset_from(self.start_symbol_id());
         let mut common = self.common_mut();
         if local_index >= common.symbol_states.len() {
             bail!(
-                "Internal error: Requested symbol `{}` from `{self}`, \
+                "Internal error: Requested `{}` from `{self}`, \
                  but local index {local_index} >= {}",
-                resources.symbol_db.symbol_name(symbol_id),
+                resources.symbol_db.symbol_debug(symbol_id),
                 common.symbol_states.len()
             );
         }
@@ -310,7 +325,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 common.symbol_states[local_index] = TargetResolutionKind::IFunc;
             } else {
                 common = self.common_mut();
-                common.symbol_states[local_index] = TargetResolutionKind::Address;
+                common.symbol_states[local_index] = TargetResolutionKind::Value;
             }
         }
         match symbol_request.target_resolution_kind {
@@ -338,7 +353,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 }
             }
             TargetResolutionKind::GotTlsDouble => match &common.symbol_states[local_index] {
-                TargetResolutionKind::Address => {
+                TargetResolutionKind::Value => {
                     common.symbol_states[local_index] = TargetResolutionKind::GotTlsDouble;
                     common.mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
                 }
@@ -352,13 +367,15 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         Ok(())
     }
 
+    fn start_symbol_id(&self) -> SymbolId;
+
     fn common_mut(&mut self) -> &mut CommonLayoutState;
 
     fn file_id(&self) -> FileId;
 
     fn load_symbol<'scope>(
         &mut self,
-        symbol_id: GlobalSymbolId,
+        symbol_id: SymbolId,
         local_index: usize,
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
@@ -375,12 +392,16 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
 
     fn load_symbol<'scope>(
         &mut self,
-        symbol_id: GlobalSymbolId,
+        symbol_id: SymbolId,
         local_index: usize,
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result<SymbolKind> {
-        self.state.loaded_symbols.push(symbol_id);
+        debug_assert_bail!(
+            resources.symbol_db.is_definition(symbol_id),
+            "Tried to load symbol in a file that doesn't hold the definition: {}",
+            resources.symbol_db.symbol_debug(symbol_id)
+        );
         let object_symbol_index = object::SymbolIndex(local_index);
         let local_symbol = self.object.symbol_by_index(object_symbol_index)?;
         let symbol_kind = match local_symbol.flags() {
@@ -393,17 +414,22 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
             }
             _ => SymbolKind::Regular,
         };
-        if let object::SymbolSection::Section(section_id) = local_symbol.section() {
-            self.state
-                .sections_required
-                .push(SectionRequest::new(section_id));
-            self.load_sections(resources, queue)?;
-        } else if let Some(common) = CommonSymbol::new(&local_symbol)? {
-            *self
-                .state
-                .common
-                .mem_sizes
-                .regular_mut(output_section_id::BSS, common.alignment) += common.size;
+        match local_symbol.section() {
+            object::SymbolSection::Section(section_id) => {
+                self.state
+                    .sections_required
+                    .push(SectionRequest::new(section_id));
+                self.load_sections(resources, queue)?;
+            }
+            object::SymbolSection::Common => {
+                let common = CommonSymbol::new(&local_symbol)?;
+                *self
+                    .state
+                    .common
+                    .mem_sizes
+                    .regular_mut(output_section_id::BSS, common.alignment) += common.size;
+            }
+            _ => {}
         }
         Ok(symbol_kind)
     }
@@ -419,6 +445,10 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
     fn file_id(&self) -> FileId {
         self.state.common.file_id
     }
+
+    fn start_symbol_id(&self) -> SymbolId {
+        self.state.common.start_symbol_id
+    }
 }
 
 impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
@@ -432,7 +462,7 @@ impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
 
     fn load_symbol<'scope>(
         &mut self,
-        _symbol_id: GlobalSymbolId,
+        _symbol_id: SymbolId,
         _local_index: usize,
         _resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
@@ -443,6 +473,40 @@ impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
     fn is_weak(&self, _local_index: usize) -> bool {
         // None of our internal symbols are currently weak.
         false
+    }
+
+    fn start_symbol_id(&self) -> SymbolId {
+        // Internal-layout always starts from the undefined symbol.
+        SymbolId::undefined()
+    }
+}
+
+impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState {
+    fn common_mut(&mut self) -> &mut CommonLayoutState {
+        &mut self.common
+    }
+
+    fn file_id(&self) -> FileId {
+        self.common.file_id
+    }
+
+    fn load_symbol<'scope>(
+        &mut self,
+        _symbol_id: SymbolId,
+        _local_index: usize,
+        _resources: &GraphResources<'data, 'scope>,
+        _queue: &mut LocalWorkQueue,
+    ) -> Result<SymbolKind> {
+        Ok(SymbolKind::Regular)
+    }
+
+    fn is_weak(&self, _local_index: usize) -> bool {
+        // Custom section start/stop symbols are currently never weak.
+        false
+    }
+
+    fn start_symbol_id(&self) -> SymbolId {
+        self.common.start_symbol_id
     }
 }
 
@@ -456,17 +520,27 @@ struct CommonLayoutState {
     /// something to refer to in the symtab.
     sections_with_content: OutputSectionMap<bool>,
 
-    /// States of each global symbol that we defined. Indexed as by Symbol::local_index.
+    /// States of each of our symbols. For symbols defined by us, this tracks whether we've done
+    /// things like allocated a GOT entry for the symbol. For symbols defined in other files, it
+    /// tracks whether we've asked the other file to allocate a GOT entry.
     symbol_states: Vec<TargetResolutionKind>,
+
+    start_symbol_id: SymbolId,
 }
 
 impl CommonLayoutState {
-    fn new(file_id: FileId, num_symbols: usize, output_sections: &OutputSections) -> Self {
+    fn new(
+        file_id: FileId,
+        num_symbols: usize,
+        output_sections: &OutputSections,
+        start_symbol_id: SymbolId,
+    ) -> Self {
         Self {
             file_id,
             mem_sizes: OutputSectionPartMap::with_size(output_sections.len()),
             sections_with_content: OutputSectionMap::with_size(output_sections.len()),
             symbol_states: vec![TargetResolutionKind::None; num_symbols],
+            start_symbol_id,
         }
     }
 
@@ -503,15 +577,15 @@ impl CommonLayoutState {
             next_rela_plt_address: memory_offsets.rela_plt,
             symbol_states: &self.symbol_states,
             symbol_db,
-            file_id: self.file_id,
             plt_relocations: Default::default(),
+            start_symbol_id: self.start_symbol_id,
         }
     }
 }
 
 struct ObjectLayoutState<'data> {
     input: InputRef<'data>,
-    object: Box<File<'data>>,
+    object: &'data File<'data>,
     state: ObjectLayoutMutableState<'data>,
     section_frame_data: Vec<SectionFrameData>,
 }
@@ -526,17 +600,10 @@ struct ObjectLayoutMutableState<'data> {
     /// same as the sections in the input object.
     sections: Vec<SectionSlot<'data>>,
 
-    /// Indexed as for object.symbols()
-    local_symbol_states: Vec<LocalSymbolState>,
-
-    /// Indexed as for object.symbols()
-    plt_got_flags: Vec<TargetResolutionKind>,
-
     /// A queue of sections that we need to load.
     sections_required: Vec<SectionRequest>,
 
-    loaded_symbols: Vec<GlobalSymbolId>,
-    local_symbol_resolutions: Vec<resolution::LocalSymbolResolution>,
+    merged_string_resolution: Vec<Option<MergedStringResolution>>,
 
     cies: SmallVec<[CieAtOffset<'data>; 2]>,
 }
@@ -544,11 +611,11 @@ struct ObjectLayoutMutableState<'data> {
 #[derive(Default)]
 struct SectionFrameData {
     /// Outgoing references from the FDE(s) for our section. Generally we have one symbol per
-    /// section and each symbol has an associated FDE. The FDE generally has 0 or 1 references
-    /// (excluding the reference to the symbol that the FDE is for). This is usually an exception
-    /// table. Since we expect that there's often 0 or 1 references, we avoid a separate allocation
-    /// for those cases.
-    relocation_actions: SmallVec<[RelocationLayoutAction; 1]>,
+    /// section and each symbol has an associated FDE. The FDE generally has 1 or 2 references
+    /// (including the reference to the symbol that the FDE is for). The second reference is usually
+    /// an exception table. Since we expect that there's often 1 or 2 references, we avoid a
+    /// separate allocation for those cases.
+    relocation_actions: SmallVec<[RelocationLayoutAction; 2]>,
 
     /// Number of FDEs associated with symbols in this section.
     num_fdes: u32,
@@ -566,12 +633,6 @@ struct LocalWorkQueue {
     local_work: Vec<WorkItem>,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug)]
-pub(crate) enum LocalSymbolState {
-    Unloaded,
-    Loaded,
-}
-
 /// What kind of resolution we want for a symbol or section.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub(crate) enum TargetResolutionKind {
@@ -579,11 +640,8 @@ pub(crate) enum TargetResolutionKind {
     #[default]
     None,
 
-    /// An absolute value.
+    /// Just a value or address.
     Value,
-
-    /// An regular address.
-    Address,
 
     /// An address in the global offset table.
     Got,
@@ -608,7 +666,7 @@ struct DynamicLayoutState<'data> {
     #[allow(dead_code)]
     object: Box<File<'data>>,
     input: InputRef<'data>,
-    referenced_symbol_ids: Vec<GlobalSymbolId>,
+    referenced_symbol_ids: Vec<SymbolId>,
 }
 
 #[derive(Debug)]
@@ -672,13 +730,8 @@ enum WorkItem {
 
 #[derive(Copy, Clone, Debug)]
 struct SymbolRequest {
-    symbol_id: GlobalSymbolId,
+    symbol_id: SymbolId,
     target_resolution_kind: TargetResolutionKind,
-}
-
-struct GlobalSymbolAddress {
-    symbol_id: GlobalSymbolId,
-    resolution: SymbolResolution,
 }
 
 impl<'data> Layout<'data> {
@@ -693,24 +746,41 @@ impl<'data> Layout<'data> {
         self.symbol_db.args
     }
 
-    pub(crate) fn global_symbol_resolution(
+    pub(crate) fn symbol_debug(&self, symbol_id: SymbolId) -> SymbolDebug {
+        self.symbol_db.symbol_debug(symbol_id)
+    }
+
+    pub(crate) fn symbol_resolution(&self, symbol_id: SymbolId) -> Option<&SymbolResolution> {
+        let canonical = self.symbol_db.definition(symbol_id);
+        self.symbol_resolutions.resolutions[canonical.as_usize()].as_ref()
+    }
+
+    pub(crate) fn resolutions_in_range(
         &self,
-        symbol_id: GlobalSymbolId,
-    ) -> Option<&SymbolResolution> {
-        self.symbol_addresses.resolutions[symbol_id.as_usize()].as_ref()
+        start: SymbolId,
+        num_symbols: usize,
+    ) -> impl Iterator<Item = (SymbolId, Option<&SymbolResolution>)> {
+        self.symbol_resolutions.resolutions[start.as_usize()..start.as_usize() + num_symbols]
+            .iter()
+            .enumerate()
+            .map(move |(i, res)| (start.add_usize(i), res.as_ref()))
     }
 
     pub(crate) fn entry_symbol_address(&self) -> Result<u64> {
         let symbol_id = self.internal().entry_symbol_id;
-        match self.global_symbol_resolution(symbol_id) {
+        match self.symbol_resolution(symbol_id) {
             Some(SymbolResolution::Resolved(resolution)) => Ok(resolution.value),
             Some(SymbolResolution::Dynamic) => {
-                let symbol_name = self.symbol_db.symbol_name(symbol_id);
-                bail!("{symbol_name} can't be from a dynamic library",)
+                bail!(
+                    "Symbol can't be from a dynamic library: {}",
+                    self.symbol_debug(symbol_id)
+                )
             }
             None => {
-                let symbol_name = self.symbol_db.symbol_name(symbol_id);
-                bail!("{symbol_name} symbol was present, but didn't get loaded")
+                bail!(
+                    "Symbol was present, but didn't get loaded: {}",
+                    self.symbol_debug(symbol_id)
+                )
             }
         }
     }
@@ -736,6 +806,10 @@ impl<'data> Layout<'data> {
 
     pub(crate) fn size_of_section(&self, section_id: OutputSectionId) -> u64 {
         self.section_layouts.get(section_id).file_size as u64
+    }
+
+    pub(crate) fn is_file_loaded(&self, file_id: FileId) -> bool {
+        !matches!(self.file_layouts[file_id.as_usize()], FileLayout::NotLoaded)
     }
 }
 
@@ -793,19 +867,20 @@ fn compute_symbols_and_layouts<'data>(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     symbol_db: &SymbolDb<'data>,
     merged_string_start_addresses: &MergedStringStartAddresses,
-) -> Result<Vec<(Vec<GlobalSymbolAddress>, FileLayout<'data>)>> {
+    symbol_resolutions: &mut [&mut [Option<SymbolResolution>]],
+) -> Result<Vec<FileLayout<'data>>> {
     layout_states
         .into_par_iter()
         .zip(starting_mem_offsets_by_file)
-        .filter_map(|(state, mut memory_offsets)| {
-            state
-                .finalise_layout(
-                    memory_offsets.as_mut(),
-                    section_layouts,
-                    symbol_db,
-                    merged_string_start_addresses,
-                )
-                .transpose()
+        .zip(symbol_resolutions)
+        .map(|((state, mut memory_offsets), symbols_out)| {
+            state.finalise_layout(
+                memory_offsets.as_mut(),
+                section_layouts,
+                symbol_db,
+                merged_string_start_addresses,
+                symbols_out,
+            )
         })
         .collect()
 }
@@ -1070,16 +1145,30 @@ impl<'data> FileWorker<'data> {
             FileLayoutState::Internal(s) => s.activate(resources),
             FileLayoutState::Dynamic(_) => todo!(),
             FileLayoutState::NotLoaded => Ok(()),
+            FileLayoutState::Epilogue(_) => Ok(()),
         }
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkDestination {
+    Local,
+    Remote,
+}
+
 impl LocalWorkQueue {
-    fn send_work(&mut self, resources: &GraphResources, file_id: FileId, work: WorkItem) {
+    fn send_work(
+        &mut self,
+        resources: &GraphResources,
+        file_id: FileId,
+        work: WorkItem,
+    ) -> WorkDestination {
         if file_id.as_usize() == self.index {
             self.local_work.push(work);
+            WorkDestination::Local
         } else {
             resources.send_work(file_id, work);
+            WorkDestination::Remote
         }
     }
 
@@ -1092,20 +1181,21 @@ impl LocalWorkQueue {
 
     fn send_symbol_request(
         &mut self,
-        symbol_id: GlobalSymbolId,
+        symbol_id: SymbolId,
         plt_got_flags: TargetResolutionKind,
         resources: &GraphResources,
-    ) {
-        let symbol = resources.symbol_db.symbol(symbol_id);
+    ) -> WorkDestination {
+        let symbol_definition = resources.symbol_db.definition(symbol_id);
+        let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_definition);
         let symbol_request = SymbolRequest {
-            symbol_id,
+            symbol_id: symbol_definition,
             target_resolution_kind: plt_got_flags,
         };
         self.send_work(
             resources,
-            symbol.file_id,
+            symbol_file_id,
             WorkItem::LoadGlobalSymbol(symbol_request),
-        );
+        )
     }
 }
 
@@ -1156,6 +1246,7 @@ impl<'data> FileLayoutState<'data> {
                 .finalise_sizes(symbol_db, output_sections)
                 .with_context(|| format!("finalise_sizes failed for {s}"))?,
             FileLayoutState::Internal(s) => s.finalise_sizes(symbol_db)?,
+            FileLayoutState::Epilogue(s) => s.finalise_sizes(symbol_db)?,
             _ => (),
         }
         Ok(())
@@ -1172,8 +1263,8 @@ impl<'data> FileLayoutState<'data> {
                 .handle_symbol_request(symbol_request, resources, queue)
                 .with_context(|| {
                     format!(
-                        "Failed to load symbol {} from {self}",
-                        resources.symbol_db.symbol_name(symbol_request.symbol_id),
+                        "Failed to load {} from {self}",
+                        resources.symbol_db.symbol_debug(symbol_request.symbol_id),
                     )
                 }),
         }
@@ -1194,6 +1285,9 @@ impl<'data> FileLayoutState<'data> {
             }
             FileLayoutState::Dynamic(state) => state.load_symbol(symbol_request, resources)?,
             FileLayoutState::NotLoaded => {}
+            FileLayoutState::Epilogue(state) => {
+                state.handle_symbol_request(symbol_request, resources, queue)?
+            }
         }
         Ok(())
     }
@@ -1204,6 +1298,7 @@ impl<'data> FileLayoutState<'data> {
             Self::Internal(s) => Some(&s.common.mem_sizes),
             Self::Dynamic(_) => None,
             Self::NotLoaded => None,
+            Self::Epilogue(s) => Some(&s.common.mem_sizes),
         }
     }
 
@@ -1211,6 +1306,7 @@ impl<'data> FileLayoutState<'data> {
         match self {
             Self::Object(s) => Some(&s.state.common),
             Self::Internal(s) => Some(&s.common),
+            Self::Epilogue(s) => Some(&s.common),
             Self::Dynamic(_) => None,
             Self::NotLoaded => None,
         }
@@ -1222,12 +1318,12 @@ impl<'data> FileLayoutState<'data> {
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
         symbol_db: &SymbolDb,
         merged_string_start_addresses: &MergedStringStartAddresses,
-    ) -> Result<Option<(Vec<GlobalSymbolAddress>, FileLayout<'data>)>> {
-        let mut addresses_out = Vec::new();
+        addresses_out: &mut [Option<SymbolResolution>],
+    ) -> Result<FileLayout<'data>> {
         let file_layout = match self {
             Self::Object(s) => FileLayout::Object(s.finalise_layout(
                 memory_offsets.unwrap(),
-                &mut addresses_out,
+                addresses_out,
                 section_layouts,
                 symbol_db,
                 merged_string_start_addresses,
@@ -1235,15 +1331,19 @@ impl<'data> FileLayoutState<'data> {
             Self::Internal(s) => FileLayout::Internal(s.finalise_layout(
                 memory_offsets.unwrap(),
                 section_layouts,
-                &mut addresses_out,
+                addresses_out,
                 symbol_db,
             )?),
-            Self::Dynamic(s) => FileLayout::Dynamic(s.finalise_layout(&mut addresses_out)),
-            Self::NotLoaded => {
-                return Ok(None);
-            }
+            Self::Epilogue(s) => FileLayout::Epilogue(s.finalise_layout(
+                memory_offsets.unwrap(),
+                section_layouts,
+                addresses_out,
+                symbol_db,
+            )?),
+            Self::Dynamic(s) => FileLayout::Dynamic(s.finalise_layout(addresses_out)),
+            Self::NotLoaded => FileLayout::NotLoaded,
         };
-        Ok(Some((addresses_out, file_layout)))
+        Ok(file_layout)
     }
 }
 
@@ -1252,6 +1352,8 @@ impl<'data> FileLayout<'data> {
         match self {
             Self::Object(s) => Some(&s.mem_sizes),
             Self::Internal(s) => Some(&s.mem_sizes),
+            Self::Epilogue(s) => Some(&s.mem_sizes),
+            Self::NotLoaded => None,
             Self::Dynamic(_) => None,
         }
     }
@@ -1278,13 +1380,20 @@ impl<'data> std::fmt::Display for InternalLayoutState<'data> {
     }
 }
 
+impl std::fmt::Display for EpilogueLayoutState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt("<custom sections>", f)
+    }
+}
+
 impl<'data> std::fmt::Display for FileLayoutState<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Object(s) => std::fmt::Display::fmt(s, f),
-            Self::Internal(_) => std::fmt::Display::fmt("<internal>", f),
-            Self::Dynamic(_) => todo!(),
-            Self::NotLoaded => std::fmt::Display::fmt("<not-loaded>", f),
+            FileLayoutState::Object(s) => std::fmt::Display::fmt(s, f),
+            FileLayoutState::Internal(_) => std::fmt::Display::fmt("<internal>", f),
+            FileLayoutState::Dynamic(_) => todo!(),
+            FileLayoutState::NotLoaded => std::fmt::Display::fmt("<not-loaded>", f),
+            FileLayoutState::Epilogue(_) => std::fmt::Display::fmt("<custom sections>", f),
         }
     }
 }
@@ -1294,6 +1403,8 @@ impl<'data> std::fmt::Display for FileLayout<'data> {
         match self {
             Self::Object(s) => std::fmt::Display::fmt(s, f),
             Self::Internal(_) => std::fmt::Display::fmt("<internal>", f),
+            Self::Epilogue(_) => std::fmt::Display::fmt("<custom sections>", f),
+            Self::NotLoaded => std::fmt::Display::fmt("<not loaded>", f),
             Self::Dynamic(_) => todo!(),
         }
     }
@@ -1389,9 +1500,7 @@ impl<'data> Section<'data> {
                 }
             }
             (
-                TargetResolutionKind::Address
-                | TargetResolutionKind::Value
-                | TargetResolutionKind::None,
+                TargetResolutionKind::Value | TargetResolutionKind::None,
                 TargetResolutionKind::GotTlsOffset,
             ) => {
                 mem_sizes.got += elf::GOT_ENTRY_SIZE;
@@ -1407,12 +1516,12 @@ impl<'data> Section<'data> {
                 mem_sizes.plt += elf::PLT_ENTRY_SIZE;
             }
             (
-                TargetResolutionKind::Address | TargetResolutionKind::None,
+                TargetResolutionKind::Value | TargetResolutionKind::None,
                 TargetResolutionKind::GotTlsDouble,
             ) => {
                 mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
             }
-            (_, TargetResolutionKind::Address | TargetResolutionKind::Value) => {}
+            (_, TargetResolutionKind::Value) => {}
             (a, b) => bail!("Unexpected state transition {a:?} -> {b:?}"),
         }
         self.resolution_kind = request.resolution_kind;
@@ -1443,13 +1552,8 @@ struct RelocationLayoutAction {
 /// An action that we need to perform if we decide to use a particular relocation.
 #[derive(Clone, Copy, Debug)]
 enum RelocationLayoutActionKind {
-    LoadSymbol(GlobalSymbolId, object::SymbolIndex, TargetResolutionKind),
+    LoadSymbol(SymbolId, TargetResolutionKind),
     LoadSection(object::SectionIndex, TargetResolutionKind),
-
-    /// The relocation can't be done at link time and needs to be done at runtime, so if we use the
-    /// relocation, all we need to do during the layout phase is allocate space in .rela_dyn for the
-    /// runtime relocation.
-    DynamicOnly,
 }
 
 impl RelocationLayoutAction {
@@ -1463,54 +1567,10 @@ impl RelocationLayoutAction {
         let args = symbol_db.args;
         match rel.target() {
             object::RelocationTarget::Symbol(local_sym_index) => {
-                let local_symbol_resolution = state.local_symbol_resolutions[local_sym_index.0];
-                match local_symbol_resolution {
-                    LocalSymbolResolution::Global(symbol_id)
-                    | LocalSymbolResolution::WeakRefToGlobal(symbol_id) => {
-                        return Ok(Some(Self::for_symbol(
-                            rel,
-                            rel_offset,
-                            section,
-                            symbol_db,
-                            symbol_id,
-                            args,
-                            local_sym_index,
-                        )?));
-                    }
-                    LocalSymbolResolution::MergedString(merge) => {
-                        // Even though we always load all the strings in a merge-string section, we
-                        // still need to send a request in order to ensure that the symbol is marked
-                        // as loaded.
-                        if let Some(symbol_id) = merge.symbol_id {
-                            return Ok(Some(Self::for_symbol(
-                                rel,
-                                rel_offset,
-                                section,
-                                symbol_db,
-                                symbol_id,
-                                args,
-                                local_sym_index,
-                            )?));
-                        } else if args.is_relocatable()
-                            && matches!(rel.kind(), object::RelocationKind::Absolute)
-                        {
-                            return Ok(Some(RelocationLayoutAction {
-                                kind: RelocationLayoutActionKind::DynamicOnly,
-                                dynamic_relocation_required: true,
-                            }));
-                        }
-                    }
-                    LocalSymbolResolution::LocalSection(local_section_index) => {
-                        return Ok(Some(Self::for_section(
-                            rel,
-                            rel_offset,
-                            section,
-                            args,
-                            local_section_index,
-                        )?));
-                    }
-                    _ => {}
-                }
+                let symbol_id = state.common.start_symbol_id.add_usize(local_sym_index.0);
+                return Ok(Some(Self::for_symbol(
+                    rel, rel_offset, section, symbol_db, symbol_id, args,
+                )?));
             }
             object::RelocationTarget::Section(local_section_index) => {
                 return Ok(Some(Self::for_section(
@@ -1531,11 +1591,10 @@ impl RelocationLayoutAction {
         rel_offset: u64,
         section: &elf::Section,
         symbol_db: &SymbolDb<'_>,
-        symbol_id: GlobalSymbolId,
+        symbol_id: SymbolId,
         args: &Args,
-        local_sym_index: object::SymbolIndex,
     ) -> Result<RelocationLayoutAction> {
-        let symbol = symbol_db.symbol(symbol_id);
+        let symbol_value_kind = symbol_db.symbol_value_kind(symbol_db.definition(symbol_id));
         let object::RelocationFlags::Elf { mut r_type } = rel.flags() else {
             unreachable!();
         };
@@ -1543,21 +1602,17 @@ impl RelocationLayoutAction {
             r_type,
             section.data()?,
             rel_offset as usize,
-            symbol.value_kind,
+            symbol_value_kind,
         ) {
             r_type = new_r_type;
         }
         let rel_info = RelocationKindInfo::from_raw(r_type)?;
-        let resolution_kind = TargetResolutionKind::new(rel_info.kind, symbol.value_kind, args)?;
+        let resolution_kind = TargetResolutionKind::new(rel_info.kind, args)?;
         let dynamic_relocation_required = args.is_relocatable()
             && matches!(rel_info.kind, RelocationKind::Absolute)
-            && !matches!(resolution_kind, TargetResolutionKind::Value);
+            && matches!(symbol_value_kind, ValueKind::Address);
         let relocation_layout_action = RelocationLayoutAction {
-            kind: RelocationLayoutActionKind::LoadSymbol(
-                symbol_id,
-                local_sym_index,
-                resolution_kind,
-            ),
+            kind: RelocationLayoutActionKind::LoadSymbol(symbol_id, resolution_kind),
             dynamic_relocation_required,
         };
         Ok(relocation_layout_action)
@@ -1582,7 +1637,7 @@ impl RelocationLayoutAction {
             r_type = new_r_type;
         }
         let rel_info = RelocationKindInfo::from_raw(r_type)?;
-        let resolution_kind = TargetResolutionKind::new(rel_info.kind, ValueKind::Address, args)?;
+        let resolution_kind = TargetResolutionKind::new(rel_info.kind, args)?;
         Ok(RelocationLayoutAction {
             kind: RelocationLayoutActionKind::LoadSection(local_section_index, resolution_kind),
             dynamic_relocation_required: args.is_relocatable()
@@ -1597,20 +1652,15 @@ impl RelocationLayoutAction {
         queue: &mut LocalWorkQueue,
     ) {
         match self.kind {
-            RelocationLayoutActionKind::LoadSymbol(symbol_id, local_sym_index, resolution_kind) => {
-                match &state.local_symbol_states[local_sym_index.0] {
-                    LocalSymbolState::Unloaded => {
-                        state.local_symbol_states[local_sym_index.0] = LocalSymbolState::Loaded;
-                        state.plt_got_flags[local_sym_index.0] = resolution_kind;
+            RelocationLayoutActionKind::LoadSymbol(symbol_id, resolution_kind) => {
+                let local_sym_index = symbol_id.offset_from(state.common.start_symbol_id);
+                if state.common.symbol_states[local_sym_index] < resolution_kind {
+                    let destination =
                         queue.send_symbol_request(symbol_id, resolution_kind, resources);
-                    }
-                    LocalSymbolState::Loaded => {
-                        if state.plt_got_flags[local_sym_index.0] < resolution_kind {
-                            // We've processed this symbol before, but the PLT/GOT requirements
-                            // just got stronger, so we'll still need to send a symbol request.
-                            state.plt_got_flags[local_sym_index.0] = resolution_kind;
-                            queue.send_symbol_request(symbol_id, resolution_kind, resources);
-                        }
+                    // For a symbol request that has a local destination, we'll update the symbol
+                    // state when we process the request.
+                    if destination == WorkDestination::Remote {
+                        state.common.symbol_states[local_sym_index] = resolution_kind;
                     }
                 }
             }
@@ -1621,7 +1671,6 @@ impl RelocationLayoutAction {
                     resolution_kind,
                 });
             }
-            RelocationLayoutActionKind::DynamicOnly => {}
         }
         if self.dynamic_relocation_required {
             state.common.mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
@@ -1630,7 +1679,7 @@ impl RelocationLayoutAction {
 }
 
 impl TargetResolutionKind {
-    fn new(rel_kind: RelocationKind, target_kind: ValueKind, args: &Args) -> Result<Self> {
+    fn new(rel_kind: RelocationKind, args: &Args) -> Result<Self> {
         let tls_mode = args.tls_mode();
         // TODO: This could probably be more efficiently implemented as lookup table indexed by the
         // raw relocation type. We can then select which lookup table to use based on tls_mode.
@@ -1639,7 +1688,7 @@ impl TargetResolutionKind {
                 if args.link_static {
                     // When statically linking, we transform PLT relocations into references to the
                     // actual function.
-                    Self::Address
+                    Self::Value
                 } else {
                     Self::Plt
                 }
@@ -1647,23 +1696,17 @@ impl TargetResolutionKind {
             RelocationKind::Got | RelocationKind::GotRelative => Self::Got,
             RelocationKind::GotTpOff => Self::GotTlsOffset,
             RelocationKind::TlsGd | RelocationKind::TlsLd => match tls_mode {
-                TlsMode::LocalExec => Self::Address,
+                TlsMode::LocalExec => Self::Value,
                 TlsMode::Preserve => Self::GotTlsDouble,
             },
-            RelocationKind::Absolute => {
-                if target_kind == ValueKind::Address {
-                    Self::Address
-                } else {
-                    Self::Value
-                }
-            }
-            RelocationKind::Relative => Self::Address,
+            RelocationKind::Absolute => Self::Value,
+            RelocationKind::Relative => Self::Value,
             RelocationKind::DtpOff | RelocationKind::TpOff => Self::Value,
         })
     }
 
     pub(crate) fn needs_got_entry(&self) -> bool {
-        !matches!(self, Self::Address | Self::None)
+        !matches!(self, Self::Value | Self::None)
     }
 }
 
@@ -1674,12 +1717,15 @@ impl<'data> InternalLayoutState<'data> {
     ) -> Self {
         let mut layout = Self {
             common: CommonLayoutState::new(
-                input_state.file_id,
+                INTERNAL_FILE_ID,
                 input_state.symbol_definitions.len(),
                 output_sections,
+                SymbolId::undefined(),
             ),
-            defined: input_state.defined,
-            symbol_definitions: input_state.symbol_definitions,
+            internal_symbols: InternalSymbols {
+                symbol_definitions: input_state.symbol_definitions.to_owned(),
+                start_symbol_id: SymbolId::zero(),
+            },
             entry_symbol_id: None,
             needs_tlsld_got_entry: false,
             merged_strings: input_state.merged_strings,
@@ -1717,11 +1763,11 @@ impl<'data> InternalLayoutState<'data> {
     fn activate(&mut self, resources: &GraphResources<'_, '_>) -> Result {
         let symbol_id = *resources
             .symbol_db
-            .symbol_ids
-            .get(&SymbolName::new(b"_start"))
+            .global_names
+            .get(&SymbolName::prehashed(b"_start"))
             .context("Missing _start symbol")?;
         self.entry_symbol_id = Some(symbol_id);
-        let file_id = resources.symbol_db.symbol(symbol_id).file_id;
+        let file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
         resources.send_work(
             file_id,
             WorkItem::LoadGlobalSymbol(SymbolRequest {
@@ -1744,7 +1790,8 @@ impl<'data> InternalLayoutState<'data> {
 
     fn finalise_sizes(&mut self, symbol_db: &SymbolDb) -> Result {
         if !symbol_db.args.strip_all {
-            self.allocate_symbol_table_sizes(symbol_db)?;
+            self.internal_symbols
+                .allocate_symbol_table_sizes(symbol_db, &mut self.common)?;
         }
 
         if symbol_db.args.pie {
@@ -1789,10 +1836,12 @@ impl<'data> InternalLayoutState<'data> {
         self.common
             .symbol_states
             .iter()
-            .zip(self.symbol_definitions.iter())
+            .zip(self.internal_symbols.symbol_definitions.iter())
             .for_each(|(symbol_state, definition)| {
                 if *symbol_state != TargetResolutionKind::None {
-                    keep_sections[definition.section_id().as_usize()] = true;
+                    if let Some(section_id) = definition.section_id() {
+                        keep_sections[section_id.as_usize()] = true;
+                    }
                 }
             });
         let num_sections = keep_sections.iter().filter(|p| **p).count();
@@ -1855,36 +1904,11 @@ impl<'data> InternalLayoutState<'data> {
         self.header_info = Some(header_info);
     }
 
-    fn allocate_symbol_table_sizes(&mut self, symbol_db: &SymbolDb<'_>) -> Result {
-        // Allocate space in the symbol table for the symbols that we define.
-        for &symbol_id in &self.defined {
-            let symbol = symbol_db.symbol(symbol_id);
-            let local_index = symbol.local_index_for_file(self.file_id())?;
-            let def_info = &self.symbol_definitions[local_index.0];
-            let sym_state = &self.common.symbol_states[local_index.0];
-            // Don't allocate space for symbols that are in our headers section, since it doesn't
-            // have an entry.
-            if def_info.section_id() == output_section_id::HEADERS {
-                continue;
-            }
-
-            // We don't put internal symbols in the symbol table if they aren't referenced.
-            if matches!(sym_state, TargetResolutionKind::None) {
-                continue;
-            }
-
-            self.common.mem_sizes.symtab_globals += size_of::<elf::SymtabEntry>() as u64;
-            self.common.mem_sizes.symtab_strings +=
-                symbol_db.symbol_name(symbol_id).len() as u64 + 1;
-        }
-        Ok(())
-    }
-
     fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
-        global_addresses_out: &mut Vec<GlobalSymbolAddress>,
+        resolutions_out: &mut [Option<SymbolResolution>],
         symbol_db: &SymbolDb,
     ) -> Result<InternalLayout<'data>> {
         let header_layout = section_layouts.built_in(output_section_id::HEADERS);
@@ -1911,40 +1935,18 @@ impl<'data> InternalLayoutState<'data> {
             address
         });
 
-        // Define symbols that are optionally put at the start/end of some sections.
-        let mut emitter = self
-            .common
-            .create_global_address_emitter(memory_offsets, symbol_db);
-        for symbol_id in &self.defined {
-            let symbol = symbol_db.symbol(*symbol_id);
-            let local_index = symbol.local_index_for_file(self.file_id())?;
-            let def_info = &self.symbol_definitions[local_index.0];
-            let sym_state = &self.common.symbol_states[local_index.0];
-
-            // We don't put internal symbols in the symbol table if they aren't referenced.
-            if matches!(sym_state, TargetResolutionKind::None) {
-                continue;
-            }
-
-            let address = match def_info {
-                InternalSymDefInfo::SectionStart(section_id) => {
-                    section_layouts.built_in(*section_id).mem_offset
-                }
-                InternalSymDefInfo::SectionEnd(section_id) => {
-                    let sec = &section_layouts.built_in(*section_id);
-                    sec.mem_offset + sec.mem_size
-                }
-            };
-            if let Some(global) = emitter.build_symbol(*symbol_id, address)? {
-                global_addresses_out.push(global);
-            }
-        }
+        self.internal_symbols.finalise_layout(
+            &self.common,
+            symbol_db,
+            memory_offsets,
+            section_layouts,
+            resolutions_out,
+        )?;
 
         let strings_offset_start = self.common.finalise_layout(memory_offsets, section_layouts);
         Ok(InternalLayout {
             mem_sizes: self.common.mem_sizes,
-            defined: self.defined,
-            symbol_definitions: self.symbol_definitions,
+            internal_symbols: self.internal_symbols,
             undefined_symbol_resolution,
             strings_offset_start,
             entry_symbol_id: self.entry_symbol_id.unwrap(),
@@ -1954,6 +1956,123 @@ impl<'data> InternalLayoutState<'data> {
             header_info: self
                 .header_info
                 .expect("we should have computed header info by now"),
+        })
+    }
+}
+
+impl InternalSymbols {
+    fn allocate_symbol_table_sizes(
+        &mut self,
+        symbol_db: &SymbolDb<'_>,
+        common: &mut CommonLayoutState,
+    ) -> Result {
+        // Allocate space in the symbol table for the symbols that we define.
+        for (index, def_info) in self.symbol_definitions.iter().enumerate() {
+            let symbol_id = self.start_symbol_id.add_usize(index);
+            if !symbol_db.is_definition(symbol_id) || symbol_id.is_undefined() {
+                continue;
+            }
+            let sym_state = &common.symbol_states[index];
+            // Don't allocate space for symbols that are in our headers section, since it doesn't
+            // have an entry.
+            if def_info.section_id() == Some(output_section_id::HEADERS) {
+                continue;
+            }
+
+            // We don't put internal symbols in the symbol table if they aren't referenced.
+            if matches!(sym_state, TargetResolutionKind::None) {
+                continue;
+            }
+
+            common.mem_sizes.symtab_globals += size_of::<elf::SymtabEntry>() as u64;
+            let symbol_name = symbol_db.symbol_name(symbol_id)?;
+            common.mem_sizes.symtab_strings += symbol_name.len() as u64 + 1;
+        }
+        Ok(())
+    }
+
+    fn finalise_layout(
+        &self,
+        common: &CommonLayoutState,
+        symbol_db: &SymbolDb,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        section_layouts: &OutputSectionMap<OutputRecordLayout>,
+        resolutions_out: &mut [Option<SymbolResolution>],
+    ) -> Result {
+        // Define symbols that are optionally put at the start/end of some sections.
+        let mut emitter = common.create_global_address_emitter(memory_offsets, symbol_db);
+        for (local_index, def_info) in self.symbol_definitions.iter().enumerate() {
+            let symbol_id = self.start_symbol_id.add_usize(local_index);
+            if !symbol_db.is_definition(symbol_id) {
+                continue;
+            }
+            let sym_state = &common.symbol_states[local_index];
+
+            // We don't put internal symbols in the symbol table if they aren't referenced.
+            if matches!(sym_state, TargetResolutionKind::None) {
+                continue;
+            }
+
+            let address = match def_info {
+                InternalSymDefInfo::Undefined => 0,
+                InternalSymDefInfo::SectionStart(section_id) => {
+                    section_layouts.built_in(*section_id).mem_offset
+                }
+                InternalSymDefInfo::SectionEnd(section_id) => {
+                    let sec = &section_layouts.built_in(*section_id);
+                    sec.mem_offset + sec.mem_size
+                }
+            };
+            emitter.emit_resolution(symbol_id, address, resolutions_out)?;
+        }
+        Ok(())
+    }
+}
+
+impl EpilogueLayoutState {
+    fn new(input_state: ResolvedEpilogue, output_sections: &OutputSections) -> EpilogueLayoutState {
+        EpilogueLayoutState {
+            common: CommonLayoutState::new(
+                input_state.file_id,
+                input_state.symbol_definitions.len(),
+                output_sections,
+                input_state.start_symbol_id,
+            ),
+            internal_symbols: InternalSymbols {
+                symbol_definitions: input_state.symbol_definitions,
+                start_symbol_id: input_state.start_symbol_id,
+            },
+        }
+    }
+
+    fn finalise_sizes(&mut self, symbol_db: &SymbolDb) -> Result {
+        if !symbol_db.args.strip_all {
+            self.internal_symbols
+                .allocate_symbol_table_sizes(symbol_db, &mut self.common)?;
+        }
+        Ok(())
+    }
+
+    fn finalise_layout(
+        self,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        section_layouts: &OutputSectionMap<OutputRecordLayout>,
+        resolutions_out: &mut [Option<SymbolResolution>],
+        symbol_db: &SymbolDb,
+    ) -> Result<EpilogueLayout> {
+        self.internal_symbols.finalise_layout(
+            &self.common,
+            symbol_db,
+            memory_offsets,
+            section_layouts,
+            resolutions_out,
+        )?;
+
+        let strings_offset_start = self.common.finalise_layout(memory_offsets, section_layouts);
+        Ok(EpilogueLayout {
+            mem_sizes: self.common.mem_sizes,
+            internal_symbols: self.internal_symbols,
+            strings_offset_start,
         })
     }
 }
@@ -1980,7 +2099,6 @@ impl<'data> ObjectLayoutState<'data> {
         input_state: resolution::ResolvedObject<'data>,
         output_sections: &OutputSections,
     ) -> ObjectLayoutState<'data> {
-        let num_symbols = input_state.local_symbol_resolutions.len();
         ObjectLayoutState {
             input: input_state.input,
             object: input_state.object,
@@ -1988,15 +2106,13 @@ impl<'data> ObjectLayoutState<'data> {
             state: ObjectLayoutMutableState {
                 common: CommonLayoutState::new(
                     input_state.file_id,
-                    input_state.local_symbol_resolutions.len(),
+                    input_state.num_symbols,
                     output_sections,
+                    input_state.start_symbol_id,
                 ),
                 sections: input_state.sections,
-                loaded_symbols: Default::default(),
-                local_symbol_states: vec![LocalSymbolState::Unloaded; num_symbols],
-                plt_got_flags: vec![TargetResolutionKind::None; num_symbols],
                 sections_required: Default::default(),
-                local_symbol_resolutions: input_state.local_symbol_resolutions,
+                merged_string_resolution: input_state.merged_string_resolutions,
                 cies: Default::default(),
             },
         }
@@ -2026,7 +2142,8 @@ impl<'data> ObjectLayoutState<'data> {
         }
         if let Some(eh_frame_section) = eh_frame_section {
             process_eh_frame_data(
-                self.object.as_ref(),
+                self.object,
+                self.start_symbol_id(),
                 &mut self.section_frame_data,
                 &mut self.state,
                 eh_frame_section,
@@ -2137,17 +2254,14 @@ impl<'data> ObjectLayoutState<'data> {
                     }
                 }
                 object::SymbolSection::Common => {
-                    if let Some(symbol_id) =
-                        self.state.local_symbol_resolutions[sym.index().0].global_symbol_id()
+                    let symbol_id = self.start_symbol_id().add_usize(sym.index().0);
+                    let symbol_file_id = symbol_db.file_id_for_symbol(symbol_id);
+                    if symbol_file_id == self.state.common.file_id
+                        && self.state.common.symbol_states[sym.index().0]
+                            != TargetResolutionKind::None
                     {
-                        let symbol = symbol_db.symbol(symbol_id);
-                        if symbol.file_id == self.state.common.file_id
-                            && self.state.common.symbol_states[sym.index().0]
-                                != TargetResolutionKind::None
-                        {
-                            num_globals += 1;
-                            strings_size += sym.name_bytes()?.len() + 1;
-                        }
+                        num_globals += 1;
+                        strings_size += sym.name_bytes()?.len() + 1;
                     }
                 }
                 _ => {}
@@ -2161,18 +2275,14 @@ impl<'data> ObjectLayoutState<'data> {
     }
 
     fn finalise_layout(
-        mut self,
+        self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        global_addresses_out: &mut Vec<GlobalSymbolAddress>,
+        resolutions_out: &mut [Option<SymbolResolution>],
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
         symbol_db: &SymbolDb,
         merged_string_start_addresses: &MergedStringStartAddresses,
     ) -> Result<ObjectLayout<'data>> {
-        // Sort in order to ensure deterministic allocation of PLT/GOT entries as well as output
-        // order.
-        self.state.loaded_symbols.sort();
-
-        let file_id = self.file_id();
+        let start_symbol_id = self.start_symbol_id();
         let mut sections = self.state.sections;
 
         let mut emitter = self
@@ -2209,7 +2319,7 @@ impl<'data> ObjectLayoutState<'data> {
                     // order to find the start and end of the whole .eh_frame section.
                     section_resolutions.push(Some(emitter.create_resolution(
                         ValueKind::Address,
-                        TargetResolutionKind::Address,
+                        TargetResolutionKind::Value,
                         memory_offsets.eh_frame,
                     )?));
                 }
@@ -2219,30 +2329,48 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
 
-        for symbol_id in &self.state.loaded_symbols {
-            let symbol = symbol_db.symbol(*symbol_id);
-            let local_index = symbol.local_index_for_file(file_id)?;
-            let local_symbol = self.object.symbol_by_index(local_index)?;
+        for (local_symbol, symbol_state) in
+            self.object.symbols().zip(&self.state.common.symbol_states)
+        {
+            if *symbol_state == TargetResolutionKind::None {
+                continue;
+            }
+            let symbol_id = start_symbol_id.add_usize(local_symbol.index().0);
+            if !symbol_db.is_definition(symbol_id) {
+                continue;
+            }
+            let local_symbol = self.object.symbol_by_index(local_symbol.index())?;
             let mut address = local_symbol.address();
-            if let Some(section_index) = local_symbol.section_index() {
-                if let Some(section_resolution) = section_resolutions[section_index.0].as_ref() {
-                    address += section_resolution.value;
-                } else {
-                    address = merged_string_start_addresses
-                        .try_resolve_local(&self.state.local_symbol_resolutions, local_index)
-                        .ok_or_else(|| {
-                            let symbol_name = symbol_db.symbol_name(*symbol_id);
-                            anyhow!("Symbol `{symbol_name}` is in a section that we didn't load")
-                        })?;
+            match local_symbol.section() {
+                object::SymbolSection::Section(section_index) => {
+                    if let Some(section_resolution) = section_resolutions[section_index.0].as_ref()
+                    {
+                        address += section_resolution.value;
+                    } else {
+                        address = merged_string_start_addresses
+                            .try_resolve_local(
+                                &self.state.merged_string_resolution,
+                                local_symbol.index(),
+                            )
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "Symbol is in a section that we didn't load. Symbol: {} Section: {}",
+                                    symbol_db.symbol_debug(symbol_id),
+                                    section_debug(self.object, section_index),
+                                )
+                            })?;
+                    }
                 }
-            } else if let Some(common) = CommonSymbol::new(&local_symbol)? {
-                let offset = memory_offsets.regular_mut(output_section_id::BSS, common.alignment);
-                address = *offset;
-                *offset += common.size;
+                object::SymbolSection::Common => {
+                    let common = CommonSymbol::new(&local_symbol)?;
+                    let offset =
+                        memory_offsets.regular_mut(output_section_id::BSS, common.alignment);
+                    address = *offset;
+                    *offset += common.size;
+                }
+                _ => {}
             }
-            if let Some(global) = emitter.build_symbol(*symbol_id, address)? {
-                global_addresses_out.push(global);
-            }
+            emitter.emit_resolution(symbol_id, address, resolutions_out)?;
         }
 
         let plt_relocations = emitter.plt_relocations;
@@ -2256,13 +2384,13 @@ impl<'data> ObjectLayoutState<'data> {
             file_id: self.state.common.file_id,
             object: self.object,
             mem_sizes: self.state.common.mem_sizes,
-            local_symbol_resolutions: self.state.local_symbol_resolutions,
             sections,
             section_resolutions,
             strtab_offset_start,
             plt_relocations,
-            loaded_symbols: self.state.loaded_symbols,
             eh_frame_start_address: memory_offsets.eh_frame,
+            start_symbol_id,
+            num_symbols: self.state.common.symbol_states.len(),
         })
     }
 }
@@ -2289,16 +2417,10 @@ impl MergedStringStartAddresses {
     /// Returns the address of `local_symbol_index` if it points to a merged string, or None if not.
     fn try_resolve_local(
         &self,
-        local_symbol_resolutions: &[LocalSymbolResolution],
+        merged_string_resolutions: &[Option<MergedStringResolution>],
         local_symbol_index: object::SymbolIndex,
     ) -> Option<u64> {
-        if let LocalSymbolResolution::MergedString(res) =
-            local_symbol_resolutions[local_symbol_index.0]
-        {
-            Some(self.resolve(res))
-        } else {
-            None
-        }
+        merged_string_resolutions[local_symbol_index.0].map(|res| self.resolve(res))
     }
 
     pub(crate) fn resolve(&self, res: resolution::MergedStringResolution) -> u64 {
@@ -2313,7 +2435,8 @@ pub(crate) fn should_copy_symbol(name: &[u8]) -> bool {
 }
 
 fn process_eh_frame_data<'data>(
-    object: &elf::File<'data>,
+    object: &crate::elf::File<'data>,
+    file_start_symbol: SymbolId,
     section_frame_data: &mut Vec<SectionFrameData>,
     state: &mut ObjectLayoutMutableState<'data>,
     eh_frame_section: elf::Section<'data, '_>,
@@ -2339,7 +2462,10 @@ fn process_eh_frame_data<'data>(
         }
         if prefix.cie_id == 0 {
             // This is a CIE
-            let mut referenced_symbols: SmallVec<[GlobalSymbolId; 1]> = Default::default();
+            let mut referenced_symbols: SmallVec<[SymbolId; 1]> = Default::default();
+            // When deduplicating CIEs, we take into consideration the bytes of the CIE and all the
+            // symbols it references. If however, it references something other than a symbol, then,
+            // because we're not taking that into consideration, we disallow deduplication.
             let mut eligible_for_deduplication = true;
             while let Some((rel_offset, rel)) = relocations.peek() {
                 if *rel_offset >= next_offset as u64 {
@@ -2358,14 +2484,11 @@ fn process_eh_frame_data<'data>(
                     action.apply(resources, state, queue);
                 }
                 if let object::RelocationTarget::Symbol(local_sym_index) = rel.target() {
-                    let symbol_res = state.local_symbol_resolutions[local_sym_index.0];
-                    match symbol_res {
-                        LocalSymbolResolution::Global(symbol_id)
-                        | LocalSymbolResolution::WeakRefToGlobal(symbol_id) => {
-                            referenced_symbols.push(symbol_id);
-                        }
-                        _ => eligible_for_deduplication = false,
-                    }
+                    let local_symbol_id = file_start_symbol.add_usize(local_sym_index.0);
+                    let definition = resources.symbol_db.definition(local_symbol_id);
+                    referenced_symbols.push(definition);
+                } else {
+                    eligible_for_deduplication = false;
                 }
                 relocations.next();
             }
@@ -2380,7 +2503,7 @@ fn process_eh_frame_data<'data>(
         } else {
             // This is an FDE
             let mut section_index = None;
-            let mut actions: SmallVec<[RelocationLayoutAction; 1]> = Default::default();
+            let mut actions: SmallVec<[RelocationLayoutAction; 2]> = Default::default();
 
             while let Some((rel_offset, rel)) = relocations.peek() {
                 if *rel_offset < next_offset as u64 {
@@ -2397,7 +2520,8 @@ fn process_eh_frame_data<'data>(
                             }
                             _ => {}
                         };
-                    } else if let Some(action) = RelocationLayoutAction::new(
+                    }
+                    if let Some(action) = RelocationLayoutAction::new(
                         rel,
                         &eh_frame_section,
                         *rel_offset,
@@ -2413,7 +2537,7 @@ fn process_eh_frame_data<'data>(
             }
             if let Some(section_index) = section_index {
                 let section_frame_data = &mut section_frame_data[section_index.0];
-                section_frame_data.relocation_actions = actions;
+                section_frame_data.relocation_actions.append(&mut actions);
                 section_frame_data.num_fdes += 1;
                 section_frame_data.total_fde_size += size as u32;
             }
@@ -2431,7 +2555,7 @@ fn process_eh_frame_data<'data>(
 struct Cie<'data> {
     bytes: &'data [u8],
     eligible_for_deduplication: bool,
-    referenced_symbols: SmallVec<[GlobalSymbolId; 1]>,
+    referenced_symbols: SmallVec<[SymbolId; 1]>,
 }
 
 struct CieAtOffset<'data> {
@@ -2449,15 +2573,13 @@ struct CommonSymbol {
 }
 
 impl CommonSymbol {
-    fn new(local_symbol: &crate::elf::Symbol) -> Result<Option<CommonSymbol>> {
-        if !local_symbol.is_common() {
-            return Ok(None);
-        }
+    fn new(local_symbol: &crate::elf::Symbol) -> Result<CommonSymbol> {
+        debug_assert!(local_symbol.is_common());
         // Common symbols misuse the value field (which we access via `address()`) to store the
         // alignment.
         let alignment = Alignment::new(local_symbol.address())?;
         let size = alignment.align_up(local_symbol.size());
-        Ok(Some(CommonSymbol { size, alignment }))
+        Ok(CommonSymbol { size, alignment })
     }
 }
 
@@ -2467,27 +2589,34 @@ struct GlobalAddressEmitter<'state> {
     next_rela_plt_address: u64,
     symbol_states: &'state [TargetResolutionKind],
     symbol_db: &'state SymbolDb<'state>,
-    file_id: FileId,
     plt_relocations: Vec<IfuncRelocation>,
+    start_symbol_id: SymbolId,
 }
 
 impl<'state> GlobalAddressEmitter<'state> {
-    fn build_symbol(
+    fn emit_resolution(
         &mut self,
-        symbol_id: GlobalSymbolId,
+        symbol_id: SymbolId,
         address: u64,
-    ) -> Result<Option<GlobalSymbolAddress>> {
-        let symbol = &self.symbol_db.symbol(symbol_id);
-        let local_symbol_index = symbol.local_index_for_file(self.file_id)?;
+        resolutions_out: &mut [Option<SymbolResolution>],
+    ) -> Result {
+        debug_assert_bail!(
+            symbol_id >= self.start_symbol_id
+                && symbol_id.offset_from(self.start_symbol_id) < resolutions_out.len(),
+            "Tried to emit resolution for {} which is outside {}..{}",
+            self.symbol_db.symbol_debug(symbol_id),
+            self.start_symbol_id,
+            self.start_symbol_id.add_usize(resolutions_out.len())
+        );
+        let local_symbol_index = symbol_id.offset_from(self.start_symbol_id);
+        let symbol_value_kind = self.symbol_db.symbol_value_kind(symbol_id);
         let resolution = self.create_resolution(
-            symbol.value_kind,
-            self.symbol_states[local_symbol_index.0],
+            symbol_value_kind,
+            self.symbol_states[local_symbol_index],
             address,
         )?;
-        Ok(Some(GlobalSymbolAddress {
-            symbol_id,
-            resolution: SymbolResolution::Resolved(resolution),
-        }))
+        resolutions_out[local_symbol_index] = Some(SymbolResolution::Resolved(resolution));
+        Ok(())
     }
 
     fn create_resolution(
@@ -2504,9 +2633,7 @@ impl<'state> GlobalAddressEmitter<'state> {
             kind: res_kind,
         };
         match res_kind {
-            TargetResolutionKind::None
-            | TargetResolutionKind::Address
-            | TargetResolutionKind::Value => {}
+            TargetResolutionKind::None | TargetResolutionKind::Value => {}
             TargetResolutionKind::Got | TargetResolutionKind::GotTlsOffset => {
                 resolution.got_address = Some(self.allocate_got());
             }
@@ -2564,6 +2691,9 @@ impl<'data> resolution::ResolvedFile<'data> {
                 FileLayoutState::Internal(Box::new(InternalLayoutState::new(s, output_sections)))
             }
             resolution::ResolvedFile::NotLoaded => FileLayoutState::NotLoaded,
+            resolution::ResolvedFile::Epilogue(s) => {
+                FileLayoutState::Epilogue(Box::new(EpilogueLayoutState::new(s, output_sections)))
+            }
         }
     }
 }
@@ -2639,28 +2769,14 @@ impl<'data> DynamicLayoutState<'data> {
         // }
     }
 
-    fn new(input_state: symbol_db::ObjectSymbols<'data>) -> DynamicLayoutState<'data> {
-        DynamicLayoutState {
-            object: input_state.object,
-            referenced_symbol_ids: Default::default(),
-            input: input_state.input,
+    fn finalise_layout(
+        self,
+        _addresses_out: &mut [Option<SymbolResolution>],
+    ) -> DynamicLayout<'data> {
+        for _symbol_id in self.referenced_symbol_ids {
+            todo!();
         }
-    }
-
-    fn finalise_layout(self, addresses_out: &mut Vec<GlobalSymbolAddress>) -> DynamicLayout<'data> {
-        addresses_out.extend(self.referenced_symbol_ids.iter().map(|symbol_id| {
-            GlobalSymbolAddress {
-                symbol_id: *symbol_id,
-                resolution: SymbolResolution::Dynamic,
-            }
-        }));
         DynamicLayout { input: self.input }
-    }
-}
-
-impl<'data> ObjectLayout<'data> {
-    pub(crate) fn global_id_for_symbol(&self, sym: &elf::Symbol) -> Option<GlobalSymbolId> {
-        self.local_symbol_resolutions[sym.index().0].global_symbol_id()
     }
 }
 
@@ -2673,21 +2789,44 @@ impl<'data> Layout<'data> {
 impl<'data> std::fmt::Debug for FileLayoutState<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Object(s) => f.debug_tuple("Object").field(&s.input).finish(),
-            Self::Internal(_) => f.debug_tuple("Internal").finish(),
-            Self::Dynamic(_) => f.debug_tuple("Dynamic").finish(),
-            Self::NotLoaded => "<not loaded>".fmt(f),
+            FileLayoutState::Object(s) => f.debug_tuple("Object").field(&s.input).finish(),
+            FileLayoutState::Internal(_) => f.debug_tuple("Internal").finish(),
+            FileLayoutState::Dynamic(_) => f.debug_tuple("Dynamic").finish(),
+            FileLayoutState::NotLoaded => Display::fmt(&"<not loaded>", f),
+            FileLayoutState::Epilogue(_) => Display::fmt(&"<custom sections>", f),
         }
     }
 }
 fn print_symbol_info(symbol_db: &SymbolDb, files: &[resolution::ResolvedFile], name: &str) {
-    let Some(symbol_id) = symbol_db.symbol_ids.get(&SymbolName::new(name.as_bytes())) else {
+    let Some(symbol_id) = symbol_db
+        .global_names
+        .get(&SymbolName::prehashed(name.as_bytes()))
+    else {
         println!("No global symbol `{name}` defined by any input files");
         return;
     };
-    let symbol = symbol_db.symbol(*symbol_id);
-    let file = &files[symbol.file_id.as_usize()];
+    let symbol_file_id = symbol_db.file_id_for_symbol(*symbol_id);
+    let file = &files[symbol_file_id.as_usize()];
     println!("Symbol `{name}` defined by {file}");
+}
+
+fn section_debug(object: &crate::elf::File, section_index: object::SectionIndex) -> SectionDebug {
+    let name = object
+        .section_by_index(section_index)
+        .and_then(|section| section.name_bytes())
+        .map(|name| String::from_utf8_lossy(name).into_owned())
+        .unwrap_or_else(|_| "??".to_owned());
+    SectionDebug { name }
+}
+
+struct SectionDebug {
+    name: String,
+}
+
+impl Display for SectionDebug {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "`{}`", self.name)
+    }
 }
 
 /// Performs layout of sections and segments then makes sure that the loadable segments don't

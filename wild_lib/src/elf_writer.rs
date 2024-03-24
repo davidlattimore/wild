@@ -13,10 +13,11 @@ use crate::elf::SegmentType;
 use crate::elf::SymtabEntry;
 use crate::elf::PLT_ENTRY_TEMPLATE;
 use crate::error::Result;
-use crate::input_data::INTERNAL_FILE_ID;
+use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
 use crate::layout::HeaderInfo;
 use crate::layout::InternalLayout;
+use crate::layout::InternalSymbols;
 use crate::layout::Layout;
 use crate::layout::ObjectLayout;
 use crate::layout::Resolution;
@@ -30,12 +31,13 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::relaxation::Relaxation;
-use crate::resolution::LocalSymbolResolution;
 use crate::resolution::SectionSlot;
 use crate::resolution::ValueKind;
+use crate::sharding::ShardKey;
 use crate::slice::slice_take_prefix_mut;
-use crate::symbol_db::GlobalSymbolId;
+use crate::slice::take_first_mut;
 use crate::symbol_db::SymbolDb;
+use crate::symbol_db::SymbolId;
 use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -323,9 +325,11 @@ impl FileHeader {
 impl<'data> FileLayout<'data> {
     fn write(&self, buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
         match self {
-            Self::Object(s) => s.write(buffers, layout)?,
-            Self::Internal(s) => s.write(buffers, layout)?,
-            Self::Dynamic(_) => {}
+            FileLayout::Object(s) => s.write(buffers, layout)?,
+            FileLayout::Internal(s) => s.write(buffers, layout)?,
+            FileLayout::Epilogue(s) => s.write(buffers, layout)?,
+            FileLayout::NotLoaded => {}
+            FileLayout::Dynamic(_) => {}
         }
         Ok(())
     }
@@ -355,10 +359,10 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
 
     fn process_symbol(
         &mut self,
-        symbol_id: GlobalSymbolId,
-        relocation_writer: &mut RelocationWriter,
+        symbol_id: SymbolId,
+        relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
-        match self.layout.global_symbol_resolution(symbol_id) {
+        match self.layout.symbol_resolution(symbol_id) {
             Some(SymbolResolution::Resolved(res)) => {
                 self.process_resolution(res, relocation_writer)?;
             }
@@ -371,14 +375,14 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
     fn process_resolution(
         &mut self,
         res: &Resolution,
-        relocation_writer: &mut RelocationWriter,
+        relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
         if let Some(got_address) = res.got_address {
             if self.got.is_empty() {
                 bail!("Didn't allocate enough space in GOT");
             }
 
-            let mut needs_relocation = relocation_writer.is_active;
+            let mut got_needs_relocation = relocation_writer.is_active;
             let address = match res.kind {
                 TargetResolutionKind::GotTlsDouble => {
                     let mod_got_entry = slice_take_prefix_mut(&mut self.got, 1);
@@ -390,7 +394,7 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
                     return Ok(());
                 }
                 TargetResolutionKind::GotTlsOffset => {
-                    needs_relocation = false;
+                    got_needs_relocation = false;
                     // Convert the address to an offset relative to the TCB which is the end of the TLS
                     // segment.
                     if !self.tls.contains(&res.value) {
@@ -402,17 +406,17 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
                     res.value.wrapping_sub(self.tls.end)
                 }
                 TargetResolutionKind::IFunc => {
-                    needs_relocation = false;
+                    got_needs_relocation = false;
                     0
                 }
                 TargetResolutionKind::Value => {
-                    needs_relocation = false;
+                    got_needs_relocation = false;
                     res.value
                 }
                 _ => res.value,
             };
             let got_entry = slice_take_prefix_mut(&mut self.got, 1);
-            if needs_relocation {
+            if got_needs_relocation {
                 relocation_writer.write_relocation(got_address.get(), address)?;
             } else {
                 got_entry[0] = address;
@@ -448,7 +452,7 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
     fn write_ifunc_relocation(
         &mut self,
         rel: &crate::layout::IfuncRelocation,
-        relocation_writer: &mut RelocationWriter,
+        relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
         let out = slice_take_prefix_mut(&mut self.rela_plt, 1);
         let out = &mut out[0];
@@ -548,11 +552,21 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         name: &[u8],
     ) -> Result<&mut SymtabEntry> {
         let entry = if is_local {
-            slice_take_prefix_mut(&mut self.local_entries, 1)
+            take_first_mut(&mut self.local_entries).with_context(|| {
+                format!(
+                    "Insufficient local symbol entries allocated for symbol `{}`",
+                    String::from_utf8_lossy(name),
+                )
+            })?
         } else {
-            slice_take_prefix_mut(&mut self.global_entries, 1)
+            take_first_mut(&mut self.global_entries).with_context(|| {
+                format!(
+                    "Insufficient global symbol entries allocated for symbol `{}`",
+                    String::from_utf8_lossy(name),
+                )
+            })?
         };
-        entry[0] = SymtabEntry {
+        *entry = SymtabEntry {
             name: self.string_offset,
             info: 0,
             other: 0,
@@ -565,7 +579,7 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         str_out[..len].copy_from_slice(name);
         str_out[len] = 0;
         self.string_offset += len as u32 + 1;
-        Ok(&mut entry[0])
+        Ok(entry)
     }
 
     /// Verifies that we've used up all the space allocated to this writer. i.e. checks that we
@@ -591,7 +605,7 @@ impl<'data> ObjectLayout<'data> {
         let start_str_offset = self.strtab_offset_start;
         let mut plt_got_writer = PltGotWriter::new(layout, &mut buffers);
         let mut relocation_writer =
-            RelocationWriter::new(layout.args().is_relocatable(), &mut buffers);
+            DynamicRelocationWriter::new(layout.args().is_relocatable(), &mut buffers);
         for sec in &self.sections {
             match sec {
                 SectionSlot::Loaded(sec) => self.write_section(
@@ -615,15 +629,16 @@ impl<'data> ObjectLayout<'data> {
         for rel in &self.plt_relocations {
             plt_got_writer.write_ifunc_relocation(rel, &mut relocation_writer)?;
         }
-        for symbol_id in &self.loaded_symbols {
-            plt_got_writer
-                .process_symbol(*symbol_id, &mut relocation_writer)
-                .with_context(|| {
-                    format!(
-                        "Failed to process symbol `{}`",
-                        layout.symbol_db.symbol_name(*symbol_id)
-                    )
-                })?;
+        for (symbol_id, resolution) in
+            layout.resolutions_in_range(self.start_symbol_id, self.num_symbols)
+        {
+            if let Some(SymbolResolution::Resolved(res)) = resolution {
+                plt_got_writer
+                    .process_resolution(res, &mut relocation_writer)
+                    .with_context(|| {
+                        format!("Failed to process `{}`", layout.symbol_debug(symbol_id))
+                    })?;
+            }
         }
         if !layout.args().strip_all {
             self.write_symbols(start_str_offset, buffers, &layout.output_sections, layout)?;
@@ -639,7 +654,7 @@ impl<'data> ObjectLayout<'data> {
         sec: &Section<'_>,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         plt_got_writer: &mut PltGotWriter<'_, '_>,
-        relocation_writer: &mut RelocationWriter,
+        relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
         if layout
             .output_sections
@@ -690,29 +705,39 @@ impl<'data> ObjectLayout<'data> {
                 object::SymbolSection::Section(section_index) => {
                     if let SectionSlot::Loaded(section) = &self.sections[section_index.0] {
                         let output_section_id = section.output_section_id.unwrap();
-                        symbol_writer.copy_symbol(
-                            &sym,
-                            output_section_id,
-                            self.section_resolutions[section_index.0]
-                                .as_ref()
-                                .unwrap()
-                                .value,
-                        )?;
+                        symbol_writer
+                            .copy_symbol(
+                                &sym,
+                                output_section_id,
+                                self.section_resolutions[section_index.0]
+                                    .as_ref()
+                                    .unwrap()
+                                    .value,
+                            )
+                            .with_context(|| {
+                                format!(
+                                    "Failed to copy {}",
+                                    layout.symbol_debug(
+                                        self.start_symbol_id.add_usize(sym.index().0)
+                                    )
+                                )
+                            })?;
                     }
                 }
                 object::SymbolSection::Common => {
-                    if let Some(symbol_id) = self.global_id_for_symbol(&sym) {
-                        let symbol = layout.symbol_db.symbol(symbol_id);
-                        if symbol.file_id == self.file_id {
-                            if let Some(SymbolResolution::Resolved(res)) =
-                                layout.global_symbol_resolution(symbol_id)
-                            {
-                                symbol_writer.copy_symbol(
-                                    &sym,
-                                    output_section_id::BSS,
-                                    res.value,
-                                )?;
-                            }
+                    let symbol_id = self.start_symbol_id.add_usize(sym.index().0);
+                    if layout.symbol_db.is_definition(symbol_id) {
+                        if let Some(SymbolResolution::Resolved(res)) =
+                            layout.symbol_resolution(symbol_id)
+                        {
+                            symbol_writer
+                                .copy_symbol(&sym, output_section_id::BSS, res.value)
+                                .with_context(|| {
+                                    format!(
+                                        "Failed to copy common {}",
+                                        layout.symbol_db.symbol_debug(symbol_id)
+                                    )
+                                })?;
                         }
                     }
                 }
@@ -728,7 +753,7 @@ impl<'data> ObjectLayout<'data> {
         out: &mut [u8],
         section: &Section,
         layout: &Layout,
-        relocation_writer: &mut RelocationWriter,
+        relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
         let section_address = self.section_resolutions[section.index.0]
             .as_ref()
@@ -765,7 +790,7 @@ impl<'data> ObjectLayout<'data> {
         eh_frame_section_index: object::SectionIndex,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         layout: &Layout,
-        relocation_writer: &mut RelocationWriter,
+        relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
         let output_data = &mut buffers.eh_frame[..];
         let headers_out: &mut [EhFrameHdrEntry] =
@@ -883,7 +908,10 @@ impl<'data> ObjectLayout<'data> {
                         relocation_writer,
                     )
                     .with_context(|| {
-                        format!("Failed to apply {}", self.display_relocation(rel, layout))
+                        format!(
+                            "Failed to apply eh_frame {}",
+                            self.display_relocation(rel, layout)
+                        )
                     })?;
                     relocations.next();
                 }
@@ -929,81 +957,28 @@ impl<'data> ObjectLayout<'data> {
         rel: &object::Relocation,
         layout: &'a Layout,
     ) -> Result<Option<Resolution>> {
-        let resolution = match rel.target() {
-            object::RelocationTarget::Symbol(local_symbol_id) => {
-                match self.local_symbol_resolutions[local_symbol_id.0] {
-                    LocalSymbolResolution::Global(symbol_id) => {
-                        match layout.global_symbol_resolution(symbol_id) {
-                            Some(SymbolResolution::Resolved(resolution)) => *resolution,
-                            Some(SymbolResolution::Dynamic) => todo!(),
-                            None => {
-                                bail!(
-                                    "Missing resolution for non-weak symbol {}",
-                                    layout.symbol_db.symbol_name(symbol_id)
-                                )
-                            }
-                        }
-                    }
-                    LocalSymbolResolution::WeakRefToGlobal(symbol_id) => {
-                        match layout.global_symbol_resolution(symbol_id) {
-                            Some(SymbolResolution::Resolved(resolution)) => *resolution,
-                            Some(SymbolResolution::Dynamic) => todo!(),
-                            None => layout.internal().undefined_symbol_resolution,
-                        }
-                    }
-                    LocalSymbolResolution::LocalSection(local_index) => {
-                        let mut r = self.section_resolutions[local_index.0].with_context(|| {
-                            format!(
-                                "Reference to section that hasn't been resolved {}",
-                                self.display_section_name(local_index)
-                            )
-                        })?;
-                        let local_sym = self.object.symbol_by_index(local_symbol_id)?;
-                        r.value += local_sym.address();
-                        r
-                    }
-                    LocalSymbolResolution::UnresolvedWeak => {
-                        layout.internal().undefined_symbol_resolution
-                    }
-                    LocalSymbolResolution::TlsGetAddr => return Ok(None),
-                    LocalSymbolResolution::UndefinedSymbol => {
-                        let name = self.object.symbol_by_index(local_symbol_id)?.name_bytes()?;
-                        bail!(
-                            "Reference to undefined symbol `{}`",
-                            String::from_utf8_lossy(name),
-                        );
-                    }
-                    LocalSymbolResolution::Null => bail!("Reference to null symbol"),
-                    LocalSymbolResolution::MergedString(res) => {
-                        if let Some(symbol_id) = res.symbol_id {
-                            match layout.global_symbol_resolution(symbol_id) {
-                                Some(SymbolResolution::Resolved(resolution)) => *resolution,
-                                Some(SymbolResolution::Dynamic) => todo!(),
-                                None => {
-                                    bail!(
-                                        "Missing resolution for global string-merge symbol {}",
-                                        layout.symbol_db.symbol_name(symbol_id)
-                                    )
-                                }
-                            }
-                        } else {
-                            Resolution {
-                                value: layout.merged_string_start_addresses.resolve(res),
-                                value_kind: ValueKind::Address,
-                                got_address: None,
-                                plt_address: None,
-                                kind: TargetResolutionKind::Address,
-                            }
-                        }
-                    }
+        let mut new_resolution = None;
+        match rel.target() {
+            object::RelocationTarget::Symbol(symbol_index) => {
+                let local_symbol_id = self.start_symbol_id.add_usize(symbol_index.0);
+                let symbol_id = layout.symbol_db.definition(local_symbol_id);
+                let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
+                if symbol_id == SymbolId::undefined() || !layout.is_file_loaded(file_id) {
+                    // TODO: Check if reference is weak.
+                    new_resolution = Some(layout.internal().undefined_symbol_resolution);
+                } else if let Some(SymbolResolution::Resolved(res)) =
+                    layout.symbol_resolution(symbol_id)
+                {
+                    new_resolution = Some(*res);
                 }
             }
-            object::RelocationTarget::Section(local_index) => {
-                self.section_resolutions[local_index.0].unwrap()
+            object::RelocationTarget::Section(_local_index) => {
+                bail!("Don't currently support relocations directly to sections");
+                // self.section_resolutions[local_index.0].unwrap()
             }
             other => bail!("Unsupported relocation {other:?}"),
         };
-        Ok(Some(resolution))
+        Ok(new_resolution)
     }
 
     fn display_section_name(&self, section_index: object::SectionIndex) -> String {
@@ -1031,53 +1006,9 @@ impl<'a> Display for DisplayRelocation<'a> {
         }
         write!(f, " to ")?;
         match self.rel.target() {
-            object::RelocationTarget::Symbol(local_symbol_id) => {
-                match &self.object.local_symbol_resolutions[local_symbol_id.0] {
-                    LocalSymbolResolution::Global(symbol_id) => {
-                        write!(
-                            f,
-                            "global `{}` ({:?})",
-                            self.symbol_db.symbol_name(*symbol_id),
-                            self.symbol_db.symbol(*symbol_id).value_kind,
-                        )?;
-                    }
-                    LocalSymbolResolution::UnresolvedWeak => write!(
-                        f,
-                        "unresolved weak symbol `{}`",
-                        self.object
-                            .object
-                            .symbol_by_index(local_symbol_id)
-                            .and_then(|s| s.name())
-                            .unwrap_or("??")
-                    )?,
-                    LocalSymbolResolution::TlsGetAddr => write!(f, "TlsGetAddr")?,
-                    LocalSymbolResolution::WeakRefToGlobal(symbol_id) => {
-                        write!(
-                            f,
-                            "weak ref to global `{}` ({:?})",
-                            self.symbol_db.symbol_name(*symbol_id),
-                            self.symbol_db.symbol(*symbol_id).value_kind,
-                        )?;
-                    }
-                    LocalSymbolResolution::LocalSection(section_index) => {
-                        write!(
-                            f,
-                            "section `{}`",
-                            self.object
-                                .object
-                                .section_by_index(*section_index)
-                                .and_then(|sec| sec.name())
-                                .unwrap_or("??")
-                        )?;
-                    }
-                    LocalSymbolResolution::UndefinedSymbol => writeln!(f, "undefined section")?,
-                    LocalSymbolResolution::Null => writeln!(f, "null symbol")?,
-                    LocalSymbolResolution::MergedString(res) => write!(
-                        f,
-                        "Merged string in section {} at offset {}",
-                        res.output_section_id, res.offset
-                    )?,
-                }
+            object::RelocationTarget::Symbol(local_symbol_index) => {
+                let symbol_id = self.object.start_symbol_id.add_usize(local_symbol_index.0);
+                write!(f, " {}", self.symbol_db.symbol_debug(symbol_id))?;
             }
             object::RelocationTarget::Section(section_index) => write!(
                 f,
@@ -1101,14 +1032,14 @@ enum RelocationModifier {
     SkipNextRelocation,
 }
 
-struct RelocationWriter<'out> {
+struct DynamicRelocationWriter<'out> {
     /// Whether we're writing relocations. This will be false if we're writing a non-relocatable
     /// output file.
     is_active: bool,
     rela_dyn: &'out mut [crate::elf::Rela],
 }
 
-impl<'out> RelocationWriter<'out> {
+impl<'out> DynamicRelocationWriter<'out> {
     fn new(is_active: bool, buffers: &mut OutputSectionPartMap<&'out mut [u8]>) -> Self {
         Self {
             is_active,
@@ -1157,7 +1088,7 @@ fn apply_relocation(
     section_address: u64,
     layout: &Layout,
     out: &mut [u8],
-    relocation_writer: &mut RelocationWriter,
+    relocation_writer: &mut DynamicRelocationWriter,
 ) -> Result<RelocationModifier> {
     let Some(resolution) = object_layout.get_resolution(rel, layout)? else {
         return Ok(RelocationModifier::Normal);
@@ -1309,7 +1240,7 @@ impl<'data> InternalLayout<'data> {
         write_section_header_strings(buffers.shstrtab, &layout.output_sections);
 
         let mut relocation_writer =
-            RelocationWriter::new(layout.args().is_relocatable(), &mut buffers);
+            DynamicRelocationWriter::new(layout.args().is_relocatable(), &mut buffers);
 
         self.write_plt_got_entries(&mut buffers, layout, &mut relocation_writer)?;
 
@@ -1351,7 +1282,7 @@ impl<'data> InternalLayout<'data> {
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         layout: &Layout,
-        relocation_writer: &mut RelocationWriter,
+        relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
         let mut plt_got_writer = PltGotWriter::new(layout, buffers);
 
@@ -1364,7 +1295,7 @@ impl<'data> InternalLayout<'data> {
         plt_got_writer
             .process_resolution(
                 &undefined_symbol_resolution,
-                &mut RelocationWriter::disabled(),
+                &mut DynamicRelocationWriter::disabled(),
             )
             .context("undefined symbol resolution")?;
 
@@ -1378,7 +1309,7 @@ impl<'data> InternalLayout<'data> {
                     plt_address: None,
                     kind: TargetResolutionKind::Got,
                 },
-                &mut RelocationWriter::disabled(),
+                &mut DynamicRelocationWriter::disabled(),
             )?;
             plt_got_writer.process_resolution(
                 &Resolution {
@@ -1388,20 +1319,16 @@ impl<'data> InternalLayout<'data> {
                     plt_address: None,
                     kind: TargetResolutionKind::Got,
                 },
-                &mut RelocationWriter::disabled(),
+                &mut DynamicRelocationWriter::disabled(),
             )?;
         }
 
-        for &symbol_id in &self.defined {
-            plt_got_writer
-                .process_symbol(symbol_id, relocation_writer)
-                .with_context(|| {
-                    format!(
-                        "Failed to process symbol `{}`",
-                        layout.symbol_db.symbol_name(symbol_id)
-                    )
-                })?;
-        }
+        write_internal_symbols_plt_got_entries(
+            &self.internal_symbols,
+            &mut plt_got_writer,
+            relocation_writer,
+            layout,
+        )?;
         plt_got_writer.validate_empty()?;
         Ok(())
     }
@@ -1421,40 +1348,9 @@ impl<'data> InternalLayout<'data> {
         // Define symbol 0. This needs to be a null placeholder.
         symbol_writer.define_symbol(true, 0, 0, 0, &[])?;
 
-        for &symbol_id in &self.defined {
-            let Some(resolution) = layout.global_symbol_resolution(symbol_id) else {
-                continue;
-            };
-            let symbol = layout.symbol_db.symbol(symbol_id);
-            let local_index = symbol.local_index_for_file(INTERNAL_FILE_ID)?;
-            let def_info = &self.symbol_definitions[local_index.0];
-            let section_id = def_info.section_id();
+        let internal_symbols = &self.internal_symbols;
 
-            // We don't emit a section header for our headers section, so don't emit symbols that
-            // are in that section, otherwise they'll show up as undefined.
-            if section_id == output_section_id::HEADERS {
-                continue;
-            }
-
-            let shndx = layout
-                .output_sections
-                .output_index_of_section(section_id)
-                .with_context(|| {
-                    format!(
-                        "symbol `{}` in section `{}` that we're not going to output",
-                        layout.symbol_db.symbol_name(symbol_id),
-                        layout.output_sections.display_name(section_id)
-                    )
-                })?;
-            let address = match resolution {
-                SymbolResolution::Resolved(res) => res.value,
-                SymbolResolution::Dynamic => unreachable!(),
-            };
-            let symbol_name = layout.symbol_db.symbol_name(symbol_id);
-            let entry =
-                symbol_writer.define_symbol(false, shndx, address, 0, symbol_name.bytes())?;
-            entry.info = (elf::Binding::Global as u8) << 4;
-        }
+        write_internal_symbols(internal_symbols, layout, &mut symbol_writer)?;
         symbol_writer.check_exhausted()?;
         Ok(())
     }
@@ -1556,6 +1452,82 @@ impl<'data> InternalLayout<'data> {
         write_dynamic_entry(&mut entries, DynamicTag::Null, 0)?;
         Ok(())
     }
+}
+
+impl EpilogueLayout {
+    fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
+        let mut relocation_writer =
+            DynamicRelocationWriter::new(layout.args().is_relocatable(), &mut buffers);
+
+        let mut plt_got_writer = PltGotWriter::new(layout, &mut buffers);
+        write_internal_symbols_plt_got_entries(
+            &self.internal_symbols,
+            &mut plt_got_writer,
+            &mut relocation_writer,
+            layout,
+        )?;
+        plt_got_writer.validate_empty()?;
+
+        if !layout.args().strip_all {
+            let mut symbol_writer = SymbolTableWriter::new(
+                self.strings_offset_start,
+                &mut buffers,
+                &self.mem_sizes,
+                &layout.output_sections,
+            );
+            write_internal_symbols(&self.internal_symbols, layout, &mut symbol_writer)?;
+        }
+
+        Ok(())
+    }
+}
+
+fn write_internal_symbols(
+    internal_symbols: &InternalSymbols,
+    layout: &Layout<'_>,
+    symbol_writer: &mut SymbolTableWriter<'_, '_>,
+) -> Result {
+    for (local_index, def_info) in internal_symbols.symbol_definitions.iter().enumerate() {
+        let symbol_id = internal_symbols.start_symbol_id.add_usize(local_index);
+        if !layout.symbol_db.is_definition(symbol_id) {
+            continue;
+        }
+        let Some(resolution) = layout.symbol_resolution(symbol_id) else {
+            continue;
+        };
+        let Some(section_id) = def_info.section_id() else {
+            // The null symbol is currently handled elsewhere. TODO: See if the code would be
+            // simpler if we just handled it here.
+            continue;
+        };
+
+        // We don't emit a section header for our headers section, so don't emit symbols that
+        // are in that section, otherwise they'll show up as undefined.
+        if section_id == output_section_id::HEADERS {
+            continue;
+        }
+
+        let symbol_name = layout.symbol_db.symbol_name(symbol_id)?;
+        let shndx = layout
+            .output_sections
+            .output_index_of_section(section_id)
+            .with_context(|| {
+                format!(
+                    "symbol `{}` in section `{}` that we're not going to output {resolution:?}",
+                    symbol_name,
+                    layout.output_sections.display_name(section_id)
+                )
+            })?;
+        let address = match resolution {
+            SymbolResolution::Resolved(res) => res.value,
+            SymbolResolution::Dynamic => unreachable!(),
+        };
+        let entry = symbol_writer
+            .define_symbol(false, shndx, address, 0, symbol_name.bytes())
+            .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
+        entry.info = (elf::Binding::Global as u8) << 4;
+    }
+    Ok(())
 }
 
 fn write_eh_frame_hdr(
@@ -1688,4 +1660,22 @@ impl<'out> ProgramHeaderWriter<'out> {
         crate::slice::take_first_mut(&mut self.headers)
             .ok_or_else(|| anyhow!("Insufficient header slots"))
     }
+}
+
+fn write_internal_symbols_plt_got_entries(
+    internal_symbols: &InternalSymbols,
+    plt_got_writer: &mut PltGotWriter,
+    relocation_writer: &mut DynamicRelocationWriter,
+    layout: &Layout,
+) -> Result {
+    for i in 0..internal_symbols.symbol_definitions.len() {
+        let symbol_id = internal_symbols.start_symbol_id.add_usize(i);
+        if !layout.symbol_db.is_definition(symbol_id) {
+            continue;
+        }
+        plt_got_writer
+            .process_symbol(symbol_id, relocation_writer)
+            .with_context(|| format!("Failed to process `{}`", layout.symbol_debug(symbol_id)))?;
+    }
+    Ok(())
 }

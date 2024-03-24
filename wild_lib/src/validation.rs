@@ -26,8 +26,8 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
         .section_by_name(".got")
         .context("Missing .got from output file")?;
     let got_data = got.data()?;
-    for (symbol_name, symbol_id) in &layout.symbol_db.symbol_ids {
-        match layout.global_symbol_resolution(*symbol_id) {
+    for (symbol_name, symbol_id) in &layout.symbol_db.global_names {
+        match layout.symbol_resolution(*symbol_id) {
             None => {}
             Some(SymbolResolution::Resolved(resolution)) => {
                 validate_resolution(symbol_name.bytes(), resolution, &got, got_data)?;
@@ -46,6 +46,8 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
                 }
             }
             crate::layout::FileLayout::Dynamic(_) => {}
+            crate::layout::FileLayout::Epilogue(_) => {}
+            crate::layout::FileLayout::NotLoaded => {}
         }
     }
     Ok(())
