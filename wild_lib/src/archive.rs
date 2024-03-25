@@ -10,6 +10,8 @@ use bytemuck::Zeroable;
 
 pub(crate) enum ArchiveEntry<'data> {
     Regular(ArchiveContent<'data>),
+    // TODO: Consider if we want to keep this.
+    #[allow(dead_code)]
     Symbols(SymbolTable<'data>),
     Filenames(ExtendedFilenames<'data>),
 }

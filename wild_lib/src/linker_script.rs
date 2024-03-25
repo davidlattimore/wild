@@ -77,7 +77,7 @@ enum Command<'a> {
     Arg(&'a str),
     Group(Vec<Command<'a>>),
     AsNeeded(Vec<Command<'a>>),
-    Ignored(Vec<Command<'a>>),
+    Ignored,
 }
 
 fn parse_commands_up_to<'a>(
@@ -110,7 +110,8 @@ fn parse_command<'a>(tokens: &mut Tokeniser<'a>, token: &str) -> Result<Command<
         }
         "OUTPUT_FORMAT" => {
             tokens.expect("(")?;
-            Ok(Command::Ignored(parse_commands_up_to(tokens, Some(")"))?))
+            parse_commands_up_to(tokens, Some(")"))?;
+            Ok(Command::Ignored)
         }
         "AS_NEEDED" => {
             tokens.expect("(")?;
@@ -144,7 +145,7 @@ fn collect_inputs(commands: &[Command], inputs: &mut Vec<Input>) {
             }
             Command::Group(subs) => collect_inputs(subs, inputs),
             Command::AsNeeded(subs) => collect_inputs(subs, inputs),
-            Command::Ignored(_) => {}
+            Command::Ignored => {}
         }
     }
 }

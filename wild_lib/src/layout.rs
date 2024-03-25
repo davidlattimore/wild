@@ -20,7 +20,6 @@ use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::UnloadedSection;
-use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::program_segments::ProgramSegmentId;
@@ -173,6 +172,7 @@ pub(crate) struct SymbolResolutions {
 pub(crate) enum FileLayout<'data> {
     Internal(InternalLayout<'data>),
     Object(ObjectLayout<'data>),
+    #[allow(dead_code)]
     Dynamic(DynamicLayout<'data>),
 }
 
@@ -642,9 +642,6 @@ pub(crate) struct OutputRecordLayout {
     pub(crate) file_offset: usize,
     pub(crate) mem_offset: u64,
 }
-
-#[derive(Default, Clone, Debug)]
-pub(crate) struct SegmentOffsets(pub(crate) [u64; NUM_BUILT_IN_SECTIONS]);
 
 struct GraphResources<'data, 'scope> {
     symbol_db: &'scope SymbolDb<'data>,
