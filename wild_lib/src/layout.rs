@@ -100,6 +100,7 @@ pub fn compute<'data>(
         &section_layouts,
         symbol_db,
         &merged_string_start_addresses,
+        &output_sections,
         &mut resolutions_by_file,
     )?;
 
@@ -229,6 +230,7 @@ pub(crate) struct EpilogueLayoutState {
 
 pub(crate) struct EpilogueLayout {
     pub(crate) mem_sizes: OutputSectionPartMap<u64>,
+    pub(crate) file_sizes: OutputSectionPartMap<usize>,
     pub(crate) internal_symbols: InternalSymbols,
     pub(crate) strings_offset_start: u32,
 }
@@ -238,6 +240,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) file_id: FileId,
     pub(crate) object: &'data File<'data>,
     pub(crate) mem_sizes: OutputSectionPartMap<u64>,
+    pub(crate) file_sizes: OutputSectionPartMap<usize>,
     pub(crate) sections: Vec<SectionSlot<'data>>,
     pub(crate) section_resolutions: Vec<Option<Resolution>>,
     pub(crate) strtab_offset_start: u32,
@@ -250,6 +253,7 @@ pub(crate) struct ObjectLayout<'data> {
 
 pub(crate) struct InternalLayout<'data> {
     pub(crate) mem_sizes: OutputSectionPartMap<u64>,
+    pub(crate) file_sizes: OutputSectionPartMap<usize>,
     // TODO: Investigate if we should get rid of this. Right now, any weak symbols that are
     // undefined use this resolution, which means they all share the same GOT entry. However the
     // whole point of a GOT entry is generally that it can be overridden at runtime, so probably
@@ -867,6 +871,7 @@ fn compute_symbols_and_layouts<'data>(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     symbol_db: &SymbolDb<'data>,
     merged_string_start_addresses: &MergedStringStartAddresses,
+    output_sections: &OutputSections,
     symbol_resolutions: &mut [&mut [Option<SymbolResolution>]],
 ) -> Result<Vec<FileLayout<'data>>> {
     layout_states
@@ -879,6 +884,7 @@ fn compute_symbols_and_layouts<'data>(
                 section_layouts,
                 symbol_db,
                 merged_string_start_addresses,
+                output_sections,
                 symbols_out,
             )
         })
@@ -1318,6 +1324,7 @@ impl<'data> FileLayoutState<'data> {
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
         symbol_db: &SymbolDb,
         merged_string_start_addresses: &MergedStringStartAddresses,
+        output_sections: &OutputSections,
         addresses_out: &mut [Option<SymbolResolution>],
     ) -> Result<FileLayout<'data>> {
         let file_layout = match self {
@@ -1326,18 +1333,21 @@ impl<'data> FileLayoutState<'data> {
                 addresses_out,
                 section_layouts,
                 symbol_db,
+                output_sections,
                 merged_string_start_addresses,
             )?),
             Self::Internal(s) => FileLayout::Internal(s.finalise_layout(
                 memory_offsets.unwrap(),
                 section_layouts,
                 addresses_out,
+                output_sections,
                 symbol_db,
             )?),
             Self::Epilogue(s) => FileLayout::Epilogue(s.finalise_layout(
                 memory_offsets.unwrap(),
                 section_layouts,
                 addresses_out,
+                output_sections,
                 symbol_db,
             )?),
             Self::Dynamic(s) => FileLayout::Dynamic(s.finalise_layout(addresses_out)),
@@ -1348,30 +1358,28 @@ impl<'data> FileLayoutState<'data> {
 }
 
 impl<'data> FileLayout<'data> {
-    pub(crate) fn mem_sizes(&self) -> Option<&OutputSectionPartMap<u64>> {
+    pub(crate) fn file_sizes(&self) -> Option<&OutputSectionPartMap<usize>> {
         match self {
-            Self::Object(s) => Some(&s.mem_sizes),
-            Self::Internal(s) => Some(&s.mem_sizes),
-            Self::Epilogue(s) => Some(&s.mem_sizes),
+            Self::Object(s) => Some(&s.file_sizes),
+            Self::Internal(s) => Some(&s.file_sizes),
+            Self::Epilogue(s) => Some(&s.file_sizes),
             Self::NotLoaded => None,
             Self::Dynamic(_) => None,
         }
     }
+}
 
-    pub(crate) fn file_sizes(
-        &self,
-        output_sections: &OutputSections,
-    ) -> Option<OutputSectionPartMap<usize>> {
-        self.mem_sizes().map(|sizes| {
-            sizes.map(output_sections, |output_section_id, size| {
-                if output_sections.has_data_in_file(output_section_id) {
-                    *size as usize
-                } else {
-                    0
-                }
-            })
-        })
-    }
+fn compute_file_sizes(
+    mem_sizes: &OutputSectionPartMap<u64>,
+    output_sections: &OutputSections<'_>,
+) -> OutputSectionPartMap<usize> {
+    mem_sizes.map(output_sections, |output_section_id, size| {
+        if output_sections.has_data_in_file(output_section_id) {
+            *size as usize
+        } else {
+            0
+        }
+    })
 }
 
 impl<'data> std::fmt::Display for InternalLayoutState<'data> {
@@ -1801,6 +1809,7 @@ impl<'data> InternalLayoutState<'data> {
         }
 
         self.common.mem_sizes.eh_frame_hdr += core::mem::size_of::<elf::EhFrameHdr>() as u64;
+
         Ok(())
     }
 
@@ -1909,6 +1918,7 @@ impl<'data> InternalLayoutState<'data> {
         memory_offsets: &mut OutputSectionPartMap<u64>,
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
         resolutions_out: &mut [Option<SymbolResolution>],
+        output_sections: &OutputSections,
         symbol_db: &SymbolDb,
     ) -> Result<InternalLayout<'data>> {
         let header_layout = section_layouts.built_in(output_section_id::HEADERS);
@@ -1945,6 +1955,7 @@ impl<'data> InternalLayoutState<'data> {
 
         let strings_offset_start = self.common.finalise_layout(memory_offsets, section_layouts);
         Ok(InternalLayout {
+            file_sizes: compute_file_sizes(&self.common.mem_sizes, output_sections),
             mem_sizes: self.common.mem_sizes,
             internal_symbols: self.internal_symbols,
             undefined_symbol_resolution,
@@ -2058,6 +2069,7 @@ impl EpilogueLayoutState {
         memory_offsets: &mut OutputSectionPartMap<u64>,
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
         resolutions_out: &mut [Option<SymbolResolution>],
+        output_sections: &OutputSections,
         symbol_db: &SymbolDb,
     ) -> Result<EpilogueLayout> {
         self.internal_symbols.finalise_layout(
@@ -2070,6 +2082,7 @@ impl EpilogueLayoutState {
 
         let strings_offset_start = self.common.finalise_layout(memory_offsets, section_layouts);
         Ok(EpilogueLayout {
+            file_sizes: compute_file_sizes(&self.common.mem_sizes, output_sections),
             mem_sizes: self.common.mem_sizes,
             internal_symbols: self.internal_symbols,
             strings_offset_start,
@@ -2280,6 +2293,7 @@ impl<'data> ObjectLayoutState<'data> {
         resolutions_out: &mut [Option<SymbolResolution>],
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
         symbol_db: &SymbolDb,
+        output_sections: &OutputSections,
         merged_string_start_addresses: &MergedStringStartAddresses,
     ) -> Result<ObjectLayout<'data>> {
         let start_symbol_id = self.start_symbol_id();
@@ -2383,6 +2397,7 @@ impl<'data> ObjectLayoutState<'data> {
             input: self.input,
             file_id: self.state.common.file_id,
             object: self.object,
+            file_sizes: compute_file_sizes(&self.state.common.mem_sizes, output_sections),
             mem_sizes: self.state.common.mem_sizes,
             sections,
             section_resolutions,
