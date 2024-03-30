@@ -170,7 +170,6 @@ impl SizedOutput {
             crate::validation::validate_bytes(layout, &self.mmap)?;
         }
 
-        // We consumed the .eh_frame_hdr section in `split_buffers_by_alignment` above, get a fresh copy.
         let mut section_buffers = split_output_into_sections(layout, &mut self.mmap);
         sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
         crate::fs::make_executable(&self.file)
@@ -183,29 +182,39 @@ impl SizedOutput {
         let mut section_buffers = split_output_into_sections(layout, &mut self.mmap);
 
         let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
-        let files_and_buffers: Vec<_> = layout
-            .file_layouts
-            .iter()
-            .map(|file| {
-                if let Some(file_sizes) = file.file_sizes(&layout.output_sections) {
-                    (file, writable_buckets.take_mut(&file_sizes))
-                } else {
-                    (
-                        file,
-                        OutputSectionPartMap::with_size(layout.output_sections.len()),
-                    )
-                }
-            })
-            .collect();
+        let files_and_buffers = split_output_by_file(layout, &mut writable_buckets);
         files_and_buffers
             .into_par_iter()
-            .map(|(file, buffer)| {
+            .try_for_each(|(file, buffer)| {
                 file.write(buffer, layout)
                     .with_context(|| format!("Failed copying from {file} to output file"))
-            })
-            .collect::<Result>()?;
+            })?;
         Ok(())
     }
+}
+
+#[tracing::instrument(skip_all, name = "Split output buffers by file")]
+fn split_output_by_file<'data, 'out>(
+    layout: &'data Layout<'data>,
+    writable_buckets: &'out mut OutputSectionPartMap<&mut [u8]>,
+) -> Vec<(
+    &'data FileLayout<'data>,
+    OutputSectionPartMap<&'out mut [u8]>,
+)> {
+    layout
+        .file_layouts
+        .iter()
+        .map(|file| {
+            if let Some(file_sizes) = file.file_sizes(&layout.output_sections) {
+                (file, writable_buckets.take_mut(&file_sizes))
+            } else {
+                (
+                    file,
+                    OutputSectionPartMap::with_size(layout.output_sections.len()),
+                )
+            }
+        })
+        .collect()
 }
 
 fn split_output_into_sections<'out>(
