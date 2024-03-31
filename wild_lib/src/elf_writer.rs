@@ -204,15 +204,9 @@ fn split_output_by_file<'data, 'out>(
     layout
         .file_layouts
         .iter()
-        .map(|file| {
-            if let Some(file_sizes) = file.file_sizes() {
-                (file, writable_buckets.take_mut(file_sizes))
-            } else {
-                (
-                    file,
-                    OutputSectionPartMap::with_size(layout.output_sections.len()),
-                )
-            }
+        .filter_map(|file| {
+            file.file_sizes()
+                .map(|file_sizes| (file, writable_buckets.take_mut(file_sizes)))
         })
         .collect()
 }
