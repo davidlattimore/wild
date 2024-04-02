@@ -14,7 +14,9 @@ use std::ops::AddAssign;
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct OutputSectionPartMap<T> {
     pub(crate) regular: Vec<AlignmentMap<T>>,
-    pub(crate) file_headers: T,
+    pub(crate) file_header: T,
+    pub(crate) program_headers: T,
+    pub(crate) section_headers: T,
     pub(crate) got: T,
     pub(crate) plt: T,
     pub(crate) symtab_locals: T,
@@ -28,6 +30,7 @@ pub(crate) struct OutputSectionPartMap<T> {
     pub(crate) dynsym: T,
     pub(crate) dynstr: T,
     pub(crate) rela_dyn: T,
+    pub(crate) interp: T,
 }
 
 impl<T: Default> OutputSectionPartMap<T> {
@@ -36,7 +39,9 @@ impl<T: Default> OutputSectionPartMap<T> {
         regular.resize_with(size - NUM_GENERATED_SECTIONS, Default::default);
         Self {
             regular,
-            file_headers: Default::default(),
+            file_header: Default::default(),
+            program_headers: Default::default(),
+            section_headers: Default::default(),
             got: Default::default(),
             plt: Default::default(),
             symtab_locals: Default::default(),
@@ -50,6 +55,7 @@ impl<T: Default> OutputSectionPartMap<T> {
             dynsym: Default::default(),
             dynstr: Default::default(),
             rela_dyn: Default::default(),
+            interp: Default::default(),
         }
     }
 }
@@ -83,10 +89,25 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
     ) -> OutputSectionPartMap<U> {
         let mut regular = Vec::new();
         regular.resize_with(self.regular.len(), AlignmentMap::<U>::default);
-        let file_headers = cb(
-            output_section_id::HEADERS,
-            output_section_id::HEADERS.min_alignment(),
-            &self.file_headers,
+        let file_header = cb(
+            output_section_id::FILE_HEADER,
+            output_section_id::FILE_HEADER.min_alignment(),
+            &self.file_header,
+        );
+        let program_headers = cb(
+            output_section_id::PROGRAM_HEADERS,
+            output_section_id::PROGRAM_HEADERS.min_alignment(),
+            &self.program_headers,
+        );
+        let section_headers = cb(
+            output_section_id::SECTION_HEADERS,
+            output_section_id::SECTION_HEADERS.min_alignment(),
+            &self.section_headers,
+        );
+        let interp = cb(
+            output_section_id::INTERP,
+            output_section_id::INTERP.min_alignment(),
+            &self.interp,
         );
         let dynsym = cb(
             output_section_id::DYNSYM,
@@ -181,7 +202,9 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
 
         OutputSectionPartMap {
             regular,
-            file_headers,
+            file_header,
+            program_headers,
+            section_headers,
             got,
             plt,
             symtab_locals,
@@ -195,6 +218,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             dynsym,
             dynstr,
             rela_dyn,
+            interp,
         }
     }
 
@@ -248,7 +272,9 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
 
         OutputSectionPartMap {
             regular,
-            file_headers: cb(&mut self.file_headers, &other.file_headers),
+            file_header: cb(&mut self.file_header, &other.file_header),
+            program_headers: cb(&mut self.program_headers, &other.program_headers),
+            section_headers: cb(&mut self.section_headers, &other.section_headers),
             got: cb(&mut self.got, &other.got),
             plt: cb(&mut self.plt, &other.plt),
             symtab_locals: cb(&mut self.symtab_locals, &other.symtab_locals),
@@ -262,6 +288,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             dynsym: cb(&mut self.dynsym, &other.dynsym),
             dynstr: cb(&mut self.dynstr, &other.dynstr),
             rela_dyn: cb(&mut self.rela_dyn, &other.rela_dyn),
+            interp: cb(&mut self.interp, &other.interp),
         }
     }
 }
@@ -313,7 +340,9 @@ impl<T: Copy> OutputSectionPartMap<T> {
             debug_assert_eq!(output_section_id.as_usize(), values_out.len());
             values_out.push(cb(values));
         };
-        update(output_section_id::HEADERS, &[self.file_headers]);
+        update(output_section_id::FILE_HEADER, &[self.file_header]);
+        update(output_section_id::PROGRAM_HEADERS, &[self.program_headers]);
+        update(output_section_id::SECTION_HEADERS, &[self.section_headers]);
         update(output_section_id::SHSTRTAB, &[self.shstrtab]);
         update(
             output_section_id::SYMTAB,
@@ -329,6 +358,7 @@ impl<T: Copy> OutputSectionPartMap<T> {
         update(output_section_id::DYNSYM, &[self.dynsym]);
         update(output_section_id::DYNSTR, &[self.dynstr]);
         update(output_section_id::RELA_DYN, &[self.rela_dyn]);
+        update(output_section_id::INTERP, &[self.interp]);
         values_out.extend(self.regular.iter().map(|parts| cb(parts.raw_values())));
         debug_assert!(
             values_out.len() == values_out.capacity(),
@@ -347,7 +377,9 @@ impl<T: AddAssign + Copy + Default> OutputSectionPartMap<T> {
         for (left, right) in self.regular.iter_mut().zip(rhs.regular.iter()) {
             left.merge(right);
         }
-        self.file_headers += rhs.file_headers;
+        self.file_header += rhs.file_header;
+        self.program_headers += rhs.program_headers;
+        self.section_headers += rhs.section_headers;
         self.got += rhs.got;
         self.plt += rhs.plt;
         self.symtab_locals += rhs.symtab_locals;
@@ -361,6 +393,7 @@ impl<T: AddAssign + Copy + Default> OutputSectionPartMap<T> {
         self.dynsym += rhs.dynsym;
         self.dynstr += rhs.dynstr;
         self.rela_dyn += rhs.rela_dyn;
+        self.interp += rhs.interp;
     }
 }
 
@@ -386,9 +419,9 @@ fn test_merge_parts() {
     });
 
     let mut headers_only = OutputSectionPartMap::<u32>::with_size(output_sections.len());
-    headers_only.file_headers += 42;
+    headers_only.file_header += 42;
     let merged: OutputSectionMap<u32> = headers_only.merge_parts(|values| values.iter().sum());
-    assert_eq!(*merged.built_in(output_section_id::HEADERS), 42);
+    assert_eq!(*merged.built_in(output_section_id::FILE_HEADER), 42);
     assert_eq!(*merged.built_in(output_section_id::TEXT), 0);
     assert_eq!(*merged.built_in(output_section_id::BSS), 0);
 }

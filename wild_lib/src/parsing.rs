@@ -1,5 +1,6 @@
 use crate::archive_splitter::InputBytes;
 use crate::args::Args;
+use crate::args::Modifiers;
 use crate::elf::File;
 use crate::error::Result;
 use crate::file_kind::FileKind;
@@ -15,10 +16,10 @@ use anyhow::bail;
 use anyhow::Context;
 use object::Object as _;
 use object::ObjectSymbol;
+use object::ObjectSymbolTable as _;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelRefIterator as _;
 use rayon::iter::ParallelIterator as _;
-use std::ffi::CString;
 use std::path::Path;
 
 #[tracing::instrument(skip_all, name = "Parse input files")]
@@ -46,9 +47,6 @@ pub(crate) fn parse_input_files<'data>(
             InputObject::Object(o) => {
                 o.start_symbol_id = next_symbol_id;
             }
-            InputObject::Dynamic(o) => {
-                o.start_symbol_id = next_symbol_id;
-            }
             InputObject::Epilogue(o) => {
                 o.start_symbol_id = next_symbol_id;
             }
@@ -61,12 +59,10 @@ pub(crate) fn parse_input_files<'data>(
 pub(crate) enum InputObject<'data> {
     Internal(InternalInputObject),
     Object(RegularInputObject<'data>),
-    Dynamic(RegularInputObject<'data>),
     Epilogue(Epilogue),
 }
 
 pub(crate) struct InternalInputObject {
-    pub(crate) dynamic_linker: Option<CString>,
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
 }
 
@@ -76,6 +72,8 @@ pub(crate) struct RegularInputObject<'data> {
     pub(crate) num_symbols: usize,
     pub(crate) start_symbol_id: SymbolId,
     pub(crate) file_id: FileId,
+    pub(crate) is_dynamic: bool,
+    modifiers: Modifiers,
 }
 
 pub(crate) struct Epilogue {
@@ -97,7 +95,7 @@ pub(crate) enum InternalSymDefInfo {
 }
 
 impl<'data> RegularInputObject<'data> {
-    fn new(input: &'data InputBytes, file_id: FileId) -> Result<Self> {
+    fn new(input: &'data InputBytes, file_id: FileId, is_dynamic: bool) -> Result<Self> {
         let object = Box::new(
             File::parse(input.data)
                 .with_context(|| format!("Failed to parse object file `{input}`"))?,
@@ -106,7 +104,11 @@ impl<'data> RegularInputObject<'data> {
         // tried using object.section_by_name(".symtab") then getting the size and computing the
         // number of symbols from that. However it turns out that, perhaps not surprisingly that
         // `section_by_name` is really slow.
-        let num_symbols = object.symbols().count();
+        let num_symbols = if is_dynamic {
+            object.dynamic_symbols().count()
+        } else {
+            object.symbols().count()
+        };
         Ok(Self {
             input: input.input,
             object,
@@ -114,11 +116,16 @@ impl<'data> RegularInputObject<'data> {
             // Filled in once we've parsed all objects.
             start_symbol_id: SymbolId::undefined(),
             file_id,
+            is_dynamic,
+            modifiers: input.modifiers,
         })
     }
 
-    pub(crate) fn is_from_archive(&self) -> bool {
-        self.input.entry_filename.is_some()
+    /// Returns whether this input should be skipped if there are no non-weak reference to symbols
+    /// it defines. This is true for archive entries and shared objects for which --as-needed is
+    /// true.
+    pub(crate) fn is_optional(&self) -> bool {
+        self.input.entry_filename.is_some() || (self.is_dynamic && self.modifiers.as_needed)
     }
 
     fn filename(&self) -> &'data Path {
@@ -129,9 +136,18 @@ impl<'data> RegularInputObject<'data> {
         &self,
         symbol_id: crate::symbol_db::SymbolId,
     ) -> Result<SymbolName<'data>> {
-        let symbol = self.object.symbol_by_index(object::SymbolIndex(
-            symbol_id.offset_from(self.start_symbol_id),
-        ))?;
+        let symbol = if self.is_dynamic {
+            self.object
+                .dynamic_symbol_table()
+                .context("Missing dynamic symbol table")?
+                .symbol_by_index(object::SymbolIndex(
+                    symbol_id.offset_from(self.start_symbol_id),
+                ))?
+        } else {
+            self.object.symbol_by_index(object::SymbolIndex(
+                symbol_id.offset_from(self.start_symbol_id),
+            ))?
+        };
         Ok(SymbolName::new(symbol.name_bytes()?))
     }
 }
@@ -140,14 +156,14 @@ impl<'data> InputObject<'data> {
     fn new(input: &'data InputBytes, file_id: FileId, args: &'data Args) -> Result<Self> {
         Ok(match input.kind {
             FileKind::ElfObject | FileKind::Archive => {
-                Self::Object(RegularInputObject::new(input, file_id)?)
+                Self::Object(RegularInputObject::new(input, file_id, false)?)
             }
             FileKind::Internal => Self::Internal(InternalInputObject::new(file_id, args)?),
             FileKind::ElfDynamic => {
-                if true {
+                if !cfg!(feature = "wip") {
                     bail!("Dynamic linking is not yet implemented");
                 }
-                Self::Dynamic(RegularInputObject::new(input, file_id)?)
+                Self::Object(RegularInputObject::new(input, file_id, true)?)
             }
             FileKind::Text => unreachable!("Should have been handled earlier"),
         })
@@ -157,7 +173,6 @@ impl<'data> InputObject<'data> {
         match self {
             InputObject::Internal(o) => o.symbol_definitions.len(),
             InputObject::Object(o) => o.num_symbols,
-            InputObject::Dynamic(_) => todo!(),
             InputObject::Epilogue(_) => {
                 // Initially, we report 0 symbols because we don't know what symbols we'll define
                 // until after archives have been processed. We're the last input file, so we can
@@ -171,7 +186,6 @@ impl<'data> InputObject<'data> {
         match self {
             InputObject::Object(s) => s.filename(),
             InputObject::Internal(_) => Path::new("<<internal>>"),
-            InputObject::Dynamic(s) => s.filename(),
             InputObject::Epilogue(_) => Path::new("<<custom sections>>"),
         }
     }
@@ -180,7 +194,6 @@ impl<'data> InputObject<'data> {
         match self {
             InputObject::Internal(_) => SymbolId::undefined(),
             InputObject::Object(o) => o.start_symbol_id,
-            InputObject::Dynamic(o) => o.start_symbol_id,
             InputObject::Epilogue(o) => o.start_symbol_id,
         }
     }
@@ -205,14 +218,7 @@ impl InternalInputObject {
                 symbol_definitions.push(InternalSymDefInfo::SectionEnd(section_id));
             }
         }
-        Ok(Self {
-            dynamic_linker: args
-                .dynamic_linker
-                .as_ref()
-                .map(|p| CString::new(p.as_os_str().as_encoded_bytes()))
-                .transpose()?,
-            symbol_definitions,
-        })
+        Ok(Self { symbol_definitions })
     }
 
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> SymbolName<'static> {
@@ -242,7 +248,6 @@ impl<'data> std::fmt::Display for InputObject<'data> {
         match self {
             InputObject::Internal(_) => std::fmt::Display::fmt("<internal>", f),
             InputObject::Object(o) => std::fmt::Display::fmt(o, f),
-            InputObject::Dynamic(o) => std::fmt::Display::fmt(o, f),
             InputObject::Epilogue(_) => std::fmt::Display::fmt("<custom-sections>", f),
         }
     }

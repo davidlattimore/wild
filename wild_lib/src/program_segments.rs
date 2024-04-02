@@ -5,12 +5,14 @@ pub(crate) const MAX_SEGMENTS: usize = PROGRAM_SEGMENT_DEFS.len();
 #[derive(Default, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, Debug)]
 pub(crate) struct ProgramSegmentId(u8);
 
-pub(crate) const LOAD_RO: ProgramSegmentId = ProgramSegmentId(0);
-pub(crate) const LOAD_EXEC: ProgramSegmentId = ProgramSegmentId(1);
-pub(crate) const LOAD_RW: ProgramSegmentId = ProgramSegmentId(2);
-pub(crate) const TLS: ProgramSegmentId = ProgramSegmentId(3);
-pub(crate) const EH_FRAME: ProgramSegmentId = ProgramSegmentId(4);
-pub(crate) const DYNAMIC: ProgramSegmentId = ProgramSegmentId(5);
+pub(crate) const PHDR: ProgramSegmentId = ProgramSegmentId(0);
+pub(crate) const INTERP: ProgramSegmentId = ProgramSegmentId(1);
+pub(crate) const LOAD_RO: ProgramSegmentId = ProgramSegmentId(2);
+pub(crate) const LOAD_EXEC: ProgramSegmentId = ProgramSegmentId(3);
+pub(crate) const LOAD_RW: ProgramSegmentId = ProgramSegmentId(4);
+pub(crate) const TLS: ProgramSegmentId = ProgramSegmentId(5);
+pub(crate) const EH_FRAME: ProgramSegmentId = ProgramSegmentId(6);
+pub(crate) const DYNAMIC: ProgramSegmentId = ProgramSegmentId(7);
 
 pub(crate) struct ProgramSegmentDef {
     pub(crate) segment_type: SegmentType,
@@ -22,6 +24,14 @@ const PF_W: u32 = 2;
 const PF_R: u32 = 4;
 
 const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
+    ProgramSegmentDef {
+        segment_type: SegmentType::Phdr,
+        segment_flags: PF_R,
+    },
+    ProgramSegmentDef {
+        segment_type: SegmentType::Interp,
+        segment_flags: PF_R,
+    },
     ProgramSegmentDef {
         segment_type: SegmentType::Load,
         segment_flags: PF_R,
@@ -126,5 +136,13 @@ fn test_constant_segment_ids() {
     assert_eq!(
         PROGRAM_SEGMENT_DEFS[DYNAMIC.as_usize()].segment_type,
         SegmentType::Dynamic
+    );
+    assert_eq!(
+        PROGRAM_SEGMENT_DEFS[PHDR.as_usize()].segment_type,
+        SegmentType::Phdr
+    );
+    assert_eq!(
+        PROGRAM_SEGMENT_DEFS[INTERP.as_usize()].segment_type,
+        SegmentType::Interp
     );
 }

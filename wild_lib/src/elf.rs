@@ -15,6 +15,8 @@ pub(crate) type Section<'data, 'file> =
     object::read::elf::ElfSection64<'data, 'file, LittleEndian, &'data [u8]>;
 pub(crate) type Symbol<'data, 'file> =
     object::read::elf::ElfSymbol64<'data, 'file, LittleEndian, &'data [u8]>;
+pub(crate) type SymbolIterator<'data, 'file> =
+    object::read::elf::ElfSymbolIterator64<'data, 'file, LittleEndian, &'data [u8]>;
 
 /// The module number for TLS variables in the current executable.
 pub(crate) const CURRENT_EXE_TLS_MOD: u64 = 1;
@@ -212,8 +214,12 @@ pub(crate) enum DynamicTag {
     InitArraySize = 27,
     FiniArraySize = 28,
     Flags = 30,
+    GnuHash = 0x6ffffef5,
+    VerSym = 0x6ffffff0,
     Flags1 = 0x6ffffffb,
     RelaCount = 0x6ffffff9,
+    VerNeed = 0x6ffffffe,
+    VerNeedNum = 0x6fffffff,
 }
 
 pub(crate) mod flags_1 {
@@ -303,6 +309,8 @@ pub(crate) const SECTION_HEADER_SIZE: u16 = 0x40;
 pub(crate) const GOT_ENTRY_SIZE: u64 = 0x8;
 pub(crate) const PLT_ENTRY_SIZE: u64 = PLT_ENTRY_TEMPLATE.len() as u64;
 pub(crate) const RELA_ENTRY_SIZE: u64 = 0x18;
+
+pub(crate) const SYMTAB_ENTRY_SIZE: u64 = core::mem::size_of::<SymtabEntry>() as u64;
 
 pub(crate) const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0xf3, 0x0f, 0x1e, 0xfa, // endbr64

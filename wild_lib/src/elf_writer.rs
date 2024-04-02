@@ -13,6 +13,7 @@ use crate::elf::SegmentType;
 use crate::elf::SymtabEntry;
 use crate::elf::PLT_ENTRY_TEMPLATE;
 use crate::error::Result;
+use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
 use crate::layout::HeaderInfo;
@@ -21,8 +22,8 @@ use crate::layout::InternalSymbols;
 use crate::layout::Layout;
 use crate::layout::ObjectLayout;
 use crate::layout::Resolution;
+use crate::layout::ResolutionValue;
 use crate::layout::Section;
-use crate::layout::SymbolResolution;
 use crate::layout::TargetResolutionKind;
 use crate::layout::TlsMode;
 use crate::output_section_id;
@@ -332,7 +333,7 @@ impl<'data> FileLayout<'data> {
             FileLayout::Internal(s) => s.write(buffers, layout)?,
             FileLayout::Epilogue(s) => s.write(buffers, layout)?,
             FileLayout::NotLoaded => {}
-            FileLayout::Dynamic(_) => {}
+            FileLayout::Dynamic(s) => s.write(buffers, layout)?,
         }
         Ok(())
     }
@@ -365,12 +366,8 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         symbol_id: SymbolId,
         relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
-        match self.layout.symbol_resolution(symbol_id) {
-            Some(SymbolResolution::Resolved(res)) => {
-                self.process_resolution(res, relocation_writer)?;
-            }
-            Some(SymbolResolution::Dynamic) => {}
-            None => {}
+        if let Some(res) = self.layout.symbol_resolution(symbol_id) {
+            self.process_resolution(res, relocation_writer)?;
         }
         Ok(())
     }
@@ -381,63 +378,70 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
         if let Some(got_address) = res.got_address {
-            if self.got.is_empty() {
-                bail!("Didn't allocate enough space in GOT");
-            }
-
-            let mut got_needs_relocation = relocation_writer.is_active;
-            let address = match res.kind {
+            let res_value = match res.kind {
                 TargetResolutionKind::GotTlsDouble => {
                     let mod_got_entry = slice_take_prefix_mut(&mut self.got, 1);
                     mod_got_entry.copy_from_slice(&[elf::CURRENT_EXE_TLS_MOD]);
                     let offset_entry = slice_take_prefix_mut(&mut self.got, 1);
                     // Convert the address to an offset relative to the TCB which is the end of the TLS
                     // segment.
-                    offset_entry[0] = res.value.wrapping_sub(self.tls.end);
+                    match res.value {
+                        ResolutionValue::Address(address) => {
+                            offset_entry[0] = address.wrapping_sub(self.tls.end);
+                        }
+                        other => bail!("Unexpected resolution value {other:?}"),
+                    }
                     return Ok(());
                 }
                 TargetResolutionKind::GotTlsOffset => {
-                    got_needs_relocation = false;
                     // Convert the address to an offset relative to the TCB which is the end of the TLS
                     // segment.
-                    if !self.tls.contains(&res.value) {
-                        bail!(
-                            "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
-                            res.value
-                        );
+                    match res.value {
+                        ResolutionValue::Address(address) => {
+                            if !self.tls.contains(&address) {
+                                bail!(
+                                    "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
+                                    address
+                                );
+                            }
+                            ResolutionValue::Absolute(address.wrapping_sub(self.tls.end))
+                        }
+                        other => bail!("Unexpected resolution value {other:?}"),
                     }
-                    res.value.wrapping_sub(self.tls.end)
                 }
-                TargetResolutionKind::IFunc => {
-                    got_needs_relocation = false;
-                    0
-                }
-                TargetResolutionKind::Value => {
-                    got_needs_relocation = false;
-                    res.value
-                }
+                TargetResolutionKind::IFunc => ResolutionValue::Absolute(0),
+                TargetResolutionKind::Value => res.value,
                 _ => res.value,
             };
-            let got_entry = slice_take_prefix_mut(&mut self.got, 1);
-            if got_needs_relocation {
-                relocation_writer.write_relocation(got_address.get(), address)?;
-            } else {
-                got_entry[0] = address;
+            let got_entry = self.take_next_got_entry()?;
+            relocation_writer.write_relocation(got_address.get(), res_value, 0)?;
+            match res_value {
+                ResolutionValue::Absolute(v) => *got_entry = v,
+                ResolutionValue::Address(v) => *got_entry = v,
+                ResolutionValue::Dynamic(_) => {}
             }
             if let Some(plt_address) = res.plt_address {
-                if self.plt.is_empty() {
-                    bail!("Didn't allocate enough space in PLT");
-                }
-                let plt_entry = slice_take_prefix_mut(&mut self.plt, elf::PLT_ENTRY_SIZE as usize);
-                plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
-                let offset: i32 = ((got_address.get().wrapping_sub(plt_address.get() + 0xb))
-                    as i64)
-                    .try_into()
-                    .map_err(|_| anyhow!("PLT is more than 2GB away from GOT"))?;
-                plt_entry[7..11].copy_from_slice(&offset.to_le_bytes());
+                self.write_plt_entry(got_address.get(), plt_address.get())?;
             }
         }
         Ok(())
+    }
+
+    fn write_plt_entry(&mut self, got_address: u64, plt_address: u64) -> Result {
+        if self.plt.len() < elf::PLT_ENTRY_SIZE as usize {
+            bail!("Didn't allocate enough space in PLT");
+        }
+        let plt_entry = slice_take_prefix_mut(&mut self.plt, elf::PLT_ENTRY_SIZE as usize);
+        plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
+        let offset: i32 = ((got_address.wrapping_sub(plt_address + 0xb)) as i64)
+            .try_into()
+            .map_err(|_| anyhow!("PLT is more than 2GB away from GOT"))?;
+        plt_entry[7..11].copy_from_slice(&offset.to_le_bytes());
+        Ok(())
+    }
+
+    fn take_next_got_entry(&mut self) -> Result<&mut u64> {
+        crate::slice::take_first_mut(&mut self.got).context("Insufficient GOT allocation")
     }
 
     /// Checks that we used all of the GOT/PLT entries that we requested during layout.
@@ -462,11 +466,13 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         if relocation_writer.is_active {
             relocation_writer.write_relocation(
                 rel.relocation_address + elf::RELA_ADDEND_OFFSET as u64,
-                rel.resolver,
+                ResolutionValue::Address(rel.resolver),
+                0,
             )?;
             relocation_writer.write_relocation(
                 rel.relocation_address + elf::RELA_ADDRESS_OFFSET as u64,
-                rel.got_address,
+                ResolutionValue::Address(rel.got_address),
+                0,
             )?;
         } else {
             out.addend = rel.resolver;
@@ -635,7 +641,7 @@ impl<'data> ObjectLayout<'data> {
         for (symbol_id, resolution) in
             layout.resolutions_in_range(self.start_symbol_id, self.num_symbols)
         {
-            if let Some(SymbolResolution::Resolved(res)) = resolution {
+            if let Some(res) = resolution {
                 plt_got_writer
                     .process_resolution(res, &mut relocation_writer)
                     .with_context(|| {
@@ -715,7 +721,8 @@ impl<'data> ObjectLayout<'data> {
                                 self.section_resolutions[section_index.0]
                                     .as_ref()
                                     .unwrap()
-                                    .value,
+                                    .value
+                                    .address_or_value()?,
                             )
                             .with_context(|| {
                                 format!(
@@ -730,11 +737,9 @@ impl<'data> ObjectLayout<'data> {
                 object::SymbolSection::Common => {
                     let symbol_id = self.start_symbol_id.add_usize(sym.index().0);
                     if layout.symbol_db.is_definition(symbol_id) {
-                        if let Some(SymbolResolution::Resolved(res)) =
-                            layout.symbol_resolution(symbol_id)
-                        {
+                        if let Some(res) = layout.symbol_resolution(symbol_id) {
                             symbol_writer
-                                .copy_symbol(&sym, output_section_id::BSS, res.value)
+                                .copy_symbol(&sym, output_section_id::BSS, res.value.address()?)
                                 .with_context(|| {
                                     format!(
                                         "Failed to copy common {}",
@@ -761,7 +766,8 @@ impl<'data> ObjectLayout<'data> {
         let section_address = self.section_resolutions[section.index.0]
             .as_ref()
             .unwrap()
-            .value;
+            .value
+            .address_or_value()?;
         let elf_section = &self.object.section_by_index(section.index)?;
         let mut modifier = RelocationModifier::Normal;
         for (offset_in_section, rel) in elf_section.relocations() {
@@ -865,7 +871,8 @@ impl<'data> ObjectLayout<'data> {
                                             prefix.cie_id, cie_pointer_pos
                                         )
                                     })?;
-                                let frame_ptr = (section_resolution.value + offset_in_section)
+                                let frame_ptr = (section_resolution.value.address()?
+                                    + offset_in_section)
                                     as i64
                                     - eh_frame_hdr_address as i64;
                                 headers_out[header_offset] = EhFrameHdrEntry {
@@ -969,9 +976,7 @@ impl<'data> ObjectLayout<'data> {
                 if symbol_id == SymbolId::undefined() || !layout.is_file_loaded(file_id) {
                     // TODO: Check if reference is weak.
                     new_resolution = Some(layout.internal().undefined_symbol_resolution);
-                } else if let Some(SymbolResolution::Resolved(res)) =
-                    layout.symbol_resolution(symbol_id)
-                {
+                } else if let Some(res) = layout.symbol_resolution(symbol_id) {
                     new_resolution = Some(*res);
                 }
             }
@@ -1050,15 +1055,33 @@ impl<'out> DynamicRelocationWriter<'out> {
         }
     }
 
-    fn write_relocation(&mut self, place: u64, address: u64) -> Result {
+    fn write_relocation(&mut self, place: u64, res_value: ResolutionValue, addend: u64) -> Result {
         if !self.is_active {
             return Ok(());
         }
-        let rela = crate::slice::take_first_mut(&mut self.rela_dyn)
-            .context("insufficient allocation to .rela.dyn")?;
-        rela.address = place;
-        rela.addend = address;
-        rela.info = elf::rel::R_X86_64_RELATIVE.into();
+        match res_value {
+            ResolutionValue::Absolute(_) => {}
+            ResolutionValue::Address(address) => {
+                let rela = crate::slice::take_first_mut(&mut self.rela_dyn)
+                    .context("insufficient allocation to .rela.dyn")?;
+                rela.address = place;
+                rela.addend = address.wrapping_add(addend);
+                rela.info = elf::rel::R_X86_64_RELATIVE.into();
+            }
+            ResolutionValue::Dynamic(symbol_index) => {
+                let rela = crate::slice::take_first_mut(&mut self.rela_dyn)
+                    .context("insufficient allocation to .rela.dyn")?;
+                rela.address = place;
+                rela.addend = addend;
+                // We could plausibly use R_X86_64_JUMP_SLOT here in cases where we have only PLT
+                // references to a symbol and no GOT references. If we did that, we'd need to put
+                // the relocation in .rela.plt not .rela.dyn. Right now, we don't track whether a
+                // symbol has only PLT references and no GOT references. Also, we currently set the
+                // BIND_NOW flag, which means all the PLT relocations would be eagerly bound, making
+                // use of JUMP_SLOT relocations pointless.
+                rela.info = u64::from(symbol_index) << 32 | u64::from(elf::rel::R_X86_64_GLOB_DAT);
+            }
+        }
         Ok(())
     }
 
@@ -1096,7 +1119,11 @@ fn apply_relocation(
     let Some(resolution) = object_layout.get_resolution(rel, layout)? else {
         return Ok(RelocationModifier::Normal);
     };
-    let address = resolution.value;
+    let (value, value_kind) = match resolution.value {
+        ResolutionValue::Absolute(v) => (v, ValueKind::Absolute),
+        ResolutionValue::Address(v) => (v, ValueKind::Address),
+        ResolutionValue::Dynamic(_) => return Ok(RelocationModifier::Normal),
+    };
     let mut offset = offset_in_section as usize;
     let place = section_address + offset_in_section;
     let mut addend = rel.addend() as u64;
@@ -1105,12 +1132,9 @@ fn apply_relocation(
         unreachable!();
     };
     let rel_info;
-    if let Some((relaxation, r_type)) = Relaxation::new(
-        r_type,
-        out,
-        offset_in_section as usize,
-        resolution.value_kind,
-    ) {
+    if let Some((relaxation, r_type)) =
+        Relaxation::new(r_type, out, offset_in_section as usize, value_kind)
+    {
         rel_info = RelocationKindInfo::from_raw(r_type)?;
         relaxation.apply(out, offset_in_section as usize, &mut addend);
     } else {
@@ -1119,21 +1143,21 @@ fn apply_relocation(
     debug_assert!(rel.size() == 0 || rel.size() as usize / 8 == rel_info.byte_size);
     let value = match rel_info.kind {
         RelocationKind::Absolute => {
-            if relocation_writer.is_active && resolution.value_kind.is_address() {
-                relocation_writer.write_relocation(place, address.wrapping_add(addend))?;
+            if relocation_writer.is_active && !resolution.value.is_absolute() {
+                relocation_writer.write_relocation(place, resolution.value, addend)?;
                 0
             } else {
-                address.wrapping_add(addend)
+                value.wrapping_add(addend)
             }
         }
-        RelocationKind::Relative => address.wrapping_add(addend).wrapping_sub(place),
+        RelocationKind::Relative => value.wrapping_add(addend).wrapping_sub(place),
         RelocationKind::GotRelative => resolution
             .got_address()?
             .wrapping_add(addend)
             .wrapping_sub(place),
         RelocationKind::PltRelative => {
             if layout.args().link_static {
-                resolution.value.wrapping_add(addend).wrapping_sub(place)
+                value.wrapping_add(addend).wrapping_sub(place)
             } else {
                 resolution
                     .plt_address()?
@@ -1156,7 +1180,7 @@ fn apply_relocation(
                     ]);
                     offset += 8;
                     next_modifier = RelocationModifier::SkipNextRelocation;
-                    address.wrapping_sub(layout.tls_end_address())
+                    value.wrapping_sub(layout.tls_end_address())
                 }
                 TlsMode::Preserve => resolution
                     .got_address()?
@@ -1188,7 +1212,7 @@ fn apply_relocation(
         }
         RelocationKind::DtpOff => {
             if layout.args().link_static {
-                address
+                value
                     .wrapping_sub(layout.tls_end_address())
                     .wrapping_add(addend)
             } else {
@@ -1199,7 +1223,7 @@ fn apply_relocation(
             .got_address()?
             .wrapping_add(addend)
             .wrapping_sub(place),
-        RelocationKind::TpOff => address.wrapping_sub(layout.tls_end_address()),
+        RelocationKind::TpOff => value.wrapping_sub(layout.tls_end_address()),
         other => bail!("Unsupported relocation kind {other:?}"),
     };
     let value_bytes = value.to_le_bytes();
@@ -1225,20 +1249,13 @@ fn expect_bytes_before_offset(bytes: &[u8], offset: usize, expected: &[u8]) -> R
 
 impl<'data> InternalLayout<'data> {
     fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
-        let (file_header_bytes, rest) = buffers
-            .file_headers
-            .split_at_mut(usize::from(elf::FILE_HEADER_SIZE));
-        let header: &mut FileHeader = bytemuck::from_bytes_mut(file_header_bytes);
+        let header: &mut FileHeader = bytemuck::from_bytes_mut(buffers.file_header);
         *header = FileHeader::build(layout, &self.header_info)?;
 
-        let (program_headers_bytes, rest) =
-            rest.split_at_mut(self.header_info.program_headers_size() as usize);
-        let mut program_headers = ProgramHeaderWriter::new(program_headers_bytes);
+        let mut program_headers = ProgramHeaderWriter::new(buffers.program_headers);
         write_program_headers(&mut program_headers, layout)?;
 
-        let (section_headers_bytes, _rest) =
-            rest.split_at_mut(self.header_info.section_headers_size() as usize);
-        write_section_headers(section_headers_bytes, layout);
+        write_section_headers(buffers.section_headers, layout);
 
         write_section_header_strings(buffers.shstrtab, &layout.output_sections);
 
@@ -1255,13 +1272,19 @@ impl<'data> InternalLayout<'data> {
 
         self.write_merged_strings(&mut buffers);
 
-        if layout.args().pie {
-            self.write_dynamic_entries(buffers.dynamic, layout)?;
-        }
+        self.write_interp(&mut buffers);
 
         relocation_writer.validate_empty(&self.mem_sizes)?;
 
         Ok(())
+    }
+
+    fn write_interp(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>) {
+        if let Some(dynamic_linker) = self.dynamic_linker.as_ref() {
+            buffers
+                .interp
+                .copy_from_slice(dynamic_linker.as_bytes_with_nul());
+        }
     }
 
     fn write_merged_strings(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>) {
@@ -1306,8 +1329,7 @@ impl<'data> InternalLayout<'data> {
         if let Some(got_address) = self.tlsld_got_entry {
             plt_got_writer.process_resolution(
                 &Resolution {
-                    value: 1,
-                    value_kind: ValueKind::Absolute,
+                    value: ResolutionValue::Absolute(1),
                     got_address: Some(got_address),
                     plt_address: None,
                     kind: TargetResolutionKind::Got,
@@ -1316,8 +1338,7 @@ impl<'data> InternalLayout<'data> {
             )?;
             plt_got_writer.process_resolution(
                 &Resolution {
-                    value: 0,
-                    value_kind: ValueKind::Absolute,
+                    value: ResolutionValue::Absolute(0),
                     got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
                     plt_address: None,
                     kind: TargetResolutionKind::Got,
@@ -1357,104 +1378,15 @@ impl<'data> InternalLayout<'data> {
         symbol_writer.check_exhausted()?;
         Ok(())
     }
+}
 
-    fn write_dynamic_entries(&self, out: &mut [u8], layout: &Layout) -> Result {
-        let mut entries: &mut [DynamicEntry] = bytemuck::cast_slice_mut(out);
-        assert_eq!(entries.len(), NUM_DYNAMIC_ENTRIES);
-        // When adding/removing entries, don't forget to update NUM_DYNAMIC_ENTRIES
-        write_dynamic_entry(
-            &mut entries,
-            DynamicTag::Init,
-            layout.offset_of_section(output_section_id::INIT),
-        )?;
-        write_dynamic_entry(
-            &mut entries,
-            DynamicTag::Fini,
-            layout.offset_of_section(output_section_id::FINI),
-        )?;
-
-        write_dynamic_entry(
-            &mut entries,
-            DynamicTag::InitArray,
-            layout.offset_of_section(output_section_id::INIT_ARRAY),
-        )?;
-        write_dynamic_entry(
-            &mut entries,
-            DynamicTag::InitArraySize,
-            layout.size_of_section(output_section_id::INIT_ARRAY),
-        )?;
-
-        write_dynamic_entry(
-            &mut entries,
-            DynamicTag::FiniArray,
-            layout.offset_of_section(output_section_id::FINI_ARRAY),
-        )?;
-        write_dynamic_entry(
-            &mut entries,
-            DynamicTag::FiniArraySize,
-            layout.size_of_section(output_section_id::FINI_ARRAY),
-        )?;
-
-        write_dynamic_entry(
-            &mut entries,
-            DynamicTag::StrTab,
-            layout.offset_of_section(output_section_id::DYNSTR),
-        )?;
-        write_dynamic_entry(
-            &mut entries,
-            DynamicTag::StrSize,
-            layout.size_of_section(output_section_id::DYNSTR),
-        )?;
-
-        write_dynamic_entry(
-            &mut entries,
-            DynamicTag::SymTab,
-            layout.offset_of_section(output_section_id::DYNSYM),
-        )?;
-        write_dynamic_entry(
-            &mut entries,
-            DynamicTag::SymEnt,
-            core::mem::size_of::<elf::SymtabEntry>() as u64,
-        )?;
-
-        write_dynamic_entry(&mut entries, DynamicTag::Debug, 0)?;
-
-        write_dynamic_entry(
-            &mut entries,
-            DynamicTag::Rela,
-            layout.offset_of_section(output_section_id::RELA_DYN),
-        )?;
-        write_dynamic_entry(
-            &mut entries,
-            DynamicTag::RelaSize,
-            layout.size_of_section(output_section_id::RELA_DYN),
-        )?;
-        write_dynamic_entry(&mut entries, DynamicTag::RelaEnt, elf::RELA_ENTRY_SIZE)?;
-        write_dynamic_entry(
-            &mut entries,
-            DynamicTag::RelaCount,
-            layout.size_of_section(output_section_id::RELA_DYN)
-                / core::mem::size_of::<elf::Rela>() as u64,
-        )?;
-
-        write_dynamic_entry(&mut entries, DynamicTag::Flags, elf::flags::BIND_NOW)?;
-        write_dynamic_entry(
-            &mut entries,
-            DynamicTag::Flags1,
-            elf::flags_1::PIE | elf::flags_1::NOW,
-        )?;
-
-        //write_dynamic_entry(&mut entries, DynamicTag::Hash, todo)?;
-        //write_dynamic_entry(&mut entries, DynamicTag::StrTab, todo)?;
-        // write_dynamic_entry(&mut entries, DynamicTag::Rela, todo)?;
-        // write_dynamic_entry(&mut entries, DynamicTag::RelaSize, todo)?;
-        // write_dynamic_entry(&mut entries, DynamicTag::RelEnt, todo)?;
-        // write_dynamic_entry(&mut entries, DynamicTag::StrSize, todo)?;
-        // write_dynamic_entry(&mut entries, DynamicTag::Rel, todo)?;
-        // write_dynamic_entry(&mut entries, DynamicTag::RelSize, todo)?;
-        write_dynamic_entry(&mut entries, DynamicTag::Null, 0)?;
-        Ok(())
+fn write_epilogue_dynamic_entries(out: &mut [u8], layout: &Layout) -> Result {
+    let mut out = DynamicEntriesWriter::new(out);
+    for writer in EPILOGUE_DYNAMIC_ENTRY_WRITERS {
+        writer.write(&mut out, layout)?;
     }
+
+    Ok(())
 }
 
 impl EpilogueLayout {
@@ -1479,6 +1411,9 @@ impl EpilogueLayout {
                 &layout.output_sections,
             );
             write_internal_symbols(&self.internal_symbols, layout, &mut symbol_writer)?;
+        }
+        if layout.args().needs_dynamic() {
+            write_epilogue_dynamic_entries(buffers.dynamic, layout)?;
         }
 
         Ok(())
@@ -1506,7 +1441,7 @@ fn write_internal_symbols(
 
         // We don't emit a section header for our headers section, so don't emit symbols that
         // are in that section, otherwise they'll show up as undefined.
-        if section_id == output_section_id::HEADERS {
+        if section_id == output_section_id::FILE_HEADER {
             continue;
         }
 
@@ -1521,10 +1456,7 @@ fn write_internal_symbols(
                     layout.output_sections.display_name(section_id)
                 )
             })?;
-        let address = match resolution {
-            SymbolResolution::Resolved(res) => res.value,
-            SymbolResolution::Dynamic => unreachable!(),
-        };
+        let address = resolution.value.address()?;
         let entry = symbol_writer
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
@@ -1576,16 +1508,92 @@ fn eh_frame_ptr(layout: &Layout<'_>) -> Result<i32> {
     .context(".eh_frame more than 2GB away from .eh_frame_hdr")
 }
 
-// TODO: Compute this at runtime by making the that writes the dynamic entries generic over its
-// output, then instantiating it with an output that just counts.
-pub(crate) const NUM_DYNAMIC_ENTRIES: usize = 18;
+pub(crate) const NUM_EPILOGUE_DYNAMIC_ENTRIES: usize = EPILOGUE_DYNAMIC_ENTRY_WRITERS.len();
 
-fn write_dynamic_entry(out: &mut &mut [DynamicEntry], tag: DynamicTag, value: u64) -> Result {
-    let entry = crate::slice::take_first_mut(out)
-        .ok_or_else(|| anyhow!("Insufficient dynamic table entries"))?;
-    entry.tag = tag as u64;
-    entry.value = value;
-    Ok(())
+const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
+    DynamicEntryWriter::new(DynamicTag::Init, |layout| {
+        layout.vma_of_section(output_section_id::INIT)
+    }),
+    DynamicEntryWriter::new(DynamicTag::Fini, |layout| {
+        layout.vma_of_section(output_section_id::FINI)
+    }),
+    DynamicEntryWriter::new(DynamicTag::InitArray, |layout| {
+        layout.vma_of_section(output_section_id::INIT_ARRAY)
+    }),
+    DynamicEntryWriter::new(DynamicTag::InitArraySize, |layout| {
+        layout.size_of_section(output_section_id::INIT_ARRAY)
+    }),
+    DynamicEntryWriter::new(DynamicTag::FiniArray, |layout| {
+        layout.vma_of_section(output_section_id::FINI_ARRAY)
+    }),
+    DynamicEntryWriter::new(DynamicTag::FiniArraySize, |layout| {
+        layout.size_of_section(output_section_id::FINI_ARRAY)
+    }),
+    DynamicEntryWriter::new(DynamicTag::StrTab, |layout| {
+        layout.vma_of_section(output_section_id::DYNSTR)
+    }),
+    DynamicEntryWriter::new(DynamicTag::StrSize, |layout| {
+        layout.size_of_section(output_section_id::DYNSTR)
+    }),
+    DynamicEntryWriter::new(DynamicTag::SymTab, |layout| {
+        layout.vma_of_section(output_section_id::DYNSYM)
+    }),
+    DynamicEntryWriter::new(DynamicTag::SymEnt, |_layout| {
+        core::mem::size_of::<elf::SymtabEntry>() as u64
+    }),
+    DynamicEntryWriter::new(DynamicTag::Debug, |_layout| 0),
+    DynamicEntryWriter::new(DynamicTag::Rela, |layout| {
+        layout.vma_of_section(output_section_id::RELA_DYN)
+    }),
+    DynamicEntryWriter::new(DynamicTag::RelaSize, |layout| {
+        layout.size_of_section(output_section_id::RELA_DYN)
+    }),
+    DynamicEntryWriter::new(DynamicTag::RelaEnt, |_layout| elf::RELA_ENTRY_SIZE),
+    DynamicEntryWriter::new(DynamicTag::RelaCount, |layout| {
+        layout.size_of_section(output_section_id::RELA_DYN)
+            / core::mem::size_of::<elf::Rela>() as u64
+    }),
+    DynamicEntryWriter::new(DynamicTag::Flags, |_layout| elf::flags::BIND_NOW),
+    DynamicEntryWriter::new(DynamicTag::Flags1, |_layout| {
+        elf::flags_1::PIE | elf::flags_1::NOW
+    }),
+    DynamicEntryWriter::new(DynamicTag::Null, |_layout| 0),
+];
+
+struct DynamicEntryWriter {
+    tag: DynamicTag,
+    cb: fn(&Layout) -> u64,
+}
+
+impl DynamicEntryWriter {
+    const fn new(tag: DynamicTag, cb: fn(&Layout) -> u64) -> DynamicEntryWriter {
+        DynamicEntryWriter { tag, cb }
+    }
+
+    fn write(&self, out: &mut DynamicEntriesWriter, layout: &Layout) -> Result {
+        let value = (self.cb)(layout);
+        out.write(self.tag, value)
+    }
+}
+
+struct DynamicEntriesWriter<'out> {
+    out: &'out mut [DynamicEntry],
+}
+
+impl<'out> DynamicEntriesWriter<'out> {
+    fn new(buffer: &mut [u8]) -> DynamicEntriesWriter {
+        DynamicEntriesWriter {
+            out: bytemuck::cast_slice_mut(buffer),
+        }
+    }
+
+    fn write(&mut self, tag: DynamicTag, value: u64) -> Result {
+        let entry = crate::slice::take_first_mut(&mut self.out)
+            .ok_or_else(|| anyhow!("Insufficient dynamic table entries"))?;
+        entry.tag = tag as u64;
+        entry.value = value;
+        Ok(())
+    }
 }
 
 fn write_section_headers(out: &mut [u8], layout: &Layout) {
@@ -1681,4 +1689,75 @@ fn write_internal_symbols_plt_got_entries(
             .with_context(|| format!("Failed to process `{}`", layout.symbol_debug(symbol_id)))?;
     }
     Ok(())
+}
+
+impl<'data> DynamicLayout<'data> {
+    fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
+        let mut plt_got_writer = PltGotWriter::new(layout, &mut buffers);
+        let mut relocation_writer = DynamicRelocationWriter::new(true, &mut buffers);
+        let mut strtab = StrTabWriter {
+            next_offset: self.dynstr_start_offset,
+            out: buffers.dynstr,
+        };
+
+        self.write_so_name(buffers.dynamic, &mut strtab)?;
+
+        let mut dynsym: &mut [SymtabEntry] = bytemuck::cast_slice_mut(buffers.dynsym);
+        for ((_symbol_id, resolution), symbol) in layout
+            .resolutions_in_range(self.start_symbol_id, self.num_symbols)
+            .zip(self.object.dynamic_symbols())
+        {
+            if let Some(res) = resolution {
+                write_dynamic_symtab_entry(&symbol, &mut dynsym, &mut strtab)?;
+                plt_got_writer.process_resolution(res, &mut relocation_writer)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Write dynamic entry to indicate name of shared object to load.
+    fn write_so_name(&self, dynamic: &mut [u8], strtab: &mut StrTabWriter) -> Result {
+        let mut dynamic_out = DynamicEntriesWriter::new(dynamic);
+        let needed_offset = strtab.write_str(self.lib_name);
+        dynamic_out.write(DynamicTag::Needed, needed_offset)?;
+        Ok(())
+    }
+}
+
+fn write_dynamic_symtab_entry(
+    symbol: &crate::elf::Symbol,
+    dynsym: &mut &mut [SymtabEntry],
+    strtab: &mut StrTabWriter,
+) -> Result {
+    let sym_out =
+        crate::slice::take_first_mut(dynsym).context("Insufficient .dynsym allocation")?;
+    sym_out.name = strtab
+        .write_str(symbol.name_bytes()?)
+        .try_into()
+        .context(".dynstr is too big")?;
+    let object::SymbolFlags::Elf { st_info, st_other } = symbol.flags() else {
+        unreachable!()
+    };
+    sym_out.info = st_info;
+    sym_out.other = st_other;
+    sym_out.size = 0;
+    Ok(())
+}
+
+struct StrTabWriter<'out> {
+    next_offset: u64,
+    out: &'out mut [u8],
+}
+
+impl<'out> StrTabWriter<'out> {
+    fn write_str(&mut self, str: &[u8]) -> u64 {
+        let len_with_terminator = str.len() + 1;
+        let lib_name_out = slice_take_prefix_mut(&mut self.out, len_with_terminator);
+        lib_name_out[..str.len()].copy_from_slice(str);
+        lib_name_out[str.len()] = 0;
+        let offset = self.next_offset;
+        self.next_offset += len_with_terminator as u64;
+        offset
+    }
 }

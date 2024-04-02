@@ -52,22 +52,25 @@ pub(crate) struct SectionDetails<'data> {
 }
 
 // Sections that we generate ourselves rather than copying directly from input objects.
-pub(crate) const HEADERS: OutputSectionId = OutputSectionId(0);
-pub(crate) const SHSTRTAB: OutputSectionId = OutputSectionId(1);
-pub(crate) const SYMTAB: OutputSectionId = OutputSectionId(2);
-pub(crate) const STRTAB: OutputSectionId = OutputSectionId(3);
-pub(crate) const GOT: OutputSectionId = OutputSectionId(4);
-pub(crate) const PLT: OutputSectionId = OutputSectionId(5);
-pub(crate) const RELA_PLT: OutputSectionId = OutputSectionId(6);
-pub(crate) const EH_FRAME: OutputSectionId = OutputSectionId(7);
-pub(crate) const EH_FRAME_HDR: OutputSectionId = OutputSectionId(8);
-pub(crate) const DYNAMIC: OutputSectionId = OutputSectionId(9);
-pub(crate) const DYNSYM: OutputSectionId = OutputSectionId(10);
-pub(crate) const DYNSTR: OutputSectionId = OutputSectionId(11);
-pub(crate) const RELA_DYN: OutputSectionId = OutputSectionId(12);
+pub(crate) const FILE_HEADER: OutputSectionId = OutputSectionId(0);
+pub(crate) const PROGRAM_HEADERS: OutputSectionId = OutputSectionId(1);
+pub(crate) const SECTION_HEADERS: OutputSectionId = OutputSectionId(2);
+pub(crate) const SHSTRTAB: OutputSectionId = OutputSectionId(3);
+pub(crate) const SYMTAB: OutputSectionId = OutputSectionId(4);
+pub(crate) const STRTAB: OutputSectionId = OutputSectionId(5);
+pub(crate) const GOT: OutputSectionId = OutputSectionId(6);
+pub(crate) const PLT: OutputSectionId = OutputSectionId(7);
+pub(crate) const RELA_PLT: OutputSectionId = OutputSectionId(8);
+pub(crate) const EH_FRAME: OutputSectionId = OutputSectionId(9);
+pub(crate) const EH_FRAME_HDR: OutputSectionId = OutputSectionId(10);
+pub(crate) const DYNAMIC: OutputSectionId = OutputSectionId(11);
+pub(crate) const DYNSYM: OutputSectionId = OutputSectionId(12);
+pub(crate) const DYNSTR: OutputSectionId = OutputSectionId(13);
+pub(crate) const RELA_DYN: OutputSectionId = OutputSectionId(14);
+pub(crate) const INTERP: OutputSectionId = OutputSectionId(15);
 
 /// Regular sections are sections that come from input files and can contain a mix of alignments.
-pub(crate) const NUM_GENERATED_SECTIONS: usize = 13;
+pub(crate) const NUM_GENERATED_SECTIONS: usize = 16;
 
 // Sections that need to be referenced from code. When adding new sections here, be sure to update
 // `test_constant_ids`.
@@ -204,6 +207,25 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
+            name: ".phdr".as_bytes(),
+            section_flags: 0,
+            ..SectionDetails::default()
+        },
+        min_alignment: alignment::PROGRAM_HEADER_ENTRY,
+        keep_if_empty: true,
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: ".shdr".as_bytes(),
+            section_flags: 0,
+            ..SectionDetails::default()
+        },
+        keep_if_empty: true,
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        details: SectionDetails {
             name: ".shstrtab".as_bytes(),
             ty: elf::Sht::Strtab,
             section_flags: elf::shf::STRINGS,
@@ -327,6 +349,15 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         },
         min_alignment: alignment::RELA_ENTRY,
         link: Some(DYNSYM),
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: ".interp".as_bytes(),
+            ty: elf::Sht::Progbits,
+            section_flags: elf::shf::ALLOC,
+            ..SectionDetails::default()
+        },
         ..DEFAULT_DEFS
     },
     // Start of regular sections
@@ -763,7 +794,14 @@ impl<'data> OutputSections<'data> {
     /// can overlap, so are represented as start and end events.
     pub(crate) fn sections_and_segments_do(&self, mut cb: impl FnMut(OrderEvent)) {
         cb(OrderEvent::SegmentStart(crate::program_segments::LOAD_RO));
-        cb(HEADERS.event());
+        cb(FILE_HEADER.event());
+        cb(OrderEvent::SegmentStart(crate::program_segments::PHDR));
+        cb(PROGRAM_HEADERS.event());
+        cb(OrderEvent::SegmentEnd(crate::program_segments::PHDR));
+        cb(SECTION_HEADERS.event());
+        cb(OrderEvent::SegmentStart(crate::program_segments::INTERP));
+        cb(INTERP.event());
+        cb(OrderEvent::SegmentEnd(crate::program_segments::INTERP));
         cb(DYNSYM.event());
         cb(DYNSTR.event());
         cb(RELA_DYN.event());
@@ -943,7 +981,7 @@ fn dynsym_info(_layout: &Layout) -> u32 {
 #[test]
 fn test_constant_ids() {
     let check = &[
-        (HEADERS, ""),
+        (FILE_HEADER, ""),
         (RODATA, ".rodata"),
         (TEXT, ".text"),
         (INIT_ARRAY, ".init_array"),
@@ -969,6 +1007,9 @@ fn test_constant_ids() {
         (DYNSTR, ".dynstr"),
         (RELA_DYN, ".rela.dyn"),
         (GCC_EXCEPT_TABLE, ".gcc_except_table"),
+        (INTERP, ".interp"),
+        (PROGRAM_HEADERS, ".phdr"),
+        (SECTION_HEADERS, ".shdr"),
     ];
     for (id, name) in check {
         assert_eq!(

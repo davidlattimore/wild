@@ -5,6 +5,7 @@
 
 use crate::args::Input;
 use crate::args::InputSpec;
+use crate::args::Modifiers;
 use crate::error::Result;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -13,12 +14,16 @@ use std::path::Path;
 
 /// Parse the kind of linker script that's put in place of a shared object to specify that the
 /// linker should load several files.
-pub(crate) fn linker_script_to_inputs(bytes: &[u8], path: &Path) -> Result<Vec<Input>> {
+pub(crate) fn linker_script_to_inputs(
+    bytes: &[u8],
+    path: &Path,
+    modifiers: Modifiers,
+) -> Result<Vec<Input>> {
     let text = std::str::from_utf8(bytes)?;
     let directory = path
         .parent()
         .ok_or_else(|| anyhow!("Need directory for path `{}`", path.display()))?;
-    Ok(inputs_from_script(text)
+    Ok(inputs_from_script(text, modifiers)
         .with_context(|| format!("Failed to parse linker script `{}`", path.display()))?
         .into_iter()
         .map(|mut input| {
@@ -121,15 +126,15 @@ fn parse_command<'a>(tokens: &mut Tokeniser<'a>, token: &str) -> Result<Command<
     }
 }
 
-fn inputs_from_script(text: &str) -> Result<Vec<Input>> {
+fn inputs_from_script(text: &str, starting_modifiers: Modifiers) -> Result<Vec<Input>> {
     let mut tokens = Tokeniser::new(text);
     let commands = parse_commands_up_to(&mut tokens, None)?;
     let mut inputs = Vec::new();
-    collect_inputs(&commands, &mut inputs);
+    collect_inputs(&commands, &mut inputs, starting_modifiers);
     Ok(inputs)
 }
 
-fn collect_inputs(commands: &[Command], inputs: &mut Vec<Input>) {
+fn collect_inputs(commands: &[Command], inputs: &mut Vec<Input>, modifiers: Modifiers) {
     for command in commands {
         match command {
             Command::Arg(arg) => {
@@ -141,10 +146,17 @@ fn collect_inputs(commands: &[Command], inputs: &mut Vec<Input>) {
                 inputs.push(Input {
                     spec,
                     search_first: None,
+                    modifiers,
                 });
             }
-            Command::Group(subs) => collect_inputs(subs, inputs),
-            Command::AsNeeded(subs) => collect_inputs(subs, inputs),
+            Command::Group(subs) => collect_inputs(subs, inputs, modifiers),
+            Command::AsNeeded(subs) => {
+                let sub_modifiers = Modifiers {
+                    as_needed: true,
+                    ..modifiers
+                };
+                collect_inputs(subs, inputs, sub_modifiers)
+            }
             Command::Ignored => {}
         }
     }
@@ -199,6 +211,7 @@ mod tests {
             r#"/* GNU ld script */
             GROUP ( libgcc_s.so.1 -lgcc )
         "#,
+            Modifiers::default(),
         )
         .unwrap();
         assert_eq!(
@@ -216,6 +229,7 @@ mod tests {
             r#"OUTPUT_FORMAT(elf64-x86-64)
             GROUP ( /lib/x86_64-linux-gnu/libc.so.6 /usr/lib/x86_64-linux-gnu/libc_nonshared.a  AS_NEEDED ( /lib64/ld-linux-x86-64.so.2 ) )
         "#,
+        Modifiers::default(),
         )
         .unwrap();
         assert_eq!(
