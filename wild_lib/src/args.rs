@@ -31,12 +31,18 @@ pub(crate) struct Args {
     pub(crate) pie: bool,
 }
 
+#[derive(Default, Debug, Eq, PartialEq, Clone, Copy)]
+pub(crate) struct Modifiers {
+    pub(crate) as_needed: bool,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct Input {
     pub(crate) spec: InputSpec,
     /// A directory to search first. Only present when the input came from a linker script, in which
     /// case this is the directory containing the linker script.
     pub(crate) search_first: Option<PathBuf>,
+    pub(crate) modifiers: Modifiers,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -58,9 +64,6 @@ const IGNORED_FLAGS: &[&str] = &[
     "--build-id",
     // TODO: We currently always GC sections. Support _not_ GCing them.
     "--gc-sections",
-    // TODO: Support --as-needed and --no-as-needed. Requires dynamic linking.
-    "--as-needed",
-    "--no-as-needed",
     // TODO: Think about if anything is needed here. We don't need groups in order resolve cycles,
     // so perhaps ignoring these is the right thing to do.
     "--start-group",
@@ -73,6 +76,8 @@ const IGNORED_FLAGS: &[&str] = &[
     "-nostdlib",
     // TODO: Implement
     "--no-dynamic-linker",
+    "--push-state",
+    "--pop-state",
 ];
 
 impl Args {
@@ -118,6 +123,7 @@ impl Args {
         let mut debug_fuel = None;
         let mut validate_output = std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1");
         let mut pie = false;
+        let mut modifier_stack = vec![Modifiers::default()];
         // Skip program name
         input.next();
         while let Some(arg) = input.next() {
@@ -134,6 +140,7 @@ impl Args {
                 inputs.push(Input {
                     spec: InputSpec::Lib(Box::from(rest)),
                     search_first: None,
+                    modifiers: *modifier_stack.last().unwrap(),
                 });
             } else if arg == "-static" {
                 link_static = true;
@@ -161,6 +168,19 @@ impl Args {
                 prepopulate_maps = true;
             } else if arg == "--sym-info" {
                 sym_info = input.next().map(|a| a.as_ref().to_owned());
+            } else if arg == "--as-needed" {
+                modifier_stack.last_mut().unwrap().as_needed = true;
+            } else if arg == "--no-as-needed" {
+                modifier_stack.last_mut().unwrap().as_needed = false;
+            } else if arg == "--push-state" {
+                modifier_stack.push(*modifier_stack.last().unwrap());
+            } else if arg == "--pop-state" {
+                modifier_stack.pop();
+                // We put the initial value on the stack, so if it's ever empty, then the arguments
+                // are invalid.
+                if modifier_stack.is_empty() {
+                    bail!("Mismatched --pop-state");
+                }
             } else if arg == "--no-string-merge" {
                 merge_strings = false;
             } else if arg == "-pie" {
@@ -186,6 +206,7 @@ impl Args {
                 inputs.push(Input {
                     spec: InputSpec::File(Box::from(Path::new(arg))),
                     search_first: None,
+                    modifiers: *modifier_stack.last().unwrap(),
                 });
             }
         }
@@ -262,6 +283,13 @@ impl Args {
     }
 
     pub(crate) fn is_relocatable(&self) -> bool {
+        self.pie
+    }
+
+    /// Returns whether we need a dynamic section.
+    pub(crate) fn needs_dynamic(&self) -> bool {
+        // TODO: Investigate if it's possible to have a dynamically linked non-relocatable
+        // executable. If it is, then we still need a dynamic section.
         self.pie
     }
 }

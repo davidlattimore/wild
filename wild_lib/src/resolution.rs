@@ -38,7 +38,6 @@ use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
 use std::collections::BTreeMap;
-use std::ffi::CString;
 
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
 pub fn resolve_symbols_and_sections<'data>(
@@ -69,7 +68,6 @@ pub fn resolve_symbols_and_sections<'data>(
     resolve_alternative_symbol_definitions(symbol_db, &resolved)?;
 
     resolved[INTERNAL_FILE_ID.as_usize()] = ResolvedFile::Internal(ResolvedInternal {
-        dynamic_linker: internal.dynamic_linker.clone(),
         symbol_definitions: &internal.symbol_definitions,
         merged_strings,
     });
@@ -89,7 +87,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
     SegQueue<StartStopSet<'data>>,
     &'data InternalInputObject,
 )> {
-    let num_objects = file_states.len();
+    let mut num_objects = 0;
     let mut objects = Vec::new();
     assert!(DefinitionsCell::is_lock_free());
     let mut symbol_definitions = symbol_db.take_definitions();
@@ -109,13 +107,13 @@ pub(crate) fn resolve_symbols_in_files<'data>(
                 ResolvedFile::NotLoaded
             }
             InputObject::Object(s) => {
-                if !s.is_from_archive() {
+                if !s.is_optional() {
                     let definitions = definitions_per_file[s.file_id.as_usize()].take().unwrap();
                     objects.push((s, definitions));
                 }
+                num_objects += 1;
                 ResolvedFile::NotLoaded
             }
-            InputObject::Dynamic(_) => todo!(),
             InputObject::Epilogue(s) => ResolvedFile::Epilogue(ResolvedEpilogue {
                 file_id: s.file_id,
                 start_symbol_id: s.start_symbol_id,
@@ -269,23 +267,26 @@ pub(crate) struct MergedStringResolution {
     pub(crate) offset: u64,
 }
 
-pub struct ResolvedInternal<'data> {
-    // TODO: Use this - when we implement dynamic linking
-    #[allow(dead_code)]
-    pub(crate) dynamic_linker: Option<CString>,
+pub(crate) struct ResolvedInternal<'data> {
     pub(crate) symbol_definitions: &'data [InternalSymDefInfo],
     pub(crate) merged_strings: OutputSectionMap<MergedStringsSection<'data>>,
 }
 
-pub struct ResolvedObject<'data> {
+pub(crate) struct ResolvedObject<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) object: &'data File<'data>,
     pub(crate) file_id: FileId,
-    pub(crate) merged_string_resolutions: Vec<Option<MergedStringResolution>>,
     pub(crate) num_symbols: usize,
+    pub(crate) start_symbol_id: SymbolId,
+
+    pub(crate) non_dynamic: Option<NonDynamicResolved<'data>>,
+}
+
+/// Parts of a resolved object that are only applicable to non-dynamic objects.
+pub(crate) struct NonDynamicResolved<'data> {
+    pub(crate) merged_string_resolutions: Vec<Option<MergedStringResolution>>,
     pub(crate) sections: Vec<SectionSlot<'data>>,
     merge_strings_sections: Vec<MergeStringsFileSection<'data>>,
-    pub(crate) start_symbol_id: SymbolId,
 
     /// Details about each custom section that is defined in this object. The index is an index into
     /// self.sections.
@@ -360,7 +361,10 @@ fn merge_strings<'data>(
         let ResolvedFile::Object(obj) = file else {
             continue;
         };
-        for sec in &mut obj.merge_strings_sections {
+        let Some(non_dynamic) = obj.non_dynamic.as_mut() else {
+            continue;
+        };
+        for sec in &mut non_dynamic.merge_strings_sections {
             let output_section_id = output_sections.output_section_id(sec.temporary_section_id)?;
             let string_to_offset = strings_by_section.get_mut(output_section_id);
             let mut symbols = sec.references.iter().peekable();
@@ -378,7 +382,7 @@ fn merge_strings<'data>(
                         // This reference belongs to a subsequent string.
                         break;
                     }
-                    obj.merged_string_resolutions[merge_ref.symbol_index.0] =
+                    non_dynamic.merged_string_resolutions[merge_ref.symbol_index.0] =
                         Some(MergedStringResolution {
                             output_section_id,
                             offset: output_offset + offset_into_string,
@@ -403,9 +407,11 @@ fn assign_section_ids<'data>(
     let mut output_sections_builder = OutputSectionsBuilder::with_base_address(args.base_address());
     for s in resolved {
         if let ResolvedFile::Object(s) = s {
-            output_sections_builder
-                .add_sections(&s.custom_sections)
-                .with_context(|| format!("Failed to process custom sections for {s}"))?;
+            if let Some(non_dynamic) = s.non_dynamic.as_ref() {
+                output_sections_builder
+                    .add_sections(&non_dynamic.custom_sections)
+                    .with_context(|| format!("Failed to process custom sections for {s}"))?;
+            }
         }
     }
     output_sections_builder.build()
@@ -555,28 +561,45 @@ impl<'data> ResolvedObject<'data> {
         definitions_out: &mut [SymbolId],
         start_stop_sets: &SegQueue<StartStopSet<'data>>,
     ) -> Result<Self> {
-        let mut custom_sections = Vec::new();
-        let mut sections = resolve_sections(obj, &mut custom_sections, symbol_db.args)?;
+        let mut non_dynamic = None;
 
-        resolve_symbols(
-            obj,
-            symbol_db,
-            request_file_id,
-            start_stop_sets,
-            definitions_out,
-            &mut sections,
-        )
-        .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
-
-        let mut merge_strings_sections = Vec::new();
-        for slot in &mut sections {
-            if let SectionSlot::MergeStrings(merge) = slot {
-                let mut owned_merge = merge.take();
-                // We need references sorted by offset so that we can find which references belong
-                // to which strings as we iterate through them when doing the merge.
-                owned_merge.references.sort_by_key(|r| r.offset);
-                merge_strings_sections.push(owned_merge);
+        if obj.is_dynamic {
+            resolve_dynamic_symbols(
+                obj,
+                symbol_db,
+                request_file_id,
+                start_stop_sets,
+                definitions_out,
+            )
+            .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
+        } else {
+            let mut custom_sections = Vec::new();
+            let mut sections = resolve_sections(obj, &mut custom_sections, symbol_db.args)?;
+            resolve_symbols(
+                obj,
+                symbol_db,
+                request_file_id,
+                start_stop_sets,
+                definitions_out,
+                &mut sections,
+            )
+            .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
+            let mut merge_strings_sections = Vec::new();
+            for slot in &mut sections {
+                if let SectionSlot::MergeStrings(merge) = slot {
+                    let mut owned_merge = merge.take();
+                    // We need references sorted by offset so that we can find which references belong
+                    // to which strings as we iterate through them when doing the merge.
+                    owned_merge.references.sort_by_key(|r| r.offset);
+                    merge_strings_sections.push(owned_merge);
+                }
             }
+            non_dynamic = Some(NonDynamicResolved {
+                merged_string_resolutions: vec![None; obj.num_symbols],
+                sections,
+                merge_strings_sections,
+                custom_sections,
+            });
         }
 
         Ok(Self {
@@ -584,11 +607,8 @@ impl<'data> ResolvedObject<'data> {
             object: &obj.object,
             file_id: obj.file_id,
             num_symbols: obj.num_symbols,
-            merged_string_resolutions: vec![None; obj.num_symbols],
-            sections,
-            custom_sections,
-            merge_strings_sections,
             start_symbol_id: obj.start_symbol_id,
+            non_dynamic,
         })
     }
 }
@@ -642,40 +662,16 @@ fn resolve_symbols<'data>(
     sections: &mut [SectionSlot<'data>],
 ) -> Result {
     let mut start_stop_refs: AHashMap<&'data [u8], Vec<object::SymbolIndex>> = AHashMap::new();
-    obj.object
-        .symbols()
-        .zip(definitions_out)
-        .try_for_each(|(local_symbol, definition)| {
-            let name_bytes = local_symbol.name_bytes()?;
-            if definition.is_undefined() && local_symbol.index().0 != 0 {
-                debug_assert_bail!(
-                    local_symbol.is_global(),
-                    "Only globals should be undefined, found symbol `{}`",
-                    String::from_utf8_lossy(name_bytes)
-                );
-                assert!(!local_symbol.is_definition());
-                match symbol_db
-                    .global_names
-                    .get(&SymbolName::prehashed(name_bytes))
-                {
-                    Some(&symbol_id) => {
-                        *definition = symbol_id;
-                        let symbol_file_id = symbol_db.file_id_for_symbol(symbol_id);
-                        if symbol_file_id != obj.file_id && !local_symbol.is_weak() {
-                            request_file_id(symbol_file_id);
-                        }
-                    }
-                    None => {
-                        if name_bytes.starts_with(b"__start_") || name_bytes.starts_with(b"__stop_")
-                        {
-                            start_stop_refs
-                                .entry(name_bytes)
-                                .or_default()
-                                .push(local_symbol.index());
-                        }
-                    }
-                }
-            }
+    obj.object.symbols().zip(definitions_out).try_for_each(
+        |(local_symbol, definition)| -> Result {
+            resolve_symbol(
+                local_symbol,
+                definition,
+                symbol_db,
+                obj,
+                &mut request_file_id,
+                &mut start_stop_refs,
+            )?;
 
             if let Some(local_section_index) = local_symbol.section_index() {
                 if let SectionSlot::MergeStrings(merge) = &mut sections[local_section_index.0] {
@@ -686,12 +682,86 @@ fn resolve_symbols<'data>(
                 }
             }
             Ok(())
+        },
+    )?;
+    if !start_stop_refs.is_empty() {
+        start_stop_sets.push(StartStopSet {
+            file_id: obj.file_id,
+            start_stop_refs,
+        });
+    }
+    Ok(())
+}
+
+fn resolve_dynamic_symbols<'data>(
+    obj: &RegularInputObject<'data>,
+    symbol_db: &SymbolDb<'data>,
+    mut request_file_id: impl FnMut(FileId),
+    start_stop_sets: &SegQueue<StartStopSet<'data>>,
+    definitions_out: &mut [SymbolId],
+) -> Result {
+    let mut start_stop_refs: AHashMap<&'data [u8], Vec<object::SymbolIndex>> = AHashMap::new();
+    obj.object
+        .dynamic_symbols()
+        .zip(definitions_out)
+        .try_for_each(|(local_symbol, definition)| -> Result {
+            resolve_symbol(
+                local_symbol,
+                definition,
+                symbol_db,
+                obj,
+                &mut request_file_id,
+                &mut start_stop_refs,
+            )
         })?;
     if !start_stop_refs.is_empty() {
         start_stop_sets.push(StartStopSet {
             file_id: obj.file_id,
             start_stop_refs,
         });
+    }
+    Ok(())
+}
+
+fn resolve_symbol<'data>(
+    local_symbol: crate::elf::Symbol<'data, '_>,
+    definition_out: &mut SymbolId,
+    symbol_db: &SymbolDb<'data>,
+    obj: &RegularInputObject<'data>,
+    request_file_id: &mut impl FnMut(FileId),
+    start_stop_refs: &mut AHashMap<&'data [u8], Vec<object::SymbolIndex>>,
+) -> Result {
+    // Don't try to resolve symbols that are already defined, e.g. locals and globals that we
+    // define. Also don't try to resolve symbol zero - the undefined symbol.
+    if !definition_out.is_undefined() || local_symbol.index().0 == 0 {
+        return Ok(());
+    }
+    let name_bytes = local_symbol.name_bytes()?;
+    debug_assert_bail!(
+        local_symbol.is_global(),
+        "Only globals should be undefined, found symbol `{}`",
+        String::from_utf8_lossy(name_bytes)
+    );
+    assert!(!local_symbol.is_definition());
+    match symbol_db
+        .global_names
+        .get(&SymbolName::prehashed(name_bytes))
+    {
+        Some(&symbol_id) => {
+            *definition_out = symbol_id;
+            let symbol_file_id = symbol_db.file_id_for_symbol(symbol_id);
+            if symbol_file_id != obj.file_id && !local_symbol.is_weak() {
+                request_file_id(symbol_file_id);
+            }
+        }
+        None => {
+            if name_bytes.starts_with(b"__start_") || name_bytes.starts_with(b"__stop_") {
+                start_stop_refs
+                    .entry(name_bytes)
+                    .or_default()
+                    .push(local_symbol.index());
+            }
+        }
     }
     Ok(())
 }
@@ -767,12 +837,10 @@ pub(crate) enum ValueKind {
     /// with an absolute value or an undefined symbol, which needs to always resolve to 0 regardless
     /// of load address.
     Absolute,
-}
 
-impl ValueKind {
-    pub(crate) fn is_address(self) -> bool {
-        self == ValueKind::Address
-    }
+    /// The value is from a shared (dynamic) object, so although it may have an address, it won't be
+    /// know until runtime.
+    Dynamic,
 }
 
 impl<'data> SymbolDb<'data> {

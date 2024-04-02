@@ -4,6 +4,7 @@ use crate::archive;
 use crate::args::Args;
 use crate::args::Input;
 use crate::args::InputSpec;
+use crate::args::Modifiers;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::linker_script::linker_script_to_inputs;
@@ -29,6 +30,7 @@ pub(crate) const INTERNAL_FILE_ID: FileId = FileId::new(0);
 pub(crate) struct InputFile {
     pub(crate) filename: PathBuf,
     pub(crate) kind: FileKind,
+    pub(crate) modifiers: Modifiers,
     bytes: Option<Mmap>,
 }
 
@@ -55,6 +57,7 @@ impl<'config> InputData<'config> {
             InputFile {
                 filename: PathBuf::new(),
                 kind: FileKind::Internal,
+                modifiers: Default::default(),
                 bytes: None,
             },
         ];
@@ -70,10 +73,10 @@ impl<'config> InputData<'config> {
     }
 
     fn register_input(&mut self, input: &Input) -> Result {
-        self.register_file(input.path(self.config)?)
+        self.register_file(input.path(self.config)?, input.modifiers)
     }
 
-    fn register_file(&mut self, path: PathBuf) -> Result {
+    fn register_file(&mut self, path: PathBuf, modifiers: Modifiers) -> Result {
         if !self.filenames.insert(path.clone()) {
             // File has already been added.
             return Ok(());
@@ -107,7 +110,7 @@ impl<'config> InputData<'config> {
 
         let kind = FileKind::identify_bytes(&bytes)?;
         if matches!(kind, FileKind::Text) {
-            for input in linker_script_to_inputs(&bytes, &path)? {
+            for input in linker_script_to_inputs(&bytes, &path, modifiers)? {
                 self.register_input(&input)?;
             }
             return Ok(());
@@ -116,6 +119,7 @@ impl<'config> InputData<'config> {
         let file_info = InputFile {
             filename: path.to_owned(),
             kind,
+            modifiers,
             bytes: Some(bytes),
         };
         self.files.push(file_info);

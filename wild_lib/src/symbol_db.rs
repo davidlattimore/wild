@@ -10,7 +10,6 @@ use crate::output_section_id::OutputSectionId;
 use crate::parsing::InputObject;
 use crate::parsing::InternalInputObject;
 use crate::parsing::InternalSymDefInfo;
-use crate::parsing::RegularInputObject;
 use crate::resolution::ValueKind;
 use crate::sharding::Shard;
 use crate::sharding::ShardKey;
@@ -26,7 +25,7 @@ use rayon::prelude::ParallelIterator;
 use std::collections::hash_map;
 
 pub struct SymbolDb<'data> {
-    pub args: &'data Args,
+    pub(crate) args: &'data Args,
 
     pub(crate) inputs: &'data [InputObject<'data>],
 
@@ -189,7 +188,6 @@ impl<'data> SymbolDb<'data> {
         match input_object {
             InputObject::Internal(o) => Ok(o.symbol_name(symbol_id)),
             InputObject::Object(o) => o.symbol_name(symbol_id),
-            InputObject::Dynamic(o) => o.symbol_name(symbol_id),
             InputObject::Epilogue(o) => {
                 Ok(self.start_stop_symbol_names[symbol_id.offset_from(o.start_symbol_id)])
             }
@@ -269,9 +267,27 @@ fn load_symbols_from_file<'data>(
     value_kinds: &mut Shard<SymbolId, ValueKind>,
 ) -> Result<SymbolLoadOutputs<'data>> {
     Ok(match reader {
-        InputObject::Object(s) => s.load_symbols(resolutions, value_kinds)?,
+        InputObject::Object(s) => {
+            if s.is_dynamic {
+                load_symbols(
+                    s.object.dynamic_symbols(),
+                    resolutions,
+                    value_kinds,
+                    |_sym| ValueKind::Dynamic,
+                )?
+            } else {
+                load_symbols(
+                    s.object.symbols(),
+                    resolutions,
+                    value_kinds,
+                    |sym| match sym.section() {
+                        object::SymbolSection::Absolute => ValueKind::Absolute,
+                        _ => ValueKind::Address,
+                    },
+                )?
+            }
+        }
         InputObject::Internal(s) => s.load_symbols(resolutions, value_kinds)?,
-        InputObject::Dynamic(s) => s.load_dynamic_symbols(resolutions, value_kinds)?,
         InputObject::Epilogue(_) => SymbolLoadOutputs {
             // Custom section start/stop symbols are generated after archive handling.
             pending_symbols: vec![],
@@ -279,68 +295,31 @@ fn load_symbols_from_file<'data>(
     })
 }
 
-impl<'data> RegularInputObject<'data> {
-    fn load_symbols(
-        &self,
-        resolutions: &mut Shard<SymbolId, SymbolId>,
-        value_kinds: &mut Shard<SymbolId, ValueKind>,
-    ) -> Result<SymbolLoadOutputs<'data>> {
-        let mut pending_symbols = Vec::new();
-        for ((symbol, (symbol_id, resolution)), value_kind) in self
-            .object
-            .symbols()
-            .zip(resolutions.iter_mut())
-            .zip(value_kinds.values_mut())
-        {
-            if symbol.is_undefined() {
-                continue;
-            }
-            *resolution = symbol_id;
-            *value_kind = match symbol.section() {
-                object::SymbolSection::Absolute => ValueKind::Absolute,
-                _ => ValueKind::Address,
-            };
-
-            if symbol.is_local() {
-                continue;
-            }
-            let name = symbol.name_bytes()?;
-            let pending = PendingSymbol::new(symbol_id, name);
-            pending_symbols.push(pending);
+fn load_symbols<'data>(
+    symbols: crate::elf::SymbolIterator<'data, '_>,
+    resolutions: &mut Shard<'_, SymbolId, SymbolId>,
+    value_kinds: &mut Shard<'_, SymbolId, ValueKind>,
+    compute_value_kind: impl Fn(&crate::elf::Symbol) -> ValueKind,
+) -> Result<SymbolLoadOutputs<'data>> {
+    let mut pending_symbols = Vec::new();
+    for ((symbol, (symbol_id, resolution)), value_kind) in symbols
+        .zip(resolutions.iter_mut())
+        .zip(value_kinds.values_mut())
+    {
+        if symbol.is_undefined() {
+            continue;
         }
-        Ok(SymbolLoadOutputs { pending_symbols })
-    }
+        *resolution = symbol_id;
+        *value_kind = compute_value_kind(&symbol);
 
-    fn load_dynamic_symbols(
-        &self,
-        resolutions: &mut Shard<SymbolId, SymbolId>,
-        value_kinds: &mut Shard<SymbolId, ValueKind>,
-    ) -> Result<SymbolLoadOutputs<'data>> {
-        let mut pending_symbols = Vec::new();
-        for ((symbol, (symbol_id, resolution)), value_kind) in self
-            .object
-            .dynamic_symbols()
-            .zip(resolutions.iter_mut())
-            .zip(value_kinds.values_mut())
-        {
-            if symbol.is_undefined() {
-                continue;
-            }
-            *resolution = symbol_id;
-            *value_kind = match symbol.section() {
-                object::SymbolSection::Absolute => ValueKind::Absolute,
-                _ => ValueKind::Address,
-            };
-
-            if symbol.is_local() {
-                continue;
-            }
-            let name = symbol.name_bytes()?;
-            let pending = PendingSymbol::new(symbol_id, name);
-            pending_symbols.push(pending);
+        if symbol.is_local() {
+            continue;
         }
-        Ok(SymbolLoadOutputs { pending_symbols })
+        let name = symbol.name_bytes()?;
+        let pending = PendingSymbol::new(symbol_id, name);
+        pending_symbols.push(pending);
     }
+    Ok(SymbolLoadOutputs { pending_symbols })
 }
 
 #[derive(Clone, Copy)]
@@ -377,7 +356,6 @@ impl<'db, 'data> std::fmt::Display for SymbolDebug<'db, 'data> {
                         write!(f, "<unnamed symbol>")?;
                     }
                 }
-                InputObject::Dynamic(_) => write!(f, "<unnamed dynamic symbol>")?,
                 InputObject::Epilogue(_) => write!(f, "<unnamed custom-section symbol>")?,
             }
         } else {

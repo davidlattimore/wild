@@ -1,3 +1,5 @@
+#![allow(clippy::needless_update)]
+
 pub(crate) mod alignment;
 pub(crate) mod archive;
 pub(crate) mod archive_splitter;

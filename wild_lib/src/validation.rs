@@ -2,7 +2,7 @@
 
 use crate::error::Result;
 use crate::layout::Layout;
-use crate::layout::SymbolResolution;
+use crate::layout::ResolutionValue;
 use crate::layout::TargetResolutionKind;
 use anyhow::bail;
 use anyhow::Context;
@@ -29,10 +29,9 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
     for (symbol_name, symbol_id) in &layout.symbol_db.global_names {
         match layout.symbol_resolution(*symbol_id) {
             None => {}
-            Some(SymbolResolution::Resolved(resolution)) => {
+            Some(resolution) => {
                 validate_resolution(symbol_name.bytes(), resolution, &got, got_data)?;
             }
-            Some(SymbolResolution::Dynamic) => {}
         }
     }
     for file in &layout.file_layouts {
@@ -72,8 +71,11 @@ fn validate_resolution(
         if end_offset > got_data.len() {
             bail!("GOT offset beyond end of GOT 0x{end_offset}");
         }
+        let expected = match resolution.value {
+            ResolutionValue::Absolute(v) | ResolutionValue::Address(v) => v,
+            ResolutionValue::Dynamic(_) => return Ok(()),
+        };
         let address = bytemuck::pod_read_unaligned(&got_data[start_offset..end_offset]);
-        let expected = resolution.value;
         if expected != address {
             let name = String::from_utf8_lossy(name);
             bail!(

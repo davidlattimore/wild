@@ -29,6 +29,9 @@ pub(crate) const GOT_ENTRY: Alignment = Alignment { exponent: 3 };
 /// The minimum alignment of a rela entry.
 pub(crate) const RELA_ENTRY: Alignment = Alignment { exponent: 3 };
 
+/// The minimum alignment of a phdr entry.
+pub(crate) const PROGRAM_HEADER_ENTRY: Alignment = Alignment { exponent: 3 };
+
 /// The minimum alignment of loadable program segments.
 pub(crate) const PAGE: Alignment = Alignment { exponent: 12 };
 
