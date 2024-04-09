@@ -454,11 +454,7 @@ fn build_obj(filename: &str, variant: &Variant, placement: FilePlacement) -> Res
                 .env("WILD_SAVE_DIR", &output_path)
                 .env("WILD_SAVE_SKIP_LINKING", "1")
                 .arg("+nightly")
-                .args(["--target", "x86_64-unknown-linux-musl"])
-                .args(["-C", "linker=/usr/bin/clang-15"])
-                .args(["-C", "relocation-model=static"])
-                .args(["-C", "target-feature=+crt-static"])
-                .args(["-C", "debuginfo=2"])
+                .args(["-C", "linker=clang"])
                 .args(["-C", &format!("link-arg=--ld-path={wild}")])
                 .args(["-o", "/dev/null"]);
         }
@@ -941,7 +937,8 @@ fn integration_test() -> Result {
             ],
         )?,
         ProgramInputs::new("libc-integration", &["libc-integration.c"])?,
-        ProgramInputs::new("trivial-rust", &["trivial-rust.rs"])?,
+        ProgramInputs::new("rust-integration", &["rust-integration.rs"])?,
+        ProgramInputs::new("rust-integration-dynamic", &["rust-integration-dynamic.rs"])?,
     ];
 
     let linkers = [
