@@ -411,12 +411,21 @@ impl<'out> OutputSectionPartMap<&'out mut [u8]> {
 #[test]
 fn test_merge_parts() {
     let output_sections = OutputSections::for_testing();
-    let all_1 = OutputSectionPartMap::<u32>::with_size(output_sections.len())
-        .output_order_map(&output_sections, |_, _, _| 1);
+    let mut expected_sum_of_sums = 0;
+    let all_1 = OutputSectionPartMap::<u32>::with_size(output_sections.len()).output_order_map(
+        &output_sections,
+        |_, _, _| {
+            expected_sum_of_sums += 1;
+            1
+        },
+    );
     let sum_of_1s: OutputSectionMap<u32> = all_1.merge_parts(|values| values.iter().sum());
+    let mut sum_of_sums = 0;
     sum_of_1s.for_each(|section_id, sum| {
+        sum_of_sums += *sum;
         assert!(*sum > 0, "Expected non-zero sum for section {section_id:?}");
     });
+    assert_eq!(sum_of_sums, expected_sum_of_sums);
 
     let mut headers_only = OutputSectionPartMap::<u32>::with_size(output_sections.len());
     headers_only.file_header += 42;
