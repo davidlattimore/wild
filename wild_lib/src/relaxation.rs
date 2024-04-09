@@ -55,7 +55,7 @@ impl Relaxation {
                 return Some(kind);
             }
             rel::R_X86_64_GOTPCRELX => {
-                if offset < 2 {
+                if offset < 2 || value_kind != ValueKind::Address {
                     return None;
                 }
                 match section_bytes[offset - 2..offset] {

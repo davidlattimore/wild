@@ -1044,14 +1044,20 @@ struct DynamicRelocationWriter<'out> {
     /// Whether we're writing relocations. This will be false if we're writing a non-relocatable
     /// output file.
     is_active: bool,
-    rela_dyn: &'out mut [crate::elf::Rela],
+    rela_dyn_relative: &'out mut [crate::elf::Rela],
+    rela_dyn_glob_dat: &'out mut [crate::elf::Rela],
 }
 
 impl<'out> DynamicRelocationWriter<'out> {
     fn new(is_active: bool, buffers: &mut OutputSectionPartMap<&'out mut [u8]>) -> Self {
         Self {
             is_active,
-            rela_dyn: bytemuck::cast_slice_mut(core::mem::take(&mut buffers.rela_dyn)),
+            rela_dyn_relative: bytemuck::cast_slice_mut(core::mem::take(
+                &mut buffers.rela_dyn_relative,
+            )),
+            rela_dyn_glob_dat: bytemuck::cast_slice_mut(core::mem::take(
+                &mut buffers.rela_dyn_glob_dat,
+            )),
         }
     }
 
@@ -1062,15 +1068,15 @@ impl<'out> DynamicRelocationWriter<'out> {
         match res_value {
             ResolutionValue::Absolute(_) => {}
             ResolutionValue::Address(address) => {
-                let rela = crate::slice::take_first_mut(&mut self.rela_dyn)
-                    .context("insufficient allocation to .rela.dyn")?;
+                let rela = crate::slice::take_first_mut(&mut self.rela_dyn_relative)
+                    .context("insufficient allocation to .rela.dyn (relative)")?;
                 rela.address = place;
                 rela.addend = address.wrapping_add(addend);
                 rela.info = elf::rel::R_X86_64_RELATIVE.into();
             }
             ResolutionValue::Dynamic(symbol_index) => {
-                let rela = crate::slice::take_first_mut(&mut self.rela_dyn)
-                    .context("insufficient allocation to .rela.dyn")?;
+                let rela = crate::slice::take_first_mut(&mut self.rela_dyn_glob_dat)
+                    .context("insufficient allocation to .rela.dyn (glob-dat)")?;
                 rela.address = place;
                 rela.addend = addend;
                 // We could plausibly use R_X86_64_JUMP_SLOT here in cases where we have only PLT
@@ -1088,19 +1094,27 @@ impl<'out> DynamicRelocationWriter<'out> {
     fn disabled() -> Self {
         Self {
             is_active: false,
-            rela_dyn: Default::default(),
+            rela_dyn_relative: Default::default(),
+            rela_dyn_glob_dat: Default::default(),
         }
     }
 
     fn validate_empty(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
-        if self.rela_dyn.is_empty() {
-            return Ok(());
+        if !self.rela_dyn_relative.is_empty() {
+            bail!(
+                "Allocated too much relative space in .rela.dyn. {} of {} entries remain unused.",
+                self.rela_dyn_relative.len(),
+                mem_sizes.rela_dyn_relative / elf::RELA_ENTRY_SIZE,
+            );
         }
-        bail!(
-            "Allocated too much space in .rela.dyn. {} of {} entries remain unused.",
-            self.rela_dyn.len(),
-            mem_sizes.rela_dyn / elf::RELA_ENTRY_SIZE,
-        );
+        if !self.rela_dyn_glob_dat.is_empty() {
+            bail!(
+                "Allocated too much glob-dat space in .rela.dyn. {} of {} entries remain unused.",
+                self.rela_dyn_glob_dat.len(),
+                mem_sizes.rela_dyn_glob_dat / elf::RELA_ENTRY_SIZE,
+            );
+        }
+        Ok(())
     }
 }
 
@@ -1122,7 +1136,7 @@ fn apply_relocation(
     let (value, value_kind) = match resolution.value {
         ResolutionValue::Absolute(v) => (v, ValueKind::Absolute),
         ResolutionValue::Address(v) => (v, ValueKind::Address),
-        ResolutionValue::Dynamic(_) => return Ok(RelocationModifier::Normal),
+        ResolutionValue::Dynamic(_) => (0, ValueKind::Dynamic),
     };
     let mut offset = offset_in_section as usize;
     let place = section_address + offset_in_section;
@@ -1210,15 +1224,9 @@ fn apply_relocation(
                     .wrapping_sub(place),
             }
         }
-        RelocationKind::DtpOff => {
-            if layout.args().link_static {
-                value
-                    .wrapping_sub(layout.tls_end_address())
-                    .wrapping_add(addend)
-            } else {
-                todo!()
-            }
-        }
+        RelocationKind::DtpOff => value
+            .wrapping_sub(layout.tls_end_address())
+            .wrapping_add(addend),
         RelocationKind::GotTpOff => resolution
             .got_address()?
             .wrapping_add(addend)
@@ -1549,8 +1557,10 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         layout.size_of_section(output_section_id::RELA_DYN)
     }),
     DynamicEntryWriter::new(DynamicTag::RelaEnt, |_layout| elf::RELA_ENTRY_SIZE),
+    // Note, rela-count is just the count of the relative relocations and doesn't include any
+    // glob-dat relocations. This is as opposed to rela-size, which includes both.
     DynamicEntryWriter::new(DynamicTag::RelaCount, |layout| {
-        layout.size_of_section(output_section_id::RELA_DYN)
+        layout.section_part_layouts.rela_dyn_relative.mem_size
             / core::mem::size_of::<elf::Rela>() as u64
     }),
     DynamicEntryWriter::new(DynamicTag::Flags, |_layout| elf::flags::BIND_NOW),
@@ -1703,13 +1713,21 @@ impl<'data> DynamicLayout<'data> {
         self.write_so_name(buffers.dynamic, &mut strtab)?;
 
         let mut dynsym: &mut [SymtabEntry] = bytemuck::cast_slice_mut(buffers.dynsym);
-        for ((_symbol_id, resolution), symbol) in layout
+        for ((symbol_id, resolution), symbol) in layout
             .resolutions_in_range(self.start_symbol_id, self.num_symbols)
             .zip(self.object.dynamic_symbols())
         {
             if let Some(res) = resolution {
                 write_dynamic_symtab_entry(&symbol, &mut dynsym, &mut strtab)?;
-                plt_got_writer.process_resolution(res, &mut relocation_writer)?;
+
+                plt_got_writer
+                    .process_resolution(res, &mut relocation_writer)
+                    .with_context(|| {
+                        format!(
+                            "Failed to write {}",
+                            layout.symbol_db.symbol_debug(symbol_id)
+                        )
+                    })?;
             }
         }
 

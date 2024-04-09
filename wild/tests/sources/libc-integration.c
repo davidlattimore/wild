@@ -5,9 +5,7 @@
 //#LinkArgs:clang-static-pie:--cc=clang -static-pie -Wl,--strip-debug
 //#LinkArgs:gcc-static:--cc=gcc -static -Wl,--strip-debug
 //#LinkArgs:gcc-static-pie:--cc=gcc -static-pie -Wl,--strip-debug
-
-// TODO
-// #LinkArgs:gcc-dynamic:--cc=gcc -dynamic -Wl,--strip-debug
+//#LinkArgs:gcc-dynamic:--cc=gcc -dynamic -Wl,--strip-debug
 
 #include <stdlib.h>
 #include <string.h>

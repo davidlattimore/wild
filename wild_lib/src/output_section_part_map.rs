@@ -29,7 +29,8 @@ pub(crate) struct OutputSectionPartMap<T> {
     pub(crate) dynamic: T,
     pub(crate) dynsym: T,
     pub(crate) dynstr: T,
-    pub(crate) rela_dyn: T,
+    pub(crate) rela_dyn_relative: T,
+    pub(crate) rela_dyn_glob_dat: T,
     pub(crate) interp: T,
 }
 
@@ -54,7 +55,8 @@ impl<T: Default> OutputSectionPartMap<T> {
             dynamic: Default::default(),
             dynsym: Default::default(),
             dynstr: Default::default(),
-            rela_dyn: Default::default(),
+            rela_dyn_relative: Default::default(),
+            rela_dyn_glob_dat: Default::default(),
             interp: Default::default(),
         }
     }
@@ -119,10 +121,15 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             output_section_id::DYNSTR.min_alignment(),
             &self.dynstr,
         );
-        let rela_dyn = cb(
+        let rela_dyn_relative = cb(
             output_section_id::RELA_DYN,
             output_section_id::RELA_DYN.min_alignment(),
-            &self.rela_dyn,
+            &self.rela_dyn_relative,
+        );
+        let rela_dyn_glob_dat = cb(
+            output_section_id::RELA_DYN,
+            output_section_id::RELA_DYN.min_alignment(),
+            &self.rela_dyn_glob_dat,
         );
         self.map_regular(output_section_id::RODATA, &mut cb, &mut regular);
         let eh_frame_hdr = cb(
@@ -217,7 +224,8 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             dynamic,
             dynsym,
             dynstr,
-            rela_dyn,
+            rela_dyn_relative,
+            rela_dyn_glob_dat,
             interp,
         }
     }
@@ -287,7 +295,8 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             dynamic: cb(&mut self.dynamic, &other.dynamic),
             dynsym: cb(&mut self.dynsym, &other.dynsym),
             dynstr: cb(&mut self.dynstr, &other.dynstr),
-            rela_dyn: cb(&mut self.rela_dyn, &other.rela_dyn),
+            rela_dyn_relative: cb(&mut self.rela_dyn_relative, &other.rela_dyn_relative),
+            rela_dyn_glob_dat: cb(&mut self.rela_dyn_glob_dat, &other.rela_dyn_glob_dat),
             interp: cb(&mut self.interp, &other.interp),
         }
     }
@@ -357,7 +366,10 @@ impl<T: Copy> OutputSectionPartMap<T> {
         update(output_section_id::DYNAMIC, &[self.dynamic]);
         update(output_section_id::DYNSYM, &[self.dynsym]);
         update(output_section_id::DYNSTR, &[self.dynstr]);
-        update(output_section_id::RELA_DYN, &[self.rela_dyn]);
+        update(
+            output_section_id::RELA_DYN,
+            &[self.rela_dyn_relative, self.rela_dyn_glob_dat],
+        );
         update(output_section_id::INTERP, &[self.interp]);
         values_out.extend(self.regular.iter().map(|parts| cb(parts.raw_values())));
         debug_assert!(
@@ -392,7 +404,8 @@ impl<T: AddAssign + Copy + Default> OutputSectionPartMap<T> {
         self.dynamic += rhs.dynamic;
         self.dynsym += rhs.dynsym;
         self.dynstr += rhs.dynstr;
-        self.rela_dyn += rhs.rela_dyn;
+        self.rela_dyn_relative += rhs.rela_dyn_relative;
+        self.rela_dyn_glob_dat += rhs.rela_dyn_glob_dat;
         self.interp += rhs.interp;
     }
 }

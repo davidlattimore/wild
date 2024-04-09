@@ -12,7 +12,6 @@ use crate::output_section_id::OutputSectionId;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolId;
-use anyhow::bail;
 use anyhow::Context;
 use object::Object as _;
 use object::ObjectSymbol;
@@ -159,12 +158,7 @@ impl<'data> InputObject<'data> {
                 Self::Object(RegularInputObject::new(input, file_id, false)?)
             }
             FileKind::Internal => Self::Internal(InternalInputObject::new(file_id, args)?),
-            FileKind::ElfDynamic => {
-                if !cfg!(feature = "wip") {
-                    bail!("Dynamic linking is not yet implemented");
-                }
-                Self::Object(RegularInputObject::new(input, file_id, true)?)
-            }
+            FileKind::ElfDynamic => Self::Object(RegularInputObject::new(input, file_id, true)?),
             FileKind::Text => unreachable!("Should have been handled earlier"),
         })
     }

@@ -284,7 +284,7 @@ pub(crate) struct InternalSymbols {
 }
 
 pub(crate) struct DynamicLayout<'data> {
-    file_id: FileId,
+    pub(crate) file_id: FileId,
     input: InputRef<'data>,
     file_sizes: OutputSectionPartMap<usize>,
 
@@ -336,13 +336,30 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
             );
         }
         if common.symbol_states[local_index] == TargetResolutionKind::None {
-            if self.load_symbol(symbol_id, local_index, resources, queue)? == SymbolKind::IFunc {
+            let symbol_kind = self.load_symbol(symbol_id, local_index, resources, queue)?;
+            if symbol_kind == SymbolKind::IFunc {
                 common = self.common_mut();
                 common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
                 common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
                 common.mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
                 if resources.symbol_db.args.is_relocatable() {
-                    common.mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE * 2;
+                    match resources.symbol_db.symbol_value_kind(symbol_id) {
+                        ValueKind::Address => {
+                            // We need two entries. One for the resolver and one for the address at which
+                            // the resolution will be stored.
+                            common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE * 2;
+                        }
+                        ValueKind::Dynamic => {
+                            // If our resolver is dynamic, then its relocation will be a glob-dat
+                            // relocation, while the relocation for the destination will still be
+                            // relative (it doesn't depend on the dynamic library).
+                            common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
+                            common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
+                        }
+                        ValueKind::Absolute => {
+                            bail!("An ifunc cannot resolve to an absolute value")
+                        }
+                    }
                 }
                 common.symbol_states[local_index] = TargetResolutionKind::IFunc;
             } else {
@@ -355,10 +372,16 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 if common.symbol_states[local_index] < TargetResolutionKind::Got {
                     common.symbol_states[local_index] = TargetResolutionKind::Got;
                     common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                    if resources.symbol_db.args.is_relocatable()
-                        && resources.symbol_db.symbol_value_kind(symbol_id) != ValueKind::Absolute
-                    {
-                        common.mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
+                    if resources.symbol_db.args.is_relocatable() {
+                        match resources.symbol_db.symbol_value_kind(symbol_id) {
+                            ValueKind::Address => {
+                                common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
+                            }
+                            ValueKind::Dynamic => {
+                                common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
+                            }
+                            ValueKind::Absolute => {}
+                        }
                     }
                 }
                 if matches!(
@@ -1603,7 +1626,7 @@ impl<'data> Section<'data> {
             (_, TargetResolutionKind::Got) => {
                 mem_sizes.got += elf::GOT_ENTRY_SIZE;
                 if args.is_relocatable() {
-                    mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
+                    mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
                 }
             }
             (
@@ -1618,7 +1641,7 @@ impl<'data> Section<'data> {
             (_, TargetResolutionKind::Plt) => {
                 mem_sizes.got += elf::GOT_ENTRY_SIZE;
                 if args.is_relocatable() {
-                    mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
+                    mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
                 }
                 mem_sizes.plt += elf::PLT_ENTRY_SIZE;
             }
@@ -1780,16 +1803,13 @@ impl RelocationLayoutAction {
             }
         }
         if self.dynamic_relocation_required {
-            state.common.mem_sizes.rela_dyn += elf::RELA_ENTRY_SIZE;
+            state.common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
         }
     }
 }
 
 impl TargetResolutionKind {
     fn new(rel_kind: RelocationKind, args: &Args) -> Result<Self> {
-        let tls_mode = args.tls_mode();
-        // TODO: This could probably be more efficiently implemented as lookup table indexed by the
-        // raw relocation type. We can then select which lookup table to use based on tls_mode.
         Ok(match rel_kind {
             RelocationKind::PltRelative => {
                 if args.link_static {
@@ -1802,10 +1822,14 @@ impl TargetResolutionKind {
             }
             RelocationKind::Got | RelocationKind::GotRelative => Self::Got,
             RelocationKind::GotTpOff => Self::GotTlsOffset,
-            RelocationKind::TlsGd | RelocationKind::TlsLd => match tls_mode {
-                TlsMode::LocalExec => Self::Value,
-                TlsMode::Preserve => Self::GotTlsDouble,
-            },
+            RelocationKind::TlsGd | RelocationKind::TlsLd => {
+                // TODO: This kind of thing should be handled by the relaxation module.
+                let tls_mode = args.tls_mode();
+                match tls_mode {
+                    TlsMode::LocalExec => Self::Value,
+                    TlsMode::Preserve => Self::GotTlsDouble,
+                }
+            }
             RelocationKind::Absolute => Self::Value,
             RelocationKind::Relative => Self::Value,
             RelocationKind::DtpOff | RelocationKind::TpOff => Self::Value,
