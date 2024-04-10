@@ -28,12 +28,14 @@ pub(crate) struct Args {
     pub(crate) time_phases: bool,
     pub(crate) validate_output: bool,
     pub(crate) pie: bool,
+    pub(crate) version_script_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutputKind {
     StaticExecutable,
     DynamicExecutable,
+    SharedObject,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -80,6 +82,8 @@ const IGNORED_FLAGS: &[&str] = &[
     // TODO: This is supposed to suppress built-in search paths, but I don't think we have any
     // built-in search paths. Perhaps we should?
     "-nostdlib",
+    // TODO
+    "--no-undefined-version",
 ];
 
 impl Args {
@@ -107,6 +111,7 @@ impl Args {
         let mut validate_output = std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1");
         let mut pie = false;
         let mut modifier_stack = vec![Modifiers::default()];
+        let mut version_script_path = None;
         // Skip program name
         input.next();
         while let Some(arg) = input.next() {
@@ -136,7 +141,10 @@ impl Args {
                 dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
             } else if arg == "--no-dynamic-linker" {
                 dynamic_linker = None;
-            } else if arg.starts_with("--hash-style=") {
+            } else if let Some(style) = arg.strip_prefix("--hash-style=") {
+                if style != "gnu" {
+                    bail!("Unsupported hash-style `{style}`");
+                }
             } else if arg.starts_with("--build-id=") {
             } else if arg == "--time" {
                 time_phases = true;
@@ -169,10 +177,15 @@ impl Args {
                 if modifier_stack.is_empty() {
                     bail!("Mismatched --pop-state");
                 }
+            } else if let Some(script) = arg.strip_prefix("--version-script=") {
+                save_dir.handle_file(script)?;
+                version_script_path = Some(PathBuf::from(script));
             } else if arg == "--no-string-merge" {
                 merge_strings = false;
             } else if arg == "-pie" {
                 pie = true;
+            } else if arg == "-shared" {
+                output_kind = OutputKind::SharedObject;
             } else if arg.starts_with("-plugin-opt=") {
                 // TODO: Implement support for linker plugins.
             } else if arg == "-plugin" {
@@ -218,6 +231,7 @@ impl Args {
             debug_fuel,
             pie,
             validate_output,
+            version_script_path,
         })
     }
 
@@ -271,14 +285,12 @@ impl Args {
     }
 
     pub(crate) fn is_relocatable(&self) -> bool {
-        self.pie
+        self.pie || self.output_kind != OutputKind::StaticExecutable
     }
 
     /// Returns whether we need a dynamic section.
     pub(crate) fn needs_dynamic(&self) -> bool {
-        // TODO: Investigate if it's possible to have a dynamically linked non-relocatable
-        // executable. If it is, then we still need a dynamic section.
-        self.pie
+        self.is_relocatable()
     }
 }
 
@@ -287,6 +299,16 @@ impl Default for Modifiers {
         Self {
             as_needed: false,
             allow_shared: true,
+        }
+    }
+}
+
+impl OutputKind {
+    pub(crate) fn is_executable(&self) -> bool {
+        match self {
+            OutputKind::StaticExecutable => true,
+            OutputKind::DynamicExecutable => true,
+            OutputKind::SharedObject => false,
         }
     }
 }

@@ -29,6 +29,9 @@ pub(crate) const GOT_ENTRY: Alignment = Alignment { exponent: 3 };
 /// The minimum alignment of a rela entry.
 pub(crate) const RELA_ENTRY: Alignment = Alignment { exponent: 3 };
 
+/// Alignment of the .gnu.hash section.
+pub(crate) const GNU_HASH: Alignment = Alignment { exponent: 3 };
+
 /// The minimum alignment of a phdr entry.
 pub(crate) const PROGRAM_HEADER_ENTRY: Alignment = Alignment { exponent: 3 };
 

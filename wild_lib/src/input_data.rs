@@ -7,7 +7,7 @@ use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::error::Result;
 use crate::file_kind::FileKind;
-use crate::linker_script::linker_script_to_inputs;
+use crate::linker_script::VersionScript;
 use anyhow::bail;
 use anyhow::Context;
 use memmap2::Mmap;
@@ -19,6 +19,7 @@ pub struct InputData<'config> {
     pub config: &'config Args,
     pub filenames: HashSet<PathBuf>,
     pub(crate) files: Vec<InputFile>,
+    pub(crate) version_script: Option<VersionScript>,
 }
 
 /// Identifies an input file. IDs start from 0 which is reserved for our "internal" state file.
@@ -29,8 +30,12 @@ pub(crate) const INTERNAL_FILE_ID: FileId = FileId::new(0);
 
 pub(crate) struct InputFile {
     pub(crate) filename: PathBuf,
+
+    /// The filename prior to path search. If this is absolute, then `filename` will be the same.
+    original_filename: PathBuf,
     pub(crate) kind: FileKind,
     pub(crate) modifiers: Modifiers,
+
     bytes: Option<Mmap>,
 }
 
@@ -48,6 +53,16 @@ impl InputFile {
     }
 }
 
+#[derive(Debug)]
+struct InputPath {
+    /// An absolute path to the file.
+    absolute: PathBuf,
+
+    /// The file as specified on the command line. In the case of an argument like -lfoo, this will
+    /// be "libfoo.so".
+    original: PathBuf,
+}
+
 impl<'config> InputData<'config> {
     #[tracing::instrument(skip_all, name = "Open input files")]
     pub fn from_args(config: &'config Args) -> Result<Self> {
@@ -56,15 +71,22 @@ impl<'config> InputData<'config> {
             // and other things that don't come from any actual file.
             InputFile {
                 filename: PathBuf::new(),
+                original_filename: PathBuf::new(),
                 kind: FileKind::Internal,
                 modifiers: Default::default(),
                 bytes: None,
             },
         ];
+        let version_script = config
+            .version_script_path
+            .as_ref()
+            .map(|path| read_version_script(path))
+            .transpose()?;
         let mut input_data = Self {
             config,
             filenames: Default::default(),
             files,
+            version_script,
         };
         for input in &config.inputs {
             input_data.register_input(input)?;
@@ -73,16 +95,14 @@ impl<'config> InputData<'config> {
     }
 
     fn register_input(&mut self, input: &Input) -> Result {
-        self.register_file(input.path(self.config)?, input.modifiers)
-    }
-
-    fn register_file(&mut self, path: PathBuf, modifiers: Modifiers) -> Result {
-        if !self.filenames.insert(path.clone()) {
+        let paths = input.path(self.config)?;
+        let absolute_path = &paths.absolute;
+        if !self.filenames.insert(absolute_path.clone()) {
             // File has already been added.
             return Ok(());
         }
-        let file = std::fs::File::open(&path)
-            .with_context(|| format!("Failed to open input file `{}`", path.display()))?;
+        let file = std::fs::File::open(absolute_path)
+            .with_context(|| format!("Failed to open input file `{}`", absolute_path.display()))?;
 
         // Safety: Unfortunately, this is a bit of a compromise. Basically this is only safe if our
         // users manage to avoid editing the input files while we've got them mapped. It'd be great
@@ -106,20 +126,25 @@ impl<'config> InputData<'config> {
         }
 
         let bytes = unsafe { mmap_options.map(&file) }
-            .with_context(|| format!("Failed to mmap input file `{}`", path.display()))?;
+            .with_context(|| format!("Failed to mmap input file `{}`", absolute_path.display()))?;
 
         let kind = FileKind::identify_bytes(&bytes)?;
         if matches!(kind, FileKind::Text) {
-            for input in linker_script_to_inputs(&bytes, &path, modifiers)? {
+            for input in crate::linker_script::linker_script_to_inputs(
+                &bytes,
+                absolute_path,
+                input.modifiers,
+            )? {
                 self.register_input(&input)?;
             }
             return Ok(());
         }
 
         let file_info = InputFile {
-            filename: path.to_owned(),
+            filename: absolute_path.to_owned(),
+            original_filename: paths.original,
             kind,
-            modifiers,
+            modifiers: input.modifiers,
             bytes: Some(bytes),
         };
         self.files.push(file_info);
@@ -127,37 +152,55 @@ impl<'config> InputData<'config> {
     }
 }
 
+fn read_version_script(path: &Path) -> Result<VersionScript> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read version script `{}`", path.display()))?;
+    VersionScript::parse(&text)
+}
+
 impl Input {
-    fn path(&self, args: &Args) -> Result<PathBuf> {
+    fn path(&self, args: &Args) -> Result<InputPath> {
         match &self.spec {
             InputSpec::File(p) => {
                 if p.components().count() == 1 {
-                    if let Some(path) = search_for_file(
+                    if let Some(absolute) = search_for_file(
                         &args.lib_search_path,
                         self.search_first.as_ref(),
                         p.as_ref(),
                     ) {
-                        return Ok(path);
+                        return Ok(InputPath {
+                            absolute,
+                            original: p.as_ref().to_owned(),
+                        });
                     }
                 }
-                Ok(p.as_ref().to_owned())
+                Ok(InputPath {
+                    absolute: p.as_ref().to_owned(),
+                    original: p.as_ref().to_owned(),
+                })
             }
             InputSpec::Lib(lib_name) => {
                 if self.modifiers.allow_shared {
-                    if let Some(path) = search_for_file(
+                    let filename = format!("lib{lib_name}.so");
+                    if let Some(absolute) = search_for_file(
                         &args.lib_search_path,
                         self.search_first.as_ref(),
-                        format!("lib{lib_name}.so"),
+                        &filename,
                     ) {
-                        return Ok(path);
+                        return Ok(InputPath {
+                            absolute,
+                            original: PathBuf::from(filename),
+                        });
                     }
                 }
-                if let Some(path) = search_for_file(
-                    &args.lib_search_path,
-                    self.search_first.as_ref(),
-                    format!("lib{lib_name}.a"),
-                ) {
-                    return Ok(path);
+                let filename = format!("lib{lib_name}.a");
+                if let Some(absolute) =
+                    search_for_file(&args.lib_search_path, self.search_first.as_ref(), &filename)
+                {
+                    return Ok(InputPath {
+                        absolute,
+                        original: PathBuf::from(filename),
+                    });
                 }
                 bail!("Couldn't find library `{lib_name}` on library search path");
             }
@@ -222,5 +265,11 @@ impl<'data> std::fmt::Debug for InputRef<'data> {
 impl std::fmt::Display for FileId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl<'data> InputRef<'data> {
+    pub(crate) fn lib_name(&self) -> &'data [u8] {
+        self.file.original_filename.as_os_str().as_encoded_bytes()
     }
 }

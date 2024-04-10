@@ -23,6 +23,7 @@ pub(crate) type SectionHeader = object::elf::SectionHeader64<LittleEndian>;
 pub(crate) type SymtabEntry = object::elf::Sym64<LittleEndian>;
 pub(crate) type DynamicEntry = object::elf::Dyn64<LittleEndian>;
 pub(crate) type Rela = object::elf::Rela64<LittleEndian>;
+pub(crate) type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
 
 /// The module number for TLS variables in the current executable.
 pub(crate) const CURRENT_EXE_TLS_MOD: u64 = 1;
@@ -238,6 +239,12 @@ pub(crate) const PLT_ENTRY_SIZE: u64 = PLT_ENTRY_TEMPLATE.len() as u64;
 pub(crate) const RELA_ENTRY_SIZE: u64 = 0x18;
 
 pub(crate) const SYMTAB_ENTRY_SIZE: u64 = core::mem::size_of::<SymtabEntry>() as u64;
+
+pub(crate) const SYMBOL_TYPE_MASK: u8 = 0xf;
+pub(crate) const SYMBOL_VISIBILITY_MASK: u8 = 0xf0;
+
+pub(crate) const SYMBOL_TYPE_IFUNC: u8 = 10;
+pub(crate) const SYMBOL_TYPE_FUNC: u8 = 2;
 
 pub(crate) const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0xf3, 0x0f, 0x1e, 0xfa, // endbr64

@@ -64,13 +64,14 @@ pub(crate) const RELA_PLT: OutputSectionId = OutputSectionId(8);
 pub(crate) const EH_FRAME: OutputSectionId = OutputSectionId(9);
 pub(crate) const EH_FRAME_HDR: OutputSectionId = OutputSectionId(10);
 pub(crate) const DYNAMIC: OutputSectionId = OutputSectionId(11);
-pub(crate) const DYNSYM: OutputSectionId = OutputSectionId(12);
-pub(crate) const DYNSTR: OutputSectionId = OutputSectionId(13);
-pub(crate) const RELA_DYN: OutputSectionId = OutputSectionId(14);
-pub(crate) const INTERP: OutputSectionId = OutputSectionId(15);
+pub(crate) const GNU_HASH: OutputSectionId = OutputSectionId(12);
+pub(crate) const DYNSYM: OutputSectionId = OutputSectionId(13);
+pub(crate) const DYNSTR: OutputSectionId = OutputSectionId(14);
+pub(crate) const RELA_DYN: OutputSectionId = OutputSectionId(15);
+pub(crate) const INTERP: OutputSectionId = OutputSectionId(16);
 
 /// Regular sections are sections that come from input files and can contain a mix of alignments.
-pub(crate) const NUM_GENERATED_SECTIONS: usize = 16;
+pub(crate) const NUM_GENERATED_SECTIONS: usize = 17;
 
 // Sections that need to be referenced from code. When adding new sections here, be sure to update
 // `test_constant_ids`.
@@ -314,6 +315,16 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         },
         min_alignment: alignment::USIZE,
         start_symbol_name: Some("_DYNAMIC"),
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: ".gnu.hash".as_bytes(),
+            ty: elf::Sht::Progbits,
+            section_flags: elf::shf::ALLOC,
+            ..SectionDetails::default()
+        },
+        min_alignment: alignment::GNU_HASH,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -802,6 +813,7 @@ impl<'data> OutputSections<'data> {
         cb(OrderEvent::SegmentStart(crate::program_segments::INTERP));
         cb(INTERP.event());
         cb(OrderEvent::SegmentEnd(crate::program_segments::INTERP));
+        cb(GNU_HASH.event());
         cb(DYNSYM.event());
         cb(DYNSTR.event());
         cb(RELA_DYN.event());
@@ -1010,6 +1022,7 @@ fn test_constant_ids() {
         (INTERP, ".interp"),
         (PROGRAM_HEADERS, ".phdr"),
         (SECTION_HEADERS, ".shdr"),
+        (GNU_HASH, ".gnu.hash"),
     ];
     for (id, name) in check {
         assert_eq!(
