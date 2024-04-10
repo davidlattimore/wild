@@ -5,6 +5,7 @@
 //!
 //! For now, we only apply those relaxations that we find we need.
 
+use crate::args::OutputKind;
 use crate::elf::rel;
 use crate::resolution::ValueKind;
 
@@ -33,7 +34,7 @@ impl Relaxation {
         section_bytes: &[u8],
         offset: usize,
         value_kind: ValueKind,
-        link_static: bool,
+        output_kind: OutputKind,
     ) -> Option<(Self, u32)> {
         // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
         // because fetching it contains potential error paths, the optimiser probably can't optimise
@@ -76,7 +77,7 @@ impl Relaxation {
                     _ => return None,
                 }
             }
-            rel::R_X86_64_PLT32 if link_static => {
+            rel::R_X86_64_PLT32 if output_kind == OutputKind::StaticExecutable => {
                 return Some((Relaxation::NoOp, rel::R_X86_64_PC32));
             }
             _ => return None,
@@ -113,9 +114,13 @@ fn test_relaxation() {
     fn check(relocation_kind: u32, bytes_in: &[u8], address: &[u8], absolute: &[u8]) {
         let mut out = bytes_in.to_owned();
         let offset = bytes_in.len();
-        if let Some((r, _)) =
-            Relaxation::new(relocation_kind, bytes_in, offset, ValueKind::Address, true)
-        {
+        if let Some((r, _)) = Relaxation::new(
+            relocation_kind,
+            bytes_in,
+            offset,
+            ValueKind::Address,
+            OutputKind::StaticExecutable,
+        ) {
             r.apply(&mut out, offset, &mut 0);
 
             assert_eq!(
@@ -123,9 +128,13 @@ fn test_relaxation() {
                 "resolved: Expected {address:x?}, got {out:x?}"
             );
         }
-        if let Some((r, _)) =
-            Relaxation::new(relocation_kind, bytes_in, offset, ValueKind::Absolute, true)
-        {
+        if let Some((r, _)) = Relaxation::new(
+            relocation_kind,
+            bytes_in,
+            offset,
+            ValueKind::Absolute,
+            OutputKind::StaticExecutable,
+        ) {
             out.copy_from_slice(bytes_in);
             r.apply(&mut out, offset, &mut 0);
             assert_eq!(
