@@ -6,7 +6,6 @@ use crate::error::Result;
 use crate::save_dir::SaveDir;
 use anyhow::anyhow;
 use anyhow::bail;
-use anyhow::Context;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -18,7 +17,7 @@ pub(crate) struct Args {
     pub(crate) inputs: Vec<Input>,
     pub(crate) output: Arc<Path>,
     pub(crate) dynamic_linker: Option<Box<Path>>,
-    pub(crate) link_static: bool,
+    pub(crate) output_kind: OutputKind,
     pub(crate) num_threads: NonZeroUsize,
     pub(crate) strip_all: bool,
     pub(crate) strip_debug: bool,
@@ -31,9 +30,19 @@ pub(crate) struct Args {
     pub(crate) pie: bool,
 }
 
-#[derive(Default, Debug, Eq, PartialEq, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutputKind {
+    StaticExecutable,
+    DynamicExecutable,
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Copy)]
 pub(crate) struct Modifiers {
+    /// Whether shared objects should only be linked if they're referenced.
     pub(crate) as_needed: bool,
+
+    /// Whether we're currently allowed to link against shared libraries.
+    pub(crate) allow_shared: bool,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -58,7 +67,7 @@ pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
 // other linkers. On the other, we should perhaps somehow let the user know that we don't support a
 // feature.
 const IGNORED_FLAGS: &[&str] = &[
-    // TODO: Support eh_frame and eh_frame_hdr
+    // TODO: Handle this flag. Right now, we always write an eh-frame-hdr.
     "--eh-frame-hdr",
     // TODO: Support build-ids
     "--build-id",
@@ -68,40 +77,14 @@ const IGNORED_FLAGS: &[&str] = &[
     // so perhaps ignoring these is the right thing to do.
     "--start-group",
     "--end-group",
-    // TODO: See if these flags need special treatment.
-    "-Bdynamic",
-    "-Bstatic",
     // TODO: This is supposed to suppress built-in search paths, but I don't think we have any
     // built-in search paths. Perhaps we should?
     "-nostdlib",
-    // TODO: Implement
-    "--no-dynamic-linker",
-    "--push-state",
-    "--pop-state",
 ];
 
 impl Args {
     pub(crate) fn from_env() -> Result<Self> {
-        let r = Self::parse(std::env::args());
-
-        // We want to be able to use our linker to link Rust programs, but we don't yet support
-        // dynamic linking, which is needed in order to link proc macros. So if we detect an error
-        // with the linker arguments, e.g. an unsupported option or that we're not statically
-        // linking, then we check if the environment variable WILD_FALLBACK_LINKER is set and if it
-        // is, use that instead. The idea is that we can link the proc macros with the system linker
-        // and use our linker for linking the final executable. TODO: Remove this once we support
-        // dynamic linking
-        if r.as_ref().map(|a| a.link_static).unwrap_or(true) {
-            if let Ok(fallback) = std::env::var("WILD_FALLBACK_LINKER") {
-                let status = std::process::Command::new(&fallback)
-                    .args(std::env::args().skip(1))
-                    .status()
-                    .with_context(|| format!("Failed to run fallback linker `{fallback}`"))?;
-                std::process::exit(status.code().unwrap_or(-1));
-            }
-        }
-
-        r
+        Self::parse(std::env::args())
     }
 
     // Parse the supplied input arguments, which should not include the program name.
@@ -111,7 +94,7 @@ impl Args {
         let mut inputs = Vec::new();
         let mut output = None;
         let mut dynamic_linker = None;
-        let mut link_static = false;
+        let mut output_kind = OutputKind::StaticExecutable;
         let mut time_phases = false;
         let mut num_threads = None;
         let mut strip_all = false;
@@ -142,12 +125,17 @@ impl Args {
                     search_first: None,
                     modifiers: *modifier_stack.last().unwrap(),
                 });
-            } else if arg == "-static" {
-                link_static = true;
+            } else if arg == "-static" || arg == "-Bstatic" {
+                modifier_stack.last_mut().unwrap().allow_shared = false;
+            } else if arg == "-Bdynamic" {
+                modifier_stack.last_mut().unwrap().allow_shared = true;
             } else if arg == "-o" {
                 output = input.next().map(|a| Arc::from(Path::new(a.as_ref())));
-            } else if arg == "-dynamic-linker" {
+            } else if arg == "--dynamic-linker" || arg == "-dynamic-linker" {
+                output_kind = OutputKind::DynamicExecutable;
                 dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
+            } else if arg == "--no-dynamic-linker" {
+                dynamic_linker = None;
             } else if arg.starts_with("--hash-style=") {
             } else if arg.starts_with("--build-id=") {
             } else if arg == "--time" {
@@ -219,7 +207,7 @@ impl Args {
             inputs,
             output: output.ok_or_else(|| anyhow!("Missing required argument -o"))?,
             dynamic_linker,
-            link_static,
+            output_kind,
             time_phases,
             num_threads,
             strip_all,
@@ -275,7 +263,7 @@ impl Args {
 
     /// Returns how we should handle TLS relocations like TLSLD and TLSGD.
     pub(crate) fn tls_mode(&self) -> crate::layout::TlsMode {
-        if self.link_static {
+        if self.output_kind == OutputKind::StaticExecutable {
             crate::layout::TlsMode::LocalExec
         } else {
             crate::layout::TlsMode::Preserve
@@ -291,6 +279,15 @@ impl Args {
         // TODO: Investigate if it's possible to have a dynamically linked non-relocatable
         // executable. If it is, then we still need a dynamic section.
         self.pie
+    }
+}
+
+impl Default for Modifiers {
+    fn default() -> Self {
+        Self {
+            as_needed: false,
+            allow_shared: true,
+        }
     }
 }
 

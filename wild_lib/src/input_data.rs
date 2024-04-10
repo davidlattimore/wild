@@ -143,7 +143,7 @@ impl Input {
                 Ok(p.as_ref().to_owned())
             }
             InputSpec::Lib(lib_name) => {
-                if !args.link_static {
+                if self.modifiers.allow_shared {
                     if let Some(path) = search_for_file(
                         &args.lib_search_path,
                         self.search_first.as_ref(),

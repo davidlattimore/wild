@@ -1151,7 +1151,7 @@ fn apply_relocation(
         out,
         offset_in_section as usize,
         value_kind,
-        layout.args().link_static,
+        layout.args().output_kind,
     ) {
         rel_info = RelocationKindInfo::from_raw(r_type)?;
         relaxation.apply(out, offset_in_section as usize, &mut addend);

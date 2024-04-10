@@ -1733,7 +1733,7 @@ impl RelocationLayoutAction {
             section.data()?,
             rel_offset as usize,
             symbol_value_kind,
-            args.link_static,
+            args.output_kind,
         ) {
             r_type = new_r_type;
         }
@@ -1764,7 +1764,7 @@ impl RelocationLayoutAction {
             section.data()?,
             rel_offset as usize,
             ValueKind::Address,
-            args.link_static,
+            args.output_kind,
         ) {
             r_type = new_r_type;
         }
