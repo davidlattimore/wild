@@ -27,6 +27,7 @@ pub(crate) struct OutputSectionPartMap<T> {
     pub(crate) eh_frame: T,
     pub(crate) eh_frame_hdr: T,
     pub(crate) dynamic: T,
+    pub(crate) gnu_hash: T,
     pub(crate) dynsym: T,
     pub(crate) dynstr: T,
     pub(crate) rela_dyn_relative: T,
@@ -53,6 +54,7 @@ impl<T: Default> OutputSectionPartMap<T> {
             eh_frame: Default::default(),
             eh_frame_hdr: Default::default(),
             dynamic: Default::default(),
+            gnu_hash: Default::default(),
             dynsym: Default::default(),
             dynstr: Default::default(),
             rela_dyn_relative: Default::default(),
@@ -110,6 +112,11 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             output_section_id::INTERP,
             output_section_id::INTERP.min_alignment(),
             &self.interp,
+        );
+        let gnu_hash = cb(
+            output_section_id::GNU_HASH,
+            output_section_id::GNU_HASH.min_alignment(),
+            &self.gnu_hash,
         );
         let dynsym = cb(
             output_section_id::DYNSYM,
@@ -222,6 +229,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             eh_frame,
             eh_frame_hdr,
             dynamic,
+            gnu_hash,
             dynsym,
             dynstr,
             rela_dyn_relative,
@@ -293,6 +301,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             eh_frame: cb(&mut self.eh_frame, &other.eh_frame),
             eh_frame_hdr: cb(&mut self.eh_frame_hdr, &other.eh_frame_hdr),
             dynamic: cb(&mut self.dynamic, &other.dynamic),
+            gnu_hash: cb(&mut self.gnu_hash, &other.gnu_hash),
             dynsym: cb(&mut self.dynsym, &other.dynsym),
             dynstr: cb(&mut self.dynstr, &other.dynstr),
             rela_dyn_relative: cb(&mut self.rela_dyn_relative, &other.rela_dyn_relative),
@@ -364,6 +373,7 @@ impl<T: Copy> OutputSectionPartMap<T> {
         update(output_section_id::EH_FRAME, &[self.eh_frame]);
         update(output_section_id::EH_FRAME_HDR, &[self.eh_frame_hdr]);
         update(output_section_id::DYNAMIC, &[self.dynamic]);
+        update(output_section_id::GNU_HASH, &[self.gnu_hash]);
         update(output_section_id::DYNSYM, &[self.dynsym]);
         update(output_section_id::DYNSTR, &[self.dynstr]);
         update(
@@ -402,6 +412,7 @@ impl<T: AddAssign + Copy + Default> OutputSectionPartMap<T> {
         self.eh_frame += rhs.eh_frame;
         self.eh_frame_hdr += rhs.eh_frame_hdr;
         self.dynamic += rhs.dynamic;
+        self.gnu_hash += rhs.gnu_hash;
         self.dynsym += rhs.dynsym;
         self.dynstr += rhs.dynstr;
         self.rela_dyn_relative += rhs.rela_dyn_relative;

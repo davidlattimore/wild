@@ -33,6 +33,114 @@ pub(crate) fn linker_script_to_inputs(
         .collect())
 }
 
+/// A version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
+pub(crate) struct VersionScript {
+    // For now, we only support a single version.
+    version: Version,
+}
+
+pub(crate) struct Version {
+    globals: Vec<SymbolMatcher>,
+    locals: Vec<SymbolMatcher>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SymbolMatcher {
+    All,
+    Prefix(String),
+    Exact(String),
+}
+
+impl VersionScript {
+    pub(crate) fn parse(script: &str) -> Result<VersionScript> {
+        let mut tokens = Tokeniser::new(script);
+        // For now, we only support anonymous versions - i.e. a single version that just says what
+        // should be global and what should be local.
+        tokens.expect("{")?;
+        let version = Version::parse(&mut tokens)?;
+        Ok(VersionScript { version })
+    }
+
+    pub(crate) fn is_local(&self, name: &[u8]) -> bool {
+        self.version.is_local(name)
+    }
+}
+
+enum VersionRuleSection {
+    Global,
+    Local,
+}
+
+impl Version {
+    fn parse(tokens: &mut Tokeniser) -> Result<Version> {
+        let mut version = Version {
+            globals: Default::default(),
+            locals: Default::default(),
+        };
+        let mut section = None;
+        while let Some(token) = tokens.next() {
+            match token {
+                "}" => return Ok(version),
+                "global:" => section = Some(VersionRuleSection::Global),
+                "local:" => section = Some(VersionRuleSection::Local),
+                pattern => {
+                    tokens.expect(";")?;
+                    match section {
+                        Some(VersionRuleSection::Global) => {
+                            version.globals.push(SymbolMatcher::from_pattern(pattern)?)
+                        }
+                        Some(VersionRuleSection::Local) => {
+                            version.locals.push(SymbolMatcher::from_pattern(pattern)?)
+                        }
+                        None => bail!("Expected global/local, found '{token}'"),
+                    }
+                }
+            }
+        }
+        bail!("Missing close '}}' in version script");
+    }
+
+    fn is_local(&self, name: &[u8]) -> bool {
+        for matcher in &self.globals {
+            if matcher.matches(name) {
+                return false;
+            }
+        }
+        for matcher in &self.locals {
+            if matcher.matches(name) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+impl SymbolMatcher {
+    fn from_pattern(token: &str) -> Result<SymbolMatcher> {
+        if token == "*" {
+            return Ok(SymbolMatcher::All);
+        }
+        if let Some(prefix) = token.strip_suffix('*') {
+            if prefix.contains('*') {
+                bail!("Unsupported symbol pattern '{token}'");
+            }
+            return Ok(SymbolMatcher::Prefix(prefix.to_owned()));
+        }
+        if token.contains('*') {
+            bail!("Unsupported symbol pattern '{token}'");
+        }
+        Ok(SymbolMatcher::Exact(token.to_owned()))
+    }
+
+    fn matches(&self, name: &[u8]) -> bool {
+        match self {
+            SymbolMatcher::All => true,
+            SymbolMatcher::Prefix(prefix) => name.starts_with(prefix.as_bytes()),
+            SymbolMatcher::Exact(exact) => name == exact.as_bytes(),
+        }
+    }
+}
+
 struct Tokeniser<'a> {
     text: &'a str,
 }
@@ -53,7 +161,7 @@ impl<'a> Tokeniser<'a> {
             let len = self
                 .text
                 .char_indices()
-                .find(|(_, ch)| matches!(ch, '(' | ' ' | ')'))
+                .find(|(_, ch)| " \n\t(){};".contains(*ch))
                 .map(|(offset, _)| offset)
                 .unwrap_or(self.text.len())
                 .max(1);
@@ -242,5 +350,19 @@ mod tests {
                 InputSpec::File(Box::from(Path::new("/lib64/ld-linux-x86-64.so.2"))),
             ]
         )
+    }
+
+    #[test]
+    fn test_parse_version_script() {
+        let script = VersionScript::parse("{global:\n foo; bar*; local: *; }").unwrap();
+        let version = script.version;
+        assert_eq!(
+            version.globals,
+            vec![
+                SymbolMatcher::Exact("foo".to_owned()),
+                SymbolMatcher::Prefix("bar".to_owned())
+            ]
+        );
+        assert_eq!(version.locals, vec![SymbolMatcher::All]);
     }
 }

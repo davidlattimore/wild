@@ -16,6 +16,7 @@
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
+use object::LittleEndian;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
@@ -27,6 +28,7 @@ use std::process::Command;
 use wait_timeout::ChildExt;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
+type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
 
 fn base_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -66,6 +68,23 @@ impl Linker {
             Linker::ThirdParty(info) => Path::new(info.path),
         }
     }
+
+    fn link_shared(&self, obj_path: &Path, so_path: &Path) -> Result<LinkerInput> {
+        let mut command = LinkCommand::new(
+            *self,
+            &[LinkerInput::new(obj_path.to_owned())],
+            so_path,
+            &ArgumentSet::default_for_linking(),
+        );
+        if self.is_wild() || !is_newer(so_path, obj_path) {
+            command.run()?;
+        }
+        Ok(LinkerInput::with_command(so_path.to_owned(), command))
+    }
+
+    fn is_wild(&self) -> bool {
+        *self == Linker::Wild
+    }
 }
 
 fn wild_path() -> &'static Path {
@@ -80,6 +99,7 @@ struct LinkOutput {
 
 struct LinkCommand {
     command: Command,
+    input_commands: Vec<LinkCommand>,
     linker: Linker,
     can_skip: bool,
     invocation_mode: LinkerInvocationMode,
@@ -107,6 +127,7 @@ struct TestParameters {
     compiler_args: Vec<ArgumentSet>,
 }
 
+#[derive(Default)]
 struct Assertions {
     expected_symtab_entries: Vec<ExpectedSymtabEntry>,
     expected_comments: Vec<String>,
@@ -149,6 +170,7 @@ struct Variant {
 enum InputType {
     Object,
     Archive,
+    SharedObject,
 }
 
 impl InputType {
@@ -156,6 +178,7 @@ impl InputType {
         Ok(match arg {
             "Object" => Self::Object,
             "Archive" => Self::Archive,
+            "Shared" => Self::SharedObject,
             other => bail!("Unknown LinkKind `{other}`"),
         })
     }
@@ -323,7 +346,7 @@ impl ProgramInputs {
         variant: &Variant,
         assertions: &'a Assertions,
     ) -> Result<Program<'a>> {
-        let object_paths = self
+        let inputs = self
             .source_files
             .iter()
             .enumerate()
@@ -336,10 +359,10 @@ impl ProgramInputs {
                 } else {
                     FilePlacement::Secondary
                 };
-                build_linker_input(source, &variant_for_file, placement)
+                build_linker_input(source, &variant_for_file, placement, linker)
             })
-            .collect::<Result<Vec<PathBuf>>>()?;
-        let link_output = linker.link(self.name, &object_paths, variant)?;
+            .collect::<Result<Vec<LinkerInput>>>()?;
+        let link_output = linker.link(self.name, &inputs, variant)?;
         Ok(Program {
             link_output,
             assertions,
@@ -382,14 +405,37 @@ impl<'a> Display for Program<'a> {
     }
 }
 
+struct LinkerInput {
+    path: PathBuf,
+    command: Option<LinkCommand>,
+}
+
+impl LinkerInput {
+    fn new(path: PathBuf) -> LinkerInput {
+        LinkerInput {
+            path,
+            command: None,
+        }
+    }
+
+    fn with_command(path: PathBuf, command: LinkCommand) -> LinkerInput {
+        LinkerInput {
+            path,
+            command: Some(command),
+        }
+    }
+}
+
 /// Creates a linker input from a source file. This will be either an object file or an archive.
 fn build_linker_input(
     filename: &str,
     variant: &Variant,
     placement: FilePlacement,
-) -> Result<PathBuf> {
+    linker: Linker,
+) -> Result<LinkerInput> {
+    let src_path = src_path(filename);
     if filename.ends_with(".a") {
-        return Ok(src_path(filename));
+        return Ok(LinkerInput::new(src_path));
     }
     let obj_path = build_obj(filename, variant, placement)?;
 
@@ -399,12 +445,22 @@ fn build_linker_input(
             if !is_newer(&archive_path, &obj_path) {
                 make_archive(&archive_path, &obj_path)?;
             }
-            Ok(archive_path)
+            Ok(LinkerInput::new(archive_path))
         }
-        InputType::Object => Ok(obj_path),
+        InputType::Object => Ok(LinkerInput::new(obj_path)),
+        InputType::SharedObject => {
+            let so_path = obj_path.with_extension(format!("{linker}.so"));
+            let out = linker.link_shared(&obj_path, &so_path)?;
+            let assertions = Assertions::default();
+            assertions
+                .check_path(&out.path, linker)
+                .with_context(|| format!("Assertions failed for `{}`", out.path.display()))?;
+            Ok(out)
+        }
     }
 }
 
+#[derive(Debug)]
 enum CompilerKind {
     C,
     Rust,
@@ -496,24 +552,14 @@ fn is_newer(output_path: &Path, src_path: &Path) -> bool {
 impl Linker {
     /// Links the supplied object files with this configuration and returns the path to the
     /// resulting binary.
-    fn link(
-        self,
-        basename: &str,
-        object_paths: &[PathBuf],
-        variant: &Variant,
-    ) -> Result<LinkOutput> {
-        let mut command = LinkCommand::new(self, basename, object_paths, variant);
+    fn link(self, basename: &str, inputs: &[LinkerInput], variant: &Variant) -> Result<LinkOutput> {
+        let output_path = self.output_path(basename, variant);
+        let mut command = LinkCommand::new(self, inputs, &output_path, &variant.linker_args);
         if !command.can_skip {
-            let status = command
-                .command
-                .status()
-                .with_context(|| format!("Failed to run command: {:?}", command.command))?;
-            if !status.success() {
-                bail!("Linker failed. Relink with:\n{command}");
-            }
+            command.run()?;
         }
         Ok(LinkOutput {
-            binary: self.output_path(basename, variant),
+            binary: output_path,
             command,
             linker_used: self,
         })
@@ -542,27 +588,28 @@ fn make_archive(archive_path: &Path, path: &Path) -> Result {
 impl LinkCommand {
     fn new(
         linker: Linker,
-        basename: &str,
-        object_paths: &[PathBuf],
-        variant: &Variant,
+        inputs: &[LinkerInput],
+        output_path: &Path,
+        linker_args: &ArgumentSet,
     ) -> LinkCommand {
-        let output_path = linker.output_path(basename, variant);
         // We allow skipping linking if all the object files are the unchanged and are older than
         // our output file, but not if we're linking with our linker, since we're always changing
         // that.
-        let can_skip =
-            linker != Linker::Wild && object_paths.iter().all(|obj| is_newer(&output_path, obj));
+        let can_skip = linker != Linker::Wild
+            && inputs
+                .iter()
+                .all(|input| is_newer(output_path, &input.path));
         let mut command;
         let mut invocation_mode = LinkerInvocationMode::Direct;
-        if let Some(script) = get_script(object_paths) {
+        if let Some((script, extra_inputs)) = get_script(inputs) {
             command = Command::new(script);
-            command.env("OUT", &output_path);
+            command.env("OUT", output_path);
             command.arg(linker.path());
+            command.args(extra_inputs.iter().map(|i| &i.path));
             invocation_mode = LinkerInvocationMode::Script;
         } else {
             let linker_path = linker.path();
-            if let Some(cc) = variant
-                .linker_args
+            if let Some(cc) = linker_args
                 .args
                 .first()
                 .and_then(|a| a.strip_prefix("--cc="))
@@ -597,46 +644,67 @@ impl LinkCommand {
                     }
                     _ => panic!("Unsupported cc={cc}"),
                 }
-                command.args(&variant.linker_args.args[1..]);
+                command.args(&linker_args.args[1..]);
             } else {
                 command = Command::new(linker_path);
                 command.arg("--gc-sections").arg("-static");
-                command.args(&variant.linker_args.args);
+                command.args(&linker_args.args);
             }
             command.env(wild_lib::args::VALIDATE_ENV, "1");
-            command.arg("-o").arg(&output_path);
-            for obj in object_paths {
-                command.arg(obj);
+            command.arg("-o").arg(output_path);
+            for input in inputs {
+                command.arg(&input.path);
             }
         }
         LinkCommand {
             command,
+            input_commands: inputs
+                .iter()
+                .filter_map(|input| input.command.as_ref().cloned())
+                .collect(),
             linker,
             can_skip,
             invocation_mode,
         }
     }
+
+    fn run(&mut self) -> Result {
+        let status = self
+            .command
+            .status()
+            .with_context(|| format!("Failed to run command: {:?}", self.command))?;
+        if !status.success() {
+            bail!("Linker failed. Relink with:\n{self}");
+        }
+        Ok(())
+    }
 }
 
-fn get_script(object_paths: &[PathBuf]) -> Option<PathBuf> {
-    if object_paths.len() != 1 {
-        return None;
-    }
-    let path = &object_paths[0];
+fn get_script(inputs: &[LinkerInput]) -> Option<(PathBuf, &[LinkerInput])> {
+    let path = &inputs[0].path;
     if path.is_dir() {
-        return Some(path.join("run-with"));
+        return Some((path.join("run-with"), &inputs[1..]));
     }
     None
 }
 
 impl Assertions {
     fn check(&self, link_output: &LinkOutput) -> Result {
-        let bytes = std::fs::read(&link_output.binary)?;
+        self.check_path(&link_output.binary, link_output.linker_used)
+    }
+
+    fn check_path(&self, path: &PathBuf, linker_used: Linker) -> Result {
+        let bytes = std::fs::read(path)?;
         let obj = object::File::parse(bytes.as_slice())?;
 
         self.verify_symbol_assertions(&obj)?;
-        self.verify_comment_section(obj, link_output.linker_used)?;
+        self.verify_comment_section(&obj, linker_used)?;
         self.verify_strings(&bytes)?;
+        // TODO: Check files other than .so files. Right now, I'm having trouble with symbol base in
+        // non-shared objects generated by GNU ld.
+        if path.extension().is_some_and(|e| e == "so") {
+            self.verify_dynamic_symbol_hashes(&obj)?;
+        }
 
         Ok(())
     }
@@ -671,16 +739,16 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_comment_section(&self, obj: object::File<'_>, linker_used: Linker) -> Result {
+    fn verify_comment_section(&self, obj: &object::File, linker_used: Linker) -> Result {
         if self.expected_comments.is_empty() {
             match linker_used {
                 Linker::Wild => {
-                    if !was_linked_with_wild(&obj) {
+                    if !was_linked_with_wild(obj) {
                         bail!("Object was supposed to be linked with wild, but is missing comment");
                     }
                 }
                 Linker::ThirdParty(linker) => {
-                    if was_linked_with_wild(&obj) {
+                    if was_linked_with_wild(obj) {
                         bail!(
                             "Object was supposed to be linked with {linker}, but .comment \
                              indicates it was linked with Wild"
@@ -690,7 +758,7 @@ impl Assertions {
             }
             return Ok(());
         }
-        let actual_comments = read_comments(&obj)?;
+        let actual_comments = read_comments(obj)?;
         let mut actual_comments_iter = actual_comments.iter();
         let mut expected_comments = self.expected_comments.iter();
         loop {
@@ -730,6 +798,112 @@ impl Assertions {
         }
         Ok(())
     }
+
+    fn verify_dynamic_symbol_hashes(&self, obj: &object::File) -> Result {
+        let num_symbols = obj.dynamic_symbols().count();
+        if num_symbols == 0 {
+            return Ok(());
+        }
+        let gnu_hash = obj
+            .section_by_name(".gnu.hash")
+            .context("Missing .gnu.hash")?;
+
+        if gnu_hash.align() != 8 {
+            bail!(".gnu.hash has alignment {}", gnu_hash.align());
+        }
+
+        let gnu_hash_bytes = gnu_hash.data()?;
+        let e = LittleEndian;
+
+        let (header, rest) = object::from_bytes::<GnuHashHeader>(gnu_hash_bytes)
+            .map_err(|_| anyhow!("Insufficient .gnu.hash bytes"))?;
+
+        let bloom_count = header.bloom_count.get(e);
+        let (bloom_values, rest) = object::slice_from_bytes::<u64>(rest, bloom_count as usize)
+            .map_err(|_| anyhow!("Insufficient data for .gnu.hash bloom filter"))?;
+
+        let bucket_count = header.bucket_count.get(e);
+        let (buckets, rest) = object::slice_from_bytes::<u32>(rest, bucket_count as usize)
+            .map_err(|_| anyhow!("Insufficient data for .gnu.hash buckets"))?;
+
+        let symbol_base = header.symbol_base.get(e);
+        let chain_count = num_symbols - symbol_base as usize;
+        let (chains, _) = object::slice_from_bytes::<u32>(rest, chain_count)
+            .map_err(|_| anyhow!("Insufficient data for .gnu.hash chains"))?;
+
+        for sym in obj.dynamic_symbols() {
+            if !sym.is_definition() {
+                if sym.index().0 >= symbol_base as usize {
+                    bail!(
+                        "Dynamic symbol `{}` is undefined, but index ({}) >= symbol base \
+                         ({symbol_base})",
+                        sym.index().0,
+                        sym.name()?
+                    );
+                }
+                continue;
+            }
+            let name = sym.name()?;
+            let name_bytes = sym.name_bytes()?;
+            let symbol_index = lookup_symbol(name_bytes, header, bloom_values, buckets, chains)
+                .with_context(|| {
+                    let hash = object::elf::gnu_hash(name_bytes);
+                    format!(
+                        "Hash lookup of symbol `{name}` failed. \
+                        hash=0x{hash:x} \
+                        buckets={buckets:?} \
+                        symbol_base={symbol_base} \
+                        chains={chains:x?}"
+                    )
+                })?;
+            if symbol_index != sym.index().0 {
+                bail!(
+                    "Dynamic symbol `{}` hash lookup found {symbol_index}, expected {}",
+                    sym.name()?,
+                    sym.index().0
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn lookup_symbol(
+    sym_name: &[u8],
+    header: &object::elf::GnuHashHeader<LittleEndian>,
+    bloom_values: &[u64],
+    buckets: &[u32],
+    chains: &[u32],
+) -> Result<usize> {
+    let e = LittleEndian;
+    let symbol_base = header.symbol_base.get(e) as usize;
+    let hash = object::elf::gnu_hash(sym_name);
+    let elf_class_bits = core::mem::size_of::<u64>() as u32 * 8;
+    let bloom_shift = header.bloom_shift.get(e);
+    let bloom_count = bloom_values.len() as u32;
+    let bucket_count = buckets.len() as u32;
+    let bloom_value = bloom_values[((hash / elf_class_bits) % bloom_count) as usize];
+    let bloom_mask =
+        (1 << (hash % elf_class_bits)) | (1 << ((hash >> bloom_shift) % elf_class_bits));
+    if (bloom_value & bloom_mask) != bloom_mask {
+        bail!("Bloom filter excludes symbol");
+    }
+    let bucket = hash % bucket_count;
+    let mut symbol_index = buckets[bucket as usize] as usize;
+    if symbol_index < symbol_base {
+        bail!("symbol_index ({symbol_index}) < symbol_base ({symbol_base}). bucket={bucket}");
+    }
+    loop {
+        let chain_value = chains[symbol_index - symbol_base];
+        if chain_value & !1 == hash & !1 {
+            return Ok(symbol_index);
+        }
+        if chain_value & 1 == 1 {
+            bail!("Symbol not found");
+        }
+        symbol_index += 1;
+    }
 }
 
 /// Returns whether the supplied object indicates that it was linked with wild.
@@ -756,7 +930,10 @@ fn read_comments<'data>(obj: &object::File<'data>) -> Result<Vec<std::borrow::Co
 
 impl Display for LinkCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let args: Vec<_> = self
+        for sub in &self.input_commands {
+            writeln!(f, "{sub}")?;
+        }
+        let mut args: Vec<_> = self
             .command
             .get_args()
             .map(|a| a.to_string_lossy())
@@ -782,10 +959,13 @@ impl Display for LinkCommand {
                         v.and_then(|v| v.to_str()).unwrap_or_default(),
                     )?;
                 }
+                // The first argument is the linker, which we're replacing with `cargo run --`.
+                args.remove(0);
                 write!(
                     f,
-                    "{} cargo run --",
+                    "{} cargo run -- {}",
                     self.command.get_program().to_string_lossy(),
+                    args.join(" ")
                 )
             }
             _ => {
@@ -820,6 +1000,7 @@ impl Display for InputType {
         match self {
             InputType::Object => write!(f, "object"),
             InputType::Archive => write!(f, "archive"),
+            InputType::SharedObject => write!(f, "shared"),
         }
     }
 }
@@ -847,6 +1028,35 @@ impl Display for CompilationVariant {
 impl Display for ThirdPartyLinker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self.name, f)
+    }
+}
+
+fn clone_command(command: &Command) -> Command {
+    let mut out = Command::new(command.get_program());
+    out.args(command.get_args());
+    for (k, v) in command.get_envs() {
+        if let Some(v) = v {
+            out.env(k, v);
+        } else {
+            out.env_remove(k);
+        }
+    }
+    if let Some(dir) = command.get_current_dir() {
+        out.current_dir(dir);
+    }
+
+    out
+}
+
+impl Clone for LinkCommand {
+    fn clone(&self) -> Self {
+        Self {
+            command: clone_command(&self.command),
+            input_commands: self.input_commands.to_vec(),
+            linker: self.linker,
+            can_skip: self.can_skip,
+            invocation_mode: self.invocation_mode,
+        }
     }
 }
 
@@ -938,7 +1148,10 @@ fn integration_test() -> Result {
         )?,
         ProgramInputs::new("libc-integration", &["libc-integration.c"])?,
         ProgramInputs::new("rust-integration", &["rust-integration.rs"])?,
-        ProgramInputs::new("rust-integration-dynamic", &["rust-integration-dynamic.rs"])?,
+        ProgramInputs::new(
+            "rust-integration-dynamic",
+            &["rust-integration-dynamic.rs", "rdyn1.rs"],
+        )?,
     ];
 
     let linkers = [

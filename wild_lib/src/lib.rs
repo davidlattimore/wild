@@ -56,7 +56,13 @@ impl Linker {
         let mut symbol_db = symbol_db::SymbolDb::build(&files, &self.args)?;
         let (resolved_files, output_sections) =
             resolution::resolve_symbols_and_sections(&files, &mut symbol_db)?;
-        let layout = layout::compute(&symbol_db, resolved_files, output_sections, &mut output)?;
+        let layout = layout::compute(
+            &symbol_db,
+            resolved_files,
+            output_sections,
+            input_data.version_script.as_ref(),
+            &mut output,
+        )?;
         output.write(&layout)?;
 
         let scope = tracing::span!(tracing::Level::INFO, "Shutdown");

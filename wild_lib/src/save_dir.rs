@@ -105,11 +105,17 @@ impl SaveDir {
                 continue;
             }
             is_output_file = arg == "-o";
-            if let Some(copied) = self.copied_paths.get(&arg) {
+            let maybe_path = if let Some(eq_index) = arg.find('=') {
+                out.write_all(&arg.as_bytes()[..eq_index + 1])?;
+                &arg[eq_index + 1..]
+            } else {
+                arg.as_str()
+            };
+            if let Some(copied) = self.copied_paths.get(maybe_path) {
                 out.write_all(b"$D/")?;
                 out.write_all(copied.as_bytes())?;
             } else {
-                out.write_all(arg.as_bytes())?;
+                out.write_all(maybe_path.as_bytes())?;
             }
         }
         if let Some(orig) = original_output_file {

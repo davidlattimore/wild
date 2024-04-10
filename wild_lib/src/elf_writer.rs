@@ -1,4 +1,5 @@
 use crate::args::Args;
+use crate::args::OutputKind;
 use crate::elf;
 use crate::elf::slice_from_all_bytes_mut;
 use crate::elf::DynamicEntry;
@@ -6,6 +7,7 @@ use crate::elf::DynamicTag;
 use crate::elf::EhFrameHdr;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::FileHeader;
+use crate::elf::GnuHashHeader;
 use crate::elf::ProgramHeader;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
@@ -302,10 +304,9 @@ fn populate_file_header(
     header: &mut FileHeader,
 ) -> Result {
     let args = layout.args();
-    let ty = if args.pie {
-        elf::FileType::SharedObject
-    } else {
-        elf::FileType::Executable
+    let ty = match args.output_kind {
+        OutputKind::StaticExecutable if !args.pie => elf::FileType::Executable,
+        _ => elf::FileType::SharedObject,
     };
     let e = LittleEndian;
     header.e_ident.magic = object::elf::ELFMAG;
@@ -533,6 +534,22 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         }
     }
 
+    fn new_dynamic(
+        string_offset: u32,
+        buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
+        output_sections: &'data OutputSections<'data>,
+    ) -> Self {
+        let global_entries = slice_from_all_bytes_mut(core::mem::take(&mut buffers.dynsym));
+        let strings = slice_from_all_bytes_mut(core::mem::take(&mut buffers.dynstr));
+        Self {
+            string_offset,
+            local_entries: Default::default(),
+            global_entries,
+            strings,
+            output_sections,
+        }
+    }
+
     fn copy_symbol(
         &mut self,
         sym: &crate::elf::Symbol,
@@ -727,16 +744,13 @@ impl<'data> ObjectLayout<'data> {
                 object::SymbolSection::Section(section_index) => {
                     if let SectionSlot::Loaded(section) = &self.sections[section_index.0] {
                         let output_section_id = section.output_section_id.unwrap();
+                        let section_address = self.section_resolutions[section_index.0]
+                            .as_ref()
+                            .unwrap()
+                            .value
+                            .address_or_value()?;
                         symbol_writer
-                            .copy_symbol(
-                                &sym,
-                                output_section_id,
-                                self.section_resolutions[section_index.0]
-                                    .as_ref()
-                                    .unwrap()
-                                    .value
-                                    .address_or_value()?,
-                            )
+                            .copy_symbol(&sym, output_section_id, section_address)
                             .with_context(|| {
                                 format!(
                                     "Failed to copy {}",
@@ -1369,7 +1383,7 @@ fn write_epilogue_dynamic_entries(out: &mut [u8], layout: &Layout) -> Result {
     Ok(())
 }
 
-impl EpilogueLayout {
+impl<'data> EpilogueLayout<'data> {
     fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
         let mut relocation_writer =
             DynamicRelocationWriter::new(layout.args().is_relocatable(), &mut buffers);
@@ -1395,9 +1409,111 @@ impl EpilogueLayout {
         if layout.args().needs_dynamic() {
             write_epilogue_dynamic_entries(buffers.dynamic, layout)?;
         }
+        write_dynamic_symbol_definitions(self, &mut buffers, layout)?;
 
         Ok(())
     }
+}
+
+fn write_dynamic_symbol_definitions(
+    epilogue: &EpilogueLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    layout: &Layout,
+) -> Result {
+    if layout.args().output_kind != OutputKind::SharedObject {
+        return Ok(());
+    }
+    let mut dynamic_symbol_writer = SymbolTableWriter::new_dynamic(
+        epilogue.dynstr_offset_start,
+        buffers,
+        &layout.output_sections,
+    );
+
+    let (header, rest) = object::from_bytes_mut::<GnuHashHeader>(buffers.gnu_hash)
+        .map_err(|_| anyhow!("Insufficient .gnu.hash allocation"))?;
+    let e = LittleEndian;
+    let gnu_hash_layout = &epilogue.gnu_hash_layout;
+    header.bucket_count.set(e, gnu_hash_layout.bucket_count);
+    header.bloom_shift.set(e, gnu_hash_layout.bloom_shift);
+    header.bloom_count.set(e, gnu_hash_layout.bloom_count);
+    header.symbol_base.set(e, gnu_hash_layout.symbol_base);
+
+    let (bloom, rest) =
+        object::slice_from_bytes_mut::<u64>(rest, gnu_hash_layout.bloom_count as usize)
+            .map_err(|_| anyhow!("Insufficient bytes for .gnu.hash bloom filter"))?;
+    let (buckets, rest) =
+        object::slice_from_bytes_mut::<u32>(rest, gnu_hash_layout.bucket_count as usize)
+            .map_err(|_| anyhow!("Insufficient bytes for .gnu.hash buckets"))?;
+    let (chains, _) =
+        object::slice_from_bytes_mut::<u32>(rest, epilogue.dynamic_symbol_definitions.len())
+            .map_err(|_| anyhow!("Insufficient bytes for .gnu.hash chains"))?;
+
+    bloom.fill(0);
+
+    let mut sym_defs = epilogue.dynamic_symbol_definitions.iter().peekable();
+
+    let elf_class_bits = core::mem::size_of::<u64>() as u32 * 8;
+
+    let mut start_of_chain = true;
+    for (i, chain_out) in chains.iter_mut().enumerate() {
+        let sym_def = sym_defs.next().unwrap();
+
+        // For each symbol, we set two bits in the bloom filter. This speeds up dynamic loading,
+        // since most symbols not defined by the shared object can be rejected just by the bloom
+        // filter.
+        let bloom_index = ((sym_def.hash / elf_class_bits) % gnu_hash_layout.bloom_count) as usize;
+        let bit1 = 1 << (sym_def.hash % elf_class_bits);
+        let bit2 = 1 << ((sym_def.hash >> gnu_hash_layout.bloom_shift) % elf_class_bits);
+        bloom[bloom_index] |= bit1 | bit2;
+
+        // Chain values are the hashes for the corresponding symbols (shifted by symbol_base). Bit 0
+        // is cleared and then later set to 1 to indicate the end of the chain.
+        *chain_out = sym_def.hash & !1;
+        let bucket = gnu_hash_layout.bucket_for_hash(sym_def.hash);
+        if start_of_chain {
+            buckets[bucket as usize] = (i as u32) + gnu_hash_layout.symbol_base;
+            start_of_chain = false;
+        }
+        let last_in_chain = sym_defs
+            .peek()
+            .map(|next| gnu_hash_layout.bucket_for_hash(next.hash) != bucket)
+            .unwrap_or(true);
+        if last_in_chain {
+            *chain_out |= 1;
+            start_of_chain = true;
+        }
+
+        let file_id = layout.symbol_db.file_id_for_symbol(sym_def.symbol_id);
+        let file_layout = &layout.file_layouts[file_id.as_usize()];
+        let FileLayout::Object(object) = file_layout else {
+            bail!("Internal error: only objects should define dynamic symbols");
+        };
+        let sym = object.object.symbol_by_index(object::SymbolIndex(
+            sym_def.symbol_id.offset_from(object.start_symbol_id),
+        ))?;
+        let section_index = sym
+            .section_index()
+            .context("Internal error: Symbols should only be defined if they have a section")?;
+        let SectionSlot::Loaded(section) = &object.sections[section_index.0] else {
+            bail!("Internal error: Defined symbols should always be for a loaded section");
+        };
+        let output_section_id = section.output_section_id.unwrap();
+        let section_address = object.section_resolutions[section_index.0]
+            .as_ref()
+            .unwrap()
+            .value
+            .address_or_value()?;
+        dynamic_symbol_writer
+            .copy_symbol(&sym, output_section_id, section_address)
+            .with_context(|| {
+                format!(
+                    "Failed to copy dynamic {}",
+                    layout.symbol_debug(sym_def.symbol_id)
+                )
+            })?;
+    }
+
+    Ok(())
 }
 
 fn write_internal_symbols(
@@ -1535,9 +1651,16 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         layout.section_part_layouts.rela_dyn_relative.mem_size
             / core::mem::size_of::<elf::Rela>() as u64
     }),
+    DynamicEntryWriter::new(DynamicTag::GnuHash, |layout| {
+        layout.vma_of_section(output_section_id::GNU_HASH)
+    }),
     DynamicEntryWriter::new(DynamicTag::Flags, |_layout| elf::flags::BIND_NOW),
-    DynamicEntryWriter::new(DynamicTag::Flags1, |_layout| {
-        elf::flags_1::PIE | elf::flags_1::NOW
+    DynamicEntryWriter::new(DynamicTag::Flags1, |layout| {
+        let mut flags = elf::flags_1::NOW;
+        if layout.args().output_kind.is_executable() && layout.args().pie {
+            flags |= elf::flags_1::PIE;
+        }
+        flags
     }),
     DynamicEntryWriter::new(DynamicTag::Null, |_layout| 0),
 ];
@@ -1731,9 +1854,22 @@ fn write_dynamic_symtab_entry(
             .try_into()
             .context(".dynstr is too big")?,
     );
-    let object::SymbolFlags::Elf { st_info, st_other } = symbol.flags() else {
+    let object::SymbolFlags::Elf {
+        mut st_info,
+        st_other,
+    } = symbol.flags()
+    else {
         unreachable!()
     };
+    // If the symbol is an ifunc, change it to a regular func. The symbol is undefined (all the
+    // symbols we write here are) and the distinction between a regular function and an ifunc only
+    // makes sense in the file that defines the symbol.
+    if st_info & elf::SYMBOL_TYPE_MASK == elf::SYMBOL_TYPE_IFUNC {
+        st_info = (st_info & elf::SYMBOL_VISIBILITY_MASK) | elf::SYMBOL_TYPE_FUNC;
+    }
+    // TODO: If this shared object weakly defines a symbol, but there are strong references to the
+    // symbol, then we should upgrade the symbol strength to global. Right now, we don't pass
+    // whether the symbol is weak or not when requesting symbols.
     sym_out.st_info = st_info;
     sym_out.st_other = st_other;
     sym_out.st_size.set(e, 0);
