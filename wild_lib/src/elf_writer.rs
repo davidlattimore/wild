@@ -25,13 +25,13 @@ use crate::layout::Resolution;
 use crate::layout::ResolutionValue;
 use crate::layout::Section;
 use crate::layout::TargetResolutionKind;
-use crate::layout::TlsMode;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::relaxation::Relaxation;
+use crate::relaxation::RelocationModifier;
 use crate::resolution::SectionSlot;
 use crate::resolution::ValueKind;
 use crate::sharding::ShardKey;
@@ -1034,12 +1034,6 @@ impl<'a> Display for DisplayRelocation<'a> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RelocationModifier {
-    Normal,
-    SkipNextRelocation,
-}
-
 struct DynamicRelocationWriter<'out> {
     /// Whether we're writing relocations. This will be false if we're writing a non-relocatable
     /// output file.
@@ -1123,7 +1117,7 @@ impl<'out> DynamicRelocationWriter<'out> {
 /// transformations that are applied.
 fn apply_relocation(
     object_layout: &ObjectLayout,
-    offset_in_section: u64,
+    mut offset_in_section: u64,
     rel: &object::Relocation,
     section_address: u64,
     layout: &Layout,
@@ -1138,7 +1132,6 @@ fn apply_relocation(
         ResolutionValue::Address(v) => (v, ValueKind::Address),
         ResolutionValue::Dynamic(_) => (0, ValueKind::Dynamic),
     };
-    let mut offset = offset_in_section as usize;
     let place = section_address + offset_in_section;
     let mut addend = rel.addend() as u64;
     let mut next_modifier = RelocationModifier::Normal;
@@ -1149,12 +1142,12 @@ fn apply_relocation(
     if let Some((relaxation, r_type)) = Relaxation::new(
         r_type,
         out,
-        offset_in_section as usize,
+        offset_in_section,
         value_kind,
         layout.args().output_kind,
     ) {
         rel_info = RelocationKindInfo::from_raw(r_type)?;
-        relaxation.apply(out, offset_in_section as usize, &mut addend);
+        relaxation.apply(out, &mut offset_in_section, &mut addend, &mut next_modifier);
     } else {
         rel_info = RelocationKindInfo::from_raw(r_type)?;
     }
@@ -1177,51 +1170,17 @@ fn apply_relocation(
             .plt_address()?
             .wrapping_add(addend)
             .wrapping_sub(place),
-        RelocationKind::TlsGd => {
-            // TODO: Move this logic, or something equivalent into the relaxation module.
-            match layout.args().tls_mode() {
-                TlsMode::LocalExec => {
-                    // Transform GD (general dynamic) into LE (local exec). We can make this
-                    // transformation because we're producing a statically linked executable.
-                    expect_bytes_before_offset(out, offset, &[0x66, 0x48, 0x8d, 0x3d])?;
-                    // Transforms to:
-                    // mov %fs:0x0,%rax // the same as a TLSLD relocation
-                    // lea {var offset}(%rax),%rax
-                    out[offset - 4..offset + 8].copy_from_slice(&[
-                        0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0x48, 0x8d, 0x80,
-                    ]);
-                    offset += 8;
-                    next_modifier = RelocationModifier::SkipNextRelocation;
-                    value.wrapping_sub(layout.tls_end_address())
-                }
-                TlsMode::Preserve => resolution
-                    .got_address()?
-                    .wrapping_add(addend)
-                    .wrapping_sub(place),
-            }
-        }
-        RelocationKind::TlsLd => {
-            match layout.args().tls_mode() {
-                TlsMode::LocalExec => {
-                    // Transform LD (local dynamic) into LE (local exec). We can make this
-                    // transformation because we're producing a statically linked executable.
-                    expect_bytes_before_offset(out, offset, &[0x48, 0x8d, 0x3d])?;
-                    // Transforms to: mov %fs:0x0,%rax
-                    out[offset - 3..offset + 5]
-                        .copy_from_slice(&[0x66, 0x66, 0x66, 0x64, 0x48, 0x8b, 0x04, 0x25]);
-                    offset += 5;
-                    next_modifier = RelocationModifier::SkipNextRelocation;
-                    0
-                }
-                TlsMode::Preserve => layout
-                    .internal()
-                    .tlsld_got_entry
-                    .unwrap()
-                    .get()
-                    .wrapping_add(addend)
-                    .wrapping_sub(place),
-            }
-        }
+        RelocationKind::TlsGd => resolution
+            .got_address()?
+            .wrapping_add(addend)
+            .wrapping_sub(place),
+        RelocationKind::TlsLd => layout
+            .internal()
+            .tlsld_got_entry
+            .unwrap()
+            .get()
+            .wrapping_add(addend)
+            .wrapping_sub(place),
         RelocationKind::DtpOff => value
             .wrapping_sub(layout.tls_end_address())
             .wrapping_add(addend),
@@ -1230,27 +1189,16 @@ fn apply_relocation(
             .wrapping_add(addend)
             .wrapping_sub(place),
         RelocationKind::TpOff => value.wrapping_sub(layout.tls_end_address()),
+        RelocationKind::None => 0,
         other => bail!("Unsupported relocation kind {other:?}"),
     };
     let value_bytes = value.to_le_bytes();
-    let end = offset + rel_info.byte_size;
+    let end = offset_in_section as usize + rel_info.byte_size;
     if out.len() < end {
         bail!("Relocation outside of bounds of section");
     }
-    out[offset..end].copy_from_slice(&value_bytes[..rel_info.byte_size]);
+    out[offset_in_section as usize..end].copy_from_slice(&value_bytes[..rel_info.byte_size]);
     Ok(next_modifier)
-}
-
-/// Verifies that the bytes leading up to `offset` are equal to `expected`. Return an error if not.
-fn expect_bytes_before_offset(bytes: &[u8], offset: usize, expected: &[u8]) -> Result {
-    if offset < expected.len() {
-        bail!("Expected bytes {expected:x?}, but only had {offset} bytes available");
-    }
-    let actual = &bytes[offset - expected.len()..offset];
-    if actual != expected {
-        bail!("Expected bytes {expected:x?}, got {actual:x?}");
-    }
-    Ok(())
 }
 
 impl<'data> InternalLayout<'data> {

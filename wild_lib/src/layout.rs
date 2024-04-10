@@ -1731,14 +1731,14 @@ impl RelocationLayoutAction {
         if let Some((_relaxation, new_r_type)) = Relaxation::new(
             r_type,
             section.data()?,
-            rel_offset as usize,
+            rel_offset,
             symbol_value_kind,
             args.output_kind,
         ) {
             r_type = new_r_type;
         }
         let rel_info = RelocationKindInfo::from_raw(r_type)?;
-        let resolution_kind = TargetResolutionKind::new(rel_info.kind, args)?;
+        let resolution_kind = TargetResolutionKind::new(rel_info.kind)?;
         let dynamic_relocation_required = args.is_relocatable()
             && matches!(rel_info.kind, RelocationKind::Absolute)
             && matches!(symbol_value_kind, ValueKind::Address);
@@ -1762,14 +1762,14 @@ impl RelocationLayoutAction {
         if let Some((_relaxation, new_r_type)) = Relaxation::new(
             r_type,
             section.data()?,
-            rel_offset as usize,
+            rel_offset,
             ValueKind::Address,
             args.output_kind,
         ) {
             r_type = new_r_type;
         }
         let rel_info = RelocationKindInfo::from_raw(r_type)?;
-        let resolution_kind = TargetResolutionKind::new(rel_info.kind, args)?;
+        let resolution_kind = TargetResolutionKind::new(rel_info.kind)?;
         Ok(RelocationLayoutAction {
             kind: RelocationLayoutActionKind::LoadSection(local_section_index, resolution_kind),
             dynamic_relocation_required: args.is_relocatable()
@@ -1811,22 +1811,16 @@ impl RelocationLayoutAction {
 }
 
 impl TargetResolutionKind {
-    fn new(rel_kind: RelocationKind, args: &Args) -> Result<Self> {
+    fn new(rel_kind: RelocationKind) -> Result<Self> {
         Ok(match rel_kind {
             RelocationKind::PltRelative => Self::Plt,
             RelocationKind::Got | RelocationKind::GotRelative => Self::Got,
             RelocationKind::GotTpOff => Self::GotTlsOffset,
-            RelocationKind::TlsGd | RelocationKind::TlsLd => {
-                // TODO: This kind of thing should be handled by the relaxation module.
-                let tls_mode = args.tls_mode();
-                match tls_mode {
-                    TlsMode::LocalExec => Self::Value,
-                    TlsMode::Preserve => Self::GotTlsDouble,
-                }
-            }
+            RelocationKind::TlsGd | RelocationKind::TlsLd => Self::GotTlsDouble,
             RelocationKind::Absolute => Self::Value,
             RelocationKind::Relative => Self::Value,
             RelocationKind::DtpOff | RelocationKind::TpOff => Self::Value,
+            RelocationKind::None => Self::Value,
         })
     }
 

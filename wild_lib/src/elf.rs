@@ -336,6 +336,10 @@ pub(crate) enum RelocationKind {
     DtpOff,
     GotTpOff,
     TpOff,
+
+    /// No relocation needs to be applied. Produced when we eliminate a relocation due to an
+    /// optimisation.
+    None,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -365,6 +369,7 @@ impl RelocationKindInfo {
                 (RelocationKind::GotRelative, 4)
             }
             rel::R_X86_64_TPOFF32 => (RelocationKind::TpOff, 4),
+            rel::R_X86_64_NONE => (RelocationKind::None, 0),
             _ => bail!("Unsupported relocation type {r_type}"),
         };
         Ok(Self {
@@ -376,6 +381,7 @@ impl RelocationKindInfo {
 
 #[allow(dead_code)]
 pub(crate) mod rel {
+    pub(crate) const R_X86_64_NONE: u32 = 0;
     pub(crate) const R_X86_64_64: u32 = 1;
     pub(crate) const R_X86_64_PC32: u32 = 2;
     pub(crate) const R_X86_64_GOT32: u32 = 3;
