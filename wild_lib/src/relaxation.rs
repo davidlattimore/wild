@@ -20,6 +20,9 @@ pub(crate) enum Relaxation {
 
     /// Transform a call instruction like `call *x(%rip)` -> `call x(%rip)`.
     CallIndirectToAbsolute,
+
+    /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
+    NoOp,
 }
 
 impl Relaxation {
@@ -30,6 +33,7 @@ impl Relaxation {
         section_bytes: &[u8],
         offset: usize,
         value_kind: ValueKind,
+        link_static: bool,
     ) -> Option<(Self, u32)> {
         // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
         // because fetching it contains potential error paths, the optimiser probably can't optimise
@@ -72,6 +76,9 @@ impl Relaxation {
                     _ => return None,
                 }
             }
+            rel::R_X86_64_PLT32 if link_static => {
+                return Some((Relaxation::NoOp, rel::R_X86_64_PC32));
+            }
             _ => return None,
         };
         Some((kind, new_rel))
@@ -95,6 +102,7 @@ impl Relaxation {
                 section_bytes[offset - 2..offset].copy_from_slice(&[0x67, 0xe8]);
                 *addend = 0;
             }
+            Relaxation::NoOp => {}
         }
     }
 }
@@ -105,7 +113,8 @@ fn test_relaxation() {
     fn check(relocation_kind: u32, bytes_in: &[u8], address: &[u8], absolute: &[u8]) {
         let mut out = bytes_in.to_owned();
         let offset = bytes_in.len();
-        if let Some((r, _)) = Relaxation::new(relocation_kind, bytes_in, offset, ValueKind::Address)
+        if let Some((r, _)) =
+            Relaxation::new(relocation_kind, bytes_in, offset, ValueKind::Address, true)
         {
             r.apply(&mut out, offset, &mut 0);
 
@@ -115,7 +124,7 @@ fn test_relaxation() {
             );
         }
         if let Some((r, _)) =
-            Relaxation::new(relocation_kind, bytes_in, offset, ValueKind::Absolute)
+            Relaxation::new(relocation_kind, bytes_in, offset, ValueKind::Absolute, true)
         {
             out.copy_from_slice(bytes_in);
             r.apply(&mut out, offset, &mut 0);

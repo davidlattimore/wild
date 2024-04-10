@@ -1733,6 +1733,7 @@ impl RelocationLayoutAction {
             section.data()?,
             rel_offset as usize,
             symbol_value_kind,
+            args.link_static,
         ) {
             r_type = new_r_type;
         }
@@ -1763,6 +1764,7 @@ impl RelocationLayoutAction {
             section.data()?,
             rel_offset as usize,
             ValueKind::Address,
+            args.link_static,
         ) {
             r_type = new_r_type;
         }
@@ -1811,15 +1813,7 @@ impl RelocationLayoutAction {
 impl TargetResolutionKind {
     fn new(rel_kind: RelocationKind, args: &Args) -> Result<Self> {
         Ok(match rel_kind {
-            RelocationKind::PltRelative => {
-                if args.link_static {
-                    // When statically linking, we transform PLT relocations into references to the
-                    // actual function.
-                    Self::Value
-                } else {
-                    Self::Plt
-                }
-            }
+            RelocationKind::PltRelative => Self::Plt,
             RelocationKind::Got | RelocationKind::GotRelative => Self::Got,
             RelocationKind::GotTpOff => Self::GotTlsOffset,
             RelocationKind::TlsGd | RelocationKind::TlsLd => {

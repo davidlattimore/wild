@@ -1146,9 +1146,13 @@ fn apply_relocation(
         unreachable!();
     };
     let rel_info;
-    if let Some((relaxation, r_type)) =
-        Relaxation::new(r_type, out, offset_in_section as usize, value_kind)
-    {
+    if let Some((relaxation, r_type)) = Relaxation::new(
+        r_type,
+        out,
+        offset_in_section as usize,
+        value_kind,
+        layout.args().link_static,
+    ) {
         rel_info = RelocationKindInfo::from_raw(r_type)?;
         relaxation.apply(out, offset_in_section as usize, &mut addend);
     } else {
@@ -1169,16 +1173,10 @@ fn apply_relocation(
             .got_address()?
             .wrapping_add(addend)
             .wrapping_sub(place),
-        RelocationKind::PltRelative => {
-            if layout.args().link_static {
-                value.wrapping_add(addend).wrapping_sub(place)
-            } else {
-                resolution
-                    .plt_address()?
-                    .wrapping_add(addend)
-                    .wrapping_sub(place)
-            }
-        }
+        RelocationKind::PltRelative => resolution
+            .plt_address()?
+            .wrapping_add(addend)
+            .wrapping_sub(place),
         RelocationKind::TlsGd => {
             // TODO: Move this logic, or something equivalent into the relaxation module.
             match layout.args().tls_mode() {
