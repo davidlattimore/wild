@@ -24,6 +24,18 @@ pub(crate) enum Relaxation {
 
     /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
     NoOp,
+
+    /// Transform GD (general dynamic) into LE (local exec).
+    TlsGdToLocalExec,
+
+    /// Transform LD (local dynamic) into LE (local exec).
+    TlsLdToLocalExec,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RelocationModifier {
+    Normal,
+    SkipNextRelocation,
 }
 
 impl Relaxation {
@@ -32,10 +44,11 @@ impl Relaxation {
     pub(crate) fn new(
         relocation_kind: u32,
         section_bytes: &[u8],
-        offset: usize,
+        offset_in_section: u64,
         value_kind: ValueKind,
         output_kind: OutputKind,
     ) -> Option<(Self, u32)> {
+        let offset = offset_in_section as usize;
         // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
         // because fetching it contains potential error paths, the optimiser probably can't optimise
         // away fetching it.
@@ -80,12 +93,32 @@ impl Relaxation {
             rel::R_X86_64_PLT32 if output_kind == OutputKind::StaticExecutable => {
                 return Some((Relaxation::NoOp, rel::R_X86_64_PC32));
             }
+            rel::R_X86_64_TLSGD if output_kind == OutputKind::StaticExecutable => {
+                if offset < 4 || section_bytes[offset - 4..offset] != [0x66, 0x48, 0x8d, 0x3d] {
+                    return None;
+                }
+                (Relaxation::TlsGdToLocalExec, rel::R_X86_64_TPOFF32)
+            }
+            rel::R_X86_64_TLSLD if output_kind == OutputKind::StaticExecutable => {
+                if offset < 3 || section_bytes[offset - 3..offset] != [0x48, 0x8d, 0x3d] {
+                    return None;
+                }
+                (Relaxation::TlsLdToLocalExec, rel::R_X86_64_NONE)
+            }
+
             _ => return None,
         };
         Some((kind, new_rel))
     }
 
-    pub(crate) fn apply(&self, section_bytes: &mut [u8], offset: usize, addend: &mut u64) {
+    pub(crate) fn apply(
+        &self,
+        section_bytes: &mut [u8],
+        offset_in_section: &mut u64,
+        addend: &mut u64,
+        next_modifier: &mut RelocationModifier,
+    ) {
+        let offset = *offset_in_section as usize;
         match self {
             Relaxation::MovIndirectToLea => {
                 // Since the value is an address, we transform a PC-relative mov into a PC-relative
@@ -103,6 +136,19 @@ impl Relaxation {
                 section_bytes[offset - 2..offset].copy_from_slice(&[0x67, 0xe8]);
                 *addend = 0;
             }
+            Relaxation::TlsGdToLocalExec => {
+                section_bytes[offset - 4..offset + 8]
+                    .copy_from_slice(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0x48, 0x8d, 0x80]);
+                *offset_in_section += 8;
+                *next_modifier = RelocationModifier::SkipNextRelocation;
+            }
+            Relaxation::TlsLdToLocalExec => {
+                // Transforms to: mov %fs:0x0,%rax
+                section_bytes[offset - 3..offset + 9]
+                    .copy_from_slice(&[0x66, 0x66, 0x66, 0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0]);
+                *offset_in_section += 5;
+                *next_modifier = RelocationModifier::SkipNextRelocation;
+            }
             Relaxation::NoOp => {}
         }
     }
@@ -113,7 +159,8 @@ fn test_relaxation() {
     #[track_caller]
     fn check(relocation_kind: u32, bytes_in: &[u8], address: &[u8], absolute: &[u8]) {
         let mut out = bytes_in.to_owned();
-        let offset = bytes_in.len();
+        let mut offset = bytes_in.len() as u64;
+        let mut modifier = RelocationModifier::Normal;
         if let Some((r, _)) = Relaxation::new(
             relocation_kind,
             bytes_in,
@@ -121,7 +168,7 @@ fn test_relaxation() {
             ValueKind::Address,
             OutputKind::StaticExecutable,
         ) {
-            r.apply(&mut out, offset, &mut 0);
+            r.apply(&mut out, &mut offset, &mut 0, &mut modifier);
 
             assert_eq!(
                 out, address,
@@ -136,7 +183,7 @@ fn test_relaxation() {
             OutputKind::StaticExecutable,
         ) {
             out.copy_from_slice(bytes_in);
-            r.apply(&mut out, offset, &mut 0);
+            r.apply(&mut out, &mut offset, &mut 0, &mut modifier);
             assert_eq!(
                 out, absolute,
                 "unresolved: Expected {absolute:x?}, got {out:x?}"
