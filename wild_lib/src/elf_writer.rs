@@ -974,6 +974,13 @@ impl<'data> ObjectLayout<'data> {
                 let symbol_id = layout.symbol_db.definition(local_symbol_id);
                 let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
                 if symbol_id == SymbolId::undefined() || !layout.is_file_loaded(file_id) {
+                    let local_symbol = &self.object.symbol_by_index(symbol_index)?;
+                    if !local_symbol.is_weak() {
+                        bail!(
+                            "Undefined strong reference to `{}`",
+                            String::from_utf8_lossy(local_symbol.name_bytes()?)
+                        );
+                    }
                     // TODO: Check if reference is weak.
                     new_resolution = Some(layout.internal().undefined_symbol_resolution);
                 } else if let Some(res) = layout.symbol_resolution(symbol_id) {
