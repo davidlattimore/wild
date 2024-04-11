@@ -68,7 +68,7 @@ pub fn compute<'data>(
     output: &mut elf_writer::Output,
 ) -> Result<Layout<'data>> {
     if let Some(sym_info) = symbol_db.args.sym_info.as_deref() {
-        print_symbol_info(symbol_db, &file_states, sym_info);
+        print_symbol_info(symbol_db, sym_info);
     }
     let mut layout_states = find_required_sections(file_states, symbol_db, &output_sections)?;
     finalise_all_sizes(symbol_db, &output_sections, &mut layout_states)?;
@@ -2989,17 +2989,28 @@ impl<'data> std::fmt::Debug for FileLayoutState<'data> {
         }
     }
 }
-fn print_symbol_info(symbol_db: &SymbolDb, files: &[resolution::ResolvedFile], name: &str) {
-    let Some(symbol_id) = symbol_db
+
+fn print_symbol_info(symbol_db: &SymbolDb, name: &str) {
+    if let Some(symbol_id) = symbol_db
         .global_names
         .get(&SymbolName::prehashed(name.as_bytes()))
-    else {
+    {
+        println!(
+            "Global definition:\n   {}",
+            symbol_db.symbol_debug(*symbol_id)
+        );
+    } else {
         println!("No global symbol `{name}` defined by any input files");
-        return;
-    };
-    let symbol_file_id = symbol_db.file_id_for_symbol(*symbol_id);
-    let file = &files[symbol_file_id.as_usize()];
-    println!("Symbol `{name}` defined by {file}");
+    }
+    for i in 0..symbol_db.num_symbols() {
+        let symbol_id = SymbolId::from_usize(i);
+        if symbol_db
+            .symbol_name(symbol_id)
+            .is_ok_and(|sym_name| sym_name.bytes() == name.as_bytes())
+        {
+            println!("{}", symbol_db.symbol_debug(symbol_id));
+        }
+    }
 }
 
 fn section_debug(object: &crate::elf::File, section_index: object::SectionIndex) -> SectionDebug {

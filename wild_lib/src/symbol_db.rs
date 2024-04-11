@@ -339,6 +339,9 @@ impl<'db, 'data> std::fmt::Display for SymbolDebug<'db, 'data> {
         let file_id = self.db.file_id_for_symbol(symbol_id);
         let file = &self.db.inputs[file_id.as_usize()];
         let local_index = symbol_id.offset_from(file.start_symbol_id());
+        if definition.is_undefined() {
+            write!(f, "undefined ")?;
+        }
         if symbol_name.bytes().is_empty() {
             match file {
                 InputObject::Internal(_) => write!(f, "<unnamed internal symbol>")?,
@@ -368,12 +371,15 @@ impl<'db, 'data> std::fmt::Display for SymbolDebug<'db, 'data> {
         if symbol_id == definition {
             return Ok(());
         }
-        let definition_file_id = self.db.file_id_for_symbol(definition);
-        let definition_file = &self.db.inputs[definition_file_id.as_usize()];
-        write!(
-            f,
-            " defined as {definition} in file #{definition_file_id} ({definition_file})"
-        )
+        if !definition.is_undefined() {
+            let definition_file_id = self.db.file_id_for_symbol(definition);
+            let definition_file = &self.db.inputs[definition_file_id.as_usize()];
+            write!(
+                f,
+                " defined as {definition} in file #{definition_file_id} ({definition_file})"
+            )?;
+        }
+        Ok(())
     }
 }
 
