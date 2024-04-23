@@ -1,5 +1,6 @@
 use crate::args::Args;
 use crate::elf;
+use crate::elf::slice_from_all_bytes_mut;
 use crate::elf::DynamicEntry;
 use crate::elf::DynamicTag;
 use crate::elf::EhFrameHdr;
@@ -44,6 +45,8 @@ use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
 use memmap2::MmapOptions;
+use object::from_bytes_mut;
+use object::LittleEndian;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
@@ -274,56 +277,71 @@ fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: 
         if segment_id.segment_type() == SegmentType::Load {
             alignment = alignment.max(crate::alignment::PAGE);
         }
-        *segment_header = ProgramHeader {
-            segment_type: segment_id.segment_type() as u32,
-            flags: segment_id.segment_flags(),
-            offset: segment_sizes.file_offset as u64,
-            virtual_addr: segment_sizes.mem_offset,
-            physical_addr: segment_sizes.mem_offset,
-            file_size: segment_sizes.file_size as u64,
-            mem_size: segment_sizes.mem_size,
-            alignment: alignment.value(),
-        };
+        let e = LittleEndian;
+        segment_header
+            .p_type
+            .set(e, segment_id.segment_type() as u32);
+        segment_header.p_flags.set(e, segment_id.segment_flags());
+        segment_header
+            .p_offset
+            .set(e, segment_sizes.file_offset as u64);
+        segment_header.p_vaddr.set(e, segment_sizes.mem_offset);
+        segment_header.p_paddr.set(e, segment_sizes.mem_offset);
+        segment_header
+            .p_filesz
+            .set(e, segment_sizes.file_size as u64);
+        segment_header.p_memsz.set(e, segment_sizes.mem_size);
+        segment_header.p_align.set(e, alignment.value());
     }
     Ok(())
 }
 
-impl FileHeader {
-    fn build(layout: &Layout, header_info: &HeaderInfo) -> Result<Self> {
-        let args = layout.args();
-        let ty = if args.pie {
-            elf::FileType::SharedObject
-        } else {
-            elf::FileType::Executable
-        };
-        Ok(Self {
-            magic: [0x7f, b'E', b'L', b'F'],
-            class: 2, // 64 bit
-            data: 1,  // Little endian
-            ei_version: 1,
-            os_abi: 0,
-            abi_version: 0,
-            padding: [0; 7],
-            ty: ty as u16,
-            machine: 0x3e, // x86-64
-            e_version: 1,
-            entry_point: layout.entry_symbol_address()?,
-
-            program_header_offset: elf::PHEADER_OFFSET,
-            section_header_offset: u64::from(elf::FILE_HEADER_SIZE)
-                + header_info.program_headers_size(),
-            flags: 0,
-            ehsize: elf::FILE_HEADER_SIZE,
-            program_header_entry_size: elf::PROGRAM_HEADER_SIZE,
-            program_header_num: header_info.active_segment_ids.len() as u16,
-            section_header_entry_size: elf::SECTION_HEADER_SIZE,
-            section_header_num: header_info.num_output_sections_with_content,
-            section_names_index: layout
-                .output_sections
-                .output_index_of_section(crate::output_section_id::SHSTRTAB)
-                .expect("we always write .shstrtab"),
-        })
-    }
+fn populate_file_header(
+    layout: &Layout,
+    header_info: &HeaderInfo,
+    header: &mut FileHeader,
+) -> Result {
+    let args = layout.args();
+    let ty = if args.pie {
+        elf::FileType::SharedObject
+    } else {
+        elf::FileType::Executable
+    };
+    let e = LittleEndian;
+    header.e_ident.magic = object::elf::ELFMAG;
+    header.e_ident.class = 2; // 64 bit
+    header.e_ident.data = 1; // Little endian
+    header.e_ident.version = 1;
+    header.e_ident.os_abi = 0;
+    header.e_ident.abi_version = 0;
+    header.e_ident.padding = Default::default();
+    header.e_type.set(e, ty as u16);
+    header.e_machine.set(e, 0x3e); // x86-64
+    header.e_version.set(e, 1);
+    header.e_entry.set(e, layout.entry_symbol_address()?);
+    header.e_phoff.set(e, elf::PHEADER_OFFSET);
+    header.e_shoff.set(
+        e,
+        u64::from(elf::FILE_HEADER_SIZE) + header_info.program_headers_size(),
+    );
+    header.e_flags.set(e, 0);
+    header.e_ehsize.set(e, elf::FILE_HEADER_SIZE);
+    header.e_phentsize.set(e, elf::PROGRAM_HEADER_SIZE);
+    header
+        .e_phnum
+        .set(e, header_info.active_segment_ids.len() as u16);
+    header.e_shentsize.set(e, elf::SECTION_HEADER_SIZE);
+    header
+        .e_shnum
+        .set(e, header_info.num_output_sections_with_content);
+    header.e_shstrndx.set(
+        e,
+        layout
+            .output_sections
+            .output_index_of_section(crate::output_section_id::SHSTRTAB)
+            .expect("we always write .shstrtab"),
+    );
+    Ok(())
 }
 
 impl<'data> FileLayout<'data> {
@@ -356,7 +374,7 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
             layout,
             got: bytemuck::cast_slice_mut(core::mem::take(&mut buffers.got)),
             plt: core::mem::take(&mut buffers.plt),
-            rela_plt: bytemuck::cast_slice_mut(core::mem::take(&mut buffers.rela_plt)),
+            rela_plt: slice_from_all_bytes_mut(core::mem::take(&mut buffers.rela_plt)),
             tls: layout.tls_start_address()..layout.tls_end_address(),
         }
     }
@@ -463,6 +481,7 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
     ) -> Result {
         let out = slice_take_prefix_mut(&mut self.rela_plt, 1);
         let out = &mut out[0];
+        let e = LittleEndian;
         if relocation_writer.is_active {
             relocation_writer.write_relocation(
                 rel.relocation_address + elf::RELA_ADDEND_OFFSET as u64,
@@ -475,10 +494,11 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
                 0,
             )?;
         } else {
-            out.addend = rel.resolver;
-            out.address = rel.got_address;
+            out.r_addend.set(e, rel.resolver as i64);
+            out.r_offset.set(e, rel.got_address);
         }
-        out.info = elf::RelocationType::IRelative as u32 as u64;
+        out.r_info
+            .set(e, elf::RelocationType::IRelative as u32 as u64);
         Ok(())
     }
 }
@@ -498,14 +518,8 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         sizes: &OutputSectionPartMap<u64>,
         output_sections: &'data OutputSections<'data>,
     ) -> Self {
-        let local_entries = bytemuck::cast_slice_mut(slice_take_prefix_mut(
-            &mut buffers.symtab_locals,
-            sizes.symtab_locals as usize,
-        ));
-        let global_entries = bytemuck::cast_slice_mut(slice_take_prefix_mut(
-            &mut buffers.symtab_globals,
-            sizes.symtab_globals as usize,
-        ));
+        let local_entries = slice_from_all_bytes_mut(core::mem::take(&mut buffers.symtab_locals));
+        let global_entries = slice_from_all_bytes_mut(core::mem::take(&mut buffers.symtab_globals));
         let strings = bytemuck::cast_slice_mut(slice_take_prefix_mut(
             &mut buffers.symtab_strings,
             sizes.symtab_strings as usize,
@@ -547,8 +561,8 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         let value = section_address + sym.address();
         let size = sym.size();
         let entry = self.define_symbol(is_local, shndx, value, size, name)?;
-        entry.info = st_info;
-        entry.other = st_other;
+        entry.st_info = st_info;
+        entry.st_other = st_other;
         Ok(())
     }
 
@@ -575,14 +589,13 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
                 )
             })?
         };
-        *entry = SymtabEntry {
-            name: self.string_offset,
-            info: 0,
-            other: 0,
-            shndx,
-            value,
-            size,
-        };
+        let e = LittleEndian;
+        entry.st_name.set(e, self.string_offset);
+        entry.st_info = 0;
+        entry.st_other = 0;
+        entry.st_shndx.set(e, shndx);
+        entry.st_value.set(e, value);
+        entry.st_size.set(e, size);
         let len = name.len();
         let str_out = slice_take_prefix_mut(&mut self.strings, len + 1);
         str_out[..len].copy_from_slice(name);
@@ -1053,10 +1066,10 @@ impl<'out> DynamicRelocationWriter<'out> {
     fn new(is_active: bool, buffers: &mut OutputSectionPartMap<&'out mut [u8]>) -> Self {
         Self {
             is_active,
-            rela_dyn_relative: bytemuck::cast_slice_mut(core::mem::take(
+            rela_dyn_relative: slice_from_all_bytes_mut(core::mem::take(
                 &mut buffers.rela_dyn_relative,
             )),
-            rela_dyn_glob_dat: bytemuck::cast_slice_mut(core::mem::take(
+            rela_dyn_glob_dat: slice_from_all_bytes_mut(core::mem::take(
                 &mut buffers.rela_dyn_glob_dat,
             )),
         }
@@ -1066,27 +1079,31 @@ impl<'out> DynamicRelocationWriter<'out> {
         if !self.is_active {
             return Ok(());
         }
+        let e = LittleEndian;
         match res_value {
             ResolutionValue::Absolute(_) => {}
             ResolutionValue::Address(address) => {
                 let rela = crate::slice::take_first_mut(&mut self.rela_dyn_relative)
                     .context("insufficient allocation to .rela.dyn (relative)")?;
-                rela.address = place;
-                rela.addend = address.wrapping_add(addend);
-                rela.info = elf::rel::R_X86_64_RELATIVE.into();
+                rela.r_offset.set(e, place);
+                rela.r_addend.set(e, address.wrapping_add(addend) as i64);
+                rela.r_info.set(e, object::elf::R_X86_64_RELATIVE.into());
             }
             ResolutionValue::Dynamic(symbol_index) => {
                 let rela = crate::slice::take_first_mut(&mut self.rela_dyn_glob_dat)
                     .context("insufficient allocation to .rela.dyn (glob-dat)")?;
-                rela.address = place;
-                rela.addend = addend;
+                rela.r_offset.set(e, place);
+                rela.r_addend.set(e, addend as i64);
                 // We could plausibly use R_X86_64_JUMP_SLOT here in cases where we have only PLT
                 // references to a symbol and no GOT references. If we did that, we'd need to put
                 // the relocation in .rela.plt not .rela.dyn. Right now, we don't track whether a
                 // symbol has only PLT references and no GOT references. Also, we currently set the
                 // BIND_NOW flag, which means all the PLT relocations would be eagerly bound, making
                 // use of JUMP_SLOT relocations pointless.
-                rela.info = u64::from(symbol_index) << 32 | u64::from(elf::rel::R_X86_64_GLOB_DAT);
+                rela.r_info.set(
+                    e,
+                    u64::from(symbol_index) << 32 | u64::from(object::elf::R_X86_64_GLOB_DAT),
+                );
             }
         }
         Ok(())
@@ -1210,8 +1227,10 @@ fn apply_relocation(
 
 impl<'data> InternalLayout<'data> {
     fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
-        let header: &mut FileHeader = bytemuck::from_bytes_mut(buffers.file_header);
-        *header = FileHeader::build(layout, &self.header_info)?;
+        let header: &mut FileHeader = from_bytes_mut(buffers.file_header)
+            .map_err(|_| anyhow!("Invalid file header allocation"))?
+            .0;
+        populate_file_header(layout, &self.header_info, header)?;
 
         let mut program_headers = ProgramHeaderWriter::new(buffers.program_headers);
         write_program_headers(&mut program_headers, layout)?;
@@ -1421,7 +1440,7 @@ fn write_internal_symbols(
         let entry = symbol_writer
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
-        entry.info = (elf::Binding::Global as u8) << 4;
+        entry.st_info = (elf::Binding::Global as u8) << 4;
     }
     Ok(())
 }
@@ -1546,21 +1565,22 @@ struct DynamicEntriesWriter<'out> {
 impl<'out> DynamicEntriesWriter<'out> {
     fn new(buffer: &mut [u8]) -> DynamicEntriesWriter {
         DynamicEntriesWriter {
-            out: bytemuck::cast_slice_mut(buffer),
+            out: slice_from_all_bytes_mut(buffer),
         }
     }
 
     fn write(&mut self, tag: DynamicTag, value: u64) -> Result {
         let entry = crate::slice::take_first_mut(&mut self.out)
             .ok_or_else(|| anyhow!("Insufficient dynamic table entries"))?;
-        entry.tag = tag as u64;
-        entry.value = value;
+        let e = LittleEndian;
+        entry.d_tag.set(e, tag as u64);
+        entry.d_val.set(e, value);
         Ok(())
     }
 }
 
 fn write_section_headers(out: &mut [u8], layout: &Layout) {
-    let entries: &mut [SectionHeader] = bytemuck::cast_slice_mut(out);
+    let entries: &mut [SectionHeader] = slice_from_all_bytes_mut(out);
     let output_sections = &layout.output_sections;
     let mut entries = entries.iter_mut();
     let mut name_offset = 0;
@@ -1588,18 +1608,18 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
                 .output_index_of_section(link_id)
                 .unwrap_or(0);
         }
-        *entries.next().unwrap() = SectionHeader {
-            name: name_offset,
-            ty: section_details.ty as u32,
-            flags: section_details.section_flags,
-            address: section_layout.mem_offset,
-            offset: section_layout.file_offset as u64,
-            size,
-            link: link.into(),
-            info: section_id.info(layout),
-            alignment,
-            entsize,
-        };
+        let entry = entries.next().unwrap();
+        let e = LittleEndian;
+        entry.sh_name.set(e, name_offset);
+        entry.sh_type.set(e, section_details.ty as u32);
+        entry.sh_flags.set(e, section_details.section_flags);
+        entry.sh_addr.set(e, section_layout.mem_offset);
+        entry.sh_offset.set(e, section_layout.file_offset as u64);
+        entry.sh_size.set(e, size);
+        entry.sh_link.set(e, link.into());
+        entry.sh_info.set(e, section_id.info(layout));
+        entry.sh_addralign.set(e, alignment);
+        entry.sh_entsize.set(e, entsize);
         name_offset += layout.output_sections.name(section_id).len() as u32 + 1;
     });
     assert!(
@@ -1626,7 +1646,7 @@ struct ProgramHeaderWriter<'out> {
 impl<'out> ProgramHeaderWriter<'out> {
     fn new(bytes: &'out mut [u8]) -> Self {
         Self {
-            headers: bytemuck::cast_slice_mut(bytes),
+            headers: slice_from_all_bytes_mut(bytes),
         }
     }
 
@@ -1665,7 +1685,7 @@ impl<'data> DynamicLayout<'data> {
 
         self.write_so_name(buffers.dynamic, &mut strtab)?;
 
-        let mut dynsym: &mut [SymtabEntry] = bytemuck::cast_slice_mut(buffers.dynsym);
+        let mut dynsym: &mut [SymtabEntry] = slice_from_all_bytes_mut(buffers.dynsym);
         for ((symbol_id, resolution), symbol) in layout
             .resolutions_in_range(self.start_symbol_id, self.num_symbols)
             .zip(self.object.dynamic_symbols())
@@ -1703,16 +1723,20 @@ fn write_dynamic_symtab_entry(
 ) -> Result {
     let sym_out =
         crate::slice::take_first_mut(dynsym).context("Insufficient .dynsym allocation")?;
-    sym_out.name = strtab
-        .write_str(symbol.name_bytes()?)
-        .try_into()
-        .context(".dynstr is too big")?;
+    let e = LittleEndian;
+    sym_out.st_name.set(
+        e,
+        strtab
+            .write_str(symbol.name_bytes()?)
+            .try_into()
+            .context(".dynstr is too big")?,
+    );
     let object::SymbolFlags::Elf { st_info, st_other } = symbol.flags() else {
         unreachable!()
     };
-    sym_out.info = st_info;
-    sym_out.other = st_other;
-    sym_out.size = 0;
+    sym_out.st_info = st_info;
+    sym_out.st_other = st_other;
+    sym_out.st_size.set(e, 0);
     Ok(())
 }
 
