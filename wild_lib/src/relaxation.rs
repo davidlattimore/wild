@@ -6,7 +6,6 @@
 //! For now, we only apply those relaxations that we find we need.
 
 use crate::args::OutputKind;
-use crate::elf::rel;
 use crate::resolution::ValueKind;
 
 #[derive(Debug)]
@@ -53,7 +52,7 @@ impl Relaxation {
         // because fetching it contains potential error paths, the optimiser probably can't optimise
         // away fetching it.
         let (kind, new_rel) = match relocation_kind {
-            rel::R_X86_64_REX_GOTPCRELX => {
+            object::elf::R_X86_64_REX_GOTPCRELX => {
                 if offset < 3 {
                     return None;
                 }
@@ -63,47 +62,53 @@ impl Relaxation {
                 }
                 let kind = match (b1, value_kind) {
                     (0x8b, ValueKind::Address) => {
-                        (Relaxation::MovIndirectToLea, rel::R_X86_64_PC32)
+                        (Relaxation::MovIndirectToLea, object::elf::R_X86_64_PC32)
                     }
                     (0x8b, ValueKind::Absolute) => {
-                        (Relaxation::MovIndirectToAbsolute, rel::R_X86_64_32)
+                        (Relaxation::MovIndirectToAbsolute, object::elf::R_X86_64_32)
                     }
                     _ => return None,
                 };
                 return Some(kind);
             }
-            rel::R_X86_64_GOTPCRELX => {
+            object::elf::R_X86_64_GOTPCRELX => {
                 if offset < 2 || value_kind != ValueKind::Address {
                     return None;
                 }
                 match section_bytes[offset - 2..offset] {
-                    [0xff, 0x15] => (Relaxation::CallIndirectToAbsolute, rel::R_X86_64_PC32),
+                    [0xff, 0x15] => (
+                        Relaxation::CallIndirectToAbsolute,
+                        object::elf::R_X86_64_PC32,
+                    ),
                     _ => return None,
                 }
             }
-            rel::R_X86_64_GOTTPOFF => {
+            object::elf::R_X86_64_GOTTPOFF => {
                 if offset < 3 {
                     return None;
                 }
                 match section_bytes[offset - 3..offset - 1] {
-                    [0x48, 0x8b] => (Relaxation::MovIndirectToAbsolute, rel::R_X86_64_DTPOFF32),
+                    [0x48, 0x8b] => (
+                        Relaxation::MovIndirectToAbsolute,
+                        object::elf::R_X86_64_DTPOFF32,
+                    ),
                     _ => return None,
                 }
             }
-            rel::R_X86_64_PLT32 if output_kind == OutputKind::StaticExecutable => {
-                return Some((Relaxation::NoOp, rel::R_X86_64_PC32));
+            object::elf::R_X86_64_PLT32 if output_kind == OutputKind::StaticExecutable => {
+                return Some((Relaxation::NoOp, object::elf::R_X86_64_PC32));
             }
-            rel::R_X86_64_TLSGD if output_kind == OutputKind::StaticExecutable => {
+            object::elf::R_X86_64_TLSGD if output_kind == OutputKind::StaticExecutable => {
                 if offset < 4 || section_bytes[offset - 4..offset] != [0x66, 0x48, 0x8d, 0x3d] {
                     return None;
                 }
-                (Relaxation::TlsGdToLocalExec, rel::R_X86_64_TPOFF32)
+                (Relaxation::TlsGdToLocalExec, object::elf::R_X86_64_TPOFF32)
             }
-            rel::R_X86_64_TLSLD if output_kind == OutputKind::StaticExecutable => {
+            object::elf::R_X86_64_TLSLD if output_kind == OutputKind::StaticExecutable => {
                 if offset < 3 || section_bytes[offset - 3..offset] != [0x48, 0x8d, 0x3d] {
                     return None;
                 }
-                (Relaxation::TlsLdToLocalExec, rel::R_X86_64_NONE)
+                (Relaxation::TlsLdToLocalExec, object::elf::R_X86_64_NONE)
             }
 
             _ => return None,
@@ -192,7 +197,7 @@ fn test_relaxation() {
     }
 
     check(
-        rel::R_X86_64_REX_GOTPCRELX,
+        object::elf::R_X86_64_REX_GOTPCRELX,
         &[0x48, 0x8b, 0xae],
         &[0x48, 0x8d, 0xae],
         &[0x48, 0xc7, 0xc5],

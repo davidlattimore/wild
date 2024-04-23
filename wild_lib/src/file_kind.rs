@@ -3,6 +3,7 @@
 use crate::elf;
 use crate::error::Result;
 use anyhow::bail;
+use object::LittleEndian;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum FileKind {
@@ -22,14 +23,14 @@ impl FileKind {
             if bytes.len() < HEADER_LEN {
                 bail!("Invalid ELF file");
             }
-            let header: &elf::FileHeader = bytemuck::from_bytes(&bytes[..HEADER_LEN]);
-            if header.class != 2 {
+            let header: &elf::FileHeader = object::from_bytes(&bytes[..HEADER_LEN]).unwrap().0;
+            if header.e_ident.class != 2 {
                 bail!("Only 64 bit ELF is currently supported");
             }
-            if header.data != 1 {
+            if header.e_ident.data != 1 {
                 bail!("Only little endian is currently supported");
             }
-            match header.ty {
+            match header.e_type.get(LittleEndian) {
                 1 => Ok(FileKind::ElfObject),
                 3 => Ok(FileKind::ElfDynamic),
                 t => bail!("Unsupported ELF kind {t}"),

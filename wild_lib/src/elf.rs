@@ -17,47 +17,15 @@ pub(crate) type Symbol<'data, 'file> =
     object::read::elf::ElfSymbol64<'data, 'file, LittleEndian, &'data [u8]>;
 pub(crate) type SymbolIterator<'data, 'file> =
     object::read::elf::ElfSymbolIterator64<'data, 'file, LittleEndian, &'data [u8]>;
+pub(crate) type FileHeader = object::elf::FileHeader64<LittleEndian>;
+pub(crate) type ProgramHeader = object::elf::ProgramHeader64<LittleEndian>;
+pub(crate) type SectionHeader = object::elf::SectionHeader64<LittleEndian>;
+pub(crate) type SymtabEntry = object::elf::Sym64<LittleEndian>;
+pub(crate) type DynamicEntry = object::elf::Dyn64<LittleEndian>;
+pub(crate) type Rela = object::elf::Rela64<LittleEndian>;
 
 /// The module number for TLS variables in the current executable.
 pub(crate) const CURRENT_EXE_TLS_MOD: u64 = 1;
-
-#[derive(Zeroable, Pod, Clone, Copy)]
-#[repr(C)]
-pub(crate) struct ProgramHeader {
-    pub(crate) segment_type: u32,
-    pub(crate) flags: u32,
-    pub(crate) offset: u64,
-    pub(crate) virtual_addr: u64,
-    pub(crate) physical_addr: u64,
-    pub(crate) file_size: u64,
-    pub(crate) mem_size: u64,
-    pub(crate) alignment: u64,
-}
-
-#[derive(Zeroable, Pod, Clone, Copy)]
-#[repr(C)]
-pub(crate) struct FileHeader {
-    pub(crate) magic: [u8; 4],
-    pub(crate) class: u8,
-    pub(crate) data: u8,
-    pub(crate) ei_version: u8,
-    pub(crate) os_abi: u8,
-    pub(crate) abi_version: u8,
-    pub(crate) padding: [u8; 7],
-    pub(crate) ty: u16,
-    pub(crate) machine: u16,
-    pub(crate) e_version: u32,
-    pub(crate) entry_point: u64,
-    pub(crate) program_header_offset: u64,
-    pub(crate) section_header_offset: u64,
-    pub(crate) flags: u32,
-    pub(crate) ehsize: u16,
-    pub(crate) program_header_entry_size: u16,
-    pub(crate) program_header_num: u16,
-    pub(crate) section_header_entry_size: u16,
-    pub(crate) section_header_num: u16,
-    pub(crate) section_names_index: u16,
-}
 
 /// Section flag bit values.
 #[allow(unused)]
@@ -118,47 +86,6 @@ pub(crate) enum Binding {
     Local = 0,
     Global = 1,
     Weak = 2,
-}
-
-#[derive(Zeroable, Pod, Clone, Copy)]
-#[repr(C)]
-pub(crate) struct SectionHeader {
-    pub(crate) name: u32,
-    pub(crate) ty: u32,
-    pub(crate) flags: u64,
-    pub(crate) address: u64,
-    pub(crate) offset: u64,
-    pub(crate) size: u64,
-    pub(crate) link: u32,
-    pub(crate) info: u32,
-    pub(crate) alignment: u64,
-    pub(crate) entsize: u64,
-}
-
-#[derive(Zeroable, Pod, Clone, Copy)]
-#[repr(C)]
-pub(crate) struct SymtabEntry {
-    pub(crate) name: u32,
-    pub(crate) info: u8,
-    pub(crate) other: u8,
-    pub(crate) shndx: u16,
-    pub(crate) value: u64,
-    pub(crate) size: u64,
-}
-
-#[derive(Zeroable, Pod, Clone, Copy)]
-#[repr(C)]
-pub(crate) struct DynamicEntry {
-    pub(crate) tag: u64,
-    pub(crate) value: u64,
-}
-
-#[derive(Zeroable, Pod, Clone, Copy)]
-#[repr(C)]
-pub(crate) struct Rela {
-    pub(crate) address: u64,
-    pub(crate) info: u64,
-    pub(crate) addend: u64,
 }
 
 pub(crate) const RELA_ADDRESS_OFFSET: usize = 0;
@@ -351,25 +278,25 @@ pub(crate) struct RelocationKindInfo {
 impl RelocationKindInfo {
     pub(crate) fn from_raw(r_type: u32) -> Result<Self> {
         let (kind, size) = match r_type {
-            rel::R_X86_64_64 => (RelocationKind::Absolute, 8),
-            rel::R_X86_64_PC32 => (RelocationKind::Relative, 4),
-            rel::R_X86_64_GOT32 => (RelocationKind::Got, 4),
-            rel::R_X86_64_PLT32 => (RelocationKind::PltRelative, 4),
-            rel::R_X86_64_GOTPCREL => (RelocationKind::GotRelative, 4),
-            rel::R_X86_64_32 | rel::R_X86_64_32S => (RelocationKind::Absolute, 4),
-            rel::R_X86_64_16 => (RelocationKind::Absolute, 2),
-            rel::R_X86_64_PC16 => (RelocationKind::Relative, 2),
-            rel::R_X86_64_8 => (RelocationKind::Absolute, 1),
-            rel::R_X86_64_PC8 => (RelocationKind::Relative, 1),
-            rel::R_X86_64_TLSGD => (RelocationKind::TlsGd, 4),
-            rel::R_X86_64_TLSLD => (RelocationKind::TlsLd, 4),
-            rel::R_X86_64_DTPOFF32 => (RelocationKind::DtpOff, 4),
-            rel::R_X86_64_GOTTPOFF => (RelocationKind::GotTpOff, 4),
-            rel::R_X86_64_GOTPCRELX | rel::R_X86_64_REX_GOTPCRELX => {
+            object::elf::R_X86_64_64 => (RelocationKind::Absolute, 8),
+            object::elf::R_X86_64_PC32 => (RelocationKind::Relative, 4),
+            object::elf::R_X86_64_GOT32 => (RelocationKind::Got, 4),
+            object::elf::R_X86_64_PLT32 => (RelocationKind::PltRelative, 4),
+            object::elf::R_X86_64_GOTPCREL => (RelocationKind::GotRelative, 4),
+            object::elf::R_X86_64_32 | object::elf::R_X86_64_32S => (RelocationKind::Absolute, 4),
+            object::elf::R_X86_64_16 => (RelocationKind::Absolute, 2),
+            object::elf::R_X86_64_PC16 => (RelocationKind::Relative, 2),
+            object::elf::R_X86_64_8 => (RelocationKind::Absolute, 1),
+            object::elf::R_X86_64_PC8 => (RelocationKind::Relative, 1),
+            object::elf::R_X86_64_TLSGD => (RelocationKind::TlsGd, 4),
+            object::elf::R_X86_64_TLSLD => (RelocationKind::TlsLd, 4),
+            object::elf::R_X86_64_DTPOFF32 => (RelocationKind::DtpOff, 4),
+            object::elf::R_X86_64_GOTTPOFF => (RelocationKind::GotTpOff, 4),
+            object::elf::R_X86_64_GOTPCRELX | object::elf::R_X86_64_REX_GOTPCRELX => {
                 (RelocationKind::GotRelative, 4)
             }
-            rel::R_X86_64_TPOFF32 => (RelocationKind::TpOff, 4),
-            rel::R_X86_64_NONE => (RelocationKind::None, 0),
+            object::elf::R_X86_64_TPOFF32 => (RelocationKind::TpOff, 4),
+            object::elf::R_X86_64_NONE => (RelocationKind::None, 0),
             _ => bail!("Unsupported relocation type {r_type}"),
         };
         Ok(Self {
@@ -379,47 +306,8 @@ impl RelocationKindInfo {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) mod rel {
-    pub(crate) const R_X86_64_NONE: u32 = 0;
-    pub(crate) const R_X86_64_64: u32 = 1;
-    pub(crate) const R_X86_64_PC32: u32 = 2;
-    pub(crate) const R_X86_64_GOT32: u32 = 3;
-    pub(crate) const R_X86_64_PLT32: u32 = 4;
-    pub(crate) const R_X86_64_COPY: u32 = 5;
-    pub(crate) const R_X86_64_GLOB_DAT: u32 = 6;
-    pub(crate) const R_X86_64_JUMP_SLOT: u32 = 7;
-    pub(crate) const R_X86_64_RELATIVE: u32 = 8;
-    pub(crate) const R_X86_64_GOTPCREL: u32 = 9;
-    pub(crate) const R_X86_64_32: u32 = 10;
-    pub(crate) const R_X86_64_32S: u32 = 11;
-    pub(crate) const R_X86_64_16: u32 = 12;
-    pub(crate) const R_X86_64_PC16: u32 = 13;
-    pub(crate) const R_X86_64_8: u32 = 14;
-    pub(crate) const R_X86_64_PC8: u32 = 15;
-    pub(crate) const R_X86_64_DTPMOD64: u32 = 16;
-    pub(crate) const R_X86_64_DTPOFF64: u32 = 17;
-    pub(crate) const R_X86_64_TPOFF64: u32 = 18;
-    pub(crate) const R_X86_64_TLSGD: u32 = 19;
-    pub(crate) const R_X86_64_TLSLD: u32 = 20;
-    pub(crate) const R_X86_64_DTPOFF32: u32 = 21;
-    pub(crate) const R_X86_64_GOTTPOFF: u32 = 22;
-    pub(crate) const R_X86_64_TPOFF32: u32 = 23;
-    pub(crate) const R_X86_64_PC64: u32 = 24;
-    pub(crate) const R_X86_64_GOTOFF64: u32 = 25;
-    pub(crate) const R_X86_64_GOTPC32: u32 = 26;
-    pub(crate) const R_X86_64_GOT64: u32 = 27;
-    pub(crate) const R_X86_64_GOTPCREL64: u32 = 28;
-    pub(crate) const R_X86_64_GOTPC64: u32 = 29;
-    pub(crate) const R_X86_64_GOTPLT64: u32 = 30;
-    pub(crate) const R_X86_64_PLTOFF64: u32 = 31;
-    pub(crate) const R_X86_64_SIZE32: u32 = 32;
-    pub(crate) const R_X86_64_SIZE64: u32 = 33;
-    pub(crate) const R_X86_64_GOTPC32_TLSDESC: u32 = 34;
-    pub(crate) const R_X86_64_TLSDESC_CALL: u32 = 35;
-    pub(crate) const R_X86_64_TLSDESC: u32 = 36;
-    pub(crate) const R_X86_64_IRELATIVE: u32 = 37;
-    pub(crate) const R_X86_64_RELATIVE64: u32 = 38;
-    pub(crate) const R_X86_64_GOTPCRELX: u32 = 41;
-    pub(crate) const R_X86_64_REX_GOTPCRELX: u32 = 42;
+pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut [T] {
+    object::slice_from_bytes_mut(data, data.len() / core::mem::size_of::<T>())
+        .unwrap()
+        .0
 }
