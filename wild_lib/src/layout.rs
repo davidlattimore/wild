@@ -48,6 +48,8 @@ use anyhow::bail;
 use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use object::elf::gnu_hash;
+use object::read::elf::Rela;
+use object::LittleEndian;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
@@ -1655,9 +1657,10 @@ impl<'data> Section<'data> {
         let alignment = Alignment::new(object_section.align())?;
         let size = object_section.size();
         let section_data = object_section.data()?;
-        for (rel_offset, rel) in object_section.relocations() {
+        for rel in object_section.elf_linked_rela()? {
+            let rel_offset = rel.r_offset.get(LittleEndian);
             if let Some(action) = RelocationLayoutAction::new(
-                &rel,
+                rel,
                 &object_section,
                 rel_offset,
                 &worker.state,
@@ -1760,36 +1763,24 @@ enum RelocationLayoutActionKind {
 
 impl RelocationLayoutAction {
     fn new(
-        rel: &object::Relocation,
+        rel: &elf::Rela,
         section: &elf::Section,
         rel_offset: u64,
         state: &ObjectLayoutMutableState<'_>,
         symbol_db: &SymbolDb,
     ) -> Result<Option<Self>> {
         let args = symbol_db.args;
-        match rel.target() {
-            object::RelocationTarget::Symbol(local_sym_index) => {
-                let symbol_id = state.common.symbol_id_range.input_to_id(local_sym_index);
-                return Ok(Some(Self::for_symbol(
-                    rel, rel_offset, section, symbol_db, symbol_id, args,
-                )?));
-            }
-            object::RelocationTarget::Section(local_section_index) => {
-                return Ok(Some(Self::for_section(
-                    rel,
-                    rel_offset,
-                    section,
-                    args,
-                    local_section_index,
-                )?));
-            }
-            _ => {}
-        };
+        if let Some(local_sym_index) = rel.symbol(LittleEndian, false) {
+            let symbol_id = state.common.symbol_id_range.input_to_id(local_sym_index);
+            return Ok(Some(Self::for_symbol(
+                rel, rel_offset, section, symbol_db, symbol_id, args,
+            )?));
+        }
         Ok(None)
     }
 
     fn for_symbol(
-        rel: &object::Relocation,
+        rel: &elf::Rela,
         rel_offset: u64,
         section: &elf::Section,
         symbol_db: &SymbolDb<'_>,
@@ -1797,9 +1788,7 @@ impl RelocationLayoutAction {
         args: &Args,
     ) -> Result<RelocationLayoutAction> {
         let symbol_value_kind = symbol_db.symbol_value_kind(symbol_db.definition(symbol_id));
-        let object::RelocationFlags::Elf { mut r_type } = rel.flags() else {
-            unreachable!();
-        };
+        let mut r_type = rel.r_type(LittleEndian, false);
         if let Some((_relaxation, new_r_type)) = Relaxation::new(
             r_type,
             section.data()?,
@@ -1828,16 +1817,16 @@ impl RelocationLayoutAction {
         Ok(relocation_layout_action)
     }
 
+    // TODO: Is this needed? It doesn't work for relocations that reference section symbols.
+    #[allow(dead_code)]
     fn for_section(
-        rel: &object::Relocation,
+        rel: &elf::Rela,
         rel_offset: u64,
         section: &elf::Section,
         args: &Args,
         local_section_index: object::SectionIndex,
     ) -> Result<RelocationLayoutAction, Error> {
-        let object::RelocationFlags::Elf { mut r_type } = rel.flags() else {
-            unreachable!();
-        };
+        let mut r_type = rel.r_type(LittleEndian, false);
         if let Some((_relaxation, new_r_type)) = Relaxation::new(
             r_type,
             section.data()?,
@@ -2827,7 +2816,8 @@ fn process_eh_frame_data<'data>(
     section_frame_data.resize_with(state.sections.len(), Default::default);
     let data = eh_frame_section.data()?;
     const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
-    let mut relocations = eh_frame_section.relocations().peekable();
+    let e = LittleEndian;
+    let mut relocations = eh_frame_section.elf_linked_rela()?.iter().peekable();
     let mut offset = 0;
     while offset + PREFIX_LEN <= data.len() {
         // Although the section data will be aligned within the object file, there's
@@ -2848,8 +2838,9 @@ fn process_eh_frame_data<'data>(
             // symbols it references. If however, it references something other than a symbol, then,
             // because we're not taking that into consideration, we disallow deduplication.
             let mut eligible_for_deduplication = true;
-            while let Some((rel_offset, rel)) = relocations.peek() {
-                if *rel_offset >= next_offset as u64 {
+            while let Some(rel) = relocations.peek() {
+                let rel_offset = rel.r_offset.get(e);
+                if rel_offset >= next_offset as u64 {
                     // This relocation belongs to the next entry.
                     break;
                 }
@@ -2858,13 +2849,13 @@ fn process_eh_frame_data<'data>(
                 if let Some(action) = RelocationLayoutAction::new(
                     rel,
                     &eh_frame_section,
-                    *rel_offset,
+                    rel_offset,
                     state,
                     resources.symbol_db,
                 )? {
                     action.apply(resources, state, queue);
                 }
-                if let object::RelocationTarget::Symbol(local_sym_index) = rel.target() {
+                if let Some(local_sym_index) = rel.symbol(e, false) {
                     let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);
                     let definition = resources.symbol_db.definition(local_symbol_id);
                     referenced_symbols.push(definition);
@@ -2886,26 +2877,21 @@ fn process_eh_frame_data<'data>(
             let mut section_index = None;
             let mut actions: SmallVec<[RelocationLayoutAction; 2]> = Default::default();
 
-            while let Some((rel_offset, rel)) = relocations.peek() {
-                if *rel_offset < next_offset as u64 {
-                    let is_pc_begin = (*rel_offset as usize - offset) == elf::FDE_PC_BEGIN_OFFSET;
+            while let Some(rel) = relocations.peek() {
+                let rel_offset = rel.r_offset.get(e);
+                if rel_offset < next_offset as u64 {
+                    let is_pc_begin = (rel_offset as usize - offset) == elf::FDE_PC_BEGIN_OFFSET;
 
                     if is_pc_begin {
-                        match rel.target() {
-                            object::RelocationTarget::Symbol(index) => {
-                                let elf_symbol = &object.symbol_by_index(index)?;
-                                section_index = elf_symbol.section_index();
-                            }
-                            object::RelocationTarget::Section(index) => {
-                                section_index = Some(index);
-                            }
-                            _ => {}
-                        };
+                        if let Some(index) = rel.symbol(e, false) {
+                            let elf_symbol = &object.symbol_by_index(index)?;
+                            section_index = elf_symbol.section_index();
+                        }
                     }
                     if let Some(action) = RelocationLayoutAction::new(
                         rel,
                         &eh_frame_section,
-                        *rel_offset,
+                        rel_offset,
                         state,
                         resources.symbol_db,
                     )? {
