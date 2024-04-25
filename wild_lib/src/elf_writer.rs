@@ -48,6 +48,7 @@ use anyhow::bail;
 use anyhow::Context;
 use memmap2::MmapOptions;
 use object::from_bytes_mut;
+use object::read::elf::Rela;
 use object::LittleEndian;
 use object::Object;
 use object::ObjectSection;
@@ -810,15 +811,16 @@ impl<'data> ObjectLayout<'data> {
             .address_or_value()?;
         let elf_section = &self.object.section_by_index(section.index)?;
         let mut modifier = RelocationModifier::Normal;
-        for (offset_in_section, rel) in elf_section.relocations() {
+        for rel in elf_section.elf_linked_rela()? {
             if modifier == RelocationModifier::SkipNextRelocation {
                 modifier = RelocationModifier::Normal;
                 continue;
             }
+            let offset_in_section = rel.r_offset.get(LittleEndian);
             modifier = apply_relocation(
                 self,
                 offset_in_section,
-                &rel,
+                rel,
                 section_address,
                 layout,
                 out,
@@ -827,7 +829,7 @@ impl<'data> ObjectLayout<'data> {
             .with_context(|| {
                 format!(
                     "Failed to apply {} at offset 0x{offset_in_section:x}",
-                    self.display_relocation(&rel, layout)
+                    self.display_relocation(rel, layout)
                 )
             })?;
         }
@@ -848,7 +850,8 @@ impl<'data> ObjectLayout<'data> {
         let eh_frame_section = self.object.section_by_index(eh_frame_section_index)?;
         let data = eh_frame_section.data()?;
         const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
-        let mut relocations = eh_frame_section.relocations().peekable();
+        let e = LittleEndian;
+        let mut relocations = eh_frame_section.elf_linked_rela()?.iter().peekable();
         let mut input_pos = 0;
         let mut output_pos = 0;
         let frame_info_ptr_base = self.eh_frame_start_address;
@@ -874,30 +877,21 @@ impl<'data> ObjectLayout<'data> {
                 should_keep = true;
             } else {
                 // This is an FDE
-                if let Some((rel_offset, rel)) = relocations.peek() {
-                    if *rel_offset < next_input_pos as u64 {
+                if let Some(rel) = relocations.peek() {
+                    let rel_offset = rel.r_offset.get(e);
+                    if rel_offset < next_input_pos as u64 {
                         let is_pc_begin =
-                            (*rel_offset as usize - input_pos) == elf::FDE_PC_BEGIN_OFFSET;
+                            (rel_offset as usize - input_pos) == elf::FDE_PC_BEGIN_OFFSET;
 
                         if is_pc_begin {
-                            let section_index;
-                            let offset_in_section;
-                            match rel.target() {
-                                object::RelocationTarget::Symbol(index) => {
-                                    let elf_symbol = &self.object.symbol_by_index(index)?;
-                                    if let Some(index) = elf_symbol.section_index() {
-                                        section_index = index;
-                                        offset_in_section = elf_symbol.address();
-                                    } else {
-                                        bail!(".eh_frame pc-begin refers to symbol that's not defined in file");
-                                    }
-                                }
-                                object::RelocationTarget::Section(index) => {
-                                    section_index = index;
-                                    offset_in_section = 0;
-                                }
-                                _ => bail!("Unexpected relocation type in .eh_frame pc-begin"),
+                            let Some(index) = rel.symbol(e, false) else {
+                                bail!("Unexpected absolute relocation in .eh_frame pc-begin");
                             };
+                            let elf_symbol = &self.object.symbol_by_index(index)?;
+                            let Some(section_index) = elf_symbol.section_index() else {
+                                bail!(".eh_frame pc-begin refers to symbol that's not defined in file");
+                            };
+                            let offset_in_section = elf_symbol.address();
                             if let Some(section_resolution) =
                                 &self.section_resolutions[section_index.0]
                             {
@@ -943,8 +937,9 @@ impl<'data> ObjectLayout<'data> {
                 if let Some(output_cie_offset) = output_cie_offset {
                     entry_out[4..8].copy_from_slice(&output_cie_offset.to_le_bytes());
                 }
-                while let Some((rel_offset, rel)) = relocations.peek() {
-                    if *rel_offset >= next_input_pos as u64 {
+                while let Some(rel) = relocations.peek() {
+                    let rel_offset = rel.r_offset.get(e);
+                    if rel_offset >= next_input_pos as u64 {
                         // This relocation belongs to the next entry.
                         break;
                     }
@@ -968,8 +963,9 @@ impl<'data> ObjectLayout<'data> {
                 output_pos = next_output_pos;
             } else {
                 // We're ignoring this entry, skip any relocations for it.
-                while let Some((rel_offset, _rel)) = relocations.peek() {
-                    if *rel_offset < next_input_pos as u64 {
+                while let Some(rel) = relocations.peek() {
+                    let rel_offset = rel.r_offset.get(e);
+                    if rel_offset < next_input_pos as u64 {
                         relocations.next();
                     } else {
                         break;
@@ -992,7 +988,7 @@ impl<'data> ObjectLayout<'data> {
 
     fn display_relocation<'a>(
         &'a self,
-        rel: &'a object::Relocation,
+        rel: &'a elf::Rela,
         layout: &'a Layout,
     ) -> DisplayRelocation<'a> {
         DisplayRelocation {
@@ -1004,35 +1000,30 @@ impl<'data> ObjectLayout<'data> {
 
     fn get_resolution<'a>(
         &'a self,
-        rel: &object::Relocation,
+        rel: &elf::Rela,
         layout: &'a Layout,
     ) -> Result<Option<Resolution>> {
         let mut new_resolution = None;
-        match rel.target() {
-            object::RelocationTarget::Symbol(symbol_index) => {
-                let local_symbol_id = self.symbol_id_range.input_to_id(symbol_index);
-                let symbol_id = layout.symbol_db.definition(local_symbol_id);
-                let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
-                if symbol_id == SymbolId::undefined() || !layout.is_file_loaded(file_id) {
-                    let local_symbol = &self.object.symbol_by_index(symbol_index)?;
-                    if !local_symbol.is_weak() {
-                        bail!(
-                            "Undefined strong reference to `{}`",
-                            String::from_utf8_lossy(local_symbol.name_bytes()?)
-                        );
-                    }
-                    // TODO: Check if reference is weak.
-                    new_resolution = Some(layout.internal().undefined_symbol_resolution);
-                } else if let Some(res) = layout.symbol_resolution(symbol_id) {
-                    new_resolution = Some(*res);
-                }
-            }
-            object::RelocationTarget::Section(_local_index) => {
-                bail!("Don't currently support relocations directly to sections");
-                // self.section_resolutions[local_index.0].unwrap()
-            }
-            other => bail!("Unsupported relocation {other:?}"),
+        let e = LittleEndian;
+        let Some(symbol_index) = rel.symbol(e, false) else {
+            bail!("Unsupported absolute relocation");
         };
+        let local_symbol_id = self.symbol_id_range.input_to_id(symbol_index);
+        let symbol_id = layout.symbol_db.definition(local_symbol_id);
+        let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
+        if symbol_id == SymbolId::undefined() || !layout.is_file_loaded(file_id) {
+            let local_symbol = &self.object.symbol_by_index(symbol_index)?;
+            if !local_symbol.is_weak() {
+                bail!(
+                    "Undefined strong reference to `{}`",
+                    String::from_utf8_lossy(local_symbol.name_bytes()?)
+                );
+            }
+            // TODO: Check if reference is weak.
+            new_resolution = Some(layout.internal().undefined_symbol_resolution);
+        } else if let Some(res) = layout.symbol_resolution(symbol_id) {
+            new_resolution = Some(*res);
+        }
         Ok(new_resolution)
     }
 
@@ -1047,35 +1038,21 @@ impl<'data> ObjectLayout<'data> {
 }
 
 struct DisplayRelocation<'a> {
-    rel: &'a object::Relocation,
+    rel: &'a elf::Rela,
     symbol_db: &'a SymbolDb<'a>,
     object: &'a ObjectLayout<'a>,
 }
 
 impl<'a> Display for DisplayRelocation<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "relocation of type ")?;
-        match self.rel.kind() {
-            object::RelocationKind::Unknown => write!(f, "{:?}", self.rel.flags())?,
-            kind => write!(f, "{kind:?}")?,
-        }
-        write!(f, " to ")?;
-        match self.rel.target() {
-            object::RelocationTarget::Symbol(local_symbol_index) => {
+        let e = LittleEndian;
+        write!(f, "relocation of type {} to ", self.rel.r_type(e, false))?;
+        match self.rel.symbol(e, false) {
+            None => write!(f, "absolute")?,
+            Some(local_symbol_index) => {
                 let symbol_id = self.object.symbol_id_range.input_to_id(local_symbol_index);
-                write!(f, " {}", self.symbol_db.symbol_debug(symbol_id))?;
+                write!(f, "{}", self.symbol_db.symbol_debug(symbol_id))?;
             }
-            object::RelocationTarget::Section(section_index) => write!(
-                f,
-                "section `{}`",
-                self.object
-                    .object
-                    .section_by_index(section_index)
-                    .and_then(|s| s.name())
-                    .unwrap_or("??")
-            )?,
-            object::RelocationTarget::Absolute => write!(f, "absolute")?,
-            _ => write!(f, "unknown")?,
         }
         Ok(())
     }
@@ -1169,7 +1146,7 @@ impl<'out> DynamicRelocationWriter<'out> {
 fn apply_relocation(
     object_layout: &ObjectLayout,
     mut offset_in_section: u64,
-    rel: &object::Relocation,
+    rel: &elf::Rela,
     section_address: u64,
     layout: &Layout,
     out: &mut [u8],
@@ -1185,11 +1162,10 @@ fn apply_relocation(
         ResolutionValue::Iplt(v) => (v, ValueKind::IFunc),
     };
     let place = section_address + offset_in_section;
-    let mut addend = rel.addend() as u64;
+    let e = LittleEndian;
+    let mut addend = rel.r_addend.get(e) as u64;
     let mut next_modifier = RelocationModifier::Normal;
-    let object::RelocationFlags::Elf { r_type } = rel.flags() else {
-        unreachable!();
-    };
+    let r_type = rel.r_type(e, false);
     let rel_info;
     if let Some((relaxation, r_type)) = Relaxation::new(
         r_type,
@@ -1203,7 +1179,6 @@ fn apply_relocation(
     } else {
         rel_info = RelocationKindInfo::from_raw(r_type)?;
     }
-    debug_assert!(rel.size() == 0 || rel.size() as usize / 8 == rel_info.byte_size);
     let value = match rel_info.kind {
         RelocationKind::Absolute => {
             if relocation_writer.is_active && !resolution.value.is_absolute() {
