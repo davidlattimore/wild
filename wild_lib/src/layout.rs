@@ -3170,13 +3170,34 @@ fn print_symbol_info(symbol_db: &SymbolDb, name: &str) {
     } else {
         println!("No global symbol `{name}` defined by any input files");
     }
+    println!("Definitions / references for `{name}`:");
     for i in 0..symbol_db.num_symbols() {
         let symbol_id = SymbolId::from_usize(i);
         if symbol_db
             .symbol_name(symbol_id)
             .is_ok_and(|sym_name| sym_name.bytes() == name.as_bytes())
         {
-            println!("{}", symbol_db.symbol_debug(symbol_id));
+            let file_id = symbol_db.file_id_for_symbol(symbol_id);
+            match &symbol_db.inputs[file_id.as_usize()] {
+                crate::parsing::InputObject::Internal(_) => println!("  <internal>"),
+                crate::parsing::InputObject::Object(o) => {
+                    let local_index = symbol_id.offset_from(o.start_symbol_id);
+                    match o.object.symbol_by_index(object::SymbolIndex(local_index)) {
+                        Ok(sym) => {
+                            println!(
+                                "  {}: symbol_id={symbol_id} Local #{local_index} \
+                                in File #{file_id} {}",
+                                crate::symbol::SymDebug(sym),
+                                o.input
+                            );
+                        }
+                        Err(e) => {
+                            println!("  Corrupted input (file_id #{file_id}) {}: {e}", o.input)
+                        }
+                    }
+                }
+                crate::parsing::InputObject::Epilogue(_) => println!("  <epilogue>"),
+            }
         }
     }
 }
