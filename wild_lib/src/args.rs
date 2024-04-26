@@ -31,6 +31,7 @@ pub(crate) struct Args {
     pub(crate) pie: bool,
     pub(crate) version_script_path: Option<PathBuf>,
     pub(crate) debug_address: Option<u64>,
+    pub(crate) bind_now: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +116,7 @@ impl Args {
         let mut modifier_stack = vec![Modifiers::default()];
         let mut version_script_path = None;
         let mut debug_address = None;
+        let mut bind_now = false;
         // Skip program name
         input.next();
         while let Some(arg) = input.next() {
@@ -158,9 +160,18 @@ impl Args {
                 strip_debug = true;
             } else if arg == "--strip-debug" {
                 strip_debug = true;
-            } else if arg == "-z" || arg == "-m" {
-                // Ignore this argument and the next thing that comes after it.
+            } else if arg == "-m" {
+                // TODO: Handle these flags
                 input.next();
+            } else if arg == "-z" {
+                if let Some(z) = input.next() {
+                    match z.as_ref() {
+                        "now" => bind_now = true,
+                        _ => {
+                            // TODO: Handle these
+                        }
+                    }
+                }
             } else if let Some(_rest) = arg.strip_prefix("-O") {
                 // We don't use opt-level for now.
             } else if arg == "--prepopulate-maps" {
@@ -238,6 +249,7 @@ impl Args {
             validate_output,
             version_script_path,
             debug_address,
+            bind_now,
         })
     }
 
