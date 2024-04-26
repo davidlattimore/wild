@@ -1604,6 +1604,8 @@ fn eh_frame_ptr(layout: &Layout<'_>) -> Result<i32> {
     .context(".eh_frame more than 2GB away from .eh_frame_hdr")
 }
 
+/// An upper-bound on how many dynamic entries we'll write in the epilogue. Some entries are
+/// optional, so might not get written. For now, we still allocate space for these optional entries.
 pub(crate) const NUM_EPILOGUE_DYNAMIC_ENTRIES: usize = EPILOGUE_DYNAMIC_ENTRY_WRITERS.len();
 
 const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
@@ -1637,7 +1639,25 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     DynamicEntryWriter::new(DynamicTag::SymEnt, |_layout| {
         core::mem::size_of::<elf::SymtabEntry>() as u64
     }),
+    // TODO: The debug tag is sometimes not present. Figure out the rules for it.
     DynamicEntryWriter::new(DynamicTag::Debug, |_layout| 0),
+    DynamicEntryWriter::optional(
+        DynamicTag::JmpRel,
+        |layout| layout.section_part_layouts.rela_plt.mem_size > 0,
+        |layout| layout.vma_of_section(output_section_id::RELA_PLT),
+    ),
+    DynamicEntryWriter::optional(
+        DynamicTag::PltRelSize,
+        |layout| layout.section_part_layouts.rela_plt.mem_size > 0,
+        |layout| layout.section_part_layouts.rela_plt.mem_size,
+    ),
+    // TODO: For some reason setting this causes libc init code to segfault (libc-integration test
+    // fails).
+    // DynamicEntryWriter::optional(
+    //     DynamicTag::PltRel,
+    //     |layout| layout.section_part_layouts.rela_plt.mem_size > 0,
+    //     |_| object::elf::DT_RELA.into(),
+    // ),
     DynamicEntryWriter::new(DynamicTag::Rela, |layout| {
         layout.vma_of_section(output_section_id::RELA_DYN)
     }),
@@ -1654,9 +1674,18 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     DynamicEntryWriter::new(DynamicTag::GnuHash, |layout| {
         layout.vma_of_section(output_section_id::GNU_HASH)
     }),
-    DynamicEntryWriter::new(DynamicTag::Flags, |_layout| elf::flags::BIND_NOW),
+    DynamicEntryWriter::new(DynamicTag::Flags, |layout| {
+        let mut flags = 0;
+        if layout.args().bind_now {
+            flags |= elf::flags::BIND_NOW;
+        }
+        flags
+    }),
     DynamicEntryWriter::new(DynamicTag::Flags1, |layout| {
-        let mut flags = elf::flags_1::NOW;
+        let mut flags = 0;
+        if layout.args().bind_now {
+            flags |= elf::flags_1::NOW;
+        }
         if layout.args().output_kind.is_executable() && layout.args().pie {
             flags |= elf::flags_1::PIE;
         }
@@ -1667,15 +1696,39 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
 
 struct DynamicEntryWriter {
     tag: DynamicTag,
+    is_present_cb: fn(&Layout) -> bool,
     cb: fn(&Layout) -> u64,
 }
 
 impl DynamicEntryWriter {
     const fn new(tag: DynamicTag, cb: fn(&Layout) -> u64) -> DynamicEntryWriter {
-        DynamicEntryWriter { tag, cb }
+        DynamicEntryWriter {
+            tag,
+            is_present_cb: |_| true,
+            cb,
+        }
+    }
+
+    const fn optional(
+        tag: DynamicTag,
+        is_present_cb: fn(&Layout) -> bool,
+        cb: fn(&Layout) -> u64,
+    ) -> DynamicEntryWriter {
+        DynamicEntryWriter {
+            tag,
+            is_present_cb,
+            cb,
+        }
+    }
+
+    fn is_present(&self, layout: &Layout) -> bool {
+        (self.is_present_cb)(layout)
     }
 
     fn write(&self, out: &mut DynamicEntriesWriter, layout: &Layout) -> Result {
+        if !self.is_present(layout) {
+            return Ok(());
+        }
         let value = (self.cb)(layout);
         out.write(self.tag, value)
     }
