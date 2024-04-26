@@ -6,6 +6,7 @@ use crate::error::Result;
 use crate::save_dir::SaveDir;
 use anyhow::anyhow;
 use anyhow::bail;
+use anyhow::Context as _;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -29,6 +30,7 @@ pub(crate) struct Args {
     pub(crate) validate_output: bool,
     pub(crate) pie: bool,
     pub(crate) version_script_path: Option<PathBuf>,
+    pub(crate) debug_address: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +114,7 @@ impl Args {
         let mut pie = false;
         let mut modifier_stack = vec![Modifiers::default()];
         let mut version_script_path = None;
+        let mut debug_address = None;
         // Skip program name
         input.next();
         while let Some(arg) = input.next() {
@@ -192,6 +195,8 @@ impl Args {
                 input.next();
             } else if arg == "--validate-output" {
                 validate_output = true;
+            } else if let Some(rest) = arg.strip_prefix("--debug-address=") {
+                debug_address = Some(parse_number(rest).context("Invalid --debug-address")?);
             } else if let Some(rest) = arg.strip_prefix("--debug-fuel=") {
                 debug_fuel = Some(AtomicI64::new(rest.parse()?));
                 // Using debug fuel with more than one thread would likely give non-deterministic
@@ -232,6 +237,7 @@ impl Args {
             pie,
             validate_output,
             version_script_path,
+            debug_address,
         })
     }
 
@@ -291,6 +297,20 @@ impl Args {
     /// Returns whether we need a dynamic section.
     pub(crate) fn needs_dynamic(&self) -> bool {
         self.is_relocatable()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn should_debug_address(&self, address: u64) -> bool {
+        self.debug_address
+            .is_some_and(|a| address >= a && address < a + 8)
+    }
+}
+
+fn parse_number(s: &str) -> Result<u64> {
+    if let Some(s) = s.strip_prefix("0x") {
+        Ok(u64::from_str_radix(s, 16)?)
+    } else {
+        Ok(s.parse::<u64>()?)
     }
 }
 
