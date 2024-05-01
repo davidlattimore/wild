@@ -1420,9 +1420,6 @@ fn write_dynamic_symbol_definitions(
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &Layout,
 ) -> Result {
-    if layout.args().output_kind != OutputKind::SharedObject {
-        return Ok(());
-    }
     let mut dynamic_symbol_writer = SymbolTableWriter::new_dynamic(
         epilogue.dynstr_offset_start,
         buffers,
