@@ -963,6 +963,11 @@ impl<'data> Layout<'data> {
     pub(crate) fn is_file_loaded(&self, file_id: FileId) -> bool {
         !matches!(self.file_layouts[file_id.as_usize()], FileLayout::NotLoaded)
     }
+
+    pub(crate) fn has_data_in_section(&self, id: OutputSectionId) -> bool {
+        alignment::all_alignments()
+            .any(|alignment| self.section_part_layouts.regular(id, alignment).mem_size > 0)
+    }
 }
 
 fn layout_sections(

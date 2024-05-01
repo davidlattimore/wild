@@ -1609,24 +1609,36 @@ fn eh_frame_ptr(layout: &Layout<'_>) -> Result<i32> {
 pub(crate) const NUM_EPILOGUE_DYNAMIC_ENTRIES: usize = EPILOGUE_DYNAMIC_ENTRY_WRITERS.len();
 
 const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
-    DynamicEntryWriter::new(DynamicTag::Init, |layout| {
-        layout.vma_of_section(output_section_id::INIT)
-    }),
-    DynamicEntryWriter::new(DynamicTag::Fini, |layout| {
-        layout.vma_of_section(output_section_id::FINI)
-    }),
-    DynamicEntryWriter::new(DynamicTag::InitArray, |layout| {
-        layout.vma_of_section(output_section_id::INIT_ARRAY)
-    }),
-    DynamicEntryWriter::new(DynamicTag::InitArraySize, |layout| {
-        layout.size_of_section(output_section_id::INIT_ARRAY)
-    }),
-    DynamicEntryWriter::new(DynamicTag::FiniArray, |layout| {
-        layout.vma_of_section(output_section_id::FINI_ARRAY)
-    }),
-    DynamicEntryWriter::new(DynamicTag::FiniArraySize, |layout| {
-        layout.size_of_section(output_section_id::FINI_ARRAY)
-    }),
+    DynamicEntryWriter::optional(
+        DynamicTag::Init,
+        |layout| layout.has_data_in_section(output_section_id::INIT),
+        |layout| layout.vma_of_section(output_section_id::INIT),
+    ),
+    DynamicEntryWriter::optional(
+        DynamicTag::Fini,
+        |layout| layout.has_data_in_section(output_section_id::FINI),
+        |layout| layout.vma_of_section(output_section_id::FINI),
+    ),
+    DynamicEntryWriter::optional(
+        DynamicTag::InitArray,
+        |layout| layout.has_data_in_section(output_section_id::INIT_ARRAY),
+        |layout| layout.vma_of_section(output_section_id::INIT_ARRAY),
+    ),
+    DynamicEntryWriter::optional(
+        DynamicTag::InitArraySize,
+        |layout| layout.has_data_in_section(output_section_id::INIT_ARRAY),
+        |layout| layout.size_of_section(output_section_id::INIT_ARRAY),
+    ),
+    DynamicEntryWriter::optional(
+        DynamicTag::FiniArray,
+        |layout| layout.has_data_in_section(output_section_id::FINI_ARRAY),
+        |layout| layout.vma_of_section(output_section_id::FINI_ARRAY),
+    ),
+    DynamicEntryWriter::optional(
+        DynamicTag::FiniArraySize,
+        |layout| layout.has_data_in_section(output_section_id::FINI_ARRAY),
+        |layout| layout.size_of_section(output_section_id::FINI_ARRAY),
+    ),
     DynamicEntryWriter::new(DynamicTag::StrTab, |layout| {
         layout.vma_of_section(output_section_id::DYNSTR)
     }),
@@ -1674,13 +1686,17 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     DynamicEntryWriter::new(DynamicTag::GnuHash, |layout| {
         layout.vma_of_section(output_section_id::GNU_HASH)
     }),
-    DynamicEntryWriter::new(DynamicTag::Flags, |layout| {
-        let mut flags = 0;
-        if layout.args().bind_now {
-            flags |= elf::flags::BIND_NOW;
-        }
-        flags
-    }),
+    DynamicEntryWriter::optional(
+        DynamicTag::Flags,
+        |layout| layout.args().bind_now,
+        |layout| {
+            let mut flags = 0;
+            if layout.args().bind_now {
+                flags |= elf::flags::BIND_NOW;
+            }
+            flags
+        },
+    ),
     DynamicEntryWriter::new(DynamicTag::Flags1, |layout| {
         let mut flags = 0;
         if layout.args().bind_now {
