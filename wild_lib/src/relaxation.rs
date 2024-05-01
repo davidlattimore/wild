@@ -60,11 +60,14 @@ impl Relaxation {
                 if section_bytes[offset - 3] != 0x48 {
                     return None;
                 }
-                let kind = match (b1, value_kind) {
-                    (0x8b, ValueKind::Address) => {
+                let kind = match (b1, value_kind, output_kind) {
+                    (0x8b, ValueKind::Address, OutputKind::NonRelocatableStaticExecutable) => {
+                        (Relaxation::MovIndirectToAbsolute, object::elf::R_X86_64_32)
+                    }
+                    (0x8b, ValueKind::Address, _) => {
                         (Relaxation::MovIndirectToLea, object::elf::R_X86_64_PC32)
                     }
-                    (0x8b, ValueKind::Absolute) => {
+                    (0x8b, ValueKind::Absolute, _) => {
                         (Relaxation::MovIndirectToAbsolute, object::elf::R_X86_64_32)
                     }
                     _ => return None,
