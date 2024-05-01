@@ -3,7 +3,7 @@
 // is that we can give error codes when things aren't right that can help us debug what is wrong.
 
 //#CompArgs:pie:-static -pie -fno-stack-protector -ftls-model=global-dynamic
-//#LinkArgs:pie:-static -pie --no-dynamic-linker
+//#LinkArgs:pie:-static -pie --no-dynamic-linker --hash-style=gnu
 
 #include "exit.h"
 #include "init.h"

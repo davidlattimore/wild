@@ -1,3 +1,5 @@
+//#DiffIgnore:asm.*
+//#DiffIgnore:.dynamic.*
 //#CompArgs:default:-C debuginfo=2
 //#LinkArgs:dynamic:--cc=clang
 //#InputType:Shared

@@ -1,0 +1,22 @@
+[package]
+name = "linker-diff"
+version = "0.1.0"
+description = "Diffs and validates ELF binaries"
+edition = "2021"
+
+[dependencies]
+object = { version = "0.34.0", default-features = false, features = [
+    "elf",
+    "read_core",
+    "std",
+    "unaligned",
+] }
+iced-x86 = { version = "1.21.0", default-features = false, features = [
+    "std",
+    "decoder",
+    "gas",
+] }
+symbolic-demangle = "12.8.0"
+anyhow = "1.0.80"
+clap = { version = "4.5.4", features = ["derive"] }
+rayon = "1.8.0"

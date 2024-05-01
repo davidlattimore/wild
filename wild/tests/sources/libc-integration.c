@@ -1,5 +1,8 @@
 // This test links against libc and checks that various things work as expected.
 
+//#DiffIgnore:asm.*
+//#DiffIgnore:iplt
+//#DiffIgnore:.dynamic.*
 //#CompArgs:debug:-g
 //#LinkArgs:clang-static:--cc=clang -static -Wl,--strip-debug
 //#LinkArgs:clang-static-pie:--cc=clang -static-pie -Wl,--strip-debug

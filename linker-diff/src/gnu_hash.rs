@@ -1,0 +1,118 @@
+use crate::Object;
+use crate::Result;
+use anyhow::anyhow;
+use anyhow::bail;
+use anyhow::Context;
+use object::LittleEndian;
+use object::Object as _;
+use object::ObjectSection as _;
+use object::ObjectSymbol as _;
+
+type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
+
+pub(crate) fn check_object(obj: &Object) -> Result {
+    let num_symbols = obj.elf_file.dynamic_symbols().count();
+    if num_symbols == 0 {
+        return Ok(());
+    }
+    let gnu_hash = obj
+        .elf_file
+        .section_by_name(".gnu.hash")
+        .context("Missing .gnu.hash")?;
+
+    if gnu_hash.align() != 8 {
+        bail!(".gnu.hash has alignment {}", gnu_hash.align());
+    }
+
+    let gnu_hash_bytes = gnu_hash.data()?;
+    let e = LittleEndian;
+
+    let (header, rest) = object::from_bytes::<GnuHashHeader>(gnu_hash_bytes)
+        .map_err(|_| anyhow!("Insufficient .gnu.hash bytes"))?;
+
+    let bloom_count = header.bloom_count.get(e);
+    let (bloom_values, rest) = object::slice_from_bytes::<u64>(rest, bloom_count as usize)
+        .map_err(|_| anyhow!("Insufficient data for .gnu.hash bloom filter"))?;
+
+    let bucket_count = header.bucket_count.get(e);
+    let (buckets, rest) = object::slice_from_bytes::<u32>(rest, bucket_count as usize)
+        .map_err(|_| anyhow!("Insufficient data for .gnu.hash buckets"))?;
+
+    let symbol_base = header.symbol_base.get(e);
+    let chain_count = num_symbols - symbol_base as usize;
+    let (chains, _) = object::slice_from_bytes::<u32>(rest, chain_count).map_err(|_| {
+        anyhow!(
+            "Insufficient data for .gnu.hash chains. \
+                num_symbols={num_symbols} symbol_base={symbol_base}"
+        )
+    })?;
+
+    for sym in obj.elf_file.dynamic_symbols() {
+        if !sym.is_definition() {
+            // It's somewhat tempting to verify that the symbol index is >= symbol_base. However
+            // it seems like if all the dynamic symbols are undefined that GNU ld sets
+            // symbol_base to the index of the last undefined symbol rather than one higher as
+            // you might expect.
+            continue;
+        }
+        let name = sym.name()?;
+        let name_bytes = sym.name_bytes()?;
+        let symbol_index = lookup_symbol(name_bytes, header, bloom_values, buckets, chains)
+            .with_context(|| {
+                let hash = object::elf::gnu_hash(name_bytes);
+                format!(
+                    "Hash lookup of symbol `{name}` failed. \
+                        hash=0x{hash:x} \
+                        buckets={buckets:?} \
+                        symbol_base={symbol_base} \
+                        chains={chains:x?}"
+                )
+            })?;
+        if symbol_index != sym.index().0 {
+            bail!(
+                "Dynamic symbol `{}` hash lookup found {symbol_index}, expected {}",
+                sym.name()?,
+                sym.index().0
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn lookup_symbol(
+    sym_name: &[u8],
+    header: &object::elf::GnuHashHeader<LittleEndian>,
+    bloom_values: &[u64],
+    buckets: &[u32],
+    chains: &[u32],
+) -> Result<usize> {
+    let e = LittleEndian;
+    let symbol_base = header.symbol_base.get(e) as usize;
+    let hash = object::elf::gnu_hash(sym_name);
+    let elf_class_bits = core::mem::size_of::<u64>() as u32 * 8;
+    let bloom_shift = header.bloom_shift.get(e);
+    let bloom_count = bloom_values.len() as u32;
+    let bucket_count = buckets.len() as u32;
+    let bloom_value = bloom_values[((hash / elf_class_bits) % bloom_count) as usize];
+    let bloom_mask =
+        (1 << (hash % elf_class_bits)) | (1 << ((hash >> bloom_shift) % elf_class_bits));
+    if (bloom_value & bloom_mask) != bloom_mask {
+        bail!("Bloom filter excludes symbol");
+    }
+    let bucket = hash % bucket_count;
+    let mut symbol_index = buckets[bucket as usize] as usize;
+    if symbol_index < symbol_base {
+        bail!("symbol_index ({symbol_index}) < symbol_base ({symbol_base}). bucket={bucket}");
+    }
+    loop {
+        let chain_value = chains[symbol_index - symbol_base];
+        if chain_value & !1 == hash & !1 {
+            return Ok(symbol_index);
+        }
+        if chain_value & 1 == 1 {
+            bail!("Symbol not found");
+        }
+        symbol_index += 1;
+    }
+}
