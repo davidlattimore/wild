@@ -123,7 +123,7 @@ impl<T> AlignmentMap<T> {
     }
 }
 
-fn all_alignments(
+pub(crate) fn all_alignments(
 ) -> impl ExactSizeIterator<Item = Alignment> + DoubleEndedIterator<Item = Alignment> {
     (MIN.exponent..=MAX.exponent).map(|exponent| Alignment { exponent })
 }
