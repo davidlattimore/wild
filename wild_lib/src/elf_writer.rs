@@ -583,6 +583,20 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         Ok(())
     }
 
+    fn copy_absolute_symbol(&mut self, sym: &crate::elf::Symbol) -> Result {
+        let name = sym.name_bytes()?;
+        let is_local = sym.is_local();
+        let object::SymbolFlags::Elf { st_info, st_other } = sym.flags() else {
+            unreachable!()
+        };
+        let value = sym.address();
+        let size = sym.size();
+        let entry = self.define_symbol(is_local, object::elf::SHN_ABS, value, size, name)?;
+        entry.st_info = st_info;
+        entry.st_other = st_other;
+        Ok(())
+    }
+
     fn define_symbol(
         &mut self,
         is_local: bool,
@@ -774,6 +788,17 @@ impl<'data> ObjectLayout<'data> {
                                     )
                                 })?;
                         }
+                    }
+                }
+                object::SymbolSection::Absolute => {
+                    let symbol_id = self.start_symbol_id.add_usize(sym.index().0);
+                    if layout.symbol_db.is_definition(symbol_id) {
+                        symbol_writer.copy_absolute_symbol(&sym).with_context(|| {
+                            format!(
+                                "Failed to absolute {}",
+                                layout.symbol_db.symbol_debug(symbol_id)
+                            )
+                        })?;
                     }
                 }
                 _ => {}
