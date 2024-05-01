@@ -95,16 +95,16 @@ impl Relaxation {
                     _ => return None,
                 }
             }
-            object::elf::R_X86_64_PLT32 if output_kind == OutputKind::StaticExecutable => {
+            object::elf::R_X86_64_PLT32 if output_kind.is_static_executable() => {
                 return Some((Relaxation::NoOp, object::elf::R_X86_64_PC32));
             }
-            object::elf::R_X86_64_TLSGD if output_kind == OutputKind::StaticExecutable => {
+            object::elf::R_X86_64_TLSGD if output_kind.is_static_executable() => {
                 if offset < 4 || section_bytes[offset - 4..offset] != [0x66, 0x48, 0x8d, 0x3d] {
                     return None;
                 }
                 (Relaxation::TlsGdToLocalExec, object::elf::R_X86_64_TPOFF32)
             }
-            object::elf::R_X86_64_TLSLD if output_kind == OutputKind::StaticExecutable => {
+            object::elf::R_X86_64_TLSLD if output_kind.is_static_executable() => {
                 if offset < 3 || section_bytes[offset - 3..offset] != [0x48, 0x8d, 0x3d] {
                     return None;
                 }
@@ -171,7 +171,7 @@ fn test_relaxation() {
             bytes_in,
             offset,
             ValueKind::Address,
-            OutputKind::StaticExecutable,
+            OutputKind::PositionIndependentStaticExecutable,
         ) {
             r.apply(&mut out, &mut offset, &mut 0, &mut modifier);
 
@@ -185,7 +185,7 @@ fn test_relaxation() {
             bytes_in,
             offset,
             ValueKind::Absolute,
-            OutputKind::StaticExecutable,
+            OutputKind::PositionIndependentStaticExecutable,
         ) {
             out.copy_from_slice(bytes_in);
             r.apply(&mut out, &mut offset, &mut 0, &mut modifier);

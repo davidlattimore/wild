@@ -305,7 +305,7 @@ fn populate_file_header(
 ) -> Result {
     let args = layout.args();
     let ty = match args.output_kind {
-        OutputKind::StaticExecutable if !args.pie => elf::FileType::Executable,
+        OutputKind::NonRelocatableStaticExecutable => elf::FileType::Executable,
         _ => elf::FileType::SharedObject,
     };
     let e = LittleEndian;

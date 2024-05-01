@@ -1,4 +1,5 @@
 #![allow(clippy::needless_update)]
+#![allow(clippy::match_like_matches_macro)]
 
 pub(crate) mod alignment;
 pub(crate) mod archive;

@@ -36,7 +36,8 @@ pub(crate) struct Args {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutputKind {
-    StaticExecutable,
+    NonRelocatableStaticExecutable,
+    PositionIndependentStaticExecutable,
     DynamicExecutable,
     SharedObject,
 }
@@ -101,7 +102,7 @@ impl Args {
         let mut inputs = Vec::new();
         let mut output = None;
         let mut dynamic_linker = None;
-        let mut output_kind = OutputKind::StaticExecutable;
+        let mut output_kind = None;
         let mut time_phases = false;
         let mut num_threads = None;
         let mut strip_all = false;
@@ -142,7 +143,7 @@ impl Args {
             } else if arg == "-o" {
                 output = input.next().map(|a| Arc::from(Path::new(a.as_ref())));
             } else if arg == "--dynamic-linker" || arg == "-dynamic-linker" {
-                output_kind = OutputKind::DynamicExecutable;
+                output_kind = Some(OutputKind::DynamicExecutable);
                 dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
             } else if arg == "--no-dynamic-linker" {
                 dynamic_linker = None;
@@ -199,7 +200,7 @@ impl Args {
             } else if arg == "-pie" {
                 pie = true;
             } else if arg == "-shared" {
-                output_kind = OutputKind::SharedObject;
+                output_kind = Some(OutputKind::SharedObject);
             } else if arg.starts_with("-plugin-opt=") {
                 // TODO: Implement support for linker plugins.
             } else if arg == "-plugin" {
@@ -229,6 +230,13 @@ impl Args {
         }
         let num_threads = num_threads.unwrap_or_else(|| {
             std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap())
+        });
+        let output_kind = output_kind.unwrap_or({
+            if pie {
+                OutputKind::PositionIndependentStaticExecutable
+            } else {
+                OutputKind::NonRelocatableStaticExecutable
+            }
         });
         save_dir.finish()?;
         Ok(Args {
@@ -295,15 +303,17 @@ impl Args {
 
     /// Returns how we should handle TLS relocations like TLSLD and TLSGD.
     pub(crate) fn tls_mode(&self) -> crate::layout::TlsMode {
-        if self.output_kind == OutputKind::StaticExecutable {
-            crate::layout::TlsMode::LocalExec
-        } else {
-            crate::layout::TlsMode::Preserve
+        match self.output_kind {
+            OutputKind::NonRelocatableStaticExecutable
+            | OutputKind::PositionIndependentStaticExecutable => crate::layout::TlsMode::LocalExec,
+            OutputKind::DynamicExecutable | OutputKind::SharedObject => {
+                crate::layout::TlsMode::Preserve
+            }
         }
     }
 
     pub(crate) fn is_relocatable(&self) -> bool {
-        self.pie || self.output_kind != OutputKind::StaticExecutable
+        self.output_kind != OutputKind::NonRelocatableStaticExecutable
     }
 
     /// Returns whether we need a dynamic section.
@@ -337,11 +347,15 @@ impl Default for Modifiers {
 
 impl OutputKind {
     pub(crate) fn is_executable(&self) -> bool {
-        match self {
-            OutputKind::StaticExecutable => true,
-            OutputKind::DynamicExecutable => true,
-            OutputKind::SharedObject => false,
-        }
+        !matches!(self, OutputKind::SharedObject)
+    }
+
+    pub(crate) fn is_static_executable(&self) -> bool {
+        matches!(
+            self,
+            OutputKind::NonRelocatableStaticExecutable
+                | OutputKind::PositionIndependentStaticExecutable
+        )
     }
 }
 
