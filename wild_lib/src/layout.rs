@@ -2545,7 +2545,7 @@ impl<'data> ObjectLayoutState<'data> {
                         }
                     }
                 }
-                object::SymbolSection::Common => {
+                object::SymbolSection::Common | object::SymbolSection::Absolute => {
                     let symbol_id = self.start_symbol_id().add_usize(sym.index().0);
                     let symbol_file_id = symbol_db.file_id_for_symbol(symbol_id);
                     if symbol_file_id == self.state.common.file_id
