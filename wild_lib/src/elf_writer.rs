@@ -27,6 +27,7 @@ use crate::layout::ObjectLayout;
 use crate::layout::Resolution;
 use crate::layout::ResolutionValue;
 use crate::layout::Section;
+use crate::layout::SymbolCopyInfo;
 use crate::layout::TargetResolutionKind;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
@@ -553,13 +554,10 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
     fn copy_symbol(
         &mut self,
         sym: &crate::elf::Symbol,
+        name: &[u8],
         output_section_id: OutputSectionId,
-        section_address: u64,
+        value: u64,
     ) -> Result {
-        let name = sym.name_bytes()?;
-        if !crate::layout::should_copy_symbol(name) {
-            return Ok(());
-        }
         let is_local = sym.is_local();
         let object::SymbolFlags::Elf { st_info, st_other } = sym.flags() else {
             unreachable!()
@@ -575,7 +573,6 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
                     output_section_id,
                 )
             })?;
-        let value = section_address + sym.address();
         let size = sym.size();
         let entry = self.define_symbol(is_local, shndx, value, size, name)?;
         entry.st_info = st_info;
@@ -583,8 +580,7 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         Ok(())
     }
 
-    fn copy_absolute_symbol(&mut self, sym: &crate::elf::Symbol) -> Result {
-        let name = sym.name_bytes()?;
+    fn copy_absolute_symbol(&mut self, sym: &crate::elf::Symbol, name: &[u8]) -> Result {
         let is_local = sym.is_local();
         let object::SymbolFlags::Elf { st_info, st_other } = sym.flags() else {
             unreachable!()
@@ -754,9 +750,19 @@ impl<'data> ObjectLayout<'data> {
         let mut symbol_writer =
             SymbolTableWriter::new(start_str_offset, &mut buffers, &self.mem_sizes, sections);
         for sym in self.object.symbols() {
-            match object::ObjectSymbol::section(&sym) {
-                object::SymbolSection::Section(section_index) => {
-                    if let SectionSlot::Loaded(section) = &self.sections[section_index.0] {
+            let symbol_id = self.start_symbol_id.add_usize(sym.index().0);
+            if let Some(info) = SymbolCopyInfo::new(
+                &sym,
+                symbol_id,
+                layout.symbol_db,
+                &self.symbol_states,
+                &self.sections,
+            ) {
+                match object::ObjectSymbol::section(&sym) {
+                    object::SymbolSection::Section(section_index) => {
+                        let SectionSlot::Loaded(section) = &self.sections[section_index.0] else {
+                            bail!("Tried to copy a symbol in a section we didn't load");
+                        };
                         let output_section_id = section.output_section_id.unwrap();
                         let section_address = self.section_resolutions[section_index.0]
                             .as_ref()
@@ -764,7 +770,12 @@ impl<'data> ObjectLayout<'data> {
                             .value
                             .address_or_value()?;
                         symbol_writer
-                            .copy_symbol(&sym, output_section_id, section_address)
+                            .copy_symbol(
+                                &sym,
+                                info.name,
+                                output_section_id,
+                                section_address + sym.address(),
+                            )
                             .with_context(|| {
                                 format!(
                                     "Failed to copy {}",
@@ -774,34 +785,36 @@ impl<'data> ObjectLayout<'data> {
                                 )
                             })?;
                     }
-                }
-                object::SymbolSection::Common => {
-                    let symbol_id = self.start_symbol_id.add_usize(sym.index().0);
-                    if layout.symbol_db.is_definition(symbol_id) {
-                        if let Some(res) = layout.symbol_resolution(symbol_id) {
-                            symbol_writer
-                                .copy_symbol(&sym, output_section_id::BSS, res.value.address()?)
-                                .with_context(|| {
-                                    format!(
-                                        "Failed to copy common {}",
-                                        layout.symbol_db.symbol_debug(symbol_id)
-                                    )
-                                })?;
-                        }
-                    }
-                }
-                object::SymbolSection::Absolute => {
-                    let symbol_id = self.start_symbol_id.add_usize(sym.index().0);
-                    if layout.symbol_db.is_definition(symbol_id) {
-                        symbol_writer.copy_absolute_symbol(&sym).with_context(|| {
-                            format!(
-                                "Failed to absolute {}",
-                                layout.symbol_db.symbol_debug(symbol_id)
+                    object::SymbolSection::Common => {
+                        let Some(res) = layout.symbol_resolution(symbol_id) else {
+                            bail!("Missing resolution for common symbol");
+                        };
+                        symbol_writer
+                            .copy_symbol(
+                                &sym,
+                                info.name,
+                                output_section_id::BSS,
+                                res.value.address()?,
                             )
-                        })?;
+                            .with_context(|| {
+                                format!(
+                                    "Failed to copy common {}",
+                                    layout.symbol_db.symbol_debug(symbol_id)
+                                )
+                            })?;
                     }
+                    object::SymbolSection::Absolute | object::SymbolSection::None => {
+                        symbol_writer
+                            .copy_absolute_symbol(&sym, info.name)
+                            .with_context(|| {
+                                format!(
+                                    "Failed to absolute {}",
+                                    layout.symbol_db.symbol_debug(symbol_id)
+                                )
+                            })?;
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
         symbol_writer.check_exhausted()?;
@@ -1525,8 +1538,9 @@ fn write_dynamic_symbol_definitions(
             .unwrap()
             .value
             .address_or_value()?;
+        let name = sym.name_bytes()?;
         dynamic_symbol_writer
-            .copy_symbol(&sym, output_section_id, section_address)
+            .copy_symbol(&sym, name, output_section_id, section_address)
             .with_context(|| {
                 format!(
                     "Failed to copy dynamic {}",

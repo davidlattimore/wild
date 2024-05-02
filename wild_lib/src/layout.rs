@@ -289,6 +289,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) eh_frame_start_address: u64,
     pub(crate) start_symbol_id: SymbolId,
     pub(crate) num_symbols: usize,
+    pub(crate) symbol_states: Vec<TargetResolutionKind>,
 }
 
 pub(crate) struct InternalLayout<'data> {
@@ -2531,32 +2532,20 @@ impl<'data> ObjectLayoutState<'data> {
         let mut num_globals = 0;
         let mut strings_size = 0;
         for sym in self.object.symbols() {
-            match sym.section() {
-                object::SymbolSection::Section(section_index) => {
-                    if self.state.sections[section_index.0].is_loaded() {
-                        let name = &sym.name_bytes()?;
-                        if should_copy_symbol(name) {
-                            if sym.is_global() {
-                                num_globals += 1;
-                            } else {
-                                num_locals += 1;
-                            }
-                            strings_size += name.len() + 1;
-                        }
-                    }
+            let symbol_id = self.start_symbol_id().add_usize(sym.index().0);
+            if let Some(info) = SymbolCopyInfo::new(
+                &sym,
+                symbol_id,
+                symbol_db,
+                &self.state.common.symbol_states,
+                &self.state.sections,
+            ) {
+                if sym.is_global() {
+                    num_globals += 1;
+                } else {
+                    num_locals += 1;
                 }
-                object::SymbolSection::Common | object::SymbolSection::Absolute => {
-                    let symbol_id = self.start_symbol_id().add_usize(sym.index().0);
-                    let symbol_file_id = symbol_db.file_id_for_symbol(symbol_id);
-                    if symbol_file_id == self.state.common.file_id
-                        && self.state.common.symbol_states[sym.index().0]
-                            != TargetResolutionKind::None
-                    {
-                        num_globals += 1;
-                        strings_size += sym.name_bytes()?.len() + 1;
-                    }
-                }
-                _ => {}
+                strings_size += info.name.len() + 1;
             }
         }
         let entry_size = size_of::<elf::SymtabEntry>() as u64;
@@ -2688,6 +2677,7 @@ impl<'data> ObjectLayoutState<'data> {
             eh_frame_start_address: memory_offsets.eh_frame,
             start_symbol_id,
             num_symbols: self.state.common.symbol_states.len(),
+            symbol_states: self.state.common.symbol_states,
         })
     }
 
@@ -2723,6 +2713,48 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
         Ok(())
+    }
+}
+
+pub(crate) struct SymbolCopyInfo<'data> {
+    pub(crate) name: &'data [u8],
+}
+
+impl<'data> SymbolCopyInfo<'data> {
+    /// The primary purpose of this function is to determine whether a symbol should be copied into
+    /// the symtab. In the process, we also return the name of the symbol, to avoid needing to read
+    /// it again.
+    pub(crate) fn new(
+        sym: &crate::elf::Symbol<'data, '_>,
+        symbol_id: SymbolId,
+        symbol_db: &SymbolDb,
+        symbol_states: &[TargetResolutionKind],
+        sections: &[SectionSlot],
+    ) -> Option<SymbolCopyInfo<'data>> {
+        if !symbol_db.is_definition(symbol_id) {
+            return None;
+        }
+        if symbol_is_in_discarded_section(sym, sections) {
+            return None;
+        }
+        if sym.is_common() && symbol_states[sym.index().0] == TargetResolutionKind::None {
+            return None;
+        }
+        // Reading the symbol name is slightly expensive, so we want to do that after all the other
+        // checks. That's also the reason why we return the symbol name, so that the caller, if it
+        // needs the name, doesn't have a go and read it again.
+        let name = sym.name_bytes().ok()?;
+        if !should_copy_symbol_named(name) {
+            return None;
+        }
+        Some(SymbolCopyInfo { name })
+    }
+}
+
+fn symbol_is_in_discarded_section(sym: &crate::elf::Symbol, sections: &[SectionSlot]) -> bool {
+    match sym.section() {
+        object::SymbolSection::Section(section_index) => !sections[section_index.0].is_loaded(),
+        _ => false,
     }
 }
 
@@ -2766,7 +2798,7 @@ impl MergedStringStartAddresses {
 
 /// Returns whether we should copy a symbol with the specified name into the output symbol table.
 /// Symbols with empty names and those starting with '.' aren't copied.
-pub(crate) fn should_copy_symbol(name: &[u8]) -> bool {
+fn should_copy_symbol_named(name: &[u8]) -> bool {
     !name.is_empty() && !name.starts_with(b".")
 }
 
