@@ -841,6 +841,9 @@ pub(crate) enum ValueKind {
     /// The value is from a shared (dynamic) object, so although it may have an address, it won't be
     /// know until runtime.
     Dynamic,
+
+    /// The value refers to an ifunc. The actual address won't be known until runtime.
+    IFunc,
 }
 
 impl<'data> SymbolDb<'data> {

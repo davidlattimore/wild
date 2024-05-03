@@ -438,6 +438,7 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
             match res_value {
                 ResolutionValue::Absolute(v) => *got_entry = v,
                 ResolutionValue::Address(v) => *got_entry = v,
+                ResolutionValue::Iplt(_) => {}
                 ResolutionValue::Dynamic(_) => {}
             }
             if let Some(plt_address) = res.plt_address {
@@ -1133,7 +1134,7 @@ impl<'out> DynamicRelocationWriter<'out> {
         }
         let e = LittleEndian;
         match res_value {
-            ResolutionValue::Absolute(_) => {}
+            ResolutionValue::Absolute(_) | ResolutionValue::Iplt(_) => {}
             ResolutionValue::Address(address) => {
                 let rela = crate::slice::take_first_mut(&mut self.rela_dyn_relative)
                     .context("insufficient allocation to .rela.dyn (relative)")?;
@@ -1207,6 +1208,7 @@ fn apply_relocation(
         ResolutionValue::Absolute(v) => (v, ValueKind::Absolute),
         ResolutionValue::Address(v) => (v, ValueKind::Address),
         ResolutionValue::Dynamic(_) => (0, ValueKind::Dynamic),
+        ResolutionValue::Iplt(v) => (v, ValueKind::IFunc),
     };
     let place = section_address + offset_in_section;
     let mut addend = rel.addend() as u64;

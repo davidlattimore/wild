@@ -218,6 +218,9 @@ pub(crate) enum ResolutionValue {
 
     /// A dynamic symbol index.
     Dynamic(u32),
+
+    /// The address of an IPLT entry for an ifunc.
+    Iplt(u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -380,17 +383,16 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 common.mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
                 if resources.symbol_db.args.is_relocatable() {
                     match resources.symbol_db.symbol_value_kind(symbol_id) {
-                        ValueKind::Address => {
+                        ValueKind::IFunc => {
                             // We need two entries. One for the resolver and one for the address at which
                             // the resolution will be stored.
                             common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE * 2;
                         }
+                        ValueKind::Address => {
+                            bail!("Unexpected address value for an IFunc symbol")
+                        }
                         ValueKind::Dynamic => {
-                            // If our resolver is dynamic, then its relocation will be a glob-dat
-                            // relocation, while the relocation for the destination will still be
-                            // relative (it doesn't depend on the dynamic library).
-                            common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
-                            common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
+                            bail!("Unexpected dynamic value for an IFunc symbol")
                         }
                         ValueKind::Absolute => {
                             bail!("An ifunc cannot resolve to an absolute value")
@@ -416,6 +418,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                             ValueKind::Dynamic => {
                                 common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
                             }
+                            ValueKind::IFunc => {}
                             ValueKind::Absolute => {}
                         }
                     }
@@ -928,6 +931,12 @@ impl<'data> Layout<'data> {
                     "Symbol can't be an absolute value: {}",
                     self.symbol_debug(symbol_id)
                 )
+            }
+            Some(Resolution {
+                value: ResolutionValue::Iplt(..),
+                ..
+            }) => {
+                bail!("Symbol can't be an ifunc: {}", self.symbol_debug(symbol_id))
             }
             None => {
                 bail!(
@@ -3015,8 +3024,8 @@ impl<'state> GlobalAddressEmitter<'state> {
                 if self.symbol_db.args.is_relocatable() {
                     self.next_rela_plt_address += elf::RELA_ENTRY_SIZE;
                 }
-                // If a symbol refers to an ifunc, then all access needs to go via the PLT.
-                resolution.value = ResolutionValue::Address(plt_address.get());
+                // If a symbol refers to an ifunc, then direct calls needs to go via the PLT.
+                resolution.value = ResolutionValue::Iplt(plt_address.get());
                 resolution.plt_address = Some(plt_address);
             }
             TargetResolutionKind::GotTlsDouble => {
@@ -3261,14 +3270,16 @@ impl Display for SectionDebug {
 impl ResolutionValue {
     pub(crate) fn address_or_value(&self) -> Result<u64> {
         match self {
-            ResolutionValue::Absolute(v) | ResolutionValue::Address(v) => Ok(*v),
+            ResolutionValue::Absolute(v)
+            | ResolutionValue::Address(v)
+            | ResolutionValue::Iplt(v) => Ok(*v),
             ResolutionValue::Dynamic(..) => bail!("Unexpected dynamic resolution"),
         }
     }
 
     pub(crate) fn address(&self) -> Result<u64> {
         match self {
-            ResolutionValue::Address(v) => Ok(*v),
+            ResolutionValue::Address(v) | ResolutionValue::Iplt(v) => Ok(*v),
             ResolutionValue::Absolute(..) => bail!("Unexpected absolute value"),
             ResolutionValue::Dynamic(..) => bail!("Unexpected dynamic resolution"),
         }
