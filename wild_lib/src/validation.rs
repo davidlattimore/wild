@@ -73,7 +73,7 @@ fn validate_resolution(
         }
         let expected = match resolution.value {
             ResolutionValue::Absolute(v) | ResolutionValue::Address(v) => v,
-            ResolutionValue::Dynamic(_) => return Ok(()),
+            ResolutionValue::Dynamic(_) | ResolutionValue::Iplt(_) => return Ok(()),
         };
         let address = bytemuck::pod_read_unaligned(&got_data[start_offset..end_offset]);
         if expected != address {

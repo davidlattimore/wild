@@ -282,7 +282,15 @@ fn load_symbols_from_file<'data>(
                     value_kinds,
                     |sym| match sym.section() {
                         object::SymbolSection::Absolute => ValueKind::Absolute,
-                        _ => ValueKind::Address,
+                        _ => {
+                            if sym.raw_symbol().st_info & crate::elf::SYMBOL_TYPE_MASK
+                                == crate::elf::SYMBOL_TYPE_IFUNC
+                            {
+                                ValueKind::IFunc
+                            } else {
+                                ValueKind::Address
+                            }
+                        }
                     },
                 )?
             }
