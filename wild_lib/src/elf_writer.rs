@@ -762,35 +762,60 @@ impl<'data> ObjectLayout<'data> {
             ) {
                 match object::ObjectSymbol::section(&sym) {
                     object::SymbolSection::Section(section_index) => {
-                        let SectionSlot::Loaded(section) = &self.sections[section_index.0] else {
-                            bail!("Tried to copy a symbol in a section we didn't load");
-                        };
-                        let output_section_id = section.output_section_id.unwrap();
-                        let section_address = self.section_resolutions[section_index.0]
-                            .as_ref()
-                            .unwrap()
-                            .value
-                            .address_or_value()?;
-                        let mut symbol_value = section_address + sym.address();
-                        if sym.kind() == SymbolKind::Tls {
-                            let tls_start_address = layout
-                                .segment_layouts
-                                .tls_start_address
-                                .context(
-                                "Writing TLS variable to symtab, but we don't have a TLS segment",
-                            )?;
-                            symbol_value -= tls_start_address;
-                        }
-                        symbol_writer
-                            .copy_symbol(&sym, info.name, output_section_id, symbol_value)
-                            .with_context(|| {
-                                format!(
-                                    "Failed to copy {}",
-                                    layout.symbol_debug(
-                                        self.start_symbol_id.add_usize(sym.index().0)
+                        match &self.sections[section_index.0] {
+                            SectionSlot::Loaded(section) => {
+                                let output_section_id = section.output_section_id.unwrap();
+                                let section_address = self.section_resolutions[section_index.0]
+                                    .as_ref()
+                                    .unwrap()
+                                    .value
+                                    .address_or_value()?;
+                                let mut symbol_value = section_address + sym.address();
+                                if sym.kind() == SymbolKind::Tls {
+                                    let tls_start_address = layout
+                                        .segment_layouts
+                                        .tls_start_address
+                                        .context(
+                                        "Writing TLS variable to symtab, but we don't have a TLS segment",
+                                    )?;
+                                    symbol_value -= tls_start_address;
+                                }
+                                symbol_writer
+                                    .copy_symbol(&sym, info.name, output_section_id, symbol_value)
+                                    .with_context(|| {
+                                        format!(
+                                            "Failed to copy {}",
+                                            layout.symbol_debug(
+                                                self.start_symbol_id.add_usize(sym.index().0)
+                                            )
+                                        )
+                                    })?;
+                            }
+                            SectionSlot::MergeStrings(_) => {
+                                let merged_string_res = &self.merged_string_resolutions[sym.index().0].context(
+                                    "Tried to write symbol for merged string without a resolution",
+                                )?;
+                                let address = layout
+                                    .merged_string_start_addresses
+                                    .resolve(*merged_string_res);
+                                symbol_writer
+                                    .copy_symbol(
+                                        &sym,
+                                        info.name,
+                                        merged_string_res.output_section_id,
+                                        address,
                                     )
-                                )
-                            })?;
+                                    .with_context(|| {
+                                        format!(
+                                            "Failed to copy {}",
+                                            layout.symbol_debug(
+                                                self.start_symbol_id.add_usize(sym.index().0)
+                                            )
+                                        )
+                                    })?;
+                            }
+                            _ => bail!("Tried to copy a symbol in a section we didn't load"),
+                        }
                     }
                     object::SymbolSection::Common => {
                         let Some(res) = layout.symbol_resolution(symbol_id) else {
