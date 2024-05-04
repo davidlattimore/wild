@@ -62,6 +62,7 @@ use std::num::NonZeroU64;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
+use crate::program_segments;
 
 #[tracing::instrument(skip_all, name = "Layout")]
 pub fn compute<'data>(
@@ -171,6 +172,7 @@ pub(crate) struct SegmentLayouts {
     /// The layout of each of our segments. Segments containing no active output sections will have
     /// been filtered, so don't try to index this by our internal segment IDs.
     pub(crate) segments: Vec<SegmentLayout>,
+    pub(crate) tls_start_address: Option<u64>,
 }
 
 #[derive(Default, Clone)]
@@ -1105,11 +1107,15 @@ fn compute_segment_layout(
     });
     complete.sort_by_key(|r| r.segment_id);
     assert_eq!(complete.len(), MAX_SEGMENTS);
+    let mut tls_start_address = None;
     let segments = header_info
         .active_segment_ids
         .iter()
         .map(|&id| {
             let r = &complete[id.as_usize()];
+            if id == program_segments::TLS {
+                tls_start_address = Some(r.mem_start);
+            }
             SegmentLayout {
                 id,
                 sizes: OutputRecordLayout {
@@ -1122,7 +1128,7 @@ fn compute_segment_layout(
             }
         })
         .collect();
-    SegmentLayouts { segments }
+    SegmentLayouts { segments, tls_start_address }
 }
 
 #[tracing::instrument(skip_all, name = "Compute total section sizes")]

@@ -53,6 +53,7 @@ use object::LittleEndian;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
+use object::SymbolKind;
 use rayon::prelude::*;
 use std::fmt::Display;
 use std::ops::Range;
@@ -770,13 +771,18 @@ impl<'data> ObjectLayout<'data> {
                             .unwrap()
                             .value
                             .address_or_value()?;
+                        let mut symbol_value = section_address + sym.address();
+                        if sym.kind() == SymbolKind::Tls {
+                            let tls_start_address = layout
+                                .segment_layouts
+                                .tls_start_address
+                                .context(
+                                "Writing TLS variable to symtab, but we don't have a TLS segment",
+                            )?;
+                            symbol_value -= tls_start_address;
+                        }
                         symbol_writer
-                            .copy_symbol(
-                                &sym,
-                                info.name,
-                                output_section_id,
-                                section_address + sym.address(),
-                            )
+                            .copy_symbol(&sym, info.name, output_section_id, symbol_value)
                             .with_context(|| {
                                 format!(
                                     "Failed to copy {}",
