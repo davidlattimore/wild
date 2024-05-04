@@ -26,6 +26,7 @@ use crate::output_section_id::UnloadedSection;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
+use crate::program_segments;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::MAX_SEGMENTS;
 use crate::relaxation::Relaxation;
@@ -62,7 +63,6 @@ use std::num::NonZeroU64;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
-use crate::program_segments;
 
 #[tracing::instrument(skip_all, name = "Layout")]
 pub fn compute<'data>(
@@ -121,6 +121,7 @@ pub fn compute<'data>(
         section_layouts,
         file_layouts,
         output_sections,
+        merged_string_start_addresses,
     })
 }
 
@@ -166,6 +167,7 @@ pub struct Layout<'data> {
     pub(crate) file_layouts: Vec<FileLayout<'data>>,
     pub(crate) segment_layouts: SegmentLayouts,
     pub(crate) output_sections: OutputSections<'data>,
+    pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
 }
 
 pub(crate) struct SegmentLayouts {
@@ -295,6 +297,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) start_symbol_id: SymbolId,
     pub(crate) num_symbols: usize,
     pub(crate) symbol_states: Vec<TargetResolutionKind>,
+    pub(crate) merged_string_resolutions: Vec<Option<MergedStringResolution>>,
 }
 
 pub(crate) struct InternalLayout<'data> {
@@ -735,7 +738,7 @@ struct ObjectLayoutMutableState<'data> {
     /// A queue of sections that we need to load.
     sections_required: Vec<SectionRequest>,
 
-    merged_string_resolution: Vec<Option<MergedStringResolution>>,
+    merged_string_resolutions: Vec<Option<MergedStringResolution>>,
 
     cies: SmallVec<[CieAtOffset<'data>; 2]>,
 }
@@ -1128,7 +1131,10 @@ fn compute_segment_layout(
             }
         })
         .collect();
-    SegmentLayouts { segments, tls_start_address }
+    SegmentLayouts {
+        segments,
+        tls_start_address,
+    }
 }
 
 #[tracing::instrument(skip_all, name = "Compute total section sizes")]
@@ -2408,7 +2414,7 @@ fn new_object_layout_state<'data>(
                 common,
                 sections: non_dynamic.sections,
                 sections_required: Default::default(),
-                merged_string_resolution: non_dynamic.merged_string_resolutions,
+                merged_string_resolutions: non_dynamic.merged_string_resolutions,
                 cies: Default::default(),
             },
         }))
@@ -2645,7 +2651,7 @@ impl<'data> ObjectLayoutState<'data> {
                     } else {
                         ResolutionValue::Address(merged_string_start_addresses
                             .try_resolve_local(
-                                &self.state.merged_string_resolution,
+                                &self.state.merged_string_resolutions,
                                 local_symbol.index(),
                             )
                             .ok_or_else(|| {
@@ -2693,6 +2699,7 @@ impl<'data> ObjectLayoutState<'data> {
             start_symbol_id,
             num_symbols: self.state.common.symbol_states.len(),
             symbol_states: self.state.common.symbol_states,
+            merged_string_resolutions: self.state.merged_string_resolutions,
         })
     }
 
