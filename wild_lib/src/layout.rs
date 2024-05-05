@@ -2552,15 +2552,20 @@ impl<'data> ObjectLayoutState<'data> {
         let mut num_locals = 0;
         let mut num_globals = 0;
         let mut strings_size = 0;
-        for sym in self.object.symbols() {
-            let symbol_id = self.start_symbol_id().add_usize(sym.index().0);
-            if let Some(info) = SymbolCopyInfo::new(
-                &sym,
-                symbol_id,
-                symbol_db,
-                &self.state.common.symbol_states,
-                &self.state.sections,
-            ) {
+        for (sym, sym_state) in self
+            .object
+            .symbols()
+            .zip(&mut self.state.common.symbol_states)
+        {
+            let symbol_id = self.state.common.start_symbol_id.add_usize(sym.index().0);
+            if let Some(info) =
+                SymbolCopyInfo::new(&sym, symbol_id, symbol_db, *sym_state, &self.state.sections)
+            {
+                // If we've decided to emit the symbol even though it's not referenced (because it's
+                // in a section we're emitting), then make sure we have a resolution for it.
+                if *sym_state == TargetResolutionKind::None {
+                    *sym_state = TargetResolutionKind::Value;
+                }
                 if sym.is_global() {
                     num_globals += 1;
                 } else {
@@ -2750,7 +2755,7 @@ impl<'data> SymbolCopyInfo<'data> {
         sym: &crate::elf::Symbol<'data, '_>,
         symbol_id: SymbolId,
         symbol_db: &SymbolDb,
-        symbol_states: &[TargetResolutionKind],
+        symbol_state: TargetResolutionKind,
         sections: &[SectionSlot],
     ) -> Option<SymbolCopyInfo<'data>> {
         if !symbol_db.is_definition(symbol_id) {
@@ -2759,7 +2764,7 @@ impl<'data> SymbolCopyInfo<'data> {
         if symbol_is_in_discarded_section(sym, sections) {
             return None;
         }
-        if sym.is_common() && symbol_states[sym.index().0] == TargetResolutionKind::None {
+        if sym.is_common() && symbol_state == TargetResolutionKind::None {
             return None;
         }
         // Reading the symbol name is slightly expensive, so we want to do that after all the other

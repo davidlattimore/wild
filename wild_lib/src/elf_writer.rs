@@ -751,13 +751,13 @@ impl<'data> ObjectLayout<'data> {
     ) -> Result {
         let mut symbol_writer =
             SymbolTableWriter::new(start_str_offset, &mut buffers, &self.mem_sizes, sections);
-        for sym in self.object.symbols() {
+        for (sym, sym_state) in self.object.symbols().zip(&self.symbol_states) {
             let symbol_id = self.start_symbol_id.add_usize(sym.index().0);
             if let Some(info) = SymbolCopyInfo::new(
                 &sym,
                 symbol_id,
                 layout.symbol_db,
-                &self.symbol_states,
+                *sym_state,
                 &self.sections,
             ) {
                 match object::ObjectSymbol::section(&sym) {
@@ -804,6 +804,30 @@ impl<'data> ObjectLayout<'data> {
                                         info.name,
                                         merged_string_res.output_section_id,
                                         address,
+                                    )
+                                    .with_context(|| {
+                                        format!(
+                                            "Failed to copy {}",
+                                            layout.symbol_debug(
+                                                self.start_symbol_id.add_usize(sym.index().0)
+                                            )
+                                        )
+                                    })?;
+                            }
+                            SectionSlot::EhFrameData(..) => {
+                                let Some(res) = layout.symbol_resolution(symbol_id) else {
+                                    bail!(
+                                        "Missing resolution for {}",
+                                        layout.symbol_debug(symbol_id)
+                                    );
+                                };
+                                let value = res.value.address_or_value()?;
+                                symbol_writer
+                                    .copy_symbol(
+                                        &sym,
+                                        info.name,
+                                        output_section_id::EH_FRAME,
+                                        value,
                                     )
                                     .with_context(|| {
                                         format!(
