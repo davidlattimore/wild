@@ -3,7 +3,6 @@ use crate::args::OutputKind;
 use crate::elf;
 use crate::elf::slice_from_all_bytes_mut;
 use crate::elf::DynamicEntry;
-use crate::elf::DynamicTag;
 use crate::elf::EhFrameHdr;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::FileHeader;
@@ -1640,49 +1639,49 @@ pub(crate) const NUM_EPILOGUE_DYNAMIC_ENTRIES: usize = EPILOGUE_DYNAMIC_ENTRY_WR
 
 const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     DynamicEntryWriter::optional(
-        DynamicTag::Init,
+        object::elf::DT_INIT,
         |layout| layout.has_data_in_section(output_section_id::INIT),
         |layout| layout.vma_of_section(output_section_id::INIT),
     ),
     DynamicEntryWriter::optional(
-        DynamicTag::Fini,
+        object::elf::DT_FINI,
         |layout| layout.has_data_in_section(output_section_id::FINI),
         |layout| layout.vma_of_section(output_section_id::FINI),
     ),
     DynamicEntryWriter::optional(
-        DynamicTag::InitArray,
+        object::elf::DT_INIT_ARRAY,
         |layout| layout.has_data_in_section(output_section_id::INIT_ARRAY),
         |layout| layout.vma_of_section(output_section_id::INIT_ARRAY),
     ),
     DynamicEntryWriter::optional(
-        DynamicTag::InitArraySize,
+        object::elf::DT_INIT_ARRAYSZ,
         |layout| layout.has_data_in_section(output_section_id::INIT_ARRAY),
         |layout| layout.size_of_section(output_section_id::INIT_ARRAY),
     ),
     DynamicEntryWriter::optional(
-        DynamicTag::FiniArray,
+        object::elf::DT_FINI_ARRAY,
         |layout| layout.has_data_in_section(output_section_id::FINI_ARRAY),
         |layout| layout.vma_of_section(output_section_id::FINI_ARRAY),
     ),
     DynamicEntryWriter::optional(
-        DynamicTag::FiniArraySize,
+        object::elf::DT_FINI_ARRAYSZ,
         |layout| layout.has_data_in_section(output_section_id::FINI_ARRAY),
         |layout| layout.size_of_section(output_section_id::FINI_ARRAY),
     ),
-    DynamicEntryWriter::new(DynamicTag::StrTab, |layout| {
+    DynamicEntryWriter::new(object::elf::DT_STRTAB, |layout| {
         layout.vma_of_section(output_section_id::DYNSTR)
     }),
-    DynamicEntryWriter::new(DynamicTag::StrSize, |layout| {
+    DynamicEntryWriter::new(object::elf::DT_STRSZ, |layout| {
         layout.size_of_section(output_section_id::DYNSTR)
     }),
-    DynamicEntryWriter::new(DynamicTag::SymTab, |layout| {
+    DynamicEntryWriter::new(object::elf::DT_SYMTAB, |layout| {
         layout.vma_of_section(output_section_id::DYNSYM)
     }),
-    DynamicEntryWriter::new(DynamicTag::SymEnt, |_layout| {
+    DynamicEntryWriter::new(object::elf::DT_SYMENT, |_layout| {
         core::mem::size_of::<elf::SymtabEntry>() as u64
     }),
     DynamicEntryWriter::optional(
-        DynamicTag::Debug,
+        object::elf::DT_DEBUG,
         |layout| {
             // Not sure why, but GNU ld seems to emit this for executables but not for shared
             // objects.
@@ -1691,40 +1690,40 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |_layout| 0,
     ),
     DynamicEntryWriter::optional(
-        DynamicTag::JmpRel,
+        object::elf::DT_JMPREL,
         |layout| layout.section_part_layouts.rela_plt.mem_size > 0,
         |layout| layout.vma_of_section(output_section_id::RELA_PLT),
     ),
     DynamicEntryWriter::optional(
-        DynamicTag::PltRelSize,
+        object::elf::DT_PLTRELSZ,
         |layout| layout.section_part_layouts.rela_plt.mem_size > 0,
         |layout| layout.section_part_layouts.rela_plt.mem_size,
     ),
     // TODO: For some reason setting this causes libc init code to segfault (libc-integration test
     // fails).
     // DynamicEntryWriter::optional(
-    //     DynamicTag::PltRel,
+    //     object::elf::DT_PltRel,
     //     |layout| layout.section_part_layouts.rela_plt.mem_size > 0,
     //     |_| object::elf::DT_RELA.into(),
     // ),
-    DynamicEntryWriter::new(DynamicTag::Rela, |layout| {
+    DynamicEntryWriter::new(object::elf::DT_RELA, |layout| {
         layout.vma_of_section(output_section_id::RELA_DYN)
     }),
-    DynamicEntryWriter::new(DynamicTag::RelaSize, |layout| {
+    DynamicEntryWriter::new(object::elf::DT_RELASZ, |layout| {
         layout.size_of_section(output_section_id::RELA_DYN)
     }),
-    DynamicEntryWriter::new(DynamicTag::RelaEnt, |_layout| elf::RELA_ENTRY_SIZE),
+    DynamicEntryWriter::new(object::elf::DT_RELAENT, |_layout| elf::RELA_ENTRY_SIZE),
     // Note, rela-count is just the count of the relative relocations and doesn't include any
     // glob-dat relocations. This is as opposed to rela-size, which includes both.
-    DynamicEntryWriter::new(DynamicTag::RelaCount, |layout| {
+    DynamicEntryWriter::new(object::elf::DT_RELACOUNT, |layout| {
         layout.section_part_layouts.rela_dyn_relative.mem_size
             / core::mem::size_of::<elf::Rela>() as u64
     }),
-    DynamicEntryWriter::new(DynamicTag::GnuHash, |layout| {
+    DynamicEntryWriter::new(object::elf::DT_GNU_HASH, |layout| {
         layout.vma_of_section(output_section_id::GNU_HASH)
     }),
     DynamicEntryWriter::optional(
-        DynamicTag::Flags,
+        object::elf::DT_FLAGS,
         |layout| layout.args().bind_now,
         |layout| {
             let mut flags = 0;
@@ -1734,7 +1733,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
             flags
         },
     ),
-    DynamicEntryWriter::new(DynamicTag::Flags1, |layout| {
+    DynamicEntryWriter::new(object::elf::DT_FLAGS_1, |layout| {
         let mut flags = 0;
         if layout.args().bind_now {
             flags |= elf::flags_1::NOW;
@@ -1744,17 +1743,17 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         }
         flags
     }),
-    DynamicEntryWriter::new(DynamicTag::Null, |_layout| 0),
+    DynamicEntryWriter::new(object::elf::DT_NULL, |_layout| 0),
 ];
 
 struct DynamicEntryWriter {
-    tag: DynamicTag,
+    tag: u32,
     is_present_cb: fn(&Layout) -> bool,
     cb: fn(&Layout) -> u64,
 }
 
 impl DynamicEntryWriter {
-    const fn new(tag: DynamicTag, cb: fn(&Layout) -> u64) -> DynamicEntryWriter {
+    const fn new(tag: u32, cb: fn(&Layout) -> u64) -> DynamicEntryWriter {
         DynamicEntryWriter {
             tag,
             is_present_cb: |_| true,
@@ -1763,7 +1762,7 @@ impl DynamicEntryWriter {
     }
 
     const fn optional(
-        tag: DynamicTag,
+        tag: u32,
         is_present_cb: fn(&Layout) -> bool,
         cb: fn(&Layout) -> u64,
     ) -> DynamicEntryWriter {
@@ -1798,7 +1797,7 @@ impl<'out> DynamicEntriesWriter<'out> {
         }
     }
 
-    fn write(&mut self, tag: DynamicTag, value: u64) -> Result {
+    fn write(&mut self, tag: u32, value: u64) -> Result {
         let entry = crate::slice::take_first_mut(&mut self.out)
             .ok_or_else(|| anyhow!("Insufficient dynamic table entries"))?;
         let e = LittleEndian;
@@ -1940,7 +1939,7 @@ impl<'data> DynamicLayout<'data> {
     fn write_so_name(&self, dynamic: &mut [u8], strtab: &mut StrTabWriter) -> Result {
         let mut dynamic_out = DynamicEntriesWriter::new(dynamic);
         let needed_offset = strtab.write_str(self.lib_name);
-        dynamic_out.write(DynamicTag::Needed, needed_offset)?;
+        dynamic_out.write(object::elf::DT_NEEDED, needed_offset)?;
         Ok(())
     }
 }
