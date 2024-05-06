@@ -108,48 +108,6 @@ pub(crate) enum SegmentType {
     EhFrame = 0x6474e550,
 }
 
-#[allow(unused)]
-#[derive(Clone, Copy)]
-#[repr(u64)]
-pub(crate) enum DynamicTag {
-    Null = 0,
-    Needed = 1,
-    PltRelSize = 2,
-    PltGot = 3,
-    Hash = 4,
-    StrTab = 5,
-    SymTab = 6,
-    Rela = 7,
-    RelaSize = 8,
-    RelaEnt = 9,
-    StrSize = 10,
-    SymEnt = 11,
-    Init = 12,
-    Fini = 13,
-    SoName = 14,
-    Rpath = 15,
-    Symbolic = 16,
-    Rel = 17,
-    RelSize = 18,
-    RelEnt = 19,
-    PltRel = 20,
-    Debug = 21,
-    TextRel = 22,
-    JmpRel = 23,
-    BindNow = 24,
-    InitArray = 25,
-    FiniArray = 26,
-    InitArraySize = 27,
-    FiniArraySize = 28,
-    Flags = 30,
-    GnuHash = 0x6ffffef5,
-    VerSym = 0x6ffffff0,
-    Flags1 = 0x6ffffffb,
-    RelaCount = 0x6ffffff9,
-    VerNeed = 0x6ffffffe,
-    VerNeedNum = 0x6fffffff,
-}
-
 pub(crate) mod flags_1 {
     pub(crate) const NOW: u64 = 0x1;
     pub(crate) const PIE: u64 = 0x08000000;
