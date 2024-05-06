@@ -1681,8 +1681,15 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     DynamicEntryWriter::new(DynamicTag::SymEnt, |_layout| {
         core::mem::size_of::<elf::SymtabEntry>() as u64
     }),
-    // TODO: The debug tag is sometimes not present. Figure out the rules for it.
-    DynamicEntryWriter::new(DynamicTag::Debug, |_layout| 0),
+    DynamicEntryWriter::optional(
+        DynamicTag::Debug,
+        |layout| {
+            // Not sure why, but GNU ld seems to emit this for executables but not for shared
+            // objects.
+            layout.args().output_kind != OutputKind::SharedObject
+        },
+        |_layout| 0,
+    ),
     DynamicEntryWriter::optional(
         DynamicTag::JmpRel,
         |layout| layout.section_part_layouts.rela_plt.mem_size > 0,
