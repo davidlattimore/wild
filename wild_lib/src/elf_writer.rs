@@ -760,105 +760,21 @@ impl<'data> ObjectLayout<'data> {
                 *sym_state,
                 &self.sections,
             ) {
-                match object::ObjectSymbol::section(&sym) {
+                let output_section_id = match object::ObjectSymbol::section(&sym) {
                     object::SymbolSection::Section(section_index) => {
                         match &self.sections[section_index.0] {
-                            SectionSlot::Loaded(section) => {
-                                let output_section_id = section.output_section_id.unwrap();
-                                let section_address = self.section_resolutions[section_index.0]
-                                    .as_ref()
-                                    .unwrap()
-                                    .value
-                                    .address_or_value()?;
-                                let mut symbol_value = section_address + sym.address();
-                                if sym.kind() == SymbolKind::Tls {
-                                    let tls_start_address = layout
-                                        .segment_layouts
-                                        .tls_start_address
-                                        .context(
-                                        "Writing TLS variable to symtab, but we don't have a TLS segment",
-                                    )?;
-                                    symbol_value -= tls_start_address;
-                                }
-                                symbol_writer
-                                    .copy_symbol(&sym, info.name, output_section_id, symbol_value)
-                                    .with_context(|| {
-                                        format!(
-                                            "Failed to copy {}",
-                                            layout.symbol_debug(
-                                                self.start_symbol_id.add_usize(sym.index().0)
-                                            )
-                                        )
-                                    })?;
-                            }
+                            SectionSlot::Loaded(section) => section.output_section_id.unwrap(),
                             SectionSlot::MergeStrings(_) => {
                                 let merged_string_res = &self.merged_string_resolutions[sym.index().0].context(
                                     "Tried to write symbol for merged string without a resolution",
                                 )?;
-                                let address = layout
-                                    .merged_string_start_addresses
-                                    .resolve(*merged_string_res);
-                                symbol_writer
-                                    .copy_symbol(
-                                        &sym,
-                                        info.name,
-                                        merged_string_res.output_section_id,
-                                        address,
-                                    )
-                                    .with_context(|| {
-                                        format!(
-                                            "Failed to copy {}",
-                                            layout.symbol_debug(
-                                                self.start_symbol_id.add_usize(sym.index().0)
-                                            )
-                                        )
-                                    })?;
+                                merged_string_res.output_section_id
                             }
-                            SectionSlot::EhFrameData(..) => {
-                                let Some(res) = layout.symbol_resolution(symbol_id) else {
-                                    bail!(
-                                        "Missing resolution for {}",
-                                        layout.symbol_debug(symbol_id)
-                                    );
-                                };
-                                let value = res.value.address_or_value()?;
-                                symbol_writer
-                                    .copy_symbol(
-                                        &sym,
-                                        info.name,
-                                        output_section_id::EH_FRAME,
-                                        value,
-                                    )
-                                    .with_context(|| {
-                                        format!(
-                                            "Failed to copy {}",
-                                            layout.symbol_debug(
-                                                self.start_symbol_id.add_usize(sym.index().0)
-                                            )
-                                        )
-                                    })?;
-                            }
+                            SectionSlot::EhFrameData(..) => output_section_id::EH_FRAME,
                             _ => bail!("Tried to copy a symbol in a section we didn't load"),
                         }
                     }
-                    object::SymbolSection::Common => {
-                        let Some(res) = layout.symbol_resolution(symbol_id) else {
-                            bail!("Missing resolution for common symbol");
-                        };
-                        symbol_writer
-                            .copy_symbol(
-                                &sym,
-                                info.name,
-                                output_section_id::BSS,
-                                res.value.address()?,
-                            )
-                            .with_context(|| {
-                                format!(
-                                    "Failed to copy common {}",
-                                    layout.symbol_db.symbol_debug(symbol_id)
-                                )
-                            })?;
-                    }
+                    object::SymbolSection::Common => output_section_id::BSS,
                     object::SymbolSection::Absolute | object::SymbolSection::None => {
                         symbol_writer
                             .copy_absolute_symbol(&sym, info.name)
@@ -868,9 +784,30 @@ impl<'data> ObjectLayout<'data> {
                                     layout.symbol_db.symbol_debug(symbol_id)
                                 )
                             })?;
+                        continue;
                     }
-                    _ => {}
+                    _ => {
+                        bail!("Attempted to output a symtab entry with an unexpected section type")
+                    }
+                };
+                let Some(res) = layout.symbol_resolution(symbol_id) else {
+                    bail!("Missing resolution for {}", layout.symbol_debug(symbol_id));
+                };
+                let mut symbol_value = res.value.address_or_value()?;
+                if sym.kind() == SymbolKind::Tls {
+                    let tls_start_address = layout.segment_layouts.tls_start_address.context(
+                        "Writing TLS variable to symtab, but we don't have a TLS segment",
+                    )?;
+                    symbol_value -= tls_start_address;
                 }
+                symbol_writer
+                    .copy_symbol(&sym, info.name, output_section_id, symbol_value)
+                    .with_context(|| {
+                        format!(
+                            "Failed to copy {}",
+                            layout.symbol_debug(self.start_symbol_id.add_usize(sym.index().0))
+                        )
+                    })?;
             }
         }
         symbol_writer.check_exhausted()?;

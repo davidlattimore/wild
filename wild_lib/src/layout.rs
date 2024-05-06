@@ -121,7 +121,6 @@ pub fn compute<'data>(
         section_layouts,
         file_layouts,
         output_sections,
-        merged_string_start_addresses,
     })
 }
 
@@ -167,7 +166,6 @@ pub struct Layout<'data> {
     pub(crate) file_layouts: Vec<FileLayout<'data>>,
     pub(crate) segment_layouts: SegmentLayouts,
     pub(crate) output_sections: OutputSections<'data>,
-    pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
 }
 
 pub(crate) struct SegmentLayouts {
