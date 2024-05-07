@@ -1,0 +1,9 @@
+[package]
+name = "linker-layout"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.83"
+postcard = { version = "1.0.8", features = ["use-std"] }
+serde = { version = "1.0.200", features = ["derive"] }

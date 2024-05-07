@@ -41,10 +41,10 @@ pub(crate) struct InputFile {
 
 /// Identifies an input object that may not be a regular file on disk, or may be an entry in an
 /// archive.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct InputRef<'data> {
     pub(crate) file: &'data InputFile,
-    pub(crate) entry_filename: Option<archive::Identifier<'data>>,
+    pub(crate) entry: Option<archive::EntryMeta<'data>>,
 }
 
 impl InputFile {
@@ -248,9 +248,9 @@ impl FileId {
 impl<'a> std::fmt::Display for InputRef<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.file.filename.display(), f)?;
-        if let Some(entry) = &self.entry_filename {
+        if let Some(entry) = &self.entry {
             std::fmt::Display::fmt(" @ ", f)?;
-            std::fmt::Display::fmt(&String::from_utf8_lossy(entry.as_slice()), f)?;
+            std::fmt::Display::fmt(&String::from_utf8_lossy(entry.identifier.as_slice()), f)?;
         }
         Ok(())
     }

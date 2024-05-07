@@ -954,6 +954,44 @@ impl<'data> Layout<'data> {
         alignment::all_alignments()
             .any(|alignment| self.section_part_layouts.regular(id, alignment).mem_size > 0)
     }
+
+    pub(crate) fn layout_data(&self) -> linker_layout::Layout {
+        let files = self
+            .file_layouts
+            .iter()
+            .filter_map(|file| match file {
+                FileLayout::Object(obj) => Some(linker_layout::InputFile {
+                    path: obj.input.file.filename.clone(),
+                    archive_entry: obj.input.entry.as_ref().map(|e| {
+                        linker_layout::ArchiveEntryInfo {
+                            range: e.from.clone(),
+                            identifier: e.identifier.as_slice().to_owned(),
+                        }
+                    }),
+                    sections: obj
+                        .section_resolutions
+                        .iter()
+                        .zip(obj.object.sections())
+                        .zip(&obj.sections)
+                        .map(|((maybe_res, section), section_slot)| {
+                            maybe_res.and_then(|res| {
+                                (matches!(section_slot, SectionSlot::Loaded(..))
+                                    && section.size() > 0)
+                                    .then(|| {
+                                        let address = res.value.address().unwrap();
+                                        linker_layout::Section {
+                                            mem_range: address..(address + section.size()),
+                                        }
+                                    })
+                            })
+                        })
+                        .collect(),
+                }),
+                _ => None,
+            })
+            .collect();
+        linker_layout::Layout { files }
+    }
 }
 
 fn layout_sections(

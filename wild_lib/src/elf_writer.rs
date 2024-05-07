@@ -128,6 +128,9 @@ impl Output {
 
     #[tracing::instrument(skip_all, name = "Write output file")]
     pub fn write(&mut self, layout: &Layout) -> Result {
+        if layout.args().write_layout {
+            write_layout(layout)?;
+        }
         let mut sized_output = match &self.creator {
             FileCreator::Background {
                 sized_output_sender,
@@ -1993,4 +1996,16 @@ impl<'out> StrTabWriter<'out> {
         self.next_offset += len_with_terminator as u64;
         offset
     }
+}
+
+fn write_layout(layout: &Layout) -> Result {
+    let layout_path = linker_layout::layout_path(&layout.args().output);
+    write_layout_to(layout, &layout_path)
+        .with_context(|| format!("Failed to write layout to `{}`", layout_path.display()))
+}
+
+fn write_layout_to(layout: &Layout, path: &Path) -> Result {
+    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+    layout.layout_data().write(&mut file)?;
+    Ok(())
 }

@@ -7,6 +7,7 @@ use anyhow::bail;
 use anyhow::Context;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
+use std::ops::Range;
 
 pub(crate) enum ArchiveEntry<'data> {
     Regular(ArchiveContent<'data>),
@@ -28,9 +29,20 @@ pub(crate) struct Identifier<'data> {
     data: &'data [u8],
 }
 
+#[derive(Clone)]
+pub(crate) struct EntryMeta<'data> {
+    pub(crate) identifier: Identifier<'data>,
+
+    /// Where in the original archive file the entry came from, not including the entry header.
+    pub(crate) from: Range<usize>,
+}
+
 pub(crate) struct ArchiveContent<'data> {
     ident: &'data str,
     pub(crate) entry_data: &'data [u8],
+
+    /// The offset in the archive at which the data is from.
+    pub(crate) data_offset: usize,
 }
 
 // TODO: Consider if we want to keep this.
@@ -41,6 +53,7 @@ pub(crate) struct SymbolTable<'data> {
 
 pub(crate) struct ArchiveIterator<'data> {
     data: &'data [u8],
+    offset: usize,
 }
 
 #[derive(Zeroable, Pod, Clone, Copy)]
@@ -65,10 +78,14 @@ impl<'data> ArchiveIterator<'data> {
     /// Create an iterator from the bytes of the whole archive. The supplied bytes should start with
     /// an archive entry.
     pub(crate) fn from_archive_bytes(data: &'data [u8]) -> Result<Self> {
-        let Some(data) = data.strip_prefix(b"!<arch>\n") else {
+        let magic = b"!<arch>\n";
+        let Some(data) = data.strip_prefix(magic) else {
             bail!("Missing header");
         };
-        Ok(Self { data })
+        Ok(Self {
+            data,
+            offset: magic.len(),
+        })
     }
 
     fn next_result(&mut self) -> Result<Option<ArchiveEntry<'data>>> {
@@ -83,6 +100,7 @@ impl<'data> ArchiveIterator<'data> {
         let bytes: &[u8] = &header.size;
         let size: usize = parse_decimal_int(bytes);
         self.data = rest;
+        self.offset += HEADER_SIZE;
         if self.data.len() < size {
             bail!(
                 "Entry size is {size}, but only {} bytes left",
@@ -95,10 +113,15 @@ impl<'data> ArchiveIterator<'data> {
         let entry = match ident {
             "/" => ArchiveEntry::Symbols(SymbolTable { data: entry_data }),
             "//" => ArchiveEntry::Filenames(ExtendedFilenames { data: entry_data }),
-            _ => ArchiveEntry::Regular(ArchiveContent { ident, entry_data }),
+            _ => ArchiveEntry::Regular(ArchiveContent {
+                ident,
+                entry_data,
+                data_offset: self.offset,
+            }),
         };
         let size_with_padding = size.next_multiple_of(2).min(self.data.len());
         self.data = &self.data[size_with_padding..];
+        self.offset += size_with_padding;
         Ok(Some(entry))
     }
 }
@@ -140,6 +163,10 @@ impl<'data> ArchiveContent<'data> {
         Identifier {
             data: self.ident.as_bytes(),
         }
+    }
+
+    pub(crate) fn data_range(&self) -> Range<usize> {
+        self.data_offset..self.data_offset + self.entry_data.len()
     }
 }
 

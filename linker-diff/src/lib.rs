@@ -19,6 +19,7 @@ use object::read::elf::ProgramHeader as _;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSymbol as _;
+use section_map::IndexedLayout;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::ops::Range;
@@ -27,6 +28,7 @@ use std::path::PathBuf;
 mod asm_diff;
 mod gnu_hash;
 mod header_diff;
+pub(crate) mod section_map;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
@@ -49,6 +51,7 @@ pub struct Object<'data> {
     elf_file: &'data ElfFile64<'data>,
     address_index: AddressIndex<'data>,
     name_index: NameIndex<'data>,
+    layout: Option<IndexedLayout>,
 }
 
 struct NameIndex<'data> {
@@ -63,15 +66,21 @@ impl Config {
 }
 
 impl<'data> Object<'data> {
-    pub(crate) fn new(elf_file: &'data ElfFile64<'data>, name: String, path: PathBuf) -> Self {
+    pub(crate) fn new(
+        elf_file: &'data ElfFile64<'data>,
+        name: String,
+        path: PathBuf,
+    ) -> Result<Self> {
         let address_index = AddressIndex::new(elf_file);
-        Self {
+        let layout = crate::section_map::for_path(&path)?;
+        Ok(Self {
             name: name.to_owned(),
             elf_file,
             path,
             address_index,
             name_index: NameIndex::new(elf_file),
-        }
+            layout,
+        })
     }
 
     /// Looks up a symbol, first trying to get a global, or failing that a local.
@@ -112,6 +121,10 @@ impl<'data> Object<'data> {
     fn has_symbols(&self) -> bool {
         !self.name_index.globals_by_name.is_empty()
     }
+
+    fn resolve_input(&self, address: u64) -> Option<section_map::InputResolution> {
+        self.layout.as_ref()?.resolve_address(address)
+    }
 }
 
 enum NameLookupResult<'data, 'file> {
@@ -151,6 +164,8 @@ pub struct Report {
 
 impl Report {
     pub fn from_config(config: Config) -> Result<Report> {
+        let display_names = short_file_display_names(&config.filenames);
+
         let file_bytes = config
             .filenames
             .iter()
@@ -169,14 +184,12 @@ impl Report {
             .map(|bytes| -> Result<ElfFile64> { Ok(ElfFile64::parse(bytes.as_slice())?) })
             .collect::<Result<Vec<_>>>()?;
 
-        let display_names = short_file_display_names(&config.filenames);
-
         let objects = elf_files
             .iter()
             .zip(display_names)
             .zip(&config.filenames)
             .map(|((elf_file, name), path)| -> Result<Object> {
-                Ok(Object::new(elf_file, name, path.clone()))
+                Object::new(elf_file, name, path.clone())
             })
             .collect::<Result<Vec<_>>>()?;
 
