@@ -1,4 +1,6 @@
 use crate::all_equal;
+use crate::section_map;
+use crate::section_map::InputResolution;
 use crate::slice_from_all_bytes;
 use crate::Diff;
 use crate::DiffValues;
@@ -11,18 +13,20 @@ use anyhow::anyhow;
 use anyhow::bail;
 use iced_x86::Formatter as _;
 use iced_x86::OpKind;
+use object::read::elf::ElfSection64;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::Rel;
 use object::read::elf::Rela;
 use object::LittleEndian;
 use object::Object as _;
-use object::ObjectSection;
+use object::ObjectSection as _;
 use object::ObjectSymbol;
 use object::ObjectSymbolTable as _;
 use object::RelocationTarget;
 use object::SymbolKind;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator as _;
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -135,16 +139,37 @@ impl<'data> FunctionVersions<'data> {
             resolutions,
         }
     }
+
+    fn determine_input_file(&self, values: &[Option<Line>]) -> Option<&section_map::InputFile> {
+        self.objects.iter().zip(values).find_map(|(obj, line)| {
+            if let Some(Line::Instruction(instruction)) = line {
+                let address = instruction.base_address;
+                let resolution = obj.resolve_input(address)?;
+                Some(resolution.file)
+            } else {
+                None
+            }
+        })
+    }
 }
+
+const ORIG: &str = "ORIG";
 
 impl Display for FunctionVersions<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let gutter_width = self.objects.iter().map(|n| n.name.len()).max().unwrap_or(0);
+        let gutter_width = self
+            .objects
+            .iter()
+            .map(|n| n.name.len())
+            .max()
+            .unwrap_or(0)
+            .max(ORIG.len());
         let mut iterators = self
             .resolutions
             .iter()
             .map(|r| r.iter())
             .collect::<Vec<_>>();
+        let mut first = true;
         loop {
             let values = iterators.iter_mut().map(|i| i.next()).collect::<Vec<_>>();
             if values.iter().all(|v| v.is_none()) {
@@ -158,6 +183,12 @@ impl Display for FunctionVersions<'_> {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
+            if first {
+                first = false;
+                if let Some(input_file) = self.determine_input_file(&values) {
+                    writeln!(f, "{ORIG:gutter_width$}           {input_file}")?;
+                }
+            }
             if instructions.len() != self.objects.len() {
                 for (value, obj) in values.iter().zip(self.objects) {
                     let display_name = &obj.name;
@@ -176,20 +207,24 @@ impl Display for FunctionVersions<'_> {
                 writeln!(f, "{:gutter_width$}            {unified}", "")?;
                 continue;
             }
+            let mut input_resolution = None;
             for (value, obj) in values.iter().zip(self.objects) {
                 let Some(value) = value else {
                     continue;
                 };
                 let display_name = &obj.name;
                 write!(f, "{display_name:gutter_width$}")?;
-                if let Some(address) = value.address() {
-                    write!(f, " 0x{address:08x}")?;
+                if let Some(instruction_address) = value.instruction_address() {
+                    if let Some(res) = obj.resolve_input(instruction_address) {
+                        input_resolution = Some(res);
+                    }
+                    write!(f, " 0x{instruction_address:08x}")?;
                 } else {
                     write!(f, "           ")?;
                 }
                 write!(f, " {value}")?;
                 if let Line::Instruction(instruction) = value {
-                    write!(f, "  // {:?}", instruction.raw_instruction.code(),)?;
+                    write!(f, "  // {:?}", instruction.raw_instruction.code())?;
                     if let Some((_, value)) = split_value(instruction) {
                         write!(f, "(0x{value:x})")?;
                     } else {
@@ -210,8 +245,50 @@ impl Display for FunctionVersions<'_> {
                 }
                 writeln!(f)?;
             }
+            if let Some(res) = input_resolution {
+                if let Err(error) = display_input_resolution(res, f, gutter_width) {
+                    write!(f, "           {error}")?;
+                }
+            } else {
+                writeln!(f, "       -- no input resolution --")?;
+            }
         }
     }
+}
+
+fn display_input_resolution(
+    res: InputResolution,
+    f: &mut std::fmt::Formatter,
+    gutter_width: usize,
+) -> Result {
+    let object_bytes = res.file.read_object_bytes()?;
+    let elf_file = &ElfFile64::parse(&object_bytes)?;
+    let section = elf_file.section_by_index(res.section_index())?;
+    let section_data = section.data()?;
+    let mut decoder = AsmDecoder::new(0, &section_data[res.offset_in_section as usize..]);
+    if let Some(instruction) = decoder.next() {
+        write!(f, "{ORIG:gutter_width$}")?;
+        write!(f, "            {instruction}")?;
+        write!(f, "  //")?;
+        if let Some(rel) = find_relocation(
+            &section,
+            res.offset_in_section..res.offset_in_section + instruction.raw_instruction.len() as u64,
+        ) {
+            write!(f, " {}", RelocationDisplay { rel, elf_file })?;
+        }
+        writeln!(f)?;
+    }
+    Ok(())
+}
+
+fn find_relocation(
+    section: &ElfSection64<LittleEndian>,
+    range: Range<u64>,
+) -> Option<object::Relocation> {
+    section
+        .relocations()
+        .find(|(offset, _rel)| range.contains(offset))
+        .map(|(_offset, rel)| rel)
 }
 
 enum SymbolResolution<'data> {
@@ -221,14 +298,104 @@ enum SymbolResolution<'data> {
     Function(FunctionDef<'data>),
 }
 
+struct RelocationDisplay<'elf, 'data> {
+    rel: object::Relocation,
+    elf_file: &'elf ElfFile64<'data>,
+}
+
+impl Display for RelocationDisplay<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let object::RelocationFlags::Elf { r_type } = self.rel.flags() else {
+            unreachable!();
+        };
+        rel_type_to_string(r_type).fmt(f)?;
+        " -> ".fmt(f)?;
+        match self.rel.target() {
+            RelocationTarget::Symbol(symbol_index) => {
+                match self.symbol_or_section_name(symbol_index) {
+                    Ok(name) => write!(f, "`{name}`")?,
+                    Err(error) => write!(f, "<{error}>")?,
+                }
+            }
+            RelocationTarget::Absolute => write!(f, "0x{:x}", self.rel.addend())?,
+            _ => "??".fmt(f)?,
+        }
+        Ok(())
+    }
+}
+
+impl<'elf, 'data> RelocationDisplay<'elf, 'data> {
+    fn symbol_or_section_name(&self, symbol_index: object::SymbolIndex) -> Result<&str> {
+        let symbol = self.elf_file.symbol_by_index(symbol_index)?;
+        let symbol_name = symbol.name()?;
+        if !symbol_name.is_empty() {
+            return Ok(symbol_name);
+        }
+        if let Some(section_index) = symbol.section_index() {
+            let section = self.elf_file.section_by_index(section_index)?;
+            return Ok(section.name()?);
+        }
+        Ok(symbol_name)
+    }
+}
+
+fn rel_type_to_string(r_type: u32) -> Cow<'static, str> {
+    Cow::Borrowed(match r_type {
+        0 => "R_X86_64_NONE",
+        1 => "R_X86_64_64",
+        2 => "R_X86_64_PC32",
+        3 => "R_X86_64_GOT32",
+        4 => "R_X86_64_PLT32",
+        5 => "R_X86_64_COPY",
+        6 => "R_X86_64_GLOB_DAT",
+        7 => "R_X86_64_JUMP_SLOT",
+        8 => "R_X86_64_RELATIVE",
+        9 => "R_X86_64_GOTPCREL",
+        10 => "R_X86_64_32",
+        11 => "R_X86_64_32S",
+        12 => "R_X86_64_16",
+        13 => "R_X86_64_PC16",
+        14 => "R_X86_64_8",
+        15 => "R_X86_64_PC8",
+        16 => "R_X86_64_DTPMOD64",
+        17 => "R_X86_64_DTPOFF64",
+        18 => "R_X86_64_TPOFF64",
+        19 => "R_X86_64_TLSGD",
+        20 => "R_X86_64_TLSLD",
+        21 => "R_X86_64_DTPOFF32",
+        22 => "R_X86_64_GOTTPOFF",
+        23 => "R_X86_64_TPOFF32",
+        24 => "R_X86_64_PC64",
+        25 => "R_X86_64_GOTOFF64",
+        26 => "R_X86_64_GOTPC32",
+        27 => "R_X86_64_GOT64",
+        28 => "R_X86_64_GOTPCREL64",
+        29 => "R_X86_64_GOTPC64",
+        30 => "R_X86_64_GOTPLT64",
+        31 => "R_X86_64_PLTOFF64",
+        32 => "R_X86_64_SIZE32",
+        33 => "R_X86_64_SIZE64",
+        34 => "R_X86_64_GOTPC32_TLSDESC",
+        35 => "R_X86_64_TLSDESC_CALL",
+        36 => "R_X86_64_TLSDESC",
+        37 => "R_X86_64_IRELATIVE",
+        38 => "R_X86_64_RELATIVE64",
+        41 => "R_X86_64_GOTPCRELX",
+        42 => "R_X86_64_REX_GOTPCRELX",
+        other => return Cow::Owned(format!("Unknown relocation type 0x{other:x}")),
+    })
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum AddressResolution<'data> {
     Basic(BasicResolution<'data>),
     //Offset(BasicResolution<'data>, u64),
     Plt(BasicResolution<'data>),
     /// When we have a pointer to something and we don't know what it is, then that means we don't
-    /// know how large it is, so we can only really look at the first byte.
-    PointerTo(RawMemory),
+    /// know how large it is, so we can only really look at the first byte. Actually, that's not
+    /// true, the pointer could be an end-pointer, so we can't even look at one byte. TODO: We
+    /// probably need to use layout info to determine the size of the thing we're pointing at.
+    PointerTo(RawMemory<'data>),
     FileHeaderOffset(u64),
     ProgramHeaderOffset(u64),
     TlsIdentifier(SymbolName<'data>),
@@ -236,9 +403,10 @@ enum AddressResolution<'data> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-struct RawMemory {
+struct RawMemory<'data> {
     first_byte: u8,
     segment_details: SegmentDetails,
+    section_name: Option<&'data [u8]>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -804,6 +972,7 @@ impl<'data> UnifiedInstruction<'data> {
                     AddressResolution::PointerTo(RawMemory {
                         first_byte: byte,
                         segment_details: segment_type,
+                        section_name: section_name_for_address(object.elf_file, address),
                     })
                 })
             {
@@ -815,6 +984,19 @@ impl<'data> UnifiedInstruction<'data> {
         }
         resolutions
     }
+}
+
+fn section_name_for_address<'data>(
+    elf_file: &ElfFile64<'data>,
+    address: u64,
+) -> Option<&'data [u8]> {
+    elf_file.sections().find_map(|section| {
+        let section_address = section.address();
+        (section_address..section_address + section.size())
+            .contains(&address)
+            .then(|| section.name_bytes().ok())
+            .flatten()
+    })
 }
 
 /// Returns the input instruction split into an instruction and a value. Will return none if the
@@ -895,7 +1077,7 @@ impl<'data> BasicResolution<'data> {
 }
 
 impl Line<'_> {
-    fn address(&self) -> Option<u64> {
+    fn instruction_address(&self) -> Option<u64> {
         match self {
             Line::Instruction(i) => Some(i.base_address + i.offset),
             _ => None,
@@ -976,13 +1158,14 @@ impl Display for UnifiedInstruction<'_> {
     }
 }
 
-impl Display for RawMemory {
+impl Display for RawMemory<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "byte in {} containing 0x{:x}",
-            self.segment_details, self.first_byte
-        )
+        write!(f, "byte in")?;
+        if let Some(section_name) = self.section_name {
+            write!(f, " {}", String::from_utf8_lossy(section_name))?;
+        }
+        write!(f, " ({})", self.segment_details)?;
+        write!(f, " containing 0x{:x}", self.first_byte)
     }
 }
 

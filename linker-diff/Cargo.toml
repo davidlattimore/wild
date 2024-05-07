@@ -5,6 +5,7 @@ description = "Diffs and validates ELF binaries"
 edition = "2021"
 
 [dependencies]
+linker-layout = { path = "../linker-layout" }
 object = { version = "0.34.0", default-features = false, features = [
     "elf",
     "read_core",

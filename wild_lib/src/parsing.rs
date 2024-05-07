@@ -123,7 +123,7 @@ impl<'data> RegularInputObject<'data> {
                 .unwrap_or(object::SymbolIndex(0))
         };
         Ok(Self {
-            input: input.input,
+            input: input.input.clone(),
             object,
             symbol_id_range: SymbolIdRange::input(
                 // Filled in once we've parsed all objects.
@@ -141,7 +141,7 @@ impl<'data> RegularInputObject<'data> {
     /// it defines. This is true for archive entries and shared objects for which --as-needed is
     /// true.
     pub(crate) fn is_optional(&self) -> bool {
-        self.input.entry_filename.is_some() || (self.is_dynamic && self.modifiers.as_needed)
+        self.input.entry.is_some() || (self.is_dynamic && self.modifiers.as_needed)
     }
 
     fn filename(&self) -> &'data Path {

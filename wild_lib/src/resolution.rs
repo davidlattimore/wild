@@ -456,7 +456,7 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
             });
         }
     };
-    let input = obj.input;
+    let input = obj.input.clone();
     let res = ResolvedObject::new(
         obj,
         resources.symbol_db,
@@ -603,7 +603,7 @@ impl<'data> ResolvedObject<'data> {
         }
 
         Ok(Self {
-            input: obj.input,
+            input: obj.input.clone(),
             object: &obj.object,
             file_id: obj.file_id,
             symbol_id_range: obj.symbol_id_range,

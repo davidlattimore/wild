@@ -1,5 +1,6 @@
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
+use crate::archive::EntryMeta;
 use crate::args::Modifiers;
 use crate::error::Result;
 use crate::file_kind::FileKind;
@@ -40,9 +41,11 @@ pub fn split_archives<'data>(input_data: &'data InputData) -> Result<Vec<InputBy
                                     kind: f.kind,
                                     input: InputRef {
                                         file: f,
-                                        entry_filename: Some(
-                                            archive_entry.identifier(extended_filenames),
-                                        ),
+                                        entry: Some(EntryMeta {
+                                            identifier: archive_entry
+                                                .identifier(extended_filenames),
+                                            from: archive_entry.data_range(),
+                                        }),
                                     },
                                     data: archive_entry.entry_data,
                                     modifiers: f.modifiers,
@@ -55,7 +58,7 @@ pub fn split_archives<'data>(input_data: &'data InputData) -> Result<Vec<InputBy
                 _ => Ok(vec![InputBytes {
                     input: InputRef {
                         file: f,
-                        entry_filename: None,
+                        entry: None,
                     },
                     kind: f.kind,
                     data: f.data(),
