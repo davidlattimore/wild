@@ -41,6 +41,7 @@ use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolDebug;
 use crate::symbol_db::SymbolId;
+use crate::symbol_db::SymbolIdRange;
 use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -292,8 +293,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) plt_relocations: Vec<IfuncRelocation>,
     /// The memory address of the start of this object's allocation within .eh_frame.
     pub(crate) eh_frame_start_address: u64,
-    pub(crate) start_symbol_id: SymbolId,
-    pub(crate) num_symbols: usize,
+    pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) symbol_states: Vec<TargetResolutionKind>,
     pub(crate) merged_string_resolutions: Vec<Option<MergedStringResolution>>,
 }
@@ -336,8 +336,7 @@ pub(crate) struct DynamicLayout<'data> {
     /// The offset in .dynstr at which we'll start writing.
     pub(crate) dynstr_start_offset: u64,
 
-    pub(crate) start_symbol_id: SymbolId,
-    pub(crate) num_symbols: usize,
+    pub(crate) symbol_id_range: SymbolIdRange,
 
     pub(crate) object: &'data crate::elf::File<'data>,
 }
@@ -367,7 +366,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         queue: &mut LocalWorkQueue,
     ) -> Result {
         let symbol_id = symbol_request.symbol_id;
-        let local_index = symbol_request.symbol_id.offset_from(self.start_symbol_id());
+        let local_index = symbol_request.symbol_id.to_offset(self.symbol_id_range());
         let mut common = self.common_mut();
         if local_index >= common.symbol_states.len() {
             bail!(
@@ -456,7 +455,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         Ok(())
     }
 
-    fn start_symbol_id(&self) -> SymbolId;
+    fn symbol_id_range(&self) -> SymbolIdRange;
 
     fn common_mut(&mut self) -> &mut CommonLayoutState;
 
@@ -491,7 +490,11 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
             "Tried to load symbol in a file that doesn't hold the definition: {}",
             resources.symbol_db.symbol_debug(symbol_id)
         );
-        let object_symbol_index = object::SymbolIndex(local_index);
+        let object_symbol_index = self
+            .state
+            .common
+            .symbol_id_range
+            .offset_to_input(local_index);
         let local_symbol = self.object.symbol_by_index(object_symbol_index)?;
         let symbol_kind = match local_symbol.flags() {
             object::SymbolFlags::Elf { st_info, .. } => {
@@ -524,7 +527,11 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
     }
 
     fn is_weak(&self, local_index: usize) -> bool {
-        let object_symbol_index = object::SymbolIndex(local_index);
+        let object_symbol_index = self
+            .state
+            .common
+            .symbol_id_range
+            .offset_to_input(local_index);
         self.object
             .symbol_by_index(object_symbol_index)
             .map(|local_symbol| local_symbol.is_weak())
@@ -535,14 +542,14 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
         self.state.common.file_id
     }
 
-    fn start_symbol_id(&self) -> SymbolId {
-        self.state.common.start_symbol_id
+    fn symbol_id_range(&self) -> SymbolIdRange {
+        self.state.common.symbol_id_range
     }
 }
 
 impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
-    fn start_symbol_id(&self) -> SymbolId {
-        self.common.start_symbol_id
+    fn symbol_id_range(&self) -> SymbolIdRange {
+        self.common.symbol_id_range
     }
 
     fn common_mut(&mut self) -> &mut CommonLayoutState {
@@ -563,11 +570,12 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         // TODO: Reading symbol names involves finding the null terminator, which is slightly
         // expensive. We do it up to three times. Once when we build the symbol DB, now, then when
         // we write out the dynamic symbol table. Look into just storing the names the first time.
+        let object_symbol_index = self.common.symbol_id_range.offset_to_input(local_index);
         let symbol = self
             .object
             .dynamic_symbol_table()
             .context("Missing dynamic symbol table")?
-            .symbol_by_index(object::SymbolIndex(local_index))?;
+            .symbol_by_index(object_symbol_index)?;
         let name = symbol.name_bytes()?;
         self.common.mem_sizes.dynstr += name.len() as u64 + 1;
         self.common.mem_sizes.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;
@@ -575,8 +583,9 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
     }
 
     fn is_weak(&self, local_index: usize) -> bool {
+        let object_symbol_index = self.common.symbol_id_range.offset_to_input(local_index);
         self.object
-            .symbol_by_index(object::SymbolIndex(local_index))
+            .symbol_by_index(object_symbol_index)
             .map(|sym| sym.is_local())
             .unwrap_or(false)
     }
@@ -606,9 +615,8 @@ impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
         false
     }
 
-    fn start_symbol_id(&self) -> SymbolId {
-        // Internal-layout always starts from the undefined symbol.
-        SymbolId::undefined()
+    fn symbol_id_range(&self) -> SymbolIdRange {
+        self.common.symbol_id_range
     }
 }
 
@@ -636,8 +644,8 @@ impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState<'data> {
         false
     }
 
-    fn start_symbol_id(&self) -> SymbolId {
-        self.common.start_symbol_id
+    fn symbol_id_range(&self) -> SymbolIdRange {
+        self.common.symbol_id_range
     }
 }
 
@@ -656,22 +664,21 @@ struct CommonLayoutState {
     /// tracks whether we've asked the other file to allocate a GOT entry.
     symbol_states: Vec<TargetResolutionKind>,
 
-    start_symbol_id: SymbolId,
+    symbol_id_range: SymbolIdRange,
 }
 
 impl CommonLayoutState {
     fn new(
         file_id: FileId,
-        num_symbols: usize,
         output_sections: &OutputSections,
-        start_symbol_id: SymbolId,
+        symbol_id_range: SymbolIdRange,
     ) -> Self {
         Self {
             file_id,
             mem_sizes: OutputSectionPartMap::with_size(output_sections.len()),
             sections_with_content: OutputSectionMap::with_size(output_sections.len()),
-            symbol_states: vec![TargetResolutionKind::None; num_symbols],
-            start_symbol_id,
+            symbol_states: vec![TargetResolutionKind::None; symbol_id_range.len()],
+            symbol_id_range,
         }
     }
 
@@ -709,7 +716,7 @@ impl CommonLayoutState {
             symbol_states: &self.symbol_states,
             symbol_db,
             plt_relocations: Default::default(),
-            start_symbol_id: self.start_symbol_id,
+            symbol_id_range: self.symbol_id_range,
         }
     }
 }
@@ -898,13 +905,12 @@ impl<'data> Layout<'data> {
 
     pub(crate) fn resolutions_in_range(
         &self,
-        start: SymbolId,
-        num_symbols: usize,
+        range: SymbolIdRange,
     ) -> impl Iterator<Item = (SymbolId, Option<&Resolution>)> {
-        self.symbol_resolutions.resolutions[start.as_usize()..start.as_usize() + num_symbols]
+        self.symbol_resolutions.resolutions[range.as_usize()]
             .iter()
             .enumerate()
-            .map(move |(i, res)| (start.add_usize(i), res.as_ref()))
+            .map(move |(i, res)| (range.offset_to_id(i), res.as_ref()))
     }
 
     pub(crate) fn entry_symbol_address(&self) -> Result<u64> {
@@ -1780,7 +1786,7 @@ impl RelocationLayoutAction {
         let args = symbol_db.args;
         match rel.target() {
             object::RelocationTarget::Symbol(local_sym_index) => {
-                let symbol_id = state.common.start_symbol_id.add_usize(local_sym_index.0);
+                let symbol_id = state.common.symbol_id_range.input_to_id(local_sym_index);
                 return Ok(Some(Self::for_symbol(
                     rel, rel_offset, section, symbol_db, symbol_id, args,
                 )?));
@@ -1880,7 +1886,7 @@ impl RelocationLayoutAction {
     ) {
         match self.kind {
             RelocationLayoutActionKind::LoadSymbol(symbol_id, resolution_kind) => {
-                let local_sym_index = symbol_id.offset_from(state.common.start_symbol_id);
+                let local_sym_index = symbol_id.to_offset(state.common.symbol_id_range);
                 if state.common.symbol_states[local_sym_index] < resolution_kind {
                     let destination =
                         queue.send_symbol_request(symbol_id, resolution_kind, resources);
@@ -1938,9 +1944,8 @@ impl<'data> InternalLayoutState<'data> {
         let mut layout = Self {
             common: CommonLayoutState::new(
                 INTERNAL_FILE_ID,
-                input_state.symbol_definitions.len(),
                 output_sections,
-                SymbolId::undefined(),
+                SymbolIdRange::internal(input_state.symbol_definitions.len()),
             ),
             internal_symbols: InternalSymbols {
                 symbol_definitions: input_state.symbol_definitions.to_owned(),
@@ -2279,9 +2284,11 @@ impl<'data> EpilogueLayoutState<'data> {
         EpilogueLayoutState {
             common: CommonLayoutState::new(
                 input_state.file_id,
-                input_state.symbol_definitions.len(),
                 output_sections,
-                input_state.start_symbol_id,
+                SymbolIdRange::epilogue(
+                    input_state.start_symbol_id,
+                    input_state.symbol_definitions.len(),
+                ),
             ),
             internal_symbols: InternalSymbols {
                 symbol_definitions: input_state.symbol_definitions,
@@ -2398,9 +2405,8 @@ fn new_object_layout_state<'data>(
 ) -> FileLayoutState<'data> {
     let common = CommonLayoutState::new(
         input_state.file_id,
-        input_state.num_symbols,
         output_sections,
-        input_state.start_symbol_id,
+        input_state.symbol_id_range,
     );
     if let Some(non_dynamic) = input_state.non_dynamic {
         FileLayoutState::Object(Box::new(ObjectLayoutState {
@@ -2452,7 +2458,7 @@ impl<'data> ObjectLayoutState<'data> {
         if let Some(eh_frame_section) = eh_frame_section {
             process_eh_frame_data(
                 self.object,
-                self.start_symbol_id(),
+                self.symbol_id_range(),
                 &mut self.section_frame_data,
                 &mut self.state,
                 eh_frame_section,
@@ -2555,7 +2561,7 @@ impl<'data> ObjectLayoutState<'data> {
             .symbols()
             .zip(&mut self.state.common.symbol_states)
         {
-            let symbol_id = self.state.common.start_symbol_id.add_usize(sym.index().0);
+            let symbol_id = self.state.common.symbol_id_range.input_to_id(sym.index());
             if let Some(info) =
                 SymbolCopyInfo::new(&sym, symbol_id, symbol_db, *sym_state, &self.state.sections)
             {
@@ -2588,7 +2594,7 @@ impl<'data> ObjectLayoutState<'data> {
         output_sections: &OutputSections,
         merged_string_start_addresses: &MergedStringStartAddresses,
     ) -> Result<ObjectLayout<'data>> {
-        let start_symbol_id = self.start_symbol_id();
+        let symbol_id_range = self.symbol_id_range();
         let mut sections = self.state.sections;
 
         let mut emitter = self
@@ -2639,7 +2645,7 @@ impl<'data> ObjectLayoutState<'data> {
             if *symbol_state == TargetResolutionKind::None {
                 continue;
             }
-            let symbol_id = start_symbol_id.add_usize(local_symbol.index().0);
+            let symbol_id = symbol_id_range.input_to_id(local_symbol.index());
             if !symbol_db.is_definition(symbol_id) {
                 continue;
             }
@@ -2655,7 +2661,7 @@ impl<'data> ObjectLayoutState<'data> {
                         ResolutionValue::Address(merged_string_start_addresses
                             .try_resolve_local(
                                 &self.state.merged_string_resolutions,
-                                local_symbol.index(),
+                                symbol_id_range.input_to_offset(local_symbol.index()),
                             )
                             .ok_or_else(|| {
                                 anyhow!(
@@ -2699,8 +2705,7 @@ impl<'data> ObjectLayoutState<'data> {
             strtab_offset_start,
             plt_relocations,
             eh_frame_start_address: memory_offsets.eh_frame,
-            start_symbol_id,
-            num_symbols: self.state.common.symbol_states.len(),
+            symbol_id_range,
             symbol_states: self.state.common.symbol_states,
             merged_string_resolutions: self.state.merged_string_resolutions,
         })
@@ -2720,7 +2725,7 @@ impl<'data> ObjectLayoutState<'data> {
                 {
                     continue;
                 }
-                let symbol_id = self.start_symbol_id().add_usize(sym.index().0);
+                let symbol_id = self.symbol_id_range().input_to_id(sym.index());
                 self.handle_symbol_request(
                     SymbolRequest {
                         symbol_id,
@@ -2811,9 +2816,9 @@ impl MergedStringStartAddresses {
     fn try_resolve_local(
         &self,
         merged_string_resolutions: &[Option<MergedStringResolution>],
-        local_symbol_index: object::SymbolIndex,
+        local_symbol_index: usize,
     ) -> Option<u64> {
-        merged_string_resolutions[local_symbol_index.0].map(|res| self.resolve(res))
+        merged_string_resolutions[local_symbol_index].map(|res| self.resolve(res))
     }
 
     pub(crate) fn resolve(&self, res: resolution::MergedStringResolution) -> u64 {
@@ -2829,7 +2834,7 @@ fn should_copy_symbol_named(name: &[u8]) -> bool {
 
 fn process_eh_frame_data<'data>(
     object: &crate::elf::File<'data>,
-    file_start_symbol: SymbolId,
+    file_symbol_id_range: SymbolIdRange,
     section_frame_data: &mut Vec<SectionFrameData>,
     state: &mut ObjectLayoutMutableState<'data>,
     eh_frame_section: elf::Section<'data, '_>,
@@ -2877,7 +2882,7 @@ fn process_eh_frame_data<'data>(
                     action.apply(resources, state, queue);
                 }
                 if let object::RelocationTarget::Symbol(local_sym_index) = rel.target() {
-                    let local_symbol_id = file_start_symbol.add_usize(local_sym_index.0);
+                    let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);
                     let definition = resources.symbol_db.definition(local_symbol_id);
                     referenced_symbols.push(definition);
                 } else {
@@ -2983,7 +2988,7 @@ struct GlobalAddressEmitter<'state> {
     symbol_states: &'state [TargetResolutionKind],
     symbol_db: &'state SymbolDb<'state>,
     plt_relocations: Vec<IfuncRelocation>,
-    start_symbol_id: SymbolId,
+    symbol_id_range: SymbolIdRange,
 }
 
 impl<'state> GlobalAddressEmitter<'state> {
@@ -2994,14 +2999,16 @@ impl<'state> GlobalAddressEmitter<'state> {
         resolutions_out: &mut [Option<Resolution>],
     ) -> Result {
         debug_assert_bail!(
-            symbol_id >= self.start_symbol_id
-                && symbol_id.offset_from(self.start_symbol_id) < resolutions_out.len(),
+            symbol_id >= self.symbol_id_range.start()
+                && symbol_id.to_offset(self.symbol_id_range) < resolutions_out.len(),
             "Tried to emit resolution for {} which is outside {}..{}",
             self.symbol_db.symbol_debug(symbol_id),
-            self.start_symbol_id,
-            self.start_symbol_id.add_usize(resolutions_out.len())
+            self.symbol_id_range.start(),
+            self.symbol_id_range
+                .start()
+                .add_usize(resolutions_out.len())
         );
-        let local_symbol_index = symbol_id.offset_from(self.start_symbol_id);
+        let local_symbol_index = symbol_id.to_offset(self.symbol_id_range);
         let resolution = self.create_resolution(self.symbol_states[local_symbol_index], value)?;
         resolutions_out[local_symbol_index] = Some(resolution);
         Ok(())
@@ -3196,8 +3203,7 @@ impl<'data> DynamicLayoutState<'data> {
             lib_name: self.lib_name,
             dynstr_start_offset,
             object: self.object,
-            start_symbol_id: self.common.start_symbol_id,
-            num_symbols: self.common.symbol_states.len(),
+            symbol_id_range: self.common.symbol_id_range,
         })
     }
 }
@@ -3243,7 +3249,7 @@ fn print_symbol_info(symbol_db: &SymbolDb, name: &str) {
             match &symbol_db.inputs[file_id.as_usize()] {
                 crate::parsing::InputObject::Internal(_) => println!("  <internal>"),
                 crate::parsing::InputObject::Object(o) => {
-                    let local_index = symbol_id.offset_from(o.start_symbol_id);
+                    let local_index = symbol_id.to_offset(o.symbol_id_range);
                     match o.object.symbol_by_index(object::SymbolIndex(local_index)) {
                         Ok(sym) => {
                             println!(

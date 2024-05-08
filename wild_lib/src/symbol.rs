@@ -45,7 +45,6 @@ impl<'data, 'file> Display for SymDebug<'data, 'file> {
         };
         let kind = if sym.is_definition() {
             match sym.kind() {
-                object::SymbolKind::Null => "Null",
                 object::SymbolKind::Text => "Text",
                 object::SymbolKind::Data => "Data",
                 object::SymbolKind::Section => "Section",

@@ -12,6 +12,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolId;
+use crate::symbol_db::SymbolIdRange;
 use anyhow::Context;
 use object::Object as _;
 use object::ObjectSymbol;
@@ -44,7 +45,7 @@ pub(crate) fn parse_input_files<'data>(
                 assert_eq!(next_symbol_id, SymbolId::undefined());
             }
             InputObject::Object(o) => {
-                o.start_symbol_id = next_symbol_id;
+                o.symbol_id_range.set_start(next_symbol_id);
             }
             InputObject::Epilogue(o) => {
                 o.start_symbol_id = next_symbol_id;
@@ -68,8 +69,7 @@ pub(crate) struct InternalInputObject {
 pub(crate) struct RegularInputObject<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) object: Box<File<'data>>,
-    pub(crate) num_symbols: usize,
-    pub(crate) start_symbol_id: SymbolId,
+    pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) file_id: FileId,
     pub(crate) is_dynamic: bool,
     modifiers: Modifiers,
@@ -108,12 +108,29 @@ impl<'data> RegularInputObject<'data> {
         } else {
             object.symbols().count()
         };
+        // object.symbols() may not return the null symbol.
+        let start_symbol_index = if is_dynamic {
+            object
+                .dynamic_symbols()
+                .next()
+                .map(|s| s.index())
+                .unwrap_or(object::SymbolIndex(0))
+        } else {
+            object
+                .symbols()
+                .next()
+                .map(|s| s.index())
+                .unwrap_or(object::SymbolIndex(0))
+        };
         Ok(Self {
             input: input.input,
             object,
-            num_symbols,
-            // Filled in once we've parsed all objects.
-            start_symbol_id: SymbolId::undefined(),
+            symbol_id_range: SymbolIdRange::input(
+                // Filled in once we've parsed all objects.
+                SymbolId::undefined(),
+                start_symbol_index,
+                num_symbols,
+            ),
             file_id,
             is_dynamic,
             modifiers: input.modifiers,
@@ -135,17 +152,14 @@ impl<'data> RegularInputObject<'data> {
         &self,
         symbol_id: crate::symbol_db::SymbolId,
     ) -> Result<SymbolName<'data>> {
+        let index = symbol_id.to_input(self.symbol_id_range);
         let symbol = if self.is_dynamic {
             self.object
                 .dynamic_symbol_table()
                 .context("Missing dynamic symbol table")?
-                .symbol_by_index(object::SymbolIndex(
-                    symbol_id.offset_from(self.start_symbol_id),
-                ))?
+                .symbol_by_index(index)?
         } else {
-            self.object.symbol_by_index(object::SymbolIndex(
-                symbol_id.offset_from(self.start_symbol_id),
-            ))?
+            self.object.symbol_by_index(index)?
         };
         Ok(SymbolName::new(symbol.name_bytes()?))
     }
@@ -166,7 +180,7 @@ impl<'data> InputObject<'data> {
     pub(crate) fn num_symbols(&self) -> usize {
         match self {
             InputObject::Internal(o) => o.symbol_definitions.len(),
-            InputObject::Object(o) => o.num_symbols,
+            InputObject::Object(o) => o.symbol_id_range.len(),
             InputObject::Epilogue(_) => {
                 // Initially, we report 0 symbols because we don't know what symbols we'll define
                 // until after archives have been processed. We're the last input file, so we can
@@ -184,11 +198,11 @@ impl<'data> InputObject<'data> {
         }
     }
 
-    pub(crate) fn start_symbol_id(&self) -> SymbolId {
+    pub(crate) fn symbol_id_range(&self) -> SymbolIdRange {
         match self {
-            InputObject::Internal(_) => SymbolId::undefined(),
-            InputObject::Object(o) => o.start_symbol_id,
-            InputObject::Epilogue(o) => o.start_symbol_id,
+            InputObject::Internal(o) => SymbolIdRange::internal(o.symbol_definitions.len()),
+            InputObject::Object(o) => o.symbol_id_range,
+            InputObject::Epilogue(o) => SymbolIdRange::epilogue(o.start_symbol_id, 0),
         }
     }
 }
@@ -216,7 +230,7 @@ impl InternalInputObject {
     }
 
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> SymbolName<'static> {
-        let def = &self.symbol_definitions[symbol_id.offset_from(SymbolId::undefined())];
+        let def = &self.symbol_definitions[symbol_id.as_usize()];
         let name = match def {
             InternalSymDefInfo::Undefined => Some(""),
             InternalSymDefInfo::SectionStart(section_id) => {
