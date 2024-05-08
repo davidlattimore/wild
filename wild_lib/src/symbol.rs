@@ -1,5 +1,6 @@
 use crate::hash::PreHashed;
-use object::ObjectSymbol;
+use object::read::elf::Sym as _;
+use object::LittleEndian;
 use std::fmt::Display;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,10 +32,11 @@ impl<'data> Display for SymbolName<'data> {
     }
 }
 
-pub(crate) struct SymDebug<'data, 'file>(pub(crate) crate::elf::Symbol<'data, 'file>);
+pub(crate) struct SymDebug<'data>(pub(crate) &'data crate::elf::SymtabEntry);
 
-impl<'data, 'file> Display for SymDebug<'data, 'file> {
+impl<'data> Display for SymDebug<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let e = LittleEndian;
         let sym = self.0;
         let vis = if sym.is_local() {
             "Local"
@@ -43,14 +45,16 @@ impl<'data, 'file> Display for SymDebug<'data, 'file> {
         } else {
             "Global"
         };
-        let kind = if sym.is_definition() {
-            match sym.kind() {
-                object::SymbolKind::Text => "Text",
-                object::SymbolKind::Data => "Data",
-                object::SymbolKind::Section => "Section",
-                object::SymbolKind::File => "File",
-                object::SymbolKind::Label => "Label",
-                object::SymbolKind::Tls => "Tls",
+        let kind = if sym.is_definition(e) {
+            match sym.st_type() {
+                object::elf::STT_FUNC => "Func",
+                object::elf::STT_GNU_IFUNC => "IFunc",
+                object::elf::STT_OBJECT => "Data",
+                object::elf::STT_COMMON => "Common",
+                object::elf::STT_SECTION => "Section",
+                object::elf::STT_FILE => "File",
+                object::elf::STT_NOTYPE => "NoType",
+                object::elf::STT_TLS => "Tls",
                 _ => "Unknown",
             }
         } else {

@@ -15,9 +15,6 @@ use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use anyhow::Context;
-use object::Object as _;
-use object::ObjectSymbol;
-use object::ObjectSymbolTable as _;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelRefIterator as _;
 use rayon::iter::ParallelIterator as _;
@@ -97,39 +94,16 @@ pub(crate) enum InternalSymDefInfo {
 impl<'data> RegularInputObject<'data> {
     fn new(input: &'data InputBytes, file_id: FileId, is_dynamic: bool) -> Result<Self> {
         let object = Box::new(
-            File::parse(input.data)
+            File::parse(input.data, is_dynamic)
                 .with_context(|| format!("Failed to parse object file `{input}`"))?,
         );
-        // Note, this looks bad performance-wise, but it seems like it's actually OK. Initially, I
-        // tried using object.section_by_name(".symtab") then getting the size and computing the
-        // number of symbols from that. However it turns out that, perhaps not surprisingly that
-        // `section_by_name` is really slow.
-        let num_symbols = if is_dynamic {
-            object.dynamic_symbols().count()
-        } else {
-            object.symbols().count()
-        };
-        // object.symbols() may not return the null symbol.
-        let start_symbol_index = if is_dynamic {
-            object
-                .dynamic_symbols()
-                .next()
-                .map(|s| s.index())
-                .unwrap_or(object::SymbolIndex(0))
-        } else {
-            object
-                .symbols()
-                .next()
-                .map(|s| s.index())
-                .unwrap_or(object::SymbolIndex(0))
-        };
+        let num_symbols = object.symbols.len();
         Ok(Self {
             input: input.input.clone(),
             object,
             symbol_id_range: SymbolIdRange::input(
                 // Filled in once we've parsed all objects.
                 SymbolId::undefined(),
-                start_symbol_index,
                 num_symbols,
             ),
             file_id,
@@ -154,15 +128,8 @@ impl<'data> RegularInputObject<'data> {
         symbol_id: crate::symbol_db::SymbolId,
     ) -> Result<SymbolName<'data>> {
         let index = symbol_id.to_input(self.symbol_id_range);
-        let symbol = if self.is_dynamic {
-            self.object
-                .dynamic_symbol_table()
-                .context("Missing dynamic symbol table")?
-                .symbol_by_index(index)?
-        } else {
-            self.object.symbol_by_index(index)?
-        };
-        Ok(SymbolName::new(symbol.name_bytes()?))
+        let symbol = self.object.symbol(index)?;
+        Ok(SymbolName::new(self.object.symbol_name(symbol)?))
     }
 }
 

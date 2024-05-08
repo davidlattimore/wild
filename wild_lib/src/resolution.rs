@@ -34,9 +34,8 @@ use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use crossbeam_utils::atomic::AtomicCell;
-use object::Object;
-use object::ObjectSection;
-use object::ObjectSymbol;
+use object::read::elf::Sym as _;
+use object::LittleEndian;
 use std::collections::BTreeMap;
 
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
@@ -544,9 +543,9 @@ fn all_unresolved_weak(
     refs.iter().all(|(file_id, sym_index)| {
         if let ResolvedFile::Object(obj) = &objects[file_id.as_usize()] {
             obj.object
-                .symbol_by_index(*sym_index)
+                .symbol(*sym_index)
                 .ok()
-                .is_some_and(|sym| sym.is_undefined() && sym.is_weak())
+                .is_some_and(|sym| sym.is_undefined(LittleEndian) && sym.is_weak())
         } else {
             unreachable!();
         }
@@ -617,45 +616,41 @@ fn resolve_sections<'data>(
     custom_sections: &mut Vec<(object::SectionIndex, SectionDetails<'data>)>,
     args: &Args,
 ) -> Result<Vec<SectionSlot<'data>>> {
-    // object.sections() may not return the null section, but we require
-    // a slot for it so that we can use ELF section indexes to access slots.
-    let null = if obj.object.sections().next().map(|section| section.index())
-        != Some(object::SectionIndex(0))
-    {
-        Some(Ok(SectionSlot::Discard))
-    } else {
-        None
-    };
-    let sections = null
-        .into_iter()
-        .chain(obj.object.sections().map(|input_section| {
-            if let Some(unloaded) = UnloadedSection::from_section(&input_section, args)? {
+    let sections = obj
+        .object
+        .sections
+        .enumerate()
+        .map(|(input_section_index, input_section)| {
+            if let Some(unloaded) = UnloadedSection::from_section(&obj.object, input_section, args)?
+            {
                 if unloaded.is_string_merge {
                     if let TemporaryOutputSectionId::Custom(_custom_section_id) =
                         unloaded.output_section_id
                     {
-                        custom_sections.push((input_section.index(), unloaded.details));
+                        custom_sections.push((input_section_index, unloaded.details));
                     }
                     Ok(SectionSlot::MergeStrings(MergeStringsFileSection::new(
+                        &obj.object,
                         input_section,
+                        input_section_index,
                         unloaded.output_section_id,
                     )?))
                 } else {
                     match unloaded.output_section_id {
                         TemporaryOutputSectionId::BuiltIn(_) => Ok(SectionSlot::Unloaded(unloaded)),
                         TemporaryOutputSectionId::Custom(_custom_section_id) => {
-                            custom_sections.push((input_section.index(), unloaded.details));
+                            custom_sections.push((input_section_index, unloaded.details));
                             Ok(SectionSlot::Unloaded(unloaded))
                         }
                         TemporaryOutputSectionId::EhFrameData => {
-                            Ok(SectionSlot::EhFrameData(input_section.index()))
+                            Ok(SectionSlot::EhFrameData(input_section_index))
                         }
                     }
                 }
             } else {
                 Ok(SectionSlot::Discard)
             }
-        }))
+        })
         .collect::<Result<Vec<_>>>()?;
     Ok(sections)
 }
@@ -669,28 +664,36 @@ fn resolve_symbols<'data>(
     sections: &mut [SectionSlot<'data>],
 ) -> Result {
     let mut start_stop_refs: AHashMap<&'data [u8], Vec<object::SymbolIndex>> = AHashMap::new();
-    obj.object.symbols().zip(definitions_out).try_for_each(
-        |(local_symbol, definition)| -> Result {
-            resolve_symbol(
-                local_symbol,
-                definition,
-                symbol_db,
-                obj,
-                &mut request_file_id,
-                &mut start_stop_refs,
-            )?;
+    obj.object
+        .symbols
+        .enumerate()
+        .zip(definitions_out)
+        .try_for_each(
+            |((local_symbol_index, local_symbol), definition)| -> Result {
+                resolve_symbol(
+                    local_symbol_index,
+                    local_symbol,
+                    definition,
+                    symbol_db,
+                    obj,
+                    &mut request_file_id,
+                    &mut start_stop_refs,
+                )?;
 
-            if let Some(local_section_index) = local_symbol.section_index() {
-                if let SectionSlot::MergeStrings(merge) = &mut sections[local_section_index.0] {
-                    merge.references.push(RefToMergeString {
-                        offset: local_symbol.address(),
-                        symbol_index: local_symbol.index(),
-                    });
+                if let Some(local_section_index) = obj
+                    .object
+                    .symbol_section(local_symbol, local_symbol_index)?
+                {
+                    if let SectionSlot::MergeStrings(merge) = &mut sections[local_section_index.0] {
+                        merge.references.push(RefToMergeString {
+                            offset: local_symbol.st_value(LittleEndian),
+                            symbol_index: local_symbol_index,
+                        });
+                    }
                 }
-            }
-            Ok(())
-        },
-    )?;
+                Ok(())
+            },
+        )?;
     if !start_stop_refs.is_empty() {
         start_stop_sets.push(StartStopSet {
             file_id: obj.file_id,
@@ -709,18 +712,22 @@ fn resolve_dynamic_symbols<'data>(
 ) -> Result {
     let mut start_stop_refs: AHashMap<&'data [u8], Vec<object::SymbolIndex>> = AHashMap::new();
     obj.object
-        .dynamic_symbols()
+        .symbols
+        .enumerate()
         .zip(definitions_out)
-        .try_for_each(|(local_symbol, definition)| -> Result {
-            resolve_symbol(
-                local_symbol,
-                definition,
-                symbol_db,
-                obj,
-                &mut request_file_id,
-                &mut start_stop_refs,
-            )
-        })?;
+        .try_for_each(
+            |((local_symbol_index, local_symbol), definition)| -> Result {
+                resolve_symbol(
+                    local_symbol_index,
+                    local_symbol,
+                    definition,
+                    symbol_db,
+                    obj,
+                    &mut request_file_id,
+                    &mut start_stop_refs,
+                )
+            },
+        )?;
     if !start_stop_refs.is_empty() {
         start_stop_sets.push(StartStopSet {
             file_id: obj.file_id,
@@ -731,7 +738,8 @@ fn resolve_dynamic_symbols<'data>(
 }
 
 fn resolve_symbol<'data>(
-    local_symbol: crate::elf::Symbol<'data, '_>,
+    local_symbol_index: object::SymbolIndex,
+    local_symbol: &crate::elf::SymtabEntry,
     definition_out: &mut SymbolId,
     symbol_db: &SymbolDb<'data>,
     obj: &RegularInputObject<'data>,
@@ -740,16 +748,16 @@ fn resolve_symbol<'data>(
 ) -> Result {
     // Don't try to resolve symbols that are already defined, e.g. locals and globals that we
     // define. Also don't try to resolve symbol zero - the undefined symbol.
-    if !definition_out.is_undefined() || local_symbol.index().0 == 0 {
+    if !definition_out.is_undefined() || local_symbol_index.0 == 0 {
         return Ok(());
     }
-    let name_bytes = local_symbol.name_bytes()?;
+    let name_bytes = obj.object.symbol_name(local_symbol)?;
     debug_assert_bail!(
-        local_symbol.is_global(),
+        !local_symbol.is_local(),
         "Only globals should be undefined, found symbol `{}`",
         String::from_utf8_lossy(name_bytes)
     );
-    assert!(!local_symbol.is_definition());
+    assert!(!local_symbol.is_definition(LittleEndian));
     match symbol_db
         .global_names
         .get(&SymbolName::prehashed(name_bytes))
@@ -766,7 +774,7 @@ fn resolve_symbol<'data>(
                 start_stop_refs
                     .entry(name_bytes)
                     .or_default()
-                    .push(local_symbol.index());
+                    .push(local_symbol_index);
             }
         }
     }
@@ -798,10 +806,12 @@ impl<'data> SectionSlot<'data> {
 
 impl<'data> MergeStringsFileSection<'data> {
     fn new(
-        input_section: crate::elf::Section<'data, '_>,
+        object: &crate::elf::File<'data>,
+        input_section: &crate::elf::SectionHeader,
+        input_section_index: object::SectionIndex,
         section_id: TemporaryOutputSectionId<'data>,
     ) -> Result<MergeStringsFileSection<'data>> {
-        let mut remaining = input_section.data()?;
+        let mut remaining = object.section_data(input_section)?;
         let mut strings = Vec::new();
         while !remaining.is_empty() {
             let len = memchr::memchr(0, remaining)
@@ -809,7 +819,7 @@ impl<'data> MergeStringsFileSection<'data> {
                 .with_context(|| {
                     format!(
                         "String in section `{}` is not null-terminated",
-                        input_section.name().unwrap_or("??")
+                        object.section_display_name(input_section_index)
                     )
                 })?;
             let (bytes, rest) = remaining.split_at(len);
@@ -858,14 +868,15 @@ impl<'data> SymbolDb<'data> {
         let file_id = self.file_id_for_symbol(symbol_id);
         if let ResolvedFile::Object(obj) = &resolved[file_id.as_usize()] {
             let local_index = symbol_id.to_input(obj.symbol_id_range);
-            let Ok(obj_symbol) = obj.object.symbol_by_index(local_index) else {
+            let Ok(obj_symbol) = obj.object.symbol(local_index) else {
                 // Errors from this function should have been reported elsewhere.
                 return SymbolStrength::Undefined;
             };
+            let e = LittleEndian;
             if obj_symbol.is_weak() {
                 SymbolStrength::Weak
-            } else if obj_symbol.is_common() {
-                SymbolStrength::Common(obj_symbol.size())
+            } else if obj_symbol.is_common(e) {
+                SymbolStrength::Common(obj_symbol.st_size(e))
             } else {
                 SymbolStrength::Strong
             }

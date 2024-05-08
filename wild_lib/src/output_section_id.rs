@@ -2,7 +2,7 @@ use crate::alignment;
 use crate::alignment::Alignment;
 use crate::args::Args;
 use crate::elf;
-use crate::elf::Section;
+use crate::elf::SectionHeader;
 use crate::error::Result;
 use crate::layout::Layout;
 use crate::program_segments::ProgramSegmentId;
@@ -10,8 +10,6 @@ use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::Context as _;
 use core::mem::size_of;
-use object::ObjectSection;
-use object::SectionFlags;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 
@@ -521,13 +519,16 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
 
 impl<'data> UnloadedSection<'data> {
     #[allow(clippy::if_same_then_else)]
-    pub(crate) fn from_section(section: &Section<'data, '_>, args: &Args) -> Result<Option<Self>> {
+    pub(crate) fn from_section(
+        object: &crate::elf::File<'data>,
+        section: &SectionHeader,
+        args: &Args,
+    ) -> Result<Option<Self>> {
         // Ideally we support reading an actual linker script to make these decisions, but for now
         // we just hard code stuff.
-        let section_name = section.name_bytes().unwrap_or_default();
-        let SectionFlags::Elf { sh_flags } = section.flags() else {
-            unreachable!();
-        };
+        let e = object::LittleEndian;
+        let section_name = object.section_name(section).unwrap_or_default();
+        let sh_flags = section.sh_flags.get(e);
         let built_in_id = if section_name.starts_with(b".rodata") {
             Some(RODATA)
         } else if section_name.starts_with(b".text") {
@@ -572,10 +573,9 @@ impl<'data> UnloadedSection<'data> {
         } else if args.strip_debug && section_name == b".debug_str" {
             None
         } else {
-            let ty = match section.kind() {
-                object::SectionKind::UninitializedData | object::SectionKind::UninitializedTls => {
-                    crate::elf::Sht::Nobits
-                }
+            let sh_type = section.sh_type.get(e);
+            let ty = match sh_type {
+                object::elf::SHT_NOBITS => crate::elf::Sht::Nobits,
                 _ => crate::elf::Sht::Progbits,
             };
             let retain = sh_flags & crate::elf::shf::GNU_RETAIN != 0;
@@ -596,18 +596,26 @@ impl<'data> UnloadedSection<'data> {
                     is_string_merge: should_merge_strings(section, args),
                 }));
             }
-            match section.kind() {
-                object::SectionKind::Text => Some(TEXT),
-                object::SectionKind::ReadOnlyData => Some(RODATA),
-                object::SectionKind::Data => Some(DATA),
-                object::SectionKind::UninitializedData => Some(BSS),
-                object::SectionKind::Tls => Some(TDATA),
-                object::SectionKind::UninitializedTls => Some(TBSS),
-                object::SectionKind::ReadOnlyString => Some(RODATA),
-
-                // TODO: Do we need to place these?
-                object::SectionKind::OtherString => None,
-                _ => None,
+            if sh_flags & u64::from(object::elf::SHF_ALLOC) == 0 {
+                None
+            } else if sh_type == object::elf::SHT_PROGBITS {
+                if sh_flags & u64::from(object::elf::SHF_EXECINSTR) != 0 {
+                    Some(TEXT)
+                } else if sh_flags & u64::from(object::elf::SHF_TLS) != 0 {
+                    Some(TDATA)
+                } else if sh_flags & u64::from(object::elf::SHF_WRITE) != 0 {
+                    Some(DATA)
+                } else {
+                    Some(RODATA)
+                }
+            } else if sh_type == object::elf::SHT_NOBITS {
+                if sh_flags & u64::from(object::elf::SHF_TLS) != 0 {
+                    Some(TBSS)
+                } else {
+                    Some(BSS)
+                }
+            } else {
+                None
             }
         };
         let Some(built_in_id) = built_in_id else {
@@ -624,16 +632,15 @@ impl<'data> UnloadedSection<'data> {
 /// Returns whether the supplied section meets our criteria for string merging. String merging is
 /// optional, so there are cases where we might be able to merge, but don't currently. For example
 /// if alignment is > 1.
-fn should_merge_strings(section: &Section, args: &Args) -> bool {
+fn should_merge_strings(section: &SectionHeader, args: &Args) -> bool {
     if !args.merge_strings {
         return false;
     }
-    let SectionFlags::Elf { sh_flags } = section.flags() else {
-        unreachable!();
-    };
+    let e = object::LittleEndian;
+    let sh_flags = section.sh_flags.get(e);
     (sh_flags & crate::elf::shf::MERGE) != 0
         && (sh_flags & crate::elf::shf::STRINGS) != 0
-        && section.align() <= 1
+        && section.sh_addralign.get(e) <= 1
 }
 
 pub(crate) fn built_in_section_ids(

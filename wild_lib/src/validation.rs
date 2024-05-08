@@ -6,11 +6,12 @@ use crate::layout::ResolutionValue;
 use crate::layout::TargetResolutionKind;
 use anyhow::bail;
 use anyhow::Context;
-use object::Object;
-use object::ObjectSection;
+use object::read::elf::SectionHeader as _;
+use object::LittleEndian;
 
 pub(crate) fn validate_bytes(layout: &Layout, file_bytes: &[u8]) -> Result {
-    let object = crate::elf::File::parse(file_bytes).context("Failed to parse our output file")?;
+    let object =
+        crate::elf::File::parse(file_bytes, true).context("Failed to parse our output file")?;
     validate_object(&object, layout).context("Output validation failed")
 }
 
@@ -22,15 +23,15 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
         // currently validating is GOT entries and they'll all have dynamic relocations.
         return Ok(());
     }
-    let got = object
+    let (_, got) = object
         .section_by_name(".got")
         .context("Missing .got from output file")?;
-    let got_data = got.data()?;
+    let got_data = object.section_data(got)?;
     for (symbol_name, symbol_id) in &layout.symbol_db.global_names {
         match layout.symbol_resolution(*symbol_id) {
             None => {}
             Some(resolution) => {
-                validate_resolution(symbol_name.bytes(), resolution, &got, got_data)?;
+                validate_resolution(symbol_name.bytes(), resolution, got, got_data)?;
             }
         }
     }
@@ -38,9 +39,14 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
         match file {
             crate::layout::FileLayout::Internal(_) => {}
             crate::layout::FileLayout::Object(obj) => {
-                for sec in obj.object.sections() {
-                    if let Some(resolution) = obj.section_resolutions[sec.index().0] {
-                        validate_resolution(sec.name_bytes()?, &resolution, &got, got_data)?;
+                for (sec_index, sec) in obj.object.sections.enumerate() {
+                    if let Some(resolution) = obj.section_resolutions[sec_index.0] {
+                        validate_resolution(
+                            obj.object.section_name(sec)?,
+                            &resolution,
+                            got,
+                            got_data,
+                        )?;
                     }
                 }
             }
@@ -55,7 +61,7 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
 fn validate_resolution(
     name: &[u8],
     resolution: &crate::layout::Resolution,
-    got: &crate::elf::Section,
+    got: &crate::elf::SectionHeader,
     got_data: &[u8],
 ) -> Result {
     let res_kind = resolution.kind;
@@ -66,7 +72,7 @@ fn validate_resolution(
         return Ok(());
     };
     if let Some(got_address) = resolution.got_address {
-        let start_offset = (got_address.get() - got.address()) as usize;
+        let start_offset = (got_address.get() - got.sh_addr(LittleEndian)) as usize;
         let end_offset = start_offset + core::mem::size_of::<u64>();
         if end_offset > got_data.len() {
             bail!("GOT offset beyond end of GOT 0x{end_offset}");

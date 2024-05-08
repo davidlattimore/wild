@@ -16,9 +16,8 @@ use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
 use ahash::AHashMap;
 use anyhow::Context;
-use object::Object;
-use object::ObjectSection;
-use object::ObjectSymbol;
+use object::read::elf::Sym as _;
+use object::LittleEndian;
 use rayon::iter::IndexedParallelIterator as _;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::prelude::ParallelIterator;
@@ -78,7 +77,6 @@ pub(crate) struct SymbolId(u32);
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SymbolIdRange {
     start_symbol_id: SymbolId,
-    start_symbol_index: object::SymbolIndex,
     num_symbols: usize,
 }
 
@@ -86,7 +84,6 @@ impl SymbolIdRange {
     pub(crate) fn internal(num_symbols: usize) -> SymbolIdRange {
         SymbolIdRange {
             start_symbol_id: SymbolId::undefined(),
-            start_symbol_index: object::SymbolIndex(0),
             num_symbols,
         }
     }
@@ -94,19 +91,13 @@ impl SymbolIdRange {
     pub(crate) fn epilogue(start_symbol_id: SymbolId, num_symbols: usize) -> SymbolIdRange {
         SymbolIdRange {
             start_symbol_id,
-            start_symbol_index: object::SymbolIndex(0),
             num_symbols,
         }
     }
 
-    pub(crate) fn input(
-        start_symbol_id: SymbolId,
-        start_symbol_index: object::SymbolIndex,
-        num_symbols: usize,
-    ) -> SymbolIdRange {
+    pub(crate) fn input(start_symbol_id: SymbolId, num_symbols: usize) -> SymbolIdRange {
         SymbolIdRange {
             start_symbol_id,
-            start_symbol_index,
             num_symbols,
         }
     }
@@ -140,11 +131,11 @@ impl SymbolIdRange {
 
     pub(crate) fn offset_to_input(&self, offset: usize) -> object::SymbolIndex {
         debug_assert!(offset < self.num_symbols);
-        object::SymbolIndex(self.start_symbol_index.0 + offset)
+        object::SymbolIndex(offset)
     }
 
     pub(crate) fn input_to_offset(&self, symbol_index: object::SymbolIndex) -> usize {
-        let offset = symbol_index.0 - self.start_symbol_index.0;
+        let offset = symbol_index.0;
         debug_assert!(offset < self.num_symbols);
         offset
     }
@@ -352,30 +343,21 @@ fn load_symbols_from_file<'data>(
     Ok(match reader {
         InputObject::Object(s) => {
             if s.is_dynamic {
-                load_symbols(
-                    s.object.dynamic_symbols(),
-                    resolutions,
-                    value_kinds,
-                    |_sym| ValueKind::Dynamic,
-                )?
+                load_symbols(&s.object, resolutions, value_kinds, |_sym| {
+                    ValueKind::Dynamic
+                })?
             } else {
-                load_symbols(
-                    s.object.symbols(),
-                    resolutions,
-                    value_kinds,
-                    |sym| match sym.section() {
-                        object::SymbolSection::Absolute => ValueKind::Absolute,
-                        _ => {
-                            if sym.elf_symbol().st_info & crate::elf::SYMBOL_TYPE_MASK
-                                == crate::elf::SYMBOL_TYPE_IFUNC
-                            {
-                                ValueKind::IFunc
-                            } else {
-                                ValueKind::Address
-                            }
-                        }
-                    },
-                )?
+                load_symbols(&s.object, resolutions, value_kinds, |sym| {
+                    if sym.is_absolute(LittleEndian) {
+                        ValueKind::Absolute
+                    } else if sym.st_info() & crate::elf::SYMBOL_TYPE_MASK
+                        == crate::elf::SYMBOL_TYPE_IFUNC
+                    {
+                        ValueKind::IFunc
+                    } else {
+                        ValueKind::Address
+                    }
+                })?
             }
         }
         InputObject::Internal(s) => s.load_symbols(resolutions, value_kinds)?,
@@ -387,26 +369,29 @@ fn load_symbols_from_file<'data>(
 }
 
 fn load_symbols<'data>(
-    symbols: crate::elf::SymbolIterator<'data, '_>,
+    object: &crate::elf::File<'data>,
     resolutions: &mut Shard<'_, SymbolId, SymbolId>,
     value_kinds: &mut Shard<'_, SymbolId, ValueKind>,
-    compute_value_kind: impl Fn(&crate::elf::Symbol) -> ValueKind,
+    compute_value_kind: impl Fn(&crate::elf::SymtabEntry) -> ValueKind,
 ) -> Result<SymbolLoadOutputs<'data>> {
+    let e = LittleEndian;
     let mut pending_symbols = Vec::new();
-    for ((symbol, (symbol_id, resolution)), value_kind) in symbols
+    for ((symbol, (symbol_id, resolution)), value_kind) in object
+        .symbols
+        .iter()
         .zip(resolutions.iter_mut())
         .zip(value_kinds.values_mut())
     {
-        if symbol.is_undefined() {
+        if symbol.is_undefined(e) {
             continue;
         }
         *resolution = symbol_id;
-        *value_kind = compute_value_kind(&symbol);
+        *value_kind = compute_value_kind(symbol);
 
         if symbol.is_local() {
             continue;
         }
-        let name = symbol.name_bytes()?;
+        let name = object.symbol_name(symbol)?;
         let pending = PendingSymbol::new(symbol_id, name);
         pending_symbols.push(pending);
     }
@@ -437,15 +422,17 @@ impl<'db, 'data> std::fmt::Display for SymbolDebug<'db, 'data> {
             match file {
                 InputObject::Internal(_) => write!(f, "<unnamed internal symbol>")?,
                 InputObject::Object(o) => {
+                    let symbol_index = symbol_id.to_input(file.symbol_id_range());
                     if let Some(section_name) = o
                         .object
-                        .symbol_by_index(symbol_id.to_input(file.symbol_id_range()))
+                        .symbol(symbol_index)
                         .ok()
-                        .and_then(|symbol| symbol.section_index())
-                        .and_then(|section_index| o.object.section_by_index(section_index).ok())
-                        .and_then(|section| section.name_bytes().ok())
+                        .and_then(|symbol| {
+                            o.object.symbol_section(symbol, symbol_index).ok().flatten()
+                        })
+                        .map(|section_index| o.object.section_display_name(section_index))
                     {
-                        write!(f, "section `{}`", String::from_utf8_lossy(section_name))?;
+                        write!(f, "section `{}`", section_name)?;
                     } else {
                         write!(f, "<unnamed symbol>")?;
                     }
