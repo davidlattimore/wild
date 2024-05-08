@@ -24,10 +24,10 @@ use crate::parsing::InternalInputObject;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::RegularInputObject;
 use crate::sharding::split_slice;
-use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
+use crate::symbol_db::SymbolIdRange;
 use ahash::AHashMap;
 use anyhow::bail;
 use anyhow::Context;
@@ -276,8 +276,7 @@ pub(crate) struct ResolvedObject<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) object: &'data File<'data>,
     pub(crate) file_id: FileId,
-    pub(crate) num_symbols: usize,
-    pub(crate) start_symbol_id: SymbolId,
+    pub(crate) symbol_id_range: SymbolIdRange,
 
     pub(crate) non_dynamic: Option<NonDynamicResolved<'data>>,
 }
@@ -382,7 +381,8 @@ fn merge_strings<'data>(
                         // This reference belongs to a subsequent string.
                         break;
                     }
-                    non_dynamic.merged_string_resolutions[merge_ref.symbol_index.0] =
+                    let local_index = obj.symbol_id_range.input_to_offset(merge_ref.symbol_index);
+                    non_dynamic.merged_string_resolutions[local_index] =
                         Some(MergedStringResolution {
                             output_section_id,
                             offset: output_offset + offset_into_string,
@@ -528,7 +528,7 @@ fn allocate_start_stop_symbol_ids<'data>(
         epilogue.symbol_definitions.push(def_info);
         for (file_id, sym_index) in refs {
             if let ResolvedFile::Object(obj) = &mut objects[file_id.as_usize()] {
-                let local_symbol_id = obj.start_symbol_id.add_usize(sym_index.0);
+                let local_symbol_id = obj.symbol_id_range.input_to_id(sym_index);
                 symbol_db.replace_definition(local_symbol_id, symbol_id);
             }
         }
@@ -595,7 +595,7 @@ impl<'data> ResolvedObject<'data> {
                 }
             }
             non_dynamic = Some(NonDynamicResolved {
-                merged_string_resolutions: vec![None; obj.num_symbols],
+                merged_string_resolutions: vec![None; obj.symbol_id_range.len()],
                 sections,
                 merge_strings_sections,
                 custom_sections,
@@ -606,8 +606,7 @@ impl<'data> ResolvedObject<'data> {
             input: obj.input,
             object: &obj.object,
             file_id: obj.file_id,
-            num_symbols: obj.num_symbols,
-            start_symbol_id: obj.start_symbol_id,
+            symbol_id_range: obj.symbol_id_range,
             non_dynamic,
         })
     }
@@ -618,10 +617,18 @@ fn resolve_sections<'data>(
     custom_sections: &mut Vec<(object::SectionIndex, SectionDetails<'data>)>,
     args: &Args,
 ) -> Result<Vec<SectionSlot<'data>>> {
-    let sections = obj
-        .object
-        .sections()
-        .map(|input_section| {
+    // object.sections() may not return the null section, but we require
+    // a slot for it so that we can use ELF section indexes to access slots.
+    let null = if obj.object.sections().next().map(|section| section.index())
+        != Some(object::SectionIndex(0))
+    {
+        Some(Ok(SectionSlot::Discard))
+    } else {
+        None
+    };
+    let sections = null
+        .into_iter()
+        .chain(obj.object.sections().map(|input_section| {
             if let Some(unloaded) = UnloadedSection::from_section(&input_section, args)? {
                 if unloaded.is_string_merge {
                     if let TemporaryOutputSectionId::Custom(_custom_section_id) =
@@ -648,7 +655,7 @@ fn resolve_sections<'data>(
             } else {
                 Ok(SectionSlot::Discard)
             }
-        })
+        }))
         .collect::<Result<Vec<_>>>()?;
     Ok(sections)
 }
@@ -850,7 +857,7 @@ impl<'data> SymbolDb<'data> {
     fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedFile]) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
         if let ResolvedFile::Object(obj) = &resolved[file_id.as_usize()] {
-            let local_index = object::SymbolIndex(symbol_id.offset_from(obj.start_symbol_id));
+            let local_index = symbol_id.to_input(obj.symbol_id_range);
             let Ok(obj_symbol) = obj.object.symbol_by_index(local_index) else {
                 // Errors from this function should have been reported elsewhere.
                 return SymbolStrength::Undefined;

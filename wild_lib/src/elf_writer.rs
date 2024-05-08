@@ -679,9 +679,7 @@ impl<'data> ObjectLayout<'data> {
         for rel in &self.plt_relocations {
             plt_got_writer.write_ifunc_relocation(rel, &mut relocation_writer)?;
         }
-        for (symbol_id, resolution) in
-            layout.resolutions_in_range(self.start_symbol_id, self.num_symbols)
-        {
+        for (symbol_id, resolution) in layout.resolutions_in_range(self.symbol_id_range) {
             if let Some(res) = resolution {
                 plt_got_writer
                     .process_resolution(res, &mut relocation_writer)
@@ -750,8 +748,10 @@ impl<'data> ObjectLayout<'data> {
     ) -> Result {
         let mut symbol_writer =
             SymbolTableWriter::new(start_str_offset, &mut buffers, &self.mem_sizes, sections);
-        for (sym, sym_state) in self.object.symbols().zip(&self.symbol_states) {
-            let symbol_id = self.start_symbol_id.add_usize(sym.index().0);
+        for (local_index, (sym, sym_state)) in
+            self.object.symbols().zip(&self.symbol_states).enumerate()
+        {
+            let symbol_id = self.symbol_id_range.offset_to_id(local_index);
             if let Some(info) = SymbolCopyInfo::new(
                 &sym,
                 symbol_id,
@@ -764,7 +764,7 @@ impl<'data> ObjectLayout<'data> {
                         match &self.sections[section_index.0] {
                             SectionSlot::Loaded(section) => section.output_section_id.unwrap(),
                             SectionSlot::MergeStrings(_) => {
-                                let merged_string_res = &self.merged_string_resolutions[sym.index().0].context(
+                                let merged_string_res = &self.merged_string_resolutions[local_index].context(
                                     "Tried to write symbol for merged string without a resolution",
                                 )?;
                                 merged_string_res.output_section_id
@@ -802,10 +802,7 @@ impl<'data> ObjectLayout<'data> {
                 symbol_writer
                     .copy_symbol(&sym, info.name, output_section_id, symbol_value)
                     .with_context(|| {
-                        format!(
-                            "Failed to copy {}",
-                            layout.symbol_debug(self.start_symbol_id.add_usize(sym.index().0))
-                        )
+                        format!("Failed to copy {}", layout.symbol_debug(symbol_id))
                     })?;
             }
         }
@@ -1027,7 +1024,7 @@ impl<'data> ObjectLayout<'data> {
         let mut new_resolution = None;
         match rel.target() {
             object::RelocationTarget::Symbol(symbol_index) => {
-                let local_symbol_id = self.start_symbol_id.add_usize(symbol_index.0);
+                let local_symbol_id = self.symbol_id_range.input_to_id(symbol_index);
                 let symbol_id = layout.symbol_db.definition(local_symbol_id);
                 let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
                 if symbol_id == SymbolId::undefined() || !layout.is_file_loaded(file_id) {
@@ -1079,7 +1076,7 @@ impl<'a> Display for DisplayRelocation<'a> {
         write!(f, " to ")?;
         match self.rel.target() {
             object::RelocationTarget::Symbol(local_symbol_index) => {
-                let symbol_id = self.object.start_symbol_id.add_usize(local_symbol_index.0);
+                let symbol_id = self.object.symbol_id_range.input_to_id(local_symbol_index);
                 write!(f, " {}", self.symbol_db.symbol_debug(symbol_id))?;
             }
             object::RelocationTarget::Section(section_index) => write!(
@@ -1516,9 +1513,9 @@ fn write_dynamic_symbol_definitions(
         let FileLayout::Object(object) = file_layout else {
             bail!("Internal error: only objects should define dynamic symbols");
         };
-        let sym = object.object.symbol_by_index(object::SymbolIndex(
-            sym_def.symbol_id.offset_from(object.start_symbol_id),
-        ))?;
+        let sym = object
+            .object
+            .symbol_by_index(sym_def.symbol_id.to_input(object.symbol_id_range))?;
         let section_index = sym
             .section_index()
             .context("Internal error: Symbols should only be defined if they have a section")?;
@@ -1915,7 +1912,7 @@ impl<'data> DynamicLayout<'data> {
 
         let mut dynsym: &mut [SymtabEntry] = slice_from_all_bytes_mut(buffers.dynsym);
         for ((symbol_id, resolution), symbol) in layout
-            .resolutions_in_range(self.start_symbol_id, self.num_symbols)
+            .resolutions_in_range(self.symbol_id_range)
             .zip(self.object.dynamic_symbols())
         {
             if let Some(res) = resolution {
