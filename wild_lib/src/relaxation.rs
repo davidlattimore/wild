@@ -57,7 +57,8 @@ impl Relaxation {
                     return None;
                 }
                 let b1 = section_bytes[offset - 2];
-                if section_bytes[offset - 3] != 0x48 {
+                let rex = section_bytes[offset - 3];
+                if rex != 0x48 && rex != 0x4c {
                     return None;
                 }
                 let kind = match (b1, value_kind, output_kind) {
@@ -91,7 +92,7 @@ impl Relaxation {
                     return None;
                 }
                 match section_bytes[offset - 3..offset - 1] {
-                    [0x48, 0x8b] => (
+                    [0x48 | 0x4c, 0x8b] => (
                         Relaxation::MovIndirectToAbsolute,
                         object::elf::R_X86_64_DTPOFF32,
                     ),
@@ -135,6 +136,8 @@ impl Relaxation {
             }
             Relaxation::MovIndirectToAbsolute => {
                 // Turn a PC-relative mov into an absolute mov.
+                let rex = section_bytes[offset - 3];
+                section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
                 section_bytes[offset - 2] = 0xc7;
                 let mod_rm = &mut section_bytes[offset - 1];
                 *mod_rm = (*mod_rm >> 3) & 0x7 | 0xc0;
