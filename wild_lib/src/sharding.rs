@@ -15,10 +15,6 @@ pub(crate) trait ShardKey: Copy {
     fn add_usize(self, offset: usize) -> Self;
 
     fn as_usize(self) -> usize;
-
-    fn next(self) -> Self {
-        self.add_usize(1)
-    }
 }
 
 pub(crate) fn split_slice<'sizes, 'data: 'sizes, V>(
@@ -79,21 +75,5 @@ impl<'data, K: ShardKey, V> Shard<'data, K, V> {
 
     pub(crate) fn values_mut(&mut self) -> impl Iterator<Item = &mut V> {
         self.data.iter_mut()
-    }
-}
-
-struct ShardIteratorMut<'data, K: ShardKey, V> {
-    values: core::slice::IterMut<'data, V>,
-    next_key: K,
-}
-
-impl<'data, K: ShardKey, V> Iterator for ShardIteratorMut<'data, K, V> {
-    type Item = (K, &'data mut V);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let value = self.values.next()?;
-        let key = self.next_key;
-        self.next_key = self.next_key.next();
-        Some((key, value))
     }
 }

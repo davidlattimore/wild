@@ -468,9 +468,6 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result<SymbolKind>;
-
-    /// Returns whether `local_index` is a weak definition.
-    fn is_weak(&self, local_index: usize) -> bool;
 }
 
 impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
@@ -526,18 +523,6 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
         Ok(symbol_kind)
     }
 
-    fn is_weak(&self, local_index: usize) -> bool {
-        let object_symbol_index = self
-            .state
-            .common
-            .symbol_id_range
-            .offset_to_input(local_index);
-        self.object
-            .symbol_by_index(object_symbol_index)
-            .map(|local_symbol| local_symbol.is_weak())
-            .unwrap_or(false)
-    }
-
     fn file_id(&self) -> FileId {
         self.state.common.file_id
     }
@@ -581,14 +566,6 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         self.common.mem_sizes.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;
         Ok(SymbolKind::Regular)
     }
-
-    fn is_weak(&self, local_index: usize) -> bool {
-        let object_symbol_index = self.common.symbol_id_range.offset_to_input(local_index);
-        self.object
-            .symbol_by_index(object_symbol_index)
-            .map(|sym| sym.is_local())
-            .unwrap_or(false)
-    }
 }
 
 impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
@@ -608,11 +585,6 @@ impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
         _queue: &mut LocalWorkQueue,
     ) -> Result<SymbolKind> {
         Ok(SymbolKind::Regular)
-    }
-
-    fn is_weak(&self, _local_index: usize) -> bool {
-        // None of our internal symbols are currently weak.
-        false
     }
 
     fn symbol_id_range(&self) -> SymbolIdRange {
@@ -637,11 +609,6 @@ impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState<'data> {
         _queue: &mut LocalWorkQueue,
     ) -> Result<SymbolKind> {
         Ok(SymbolKind::Regular)
-    }
-
-    fn is_weak(&self, _local_index: usize) -> bool {
-        // Custom section start/stop symbols are currently never weak.
-        false
     }
 
     fn symbol_id_range(&self) -> SymbolIdRange {

@@ -272,11 +272,6 @@ impl<'data> std::fmt::Debug for SymbolName<'data> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct PltEntry {
-    got_address: u64,
-}
-
 pub(crate) struct AddressIndex<'data> {
     address_resolutions: HashMap<u64, Vec<AddressResolution<'data>>>,
     name_to_address: HashMap<&'data [u8], u64>,
