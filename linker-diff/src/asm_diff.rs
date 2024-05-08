@@ -19,7 +19,7 @@ use object::read::elf::Rel;
 use object::read::elf::Rela;
 use object::LittleEndian;
 use object::Object as _;
-use object::ObjectSection as _;
+use object::ObjectSection;
 use object::ObjectSymbol;
 use object::ObjectSymbolTable as _;
 use object::RelocationTarget;
@@ -389,7 +389,7 @@ fn rel_type_to_string(r_type: u32) -> Cow<'static, str> {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum AddressResolution<'data> {
     Basic(BasicResolution<'data>),
-    //Offset(BasicResolution<'data>, u64),
+    Got(BasicResolution<'data>),
     Plt(BasicResolution<'data>),
     /// When we have a pointer to something and we don't know what it is, then that means we don't
     /// know how large it is, so we can only really look at the first byte. Actually, that's not
@@ -469,6 +469,7 @@ impl<'data> AddressIndex<'data> {
         info.address_resolutions
             .insert(0, vec![AddressResolution::Null]);
         info.index_symbols(object);
+        info.index_got(object).unwrap();
         info.index_dynamic_relocations(object);
         if let Err(error) = info.index_ifuncs(object) {
             info.iplt_error = Some(error);
@@ -662,6 +663,33 @@ impl<'data> AddressIndex<'data> {
                 self.program_header_addresses = mem_start..(mem_start + byte_len);
             }
         }
+    }
+
+    fn index_got(&mut self, elf_file: &ElfFile64) -> Result {
+        let Some(got) = elf_file.section_by_name(".got") else {
+            return Ok(());
+        };
+        let data = got.data()?;
+        let entry_size = core::mem::size_of::<u64>();
+        let entries: &[u64] = object::slice_from_bytes(data, data.len() / entry_size)
+            .unwrap()
+            .0;
+        let mut new_resolutions = Vec::new();
+        let mut address = got.address();
+        for entry in entries {
+            new_resolutions.extend(self.resolve(*entry).iter().filter_map(|res| {
+                if let AddressResolution::Basic(basic) = res {
+                    Some(AddressResolution::Got(*basic))
+                } else {
+                    None
+                }
+            }));
+            for res in new_resolutions.drain(..) {
+                self.add_resolution(address, res);
+            }
+            address += entry_size as u64;
+        }
+        Ok(())
     }
 }
 
@@ -1089,6 +1117,7 @@ impl Display for AddressResolution<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AddressResolution::Basic(res) => write!(f, "{res}"),
+            AddressResolution::Got(res) => write!(f, "GOT[{res}]"),
             AddressResolution::Plt(res) => write!(f, "PLT[{res}]"),
             AddressResolution::PointerTo(raw) => write!(f, "pointer to {raw}"),
             AddressResolution::FileHeaderOffset(offset) => write!(f, "FILE_HEADER[0x{offset:x}]"),
