@@ -1141,7 +1141,7 @@ fn diff_files(
     display: &dyn Display,
 ) -> Result {
     let mut config = linker_diff::Config::default();
-    config.ignore = instructions.diff_ignore.clone();
+    config.ignore.clone_from(&instructions.diff_ignore);
     config.filenames = filenames;
     let report = linker_diff::Report::from_config(config.clone())?;
     if report.has_problems() {

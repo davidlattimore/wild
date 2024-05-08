@@ -381,9 +381,10 @@ fn short_file_display_names(paths: &[PathBuf]) -> Vec<String> {
         })
         .collect::<Vec<_>>();
     if names.iter().all(|n| n.ends_with(".so")) {
-        names
-            .iter_mut()
-            .for_each(|n| *n = n.strip_suffix(".so").unwrap().to_owned());
+        names = names
+            .into_iter()
+            .map(|n| n.strip_suffix(".so").unwrap().to_owned())
+            .collect();
     }
     names
 }

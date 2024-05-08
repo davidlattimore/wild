@@ -158,12 +158,6 @@ impl SymbolIdRange {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) struct ObjectSymDefInfo {
-    /// The index of the symbol within the symbol table of the object that defined it.
-    pub(crate) local_symbol_id: object::SymbolIndex,
-}
-
 struct SymbolLoadOutputs<'data> {
     pending_symbols: Vec<PendingSymbol<'data>>,
 }
