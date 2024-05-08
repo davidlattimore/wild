@@ -49,12 +49,10 @@ use anyhow::bail;
 use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use object::elf::gnu_hash;
-use object::read::elf::Rela;
+use object::read::elf::Rela as _;
+use object::read::elf::SectionHeader as _;
+use object::read::elf::Sym as _;
 use object::LittleEndian;
-use object::Object;
-use object::ObjectSection;
-use object::ObjectSymbol;
-use object::ObjectSymbolTable as _;
 use rayon::prelude::IndexedParallelIterator;
 use rayon::prelude::IntoParallelIterator;
 use rayon::prelude::IntoParallelRefMutIterator;
@@ -473,33 +471,28 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
             .common
             .symbol_id_range
             .offset_to_input(local_index);
-        let local_symbol = self.object.symbol_by_index(object_symbol_index)?;
-        let symbol_kind = match local_symbol.flags() {
-            object::SymbolFlags::Elf { st_info, .. } => {
-                if st_info & elf::SYMBOL_TYPE_MASK == elf::SYMBOL_TYPE_IFUNC {
-                    SymbolKind::IFunc
-                } else {
-                    SymbolKind::Regular
-                }
-            }
-            _ => SymbolKind::Regular,
-        };
-        match local_symbol.section() {
-            object::SymbolSection::Section(section_id) => {
-                self.state
-                    .sections_required
-                    .push(SectionRequest::new(section_id));
-                self.load_sections(resources, queue)?;
-            }
-            object::SymbolSection::Common => {
-                let common = CommonSymbol::new(&local_symbol)?;
-                *self
-                    .state
-                    .common
-                    .mem_sizes
-                    .regular_mut(output_section_id::BSS, common.alignment) += common.size;
-            }
-            _ => {}
+        let local_symbol = self.object.symbol(object_symbol_index)?;
+        let symbol_kind =
+            if local_symbol.st_info() & elf::SYMBOL_TYPE_MASK == elf::SYMBOL_TYPE_IFUNC {
+                SymbolKind::IFunc
+            } else {
+                SymbolKind::Regular
+            };
+        if let Some(section_id) = self
+            .object
+            .symbol_section(local_symbol, object_symbol_index)?
+        {
+            self.state
+                .sections_required
+                .push(SectionRequest::new(section_id));
+            self.load_sections(resources, queue)?;
+        } else if local_symbol.is_common(LittleEndian) {
+            let common = CommonSymbol::new(local_symbol)?;
+            *self
+                .state
+                .common
+                .mem_sizes
+                .regular_mut(output_section_id::BSS, common.alignment) += common.size;
         }
         Ok(symbol_kind)
     }
@@ -537,12 +530,8 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         // expensive. We do it up to three times. Once when we build the symbol DB, now, then when
         // we write out the dynamic symbol table. Look into just storing the names the first time.
         let object_symbol_index = self.common.symbol_id_range.offset_to_input(local_index);
-        let symbol = self
-            .object
-            .dynamic_symbol_table()
-            .context("Missing dynamic symbol table")?
-            .symbol_by_index(object_symbol_index)?;
-        let name = symbol.name_bytes()?;
+        let symbol = self.object.symbol(object_symbol_index)?;
+        let name = self.object.symbol_name(symbol)?;
         self.common.mem_sizes.dynstr += name.len() as u64 + 1;
         self.common.mem_sizes.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;
         Ok(SymbolKind::Regular)
@@ -952,7 +941,7 @@ impl<'data> Layout<'data> {
                     sections: obj
                         .section_resolutions
                         .iter()
-                        .zip(obj.object.elf_section_table().iter())
+                        .zip(obj.object.sections.iter())
                         .zip(&obj.sections)
                         .map(|((maybe_res, section), section_slot)| {
                             maybe_res.and_then(|res| {
@@ -1654,15 +1643,17 @@ impl<'data> Section<'data> {
         section_id: object::SectionIndex,
         resources: &GraphResources<'data, 'scope>,
     ) -> Result<Section<'data>> {
-        let object_section = worker.object.section_by_index(section_id)?;
-        let alignment = Alignment::new(object_section.align())?;
-        let size = object_section.size();
-        let section_data = object_section.data()?;
-        for rel in object_section.elf_linked_rela()? {
+        let e = LittleEndian;
+        let object_section = worker.object.section(section_id)?;
+        let alignment = Alignment::new(object_section.sh_addralign(e))?;
+        let size = object_section.sh_size(e);
+        let section_data = worker.object.section_data(object_section)?;
+        for rel in worker.object.relocations(section_id)? {
             let rel_offset = rel.r_offset.get(LittleEndian);
             if let Some(action) = RelocationLayoutAction::new(
+                worker.object,
                 rel,
-                &object_section,
+                object_section,
                 rel_offset,
                 &worker.state,
                 resources.symbol_db,
@@ -1763,8 +1754,9 @@ enum RelocationLayoutActionKind {
 
 impl RelocationLayoutAction {
     fn new(
+        object: &crate::elf::File<'_>,
         rel: &elf::Rela,
-        section: &elf::Section,
+        section: &elf::SectionHeader,
         rel_offset: u64,
         state: &ObjectLayoutMutableState<'_>,
         symbol_db: &SymbolDb,
@@ -1773,16 +1765,17 @@ impl RelocationLayoutAction {
         if let Some(local_sym_index) = rel.symbol(LittleEndian, false) {
             let symbol_id = state.common.symbol_id_range.input_to_id(local_sym_index);
             return Ok(Some(Self::for_symbol(
-                rel, rel_offset, section, symbol_db, symbol_id, args,
+                object, rel, rel_offset, section, symbol_db, symbol_id, args,
             )?));
         }
         Ok(None)
     }
 
     fn for_symbol(
+        object: &crate::elf::File<'_>,
         rel: &elf::Rela,
         rel_offset: u64,
-        section: &elf::Section,
+        section: &elf::SectionHeader,
         symbol_db: &SymbolDb<'_>,
         symbol_id: SymbolId,
         args: &Args,
@@ -1791,7 +1784,7 @@ impl RelocationLayoutAction {
         let mut r_type = rel.r_type(LittleEndian, false);
         if let Some((_relaxation, new_r_type)) = Relaxation::new(
             r_type,
-            section.data()?,
+            object.section_data(section)?,
             rel_offset,
             symbol_value_kind,
             args.output_kind,
@@ -2392,7 +2385,7 @@ impl<'data> ObjectLayoutState<'data> {
                     }
                 }
                 SectionSlot::EhFrameData(index) => {
-                    eh_frame_section = Some(self.object.section_by_index(*index)?);
+                    eh_frame_section = Some(*index);
                 }
                 _ => (),
             }
@@ -2458,10 +2451,9 @@ impl<'data> ObjectLayoutState<'data> {
                     self.state.sections[section_id.0] = SectionSlot::Loaded(section);
                 }
                 SectionSlot::Discard => {
-                    let object_section = self.object.section_by_index(section_id)?;
                     bail!(
                         "{self}: Don't know what segment to put `{}` in, but it's referenced",
-                        String::from_utf8_lossy(object_section.name_bytes()?),
+                        self.object.section_display_name(section_id),
                     );
                 }
                 SectionSlot::Loaded(_) | SectionSlot::EhFrameData(..) => {}
@@ -2498,24 +2490,31 @@ impl<'data> ObjectLayoutState<'data> {
         let mut num_locals = 0;
         let mut num_globals = 0;
         let mut strings_size = 0;
-        for (sym, sym_state) in self
+        for ((sym_index, sym), sym_state) in self
             .object
-            .symbols()
+            .symbols
+            .enumerate()
             .zip(&mut self.state.common.symbol_states)
         {
-            let symbol_id = self.state.common.symbol_id_range.input_to_id(sym.index());
-            if let Some(info) =
-                SymbolCopyInfo::new(&sym, symbol_id, symbol_db, *sym_state, &self.state.sections)
-            {
+            let symbol_id = self.state.common.symbol_id_range.input_to_id(sym_index);
+            if let Some(info) = SymbolCopyInfo::new(
+                self.object,
+                sym_index,
+                sym,
+                symbol_id,
+                symbol_db,
+                *sym_state,
+                &self.state.sections,
+            ) {
                 // If we've decided to emit the symbol even though it's not referenced (because it's
                 // in a section we're emitting), then make sure we have a resolution for it.
                 if *sym_state == TargetResolutionKind::None {
                     *sym_state = TargetResolutionKind::Value;
                 }
-                if sym.is_global() {
-                    num_globals += 1;
-                } else {
+                if sym.is_local() {
                     num_locals += 1;
+                } else {
+                    num_globals += 1;
                 }
                 strings_size += info.name.len() + 1;
             }
@@ -2551,10 +2550,7 @@ impl<'data> ObjectLayoutState<'data> {
                     let output_section_id = sec.output_section_id.with_context(|| {
                         format!(
                             "Tried to load section `{}` which isn't mapped to an output section",
-                            self.object
-                                .section_by_index(sec.index)
-                                .and_then(|s| s.name())
-                                .unwrap_or("??")
+                            self.object.section_display_name(sec.index)
                         )
                     })?;
                     let address = memory_offsets.regular_mut(output_section_id, sec.alignment);
@@ -2581,51 +2577,52 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
 
-        for (local_symbol, symbol_state) in
-            self.object.symbols().zip(&self.state.common.symbol_states)
+        let e = LittleEndian;
+        for ((local_symbol_index, local_symbol), symbol_state) in self
+            .object
+            .symbols
+            .enumerate()
+            .zip(&self.state.common.symbol_states)
         {
             if *symbol_state == TargetResolutionKind::None {
                 continue;
             }
-            let symbol_id = symbol_id_range.input_to_id(local_symbol.index());
+            let symbol_id = symbol_id_range.input_to_id(local_symbol_index);
             if !symbol_db.is_definition(symbol_id) {
                 continue;
             }
-            let local_symbol = self.object.symbol_by_index(local_symbol.index())?;
-            let value = match local_symbol.section() {
-                object::SymbolSection::Section(section_index) => {
-                    if let Some(section_resolution) = section_resolutions[section_index.0].as_ref()
-                    {
-                        ResolutionValue::Address(
-                            local_symbol.address() + section_resolution.value.address_or_value()?,
+            let value = if let Some(section_index) = self
+                .object
+                .symbol_section(local_symbol, local_symbol_index)?
+            {
+                if let Some(section_resolution) = section_resolutions[section_index.0].as_ref() {
+                    ResolutionValue::Address(
+                        local_symbol.st_value(e) + section_resolution.value.address_or_value()?,
+                    )
+                } else {
+                    ResolutionValue::Address(merged_string_start_addresses
+                        .try_resolve_local(
+                            &self.state.merged_string_resolutions,
+                            symbol_id_range.input_to_offset(local_symbol_index),
                         )
-                    } else {
-                        ResolutionValue::Address(merged_string_start_addresses
-                            .try_resolve_local(
-                                &self.state.merged_string_resolutions,
-                                symbol_id_range.input_to_offset(local_symbol.index()),
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "Symbol is in a section that we didn't load. Symbol: {} Section: {}",
+                                symbol_db.symbol_debug(symbol_id),
+                                section_debug(self.object, section_index),
                             )
-                            .ok_or_else(|| {
-                                anyhow!(
-                                    "Symbol is in a section that we didn't load. Symbol: {} Section: {}",
-                                    symbol_db.symbol_debug(symbol_id),
-                                    section_debug(self.object, section_index),
-                                )
-                            })?)
-                    }
+                        })?)
                 }
-                object::SymbolSection::Common => {
-                    let common = CommonSymbol::new(&local_symbol)?;
-                    let offset =
-                        memory_offsets.regular_mut(output_section_id::BSS, common.alignment);
-                    let address = *offset;
-                    *offset += common.size;
-                    ResolutionValue::Address(address)
-                }
-                object::SymbolSection::Absolute => {
-                    ResolutionValue::Absolute(local_symbol.address())
-                }
-                _ => ResolutionValue::Address(local_symbol.address()),
+            } else if local_symbol.is_common(e) {
+                let common = CommonSymbol::new(local_symbol)?;
+                let offset = memory_offsets.regular_mut(output_section_id::BSS, common.alignment);
+                let address = *offset;
+                *offset += common.size;
+                ResolutionValue::Address(address)
+            } else if local_symbol.is_absolute(e) {
+                ResolutionValue::Absolute(local_symbol.st_value(e))
+            } else {
+                ResolutionValue::Address(local_symbol.st_value(e))
             };
             emitter.emit_resolution(symbol_id, value, resolutions_out)?;
         }
@@ -2658,16 +2655,16 @@ impl<'data> ObjectLayoutState<'data> {
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
-        for sym in self.object.symbols() {
+        for (sym_index, sym) in self.object.symbols.enumerate() {
             if can_export_symbol(sym) {
-                let name = sym.name_bytes()?;
+                let name = self.object.symbol_name(sym)?;
                 if resources
                     .version_script
                     .is_some_and(|script| script.is_local(name))
                 {
                     continue;
                 }
-                let symbol_id = self.symbol_id_range().input_to_id(sym.index());
+                let symbol_id = self.symbol_id_range().input_to_id(sym_index);
                 self.handle_symbol_request(
                     SymbolRequest {
                         symbol_id,
@@ -2697,7 +2694,9 @@ impl<'data> SymbolCopyInfo<'data> {
     /// the symtab. In the process, we also return the name of the symbol, to avoid needing to read
     /// it again.
     pub(crate) fn new(
-        sym: &crate::elf::Symbol<'data, '_>,
+        object: &crate::elf::File<'data>,
+        sym_index: object::SymbolIndex,
+        sym: &crate::elf::Symbol,
         symbol_id: SymbolId,
         symbol_db: &SymbolDb,
         symbol_state: TargetResolutionKind,
@@ -2706,16 +2705,19 @@ impl<'data> SymbolCopyInfo<'data> {
         if !symbol_db.is_definition(symbol_id) {
             return None;
         }
-        if symbol_is_in_discarded_section(sym, sections) {
-            return None;
+        if let Ok(Some(section)) = object.symbol_section(sym, sym_index) {
+            if !sections[section.0].is_loaded() {
+                // Symbol is in discarded section.
+                return None;
+            }
         }
-        if sym.is_common() && symbol_state == TargetResolutionKind::None {
+        if sym.is_common(LittleEndian) && symbol_state == TargetResolutionKind::None {
             return None;
         }
         // Reading the symbol name is slightly expensive, so we want to do that after all the other
         // checks. That's also the reason why we return the symbol name, so that the caller, if it
         // needs the name, doesn't have a go and read it again.
-        let name = sym.name_bytes().ok()?;
+        let name = object.symbol_name(sym).ok()?;
         if !should_copy_symbol_named(name) {
             return None;
         }
@@ -2723,16 +2725,9 @@ impl<'data> SymbolCopyInfo<'data> {
     }
 }
 
-fn symbol_is_in_discarded_section(sym: &crate::elf::Symbol, sections: &[SectionSlot]) -> bool {
-    match sym.section() {
-        object::SymbolSection::Section(section_index) => !sections[section_index.0].is_loaded(),
-        _ => false,
-    }
-}
-
 /// Returns whether the supplied symbol can be exported when we're outputting a shared object.
-pub(crate) fn can_export_symbol(sym: crate::elf::Symbol) -> bool {
-    sym.is_definition() && sym.is_global() && sym.elf_symbol().st_visibility() == 0
+pub(crate) fn can_export_symbol(sym: &crate::elf::SymtabEntry) -> bool {
+    sym.is_definition(LittleEndian) && !sym.is_local() && sym.st_visibility() == 0
 }
 
 impl MergedStringStartAddresses {
@@ -2779,15 +2774,19 @@ fn process_eh_frame_data<'data>(
     file_symbol_id_range: SymbolIdRange,
     section_frame_data: &mut Vec<SectionFrameData>,
     state: &mut ObjectLayoutMutableState<'data>,
-    eh_frame_section: elf::Section<'data, '_>,
+    eh_frame_section_index: object::SectionIndex,
     resources: &GraphResources,
     queue: &mut LocalWorkQueue,
 ) -> Result {
     section_frame_data.resize_with(state.sections.len(), Default::default);
-    let data = eh_frame_section.data()?;
+    let eh_frame_section = object.section(eh_frame_section_index)?;
+    let data = object.section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
     let e = LittleEndian;
-    let mut relocations = eh_frame_section.elf_linked_rela()?.iter().peekable();
+    let mut relocations = object
+        .relocations(eh_frame_section_index)?
+        .iter()
+        .peekable();
     let mut offset = 0;
     while offset + PREFIX_LEN <= data.len() {
         // Although the section data will be aligned within the object file, there's
@@ -2817,8 +2816,9 @@ fn process_eh_frame_data<'data>(
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
                 if let Some(action) = RelocationLayoutAction::new(
+                    object,
                     rel,
-                    &eh_frame_section,
+                    eh_frame_section,
                     rel_offset,
                     state,
                     resources.symbol_db,
@@ -2854,13 +2854,14 @@ fn process_eh_frame_data<'data>(
 
                     if is_pc_begin {
                         if let Some(index) = rel.symbol(e, false) {
-                            let elf_symbol = &object.symbol_by_index(index)?;
-                            section_index = elf_symbol.section_index();
+                            let elf_symbol = object.symbol(index)?;
+                            section_index = object.symbol_section(elf_symbol, index)?;
                         }
                     }
                     if let Some(action) = RelocationLayoutAction::new(
+                        object,
                         rel,
-                        &eh_frame_section,
+                        eh_frame_section,
                         rel_offset,
                         state,
                         resources.symbol_db,
@@ -2910,12 +2911,13 @@ struct CommonSymbol {
 }
 
 impl CommonSymbol {
-    fn new(local_symbol: &crate::elf::Symbol) -> Result<CommonSymbol> {
-        debug_assert!(local_symbol.is_common());
+    fn new(local_symbol: &crate::elf::SymtabEntry) -> Result<CommonSymbol> {
+        let e = LittleEndian;
+        debug_assert!(local_symbol.is_common(e));
         // Common symbols misuse the value field (which we access via `address()`) to store the
         // alignment.
-        let alignment = Alignment::new(local_symbol.address())?;
-        let size = alignment.align_up(local_symbol.size());
+        let alignment = Alignment::new(local_symbol.st_value(e))?;
+        let size = alignment.align_up(local_symbol.st_size(e));
         Ok(CommonSymbol { size, alignment })
     }
 }
@@ -3111,7 +3113,8 @@ impl<'data> DynamicLayoutState<'data> {
 
         for ((_local_symbol, symbol_state), resolution) in self
             .object
-            .dynamic_symbols()
+            .symbols
+            .iter()
             .zip(&self.common.symbol_states)
             .zip(resolutions_out)
         {
@@ -3183,8 +3186,8 @@ fn print_symbol_info(symbol_db: &SymbolDb, name: &str) {
             match &symbol_db.inputs[file_id.as_usize()] {
                 crate::parsing::InputObject::Internal(_) => println!("  <internal>"),
                 crate::parsing::InputObject::Object(o) => {
-                    let local_index = symbol_id.to_offset(o.symbol_id_range);
-                    match o.object.symbol_by_index(object::SymbolIndex(local_index)) {
+                    let local_index = symbol_id.to_input(o.symbol_id_range);
+                    match o.object.symbol(local_index) {
                         Ok(sym) => {
                             println!(
                                 "  {}: symbol_id={symbol_id} Local #{local_index} \
@@ -3206,8 +3209,8 @@ fn print_symbol_info(symbol_db: &SymbolDb, name: &str) {
 
 fn section_debug(object: &crate::elf::File, section_index: object::SectionIndex) -> SectionDebug {
     let name = object
-        .section_by_index(section_index)
-        .and_then(|section| section.name_bytes())
+        .section(section_index)
+        .and_then(|section| object.section_name(section))
         .map(|name| String::from_utf8_lossy(name).into_owned())
         .unwrap_or_else(|_| "??".to_owned());
     SectionDebug { name }

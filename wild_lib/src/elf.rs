@@ -2,7 +2,11 @@ use crate::error::Result;
 use anyhow::bail;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
+use object::read::elf::FileHeader as _;
+use object::read::elf::RelocationSections;
+use object::read::elf::SectionHeader as _;
 use object::LittleEndian;
+use std::borrow::Cow;
 
 /// Our starting address in memory when linking non-relocatable executables. We can start memory
 /// addresses wherever we like, even from 0. We pick 400k because it's the same as what ld does and
@@ -10,20 +14,107 @@ use object::LittleEndian;
 /// up file and memory offsets.
 pub const NON_PIE_START_MEM_ADDRESS: u64 = 0x400_000;
 
-pub(crate) type File<'data> = object::read::elf::ElfFile64<'data, LittleEndian, &'data [u8]>;
-pub(crate) type Section<'data, 'file> =
-    object::read::elf::ElfSection64<'data, 'file, LittleEndian, &'data [u8]>;
-pub(crate) type Symbol<'data, 'file> =
-    object::read::elf::ElfSymbol64<'data, 'file, LittleEndian, &'data [u8]>;
-pub(crate) type SymbolIterator<'data, 'file> =
-    object::read::elf::ElfSymbolIterator64<'data, 'file, LittleEndian, &'data [u8]>;
 pub(crate) type FileHeader = object::elf::FileHeader64<LittleEndian>;
 pub(crate) type ProgramHeader = object::elf::ProgramHeader64<LittleEndian>;
 pub(crate) type SectionHeader = object::elf::SectionHeader64<LittleEndian>;
+pub(crate) type Symbol = object::elf::Sym64<LittleEndian>;
 pub(crate) type SymtabEntry = object::elf::Sym64<LittleEndian>;
 pub(crate) type DynamicEntry = object::elf::Dyn64<LittleEndian>;
 pub(crate) type Rela = object::elf::Rela64<LittleEndian>;
 pub(crate) type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
+
+type SectionTable<'data> = object::read::elf::SectionTable<'data, FileHeader>;
+type SymbolTable<'data> = object::read::elf::SymbolTable<'data, FileHeader>;
+
+pub(crate) struct File<'data> {
+    pub(crate) data: &'data [u8],
+    pub(crate) sections: SectionTable<'data>,
+    /// This may be symtab or dynsym depending on the file type.
+    pub(crate) symbols: SymbolTable<'data>,
+    pub(crate) relocations: RelocationSections,
+}
+
+impl<'data> File<'data> {
+    pub(crate) fn parse(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
+        let header = FileHeader::parse(data)?;
+        let endian = header.endian()?;
+        let sections = header.sections(endian, data)?;
+        let sh_type = if is_dynamic {
+            object::elf::SHT_DYNSYM
+        } else {
+            object::elf::SHT_SYMTAB
+        };
+        let symbols = sections.symbols(endian, data, sh_type)?;
+        let relocations = if is_dynamic {
+            RelocationSections::default()
+        } else {
+            sections.relocation_sections(endian, symbols.section())?
+        };
+        Ok(Self {
+            data,
+            sections,
+            symbols,
+            relocations,
+        })
+    }
+
+    pub(crate) fn section(&self, index: object::SectionIndex) -> Result<&'data SectionHeader> {
+        Ok(self.sections.section(index)?)
+    }
+
+    pub(crate) fn section_by_name(
+        &self,
+        name: &str,
+    ) -> Option<(object::SectionIndex, &'data SectionHeader)> {
+        self.sections.section_by_name(LittleEndian, name.as_bytes())
+    }
+
+    pub(crate) fn section_name(&self, section: &SectionHeader) -> Result<&'data [u8]> {
+        Ok(self.sections.section_name(LittleEndian, section)?)
+    }
+
+    pub(crate) fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str> {
+        self.section(index)
+            .and_then(|section| self.section_name(section))
+            .map(String::from_utf8_lossy)
+            .unwrap_or_else(|_| format!("<index {}>", index.0).into())
+    }
+
+    pub(crate) fn section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
+        Ok(section.data(LittleEndian, self.data)?)
+    }
+
+    pub(crate) fn relocations(&self, index: object::SectionIndex) -> Result<&'data [Rela]> {
+        let Some(rela_index) = self.relocations.get(index) else {
+            return Ok(&[]);
+        };
+        let rela_section = self.sections.section(rela_index)?;
+        let Some((rela, _)) = rela_section.rela(LittleEndian, self.data)? else {
+            return Ok(&[]);
+        };
+        Ok(rela)
+    }
+
+    pub(crate) fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Symbol> {
+        Ok(self.symbols.symbol(index)?)
+    }
+
+    pub(crate) fn symbol_name(&self, symbol: &Symbol) -> Result<&'data [u8]> {
+        Ok(self.symbols.symbol_name(LittleEndian, symbol)?)
+    }
+
+    pub(crate) fn symbol_display_name(&self, symbol: &Symbol) -> Result<Cow<'data, str>> {
+        Ok(String::from_utf8_lossy(self.symbol_name(symbol)?))
+    }
+
+    pub(crate) fn symbol_section(
+        &self,
+        symbol: &Symbol,
+        index: object::SymbolIndex,
+    ) -> Result<Option<object::SectionIndex>> {
+        Ok(self.symbols.symbol_section(LittleEndian, symbol, index)?)
+    }
+}
 
 /// The module number for TLS variables in the current executable.
 pub(crate) const CURRENT_EXE_TLS_MOD: u64 = 1;

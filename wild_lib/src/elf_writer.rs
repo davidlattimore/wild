@@ -48,12 +48,9 @@ use anyhow::bail;
 use anyhow::Context;
 use memmap2::MmapOptions;
 use object::from_bytes_mut;
-use object::read::elf::Rela;
+use object::read::elf::Rela as _;
+use object::read::elf::Sym as _;
 use object::LittleEndian;
-use object::Object;
-use object::ObjectSection;
-use object::ObjectSymbol;
-use object::SymbolKind;
 use rayon::prelude::*;
 use std::fmt::Display;
 use std::ops::Range;
@@ -546,10 +543,8 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         output_section_id: OutputSectionId,
         value: u64,
     ) -> Result {
+        let e = LittleEndian;
         let is_local = sym.is_local();
-        let object::SymbolFlags::Elf { st_info, st_other } = sym.flags() else {
-            unreachable!()
-        };
         let shndx = self
             .output_sections
             .output_index_of_section(output_section_id)
@@ -561,23 +556,21 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
                     output_section_id,
                 )
             })?;
-        let size = sym.size();
+        let size = sym.st_size(e);
         let entry = self.define_symbol(is_local, shndx, value, size, name)?;
-        entry.st_info = st_info;
-        entry.st_other = st_other;
+        entry.st_info = sym.st_info();
+        entry.st_other = sym.st_other();
         Ok(())
     }
 
     fn copy_absolute_symbol(&mut self, sym: &crate::elf::Symbol, name: &[u8]) -> Result {
+        let e = LittleEndian;
         let is_local = sym.is_local();
-        let object::SymbolFlags::Elf { st_info, st_other } = sym.flags() else {
-            unreachable!()
-        };
-        let value = sym.address();
-        let size = sym.size();
+        let value = sym.st_value(e);
+        let size = sym.st_size(e);
         let entry = self.define_symbol(is_local, object::elf::SHN_ABS, value, size, name)?;
-        entry.st_info = st_info;
-        entry.st_other = st_other;
+        entry.st_info = sym.st_info();
+        entry.st_other = sym.st_other();
         Ok(())
     }
 
@@ -699,8 +692,8 @@ impl<'data> ObjectLayout<'data> {
             let allocation_size = sec.capacity() as usize;
             if section_buffer.len() < allocation_size {
                 bail!(
-                    "Insufficient space allocated to section {}. Tried to take {} bytes, but only {} remain",
-                    self.display_section_name(sec.index),
+                    "Insufficient space allocated to section `{}`. Tried to take {} bytes, but only {} remain",
+                    self.object.section_display_name(sec.index),
                     allocation_size, section_buffer.len()
                 );
             }
@@ -711,8 +704,8 @@ impl<'data> ObjectLayout<'data> {
             self.apply_relocations(out, sec, layout, relocation_writer)
                 .with_context(|| {
                     format!(
-                        "Failed to apply relocations in section {} of {}",
-                        self.display_section_name(sec.index),
+                        "Failed to apply relocations in section `{}` of {}",
+                        self.object.section_display_name(sec.index),
                         self.input
                     )
                 })?;
@@ -735,23 +728,28 @@ impl<'data> ObjectLayout<'data> {
     ) -> Result {
         let mut symbol_writer =
             SymbolTableWriter::new(start_str_offset, &mut buffers, &self.mem_sizes, sections);
-        for (local_index, (sym, sym_state)) in
-            self.object.symbols().zip(&self.symbol_states).enumerate()
+        for ((sym_index, sym), sym_state) in
+            self.object.symbols.enumerate().zip(&self.symbol_states)
         {
-            let symbol_id = self.symbol_id_range.offset_to_id(local_index);
+            let symbol_id = self.symbol_id_range.input_to_id(sym_index);
             if let Some(info) = SymbolCopyInfo::new(
-                &sym,
+                self.object,
+                sym_index,
+                sym,
                 symbol_id,
                 layout.symbol_db,
                 *sym_state,
                 &self.sections,
             ) {
-                let output_section_id = match object::ObjectSymbol::section(&sym) {
-                    object::SymbolSection::Section(section_index) => {
+                let e = LittleEndian;
+                let output_section_id =
+                    if let Some(section_index) = self.object.symbol_section(sym, sym_index)? {
                         match &self.sections[section_index.0] {
                             SectionSlot::Loaded(section) => section.output_section_id.unwrap(),
                             SectionSlot::MergeStrings(_) => {
-                                let merged_string_res = &self.merged_string_resolutions[local_index].context(
+                                let local_index = self.symbol_id_range.input_to_offset(sym_index);
+                                let merged_string_res = &self.merged_string_resolutions[local_index]
+                                .context(
                                     "Tried to write symbol for merged string without a resolution",
                                 )?;
                                 merged_string_res.output_section_id
@@ -759,11 +757,11 @@ impl<'data> ObjectLayout<'data> {
                             SectionSlot::EhFrameData(..) => output_section_id::EH_FRAME,
                             _ => bail!("Tried to copy a symbol in a section we didn't load"),
                         }
-                    }
-                    object::SymbolSection::Common => output_section_id::BSS,
-                    object::SymbolSection::Absolute | object::SymbolSection::None => {
+                    } else if sym.is_common(e) {
+                        output_section_id::BSS
+                    } else if sym.is_absolute(e) {
                         symbol_writer
-                            .copy_absolute_symbol(&sym, info.name)
+                            .copy_absolute_symbol(sym, info.name)
                             .with_context(|| {
                                 format!(
                                     "Failed to absolute {}",
@@ -771,23 +769,21 @@ impl<'data> ObjectLayout<'data> {
                                 )
                             })?;
                         continue;
-                    }
-                    _ => {
+                    } else {
                         bail!("Attempted to output a symtab entry with an unexpected section type")
-                    }
-                };
+                    };
                 let Some(res) = layout.symbol_resolution(symbol_id) else {
                     bail!("Missing resolution for {}", layout.symbol_debug(symbol_id));
                 };
                 let mut symbol_value = res.value.address_or_value()?;
-                if sym.kind() == SymbolKind::Tls {
+                if sym.st_type() == object::elf::STT_TLS {
                     let tls_start_address = layout.segment_layouts.tls_start_address.context(
                         "Writing TLS variable to symtab, but we don't have a TLS segment",
                     )?;
                     symbol_value -= tls_start_address;
                 }
                 symbol_writer
-                    .copy_symbol(&sym, info.name, output_section_id, symbol_value)
+                    .copy_symbol(sym, info.name, output_section_id, symbol_value)
                     .with_context(|| {
                         format!("Failed to copy {}", layout.symbol_debug(symbol_id))
                     })?;
@@ -809,9 +805,8 @@ impl<'data> ObjectLayout<'data> {
             .unwrap()
             .value
             .address_or_value()?;
-        let elf_section = &self.object.section_by_index(section.index)?;
         let mut modifier = RelocationModifier::Normal;
-        for rel in elf_section.elf_linked_rela()? {
+        for rel in self.object.relocations(section.index)? {
             if modifier == RelocationModifier::SkipNextRelocation {
                 modifier = RelocationModifier::Normal;
                 continue;
@@ -847,11 +842,15 @@ impl<'data> ObjectLayout<'data> {
         let headers_out: &mut [EhFrameHdrEntry] =
             bytemuck::cast_slice_mut(&mut buffers.eh_frame_hdr[..]);
         let mut header_offset = 0;
-        let eh_frame_section = self.object.section_by_index(eh_frame_section_index)?;
-        let data = eh_frame_section.data()?;
+        let eh_frame_section = self.object.section(eh_frame_section_index)?;
+        let data = self.object.section_data(eh_frame_section)?;
         const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
         let e = LittleEndian;
-        let mut relocations = eh_frame_section.elf_linked_rela()?.iter().peekable();
+        let mut relocations = self
+            .object
+            .relocations(eh_frame_section_index)?
+            .iter()
+            .peekable();
         let mut input_pos = 0;
         let mut output_pos = 0;
         let frame_info_ptr_base = self.eh_frame_start_address;
@@ -887,11 +886,13 @@ impl<'data> ObjectLayout<'data> {
                             let Some(index) = rel.symbol(e, false) else {
                                 bail!("Unexpected absolute relocation in .eh_frame pc-begin");
                             };
-                            let elf_symbol = &self.object.symbol_by_index(index)?;
-                            let Some(section_index) = elf_symbol.section_index() else {
+                            let elf_symbol = &self.object.symbol(index)?;
+                            let Some(section_index) =
+                                self.object.symbol_section(elf_symbol, index)?
+                            else {
                                 bail!(".eh_frame pc-begin refers to symbol that's not defined in file");
                             };
-                            let offset_in_section = elf_symbol.address();
+                            let offset_in_section = elf_symbol.st_value(e);
                             if let Some(section_resolution) =
                                 &self.section_resolutions[section_index.0]
                             {
@@ -1012,11 +1013,11 @@ impl<'data> ObjectLayout<'data> {
         let symbol_id = layout.symbol_db.definition(local_symbol_id);
         let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
         if symbol_id == SymbolId::undefined() || !layout.is_file_loaded(file_id) {
-            let local_symbol = &self.object.symbol_by_index(symbol_index)?;
+            let local_symbol = &self.object.symbol(symbol_index)?;
             if !local_symbol.is_weak() {
                 bail!(
                     "Undefined strong reference to `{}`",
-                    String::from_utf8_lossy(local_symbol.name_bytes()?)
+                    self.object.symbol_display_name(local_symbol)?
                 );
             }
             // TODO: Check if reference is weak.
@@ -1025,15 +1026,6 @@ impl<'data> ObjectLayout<'data> {
             new_resolution = Some(*res);
         }
         Ok(new_resolution)
-    }
-
-    fn display_section_name(&self, section_index: object::SectionIndex) -> String {
-        if let Ok(section) = self.object.section_by_index(section_index) {
-            if let Ok(name) = section.name() {
-                return format!("`{name}`");
-            }
-        }
-        "(failed to get section name)".to_owned()
     }
 }
 
@@ -1476,11 +1468,11 @@ fn write_dynamic_symbol_definitions(
         let FileLayout::Object(object) = file_layout else {
             bail!("Internal error: only objects should define dynamic symbols");
         };
-        let sym = object
+        let sym_index = sym_def.symbol_id.to_input(object.symbol_id_range);
+        let sym = object.object.symbol(sym_index)?;
+        let section_index = object
             .object
-            .symbol_by_index(sym_def.symbol_id.to_input(object.symbol_id_range))?;
-        let section_index = sym
-            .section_index()
+            .symbol_section(sym, sym_index)?
             .context("Internal error: Symbols should only be defined if they have a section")?;
         let SectionSlot::Loaded(section) = &object.sections[section_index.0] else {
             bail!("Internal error: Defined symbols should always be for a loaded section");
@@ -1491,9 +1483,9 @@ fn write_dynamic_symbol_definitions(
             .unwrap()
             .value
             .address_or_value()?;
-        let name = sym.name_bytes()?;
+        let name = object.object.symbol_name(sym)?;
         dynamic_symbol_writer
-            .copy_symbol(&sym, name, output_section_id, section_address)
+            .copy_symbol(sym, name, output_section_id, section_address)
             .with_context(|| {
                 format!(
                     "Failed to copy dynamic {}",
@@ -1874,10 +1866,10 @@ impl<'data> DynamicLayout<'data> {
         let mut dynsym: &mut [SymtabEntry] = slice_from_all_bytes_mut(buffers.dynsym);
         for ((symbol_id, resolution), symbol) in layout
             .resolutions_in_range(self.symbol_id_range)
-            .zip(self.object.dynamic_symbols())
+            .zip(self.object.symbols.iter())
         {
             if let Some(res) = resolution {
-                write_dynamic_symtab_entry(&symbol, &mut dynsym, &mut strtab)?;
+                write_dynamic_symtab_entry(self.object, symbol, &mut dynsym, &mut strtab)?;
 
                 plt_got_writer
                     .process_resolution(res, &mut relocation_writer)
@@ -1903,7 +1895,8 @@ impl<'data> DynamicLayout<'data> {
 }
 
 fn write_dynamic_symtab_entry(
-    symbol: &crate::elf::Symbol,
+    object: &crate::elf::File<'_>,
+    symbol: &SymtabEntry,
     dynsym: &mut &mut [SymtabEntry],
     strtab: &mut StrTabWriter,
 ) -> Result {
@@ -1913,20 +1906,14 @@ fn write_dynamic_symtab_entry(
     sym_out.st_name.set(
         e,
         strtab
-            .write_str(symbol.name_bytes()?)
+            .write_str(object.symbol_name(symbol)?)
             .try_into()
             .context(".dynstr is too big")?,
     );
-    let object::SymbolFlags::Elf {
-        mut st_info,
-        st_other,
-    } = symbol.flags()
-    else {
-        unreachable!()
-    };
     // If the symbol is an ifunc, change it to a regular func. The symbol is undefined (all the
     // symbols we write here are) and the distinction between a regular function and an ifunc only
     // makes sense in the file that defines the symbol.
+    let mut st_info = symbol.st_info();
     if st_info & elf::SYMBOL_TYPE_MASK == elf::SYMBOL_TYPE_IFUNC {
         st_info = (st_info & elf::SYMBOL_VISIBILITY_MASK) | elf::SYMBOL_TYPE_FUNC;
     }
@@ -1934,7 +1921,7 @@ fn write_dynamic_symtab_entry(
     // symbol, then we should upgrade the symbol strength to global. Right now, we don't pass
     // whether the symbol is weak or not when requesting symbols.
     sym_out.st_info = st_info;
-    sym_out.st_other = st_other;
+    sym_out.st_other = symbol.st_other();
     sym_out.st_size.set(e, 0);
     Ok(())
 }
