@@ -89,9 +89,6 @@ pub(crate) enum Binding {
     Weak = 2,
 }
 
-pub(crate) const RELA_ADDRESS_OFFSET: usize = 0;
-pub(crate) const RELA_ADDEND_OFFSET: usize = 16;
-
 #[allow(unused)]
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 #[repr(u32)]
