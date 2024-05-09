@@ -480,29 +480,12 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         Ok(())
     }
 
-    fn write_ifunc_relocation(
-        &mut self,
-        rel: &crate::layout::IfuncRelocation,
-        relocation_writer: &mut DynamicRelocationWriter,
-    ) -> Result {
+    fn write_ifunc_relocation(&mut self, rel: &crate::layout::IfuncRelocation) -> Result {
         let out = slice_take_prefix_mut(&mut self.rela_plt, 1);
         let out = &mut out[0];
         let e = LittleEndian;
-        if relocation_writer.is_active {
-            relocation_writer.write_relocation(
-                rel.relocation_address + elf::RELA_ADDEND_OFFSET as u64,
-                ResolutionValue::Address(rel.resolver),
-                0,
-            )?;
-            relocation_writer.write_relocation(
-                rel.relocation_address + elf::RELA_ADDRESS_OFFSET as u64,
-                ResolutionValue::Address(rel.got_address),
-                0,
-            )?;
-        } else {
-            out.r_addend.set(e, rel.resolver as i64);
-            out.r_offset.set(e, rel.got_address);
-        }
+        out.r_addend.set(e, rel.resolver as i64);
+        out.r_offset.set(e, rel.got_address);
         out.r_info
             .set(e, elf::RelocationType::IRelative as u32 as u64);
         Ok(())
@@ -680,7 +663,7 @@ impl<'data> ObjectLayout<'data> {
             }
         }
         for rel in &self.plt_relocations {
-            plt_got_writer.write_ifunc_relocation(rel, &mut relocation_writer)?;
+            plt_got_writer.write_ifunc_relocation(rel)?;
         }
         for (symbol_id, resolution) in layout.resolutions_in_range(self.symbol_id_range) {
             if let Some(res) = resolution {
@@ -1695,17 +1678,15 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |layout| layout.vma_of_section(output_section_id::RELA_PLT),
     ),
     DynamicEntryWriter::optional(
+        object::elf::DT_PLTREL,
+        |layout| layout.section_part_layouts.rela_plt.mem_size > 0,
+        |_| object::elf::DT_RELA.into(),
+    ),
+    DynamicEntryWriter::optional(
         object::elf::DT_PLTRELSZ,
         |layout| layout.section_part_layouts.rela_plt.mem_size > 0,
         |layout| layout.section_part_layouts.rela_plt.mem_size,
     ),
-    // TODO: For some reason setting this causes libc init code to segfault (libc-integration test
-    // fails).
-    // DynamicEntryWriter::optional(
-    //     object::elf::DT_PltRel,
-    //     |layout| layout.section_part_layouts.rela_plt.mem_size > 0,
-    //     |_| object::elf::DT_RELA.into(),
-    // ),
     DynamicEntryWriter::new(object::elf::DT_RELA, |layout| {
         layout.vma_of_section(output_section_id::RELA_DYN)
     }),

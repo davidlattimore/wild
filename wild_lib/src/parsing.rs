@@ -1,6 +1,7 @@
 use crate::archive_splitter::InputBytes;
 use crate::args::Args;
 use crate::args::Modifiers;
+use crate::args::OutputKind;
 use crate::elf::File;
 use crate::error::Result;
 use crate::file_kind::FileKind;
@@ -219,6 +220,14 @@ impl InternalInputObject {
                 continue;
             }
             let def = section_id.built_in_details();
+            // .rela.plt start/stop symbols are only emitted for non-relocatable executables.
+            // Emitting them for relocatable binaries causes glibc to try to call the resolver
+            // functions without taking into account that the binary has been relocated.
+            if args.output_kind != OutputKind::NonRelocatableStaticExecutable
+                && section_id == output_section_id::RELA_PLT
+            {
+                continue;
+            }
             if def.start_symbol_name.is_some() {
                 symbol_definitions.push(InternalSymDefInfo::SectionStart(section_id));
             }
