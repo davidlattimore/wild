@@ -69,6 +69,95 @@ pub(crate) struct PendingSymbol<'data> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct SymbolId(u32);
 
+/// A range of symbol IDs that are defined by the same input file.
+///
+/// This exists to translate between 3 different ways of identifying a symbol:
+/// - A `SymbolId` is a globally unique identifier for a symbol.
+/// - An `object::SymbolIndex` is an index into the ELF symbol table of the input file.
+/// - A `usize` offset is an index into our own data structures for the file.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SymbolIdRange {
+    start_symbol_id: SymbolId,
+    start_symbol_index: object::SymbolIndex,
+    num_symbols: usize,
+}
+
+impl SymbolIdRange {
+    pub(crate) fn internal(num_symbols: usize) -> SymbolIdRange {
+        SymbolIdRange {
+            start_symbol_id: SymbolId::undefined(),
+            start_symbol_index: object::SymbolIndex(0),
+            num_symbols,
+        }
+    }
+
+    pub(crate) fn epilogue(start_symbol_id: SymbolId, num_symbols: usize) -> SymbolIdRange {
+        SymbolIdRange {
+            start_symbol_id,
+            start_symbol_index: object::SymbolIndex(0),
+            num_symbols,
+        }
+    }
+
+    pub(crate) fn input(
+        start_symbol_id: SymbolId,
+        start_symbol_index: object::SymbolIndex,
+        num_symbols: usize,
+    ) -> SymbolIdRange {
+        SymbolIdRange {
+            start_symbol_id,
+            start_symbol_index,
+            num_symbols,
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.num_symbols
+    }
+
+    pub(crate) fn start(&self) -> SymbolId {
+        self.start_symbol_id
+    }
+
+    pub(crate) fn set_start(&mut self, start: SymbolId) {
+        self.start_symbol_id = start;
+    }
+
+    pub(crate) fn as_usize(&self) -> std::ops::Range<usize> {
+        self.start_symbol_id.as_usize()..self.start_symbol_id.as_usize() + self.num_symbols
+    }
+
+    pub(crate) fn offset_to_id(&self, offset: usize) -> SymbolId {
+        debug_assert!(offset < self.num_symbols);
+        self.start_symbol_id.add_usize(offset)
+    }
+
+    pub(crate) fn id_to_offset(&self, symbol_id: SymbolId) -> usize {
+        let offset = (symbol_id.0 - self.start_symbol_id.0) as usize;
+        debug_assert!(offset < self.num_symbols);
+        offset
+    }
+
+    pub(crate) fn offset_to_input(&self, offset: usize) -> object::SymbolIndex {
+        debug_assert!(offset < self.num_symbols);
+        object::SymbolIndex(self.start_symbol_index.0 + offset)
+    }
+
+    pub(crate) fn input_to_offset(&self, symbol_index: object::SymbolIndex) -> usize {
+        let offset = symbol_index.0 - self.start_symbol_index.0;
+        debug_assert!(offset < self.num_symbols);
+        offset
+    }
+
+    pub(crate) fn input_to_id(&self, symbol_index: object::SymbolIndex) -> SymbolId {
+        self.offset_to_id(self.input_to_offset(symbol_index))
+    }
+
+    pub(crate) fn id_to_input(&self, symbol_id: SymbolId) -> object::SymbolIndex {
+        self.offset_to_input(self.id_to_offset(symbol_id))
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) struct ObjectSymDefInfo {
     /// The index of the symbol within the symbol table of the object that defined it.
@@ -346,7 +435,7 @@ impl<'db, 'data> std::fmt::Display for SymbolDebug<'db, 'data> {
         let definition = self.db.definition(symbol_id);
         let file_id = self.db.file_id_for_symbol(symbol_id);
         let file = &self.db.inputs[file_id.as_usize()];
-        let local_index = symbol_id.offset_from(file.start_symbol_id());
+        let local_index = symbol_id.to_offset(file.symbol_id_range());
         if definition.is_undefined() {
             write!(f, "undefined ")?;
         }
@@ -356,7 +445,7 @@ impl<'db, 'data> std::fmt::Display for SymbolDebug<'db, 'data> {
                 InputObject::Object(o) => {
                     if let Some(section_name) = o
                         .object
-                        .symbol_by_index(object::SymbolIndex(local_index))
+                        .symbol_by_index(symbol_id.to_input(file.symbol_id_range()))
                         .ok()
                         .and_then(|symbol| symbol.section_index())
                         .and_then(|section_index| o.object.section_by_index(section_index).ok())
@@ -404,8 +493,16 @@ impl SymbolId {
         SymbolId(value)
     }
 
-    pub(crate) fn offset_from(&self, base: SymbolId) -> usize {
+    pub(crate) fn offset_from(self, base: SymbolId) -> usize {
         (self.0 - base.0) as usize
+    }
+
+    pub(crate) fn to_offset(self, range: SymbolIdRange) -> usize {
+        range.id_to_offset(self)
+    }
+
+    pub(crate) fn to_input(self, range: SymbolIdRange) -> object::SymbolIndex {
+        range.id_to_input(self)
     }
 
     pub(crate) fn is_undefined(&self) -> bool {
