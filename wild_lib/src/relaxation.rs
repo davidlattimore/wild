@@ -2,8 +2,6 @@
 //! optional for the linker to do, but it turns out that libc in some cases won't work unless
 //! they're performed. e.g. it uses GOT relocations in _start, which cannot work in a static-PIE
 //! binary because dynamic relocations haven't yet been applied to the GOT yet.
-//!
-//! For now, we only apply those relaxations that we find we need.
 
 use crate::args::OutputKind;
 use crate::resolution::ValueKind;
@@ -18,8 +16,14 @@ pub(crate) enum Relaxation {
     /// The transformation will look like `mov *x(%rip), reg` ->  `mov x, reg`.
     MovIndirectToAbsolute,
 
+    // Transforms an indirect sub to an absolute sub.
+    SubIndirectToAbsolute,
+
+    // Transforms an indirect cmp to an absolute cmp.
+    CmpIndirectToAbsolute,
+
     /// Transform a call instruction like `call *x(%rip)` -> `call x(%rip)`.
-    CallIndirectToAbsolute,
+    CallIndirectToRelative,
 
     /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
     NoOp,
@@ -44,9 +48,16 @@ impl Relaxation {
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
-        value_kind: ValueKind,
+        mut value_kind: ValueKind,
         output_kind: OutputKind,
     ) -> Option<(Self, u32)> {
+        // If our output isn't relocatable, then we can treat addresses like absolute values.
+        if output_kind == OutputKind::NonRelocatableStaticExecutable
+            && value_kind == ValueKind::Address
+        {
+            value_kind = ValueKind::Absolute;
+        }
+
         let offset = offset_in_section as usize;
         // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
         // because fetching it contains potential error paths, the optimiser probably can't optimise
@@ -61,27 +72,30 @@ impl Relaxation {
                 if rex != 0x48 && rex != 0x4c {
                     return None;
                 }
-                let kind = match (b1, value_kind, output_kind) {
-                    (0x8b, ValueKind::Address, OutputKind::NonRelocatableStaticExecutable) => {
-                        (Relaxation::MovIndirectToAbsolute, object::elf::R_X86_64_32)
-                    }
-                    (0x8b, ValueKind::Address, _) => {
+                let kind = match (b1, value_kind) {
+                    (0x8b, ValueKind::Address) => {
                         (Relaxation::MovIndirectToLea, object::elf::R_X86_64_PC32)
                     }
-                    (0x8b, ValueKind::Absolute, _) => {
+                    (0x8b, ValueKind::Absolute) => {
                         (Relaxation::MovIndirectToAbsolute, object::elf::R_X86_64_32)
+                    }
+                    (0x2b, ValueKind::Absolute) => {
+                        (Relaxation::SubIndirectToAbsolute, object::elf::R_X86_64_32)
+                    }
+                    (0x3b, ValueKind::Absolute) => {
+                        (Relaxation::CmpIndirectToAbsolute, object::elf::R_X86_64_32)
                     }
                     _ => return None,
                 };
                 return Some(kind);
             }
             object::elf::R_X86_64_GOTPCRELX => {
-                if offset < 2 || value_kind != ValueKind::Address {
+                if offset < 2 {
                     return None;
                 }
-                match section_bytes[offset - 2..offset] {
-                    [0xff, 0x15] => (
-                        Relaxation::CallIndirectToAbsolute,
+                match (&section_bytes[offset - 2..offset], value_kind) {
+                    ([0xff, 0x15], ValueKind::Absolute | ValueKind::Address) => (
+                        Relaxation::CallIndirectToRelative,
                         object::elf::R_X86_64_PC32,
                     ),
                     _ => return None,
@@ -143,9 +157,26 @@ impl Relaxation {
                 *mod_rm = (*mod_rm >> 3) & 0x7 | 0xc0;
                 *addend = 0;
             }
-            Relaxation::CallIndirectToAbsolute => {
-                section_bytes[offset - 2..offset].copy_from_slice(&[0x67, 0xe8]);
+            Relaxation::SubIndirectToAbsolute => {
+                // Turn a PC-relative sub into an absolute sub.
+                let rex = section_bytes[offset - 3];
+                section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
+                section_bytes[offset - 2] = 0x81;
+                let mod_rm = &mut section_bytes[offset - 1];
+                *mod_rm = (*mod_rm >> 3) & 0x7 | 0xe8;
                 *addend = 0;
+            }
+            Relaxation::CmpIndirectToAbsolute => {
+                // Turn a PC-relative cmp into an absolute cmp.
+                let rex = section_bytes[offset - 3];
+                section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
+                section_bytes[offset - 2] = 0x81;
+                let mod_rm = &mut section_bytes[offset - 1];
+                *mod_rm = (*mod_rm >> 3) & 0x7 | 0xf8;
+                *addend = 0;
+            }
+            Relaxation::CallIndirectToRelative => {
+                section_bytes[offset - 2..offset].copy_from_slice(&[0x67, 0xe8]);
             }
             Relaxation::TlsGdToLocalExec => {
                 section_bytes[offset - 4..offset + 8]
