@@ -1758,7 +1758,6 @@ enum DynamicRelocationKind {
 #[derive(Clone, Copy, Debug)]
 enum RelocationLayoutActionKind {
     LoadSymbol(SymbolId, TargetResolutionKind),
-    LoadSection(object::SectionIndex, TargetResolutionKind),
 }
 
 impl RelocationLayoutAction {
@@ -1817,39 +1816,6 @@ impl RelocationLayoutAction {
         Ok(relocation_layout_action)
     }
 
-    // TODO: Is this needed? It doesn't work for relocations that reference section symbols.
-    #[allow(dead_code)]
-    fn for_section(
-        rel: &elf::Rela,
-        rel_offset: u64,
-        section: &elf::Section,
-        args: &Args,
-        local_section_index: object::SectionIndex,
-    ) -> Result<RelocationLayoutAction, Error> {
-        let mut r_type = rel.r_type(LittleEndian, false);
-        if let Some((_relaxation, new_r_type)) = Relaxation::new(
-            r_type,
-            section.data()?,
-            rel_offset,
-            ValueKind::Address,
-            args.output_kind,
-        ) {
-            r_type = new_r_type;
-        }
-        let rel_info = RelocationKindInfo::from_raw(r_type)?;
-        let resolution_kind = TargetResolutionKind::new(rel_info.kind)?;
-        let dynamic_relocation_kind =
-            if args.is_relocatable() && matches!(rel_info.kind, RelocationKind::Absolute) {
-                DynamicRelocationKind::Relative
-            } else {
-                DynamicRelocationKind::None
-            };
-        Ok(RelocationLayoutAction {
-            kind: RelocationLayoutActionKind::LoadSection(local_section_index, resolution_kind),
-            dynamic_relocation_kind,
-        })
-    }
-
     fn apply(
         &self,
         resources: &GraphResources<'_, '_>,
@@ -1868,13 +1834,6 @@ impl RelocationLayoutAction {
                         state.common.symbol_states[local_sym_index] = resolution_kind;
                     }
                 }
-            }
-            RelocationLayoutActionKind::LoadSection(local_section_index, resolution_kind) => {
-                // TODO: See if it's worthwhile checking if we've already loaded the section.
-                state.sections_required.push(SectionRequest {
-                    id: local_section_index,
-                    resolution_kind,
-                });
             }
         }
         match self.dynamic_relocation_kind {
