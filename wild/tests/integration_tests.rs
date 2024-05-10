@@ -521,8 +521,7 @@ fn build_obj(filename: &str, variant: &Variant, placement: FilePlacement) -> Res
                 .env("WILD_SAVE_SKIP_LINKING", "1")
                 .arg("+nightly")
                 .args(["-C", "linker=clang"])
-                .args(["-C", &format!("link-arg=--ld-path={wild}")])
-                .args(["-o", "/dev/null"]);
+                .args(["-C", &format!("link-arg=--ld-path={wild}")]);
         }
     }
     command.arg(&src_path);
