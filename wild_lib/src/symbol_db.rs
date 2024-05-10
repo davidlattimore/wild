@@ -366,7 +366,7 @@ fn load_symbols_from_file<'data>(
                     |sym| match sym.section() {
                         object::SymbolSection::Absolute => ValueKind::Absolute,
                         _ => {
-                            if sym.raw_symbol().st_info & crate::elf::SYMBOL_TYPE_MASK
+                            if sym.elf_symbol().st_info & crate::elf::SYMBOL_TYPE_MASK
                                 == crate::elf::SYMBOL_TYPE_IFUNC
                             {
                                 ValueKind::IFunc

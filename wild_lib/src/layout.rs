@@ -933,6 +933,7 @@ impl<'data> Layout<'data> {
     }
 
     pub(crate) fn layout_data(&self) -> linker_layout::Layout {
+        let e = object::LittleEndian;
         let files = self
             .file_layouts
             .iter()
@@ -948,16 +949,16 @@ impl<'data> Layout<'data> {
                     sections: obj
                         .section_resolutions
                         .iter()
-                        .zip(obj.object.sections())
+                        .zip(obj.object.elf_section_table().iter())
                         .zip(&obj.sections)
                         .map(|((maybe_res, section), section_slot)| {
                             maybe_res.and_then(|res| {
                                 (matches!(section_slot, SectionSlot::Loaded(..))
-                                    && section.size() > 0)
+                                    && section.sh_size.get(e) > 0)
                                     .then(|| {
                                         let address = res.value.address().unwrap();
                                         linker_layout::Section {
-                                            mem_range: address..(address + section.size()),
+                                            mem_range: address..(address + section.sh_size.get(e)),
                                         }
                                     })
                             })
@@ -2772,7 +2773,7 @@ fn symbol_is_in_discarded_section(sym: &crate::elf::Symbol, sections: &[SectionS
 
 /// Returns whether the supplied symbol can be exported when we're outputting a shared object.
 pub(crate) fn can_export_symbol(sym: crate::elf::Symbol) -> bool {
-    sym.is_definition() && sym.is_global() && sym.raw_symbol().st_visibility() == 0
+    sym.is_definition() && sym.is_global() && sym.elf_symbol().st_visibility() == 0
 }
 
 impl MergedStringStartAddresses {
