@@ -34,6 +34,11 @@ use std::ops::Range;
 
 const BIT_CLASS: u32 = 64;
 
+/// Whether to resolve section names when processing a pointer that we're not sure what it points
+/// to. This is off by default because we sometimes put things into sections with different names
+/// and we're OK with that at the moment.
+const RESOLVE_SECTION_NAMES: bool = false;
+
 /// A placeholder value that we substitute for a relative or absolute address in order to make two
 /// or more instructions equivalent.
 const PLACEHOLDER: u64 = 0xaaa;
@@ -98,6 +103,17 @@ impl<'data> FunctionVersions<'data> {
         {
             return true;
         }
+        // For now, if we have duplicate definitions, we just accept them so long as each file has
+        // the same number of duplicates.
+        if let Some(SymbolResolution::Duplicate(n)) = self.resolutions.first() {
+            return self.resolutions.iter().all(|r| {
+                if let SymbolResolution::Duplicate(n2) = r {
+                    n2 == n
+                } else {
+                    false
+                }
+            });
+        };
         let mut disassemblers = self
             .resolutions
             .iter()
@@ -400,11 +416,11 @@ enum AddressResolution<'data> {
     ProgramHeaderOffset(u64),
     TlsIdentifier(SymbolName<'data>),
     Null,
+    UndefinedTls,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 struct RawMemory<'data> {
-    first_byte: u8,
     segment_details: SegmentDetails,
     section_name: Option<&'data [u8]>,
 }
@@ -475,6 +491,7 @@ impl<'data> AddressIndex<'data> {
             info.iplt_error = Some(error);
         }
         info.index_plt_entries(object);
+        info.index_undefined_tls(object);
 
         info
     }
@@ -691,6 +708,13 @@ impl<'data> AddressIndex<'data> {
         }
         Ok(())
     }
+
+    fn index_undefined_tls(&mut self, object: &ElfFile64) {
+        // Undefined weak references to TLS variables end up with an offset that is the negative of
+        // address of the TCB, which is the end of the TLS segment with 8-byte alignment applied.
+        let undefined_tls = 0_u64.wrapping_sub(get_tls_end_address(object));
+        self.add_resolution(undefined_tls, AddressResolution::UndefinedTls);
+    }
 }
 
 fn get_tls_segment_size(object: &ElfFile64) -> u64 {
@@ -698,6 +722,16 @@ fn get_tls_segment_size(object: &ElfFile64) -> u64 {
     for segment in object.raw_segments() {
         if segment.p_type(e) == object::elf::PT_TLS {
             return segment.p_memsz(e).next_multiple_of(8);
+        }
+    }
+    0
+}
+
+fn get_tls_end_address(object: &ElfFile64) -> u64 {
+    let e = LittleEndian;
+    for segment in object.raw_segments() {
+        if segment.p_type(e) == object::elf::PT_TLS {
+            return (segment.p_vaddr(e) + segment.p_memsz(e)).next_multiple_of(8);
         }
     }
     0
@@ -719,7 +753,7 @@ fn read_segment<'data>(
         let seg_len = raw_seg.p_memsz(e);
         let seg_end = seg_address + seg_len;
 
-        if seg_address <= address && address + len <= seg_end {
+        if seg_address <= address && address.saturating_add(len) <= seg_end {
             let start = (address - seg_address) as usize;
             let flags = raw_seg.p_flags(LittleEndian);
             let end = start + len as usize;
@@ -861,7 +895,7 @@ enum Line<'data> {
     Undefined,
     Duplicate(usize),
     Error(&'data anyhow::Error),
-    Instruction(Instruction),
+    Instruction(Instruction<'data>),
 }
 
 impl<'data> FunctionDef<'data> {
@@ -873,6 +907,7 @@ impl<'data> FunctionDef<'data> {
 struct AsmDecoder<'data> {
     base_address: u64,
     instruction_decoder: iced_x86::Decoder<'data>,
+    bytes: &'data [u8],
 }
 
 impl<'data> AsmDecoder<'data> {
@@ -881,34 +916,40 @@ impl<'data> AsmDecoder<'data> {
         Self {
             base_address,
             instruction_decoder: iced_x86::Decoder::new(BIT_CLASS, bytes, options),
+            bytes,
         }
     }
 }
 
 impl<'data> Iterator for AsmDecoder<'data> {
-    type Item = Instruction;
+    type Item = Instruction<'data>;
 
     fn next(&mut self) -> Option<Self::Item> {
         if !self.instruction_decoder.can_decode() {
             return None;
         }
-        let offset = self.instruction_decoder.position() as u64;
+        let offset = self.instruction_decoder.position();
         let instruction = self.instruction_decoder.decode();
+        let next_offset = self.instruction_decoder.position();
+        let bytes = &self.bytes[offset..next_offset];
         Some(Instruction {
             base_address: self.base_address,
-            offset,
+            offset: offset as u64,
             raw_instruction: instruction,
+            bytes,
         })
     }
 }
 
 #[derive(Clone, Copy)]
-struct Instruction {
+struct Instruction<'data> {
     raw_instruction: iced_x86::Instruction,
     /// The address of the start of the function that contained this instruction.
     base_address: u64,
     /// The offset of this instruction within the function.
     offset: u64,
+
+    bytes: &'data [u8],
 }
 
 #[derive(PartialEq, Eq)]
@@ -996,11 +1037,12 @@ impl<'data> UnifiedInstruction<'data> {
         // If we don't have a resolution by now, just see what byte we're pointing at.
         if resolutions.is_empty() {
             if let Some(resolution) =
-                read_segment_byte(object.elf_file, address).map(|(byte, segment_type)| {
+                read_segment_byte(object.elf_file, address).map(|(_byte, segment_type)| {
                     AddressResolution::PointerTo(RawMemory {
-                        first_byte: byte,
                         segment_details: segment_type,
-                        section_name: section_name_for_address(object.elf_file, address),
+                        section_name: RESOLVE_SECTION_NAMES
+                            .then(|| section_name_for_address(object.elf_file, address))
+                            .flatten(),
                     })
                 })
             {
@@ -1071,8 +1113,7 @@ fn split_value(instruction: &Instruction) -> Option<(iced_x86::Instruction, u64)
 fn sign_extended_memory_displacement(instruction: &iced_x86::Instruction) -> u64 {
     let value = instruction.memory_displacement64();
     match instruction.memory_displ_size() {
-        0 => 0,
-        1 => {
+        0 | 1 => {
             // Not quite sure how to interpret this, but let's just leave it as-is for now.
             value
         }
@@ -1126,6 +1167,7 @@ impl Display for AddressResolution<'_> {
                 write!(f, "PROGRAM_HEADER[0x{offset:x}]")
             }
             AddressResolution::Null => write!(f, "null"),
+            AddressResolution::UndefinedTls => write!(f, "undefined-TLS"),
         }
     }
 }
@@ -1161,11 +1203,14 @@ impl Display for Line<'_> {
     }
 }
 
-impl Display for Instruction {
+impl Display for Instruction<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut out = String::new();
         let mut formatter = iced_x86::GasFormatter::new();
         formatter.format(&self.raw_instruction, &mut out);
+        for v in self.bytes {
+            write!(f, "{v:02x} ")?;
+        }
         write!(f, "{out}")?;
         Ok(())
     }
@@ -1193,8 +1238,7 @@ impl Display for RawMemory<'_> {
         if let Some(section_name) = self.section_name {
             write!(f, " {}", String::from_utf8_lossy(section_name))?;
         }
-        write!(f, " ({})", self.segment_details)?;
-        write!(f, " containing 0x{:x}", self.first_byte)
+        write!(f, " ({})", self.segment_details)
     }
 }
 
