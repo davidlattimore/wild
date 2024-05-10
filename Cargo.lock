@@ -313,7 +313,7 @@ dependencies = [
  "clap",
  "iced-x86",
  "linker-layout",
- "object",
+ "object 0.34.0",
  "rayon",
  "symbolic-demangle",
 ]
@@ -366,6 +366,14 @@ name = "object"
 version = "0.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7090bae93f8585aad99e595b7073c5de9ba89fbd6b4e9f0cdd7a10177273ac8"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "object"
+version = "0.35.0"
+source = "git+https://github.com/gimli-rs/object?rev=017624aa70a1a52e36dbb61e693ba3c7f3bf010e#017624aa70a1a52e36dbb61e693ba3c7f3bf010e"
 dependencies = [
  "memchr",
 ]
@@ -642,7 +650,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "linker-diff",
- "object",
+ "object 0.35.0",
  "tracing",
  "wait-timeout",
  "wild_lib",
@@ -661,7 +669,7 @@ dependencies = [
  "linker-layout",
  "memchr",
  "memmap2",
- "object",
+ "object 0.35.0",
  "rayon",
  "smallvec",
  "tracing",
