@@ -9,3 +9,7 @@ debug = false
 [profile.opt-debug]
 inherits = "release"
 debug = true
+
+[patch.crates-io]
+# TODO: Remove patch once version newer than 0.35.0 is released.
+object = { git = "https://github.com/gimli-rs/object", rev = "017624aa70a1a52e36dbb61e693ba3c7f3bf010e" }
