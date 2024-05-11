@@ -1409,6 +1409,9 @@ fn write_dynamic_symbol_definitions(
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     layout: &Layout,
 ) -> Result {
+    let Some(gnu_hash_layout) = epilogue.gnu_hash_layout.as_ref() else {
+        return Ok(());
+    };
     let mut dynamic_symbol_writer = SymbolTableWriter::new_dynamic(
         epilogue.dynstr_offset_start,
         buffers,
@@ -1418,7 +1421,6 @@ fn write_dynamic_symbol_definitions(
     let (header, rest) = object::from_bytes_mut::<GnuHashHeader>(buffers.gnu_hash)
         .map_err(|_| anyhow!("Insufficient .gnu.hash allocation"))?;
     let e = LittleEndian;
-    let gnu_hash_layout = &epilogue.gnu_hash_layout;
     header.bucket_count.set(e, gnu_hash_layout.bucket_count);
     header.bloom_shift.set(e, gnu_hash_layout.bloom_shift);
     header.bloom_count.set(e, gnu_hash_layout.bloom_count);
