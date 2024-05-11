@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 linker-layout = { path = "../linker-layout" }
-object = { version = "0.34.0", default-features = false, features = [
+object = { version = "0.35.0", default-features = false, features = [
     "elf",
     "read_core",
     "std",

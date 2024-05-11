@@ -313,7 +313,7 @@ dependencies = [
  "clap",
  "iced-x86",
  "linker-layout",
- "object 0.34.0",
+ "object",
  "rayon",
  "symbolic-demangle",
 ]
@@ -359,15 +359,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfb67c6dd0fa9b00619c41c5700b6f92d5f418be49b45ddb9970fbd4569df3c8"
 dependencies = [
  "bitflags",
-]
-
-[[package]]
-name = "object"
-version = "0.34.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7090bae93f8585aad99e595b7073c5de9ba89fbd6b4e9f0cdd7a10177273ac8"
-dependencies = [
- "memchr",
 ]
 
 [[package]]
@@ -650,7 +641,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "linker-diff",
- "object 0.35.0",
+ "object",
  "tracing",
  "wait-timeout",
  "wild_lib",
@@ -669,7 +660,7 @@ dependencies = [
  "linker-layout",
  "memchr",
  "memmap2",
- "object 0.35.0",
+ "object",
  "rayon",
  "smallvec",
  "tracing",

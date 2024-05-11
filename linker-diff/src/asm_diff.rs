@@ -656,13 +656,13 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn index_headers(&mut self, elf_file: &ElfFile64) {
-        let header = elf_file.raw_header();
+        let header = elf_file.elf_header();
         let e = LittleEndian;
         let phoff = header.e_phoff.get(e);
         let phnum = header.e_phnum.get(e);
         let file_header_size =
             core::mem::size_of::<object::elf::FileHeader64<LittleEndian>>() as u64;
-        for raw_seg in elf_file.raw_segments() {
+        for raw_seg in elf_file.elf_program_headers() {
             if raw_seg.p_type(e) != object::elf::PT_LOAD {
                 continue;
             }
@@ -719,7 +719,7 @@ impl<'data> AddressIndex<'data> {
 
 fn get_tls_segment_size(object: &ElfFile64) -> u64 {
     let e = LittleEndian;
-    for segment in object.raw_segments() {
+    for segment in object.elf_program_headers() {
         if segment.p_type(e) == object::elf::PT_TLS {
             return segment.p_memsz(e).next_multiple_of(8);
         }
@@ -729,7 +729,7 @@ fn get_tls_segment_size(object: &ElfFile64) -> u64 {
 
 fn get_tls_end_address(object: &ElfFile64) -> u64 {
     let e = LittleEndian;
-    for segment in object.raw_segments() {
+    for segment in object.elf_program_headers() {
         if segment.p_type(e) == object::elf::PT_TLS {
             return (segment.p_vaddr(e) + segment.p_memsz(e)).next_multiple_of(8);
         }
@@ -744,7 +744,7 @@ fn read_segment<'data>(
     len: u64,
 ) -> Option<(Data<'data>, SegmentDetails)> {
     // This could well end up needing to be optimised if we end up caring about performance.
-    for raw_seg in elf_file.raw_segments() {
+    for raw_seg in elf_file.elf_program_headers() {
         let e = LittleEndian;
         if raw_seg.p_type(e) != object::elf::PT_LOAD {
             continue;

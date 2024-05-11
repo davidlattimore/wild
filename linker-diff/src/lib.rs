@@ -290,7 +290,7 @@ struct LoadSegments {
 impl LoadSegments {
     fn new(elf_file: &ElfFile64) -> Self {
         let segments = elf_file
-            .raw_segments()
+            .elf_program_headers()
             .iter()
             .filter_map(|raw_seg| {
                 let e = LittleEndian;
