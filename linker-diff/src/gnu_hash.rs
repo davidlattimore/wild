@@ -11,7 +11,13 @@ use object::ObjectSymbol as _;
 type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
 
 pub(crate) fn check_object(obj: &Object) -> Result {
-    let num_symbols = obj.elf_file.dynamic_symbols().count();
+    let num_symbols = obj
+        .elf_file
+        .dynamic_symbols()
+        .map(|s| s.index().0)
+        .max()
+        .unwrap_or(0)
+        + 1;
     if num_symbols == 0 {
         return Ok(());
     }
@@ -39,7 +45,14 @@ pub(crate) fn check_object(obj: &Object) -> Result {
         .map_err(|_| anyhow!("Insufficient data for .gnu.hash buckets"))?;
 
     let symbol_base = header.symbol_base.get(e);
-    let chain_count = num_symbols - symbol_base as usize;
+    let chain_count = num_symbols
+        .checked_sub(symbol_base as usize)
+        .with_context(|| {
+            format!(
+                ".gnu.hash symbol base ({symbol_base}) is greater than number of \
+                dynamic symbols ({num_symbols})"
+            )
+        })?;
     let (chains, _) = object::slice_from_bytes::<u32>(rest, chain_count).map_err(|_| {
         anyhow!(
             "Insufficient data for .gnu.hash chains. \

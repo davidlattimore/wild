@@ -196,7 +196,7 @@ impl FieldValues {
 
 fn read_file_header_fields(obj: &Object) -> Result<FieldValues> {
     let mut values = FieldValues::default();
-    let header = obj.elf_file.raw_header();
+    let header = obj.elf_file.elf_header();
     let e = LittleEndian;
     values.insert_string("ident", format!("{:?}", header.e_ident.magic));
     values.insert("type", header.e_type.get(e), Converter::None, obj);
