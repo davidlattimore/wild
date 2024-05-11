@@ -11,6 +11,7 @@ use crate::Report;
 use crate::Result;
 use anyhow::anyhow;
 use anyhow::bail;
+use anyhow::Context;
 use iced_x86::Formatter as _;
 use iced_x86::OpKind;
 use object::read::elf::ElfSection64;
@@ -75,6 +76,36 @@ pub(crate) fn validate_iplt(object: &Object) -> Result {
     if let Some(error) = &object.address_index.iplt_error {
         bail!("{error}");
     }
+    Ok(())
+}
+
+pub(crate) fn validate_dyn(object: &Object) -> Result {
+    if let Some(error) = &object.address_index.dyn_error {
+        bail!("{error}");
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_got_plt(object: &Object) -> Result {
+    let Some(dynamic) = object.address_index.dynamic_segment_address else {
+        return Ok(());
+    };
+    let got_plt_sec = object
+        .elf_file
+        .section_by_name(".got.plt")
+        .context(".got.plt missing")?;
+    let got_plt: &[u64] = object::slice_from_all_bytes(got_plt_sec.data()?)
+        .map_err(|_| anyhow!("Invalid .got.plt"))?;
+    if got_plt.len() < 3 {
+        bail!(".got.plt is too short");
+    }
+    if got_plt[0] != dynamic {
+        bail!("First entry of .got.plt should point to .dynamic");
+    }
+    if got_plt[1] != 0 || got_plt[2] != 0 {
+        bail!(".got.plt[1] and .got.plt[2] are reserved and should be zero");
+    }
+
     Ok(())
 }
 
@@ -461,8 +492,12 @@ pub(crate) struct AddressIndex<'data> {
     name_to_address: HashMap<&'data [u8], u64>,
     tls_by_offset: HashMap<u64, &'data [u8]>,
     iplt_error: Option<anyhow::Error>,
+    dyn_error: Option<anyhow::Error>,
     file_header_addresses: Range<u64>,
     program_header_addresses: Range<u64>,
+    jmprel_address: Option<u64>,
+    jmprel_size: Option<u64>,
+    dynamic_segment_address: Option<u64>,
 }
 
 struct FunctionDef<'data> {
@@ -477,10 +512,17 @@ impl<'data> AddressIndex<'data> {
             name_to_address: Default::default(),
             tls_by_offset: Default::default(),
             iplt_error: None,
+            dyn_error: None,
             file_header_addresses: Default::default(),
             program_header_addresses: Default::default(),
+            jmprel_address: None,
+            jmprel_size: None,
+            dynamic_segment_address: None,
         };
 
+        if let Err(error) = info.index_dynamic(object) {
+            info.dyn_error = Some(error);
+        }
         info.index_headers(object);
         info.address_resolutions
             .insert(0, vec![AddressResolution::Null]);
@@ -623,10 +665,9 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn index_ifuncs(&mut self, elf_file: &ElfFile64) -> Result {
-        let start = self.symbol_address("__rela_iplt_start")?;
-        let end = self.symbol_address("__rela_iplt_end")?;
-        let iplt_bytes = read_bytes(elf_file, start, end - start)
-            .ok_or_else(|| anyhow!("IPLT start/stop refer to invalid file range"))?;
+        let Some(iplt_bytes) = self.iplt_bytes(elf_file)? else {
+            return Ok(());
+        };
         let iplt: &[Rela64] = slice_from_all_bytes(iplt_bytes);
         let e = LittleEndian;
         for relocation in iplt {
@@ -647,8 +688,24 @@ impl<'data> AddressIndex<'data> {
         Ok(())
     }
 
+    fn iplt_bytes(&self, elf_file: &ElfFile64<'data>) -> Result<Option<&'data [u8]>> {
+        // Non-relocatable static binaries use symbols to determine the location of the IPLT
+        // relocations.
+        if let (Ok(start), Ok(end)) = (
+            self.symbol_address("__rela_iplt_start"),
+            self.symbol_address("__rela_iplt_end"),
+        ) {
+            return Ok(read_bytes(elf_file, start, end - start));
+        }
+        // Everything else uses entries in the DYNAMIC segment.
+        if let (Some(start), Some(len)) = (self.jmprel_address, self.jmprel_size) {
+            return Ok(read_bytes(elf_file, start, len));
+        }
+        Ok(None)
+    }
+
     /// Returns memory address of the symbol with the specified name.
-    fn symbol_address(&mut self, symbol_name: &str) -> Result<u64> {
+    fn symbol_address(&self, symbol_name: &str) -> Result<u64> {
         self.name_to_address
             .get(symbol_name.as_bytes())
             .ok_or_else(|| anyhow!("Global symbol `{symbol_name}` is not defined"))
@@ -714,6 +771,33 @@ impl<'data> AddressIndex<'data> {
         // address of the TCB, which is the end of the TLS segment with 8-byte alignment applied.
         let undefined_tls = 0_u64.wrapping_sub(get_tls_end_address(object));
         self.add_resolution(undefined_tls, AddressResolution::UndefinedTls);
+    }
+
+    fn index_dynamic(&mut self, object: &ElfFile64) -> Result {
+        let e = LittleEndian;
+        let dynamic_segment = object
+            .elf_program_headers()
+            .iter()
+            .find(|seg| seg.p_type(LittleEndian) == object::elf::PT_DYNAMIC);
+        self.dynamic_segment_address = dynamic_segment.map(|seg| seg.p_vaddr(e));
+        dynamic_segment
+            .and_then(|seg| seg.data(LittleEndian, object.data()).ok())
+            .and_then(|dynamic_table_data| {
+                object::slice_from_all_bytes::<object::elf::Dyn64<LittleEndian>>(dynamic_table_data)
+                    .ok()
+            })
+            .unwrap_or_default()
+            .iter()
+            .for_each(|entry| match entry.d_tag.get(e) as u32 {
+                object::elf::DT_JMPREL => {
+                    self.jmprel_address = Some(entry.d_val.get(e));
+                }
+                object::elf::DT_PLTRELSZ => {
+                    self.jmprel_size = Some(entry.d_val.get(e));
+                }
+                _ => {}
+            });
+        Ok(())
     }
 }
 

@@ -1,14 +1,14 @@
 // This test links against libc and checks that various things work as expected.
 
-//#DiffIgnore:asm.*
-//#DiffIgnore:iplt
+//#DiffIgnore:.got.plt
 //#DiffIgnore:.dynamic.*
+//#DiffIgnore:asm.*
 //#CompArgs:debug:-g
-//#LinkArgs:clang-static:--cc=clang -static -Wl,--strip-debug
-//#LinkArgs:clang-static-pie:--cc=clang -static-pie -Wl,--strip-debug
-//#LinkArgs:gcc-static:--cc=gcc -static -Wl,--strip-debug
-//#LinkArgs:gcc-static-pie:--cc=gcc -static-pie -Wl,--strip-debug
-//#LinkArgs:gcc-dynamic:--cc=gcc -dynamic -Wl,--strip-debug
+//#LinkArgs:clang-static:--cc=clang -static -Wl,--strip-debug -Wl,--gc-sections
+//#LinkArgs:clang-static-pie:--cc=clang -static-pie -Wl,--strip-debug -Wl,--gc-sections
+//#LinkArgs:gcc-static:--cc=gcc -static -Wl,--strip-debug -Wl,--gc-sections
+//#LinkArgs:gcc-static-pie:--cc=gcc -static-pie -Wl,--strip-debug -Wl,--gc-sections
+//#LinkArgs:gcc-dynamic:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections
 
 #include <stdlib.h>
 #include <string.h>

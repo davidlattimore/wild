@@ -206,6 +206,8 @@ impl Report {
     fn run_on_objects(&mut self, objects: &[Object]) {
         validate_objects(self, objects, ".gnu.hash", gnu_hash::check_object);
         validate_objects(self, objects, "iplt", asm_diff::validate_iplt);
+        validate_objects(self, objects, "dyn", asm_diff::validate_dyn);
+        validate_objects(self, objects, ".got.plt", asm_diff::validate_got_plt);
         header_diff::check_dynamic_headers(self, objects);
         header_diff::check_file_headers(self, objects);
         asm_diff::report_function_diffs(self, objects);
