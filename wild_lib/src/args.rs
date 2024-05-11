@@ -33,6 +33,7 @@ pub(crate) struct Args {
     pub(crate) debug_address: Option<u64>,
     pub(crate) bind_now: bool,
     pub(crate) write_layout: bool,
+    pub(crate) hash_style: Option<HashStyle>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +66,11 @@ pub(crate) struct Input {
 pub(crate) enum InputSpec {
     File(Box<Path>),
     Lib(Box<str>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HashStyle {
+    Gnu,
 }
 
 pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
@@ -121,6 +127,7 @@ impl Args {
         let mut version_script_path = None;
         let mut debug_address = None;
         let mut bind_now = false;
+        let mut hash_style = None;
         // Skip program name
         input.next();
         while let Some(arg) = input.next() {
@@ -151,6 +158,7 @@ impl Args {
             } else if arg == "--no-dynamic-linker" {
                 dynamic_linker = None;
             } else if let Some(style) = arg.strip_prefix("--hash-style=") {
+                hash_style = Some(HashStyle::Gnu);
                 if style != "gnu" {
                     bail!("Unsupported hash-style `{style}`");
                 }
@@ -243,6 +251,9 @@ impl Args {
                 OutputKind::NonRelocatableStaticExecutable
             }
         });
+        if output_kind == OutputKind::NonRelocatableStaticExecutable {
+            hash_style = None;
+        }
         save_dir.finish()?;
         Ok(Args {
             lib_search_path,
@@ -264,6 +275,7 @@ impl Args {
             debug_address,
             bind_now,
             write_layout,
+            hash_style,
         })
     }
 

@@ -5,6 +5,7 @@
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::args::Args;
+use crate::args::HashStyle;
 use crate::args::OutputKind;
 use crate::debug_assert_bail;
 use crate::elf;
@@ -262,7 +263,7 @@ pub(crate) struct EpilogueLayoutState<'data> {
     internal_symbols: InternalSymbols,
 
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
-    gnu_hash_layout: GnuHashLayout,
+    gnu_hash_layout: Option<GnuHashLayout>,
 }
 
 #[derive(Default)]
@@ -278,7 +279,7 @@ pub(crate) struct EpilogueLayout<'data> {
     pub(crate) file_sizes: OutputSectionPartMap<usize>,
     pub(crate) internal_symbols: InternalSymbols,
     pub(crate) strings_offset_start: u32,
-    pub(crate) gnu_hash_layout: GnuHashLayout,
+    pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     pub(crate) dynstr_offset_start: u32,
 }
@@ -2226,7 +2227,7 @@ impl<'data> EpilogueLayoutState<'data> {
                 start_symbol_id: input_state.start_symbol_id,
             },
             dynamic_symbol_definitions: Default::default(),
-            gnu_hash_layout: Default::default(),
+            gnu_hash_layout: None,
         }
     }
 
@@ -2245,27 +2246,35 @@ impl<'data> EpilogueLayoutState<'data> {
         let num_defs = self.dynamic_symbol_definitions.len();
         // Our number of buckets is computed somewhat arbitrarily so that we have on average 2
         // symbols per bucket, but then we round up to a power of two.
-        self.gnu_hash_layout.bucket_count = (num_defs / 2).next_power_of_two() as u32;
-        self.gnu_hash_layout.bloom_shift = 6;
-        self.gnu_hash_layout.bloom_count = 1;
-        // Sort by bucket. Tie-break by name for determinism.
-        self.dynamic_symbol_definitions
-            .sort_by_key(|d| (self.gnu_hash_layout.bucket_for_hash(d.hash), d.name));
-        self.common.mem_sizes.dynstr += self
-            .dynamic_symbol_definitions
-            .iter()
-            .map(|n| n.name.len() + 1)
-            .sum::<usize>() as u64;
-        self.common.mem_sizes.dynsym +=
-            (self.dynamic_symbol_definitions.len() * size_of::<elf::SymtabEntry>()) as u64;
-
-        // .gnu.hash
-        let num_blume = 1;
-        self.common.mem_sizes.gnu_hash += (core::mem::size_of::<elf::GnuHashHeader>()
-            + core::mem::size_of::<u64>() * num_blume
-            + core::mem::size_of::<u32>() * self.gnu_hash_layout.bucket_count as usize
-            + core::mem::size_of::<u32>() * num_defs)
-            as u64;
+        if symbol_db.args.hash_style == Some(HashStyle::Gnu) {
+            let gnu_hash_layout = GnuHashLayout {
+                bucket_count: (num_defs / 2).next_power_of_two() as u32,
+                bloom_shift: 6,
+                bloom_count: 1,
+                // `symbol_base` is set later in `finalise_layout`.
+                symbol_base: 0,
+            };
+            // Sort by bucket. Tie-break by name for determinism.
+            self.dynamic_symbol_definitions
+                .sort_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
+            self.common.mem_sizes.dynstr += self
+                .dynamic_symbol_definitions
+                .iter()
+                .map(|n| n.name.len() + 1)
+                .sum::<usize>() as u64;
+            self.common.mem_sizes.dynsym +=
+                (self.dynamic_symbol_definitions.len() * size_of::<elf::SymtabEntry>()) as u64;
+            // .gnu.hash
+            let num_blume = 1;
+            self.common.mem_sizes.gnu_hash += (core::mem::size_of::<elf::GnuHashHeader>()
+                + core::mem::size_of::<u64>() * num_blume
+                + core::mem::size_of::<u32>() * gnu_hash_layout.bucket_count as usize
+                + core::mem::size_of::<u32>() * num_defs)
+                as u64;
+            self.gnu_hash_layout = Some(gnu_hash_layout);
+        } else if !self.dynamic_symbol_definitions.is_empty() {
+            bail!("Dynamic linking requires that --hash-style is specified");
+        }
 
         Ok(())
     }
@@ -2294,13 +2303,15 @@ impl<'data> EpilogueLayoutState<'data> {
             .context("Symbol string table overflowed 32 bits")?;
 
         let strings_offset_start = self.common.finalise_layout(memory_offsets, section_layouts);
-        self.gnu_hash_layout.symbol_base = ((memory_offsets.dynsym
-            - section_layouts
-                .built_in(output_section_id::DYNSYM)
-                .mem_offset)
-            / elf::SYMTAB_ENTRY_SIZE)
-            .try_into()
-            .context("Too many dynamic symbols")?;
+        if let Some(gnu_hash_layout) = self.gnu_hash_layout.as_mut() {
+            gnu_hash_layout.symbol_base = ((memory_offsets.dynsym
+                - section_layouts
+                    .built_in(output_section_id::DYNSYM)
+                    .mem_offset)
+                / elf::SYMTAB_ENTRY_SIZE)
+                .try_into()
+                .context("Too many dynamic symbols")?;
+        }
         Ok(EpilogueLayout {
             file_sizes: compute_file_sizes(&self.common.mem_sizes, output_sections),
             mem_sizes: self.common.mem_sizes,
