@@ -471,7 +471,7 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         if !self.got.is_empty() || !self.plt.is_empty() {
             bail!(
                 "Unused PLT/GOT entries remain: GOT={}, PLT={}",
-                self.got.len() as u64 / elf::GOT_ENTRY_SIZE,
+                self.got.len() as u64,
                 self.plt.len() as u64 / elf::PLT_ENTRY_SIZE
             );
         }

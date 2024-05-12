@@ -365,34 +365,32 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         let symbol_id = symbol_request.symbol_id;
         let local_index = symbol_request.symbol_id.to_offset(self.symbol_id_range());
         let mut common = self.common_mut();
-        if local_index >= common.symbol_states.len() {
-            bail!(
-                "Internal error: Requested `{}` from `{self}`, \
-                 but local index {local_index} >= {}",
-                resources.symbol_db.symbol_debug(symbol_id),
-                common.symbol_states.len()
-            );
-        }
+        let mut target_resolution_kind = symbol_request.target_resolution_kind;
         if common.symbol_states[local_index] == TargetResolutionKind::None {
             let symbol_kind = self.load_symbol(symbol_id, local_index, resources, queue)?;
             if symbol_kind == SymbolKind::IFunc {
-                common = self.common_mut();
-                common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
-                common.mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
-                common.symbol_states[local_index] = TargetResolutionKind::IFunc;
-            } else {
-                common = self.common_mut();
-                common.symbol_states[local_index] = TargetResolutionKind::Value;
+                target_resolution_kind = TargetResolutionKind::IFunc;
             }
         }
-        match symbol_request.target_resolution_kind {
-            TargetResolutionKind::Got | TargetResolutionKind::Plt => {
-                if common.symbol_states[local_index] < TargetResolutionKind::Got {
-                    common.symbol_states[local_index] = TargetResolutionKind::Got;
+        common = self.common_mut();
+        common.symbol_states[local_index] =
+            common.symbol_states[local_index].max(target_resolution_kind);
+        Ok(())
+    }
+
+    fn finalise_symbol_sizes(&mut self, symbol_db: &SymbolDb) {
+        let symbol_id_range = self.symbol_id_range();
+        let common = self.common_mut();
+        for (local_index, sym_state) in common.symbol_states.iter().enumerate() {
+            let symbol_id = symbol_id_range.offset_to_id(local_index);
+            if !symbol_db.is_definition(symbol_id) {
+                continue;
+            }
+            match sym_state {
+                TargetResolutionKind::Got | TargetResolutionKind::Plt => {
                     common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                    if resources.symbol_db.args.is_relocatable() {
-                        match resources.symbol_db.symbol_value_kind(symbol_id) {
+                    if symbol_db.args.is_relocatable() {
+                        match symbol_db.symbol_value_kind(symbol_id) {
                             ValueKind::Address => {
                                 common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
                             }
@@ -403,35 +401,24 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                             ValueKind::Absolute => {}
                         }
                     }
+                    if matches!(sym_state, TargetResolutionKind::Plt) {
+                        common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
+                    }
                 }
-                if matches!(
-                    symbol_request.target_resolution_kind,
-                    TargetResolutionKind::Plt
-                ) && common.symbol_states[local_index] < TargetResolutionKind::Plt
-                {
-                    common.symbol_states[local_index] = TargetResolutionKind::Plt;
-                    common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
-                }
-            }
-            TargetResolutionKind::GotTlsOffset => {
-                if common.symbol_states[local_index] < TargetResolutionKind::Got {
-                    common.symbol_states[local_index] = TargetResolutionKind::GotTlsOffset;
+                TargetResolutionKind::GotTlsOffset => {
                     common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
                 }
-            }
-            TargetResolutionKind::GotTlsDouble => match &common.symbol_states[local_index] {
-                TargetResolutionKind::Value => {
-                    common.symbol_states[local_index] = TargetResolutionKind::GotTlsDouble;
+                TargetResolutionKind::GotTlsDouble => {
                     common.mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
                 }
-                TargetResolutionKind::GotTlsDouble => {}
-                other => {
-                    bail!("Invalid state transition {other:?} -> TlsGot");
+                TargetResolutionKind::IFunc => {
+                    common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
+                    common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
+                    common.mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
                 }
-            },
-            _ => {}
+                _ => {}
+            }
         }
-        Ok(())
     }
 
     fn symbol_id_range(&self) -> SymbolIdRange;
@@ -1404,12 +1391,23 @@ impl<'data, 'scope> GraphResources<'data, 'scope> {
 impl<'data> FileLayoutState<'data> {
     fn finalise_sizes(&mut self, symbol_db: &SymbolDb, output_sections: &OutputSections) -> Result {
         match self {
-            FileLayoutState::Object(s) => s
-                .finalise_sizes(symbol_db, output_sections)
-                .with_context(|| format!("finalise_sizes failed for {s}"))?,
-            FileLayoutState::Dynamic(s) => s.finalise_sizes()?,
-            FileLayoutState::Internal(s) => s.finalise_sizes(symbol_db)?,
-            FileLayoutState::Epilogue(s) => s.finalise_sizes(symbol_db)?,
+            FileLayoutState::Object(s) => {
+                s.finalise_symbol_sizes(symbol_db);
+                s.finalise_sizes(symbol_db, output_sections)
+                    .with_context(|| format!("finalise_sizes failed for {s}"))?
+            }
+            FileLayoutState::Dynamic(s) => {
+                s.finalise_symbol_sizes(symbol_db);
+                s.finalise_sizes()?
+            }
+            FileLayoutState::Internal(s) => {
+                s.finalise_symbol_sizes(symbol_db);
+                s.finalise_sizes(symbol_db)?
+            }
+            FileLayoutState::Epilogue(s) => {
+                s.finalise_symbol_sizes(symbol_db);
+                s.finalise_sizes(symbol_db)?
+            }
             FileLayoutState::NotLoaded => {}
         }
         Ok(())
@@ -1472,7 +1470,7 @@ impl<'data> FileLayoutState<'data> {
             Self::Object(s) => Some(&s.state.common),
             Self::Internal(s) => Some(&s.common),
             Self::Epilogue(s) => Some(&s.common),
-            Self::Dynamic(_) => None,
+            Self::Dynamic(s) => Some(&s.common),
             Self::NotLoaded => None,
         }
     }
@@ -1671,51 +1669,6 @@ impl<'data> Section<'data> {
             packed: unloaded.details.packed,
         };
         Ok(section)
-    }
-
-    fn allocate_required_entries(
-        &mut self,
-        request: &SectionRequest,
-        mem_sizes: &mut OutputSectionPartMap<u64>,
-        args: &Args,
-    ) -> Result {
-        if self.resolution_kind >= request.resolution_kind {
-            return Ok(());
-        }
-        match (self.resolution_kind, request.resolution_kind) {
-            (_, TargetResolutionKind::Got) => {
-                mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                if args.is_relocatable() {
-                    mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
-                }
-            }
-            (
-                TargetResolutionKind::Value | TargetResolutionKind::None,
-                TargetResolutionKind::GotTlsOffset,
-            ) => {
-                mem_sizes.got += elf::GOT_ENTRY_SIZE;
-            }
-            (TargetResolutionKind::Got, TargetResolutionKind::Plt) => {
-                mem_sizes.plt += elf::PLT_ENTRY_SIZE;
-            }
-            (_, TargetResolutionKind::Plt) => {
-                mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                if args.is_relocatable() {
-                    mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
-                }
-                mem_sizes.plt += elf::PLT_ENTRY_SIZE;
-            }
-            (
-                TargetResolutionKind::Value | TargetResolutionKind::None,
-                TargetResolutionKind::GotTlsDouble,
-            ) => {
-                mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
-            }
-            (_, TargetResolutionKind::Value) => {}
-            (a, b) => bail!("Unexpected state transition {a:?} -> {b:?}"),
-        }
-        self.resolution_kind = request.resolution_kind;
-        Ok(())
     }
 
     // How much space we take up. This is our size rounded up to the next multiple of our alignment,
@@ -1953,7 +1906,7 @@ impl<'data> InternalLayoutState<'data> {
             file_id,
             WorkItem::LoadGlobalSymbol(SymbolRequest {
                 symbol_id,
-                target_resolution_kind: Default::default(),
+                target_resolution_kind: TargetResolutionKind::Value,
             }),
         );
         Ok(())
@@ -2463,11 +2416,8 @@ impl<'data> ObjectLayoutState<'data> {
                 }
             }
             if let SectionSlot::Loaded(section) = &mut self.state.sections[section_id.0] {
-                section.allocate_required_entries(
-                    &section_request,
-                    &mut self.state.common.mem_sizes,
-                    resources.symbol_db.args,
-                )?;
+                section.resolution_kind =
+                    section.resolution_kind.max(section_request.resolution_kind);
             };
         }
         Ok(())
@@ -2477,6 +2427,34 @@ impl<'data> ObjectLayoutState<'data> {
         self.state.common.mem_sizes.resize(output_sections.len());
         if !symbol_db.args.strip_all {
             self.allocate_symtab_space(symbol_db)?;
+        }
+        let args = symbol_db.args;
+        let mem_sizes = &mut self.state.common.mem_sizes;
+        for slot in &self.state.sections {
+            if let SectionSlot::Loaded(section) = slot {
+                match section.resolution_kind {
+                    TargetResolutionKind::Got => {
+                        mem_sizes.got += elf::GOT_ENTRY_SIZE;
+                        if args.is_relocatable() {
+                            mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
+                        }
+                    }
+                    TargetResolutionKind::GotTlsOffset => {
+                        mem_sizes.got += elf::GOT_ENTRY_SIZE;
+                    }
+                    TargetResolutionKind::Plt => {
+                        mem_sizes.got += elf::GOT_ENTRY_SIZE;
+                        if args.is_relocatable() {
+                            mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
+                        }
+                        mem_sizes.plt += elf::PLT_ENTRY_SIZE;
+                    }
+                    TargetResolutionKind::GotTlsDouble => {
+                        mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
+                    }
+                    _ => {}
+                }
+            }
         }
         // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
         // that we "won".
