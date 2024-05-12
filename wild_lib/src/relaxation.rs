@@ -63,7 +63,7 @@ impl Relaxation {
         // because fetching it contains potential error paths, the optimiser probably can't optimise
         // away fetching it.
         let (kind, new_rel) = match relocation_kind {
-            object::elf::R_X86_64_REX_GOTPCRELX => {
+            object::elf::R_X86_64_REX_GOTPCRELX | object::elf::R_X86_64_GOTPCREL => {
                 if offset < 3 {
                     return None;
                 }
