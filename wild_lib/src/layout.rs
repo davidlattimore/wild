@@ -48,6 +48,7 @@ use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
+use enumflags2::BitFlags;
 use object::elf::gnu_hash;
 use object::read::elf::Rela as _;
 use object::read::elf::SectionHeader as _;
@@ -209,7 +210,7 @@ pub(crate) struct Resolution {
     pub(crate) got_address: Option<NonZeroU64>,
     pub(crate) plt_address: Option<NonZeroU64>,
     // TODO: Try to remove this.
-    pub(crate) kind: TargetResolutionKind,
+    pub(crate) kind: BitFlags<ResolutionFlag>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -295,7 +296,7 @@ pub(crate) struct ObjectLayout<'data> {
     /// The memory address of the start of this object's allocation within .eh_frame.
     pub(crate) eh_frame_start_address: u64,
     pub(crate) symbol_id_range: SymbolIdRange,
-    pub(crate) symbol_states: Vec<TargetResolutionKind>,
+    pub(crate) symbol_states: Vec<BitFlags<ResolutionFlag>>,
     pub(crate) merged_string_resolutions: Vec<Option<MergedStringResolution>>,
 }
 
@@ -366,10 +367,13 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         let local_index = symbol_request.symbol_id.to_offset(self.symbol_id_range());
         let mut common = self.common_mut();
         let mut target_resolution_kind = symbol_request.target_resolution_kind;
-        if common.symbol_states[local_index] == TargetResolutionKind::None {
+        if !common.symbol_states[local_index].contains(ResolutionFlag::Value) {
             let symbol_kind = self.load_symbol(symbol_id, local_index, resources, queue)?;
             if symbol_kind == SymbolKind::IFunc {
-                target_resolution_kind = TargetResolutionKind::IFunc;
+                target_resolution_kind = target_resolution_kind
+                    | ResolutionFlag::IFunc
+                    | ResolutionFlag::Got
+                    | ResolutionFlag::Plt;
             }
         }
         common = self.common_mut();
@@ -386,37 +390,30 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
             if !symbol_db.is_definition(symbol_id) {
                 continue;
             }
-            match sym_state {
-                TargetResolutionKind::Got | TargetResolutionKind::Plt => {
-                    common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                    if symbol_db.args.is_relocatable() {
-                        match symbol_db.symbol_value_kind(symbol_id) {
-                            ValueKind::Address => {
+            if sym_state.contains(ResolutionFlag::Got) {
+                common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
+                if sym_state.contains(ResolutionFlag::IFunc) {
+                    common.mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
+                } else if symbol_db.args.is_relocatable() {
+                    match symbol_db.symbol_value_kind(symbol_id) {
+                        ValueKind::Address => {
+                            if !sym_state.contains(ResolutionFlag::Tls) {
                                 common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
                             }
-                            ValueKind::Dynamic => {
-                                common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
-                            }
-                            ValueKind::IFunc => {}
-                            ValueKind::Absolute => {}
                         }
+                        ValueKind::Dynamic => {
+                            common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
+                        }
+                        ValueKind::IFunc => {}
+                        ValueKind::Absolute => {}
                     }
-                    if matches!(sym_state, TargetResolutionKind::Plt) {
-                        common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
-                    }
                 }
-                TargetResolutionKind::GotTlsOffset => {
-                    common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                }
-                TargetResolutionKind::GotTlsDouble => {
-                    common.mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
-                }
-                TargetResolutionKind::IFunc => {
-                    common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                    common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
-                    common.mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
-                }
-                _ => {}
+            }
+            if sym_state.contains(ResolutionFlag::Plt) {
+                common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
+            }
+            if sym_state.contains(ResolutionFlag::GotTlsModule) {
+                common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
             }
         }
     }
@@ -586,7 +583,7 @@ struct CommonLayoutState {
     /// States of each of our symbols. For symbols defined by us, this tracks whether we've done
     /// things like allocated a GOT entry for the symbol. For symbols defined in other files, it
     /// tracks whether we've asked the other file to allocate a GOT entry.
-    symbol_states: Vec<TargetResolutionKind>,
+    symbol_states: Vec<BitFlags<ResolutionFlag>>,
 
     symbol_id_range: SymbolIdRange,
 }
@@ -601,7 +598,7 @@ impl CommonLayoutState {
             file_id,
             mem_sizes: OutputSectionPartMap::with_size(output_sections.len()),
             sections_with_content: OutputSectionMap::with_size(output_sections.len()),
-            symbol_states: vec![TargetResolutionKind::None; symbol_id_range.len()],
+            symbol_states: vec![Default::default(); symbol_id_range.len()],
             symbol_id_range,
         }
     }
@@ -697,31 +694,27 @@ struct LocalWorkQueue {
 }
 
 /// What kind of resolution we want for a symbol or section.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
-pub(crate) enum TargetResolutionKind {
-    /// No resolution.
-    #[default]
-    None,
-
-    /// Just a value or address.
+#[enumflags2::bitflags]
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub(crate) enum ResolutionFlag {
+    /// The target is needed. Should always be set for any request. Clear for symbols / sections
+    /// that can be discarded.
     Value,
 
-    /// An address in the global offset table.
+    /// An address in the global offset table is needed.
     Got,
-
-    /// A TLS offset in the global offset table.
-    GotTlsOffset,
 
     /// A PLT entry and a GOT entry.
     Plt,
 
-    /// A PLT entry and a GOT entry. The GOT entry will have a relocation that will be resolved at
-    /// program startup by calling the ifunc resolver function.
+    /// A second GOT entry is needed in order to store the module number. Only set for TLS
+    /// variables.
+    GotTlsModule,
+
     IFunc,
 
-    /// A double-entry in the global offset table. Used to store the module number and offset for a
-    /// TLS variable.
-    GotTlsDouble,
+    Tls,
 }
 
 struct DynamicLayoutState<'data> {
@@ -747,7 +740,7 @@ pub(crate) struct Section<'data> {
     /// Our data. May be empty if we're in a zero-initialised section.
     pub(crate) data: &'data [u8],
     pub(crate) alignment: Alignment,
-    pub(crate) resolution_kind: TargetResolutionKind,
+    pub(crate) resolution_kind: BitFlags<ResolutionFlag>,
     packed: bool,
 }
 
@@ -802,7 +795,7 @@ enum WorkItem {
 #[derive(Copy, Clone, Debug)]
 struct SymbolRequest {
     symbol_id: SymbolId,
-    target_resolution_kind: TargetResolutionKind,
+    target_resolution_kind: BitFlags<ResolutionFlag>,
 }
 
 impl<'data> Layout<'data> {
@@ -1331,14 +1324,14 @@ impl LocalWorkQueue {
     fn send_symbol_request(
         &mut self,
         symbol_id: SymbolId,
-        plt_got_flags: TargetResolutionKind,
+        flags: BitFlags<ResolutionFlag>,
         resources: &GraphResources,
     ) -> WorkDestination {
         let symbol_definition = resources.symbol_db.definition(symbol_id);
         let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_definition);
         let symbol_request = SymbolRequest {
             symbol_id: symbol_definition,
-            target_resolution_kind: plt_got_flags,
+            target_resolution_kind: flags,
         };
         self.send_work(
             resources,
@@ -1621,7 +1614,7 @@ impl<'data> std::fmt::Display for ObjectLayout<'data> {
 
 struct SectionRequest {
     id: object::SectionIndex,
-    resolution_kind: TargetResolutionKind,
+    resolution_kind: BitFlags<ResolutionFlag>,
 }
 
 impl SectionRequest {
@@ -1665,7 +1658,7 @@ impl<'data> Section<'data> {
             alignment,
             size,
             data: section_data,
-            resolution_kind: TargetResolutionKind::None,
+            resolution_kind: Default::default(),
             packed: unloaded.details.packed,
         };
         Ok(section)
@@ -1702,7 +1695,7 @@ enum DynamicRelocationKind {
 /// An action that we need to perform if we decide to use a particular relocation.
 #[derive(Clone, Copy, Debug)]
 enum RelocationLayoutActionKind {
-    LoadSymbol(SymbolId, TargetResolutionKind),
+    LoadSymbol(SymbolId, BitFlags<ResolutionFlag>),
 }
 
 impl RelocationLayoutAction {
@@ -1745,7 +1738,7 @@ impl RelocationLayoutAction {
             r_type = new_r_type;
         }
         let rel_info = RelocationKindInfo::from_raw(r_type)?;
-        let resolution_kind = TargetResolutionKind::new(rel_info.kind)?;
+        let resolution_kind = resolution_flags(rel_info.kind);
         let dynamic_relocation_kind =
             match (args.is_relocatable(), rel_info.kind, symbol_value_kind) {
                 (true, RelocationKind::Absolute, ValueKind::Address) => {
@@ -1772,13 +1765,13 @@ impl RelocationLayoutAction {
         match self.kind {
             RelocationLayoutActionKind::LoadSymbol(symbol_id, resolution_kind) => {
                 let local_sym_index = symbol_id.to_offset(state.common.symbol_id_range);
-                if state.common.symbol_states[local_sym_index] < resolution_kind {
+                if !state.common.symbol_states[local_sym_index].contains(resolution_kind) {
                     let destination =
                         queue.send_symbol_request(symbol_id, resolution_kind, resources);
                     // For a symbol request that has a local destination, we'll update the symbol
                     // state when we process the request.
                     if destination == WorkDestination::Remote {
-                        state.common.symbol_states[local_sym_index] = resolution_kind;
+                        state.common.symbol_states[local_sym_index] |= resolution_kind;
                     }
                 }
             }
@@ -1795,22 +1788,27 @@ impl RelocationLayoutAction {
     }
 }
 
-impl TargetResolutionKind {
-    fn new(rel_kind: RelocationKind) -> Result<Self> {
-        Ok(match rel_kind {
-            RelocationKind::PltRelative => Self::Plt,
-            RelocationKind::Got | RelocationKind::GotRelative => Self::Got,
-            RelocationKind::GotTpOff => Self::GotTlsOffset,
-            RelocationKind::TlsGd | RelocationKind::TlsLd => Self::GotTlsDouble,
-            RelocationKind::Absolute => Self::Value,
-            RelocationKind::Relative => Self::Value,
-            RelocationKind::DtpOff | RelocationKind::TpOff => Self::Value,
-            RelocationKind::None => Self::Value,
-        })
-    }
-
-    pub(crate) fn needs_got_entry(&self) -> bool {
-        !matches!(self, Self::Value | Self::None)
+fn resolution_flags(rel_kind: RelocationKind) -> BitFlags<ResolutionFlag> {
+    match rel_kind {
+        RelocationKind::PltRelative => {
+            ResolutionFlag::Value | ResolutionFlag::Got | ResolutionFlag::Plt
+        }
+        RelocationKind::Got | RelocationKind::GotRelative => {
+            ResolutionFlag::Value | ResolutionFlag::Got
+        }
+        RelocationKind::GotTpOff => {
+            ResolutionFlag::Value | ResolutionFlag::Got | ResolutionFlag::Tls
+        }
+        RelocationKind::TlsGd | RelocationKind::TlsLd => {
+            ResolutionFlag::Value
+                | ResolutionFlag::Got
+                | ResolutionFlag::Tls
+                | ResolutionFlag::GotTlsModule
+        }
+        RelocationKind::Absolute => ResolutionFlag::Value.into(),
+        RelocationKind::Relative => ResolutionFlag::Value.into(),
+        RelocationKind::DtpOff | RelocationKind::TpOff => ResolutionFlag::Value.into(),
+        RelocationKind::None => ResolutionFlag::Value.into(),
     }
 }
 
@@ -1906,7 +1904,7 @@ impl<'data> InternalLayoutState<'data> {
             file_id,
             WorkItem::LoadGlobalSymbol(SymbolRequest {
                 symbol_id,
-                target_resolution_kind: TargetResolutionKind::Value,
+                target_resolution_kind: ResolutionFlag::Value.into(),
             }),
         );
         Ok(())
@@ -1957,7 +1955,7 @@ impl<'data> InternalLayoutState<'data> {
             .iter()
             .zip(self.internal_symbols.symbol_definitions.iter())
             .for_each(|(symbol_state, definition)| {
-                if *symbol_state != TargetResolutionKind::None {
+                if !symbol_state.is_empty() {
                     if let Some(section_id) = definition.section_id() {
                         keep_sections[section_id.as_usize()] = true;
                     }
@@ -2047,7 +2045,7 @@ impl<'data> InternalLayoutState<'data> {
             // If anything ever actually tries to call the PLT for an undefined symbol, it's
             // undefined behaviour, so we can put whatever pointer we like here.
             plt_address: NonZeroU64::new(0xdead),
-            kind: TargetResolutionKind::Plt,
+            kind: ResolutionFlag::Value | ResolutionFlag::Got | ResolutionFlag::Plt,
         };
         memory_offsets.got += elf::GOT_ENTRY_SIZE;
 
@@ -2105,7 +2103,7 @@ impl InternalSymbols {
             }
 
             // We don't put internal symbols in the symbol table if they aren't referenced.
-            if matches!(sym_state, TargetResolutionKind::None) {
+            if sym_state.is_empty() {
                 continue;
             }
 
@@ -2134,7 +2132,7 @@ impl InternalSymbols {
             let sym_state = &common.symbol_states[local_index];
 
             // We don't put internal symbols in the symbol table if they aren't referenced.
-            if matches!(sym_state, TargetResolutionKind::None) {
+            if sym_state.is_empty() {
                 continue;
             }
 
@@ -2432,27 +2430,20 @@ impl<'data> ObjectLayoutState<'data> {
         let mem_sizes = &mut self.state.common.mem_sizes;
         for slot in &self.state.sections {
             if let SectionSlot::Loaded(section) = slot {
-                match section.resolution_kind {
-                    TargetResolutionKind::Got => {
-                        mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                        if args.is_relocatable() {
-                            mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
-                        }
+                if section.resolution_kind.contains(ResolutionFlag::Got) {
+                    mem_sizes.got += elf::GOT_ENTRY_SIZE;
+                    if args.is_relocatable() {
+                        mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
                     }
-                    TargetResolutionKind::GotTlsOffset => {
-                        mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                    }
-                    TargetResolutionKind::Plt => {
-                        mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                        if args.is_relocatable() {
-                            mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
-                        }
-                        mem_sizes.plt += elf::PLT_ENTRY_SIZE;
-                    }
-                    TargetResolutionKind::GotTlsDouble => {
-                        mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
-                    }
-                    _ => {}
+                }
+                if section.resolution_kind.contains(ResolutionFlag::Plt) {
+                    mem_sizes.plt += elf::PLT_ENTRY_SIZE;
+                }
+                if section
+                    .resolution_kind
+                    .contains(ResolutionFlag::GotTlsModule)
+                {
+                    mem_sizes.got += elf::GOT_ENTRY_SIZE;
                 }
             }
         }
@@ -2486,9 +2477,7 @@ impl<'data> ObjectLayoutState<'data> {
             ) {
                 // If we've decided to emit the symbol even though it's not referenced (because it's
                 // in a section we're emitting), then make sure we have a resolution for it.
-                if *sym_state == TargetResolutionKind::None {
-                    *sym_state = TargetResolutionKind::Value;
-                }
+                *sym_state |= ResolutionFlag::Value;
                 if sym.is_local() {
                     num_locals += 1;
                 } else {
@@ -2545,7 +2534,7 @@ impl<'data> ObjectLayoutState<'data> {
                     // section where we're GCing stuff, but crtbegin.o and crtend.o use them in
                     // order to find the start and end of the whole .eh_frame section.
                     section_resolutions.push(Some(emitter.create_resolution(
-                        TargetResolutionKind::Value,
+                        ResolutionFlag::Value.into(),
                         ResolutionValue::Address(memory_offsets.eh_frame),
                     )?));
                 }
@@ -2562,7 +2551,7 @@ impl<'data> ObjectLayoutState<'data> {
             .enumerate()
             .zip(&self.state.common.symbol_states)
         {
-            if *symbol_state == TargetResolutionKind::None {
+            if symbol_state.is_empty() {
                 continue;
             }
             let symbol_id = symbol_id_range.input_to_id(local_symbol_index);
@@ -2646,7 +2635,7 @@ impl<'data> ObjectLayoutState<'data> {
                 self.handle_symbol_request(
                     SymbolRequest {
                         symbol_id,
-                        target_resolution_kind: TargetResolutionKind::Value,
+                        target_resolution_kind: ResolutionFlag::Value.into(),
                     },
                     resources,
                     queue,
@@ -2677,7 +2666,7 @@ impl<'data> SymbolCopyInfo<'data> {
         sym: &crate::elf::Symbol,
         symbol_id: SymbolId,
         symbol_db: &SymbolDb,
-        symbol_state: TargetResolutionKind,
+        symbol_state: BitFlags<ResolutionFlag>,
         sections: &[SectionSlot],
     ) -> Option<SymbolCopyInfo<'data>> {
         if !symbol_db.is_definition(symbol_id) {
@@ -2689,7 +2678,7 @@ impl<'data> SymbolCopyInfo<'data> {
                 return None;
             }
         }
-        if sym.is_common(LittleEndian) && symbol_state == TargetResolutionKind::None {
+        if sym.is_common(LittleEndian) && symbol_state.is_empty() {
             return None;
         }
         // Reading the symbol name is slightly expensive, so we want to do that after all the other
@@ -2903,7 +2892,7 @@ impl CommonSymbol {
 struct GlobalAddressEmitter<'state> {
     next_got_address: u64,
     next_plt_address: u64,
-    symbol_states: &'state [TargetResolutionKind],
+    symbol_states: &'state [BitFlags<ResolutionFlag>],
     symbol_db: &'state SymbolDb<'state>,
     plt_relocations: Vec<IfuncRelocation>,
     symbol_id_range: SymbolIdRange,
@@ -2934,7 +2923,7 @@ impl<'state> GlobalAddressEmitter<'state> {
 
     fn create_resolution(
         &mut self,
-        res_kind: TargetResolutionKind,
+        res_kind: BitFlags<ResolutionFlag>,
         value: ResolutionValue,
     ) -> Result<Resolution> {
         let mut resolution = Resolution {
@@ -2943,34 +2932,31 @@ impl<'state> GlobalAddressEmitter<'state> {
             plt_address: None,
             kind: res_kind,
         };
-        match res_kind {
-            TargetResolutionKind::None | TargetResolutionKind::Value => {}
-            TargetResolutionKind::Got | TargetResolutionKind::GotTlsOffset => {
-                resolution.got_address = Some(self.allocate_got());
-            }
-            TargetResolutionKind::Plt => {
-                resolution.got_address = Some(self.allocate_got());
-                resolution.plt_address = Some(self.allocate_plt());
-            }
-            TargetResolutionKind::IFunc => {
-                let got_address = self.allocate_got();
-                resolution.got_address = Some(got_address);
-                let plt_address = self.allocate_plt();
-                // An ifunc is always resolved at runtime, so we need a relocation for it.
-                self.plt_relocations.push(IfuncRelocation {
-                    resolver: value.address()?,
-                    got_address: got_address.get(),
-                });
-                // If a symbol refers to an ifunc, then direct calls needs to go via the PLT.
-                resolution.value = ResolutionValue::Iplt(plt_address.get());
-                resolution.plt_address = Some(plt_address);
-            }
-            TargetResolutionKind::GotTlsDouble => {
-                // Allocate two GOT entries, storing a pointer to the first. This double-entry is
-                // the structure expected by __tls_get_addr.
-                resolution.got_address = Some(self.allocate_got());
-                self.allocate_got();
-            }
+        if res_kind.contains(ResolutionFlag::Plt) {
+            resolution.plt_address = Some(self.allocate_plt());
+        }
+        if res_kind.contains(ResolutionFlag::Got) {
+            resolution.got_address = Some(self.allocate_got());
+        }
+        if res_kind.contains(ResolutionFlag::GotTlsModule) {
+            debug_assert!(res_kind.contains(ResolutionFlag::Got));
+            self.allocate_got();
+        }
+        if res_kind.contains(ResolutionFlag::IFunc) {
+            // IFuncs need to always have GOT and PLT entries.
+            let got_address = resolution
+                .got_address
+                .ok_or_else(|| anyhow!("Internal error: IFunc without GOT"))?;
+            let plt_address = resolution
+                .plt_address
+                .ok_or_else(|| anyhow!("Internal error: IFunc without PLT"))?;
+            // An ifunc is always resolved at runtime, so we need a relocation for it.
+            self.plt_relocations.push(IfuncRelocation {
+                resolver: value.address()?,
+                got_address: got_address.get(),
+            });
+            // If a symbol refers to an ifunc, then direct calls needs to go via the PLT.
+            resolution.value = ResolutionValue::Iplt(plt_address.get());
         }
         Ok(resolution)
     }
@@ -3096,7 +3082,7 @@ impl<'data> DynamicLayoutState<'data> {
             .zip(&self.common.symbol_states)
             .zip(resolutions_out)
         {
-            if *symbol_state == TargetResolutionKind::None {
+            if symbol_state.is_empty() {
                 continue;
             }
             *resolution =

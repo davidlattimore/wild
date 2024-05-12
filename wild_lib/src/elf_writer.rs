@@ -24,10 +24,10 @@ use crate::layout::InternalSymbols;
 use crate::layout::Layout;
 use crate::layout::ObjectLayout;
 use crate::layout::Resolution;
+use crate::layout::ResolutionFlag;
 use crate::layout::ResolutionValue;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
-use crate::layout::TargetResolutionKind;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
@@ -399,41 +399,40 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
         if let Some(got_address) = res.got_address {
-            let res_value = match res.kind {
-                TargetResolutionKind::GotTlsDouble => {
-                    let mod_got_entry = slice_take_prefix_mut(&mut self.got, 1);
-                    mod_got_entry.copy_from_slice(&[elf::CURRENT_EXE_TLS_MOD]);
-                    let offset_entry = slice_take_prefix_mut(&mut self.got, 1);
-                    // Convert the address to an offset relative to the TCB which is the end of the TLS
-                    // segment.
-                    match res.value {
-                        ResolutionValue::Address(address) => {
-                            offset_entry[0] = address.wrapping_sub(self.tls.end);
-                        }
-                        other => bail!("Unexpected resolution value {other:?}"),
+            if res.kind.contains(ResolutionFlag::GotTlsModule) {
+                let mod_got_entry = slice_take_prefix_mut(&mut self.got, 1);
+                mod_got_entry.copy_from_slice(&[elf::CURRENT_EXE_TLS_MOD]);
+                let offset_entry = slice_take_prefix_mut(&mut self.got, 1);
+                // Convert the address to an offset relative to the TCB which is the end of the TLS
+                // segment.
+                match res.value {
+                    ResolutionValue::Address(address) => {
+                        offset_entry[0] = address.wrapping_sub(self.tls.end);
                     }
-                    return Ok(());
+                    other => bail!("Unexpected resolution value {other:?}"),
                 }
-                TargetResolutionKind::GotTlsOffset => {
-                    // Convert the address to an offset relative to the TCB which is the end of the TLS
-                    // segment.
-                    match res.value {
-                        ResolutionValue::Address(address) => {
-                            if !self.tls.contains(&address) {
-                                bail!(
-                                    "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
-                                    address
-                                );
-                            }
-                            ResolutionValue::Absolute(address.wrapping_sub(self.tls.end))
+                return Ok(());
+            }
+            let mut res_value = res.value;
+            if res.kind.contains(ResolutionFlag::Tls) {
+                // Convert the address to an offset relative to the TCB which is the end of the TLS
+                // segment.
+                match res.value {
+                    ResolutionValue::Address(address) => {
+                        if !self.tls.contains(&address) {
+                            bail!(
+                                "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
+                                address
+                            );
                         }
-                        other => bail!("Unexpected resolution value {other:?}"),
+                        res_value = ResolutionValue::Absolute(address.wrapping_sub(self.tls.end));
                     }
+                    other => bail!("Unexpected resolution value {other:?}"),
                 }
-                TargetResolutionKind::IFunc => ResolutionValue::Absolute(0),
-                TargetResolutionKind::Value => res.value,
-                _ => res.value,
-            };
+            }
+            if res.kind.contains(ResolutionFlag::IFunc) {
+                res_value = ResolutionValue::Absolute(0);
+            }
             let got_entry = self.take_next_got_entry()?;
             relocation_writer.write_relocation(got_address.get(), res_value, 0)?;
             match res_value {
@@ -710,7 +709,7 @@ impl<'data> ObjectLayout<'data> {
                     )
                 })?;
         }
-        if sec.resolution_kind.needs_got_entry() {
+        if sec.resolution_kind.contains(ResolutionFlag::Got) {
             let res = self.section_resolutions[sec.index.0]
                 .as_ref()
                 .ok_or_else(|| anyhow!("Section requires GOT, but hasn't been resolved"))?;
@@ -1307,7 +1306,7 @@ impl<'data> InternalLayout<'data> {
                     value: ResolutionValue::Absolute(1),
                     got_address: Some(got_address),
                     plt_address: None,
-                    kind: TargetResolutionKind::Got,
+                    kind: ResolutionFlag::Value | ResolutionFlag::Got,
                 },
                 &mut DynamicRelocationWriter::disabled(),
             )?;
@@ -1316,7 +1315,7 @@ impl<'data> InternalLayout<'data> {
                     value: ResolutionValue::Absolute(0),
                     got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
                     plt_address: None,
-                    kind: TargetResolutionKind::Got,
+                    kind: ResolutionFlag::Value | ResolutionFlag::Got,
                 },
                 &mut DynamicRelocationWriter::disabled(),
             )?;

@@ -2,8 +2,8 @@
 
 use crate::error::Result;
 use crate::layout::Layout;
+use crate::layout::ResolutionFlag;
 use crate::layout::ResolutionValue;
-use crate::layout::TargetResolutionKind;
 use anyhow::bail;
 use anyhow::Context;
 use object::read::elf::SectionHeader as _;
@@ -65,10 +65,7 @@ fn validate_resolution(
     got_data: &[u8],
 ) -> Result {
     let res_kind = resolution.kind;
-    if matches!(
-        res_kind,
-        TargetResolutionKind::IFunc | TargetResolutionKind::GotTlsOffset
-    ) {
+    if res_kind.contains(ResolutionFlag::IFunc) || res_kind.contains(ResolutionFlag::Tls) {
         return Ok(());
     };
     if let Some(got_address) = resolution.got_address {
