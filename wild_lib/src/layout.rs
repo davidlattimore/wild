@@ -1921,6 +1921,9 @@ impl<'data> InternalLayoutState<'data> {
         Ok(())
     }
 
+    /// This function is where we determine sizes that depend on other sizes. For example, the size
+    /// of the section headers table depends on which sections we're writing which depends on which
+    /// sections are non-empty.
     fn determine_header_sizes(
         &mut self,
         total_sizes: &mut OutputSectionPartMap<u64>,
@@ -2004,23 +2007,22 @@ impl<'data> InternalLayoutState<'data> {
             active_segment_ids,
         };
 
-        // Allocate space for headers based on segment and section counts. We need to allocate both
-        // our own size record and the file totals, since they've already been computed.
-        self.common.mem_sizes.file_header = u64::from(elf::FILE_HEADER_SIZE);
-        total_sizes.file_header += self.common.mem_sizes.file_header;
+        // Allocate space for headers based on segment and section counts.
+        let mut extra_sizes = OutputSectionPartMap::with_size(self.common.mem_sizes.len());
 
-        self.common.mem_sizes.program_headers = header_info.program_headers_size();
-        total_sizes.program_headers += self.common.mem_sizes.program_headers;
-
-        self.common.mem_sizes.section_headers = header_info.section_headers_size();
-        total_sizes.section_headers += self.common.mem_sizes.section_headers;
-
-        self.common.mem_sizes.shstrtab = output_sections
+        extra_sizes.file_header = u64::from(elf::FILE_HEADER_SIZE);
+        extra_sizes.program_headers = header_info.program_headers_size();
+        extra_sizes.section_headers = header_info.section_headers_size();
+        extra_sizes.shstrtab = output_sections
             .ids_with_info()
             .filter(|(id, _info)| output_sections.output_index_of_section(*id).is_some())
             .map(|(_id, info)| info.details.name.len() as u64 + 1)
             .sum::<u64>();
-        total_sizes.shstrtab += self.common.mem_sizes.shstrtab;
+
+        // We need to allocate both our own size record and the file totals, since they've already
+        // been computed.
+        self.common.mem_sizes.merge(&extra_sizes);
+        total_sizes.merge(&extra_sizes);
 
         self.header_info = Some(header_info);
     }
