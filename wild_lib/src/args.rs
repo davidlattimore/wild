@@ -126,7 +126,10 @@ impl Args {
         let mut modifier_stack = vec![Modifiers::default()];
         let mut version_script_path = None;
         let mut debug_address = None;
-        let mut bind_now = false;
+        // Lazy binding isn't used so much these days, since it makes things less secure. It adds
+        // quite a bit of complexity and we don't properly support it. We may eventually drop
+        // support completely.
+        let mut bind_now = true;
         let mut hash_style = None;
         // Skip program name
         input.next();
