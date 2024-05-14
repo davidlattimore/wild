@@ -2,7 +2,7 @@
 
 //#DiffIgnore:.got.plt
 //#DiffIgnore:.dynamic.*
-//#DiffIgnore:asm.*
+//#DiffIgnore:asm.__sfp_handle_exceptions
 //#CompArgs:debug:-g
 //#LinkArgs:clang-static:--cc=clang -static -Wl,--strip-debug -Wl,--gc-sections
 //#LinkArgs:clang-static-pie:--cc=clang -static-pie -Wl,--strip-debug -Wl,--gc-sections

@@ -72,15 +72,8 @@ fn diff_key_for_symbol(symbol_name: &[u8]) -> String {
     format!("asm.{}", String::from_utf8_lossy(symbol_name))
 }
 
-pub(crate) fn validate_iplt(object: &Object) -> Result {
-    if let Some(error) = &object.address_index.iplt_error {
-        bail!("{error}");
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_dyn(object: &Object) -> Result {
-    if let Some(error) = &object.address_index.dyn_error {
+pub(crate) fn validate_indexes(object: &Object) -> Result {
+    if let Some(error) = &object.address_index.index_error {
         bail!("{error}");
     }
     Ok(())
@@ -491,12 +484,12 @@ pub(crate) struct AddressIndex<'data> {
     address_resolutions: HashMap<u64, Vec<AddressResolution<'data>>>,
     name_to_address: HashMap<&'data [u8], u64>,
     tls_by_offset: HashMap<u64, &'data [u8]>,
-    iplt_error: Option<anyhow::Error>,
-    dyn_error: Option<anyhow::Error>,
+    index_error: Option<anyhow::Error>,
     file_header_addresses: Range<u64>,
     program_header_addresses: Range<u64>,
     jmprel_address: Option<u64>,
     jmprel_size: Option<u64>,
+    got_plt_address: Option<u64>,
     dynamic_segment_address: Option<u64>,
 }
 
@@ -511,31 +504,33 @@ impl<'data> AddressIndex<'data> {
             address_resolutions: Default::default(),
             name_to_address: Default::default(),
             tls_by_offset: Default::default(),
-            iplt_error: None,
-            dyn_error: None,
+            index_error: None,
             file_header_addresses: Default::default(),
             program_header_addresses: Default::default(),
             jmprel_address: None,
             jmprel_size: None,
+            got_plt_address: None,
             dynamic_segment_address: None,
         };
 
-        if let Err(error) = info.index_dynamic(object) {
-            info.dyn_error = Some(error);
+        if let Err(error) = info.build_indexes(object) {
+            info.index_error = Some(error);
         }
-        info.index_headers(object);
-        info.address_resolutions
-            .insert(0, vec![AddressResolution::Null]);
-        info.index_symbols(object);
-        info.index_got(object).unwrap();
-        info.index_dynamic_relocations(object);
-        if let Err(error) = info.index_ifuncs(object) {
-            info.iplt_error = Some(error);
-        }
-        info.index_plt_entries(object);
-        info.index_undefined_tls(object);
-
         info
+    }
+
+    fn build_indexes(&mut self, object: &ElfFile64<'data>) -> Result {
+        self.index_dynamic(object)?;
+        self.index_headers(object);
+        self.address_resolutions
+            .insert(0, vec![AddressResolution::Null]);
+        self.index_symbols(object);
+        self.index_got(object).unwrap();
+        self.index_dynamic_relocations(object);
+        self.index_ifuncs(object)?;
+        self.index_plt_sections(object)?;
+        self.index_undefined_tls(object);
+        Ok(())
     }
 
     fn add_resolution(&mut self, address: u64, new_resolution: AddressResolution<'data>) {
@@ -609,29 +604,27 @@ impl<'data> AddressIndex<'data> {
         }
     }
 
-    fn index_plt_entries(&mut self, elf_file: &ElfFile64<'data>) {
-        const PLT_ENTRY_TEMPLATE: &[u8] = &[
-            0xf3, 0x0f, 0x1e, 0xfa, // endbr64
-            0xf2, 0xff, 0x25, 0x0, 0x0, 0x0, 0x0, // bnd jmp *{relative GOT address}(%rip)
-            0x0f, 0x1f, 0x44, 0x0, 0x0, // nopl   0x0(%rax,%rax,1)
-        ];
+    fn index_plt_sections(&mut self, elf_file: &ElfFile64<'data>) -> Result {
+        self.index_plt_named(elf_file, ".plt")?;
+        self.index_plt_named(elf_file, ".plt.sec")?;
+        Ok(())
+    }
 
-        // The offset of the instruction pointer when the jmp instruction is processed - i.e. the
-        // start of the next instruction after the jmp instruction.
-        const RIP_OFFSET: u64 = 11;
-
-        let Some(section) = elf_file.section_by_name(".plt") else {
-            return;
+    fn index_plt_named(&mut self, elf_file: &ElfFile64<'data>, section_name: &str) -> Result {
+        let Some(section) = elf_file.section_by_name(section_name) else {
+            return Ok(());
         };
         let Ok(bytes) = section.data() else {
-            return;
+            return Ok(());
         };
 
-        let mut address = section.address();
-        for chunk in bytes.chunks(PLT_ENTRY_TEMPLATE.len()) {
-            if chunk[..7] == PLT_ENTRY_TEMPLATE[..7] {
-                let offset = u64::from(u32::from_le_bytes(*chunk[7..].first_chunk::<4>().unwrap()));
-                let got_address = address + RIP_OFFSET + offset;
+        let plt_base = section.address();
+        let mut plt_offset = 0;
+        for chunk in bytes.chunks(PLT_ENTRY_LENGTH) {
+            if let Some(got_address) = PltEntry::decode(chunk, plt_base, plt_offset)
+                .map(|entry| self.got_address(entry))
+                .transpose()?
+            {
                 let mut new_resolutions = Vec::new();
                 for res in self.resolve(got_address) {
                     if let AddressResolution::Basic(got_resolution) = res {
@@ -650,10 +643,21 @@ impl<'data> AddressIndex<'data> {
                     }
                 }
                 for res in new_resolutions {
-                    self.add_resolution(address, res);
+                    self.add_resolution(plt_base + plt_offset, res);
                 }
             }
-            address += PLT_ENTRY_TEMPLATE.len() as u64;
+            plt_offset += PLT_ENTRY_LENGTH as u64;
+        }
+        Ok(())
+    }
+
+    fn got_address(&self, plt_entry: PltEntry) -> Result<u64> {
+        match plt_entry {
+            PltEntry::DerefJmp(address) => Ok(address),
+            PltEntry::GotIndex(got_index) => Ok(self
+                .got_plt_address
+                .context("Index-based PLT entry with no DT_PLTGOT")?
+                + u64::from(got_index) * 8),
         }
     }
 
@@ -671,6 +675,10 @@ impl<'data> AddressIndex<'data> {
         let iplt: &[Rela64] = slice_from_all_bytes(iplt_bytes);
         let e = LittleEndian;
         for relocation in iplt {
+            let rel_type = (relocation.r_info.get(LittleEndian) & 0xffff_ffff) as u32;
+            if rel_type != object::elf::R_X86_64_IRELATIVE {
+                continue;
+            }
             let mut new_resolutions = Vec::new();
             let resolver_address = relocation.r_addend(e) as u64;
             for res in self.resolve(resolver_address) {
@@ -795,9 +803,87 @@ impl<'data> AddressIndex<'data> {
                 object::elf::DT_PLTRELSZ => {
                     self.jmprel_size = Some(entry.d_val.get(e));
                 }
+                object::elf::DT_PLTGOT => {
+                    self.got_plt_address = Some(entry.d_val.get(e));
+                }
                 _ => {}
             });
         Ok(())
+    }
+}
+
+const PLT_ENTRY_LENGTH: usize = 0x10;
+
+enum PltEntry {
+    /// The parameter is an address (most likely of a GOT entry) that will be dereferenced by the
+    /// PLT entry then jumped to.
+    DerefJmp(u64),
+
+    /// The parameter is an index into the GOT. This is used by PLT entries that are going to be
+    /// lazily evaluated.
+    GotIndex(u32),
+}
+
+impl PltEntry {
+    fn decode(plt_entry: &[u8], plt_base: u64, plt_offset: u64) -> Option<PltEntry> {
+        {
+            const PLT_ENTRY_TEMPLATE: &[u8; PLT_ENTRY_LENGTH] = &[
+                0xf3, 0x0f, 0x1e, 0xfa, // endbr64
+                0xf2, 0xff, 0x25, 0x0, 0x0, 0x0, 0x0, // bnd jmp *{relative GOT address}(%rip)
+                0x0f, 0x1f, 0x44, 0x0, 0x0, // nopl   0x0(%rax,%rax,1)
+            ];
+
+            if plt_entry[..7] == PLT_ENTRY_TEMPLATE[..7] {
+                // The offset of the instruction pointer when the jmp instruction is processed -
+                // i.e. the start of the next instruction after the jmp instruction.
+                const RIP_OFFSET: usize = 11;
+                let offset = u64::from(u32::from_le_bytes(
+                    *plt_entry[RIP_OFFSET - 4..].first_chunk::<4>().unwrap(),
+                ));
+                return Some(PltEntry::DerefJmp(
+                    (plt_base + plt_offset + RIP_OFFSET as u64).wrapping_add(offset),
+                ));
+            }
+        }
+
+        {
+            const PLT_ENTRY_TEMPLATE: &[u8; PLT_ENTRY_LENGTH] = &[
+                0xf3, 0x0f, 0x1e, 0xfa, // endbr64
+                0x68, 0, 0, 0, 0, // push $0
+                0xf2, 0xe9, 0, 0, 0, 0,    // bnd jmp {plt[0]}(%rip)
+                0x90, // nop
+            ];
+            if plt_entry[..5] == PLT_ENTRY_TEMPLATE[..5]
+                && plt_entry[9..11] == PLT_ENTRY_TEMPLATE[9..11]
+            {
+                let index = u32::from_le_bytes(*plt_entry[5..].first_chunk::<4>().unwrap());
+                return Some(PltEntry::GotIndex(index));
+            }
+        }
+
+        {
+            const PLT_ENTRY_TEMPLATE: &[u8; PLT_ENTRY_LENGTH] = &[
+                0xff, 0x25, 0, 0, 0, 0, // jmp *{relative GOT address}(%rip)
+                0x68, 0, 0, 0, 0, // push $0
+                0xe9, 0, 0, 0, 0, // jmp {plt[0]}(%rip)
+            ];
+            if plt_entry[..2] == PLT_ENTRY_TEMPLATE[..2]
+                && plt_entry[6] == PLT_ENTRY_TEMPLATE[6]
+                && plt_entry[11] == PLT_ENTRY_TEMPLATE[11]
+            {
+                // The offset of the instruction pointer when the jmp instruction is processed -
+                // i.e. the start of the next instruction after the jmp instruction.
+                const RIP_OFFSET: usize = 6;
+                let offset = u64::from(u32::from_le_bytes(
+                    *plt_entry[RIP_OFFSET - 4..].first_chunk::<4>().unwrap(),
+                ));
+                return Some(PltEntry::DerefJmp(
+                    (plt_base + plt_offset + RIP_OFFSET as u64).wrapping_add(offset),
+                ));
+            }
+        }
+
+        None
     }
 }
 
