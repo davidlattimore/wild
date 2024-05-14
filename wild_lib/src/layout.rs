@@ -35,7 +35,7 @@ use crate::resolution;
 use crate::resolution::MergedStringResolution;
 use crate::resolution::ResolvedEpilogue;
 use crate::resolution::SectionSlot;
-use crate::resolution::ValueKind;
+use crate::resolution::ValueFlag;
 use crate::sharding::split_slice;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
@@ -395,17 +395,13 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 if sym_state.contains(ResolutionFlag::IFunc) {
                     common.mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
                 } else if symbol_db.args.is_relocatable() {
-                    match symbol_db.symbol_value_kind(symbol_id) {
-                        ValueKind::Address => {
-                            if !sym_state.contains(ResolutionFlag::Tls) {
-                                common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
-                            }
-                        }
-                        ValueKind::Dynamic => {
-                            common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
-                        }
-                        ValueKind::IFunc => {}
-                        ValueKind::Absolute => {}
+                    let symbol_value_flags = symbol_db.symbol_value_flags(symbol_id);
+                    if symbol_value_flags.contains(ValueFlag::Dynamic) {
+                        common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
+                    } else if symbol_value_flags.contains(ValueFlag::Address)
+                        && !sym_state.contains(ResolutionFlag::Tls)
+                    {
+                        common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
                     }
                 }
             }
@@ -696,7 +692,7 @@ struct LocalWorkQueue {
 /// What kind of resolution we want for a symbol or section.
 #[enumflags2::bitflags]
 #[repr(u8)]
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ResolutionFlag {
     /// The target is needed. Should always be set for any request. Clear for symbols / sections
     /// that can be discarded.
@@ -1726,29 +1722,30 @@ impl RelocationLayoutAction {
         symbol_id: SymbolId,
         args: &Args,
     ) -> Result<RelocationLayoutAction> {
-        let symbol_value_kind = symbol_db.symbol_value_kind(symbol_db.definition(symbol_id));
+        let symbol_value_flags = symbol_db.symbol_value_flags(symbol_db.definition(symbol_id));
         let mut r_type = rel.r_type(LittleEndian, false);
         if let Some((_relaxation, new_r_type)) = Relaxation::new(
             r_type,
             object.section_data(section)?,
             rel_offset,
-            symbol_value_kind,
+            symbol_value_flags,
             args.output_kind,
         ) {
             r_type = new_r_type;
         }
         let rel_info = RelocationKindInfo::from_raw(r_type)?;
         let resolution_kind = resolution_flags(rel_info.kind);
-        let dynamic_relocation_kind =
-            match (args.is_relocatable(), rel_info.kind, symbol_value_kind) {
-                (true, RelocationKind::Absolute, ValueKind::Address) => {
-                    DynamicRelocationKind::Relative
-                }
-                (_, RelocationKind::Absolute | RelocationKind::Relative, ValueKind::Dynamic) => {
-                    DynamicRelocationKind::Dynamic
-                }
-                _ => DynamicRelocationKind::None,
-            };
+        let dynamic_relocation_kind = match (args.is_relocatable(), rel_info.kind) {
+            (true, RelocationKind::Absolute) if symbol_value_flags.contains(ValueFlag::Address) => {
+                DynamicRelocationKind::Relative
+            }
+            (_, RelocationKind::Absolute | RelocationKind::Relative)
+                if symbol_value_flags.contains(ValueFlag::Dynamic) =>
+            {
+                DynamicRelocationKind::Dynamic
+            }
+            _ => DynamicRelocationKind::None,
+        };
         let relocation_layout_action = RelocationLayoutAction {
             kind: RelocationLayoutActionKind::LoadSymbol(symbol_id, resolution_kind),
             dynamic_relocation_kind,

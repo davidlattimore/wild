@@ -10,12 +10,13 @@ use crate::output_section_id::OutputSectionId;
 use crate::parsing::InputObject;
 use crate::parsing::InternalInputObject;
 use crate::parsing::InternalSymDefInfo;
-use crate::resolution::ValueKind;
+use crate::resolution::ValueFlag;
 use crate::sharding::Shard;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
 use ahash::AHashMap;
 use anyhow::Context;
+use enumflags2::BitFlags;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use rayon::iter::IndexedParallelIterator as _;
@@ -43,7 +44,7 @@ pub struct SymbolDb<'data> {
     /// value at index 5 will be the symbol ID 5.
     symbol_definitions: Vec<SymbolId>,
 
-    symbol_value_kinds: Vec<ValueKind>,
+    symbol_value_kinds: Vec<BitFlags<ValueFlag>>,
 
     /// Global symbols that have multiple definitions. Keyed by the canonical symbol ID with that
     /// name.
@@ -162,7 +163,8 @@ impl<'data> SymbolDb<'data> {
             .collect::<Vec<usize>>();
         let num_symbols = num_symbols_per_file.iter().sum();
         let mut symbol_definitions: Vec<SymbolId> = vec![SymbolId::undefined(); num_symbols];
-        let mut symbol_value_kinds: Vec<ValueKind> = vec![ValueKind::Absolute; num_symbols];
+        let mut symbol_value_kinds: Vec<BitFlags<ValueFlag>> =
+            vec![ValueFlag::Absolute.into(); num_symbols];
         let mut per_file_resolutions =
             crate::sharding::split_to_shards(&mut symbol_definitions, &num_symbols_per_file);
         let mut per_file_kinds =
@@ -244,7 +246,7 @@ impl<'data> SymbolDb<'data> {
         self.start_stop_symbol_names
             .push(SymbolName::new(symbol_name));
         self.num_symbols_per_file[self.custom_sections_file_id.as_usize()] += 1;
-        self.symbol_value_kinds.push(ValueKind::Address);
+        self.symbol_value_kinds.push(ValueFlag::Address.into());
         symbol_id
     }
 
@@ -268,7 +270,7 @@ impl<'data> SymbolDb<'data> {
         }
     }
 
-    pub(crate) fn symbol_value_kind(&self, symbol_id: SymbolId) -> ValueKind {
+    pub(crate) fn symbol_value_flags(&self, symbol_id: SymbolId) -> BitFlags<ValueFlag> {
         self.symbol_value_kinds[symbol_id.as_usize()]
     }
 
@@ -320,7 +322,7 @@ impl<'data> SymbolDb<'data> {
 fn read_symbols<'data>(
     readers: &[InputObject<'data>],
     per_file_resolutions: &mut [Shard<SymbolId, SymbolId>],
-    per_file_value_kinds: &mut [Shard<SymbolId, ValueKind>],
+    per_file_value_kinds: &mut [Shard<SymbolId, BitFlags<ValueFlag>>],
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
     let symbol_per_file = readers
         .par_iter()
@@ -338,24 +340,24 @@ fn read_symbols<'data>(
 fn load_symbols_from_file<'data>(
     reader: &InputObject<'data>,
     resolutions: &mut Shard<SymbolId, SymbolId>,
-    value_kinds: &mut Shard<SymbolId, ValueKind>,
+    value_kinds: &mut Shard<SymbolId, BitFlags<ValueFlag>>,
 ) -> Result<SymbolLoadOutputs<'data>> {
     Ok(match reader {
         InputObject::Object(s) => {
             if s.is_dynamic {
                 load_symbols(&s.object, resolutions, value_kinds, |_sym| {
-                    ValueKind::Dynamic
+                    ValueFlag::Dynamic.into()
                 })?
             } else {
                 load_symbols(&s.object, resolutions, value_kinds, |sym| {
                     if sym.is_absolute(LittleEndian) {
-                        ValueKind::Absolute
+                        ValueFlag::Absolute.into()
                     } else if sym.st_info() & crate::elf::SYMBOL_TYPE_MASK
                         == crate::elf::SYMBOL_TYPE_IFUNC
                     {
-                        ValueKind::IFunc
+                        ValueFlag::IFunc.into()
                     } else {
-                        ValueKind::Address
+                        ValueFlag::Address.into()
                     }
                 })?
             }
@@ -371,8 +373,8 @@ fn load_symbols_from_file<'data>(
 fn load_symbols<'data>(
     object: &crate::elf::File<'data>,
     resolutions: &mut Shard<'_, SymbolId, SymbolId>,
-    value_kinds: &mut Shard<'_, SymbolId, ValueKind>,
-    compute_value_kind: impl Fn(&crate::elf::SymtabEntry) -> ValueKind,
+    value_kinds: &mut Shard<'_, SymbolId, BitFlags<ValueFlag>>,
+    compute_value_flags: impl Fn(&crate::elf::SymtabEntry) -> BitFlags<ValueFlag>,
 ) -> Result<SymbolLoadOutputs<'data>> {
     let e = LittleEndian;
     let mut pending_symbols = Vec::new();
@@ -386,7 +388,7 @@ fn load_symbols<'data>(
             continue;
         }
         *resolution = symbol_id;
-        *value_kind = compute_value_kind(symbol);
+        *value_kind = compute_value_flags(symbol);
 
         if symbol.is_local() {
             continue;
@@ -503,10 +505,10 @@ impl InternalInputObject {
     fn load_symbols(
         &self,
         resolutions: &mut Shard<SymbolId, SymbolId>,
-        value_kinds: &mut Shard<SymbolId, ValueKind>,
+        value_kinds: &mut Shard<SymbolId, BitFlags<ValueFlag>>,
     ) -> Result<SymbolLoadOutputs<'static>> {
         let mut pending_symbols = Vec::with_capacity(self.symbol_definitions.len());
-        for ((definition, (symbol_id, resolution)), value_kind) in self
+        for ((definition, (symbol_id, resolution)), value_flags) in self
             .symbol_definitions
             .iter()
             .zip(resolutions.iter_mut())
@@ -515,19 +517,19 @@ impl InternalInputObject {
             *resolution = symbol_id;
             match definition {
                 InternalSymDefInfo::Undefined => {
-                    *value_kind = ValueKind::Absolute;
+                    *value_flags = ValueFlag::Absolute.into();
                 }
                 InternalSymDefInfo::SectionStart(section_id) => {
                     let def = section_id.built_in_details();
                     let name = def.start_symbol_name.unwrap().as_bytes();
                     pending_symbols.push(PendingSymbol::new(symbol_id, name));
-                    *value_kind = ValueKind::Address;
+                    *value_flags = ValueFlag::Address.into();
                 }
                 InternalSymDefInfo::SectionEnd(section_id) => {
                     let def = section_id.built_in_details();
                     let name = def.end_symbol_name.unwrap().as_bytes();
                     pending_symbols.push(PendingSymbol::new(symbol_id, name));
-                    *value_kind = ValueKind::Address;
+                    *value_flags = ValueFlag::Address.into();
                 }
             }
         }

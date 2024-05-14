@@ -845,8 +845,10 @@ impl<'data> MergeStringsFileSection<'data> {
     }
 }
 
+#[enumflags2::bitflags]
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ValueKind {
+pub(crate) enum ValueFlag {
     /// Something with an address. e.g. a regular symbol, a section etc.
     Address,
 

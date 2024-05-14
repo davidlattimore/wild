@@ -4,7 +4,8 @@
 //! binary because dynamic relocations haven't yet been applied to the GOT yet.
 
 use crate::args::OutputKind;
-use crate::resolution::ValueKind;
+use crate::resolution::ValueFlag;
+use enumflags2::BitFlags;
 
 #[derive(Debug)]
 pub(crate) enum Relaxation {
@@ -48,21 +49,19 @@ impl Relaxation {
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
-        mut value_kind: ValueKind,
+        value_flags: BitFlags<ValueFlag>,
         output_kind: OutputKind,
     ) -> Option<(Self, u32)> {
+        let is_known_address = value_flags.contains(ValueFlag::Address);
         // If our output isn't relocatable, then we can treat addresses like absolute values.
-        if output_kind == OutputKind::NonRelocatableStaticExecutable
-            && value_kind == ValueKind::Address
-        {
-            value_kind = ValueKind::Absolute;
-        }
+        let is_absolute = value_flags.contains(ValueFlag::Absolute)
+            || (is_known_address && output_kind == OutputKind::NonRelocatableStaticExecutable);
 
         let offset = offset_in_section as usize;
         // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
         // because fetching it contains potential error paths, the optimiser probably can't optimise
         // away fetching it.
-        let (kind, new_rel) = match relocation_kind {
+        match relocation_kind {
             object::elf::R_X86_64_REX_GOTPCRELX | object::elf::R_X86_64_GOTPCREL => {
                 if offset < 3 {
                     return None;
@@ -72,45 +71,69 @@ impl Relaxation {
                 if rex != 0x48 && rex != 0x4c {
                     return None;
                 }
-                let kind = match (b1, value_kind) {
-                    (0x8b, ValueKind::Address) => {
-                        (Relaxation::MovIndirectToLea, object::elf::R_X86_64_PC32)
+                if is_absolute {
+                    match b1 {
+                        0x8b => {
+                            return Some((
+                                Relaxation::MovIndirectToAbsolute,
+                                object::elf::R_X86_64_32,
+                            ));
+                        }
+                        0x2b => {
+                            return Some((
+                                Relaxation::SubIndirectToAbsolute,
+                                object::elf::R_X86_64_32,
+                            ));
+                        }
+                        0x3b => {
+                            return Some((
+                                Relaxation::CmpIndirectToAbsolute,
+                                object::elf::R_X86_64_32,
+                            ));
+                        }
+                        _ => return None,
                     }
-                    (0x8b, ValueKind::Absolute) => {
-                        (Relaxation::MovIndirectToAbsolute, object::elf::R_X86_64_32)
+                } else if is_known_address {
+                    match b1 {
+                        0x8b => {
+                            return Some((
+                                Relaxation::MovIndirectToLea,
+                                object::elf::R_X86_64_PC32,
+                            ));
+                        }
+                        _ => return None,
                     }
-                    (0x2b, ValueKind::Absolute) => {
-                        (Relaxation::SubIndirectToAbsolute, object::elf::R_X86_64_32)
-                    }
-                    (0x3b, ValueKind::Absolute) => {
-                        (Relaxation::CmpIndirectToAbsolute, object::elf::R_X86_64_32)
-                    }
-                    _ => return None,
-                };
-                return Some(kind);
+                }
             }
             object::elf::R_X86_64_GOTPCRELX => {
                 if offset < 2 {
                     return None;
                 }
-                match (&section_bytes[offset - 2..offset], value_kind) {
-                    ([0xff, 0x15], ValueKind::Absolute | ValueKind::Address) => (
-                        Relaxation::CallIndirectToRelative,
-                        object::elf::R_X86_64_PC32,
-                    ),
-                    _ => return None,
+                if is_absolute || is_known_address {
+                    match &section_bytes[offset - 2..offset] {
+                        [0xff, 0x15] => {
+                            return Some((
+                                Relaxation::CallIndirectToRelative,
+                                object::elf::R_X86_64_PC32,
+                            ))
+                        }
+                        _ => return None,
+                    }
                 }
+                return None;
             }
             object::elf::R_X86_64_GOTTPOFF => {
                 if offset < 3 {
                     return None;
                 }
                 match section_bytes[offset - 3..offset - 1] {
-                    [0x48 | 0x4c, 0x8b] => (
-                        Relaxation::MovIndirectToAbsolute,
-                        object::elf::R_X86_64_DTPOFF32,
-                    ),
-                    _ => return None,
+                    [0x48 | 0x4c, 0x8b] => {
+                        return Some((
+                            Relaxation::MovIndirectToAbsolute,
+                            object::elf::R_X86_64_DTPOFF32,
+                        ))
+                    }
+                    _ => {}
                 }
             }
             object::elf::R_X86_64_PLT32 if output_kind.is_static_executable() => {
@@ -120,18 +143,18 @@ impl Relaxation {
                 if offset < 4 || section_bytes[offset - 4..offset] != [0x66, 0x48, 0x8d, 0x3d] {
                     return None;
                 }
-                (Relaxation::TlsGdToLocalExec, object::elf::R_X86_64_TPOFF32)
+                return Some((Relaxation::TlsGdToLocalExec, object::elf::R_X86_64_TPOFF32));
             }
             object::elf::R_X86_64_TLSLD if output_kind.is_static_executable() => {
                 if offset < 3 || section_bytes[offset - 3..offset] != [0x48, 0x8d, 0x3d] {
                     return None;
                 }
-                (Relaxation::TlsLdToLocalExec, object::elf::R_X86_64_NONE)
+                return Some((Relaxation::TlsLdToLocalExec, object::elf::R_X86_64_NONE));
             }
 
             _ => return None,
         };
-        Some((kind, new_rel))
+        None
     }
 
     pub(crate) fn apply(
@@ -207,7 +230,7 @@ fn test_relaxation() {
             relocation_kind,
             bytes_in,
             offset,
-            ValueKind::Address,
+            ValueFlag::Address.into(),
             OutputKind::PositionIndependentStaticExecutable,
         ) {
             r.apply(&mut out, &mut offset, &mut 0, &mut modifier);
@@ -221,7 +244,7 @@ fn test_relaxation() {
             relocation_kind,
             bytes_in,
             offset,
-            ValueKind::Absolute,
+            ValueFlag::Absolute.into(),
             OutputKind::PositionIndependentStaticExecutable,
         ) {
             out.copy_from_slice(bytes_in);

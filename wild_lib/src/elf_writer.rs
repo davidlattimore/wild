@@ -36,7 +36,7 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::relaxation::Relaxation;
 use crate::relaxation::RelocationModifier;
 use crate::resolution::SectionSlot;
-use crate::resolution::ValueKind;
+use crate::resolution::ValueFlag;
 use crate::sharding::ShardKey;
 use crate::slice::slice_take_prefix_mut;
 use crate::slice::take_first_mut;
@@ -1146,11 +1146,11 @@ fn apply_relocation(
     let Some(resolution) = object_layout.get_resolution(rel, layout)? else {
         return Ok(RelocationModifier::Normal);
     };
-    let (value, value_kind) = match resolution.value {
-        ResolutionValue::Absolute(v) => (v, ValueKind::Absolute),
-        ResolutionValue::Address(v) => (v, ValueKind::Address),
-        ResolutionValue::Dynamic(_) => (0, ValueKind::Dynamic),
-        ResolutionValue::Iplt(v) => (v, ValueKind::IFunc),
+    let (value, value_flags) = match resolution.value {
+        ResolutionValue::Absolute(v) => (v, ValueFlag::Absolute.into()),
+        ResolutionValue::Address(v) => (v, ValueFlag::Address.into()),
+        ResolutionValue::Dynamic(_) => (0, ValueFlag::Dynamic.into()),
+        ResolutionValue::Iplt(v) => (v, ValueFlag::IFunc.into()),
     };
     let place = section_address + offset_in_section;
     let e = LittleEndian;
@@ -1162,7 +1162,7 @@ fn apply_relocation(
         r_type,
         out,
         offset_in_section,
-        value_kind,
+        value_flags,
         layout.args().output_kind,
     ) {
         rel_info = RelocationKindInfo::from_raw(r_type)?;
