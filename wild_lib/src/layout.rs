@@ -382,6 +382,10 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 *sym_state |= ResolutionFlag::Got | ResolutionFlag::Plt;
                 common.mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
             }
+            if sym_state.contains(ResolutionFlag::Plt) {
+                common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
+                *sym_state |= ResolutionFlag::Got;
+            }
             if sym_state.contains(ResolutionFlag::Got) {
                 common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
                 if symbol_db.args.is_relocatable() && !symbol_value_flags.contains(ValueFlag::IFunc)
@@ -394,9 +398,6 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                         common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
                     }
                 }
-            }
-            if sym_state.contains(ResolutionFlag::Plt) {
-                common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
             }
             if sym_state.contains(ResolutionFlag::GotTlsModule) {
                 common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
@@ -678,14 +679,14 @@ struct LocalWorkQueue {
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ResolutionFlag {
-    /// The target is needed. Should always be set for any request. Clear for symbols / sections
-    /// that can be discarded.
-    Value,
+    /// The direct value is needed. e.g. via a relative or absolute relocation that doesn't use the
+    /// PLT or GOT.
+    Direct,
 
     /// An address in the global offset table is needed.
     Got,
 
-    /// A PLT entry and a GOT entry.
+    /// A PLT entry is needed.
     Plt,
 
     /// A second GOT entry is needed in order to store the module number. Only set for TLS
@@ -1750,25 +1751,16 @@ impl RelocationLayoutAction {
 
 fn resolution_flags(rel_kind: RelocationKind) -> BitFlags<ResolutionFlag> {
     match rel_kind {
-        RelocationKind::PltRelative => {
-            ResolutionFlag::Value | ResolutionFlag::Got | ResolutionFlag::Plt
-        }
-        RelocationKind::Got | RelocationKind::GotRelative => {
-            ResolutionFlag::Value | ResolutionFlag::Got
-        }
-        RelocationKind::GotTpOff => {
-            ResolutionFlag::Value | ResolutionFlag::Got | ResolutionFlag::Tls
-        }
+        RelocationKind::PltRelative => ResolutionFlag::Plt.into(),
+        RelocationKind::Got | RelocationKind::GotRelative => ResolutionFlag::Got.into(),
+        RelocationKind::GotTpOff => ResolutionFlag::Got | ResolutionFlag::Tls,
         RelocationKind::TlsGd | RelocationKind::TlsLd => {
-            ResolutionFlag::Value
-                | ResolutionFlag::Got
-                | ResolutionFlag::Tls
-                | ResolutionFlag::GotTlsModule
+            ResolutionFlag::Got | ResolutionFlag::Tls | ResolutionFlag::GotTlsModule
         }
-        RelocationKind::Absolute => ResolutionFlag::Value.into(),
-        RelocationKind::Relative => ResolutionFlag::Value.into(),
-        RelocationKind::DtpOff | RelocationKind::TpOff => ResolutionFlag::Value.into(),
-        RelocationKind::None => ResolutionFlag::Value.into(),
+        RelocationKind::Absolute => ResolutionFlag::Direct.into(),
+        RelocationKind::Relative => ResolutionFlag::Direct.into(),
+        RelocationKind::DtpOff | RelocationKind::TpOff => ResolutionFlag::Direct.into(),
+        RelocationKind::None => ResolutionFlag::Direct.into(),
     }
 }
 
@@ -1864,7 +1856,7 @@ impl<'data> InternalLayoutState<'data> {
             file_id,
             WorkItem::LoadGlobalSymbol(SymbolRequest {
                 symbol_id,
-                target_resolution_kind: ResolutionFlag::Value.into(),
+                target_resolution_kind: ResolutionFlag::Direct.into(),
             }),
         );
         Ok(())
@@ -2007,7 +1999,7 @@ impl<'data> InternalLayoutState<'data> {
             // If anything ever actually tries to call the PLT for an undefined symbol, it's
             // undefined behaviour, so we can put whatever pointer we like here.
             plt_address: NonZeroU64::new(0xdead),
-            kind: ResolutionFlag::Value | ResolutionFlag::Got | ResolutionFlag::Plt,
+            kind: ResolutionFlag::Direct | ResolutionFlag::Got | ResolutionFlag::Plt,
             value_flags: ValueFlag::Absolute.into(),
         };
         memory_offsets.got += elf::GOT_ENTRY_SIZE;
@@ -2441,7 +2433,7 @@ impl<'data> ObjectLayoutState<'data> {
             ) {
                 // If we've decided to emit the symbol even though it's not referenced (because it's
                 // in a section we're emitting), then make sure we have a resolution for it.
-                *sym_state |= ResolutionFlag::Value;
+                *sym_state |= ResolutionFlag::Direct;
                 if sym.is_local() {
                     num_locals += 1;
                 } else {
@@ -2499,7 +2491,7 @@ impl<'data> ObjectLayoutState<'data> {
                     // section where we're GCing stuff, but crtbegin.o and crtend.o use them in
                     // order to find the start and end of the whole .eh_frame section.
                     section_resolutions.push(Some(emitter.create_resolution(
-                        ResolutionFlag::Value.into(),
+                        ResolutionFlag::Direct.into(),
                         memory_offsets.eh_frame,
                         ValueFlag::Address.into(),
                     )?));
@@ -2598,7 +2590,7 @@ impl<'data> ObjectLayoutState<'data> {
                 self.handle_symbol_request(
                     SymbolRequest {
                         symbol_id,
-                        target_resolution_kind: ResolutionFlag::Value.into(),
+                        target_resolution_kind: ResolutionFlag::Direct.into(),
                     },
                     resources,
                     queue,
