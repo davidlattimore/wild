@@ -211,6 +211,7 @@ pub(crate) struct Resolution {
     pub(crate) plt_address: Option<NonZeroU64>,
     // TODO: Try to remove this.
     pub(crate) kind: BitFlags<ResolutionFlag>,
+    pub(crate) value_flags: BitFlags<ValueFlag>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -2045,6 +2046,7 @@ impl<'data> InternalLayoutState<'data> {
             // undefined behaviour, so we can put whatever pointer we like here.
             plt_address: NonZeroU64::new(0xdead),
             kind: ResolutionFlag::Value | ResolutionFlag::Got | ResolutionFlag::Plt,
+            value_flags: ValueFlag::Absolute.into(),
         };
         memory_offsets.got += elf::GOT_ENTRY_SIZE;
 
@@ -2525,6 +2527,7 @@ impl<'data> ObjectLayoutState<'data> {
                     section_resolutions.push(Some(emitter.create_resolution(
                         sec.resolution_kind,
                         ResolutionValue::Address(*address),
+                        ValueFlag::Address.into(),
                     )?));
                     *address += sec.capacity();
                 }
@@ -2535,6 +2538,7 @@ impl<'data> ObjectLayoutState<'data> {
                     section_resolutions.push(Some(emitter.create_resolution(
                         ResolutionFlag::Value.into(),
                         ResolutionValue::Address(memory_offsets.eh_frame),
+                        ValueFlag::Address.into(),
                     )?));
                 }
                 _ => {
@@ -2915,7 +2919,11 @@ impl<'state> GlobalAddressEmitter<'state> {
                 .add_usize(resolutions_out.len())
         );
         let local_symbol_index = symbol_id.to_offset(self.symbol_id_range);
-        let resolution = self.create_resolution(self.symbol_states[local_symbol_index], value)?;
+        let resolution = self.create_resolution(
+            self.symbol_states[local_symbol_index],
+            value,
+            self.symbol_db.symbol_value_flags(symbol_id),
+        )?;
         resolutions_out[local_symbol_index] = Some(resolution);
         Ok(())
     }
@@ -2924,12 +2932,14 @@ impl<'state> GlobalAddressEmitter<'state> {
         &mut self,
         res_kind: BitFlags<ResolutionFlag>,
         value: ResolutionValue,
+        value_flags: BitFlags<ValueFlag>,
     ) -> Result<Resolution> {
         let mut resolution = Resolution {
             value,
             got_address: None,
             plt_address: None,
             kind: res_kind,
+            value_flags,
         };
         if res_kind.contains(ResolutionFlag::Plt) {
             resolution.plt_address = Some(self.allocate_plt());
@@ -2995,6 +3005,19 @@ impl Resolution {
 
     pub(crate) fn plt_address(&self) -> Result<u64> {
         Ok(self.plt_address.context("Missing PLT address")?.get())
+    }
+
+    pub(crate) fn value_flags(self) -> BitFlags<ValueFlag> {
+        self.value_flags
+    }
+
+    pub(crate) fn value(self) -> u64 {
+        match self.value {
+            ResolutionValue::Absolute(v) => v,
+            ResolutionValue::Address(v) => v,
+            ResolutionValue::Dynamic(_) => 0,
+            ResolutionValue::Iplt(v) => v,
+        }        
     }
 }
 
@@ -3084,11 +3107,11 @@ impl<'data> DynamicLayoutState<'data> {
             if symbol_state.is_empty() {
                 continue;
             }
-            *resolution =
-                Some(emitter.create_resolution(
-                    *symbol_state,
-                    ResolutionValue::Dynamic(next_symbol_index),
-                )?);
+            *resolution = Some(emitter.create_resolution(
+                *symbol_state,
+                ResolutionValue::Dynamic(next_symbol_index),
+                ValueFlag::Dynamic.into(),
+            )?);
 
             next_symbol_index += 1;
         }

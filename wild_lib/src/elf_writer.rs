@@ -1146,12 +1146,7 @@ fn apply_relocation(
     let Some(resolution) = object_layout.get_resolution(rel, layout)? else {
         return Ok(RelocationModifier::Normal);
     };
-    let (value, value_flags) = match resolution.value {
-        ResolutionValue::Absolute(v) => (v, ValueFlag::Absolute.into()),
-        ResolutionValue::Address(v) => (v, ValueFlag::Address.into()),
-        ResolutionValue::Dynamic(_) => (0, ValueFlag::Dynamic.into()),
-        ResolutionValue::Iplt(v) => (v, ValueFlag::IFunc.into()),
-    };
+    let value_flags = resolution.value_flags();
     let place = section_address + offset_in_section;
     let e = LittleEndian;
     let mut addend = rel.r_addend.get(e) as u64;
@@ -1176,10 +1171,10 @@ fn apply_relocation(
                 relocation_writer.write_relocation(place, resolution.value, addend)?;
                 0
             } else {
-                value.wrapping_add(addend)
+                resolution.value().wrapping_add(addend)
             }
         }
-        RelocationKind::Relative => value.wrapping_add(addend).wrapping_sub(place),
+        RelocationKind::Relative => resolution.value().wrapping_add(addend).wrapping_sub(place),
         RelocationKind::GotRelative => resolution
             .got_address()?
             .wrapping_add(addend)
@@ -1199,14 +1194,15 @@ fn apply_relocation(
             .get()
             .wrapping_add(addend)
             .wrapping_sub(place),
-        RelocationKind::DtpOff => value
+        RelocationKind::DtpOff => resolution
+            .value()
             .wrapping_sub(layout.tls_end_address())
             .wrapping_add(addend),
         RelocationKind::GotTpOff => resolution
             .got_address()?
             .wrapping_add(addend)
             .wrapping_sub(place),
-        RelocationKind::TpOff => value.wrapping_sub(layout.tls_end_address()),
+        RelocationKind::TpOff => resolution.value().wrapping_sub(layout.tls_end_address()),
         RelocationKind::None => 0,
         other => bail!("Unsupported relocation kind {other:?}"),
     };
@@ -1307,6 +1303,7 @@ impl<'data> InternalLayout<'data> {
                     got_address: Some(got_address),
                     plt_address: None,
                     kind: ResolutionFlag::Value | ResolutionFlag::Got,
+                    value_flags: ValueFlag::Absolute.into(),
                 },
                 &mut DynamicRelocationWriter::disabled(),
             )?;
@@ -1316,6 +1313,7 @@ impl<'data> InternalLayout<'data> {
                     got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
                     plt_address: None,
                     kind: ResolutionFlag::Value | ResolutionFlag::Got,
+                    value_flags: ValueFlag::Absolute.into(),
                 },
                 &mut DynamicRelocationWriter::disabled(),
             )?;
