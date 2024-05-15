@@ -827,46 +827,27 @@ impl<'data> Layout<'data> {
     }
 
     pub(crate) fn entry_symbol_address(&self) -> Result<u64> {
-        let Some(symbol_id) = self.internal().entry_symbol_id else {
-            // If our output is a shared object, we won't have an entry point.
+        if self.args().output_kind == OutputKind::SharedObject {
+            // Shared objects don't have an entry point.
             return Ok(0);
-        };
-        match self.symbol_resolution(symbol_id) {
-            Some(Resolution {
-                value: ResolutionValue::Address(address),
-                ..
-            }) => Ok(*address),
-            Some(Resolution {
-                value: ResolutionValue::Dynamic(..),
-                ..
-            }) => {
-                bail!(
-                    "Symbol can't be from a dynamic library: {}",
-                    self.symbol_debug(symbol_id)
-                )
-            }
-            Some(Resolution {
-                value: ResolutionValue::Absolute(..),
-                ..
-            }) => {
-                bail!(
-                    "Symbol can't be an absolute value: {}",
-                    self.symbol_debug(symbol_id)
-                )
-            }
-            Some(Resolution {
-                value: ResolutionValue::Iplt(..),
-                ..
-            }) => {
-                bail!("Symbol can't be an ifunc: {}", self.symbol_debug(symbol_id))
-            }
-            None => {
-                bail!(
-                    "Symbol was present, but didn't get loaded: {}",
-                    self.symbol_debug(symbol_id)
-                )
-            }
         }
+        let symbol_id = self
+            .internal()
+            .entry_symbol_id
+            .context("Entry point is undefined")?;
+        let resolution = self.symbol_resolution(symbol_id).with_context(|| {
+            format!(
+                "Entry point symbol was defined, but didn't get loaded. {}",
+                self.symbol_debug(symbol_id)
+            )
+        })?;
+        if !resolution.value_flags().contains(ValueFlag::Address) {
+            bail!(
+                "Entry point must be an address. {}",
+                self.symbol_debug(symbol_id)
+            );
+        }
+        Ok(resolution.value())
     }
 
     pub(crate) fn tls_start_address(&self) -> u64 {
@@ -3017,7 +2998,7 @@ impl Resolution {
             ResolutionValue::Address(v) => v,
             ResolutionValue::Dynamic(_) => 0,
             ResolutionValue::Iplt(v) => v,
-        }        
+        }
     }
 }
 
