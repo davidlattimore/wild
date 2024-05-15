@@ -74,7 +74,7 @@ fn validate_resolution(
         if end_offset > got_data.len() {
             bail!("GOT offset beyond end of GOT 0x{end_offset}");
         }
-        let expected = match resolution.value {
+        let expected = match resolution.resolution_value() {
             ResolutionValue::Absolute(v) | ResolutionValue::Address(v) => v,
             ResolutionValue::Dynamic(_) | ResolutionValue::Iplt(_) => return Ok(()),
         };

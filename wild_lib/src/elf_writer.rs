@@ -405,19 +405,15 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
                 let offset_entry = slice_take_prefix_mut(&mut self.got, 1);
                 // Convert the address to an offset relative to the TCB which is the end of the TLS
                 // segment.
-                match res.value {
-                    ResolutionValue::Address(address) => {
-                        offset_entry[0] = address.wrapping_sub(self.tls.end);
-                    }
-                    other => bail!("Unexpected resolution value {other:?}"),
-                }
+                let address = res.address()?;
+                offset_entry[0] = address.wrapping_sub(self.tls.end);
                 return Ok(());
             }
-            let mut res_value = res.value;
+            let mut res_value = res.resolution_value();
             if res.kind.contains(ResolutionFlag::Tls) {
                 // Convert the address to an offset relative to the TCB which is the end of the TLS
                 // segment.
-                match res.value {
+                match res_value {
                     ResolutionValue::Address(address) => {
                         if !self.tls.contains(&address) {
                             bail!(
@@ -774,7 +770,7 @@ impl<'data> ObjectLayout<'data> {
                 let Some(res) = layout.symbol_resolution(symbol_id) else {
                     bail!("Missing resolution for {}", layout.symbol_debug(symbol_id));
                 };
-                let mut symbol_value = res.value.address_or_value()?;
+                let mut symbol_value = res.address_or_value()?;
                 if sym.st_type() == object::elf::STT_TLS {
                     let tls_start_address = layout.segment_layouts.tls_start_address.context(
                         "Writing TLS variable to symtab, but we don't have a TLS segment",
@@ -802,8 +798,7 @@ impl<'data> ObjectLayout<'data> {
         let section_address = self.section_resolutions[section.index.0]
             .as_ref()
             .unwrap()
-            .value
-            .address_or_value()?;
+            .address()?;
         let mut modifier = RelocationModifier::Normal;
         for rel in self.object.relocations(section.index)? {
             if modifier == RelocationModifier::SkipNextRelocation {
@@ -905,8 +900,7 @@ impl<'data> ObjectLayout<'data> {
                                             prefix.cie_id, cie_pointer_pos
                                         )
                                     })?;
-                                let frame_ptr = (section_resolution.value.address()?
-                                    + offset_in_section)
+                                let frame_ptr = (section_resolution.address()? + offset_in_section)
                                     as i64
                                     - eh_frame_hdr_address as i64;
                                 headers_out[header_offset] = EhFrameHdrEntry {
@@ -1167,8 +1161,8 @@ fn apply_relocation(
     }
     let value = match rel_info.kind {
         RelocationKind::Absolute => {
-            if relocation_writer.is_active && !resolution.value.is_absolute() {
-                relocation_writer.write_relocation(place, resolution.value, addend)?;
+            if relocation_writer.is_active && !resolution.is_absolute() {
+                relocation_writer.write_relocation(place, resolution.resolution_value(), addend)?;
                 0
             } else {
                 resolution.value().wrapping_add(addend)
@@ -1299,7 +1293,7 @@ impl<'data> InternalLayout<'data> {
         if let Some(got_address) = self.tlsld_got_entry {
             plt_got_writer.process_resolution(
                 &Resolution {
-                    value: ResolutionValue::Absolute(1),
+                    raw_value: 1,
                     got_address: Some(got_address),
                     plt_address: None,
                     kind: ResolutionFlag::Value | ResolutionFlag::Got,
@@ -1309,7 +1303,7 @@ impl<'data> InternalLayout<'data> {
             )?;
             plt_got_writer.process_resolution(
                 &Resolution {
-                    value: ResolutionValue::Absolute(0),
+                    raw_value: 0,
                     got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
                     plt_address: None,
                     kind: ResolutionFlag::Value | ResolutionFlag::Got,
@@ -1478,8 +1472,7 @@ fn write_dynamic_symbol_definitions(
         let section_address = object.section_resolutions[section_index.0]
             .as_ref()
             .unwrap()
-            .value
-            .address_or_value()?;
+            .address()?;
         let name = object.object.symbol_name(sym)?;
         dynamic_symbol_writer
             .copy_symbol(sym, name, output_section_id, section_address)
@@ -1530,7 +1523,7 @@ fn write_internal_symbols(
                     layout.output_sections.display_name(section_id)
                 )
             })?;
-        let address = resolution.value.address()?;
+        let address = resolution.address()?;
         let entry = symbol_writer
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;

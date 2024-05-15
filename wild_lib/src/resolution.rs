@@ -34,6 +34,7 @@ use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use crossbeam_utils::atomic::AtomicCell;
+use enumflags2::BitFlags;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::collections::BTreeMap;
@@ -863,6 +864,18 @@ pub(crate) enum ValueFlag {
 
     /// The value refers to an ifunc. The actual address won't be known until runtime.
     IFunc,
+}
+
+impl ValueFlag {
+    pub(crate) fn from_elf_symbol(sym: &crate::elf::Symbol) -> BitFlags<ValueFlag> {
+        if sym.is_absolute(LittleEndian) {
+            ValueFlag::Absolute.into()
+        } else if sym.st_info() & crate::elf::SYMBOL_TYPE_MASK == crate::elf::SYMBOL_TYPE_IFUNC {
+            ValueFlag::IFunc.into()
+        } else {
+            ValueFlag::Address.into()
+        }
+    }
 }
 
 impl<'data> SymbolDb<'data> {

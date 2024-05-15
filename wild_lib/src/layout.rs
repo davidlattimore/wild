@@ -204,8 +204,7 @@ pub(crate) struct MergedStringStartAddresses {
 /// Address information for a symbol or section.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) struct Resolution {
-    // TODO: Experiment with putting these in separate vectors.
-    pub(crate) value: ResolutionValue,
+    pub(crate) raw_value: u64,
 
     pub(crate) got_address: Option<NonZeroU64>,
     pub(crate) plt_address: Option<NonZeroU64>,
@@ -906,7 +905,7 @@ impl<'data> Layout<'data> {
                                 (matches!(section_slot, SectionSlot::Loaded(..))
                                     && section.sh_size.get(e) > 0)
                                     .then(|| {
-                                        let address = res.value.address().unwrap();
+                                        let address = res.address().unwrap();
                                         linker_layout::Section {
                                             mem_range: address..(address + section.sh_size.get(e)),
                                         }
@@ -2019,7 +2018,7 @@ impl<'data> InternalLayoutState<'data> {
 
         // We need a GOT address to use for any relocations that point to undefined weak symbols.
         let undefined_symbol_resolution = Resolution {
-            value: ResolutionValue::Absolute(0),
+            raw_value: 0,
             got_address: Some(
                 NonZeroU64::new(memory_offsets.got).expect("GOT address must never be zero"),
             ),
@@ -2118,17 +2117,18 @@ impl InternalSymbols {
                 continue;
             }
 
-            let value = match def_info {
-                InternalSymDefInfo::Undefined => ResolutionValue::Absolute(0),
-                InternalSymDefInfo::SectionStart(section_id) => {
-                    ResolutionValue::Address(section_layouts.built_in(*section_id).mem_offset)
-                }
+            let (raw_value, value_flags) = match def_info {
+                InternalSymDefInfo::Undefined => (0, ValueFlag::Absolute.into()),
+                InternalSymDefInfo::SectionStart(section_id) => (
+                    section_layouts.built_in(*section_id).mem_offset,
+                    ValueFlag::Address.into(),
+                ),
                 InternalSymDefInfo::SectionEnd(section_id) => {
                     let sec = &section_layouts.built_in(*section_id);
-                    ResolutionValue::Address(sec.mem_offset + sec.mem_size)
+                    (sec.mem_offset + sec.mem_size, ValueFlag::Address.into())
                 }
             };
-            emitter.emit_resolution(symbol_id, value, resolutions_out)?;
+            emitter.emit_resolution(symbol_id, raw_value, value_flags, resolutions_out)?;
         }
         Ok(())
     }
@@ -2507,7 +2507,7 @@ impl<'data> ObjectLayoutState<'data> {
                     // that need a TLS GOT struct.
                     section_resolutions.push(Some(emitter.create_resolution(
                         sec.resolution_kind,
-                        ResolutionValue::Address(*address),
+                        *address,
                         ValueFlag::Address.into(),
                     )?));
                     *address += sec.capacity();
@@ -2518,7 +2518,7 @@ impl<'data> ObjectLayoutState<'data> {
                     // order to find the start and end of the whole .eh_frame section.
                     section_resolutions.push(Some(emitter.create_resolution(
                         ResolutionFlag::Value.into(),
-                        ResolutionValue::Address(memory_offsets.eh_frame),
+                        memory_offsets.eh_frame,
                         ValueFlag::Address.into(),
                     )?));
                 }
@@ -2542,16 +2542,15 @@ impl<'data> ObjectLayoutState<'data> {
             if !symbol_db.is_definition(symbol_id) {
                 continue;
             }
-            let value = if let Some(section_index) = self
+            let value_flags = ValueFlag::from_elf_symbol(local_symbol);
+            let raw_value = if let Some(section_index) = self
                 .object
                 .symbol_section(local_symbol, local_symbol_index)?
             {
                 if let Some(section_resolution) = section_resolutions[section_index.0].as_ref() {
-                    ResolutionValue::Address(
-                        local_symbol.st_value(e) + section_resolution.value.address_or_value()?,
-                    )
+                    local_symbol.st_value(e) + section_resolution.address()?
                 } else {
-                    ResolutionValue::Address(merged_string_start_addresses
+                    merged_string_start_addresses
                         .try_resolve_local(
                             &self.state.merged_string_resolutions,
                             symbol_id_range.input_to_offset(local_symbol_index),
@@ -2562,20 +2561,18 @@ impl<'data> ObjectLayoutState<'data> {
                                 symbol_db.symbol_debug(symbol_id),
                                 section_debug(self.object, section_index),
                             )
-                        })?)
+                        })?
                 }
             } else if local_symbol.is_common(e) {
                 let common = CommonSymbol::new(local_symbol)?;
                 let offset = memory_offsets.regular_mut(output_section_id::BSS, common.alignment);
                 let address = *offset;
                 *offset += common.size;
-                ResolutionValue::Address(address)
-            } else if local_symbol.is_absolute(e) {
-                ResolutionValue::Absolute(local_symbol.st_value(e))
+                address
             } else {
-                ResolutionValue::Address(local_symbol.st_value(e))
+                local_symbol.st_value(e)
             };
-            emitter.emit_resolution(symbol_id, value, resolutions_out)?;
+            emitter.emit_resolution(symbol_id, raw_value, value_flags, resolutions_out)?;
         }
 
         let plt_relocations = emitter.plt_relocations;
@@ -2886,7 +2883,8 @@ impl<'state> GlobalAddressEmitter<'state> {
     fn emit_resolution(
         &mut self,
         symbol_id: SymbolId,
-        value: ResolutionValue,
+        raw_value: u64,
+        value_flags: BitFlags<ValueFlag>,
         resolutions_out: &mut [Option<Resolution>],
     ) -> Result {
         debug_assert_bail!(
@@ -2902,8 +2900,8 @@ impl<'state> GlobalAddressEmitter<'state> {
         let local_symbol_index = symbol_id.to_offset(self.symbol_id_range);
         let resolution = self.create_resolution(
             self.symbol_states[local_symbol_index],
-            value,
-            self.symbol_db.symbol_value_flags(symbol_id),
+            raw_value,
+            value_flags,
         )?;
         resolutions_out[local_symbol_index] = Some(resolution);
         Ok(())
@@ -2912,11 +2910,11 @@ impl<'state> GlobalAddressEmitter<'state> {
     fn create_resolution(
         &mut self,
         res_kind: BitFlags<ResolutionFlag>,
-        value: ResolutionValue,
+        raw_value: u64,
         value_flags: BitFlags<ValueFlag>,
     ) -> Result<Resolution> {
         let mut resolution = Resolution {
-            value,
+            raw_value,
             got_address: None,
             plt_address: None,
             kind: res_kind,
@@ -2942,11 +2940,12 @@ impl<'state> GlobalAddressEmitter<'state> {
                 .ok_or_else(|| anyhow!("Internal error: IFunc without PLT"))?;
             // An ifunc is always resolved at runtime, so we need a relocation for it.
             self.plt_relocations.push(IfuncRelocation {
-                resolver: value.address()?,
+                resolver: raw_value,
                 got_address: got_address.get(),
             });
             // If a symbol refers to an ifunc, then direct calls needs to go via the PLT.
-            resolution.value = ResolutionValue::Iplt(plt_address.get());
+            resolution.raw_value = plt_address.get();
+            resolution.value_flags |= ValueFlag::IFunc;
         }
         Ok(resolution)
     }
@@ -2993,12 +2992,41 @@ impl Resolution {
     }
 
     pub(crate) fn value(self) -> u64 {
-        match self.value {
-            ResolutionValue::Absolute(v) => v,
-            ResolutionValue::Address(v) => v,
-            ResolutionValue::Dynamic(_) => 0,
-            ResolutionValue::Iplt(v) => v,
+        if self.value_flags.contains(ValueFlag::Dynamic) {
+            0
+        } else {
+            self.raw_value
         }
+    }
+
+    pub(crate) fn address(&self) -> Result<u64> {
+        if !self.value_flags.contains(ValueFlag::Address) {
+            bail!("Expected address, found {:?}", self.value_flags);
+        }
+        Ok(self.raw_value)
+    }
+
+    pub(crate) fn resolution_value(&self) -> ResolutionValue {
+        if self.value_flags.contains(ValueFlag::Dynamic) {
+            ResolutionValue::Dynamic(self.raw_value as u32)
+        } else if self.value_flags.contains(ValueFlag::IFunc) {
+            ResolutionValue::Iplt(self.raw_value)
+        } else if self.value_flags.contains(ValueFlag::Absolute) {
+            ResolutionValue::Absolute(self.raw_value)
+        } else {
+            ResolutionValue::Address(self.raw_value)
+        }
+    }
+
+    pub(crate) fn address_or_value(&self) -> Result<u64> {
+        if self.value_flags.contains(ValueFlag::Dynamic) {
+            bail!("Tried to get address/value of a dynamic symbol");
+        }
+        Ok(self.raw_value)
+    }
+
+    pub(crate) fn is_absolute(&self) -> bool {
+        self.value_flags.contains(ValueFlag::Absolute)
     }
 }
 
@@ -3090,7 +3118,7 @@ impl<'data> DynamicLayoutState<'data> {
             }
             *resolution = Some(emitter.create_resolution(
                 *symbol_state,
-                ResolutionValue::Dynamic(next_symbol_index),
+                u64::from(next_symbol_index),
                 ValueFlag::Dynamic.into(),
             )?);
 
@@ -3190,29 +3218,6 @@ struct SectionDebug {
 impl Display for SectionDebug {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "`{}`", self.name)
-    }
-}
-
-impl ResolutionValue {
-    pub(crate) fn address_or_value(&self) -> Result<u64> {
-        match self {
-            ResolutionValue::Absolute(v)
-            | ResolutionValue::Address(v)
-            | ResolutionValue::Iplt(v) => Ok(*v),
-            ResolutionValue::Dynamic(..) => bail!("Unexpected dynamic resolution"),
-        }
-    }
-
-    pub(crate) fn address(&self) -> Result<u64> {
-        match self {
-            ResolutionValue::Address(v) | ResolutionValue::Iplt(v) => Ok(*v),
-            ResolutionValue::Absolute(..) => bail!("Unexpected absolute value"),
-            ResolutionValue::Dynamic(..) => bail!("Unexpected dynamic resolution"),
-        }
-    }
-
-    pub(crate) fn is_absolute(&self) -> bool {
-        matches!(self, ResolutionValue::Absolute(..))
     }
 }
 

@@ -350,15 +350,7 @@ fn load_symbols_from_file<'data>(
                 })?
             } else {
                 load_symbols(&s.object, resolutions, value_kinds, |sym| {
-                    if sym.is_absolute(LittleEndian) {
-                        ValueFlag::Absolute.into()
-                    } else if sym.st_info() & crate::elf::SYMBOL_TYPE_MASK
-                        == crate::elf::SYMBOL_TYPE_IFUNC
-                    {
-                        ValueFlag::IFunc.into()
-                    } else {
-                        ValueFlag::Address.into()
-                    }
+                    ValueFlag::from_elf_symbol(sym)
                 })?
             }
         }
