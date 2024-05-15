@@ -349,12 +349,6 @@ pub(crate) struct IfuncRelocation {
     pub(crate) got_address: u64,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SymbolKind {
-    Regular,
-    IFunc,
-}
-
 trait SymbolRequestHandler<'data>: std::fmt::Display {
     /// Handles a request for a symbol, updating state as necessary.
     fn handle_symbol_request<'scope>(
@@ -366,36 +360,32 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         let symbol_id = symbol_request.symbol_id;
         let local_index = symbol_request.symbol_id.to_offset(self.symbol_id_range());
         let mut common = self.common_mut();
-        let mut target_resolution_kind = symbol_request.target_resolution_kind;
-        if !common.symbol_states[local_index].contains(ResolutionFlag::Value) {
-            let symbol_kind = self.load_symbol(symbol_id, local_index, resources, queue)?;
-            if symbol_kind == SymbolKind::IFunc {
-                target_resolution_kind = target_resolution_kind
-                    | ResolutionFlag::IFunc
-                    | ResolutionFlag::Got
-                    | ResolutionFlag::Plt;
-            }
+        let target_resolution_kind = symbol_request.target_resolution_kind;
+        if common.symbol_states[local_index].is_empty() {
+            self.load_symbol(symbol_id, local_index, resources, queue)?;
         }
         common = self.common_mut();
-        common.symbol_states[local_index] =
-            common.symbol_states[local_index].max(target_resolution_kind);
+        common.symbol_states[local_index] |= target_resolution_kind;
         Ok(())
     }
 
     fn finalise_symbol_sizes(&mut self, symbol_db: &SymbolDb) {
         let symbol_id_range = self.symbol_id_range();
         let common = self.common_mut();
-        for (local_index, sym_state) in common.symbol_states.iter().enumerate() {
+        for (local_index, sym_state) in common.symbol_states.iter_mut().enumerate() {
             let symbol_id = symbol_id_range.offset_to_id(local_index);
             if !symbol_db.is_definition(symbol_id) {
                 continue;
             }
+            let symbol_value_flags = symbol_db.symbol_value_flags(symbol_id);
+            if symbol_value_flags.contains(ValueFlag::IFunc) {
+                *sym_state |= ResolutionFlag::Got | ResolutionFlag::Plt;
+                common.mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
+            }
             if sym_state.contains(ResolutionFlag::Got) {
                 common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                if sym_state.contains(ResolutionFlag::IFunc) {
-                    common.mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
-                } else if symbol_db.args.is_relocatable() {
-                    let symbol_value_flags = symbol_db.symbol_value_flags(symbol_id);
+                if symbol_db.args.is_relocatable() && !symbol_value_flags.contains(ValueFlag::IFunc)
+                {
                     if symbol_value_flags.contains(ValueFlag::Dynamic) {
                         common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
                     } else if symbol_value_flags.contains(ValueFlag::Address)
@@ -426,7 +416,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         local_index: usize,
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
-    ) -> Result<SymbolKind>;
+    ) -> Result;
 }
 
 impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
@@ -440,7 +430,7 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
         local_index: usize,
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
-    ) -> Result<SymbolKind> {
+    ) -> Result {
         debug_assert_bail!(
             resources.symbol_db.is_definition(symbol_id),
             "Tried to load symbol in a file that doesn't hold the definition: {}",
@@ -452,12 +442,6 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
             .symbol_id_range
             .offset_to_input(local_index);
         let local_symbol = self.object.symbol(object_symbol_index)?;
-        let symbol_kind =
-            if local_symbol.st_info() & elf::SYMBOL_TYPE_MASK == elf::SYMBOL_TYPE_IFUNC {
-                SymbolKind::IFunc
-            } else {
-                SymbolKind::Regular
-            };
         if let Some(section_id) = self
             .object
             .symbol_section(local_symbol, object_symbol_index)?
@@ -474,7 +458,7 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
                 .mem_sizes
                 .regular_mut(output_section_id::BSS, common.alignment) += common.size;
         }
-        Ok(symbol_kind)
+        Ok(())
     }
 
     fn file_id(&self) -> FileId {
@@ -505,7 +489,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         local_index: usize,
         _resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
-    ) -> Result<SymbolKind> {
+    ) -> Result {
         // TODO: Reading symbol names involves finding the null terminator, which is slightly
         // expensive. We do it up to three times. Once when we build the symbol DB, now, then when
         // we write out the dynamic symbol table. Look into just storing the names the first time.
@@ -514,7 +498,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         let name = self.object.symbol_name(symbol)?;
         self.common.mem_sizes.dynstr += name.len() as u64 + 1;
         self.common.mem_sizes.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;
-        Ok(SymbolKind::Regular)
+        Ok(())
     }
 }
 
@@ -533,8 +517,8 @@ impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
         _local_index: usize,
         _resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
-    ) -> Result<SymbolKind> {
-        Ok(SymbolKind::Regular)
+    ) -> Result {
+        Ok(())
     }
 
     fn symbol_id_range(&self) -> SymbolIdRange {
@@ -557,8 +541,8 @@ impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState<'data> {
         _local_index: usize,
         _resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
-    ) -> Result<SymbolKind> {
-        Ok(SymbolKind::Regular)
+    ) -> Result {
+        Ok(())
     }
 
     fn symbol_id_range(&self) -> SymbolIdRange {
@@ -707,8 +691,6 @@ pub(crate) enum ResolutionFlag {
     /// A second GOT entry is needed in order to store the module number. Only set for TLS
     /// variables.
     GotTlsModule,
-
-    IFunc,
 
     Tls,
 }
@@ -2920,6 +2902,29 @@ impl<'state> GlobalAddressEmitter<'state> {
             kind: res_kind,
             value_flags,
         };
+        if value_flags.contains(ValueFlag::IFunc) {
+            debug_assert_bail!(
+                res_kind.contains(ResolutionFlag::Got),
+                "Missing GOT for ifunc {res_kind:?} -- {value_flags:?}"
+            );
+            debug_assert_bail!(
+                res_kind.contains(ResolutionFlag::Plt),
+                "Missing PLT for ifunc"
+            );
+            // IFuncs need to always have GOT. Currently we also always create a PLT entry.
+            let got_address = self.allocate_got();
+            let plt_address = self.allocate_plt();
+            // An ifunc is always resolved at runtime, so we need a relocation for it.
+            self.plt_relocations.push(IfuncRelocation {
+                resolver: raw_value,
+                got_address: got_address.get(),
+            });
+            // If a symbol refers to an ifunc, then direct calls needs to go via the PLT.
+            resolution.raw_value = plt_address.get();
+            resolution.got_address = Some(got_address);
+            resolution.plt_address = Some(plt_address);
+            return Ok(resolution);
+        }
         if res_kind.contains(ResolutionFlag::Plt) {
             resolution.plt_address = Some(self.allocate_plt());
         }
@@ -2929,23 +2934,6 @@ impl<'state> GlobalAddressEmitter<'state> {
         if res_kind.contains(ResolutionFlag::GotTlsModule) {
             debug_assert!(res_kind.contains(ResolutionFlag::Got));
             self.allocate_got();
-        }
-        if res_kind.contains(ResolutionFlag::IFunc) {
-            // IFuncs need to always have GOT and PLT entries.
-            let got_address = resolution
-                .got_address
-                .ok_or_else(|| anyhow!("Internal error: IFunc without GOT"))?;
-            let plt_address = resolution
-                .plt_address
-                .ok_or_else(|| anyhow!("Internal error: IFunc without PLT"))?;
-            // An ifunc is always resolved at runtime, so we need a relocation for it.
-            self.plt_relocations.push(IfuncRelocation {
-                resolver: raw_value,
-                got_address: got_address.get(),
-            });
-            // If a symbol refers to an ifunc, then direct calls needs to go via the PLT.
-            resolution.raw_value = plt_address.get();
-            resolution.value_flags |= ValueFlag::IFunc;
         }
         Ok(resolution)
     }

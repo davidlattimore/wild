@@ -4,6 +4,7 @@ use crate::error::Result;
 use crate::layout::Layout;
 use crate::layout::ResolutionFlag;
 use crate::layout::ResolutionValue;
+use crate::resolution::ValueFlag;
 use anyhow::bail;
 use anyhow::Context;
 use object::read::elf::SectionHeader as _;
@@ -65,7 +66,8 @@ fn validate_resolution(
     got_data: &[u8],
 ) -> Result {
     let res_kind = resolution.kind;
-    if res_kind.contains(ResolutionFlag::IFunc) || res_kind.contains(ResolutionFlag::Tls) {
+    let value_flags = resolution.value_flags;
+    if value_flags.contains(ValueFlag::IFunc) || res_kind.contains(ResolutionFlag::Tls) {
         return Ok(());
     };
     if let Some(got_address) = resolution.got_address {

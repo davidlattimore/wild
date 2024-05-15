@@ -426,7 +426,7 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
                     other => bail!("Unexpected resolution value {other:?}"),
                 }
             }
-            if res.kind.contains(ResolutionFlag::IFunc) {
+            if res.value_flags.contains(ValueFlag::IFunc) {
                 res_value = ResolutionValue::Absolute(0);
             }
             let got_entry = self.take_next_got_entry()?;
