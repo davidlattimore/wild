@@ -17,11 +17,15 @@ pub(crate) enum Relaxation {
     /// The transformation will look like `mov *x(%rip), reg` ->  `mov x, reg`.
     MovIndirectToAbsolute,
 
+    /// Transforms a mov instruction that would have loaded an absolute value to not use the GOT.
+    /// The transformation will look like `mov *x(%rip), reg` ->  `mov x, reg`.
+    RexMovIndirectToAbsolute,
+
     // Transforms an indirect sub to an absolute sub.
-    SubIndirectToAbsolute,
+    RexSubIndirectToAbsolute,
 
     // Transforms an indirect cmp to an absolute cmp.
-    CmpIndirectToAbsolute,
+    RexCmpIndirectToAbsolute,
 
     /// Transform a call instruction like `call *x(%rip)` -> `call x(%rip)`.
     CallIndirectToRelative,
@@ -53,9 +57,10 @@ impl Relaxation {
         output_kind: OutputKind,
     ) -> Option<(Self, u32)> {
         let is_known_address = value_flags.contains(ValueFlag::Address);
-        // If our output isn't relocatable, then we can treat addresses like absolute values.
-        let is_absolute = value_flags.contains(ValueFlag::Absolute)
-            || (is_known_address && output_kind == OutputKind::NonRelocatableStaticExecutable);
+        let is_absolute = value_flags.contains(ValueFlag::Absolute);
+        let non_relocatable = output_kind == OutputKind::NonRelocatableStaticExecutable;
+        let is_absolute_address = is_known_address && non_relocatable;
+        let can_be_pc_relative = is_known_address || (is_absolute && non_relocatable);
 
         let can_bypass_got =
             value_flags.contains(ValueFlag::CanBypassGot) || output_kind.is_static_executable();
@@ -65,7 +70,7 @@ impl Relaxation {
         // because fetching it contains potential error paths, the optimiser probably can't optimise
         // away fetching it.
         match relocation_kind {
-            object::elf::R_X86_64_REX_GOTPCRELX | object::elf::R_X86_64_GOTPCREL => {
+            object::elf::R_X86_64_REX_GOTPCRELX => {
                 if offset < 3 {
                     return None;
                 }
@@ -74,29 +79,29 @@ impl Relaxation {
                 if rex != 0x48 && rex != 0x4c {
                     return None;
                 }
-                if is_absolute {
+                if is_absolute || is_absolute_address {
                     match b1 {
                         0x8b => {
                             return Some((
-                                Relaxation::MovIndirectToAbsolute,
+                                Relaxation::RexMovIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
                             ));
                         }
                         0x2b => {
                             return Some((
-                                Relaxation::SubIndirectToAbsolute,
+                                Relaxation::RexSubIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
                             ));
                         }
                         0x3b => {
                             return Some((
-                                Relaxation::CmpIndirectToAbsolute,
+                                Relaxation::RexCmpIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
                             ));
                         }
                         _ => return None,
                     }
-                } else if is_known_address {
+                } else if can_be_pc_relative {
                     match b1 {
                         0x8b => {
                             return Some((
@@ -112,7 +117,18 @@ impl Relaxation {
                 if offset < 2 {
                     return None;
                 }
-                if is_absolute || is_known_address {
+                if is_absolute || is_absolute_address {
+                    match section_bytes[offset - 2] {
+                        0x8b => {
+                            return Some((
+                                Relaxation::MovIndirectToAbsolute,
+                                object::elf::R_X86_64_32,
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+                if can_be_pc_relative {
                     match &section_bytes[offset - 2..offset] {
                         [0xff, 0x15] => {
                             return Some((
@@ -125,6 +141,16 @@ impl Relaxation {
                 }
                 return None;
             }
+            object::elf::R_X86_64_GOTPCREL if can_be_pc_relative && offset >= 2 => {
+                let b1 = section_bytes[offset - 2];
+                match b1 {
+                    0x8b => {
+                        return Some((Relaxation::MovIndirectToLea, object::elf::R_X86_64_PC32));
+                    }
+                    _ => {}
+                }
+                return None;
+            }
             object::elf::R_X86_64_GOTTPOFF => {
                 if offset < 3 {
                     return None;
@@ -132,7 +158,7 @@ impl Relaxation {
                 match section_bytes[offset - 3..offset - 1] {
                     [0x48 | 0x4c, 0x8b] => {
                         return Some((
-                            Relaxation::MovIndirectToAbsolute,
+                            Relaxation::RexMovIndirectToAbsolute,
                             object::elf::R_X86_64_DTPOFF32,
                         ))
                     }
@@ -176,6 +202,13 @@ impl Relaxation {
             }
             Relaxation::MovIndirectToAbsolute => {
                 // Turn a PC-relative mov into an absolute mov.
+                section_bytes[offset - 2] = 0xc7;
+                let mod_rm = &mut section_bytes[offset - 1];
+                *mod_rm = (*mod_rm >> 3) & 0x7 | 0xc0;
+                *addend = 0;
+            }
+            Relaxation::RexMovIndirectToAbsolute => {
+                // Turn a PC-relative mov into an absolute mov.
                 let rex = section_bytes[offset - 3];
                 section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
                 section_bytes[offset - 2] = 0xc7;
@@ -183,7 +216,7 @@ impl Relaxation {
                 *mod_rm = (*mod_rm >> 3) & 0x7 | 0xc0;
                 *addend = 0;
             }
-            Relaxation::SubIndirectToAbsolute => {
+            Relaxation::RexSubIndirectToAbsolute => {
                 // Turn a PC-relative sub into an absolute sub.
                 let rex = section_bytes[offset - 3];
                 section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
@@ -192,7 +225,7 @@ impl Relaxation {
                 *mod_rm = (*mod_rm >> 3) & 0x7 | 0xe8;
                 *addend = 0;
             }
-            Relaxation::CmpIndirectToAbsolute => {
+            Relaxation::RexCmpIndirectToAbsolute => {
                 // Turn a PC-relative cmp into an absolute cmp.
                 let rex = section_bytes[offset - 3];
                 section_bytes[offset - 3] = (rex & !4) | ((rex & 4) >> 2);
