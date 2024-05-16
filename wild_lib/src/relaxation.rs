@@ -57,6 +57,9 @@ impl Relaxation {
         let is_absolute = value_flags.contains(ValueFlag::Absolute)
             || (is_known_address && output_kind == OutputKind::NonRelocatableStaticExecutable);
 
+        let can_bypass_got =
+            value_flags.contains(ValueFlag::CanBypassGot) || output_kind.is_static_executable();
+
         let offset = offset_in_section as usize;
         // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
         // because fetching it contains potential error paths, the optimiser probably can't optimise
@@ -136,7 +139,7 @@ impl Relaxation {
                     _ => {}
                 }
             }
-            object::elf::R_X86_64_PLT32 if output_kind.is_static_executable() => {
+            object::elf::R_X86_64_PLT32 if can_bypass_got => {
                 return Some((Relaxation::NoOp, object::elf::R_X86_64_PC32));
             }
             object::elf::R_X86_64_TLSGD if output_kind.is_static_executable() => {

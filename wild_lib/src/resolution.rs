@@ -864,17 +864,25 @@ pub(crate) enum ValueFlag {
 
     /// The value refers to an ifunc. The actual address won't be known until runtime.
     IFunc,
+
+    /// Whether the GOT can be bypassed for this value. Always true for non-symbols. For symbols,
+    /// this indicates that the symbol cannot be interposed (overridden at runtime).
+    CanBypassGot,
 }
 
 impl ValueFlag {
     pub(crate) fn from_elf_symbol(sym: &crate::elf::Symbol) -> BitFlags<ValueFlag> {
-        if sym.is_absolute(LittleEndian) {
+        let mut flags: BitFlags<ValueFlag> = if sym.is_absolute(LittleEndian) {
             ValueFlag::Absolute.into()
-        } else if sym.st_info() & crate::elf::SYMBOL_TYPE_MASK == crate::elf::SYMBOL_TYPE_IFUNC {
+        } else if sym.st_type() == object::elf::STT_GNU_IFUNC {
             ValueFlag::IFunc.into()
         } else {
             ValueFlag::Address.into()
+        };
+        if sym.st_visibility() != object::elf::STV_DEFAULT || sym.is_local() {
+            flags |= ValueFlag::CanBypassGot;
         }
+        flags
     }
 }
 
