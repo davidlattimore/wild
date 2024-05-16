@@ -556,6 +556,12 @@ impl<'data> AddressIndex<'data> {
         let tls_segment_size = get_tls_segment_size(object);
         for symbol in object.symbols() {
             let name = symbol.name_bytes().unwrap_or_default();
+            // GNU ld usually drops local symbols that start with .L. However occasionally it keeps
+            // them for some reason that I haven't been able to figure out. Ignore them here to
+            // avoid spurious diffs.
+            if symbol.is_local() && name.starts_with(b".L") {
+                continue;
+            }
             let new_resolution =
                 AddressResolution::Basic(BasicResolution::Symbol(SymbolName { bytes: name }));
             let mut address = symbol.address();
