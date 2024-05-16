@@ -16,7 +16,6 @@ use iced_x86::Formatter as _;
 use iced_x86::OpKind;
 use object::read::elf::ElfSection64;
 use object::read::elf::ProgramHeader as _;
-use object::read::elf::Rel;
 use object::read::elf::Rela;
 use object::LittleEndian;
 use object::Object as _;
@@ -441,6 +440,8 @@ enum AddressResolution<'data> {
     TlsIdentifier(SymbolName<'data>),
     Null,
     UndefinedTls,
+    UnknownTls(u64),
+    TlsBlock,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -590,15 +591,21 @@ impl<'data> AddressIndex<'data> {
             return;
         };
         let e = LittleEndian;
-        let rela_dyn: &[object::elf::Rel64<LittleEndian>] = slice_from_all_bytes(rela_dyn_bytes);
+        let rela_dyn: &[object::elf::Rela64<LittleEndian>] = slice_from_all_bytes(rela_dyn_bytes);
         for rel in rela_dyn {
-            if rel.r_type(e) == object::elf::R_X86_64_DTPMOD64 {
+            if rel.r_type(e, false) == object::elf::R_X86_64_DTPMOD64 {
                 let address = rel.r_offset(e);
-                if let Some(tls_name) = read_address(object, address + 8)
-                    .and_then(|tls_offset| self.tls_by_offset.get(&tls_offset))
-                {
+                let Some(tls_offset) = read_address(object, address + 8) else {
+                    continue;
+                };
+                if tls_offset == 0 {
+                    self.add_resolution(address, AddressResolution::TlsBlock);
+                }
+                if let Some(tls_name) = self.tls_by_offset.get(&tls_offset) {
                     let symbol = SymbolName { bytes: tls_name };
                     self.add_resolution(address, AddressResolution::TlsIdentifier(symbol));
+                } else {
+                    self.add_resolution(address, AddressResolution::UnknownTls(tls_offset));
                 }
             }
         }
@@ -1338,6 +1345,8 @@ impl Display for AddressResolution<'_> {
             }
             AddressResolution::Null => write!(f, "null"),
             AddressResolution::UndefinedTls => write!(f, "undefined-TLS"),
+            AddressResolution::UnknownTls(offset) => write!(f, "Unknown TLS at 0x{offset:x}"),
+            AddressResolution::TlsBlock => write!(f, "TLS"),
         }
     }
 }

@@ -377,6 +377,8 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
             if !symbol_db.is_definition(symbol_id) {
                 continue;
             }
+            // TODO: Some logic here is duplicated with similar logic for handling sections. See
+            // what deduplication would make sense.
             let symbol_value_flags = symbol_db.symbol_value_flags(symbol_id);
             if symbol_value_flags.contains(ValueFlag::IFunc) {
                 *sym_state |= ResolutionFlag::Got | ResolutionFlag::Plt;
@@ -401,6 +403,11 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
             }
             if sym_state.contains(ResolutionFlag::GotTlsModule) {
                 common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
+                // For executables, the TLS module ID is known at link time. For shared objects, we
+                // need a runtime relocation to fill it in.
+                if !symbol_db.args.output_kind.is_executable() {
+                    common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
+                }
             }
         }
     }
@@ -1754,9 +1761,10 @@ fn resolution_flags(rel_kind: RelocationKind) -> BitFlags<ResolutionFlag> {
         RelocationKind::PltRelative => ResolutionFlag::Plt.into(),
         RelocationKind::Got | RelocationKind::GotRelative => ResolutionFlag::Got.into(),
         RelocationKind::GotTpOff => ResolutionFlag::Got | ResolutionFlag::Tls,
-        RelocationKind::TlsGd | RelocationKind::TlsLd => {
+        RelocationKind::TlsGd => {
             ResolutionFlag::Got | ResolutionFlag::Tls | ResolutionFlag::GotTlsModule
         }
+        RelocationKind::TlsLd => Default::default(),
         RelocationKind::Absolute => ResolutionFlag::Direct.into(),
         RelocationKind::Relative => ResolutionFlag::Direct.into(),
         RelocationKind::DtpOff | RelocationKind::TpOff => ResolutionFlag::Direct.into(),
@@ -1822,6 +1830,11 @@ impl<'data> InternalLayoutState<'data> {
             // Allocate space for a TLS module number and offset for use with TLSLD relocations.
             self.common.mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
             self.needs_tlsld_got_entry = true;
+            // For shared objects, we'll need to use a DTPMOD relocation to fill in the TLS module
+            // number.
+            if !resources.symbol_db.args.output_kind.is_executable() {
+                self.common.mem_sizes.rela_dyn_glob_dat += crate::elf::RELA_ENTRY_SIZE;
+            }
         }
 
         if resources.symbol_db.args.is_relocatable() {
@@ -2400,6 +2413,11 @@ impl<'data> ObjectLayoutState<'data> {
                     .contains(ResolutionFlag::GotTlsModule)
                 {
                     mem_sizes.got += elf::GOT_ENTRY_SIZE;
+                    // For executables, the TLS module ID is known at link time. For shared objects,
+                    // we need a runtime relocation to fill it in.
+                    if !args.output_kind.is_executable() {
+                        mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
+                    }
                 }
             }
         }

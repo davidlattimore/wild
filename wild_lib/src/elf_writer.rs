@@ -401,12 +401,15 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         if let Some(got_address) = res.got_address {
             if res.kind.contains(ResolutionFlag::GotTlsModule) {
                 let mod_got_entry = slice_take_prefix_mut(&mut self.got, 1);
-                mod_got_entry.copy_from_slice(&[elf::CURRENT_EXE_TLS_MOD]);
+                if self.layout.args().output_kind.is_executable() {
+                    mod_got_entry.copy_from_slice(&[elf::CURRENT_EXE_TLS_MOD]);
+                } else {
+                    relocation_writer.write_dtpmod(got_address.get())?;
+                }
                 let offset_entry = slice_take_prefix_mut(&mut self.got, 1);
-                // Convert the address to an offset relative to the TCB which is the end of the TLS
-                // segment.
+                // Convert the address to an offset within the TLS segment
                 let address = res.address()?;
-                offset_entry[0] = address.wrapping_sub(self.tls.end);
+                offset_entry[0] = address - self.tls.start;
                 return Ok(());
             }
             let mut res_value = res.resolution_value();
@@ -1079,8 +1082,7 @@ impl<'out> DynamicRelocationWriter<'out> {
                 rela.r_info.set(e, object::elf::R_X86_64_RELATIVE.into());
             }
             ResolutionValue::Dynamic(symbol_index) => {
-                let rela = crate::slice::take_first_mut(&mut self.rela_dyn_glob_dat)
-                    .context("insufficient allocation to .rela.dyn (glob-dat)")?;
+                let rela = self.take_glob_dat()?;
                 rela.r_offset.set(e, place);
                 rela.r_addend.set(e, addend as i64);
                 // We could plausibly use R_X86_64_JUMP_SLOT here in cases where we have only PLT
@@ -1095,6 +1097,19 @@ impl<'out> DynamicRelocationWriter<'out> {
                 );
             }
         }
+        Ok(())
+    }
+
+    fn take_glob_dat(&mut self) -> Result<&mut object::elf::Rela64<LittleEndian>> {
+        crate::slice::take_first_mut(&mut self.rela_dyn_glob_dat)
+            .context("insufficient allocation to .rela.dyn (glob-dat)")
+    }
+
+    fn write_dtpmod(&mut self, place: u64) -> Result {
+        let rela = self.take_glob_dat()?;
+        rela.r_offset.set(LittleEndian, place);
+        rela.r_info
+            .set(LittleEndian, object::elf::R_X86_64_DTPMOD64.into());
         Ok(())
     }
 
@@ -1291,16 +1306,21 @@ impl<'data> InternalLayout<'data> {
 
         // Write a pair of GOT entries for use by any TLSLD or TLSGD relocations.
         if let Some(got_address) = self.tlsld_got_entry {
-            plt_got_writer.process_resolution(
-                &Resolution {
-                    raw_value: 1,
-                    got_address: Some(got_address),
-                    plt_address: None,
-                    kind: ResolutionFlag::Got.into(),
-                    value_flags: ValueFlag::Absolute.into(),
-                },
-                &mut DynamicRelocationWriter::disabled(),
-            )?;
+            if layout.args().output_kind.is_executable() {
+                plt_got_writer.process_resolution(
+                    &Resolution {
+                        raw_value: crate::elf::CURRENT_EXE_TLS_MOD,
+                        got_address: Some(got_address),
+                        plt_address: None,
+                        kind: ResolutionFlag::Got.into(),
+                        value_flags: ValueFlag::Absolute.into(),
+                    },
+                    &mut DynamicRelocationWriter::disabled(),
+                )?;
+            } else {
+                plt_got_writer.take_next_got_entry()?;
+                relocation_writer.write_dtpmod(got_address.get())?;
+            }
             plt_got_writer.process_resolution(
                 &Resolution {
                     raw_value: 0,
