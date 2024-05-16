@@ -2658,7 +2658,7 @@ impl<'data> SymbolCopyInfo<'data> {
         // checks. That's also the reason why we return the symbol name, so that the caller, if it
         // needs the name, doesn't have a go and read it again.
         let name = object.symbol_name(sym).ok()?;
-        if !should_copy_symbol_named(name) {
+        if name.is_empty() || (sym.is_local() && name.starts_with(b".L")) {
             return None;
         }
         Some(SymbolCopyInfo { name })
@@ -2701,12 +2701,6 @@ impl MergedStringStartAddresses {
     pub(crate) fn resolve(&self, res: resolution::MergedStringResolution) -> u64 {
         self.addresses.get(res.output_section_id) + res.offset
     }
-}
-
-/// Returns whether we should copy a symbol with the specified name into the output symbol table.
-/// Symbols with empty names and those starting with '.' aren't copied.
-fn should_copy_symbol_named(name: &[u8]) -> bool {
-    !name.is_empty() && !name.starts_with(b".")
 }
 
 fn process_eh_frame_data<'data>(
