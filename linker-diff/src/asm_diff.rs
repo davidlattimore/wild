@@ -1274,6 +1274,12 @@ fn split_value(instruction: &Instruction) -> Option<(iced_x86::Instruction, u64)
                     instruction.raw_instruction.immediate64(),
                 ))
             }
+            OpKind::Immediate32 => {
+                return Some((
+                    clear_immediate(instruction.raw_instruction),
+                    instruction.raw_instruction.immediate32() as u64,
+                ))
+            }
             OpKind::Memory | OpKind::NearBranch64 => {
                 let displacement = sign_extended_memory_displacement(&instruction.raw_instruction);
                 if instruction.raw_instruction.has_segment_prefix() {
