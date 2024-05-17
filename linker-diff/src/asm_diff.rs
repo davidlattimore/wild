@@ -13,7 +13,9 @@ use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
 use iced_x86::Formatter as _;
+use iced_x86::Mnemonic;
 use iced_x86::OpKind;
+use iced_x86::Register;
 use object::read::elf::ElfSection64;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::Rela;
@@ -448,7 +450,7 @@ enum AddressResolution<'data> {
     TlsIdentifier(SymbolName<'data>),
     Null,
     UndefinedTls,
-    UnknownTls(u64),
+    UnknownTls,
     TlsBlock,
 }
 
@@ -500,6 +502,7 @@ pub(crate) struct AddressIndex<'data> {
     jmprel_size: Option<u64>,
     got_plt_address: Option<u64>,
     dynamic_segment_address: Option<u64>,
+    tls_segment_size: u64,
 }
 
 struct FunctionDef<'data> {
@@ -520,6 +523,7 @@ impl<'data> AddressIndex<'data> {
             jmprel_size: None,
             got_plt_address: None,
             dynamic_segment_address: None,
+            tls_segment_size: 0,
         };
 
         if let Err(error) = info.build_indexes(object) {
@@ -554,6 +558,7 @@ impl<'data> AddressIndex<'data> {
 
     fn index_symbols(&mut self, object: &ElfFile64<'data>) {
         let tls_segment_size = get_tls_segment_size(object);
+        self.tls_segment_size = tls_segment_size;
         for symbol in object.symbols() {
             let name = symbol.name_bytes().unwrap_or_default();
             // GNU ld usually drops local symbols that start with .L. However occasionally it keeps
@@ -618,8 +623,6 @@ impl<'data> AddressIndex<'data> {
                 if let Some(tls_name) = self.tls_by_offset.get(&tls_offset) {
                     let symbol = SymbolName { bytes: tls_name };
                     self.add_resolution(address, AddressResolution::TlsIdentifier(symbol));
-                } else {
-                    self.add_resolution(address, AddressResolution::UnknownTls(tls_offset));
                 }
             }
         }
@@ -1227,7 +1230,11 @@ impl<'data> UnifiedInstruction<'data> {
 
         // If we don't have a resolution by now, just see what byte we're pointing at.
         if resolutions.is_empty() {
-            if let Some(resolution) =
+            let resolution = if address < object.address_index.tls_segment_size
+                || address > 0_u64.wrapping_sub(object.address_index.tls_segment_size)
+            {
+                Some(AddressResolution::UnknownTls)
+            } else {
                 read_segment_byte(object.elf_file, address).map(|(_byte, segment_type)| {
                     AddressResolution::PointerTo(RawMemory {
                         segment_details: segment_type,
@@ -1236,7 +1243,8 @@ impl<'data> UnifiedInstruction<'data> {
                             .flatten(),
                     })
                 })
-            {
+            };
+            if let Some(resolution) = resolution {
                 return vec![Self {
                     instruction: raw_instruction,
                     resolution: Some(resolution),
@@ -1302,15 +1310,45 @@ fn split_value(instruction: &Instruction) -> Option<(iced_x86::Instruction, u64)
                         displacement,
                     ));
                 }
-                return Some((
-                    clear_displacement(instruction.raw_instruction),
-                    instruction.base_address.wrapping_add(displacement),
-                ));
+                let mut value = displacement;
+                if is_ip_relative(&instruction.raw_instruction) {
+                    value = instruction.base_address.wrapping_add(displacement);
+                }
+                return Some((clear_displacement(instruction.raw_instruction), value));
             }
             _ => {}
         }
     }
     None
+}
+
+fn is_ip_relative(instruction: &iced_x86::Instruction) -> bool {
+    instruction.memory_base() == Register::RIP
+        || matches!(
+            instruction.mnemonic(),
+            Mnemonic::Call
+                | Mnemonic::Ja
+                | Mnemonic::Jae
+                | Mnemonic::Jb
+                | Mnemonic::Jbe
+                | Mnemonic::Jcxz
+                | Mnemonic::Je
+                | Mnemonic::Jecxz
+                | Mnemonic::Jg
+                | Mnemonic::Jge
+                | Mnemonic::Jl
+                | Mnemonic::Jle
+                | Mnemonic::Jmp
+                | Mnemonic::Jmpe
+                | Mnemonic::Jne
+                | Mnemonic::Jno
+                | Mnemonic::Jnp
+                | Mnemonic::Jns
+                | Mnemonic::Jo
+                | Mnemonic::Jp
+                | Mnemonic::Jrcxz
+                | Mnemonic::Js
+        )
 }
 
 fn sign_extended_memory_displacement(instruction: &iced_x86::Instruction) -> u64 {
@@ -1371,7 +1409,7 @@ impl Display for AddressResolution<'_> {
             }
             AddressResolution::Null => write!(f, "null"),
             AddressResolution::UndefinedTls => write!(f, "undefined-TLS"),
-            AddressResolution::UnknownTls(offset) => write!(f, "Unknown TLS at 0x{offset:x}"),
+            AddressResolution::UnknownTls => write!(f, "Unknown TLS"),
             AddressResolution::TlsBlock => write!(f, "TLS"),
         }
     }
