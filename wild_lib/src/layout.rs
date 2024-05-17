@@ -2058,17 +2058,12 @@ impl InternalSymbols {
         common: &mut CommonLayoutState,
     ) -> Result {
         // Allocate space in the symbol table for the symbols that we define.
-        for (index, def_info) in self.symbol_definitions.iter().enumerate() {
+        for index in 0..self.symbol_definitions.len() {
             let symbol_id = self.start_symbol_id.add_usize(index);
             if !symbol_db.is_definition(symbol_id) || symbol_id.is_undefined() {
                 continue;
             }
             let sym_state = &common.symbol_states[index];
-            // Don't allocate space for symbols that are in our headers section, since it doesn't
-            // have an entry.
-            if def_info.section_id() == Some(output_section_id::FILE_HEADER) {
-                continue;
-            }
 
             // We don't put internal symbols in the symbol table if they aren't referenced.
             if sym_state.is_empty() {

@@ -1531,14 +1531,8 @@ fn write_internal_symbols(
             continue;
         };
 
-        // We don't emit a section header for our headers section, so don't emit symbols that
-        // are in that section, otherwise they'll show up as undefined.
-        if section_id == output_section_id::FILE_HEADER {
-            continue;
-        }
-
         let symbol_name = layout.symbol_db.symbol_name(symbol_id)?;
-        let shndx = layout
+        let mut shndx = layout
             .output_sections
             .output_index_of_section(section_id)
             .with_context(|| {
@@ -1548,6 +1542,13 @@ fn write_internal_symbols(
                     layout.output_sections.display_name(section_id)
                 )
             })?;
+
+        // Move symbols that are in our header (section 0) into the first section, otherwise they'll
+        // show up as undefined.
+        if shndx == 0 {
+            shndx = 1;
+        }
+
         let address = resolution.address()?;
         let entry = symbol_writer
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
