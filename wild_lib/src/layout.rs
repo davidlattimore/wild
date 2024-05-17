@@ -372,43 +372,28 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
     fn finalise_symbol_sizes(&mut self, symbol_db: &SymbolDb) {
         let symbol_id_range = self.symbol_id_range();
         let common = self.common_mut();
-        for (local_index, sym_state) in common.symbol_states.iter_mut().enumerate() {
+        for (local_index, resolution_flags) in common.symbol_states.iter_mut().enumerate() {
             let symbol_id = symbol_id_range.offset_to_id(local_index);
             if !symbol_db.is_definition(symbol_id) {
                 continue;
             }
-            // TODO: Some logic here is duplicated with similar logic for handling sections. See
-            // what deduplication would make sense.
-            let symbol_value_flags = symbol_db.symbol_value_flags(symbol_id);
-            if symbol_value_flags.contains(ValueFlag::IFunc) {
-                *sym_state |= ResolutionFlag::Got | ResolutionFlag::Plt;
+            let value_flags = symbol_db.symbol_value_flags(symbol_id);
+
+            if value_flags.contains(ValueFlag::IFunc) {
+                *resolution_flags |= ResolutionFlag::Got | ResolutionFlag::Plt;
                 common.mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
             }
-            if sym_state.contains(ResolutionFlag::Plt) {
+            if resolution_flags.contains(ResolutionFlag::Plt) {
                 common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
-                *sym_state |= ResolutionFlag::Got;
+                *resolution_flags |= ResolutionFlag::Got;
             }
-            if sym_state.contains(ResolutionFlag::Got) {
-                common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                if symbol_db.args.is_relocatable() && !symbol_value_flags.contains(ValueFlag::IFunc)
-                {
-                    if symbol_value_flags.contains(ValueFlag::Dynamic) {
-                        common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
-                    } else if symbol_value_flags.contains(ValueFlag::Address)
-                        && !sym_state.contains(ResolutionFlag::Tls)
-                    {
-                        common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
-                    }
-                }
-            }
-            if sym_state.contains(ResolutionFlag::GotTlsModule) {
-                common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                // For executables, the TLS module ID is known at link time. For shared objects, we
-                // need a runtime relocation to fill it in.
-                if !symbol_db.args.output_kind.is_executable() {
-                    common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
-                }
-            }
+
+            allocate_resolution(
+                value_flags,
+                *resolution_flags,
+                &mut common.mem_sizes,
+                symbol_db.args,
+            );
         }
     }
 
@@ -425,6 +410,34 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result;
+}
+
+fn allocate_resolution(
+    value_flags: BitFlags<ValueFlag, u8>,
+    resolution_flags: BitFlags<ResolutionFlag, u8>,
+    mem_sizes: &mut OutputSectionPartMap<u64>,
+    args: &Args,
+) {
+    if resolution_flags.contains(ResolutionFlag::Got) {
+        mem_sizes.got += elf::GOT_ENTRY_SIZE;
+        if args.is_relocatable() && !value_flags.contains(ValueFlag::IFunc) {
+            if value_flags.contains(ValueFlag::Dynamic) {
+                mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
+            } else if value_flags.contains(ValueFlag::Address)
+                && !resolution_flags.contains(ResolutionFlag::Tls)
+            {
+                mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
+            }
+        }
+    }
+    if resolution_flags.contains(ResolutionFlag::GotTlsModule) {
+        mem_sizes.got += elf::GOT_ENTRY_SIZE;
+        // For executables, the TLS module ID is known at link time. For shared objects, we
+        // need a runtime relocation to fill it in.
+        if !args.output_kind.is_executable() {
+            mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
+        }
+    }
 }
 
 impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
@@ -2392,28 +2405,14 @@ impl<'data> ObjectLayoutState<'data> {
         }
         let args = symbol_db.args;
         let mem_sizes = &mut self.state.common.mem_sizes;
-        for slot in &self.state.sections {
+        for slot in &mut self.state.sections {
             if let SectionSlot::Loaded(section) = slot {
-                if section.resolution_kind.contains(ResolutionFlag::Got) {
-                    mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                    if args.is_relocatable() {
-                        mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
-                    }
-                }
-                if section.resolution_kind.contains(ResolutionFlag::Plt) {
-                    mem_sizes.plt += elf::PLT_ENTRY_SIZE;
-                }
-                if section
-                    .resolution_kind
-                    .contains(ResolutionFlag::GotTlsModule)
-                {
-                    mem_sizes.got += elf::GOT_ENTRY_SIZE;
-                    // For executables, the TLS module ID is known at link time. For shared objects,
-                    // we need a runtime relocation to fill it in.
-                    if !args.output_kind.is_executable() {
-                        mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
-                    }
-                }
+                allocate_resolution(
+                    ValueFlag::Address.into(),
+                    section.resolution_kind,
+                    mem_sizes,
+                    args,
+                );
             }
         }
         // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
