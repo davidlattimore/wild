@@ -54,6 +54,7 @@ use object::LittleEndian;
 use rayon::prelude::*;
 use std::fmt::Display;
 use std::ops::Range;
+use std::ops::Sub;
 use std::path::Path;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
@@ -1162,13 +1163,10 @@ fn apply_relocation(
     let mut next_modifier = RelocationModifier::Normal;
     let r_type = rel.r_type(e, false);
     let rel_info;
-    if let Some((relaxation, r_type)) = Relaxation::new(
-        r_type,
-        out,
-        offset_in_section,
-        value_flags,
-        layout.args().output_kind,
-    ) {
+    let output_kind = layout.args().output_kind;
+    if let Some((relaxation, r_type)) =
+        Relaxation::new(r_type, out, offset_in_section, value_flags, output_kind)
+    {
         rel_info = RelocationKindInfo::from_raw(r_type)?;
         relaxation.apply(out, &mut offset_in_section, &mut addend, &mut next_modifier);
     } else {
@@ -1203,6 +1201,10 @@ fn apply_relocation(
             .get()
             .wrapping_add(addend)
             .wrapping_sub(place),
+        RelocationKind::DtpOff if output_kind == OutputKind::SharedObject => resolution
+            .value()
+            .sub(layout.tls_start_address())
+            .wrapping_add(addend),
         RelocationKind::DtpOff => resolution
             .value()
             .wrapping_sub(layout.tls_end_address())
@@ -1211,7 +1213,10 @@ fn apply_relocation(
             .got_address()?
             .wrapping_add(addend)
             .wrapping_sub(place),
-        RelocationKind::TpOff => resolution.value().wrapping_sub(layout.tls_end_address()),
+        RelocationKind::TpOff => resolution
+            .value()
+            .wrapping_sub(layout.tls_end_address())
+            .wrapping_add(addend),
         RelocationKind::None => 0,
         other => bail!("Unsupported relocation kind {other:?}"),
     };

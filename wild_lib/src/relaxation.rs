@@ -159,7 +159,7 @@ impl Relaxation {
                     [0x48 | 0x4c, 0x8b] => {
                         return Some((
                             Relaxation::RexMovIndirectToAbsolute,
-                            object::elf::R_X86_64_DTPOFF32,
+                            object::elf::R_X86_64_TPOFF32,
                         ))
                     }
                     _ => {}
