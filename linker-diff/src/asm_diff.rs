@@ -351,9 +351,8 @@ impl Display for RelocationDisplay<'_, '_> {
         " -> ".fmt(f)?;
         match self.rel.target() {
             RelocationTarget::Symbol(symbol_index) => {
-                match self.symbol_or_section_name(symbol_index) {
-                    Ok(name) => write!(f, "`{name}`")?,
-                    Err(error) => write!(f, "<{error}>")?,
+                if let Err(error) = self.write_symbol_or_section_name(f, symbol_index) {
+                    write!(f, "<{error}>")?
                 }
             }
             RelocationTarget::Absolute => write!(f, "0x{:x}", self.rel.addend())?,
@@ -364,17 +363,26 @@ impl Display for RelocationDisplay<'_, '_> {
 }
 
 impl<'elf, 'data> RelocationDisplay<'elf, 'data> {
-    fn symbol_or_section_name(&self, symbol_index: object::SymbolIndex) -> Result<&str> {
+    fn write_symbol_or_section_name(
+        &self,
+        f: &mut std::fmt::Formatter,
+        symbol_index: object::SymbolIndex,
+    ) -> Result {
         let symbol = self.elf_file.symbol_by_index(symbol_index)?;
-        let symbol_name = symbol.name()?;
+        let symbol_name = symbol.name_bytes()?;
         if !symbol_name.is_empty() {
-            return Ok(symbol_name);
+            write!(
+                f,
+                "`{}`",
+                symbolic_demangle::demangle(&String::from_utf8_lossy(symbol_name)),
+            )?;
+            return Ok(());
         }
         if let Some(section_index) = symbol.section_index() {
             let section = self.elf_file.section_by_index(section_index)?;
-            return Ok(section.name()?);
+            write!(f, "`{}`", String::from_utf8_lossy(section.name_bytes()?))?;
         }
-        Ok(symbol_name)
+        Ok(())
     }
 }
 
