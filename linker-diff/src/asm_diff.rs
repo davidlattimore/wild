@@ -266,7 +266,7 @@ impl Display for FunctionVersions<'_> {
                 write!(f, " {value}")?;
                 if let Line::Instruction(instruction) = value {
                     write!(f, "  // {:?}", instruction.raw_instruction.code())?;
-                    if let Some((_, value)) = split_value(instruction) {
+                    if let Some((_, value)) = split_value(obj, instruction) {
                         write!(f, "(0x{value:x})")?;
                     } else {
                         write!(
@@ -503,12 +503,15 @@ pub(crate) struct AddressIndex<'data> {
     got_plt_address: Option<u64>,
     dynamic_segment_address: Option<u64>,
     tls_segment_size: u64,
+    load_offset: u64,
 }
 
 struct FunctionDef<'data> {
     address: u64,
     bytes: &'data [u8],
 }
+
+const DEFAULT_LOAD_OFFSET: u64 = 0x3000_0000;
 
 impl<'data> AddressIndex<'data> {
     pub(crate) fn new(object: &'data ElfFile64<'data>) -> Self {
@@ -524,6 +527,7 @@ impl<'data> AddressIndex<'data> {
             got_plt_address: None,
             dynamic_segment_address: None,
             tls_segment_size: 0,
+            load_offset: DEFAULT_LOAD_OFFSET,
         };
 
         if let Err(error) = info.build_indexes(object) {
@@ -533,6 +537,8 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn build_indexes(&mut self, object: &ElfFile64<'data>) -> Result {
+        // Note, `index_dynamic` needs to be called first, since it sets `load_offset` to 0 for
+        // non-relocatable binaries.
         self.index_dynamic(object)?;
         self.index_headers(object);
         self.address_resolutions
@@ -567,22 +573,31 @@ impl<'data> AddressIndex<'data> {
             if symbol.is_local() && name.starts_with(b".L") {
                 continue;
             }
+            // Symbols with no section are absolute. We don't index them.
+            if symbol.section_index().is_none() {
+                continue;
+            }
             let new_resolution =
                 AddressResolution::Basic(BasicResolution::Symbol(SymbolName { bytes: name }));
-            let mut address = symbol.address();
+            let address = symbol.address();
             if symbol.kind() == SymbolKind::Tls {
                 self.tls_by_offset.insert(address, name);
-                address = address.wrapping_sub(tls_segment_size);
+                // Index both by positive and negative offsets. Positive are used in .so files.
+                // Negative are used in executables.
+                self.add_resolution(address, new_resolution);
+                self.add_resolution(address.wrapping_sub(tls_segment_size), new_resolution);
+            } else {
+                self.add_resolution(address + self.load_offset, new_resolution);
+                self.name_to_address.insert(name, address);
             }
-            self.add_resolution(address, new_resolution);
-            self.name_to_address.insert(name, address);
         }
     }
 
-    fn index_dynamic_relocations(&mut self, object: &ElfFile64<'data>) {
-        let (Some(dynamic_symbol_table), Some(relocations)) =
-            (object.dynamic_symbol_table(), object.dynamic_relocations())
-        else {
+    fn index_dynamic_relocations(&mut self, elf_file: &ElfFile64<'data>) {
+        let (Some(dynamic_symbol_table), Some(relocations)) = (
+            elf_file.dynamic_symbol_table(),
+            elf_file.dynamic_relocations(),
+        ) else {
             return;
         };
         for (address, rel) in relocations {
@@ -592,7 +607,7 @@ impl<'data> AddressIndex<'data> {
                     .and_then(|sym| sym.name_bytes())
                 {
                     self.add_resolution(
-                        address,
+                        address + self.load_offset,
                         AddressResolution::Basic(BasicResolution::Dynamic(SymbolName {
                             bytes: symbol_name,
                         })),
@@ -603,7 +618,7 @@ impl<'data> AddressIndex<'data> {
 
         // The relocations above don't give us enough access to identify some of the relocation
         // types that we need, so go through the relocations again using a lower level API.
-        let Some(rela_dyn_bytes) = object
+        let Some(rela_dyn_bytes) = elf_file
             .section_by_name(".rela.dyn")
             .and_then(|s| s.data().ok())
         else {
@@ -613,8 +628,8 @@ impl<'data> AddressIndex<'data> {
         let rela_dyn: &[object::elf::Rela64<LittleEndian>] = slice_from_all_bytes(rela_dyn_bytes);
         for rel in rela_dyn {
             if rel.r_type(e, false) == object::elf::R_X86_64_DTPMOD64 {
-                let address = rel.r_offset(e);
-                let Some(tls_offset) = read_address(object, address + 8) else {
+                let address = self.load_offset + rel.r_offset(e);
+                let Some(tls_offset) = read_address(elf_file, self, address + 8) else {
                     continue;
                 };
                 if tls_offset == 0 {
@@ -642,12 +657,13 @@ impl<'data> AddressIndex<'data> {
             return Ok(());
         };
 
-        let plt_base = section.address();
+        let plt_base = section.address() + self.load_offset;
         let mut plt_offset = 0;
         for chunk in bytes.chunks(PLT_ENTRY_LENGTH) {
             if let Some(got_address) = PltEntry::decode(chunk, plt_base, plt_offset)
                 .map(|entry| self.got_address(entry))
                 .transpose()?
+                .map(|o| self.load_offset + o)
             {
                 let mut new_resolutions = Vec::new();
                 for res in self.resolve(got_address) {
@@ -658,8 +674,8 @@ impl<'data> AddressIndex<'data> {
                 if new_resolutions.is_empty() {
                     // If we don't have a resolution for the GOT address, then try just reading the
                     // value at that address.
-                    if let Some(got_value) = read_address(elf_file, got_address) {
-                        for res in self.resolve(got_value) {
+                    if let Some(got_value) = read_address(elf_file, self, got_address) {
+                        for res in self.resolve(got_value + self.load_offset) {
                             if let AddressResolution::Basic(got_resolution) = res {
                                 new_resolutions.push(AddressResolution::Plt(*got_resolution));
                             }
@@ -704,7 +720,7 @@ impl<'data> AddressIndex<'data> {
                 continue;
             }
             let mut new_resolutions = Vec::new();
-            let resolver_address = relocation.r_addend(e) as u64;
+            let resolver_address = relocation.r_addend(e) as u64 + self.load_offset;
             for res in self.resolve(resolver_address) {
                 if let AddressResolution::Basic(got_resolution) = res {
                     new_resolutions.push(AddressResolution::Basic(BasicResolution::IFunc(
@@ -712,7 +728,7 @@ impl<'data> AddressIndex<'data> {
                     )));
                 }
             }
-            let address = relocation.r_offset(e);
+            let address = relocation.r_offset(e) + self.load_offset;
             for res in new_resolutions {
                 self.add_resolution(address, res);
             }
@@ -727,11 +743,11 @@ impl<'data> AddressIndex<'data> {
             self.symbol_address("__rela_iplt_start"),
             self.symbol_address("__rela_iplt_end"),
         ) {
-            return Ok(read_bytes(elf_file, start, end - start));
+            return Ok(read_bytes(elf_file, self, start, end - start));
         }
         // Everything else uses entries in the DYNAMIC segment.
         if let (Some(start), Some(len)) = (self.jmprel_address, self.jmprel_size) {
-            return Ok(read_bytes(elf_file, start, len));
+            return Ok(read_bytes(elf_file, self, start, len));
         }
         Ok(None)
     }
@@ -758,7 +774,7 @@ impl<'data> AddressIndex<'data> {
             let file_offset = raw_seg.p_offset(e);
             let file_size = raw_seg.p_filesz(e);
             let file_range = file_offset..(file_offset + file_size);
-            let seg_address = raw_seg.p_paddr(e);
+            let seg_address = raw_seg.p_paddr(e) + self.load_offset;
             if file_offset == 0 {
                 self.file_header_addresses = seg_address..seg_address + file_header_size;
             }
@@ -781,7 +797,7 @@ impl<'data> AddressIndex<'data> {
             .unwrap()
             .0;
         let mut new_resolutions = Vec::new();
-        let mut address = got.address();
+        let mut address = got.address() + self.load_offset;
         for entry in entries {
             new_resolutions.extend(self.resolve(*entry).iter().filter_map(|res| {
                 if let AddressResolution::Basic(basic) = res {
@@ -812,6 +828,11 @@ impl<'data> AddressIndex<'data> {
             .iter()
             .find(|seg| seg.p_type(LittleEndian) == object::elf::PT_DYNAMIC);
         self.dynamic_segment_address = dynamic_segment.map(|seg| seg.p_vaddr(e));
+        if dynamic_segment.is_none() {
+            // There's no dynamic segment, which means our binary isn't relocatable. Don't apply any
+            // offset to addresses.
+            self.load_offset = 0;
+        }
         dynamic_segment
             .and_then(|seg| seg.data(LittleEndian, object.data()).ok())
             .and_then(|dynamic_table_data| {
@@ -934,9 +955,11 @@ fn get_tls_end_address(object: &ElfFile64) -> u64 {
 /// Attempts to read some data from `address`.
 fn read_segment<'data>(
     elf_file: &ElfFile64<'data>,
+    address_index: &AddressIndex,
     address: u64,
     len: u64,
 ) -> Option<(Data<'data>, SegmentDetails)> {
+    let address = address.checked_sub(address_index.load_offset)?;
     // This could well end up needing to be optimised if we end up caring about performance.
     for raw_seg in elf_file.elf_program_headers() {
         let e = LittleEndian;
@@ -978,26 +1001,40 @@ fn read_segment<'data>(
     None
 }
 
-fn read<'data>(elf_file: &ElfFile64<'data>, address: u64, len: u64) -> Option<Data<'data>> {
-    read_segment(elf_file, address, len).map(|(data, _)| data)
+fn read<'data>(
+    elf_file: &ElfFile64<'data>,
+    address_index: &AddressIndex,
+    address: u64,
+    len: u64,
+) -> Option<Data<'data>> {
+    read_segment(elf_file, address_index, address, len).map(|(data, _)| data)
 }
 
-fn read_bytes<'data>(elf_file: &ElfFile64<'data>, address: u64, len: u64) -> Option<&'data [u8]> {
-    read_segment(elf_file, address, len).and_then(|(data, _)| match data {
+fn read_bytes<'data>(
+    elf_file: &ElfFile64<'data>,
+    address_index: &AddressIndex,
+    address: u64,
+    len: u64,
+) -> Option<&'data [u8]> {
+    read_segment(elf_file, address_index, address, len).and_then(|(data, _)| match data {
         Data::Bytes(bytes) => Some(bytes),
         Data::Bss => None,
     })
 }
 
-fn read_address(elf_file: &ElfFile64, address: u64) -> Option<u64> {
-    read(elf_file, address, 8).map(|data| match data {
+fn read_address(elf_file: &ElfFile64, address_index: &AddressIndex, address: u64) -> Option<u64> {
+    read(elf_file, address_index, address, 8).map(|data| match data {
         Data::Bytes(bytes) => u64::from_le_bytes(*bytes.first_chunk::<8>().unwrap()),
         Data::Bss => 0,
     })
 }
 
-fn read_segment_byte(elf_file: &ElfFile64, address: u64) -> Option<(u8, SegmentDetails)> {
-    read_segment(elf_file, address, 1).map(|(data, segment_type)| match data {
+fn read_segment_byte(
+    elf_file: &ElfFile64,
+    address_index: &AddressIndex,
+    address: u64,
+) -> Option<(u8, SegmentDetails)> {
+    read_segment(elf_file, address_index, address, 1).map(|(data, segment_type)| match data {
         Data::Bytes(bytes) => (bytes[0], segment_type),
         Data::Bss => (0, segment_type),
     })
@@ -1179,7 +1216,7 @@ impl<'data> UnifiedInstruction<'data> {
     }
 
     fn all_resolved(instruction: &Instruction, object: &'data Object<'data>) -> Vec<Self> {
-        if let Some((updated_instruction, value)) = split_value(instruction) {
+        if let Some((updated_instruction, value)) = split_value(object, instruction) {
             Self::resolve_address(updated_instruction, value, object)
         } else {
             vec![]
@@ -1235,14 +1272,16 @@ impl<'data> UnifiedInstruction<'data> {
             {
                 Some(AddressResolution::UnknownTls)
             } else {
-                read_segment_byte(object.elf_file, address).map(|(_byte, segment_type)| {
-                    AddressResolution::PointerTo(RawMemory {
-                        segment_details: segment_type,
-                        section_name: RESOLVE_SECTION_NAMES
-                            .then(|| section_name_for_address(object.elf_file, address))
-                            .flatten(),
-                    })
-                })
+                read_segment_byte(object.elf_file, &object.address_index, address).map(
+                    |(_byte, segment_type)| {
+                        AddressResolution::PointerTo(RawMemory {
+                            segment_details: segment_type,
+                            section_name: RESOLVE_SECTION_NAMES
+                                .then(|| section_name_for_address(object.elf_file, address))
+                                .flatten(),
+                        })
+                    },
+                )
             };
             if let Some(resolution) = resolution {
                 return vec![Self {
@@ -1271,7 +1310,7 @@ fn section_name_for_address<'data>(
 /// Returns the input instruction split into an instruction and a value. Will return none if the
 /// instruction doesn't contain an address/value. The returned instruction will have had the
 /// address/value replaced with the placeholder.
-fn split_value(instruction: &Instruction) -> Option<(iced_x86::Instruction, u64)> {
+fn split_value(object: &Object, instruction: &Instruction) -> Option<(iced_x86::Instruction, u64)> {
     fn clear_immediate(mut instruction: iced_x86::Instruction) -> iced_x86::Instruction {
         instruction.set_immediate64(0);
         instruction
@@ -1312,7 +1351,8 @@ fn split_value(instruction: &Instruction) -> Option<(iced_x86::Instruction, u64)
                 }
                 let mut value = displacement;
                 if is_ip_relative(&instruction.raw_instruction) {
-                    value = instruction.base_address.wrapping_add(displacement);
+                    value = instruction.base_address.wrapping_add(displacement)
+                        + object.address_index.load_offset;
                 }
                 return Some((clear_displacement(instruction.raw_instruction), value));
             }
