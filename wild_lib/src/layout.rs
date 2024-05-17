@@ -2917,8 +2917,6 @@ impl<'state> GlobalAddressEmitter<'state> {
                 resolver: raw_value,
                 got_address: got_address.get(),
             });
-            // If a symbol refers to an ifunc, then direct calls needs to go via the PLT.
-            resolution.raw_value = plt_address.get();
             resolution.got_address = Some(got_address);
             resolution.plt_address = Some(plt_address);
             return Ok(resolution);
@@ -3004,11 +3002,8 @@ impl Resolution {
         }
     }
 
-    pub(crate) fn address_or_value(&self) -> Result<u64> {
-        if self.value_flags.contains(ValueFlag::Dynamic) {
-            bail!("Tried to get address/value of a dynamic symbol");
-        }
-        Ok(self.raw_value)
+    pub(crate) fn value_for_symbol_table(&self) -> u64 {
+        self.raw_value
     }
 
     pub(crate) fn is_absolute(&self) -> bool {

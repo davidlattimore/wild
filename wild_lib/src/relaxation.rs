@@ -62,6 +62,17 @@ impl Relaxation {
         let is_absolute_address = is_known_address && non_relocatable;
         let can_be_pc_relative = is_known_address || (is_absolute && non_relocatable);
 
+        // IFuncs cannot be referenced directly. The always need to go via the GOT. So if we've got
+        // say a PLT32 relocation, we don't want to relax it even if we're in a static executable.
+        // Furthermore, if we encounter a relocation like PC32 to an ifunc, then we need to change
+        // it so that it goes via the GOT. This is kind of the opposite of relaxation.
+        if value_flags.contains(ValueFlag::IFunc) {
+            return match relocation_kind {
+                object::elf::R_X86_64_PC32 => Some((Relaxation::NoOp, object::elf::R_X86_64_PLT32)),
+                _ => None,
+            };
+        }
+
         let can_bypass_got =
             value_flags.contains(ValueFlag::CanBypassGot) || output_kind.is_static_executable();
 

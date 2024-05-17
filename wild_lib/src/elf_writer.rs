@@ -774,7 +774,7 @@ impl<'data> ObjectLayout<'data> {
                 let Some(res) = layout.symbol_resolution(symbol_id) else {
                     bail!("Missing resolution for {}", layout.symbol_debug(symbol_id));
                 };
-                let mut symbol_value = res.address_or_value()?;
+                let mut symbol_value = res.value_for_symbol_table();
                 if sym.st_type() == object::elf::STT_TLS {
                     let tls_start_address = layout.segment_layouts.tls_start_address.context(
                         "Writing TLS variable to symtab, but we don't have a TLS segment",
