@@ -19,6 +19,7 @@ use iced_x86::Register;
 use object::read::elf::ElfSection64;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::Rela;
+use object::read::elf::SectionHeader;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection;
@@ -646,6 +647,7 @@ impl<'data> AddressIndex<'data> {
     fn index_plt_sections(&mut self, elf_file: &ElfFile64<'data>) -> Result {
         self.index_plt_named(elf_file, ".plt")?;
         self.index_plt_named(elf_file, ".plt.sec")?;
+        self.index_plt_named(elf_file, ".plt.got")?;
         Ok(())
     }
 
@@ -656,10 +658,17 @@ impl<'data> AddressIndex<'data> {
         let Ok(bytes) = section.data() else {
             return Ok(());
         };
+        let mut entry_length = section.elf_section_header().sh_entsize(LittleEndian) as usize;
+        if entry_length == 0 {
+            entry_length = 0x10;
+        }
+        if ![8, 0x10].contains(&entry_length) {
+            bail!("{section_name} has unrecognised entry length {entry_length}");
+        }
 
         let plt_base = section.address();
         let mut plt_offset = 0;
-        for chunk in bytes.chunks(PLT_ENTRY_LENGTH) {
+        for chunk in bytes.chunks(entry_length) {
             if let Some(got_address) = PltEntry::decode(chunk, plt_base, plt_offset)
                 .map(|entry| self.got_address(entry))
                 .transpose()?
@@ -686,7 +695,7 @@ impl<'data> AddressIndex<'data> {
                     self.add_resolution(plt_base + self.load_offset + plt_offset, res);
                 }
             }
-            plt_offset += PLT_ENTRY_LENGTH as u64;
+            plt_offset += entry_length as u64;
         }
         Ok(())
     }
@@ -857,8 +866,6 @@ impl<'data> AddressIndex<'data> {
     }
 }
 
-const PLT_ENTRY_LENGTH: usize = 0x10;
-
 enum PltEntry {
     /// The parameter is an address (most likely of a GOT entry) that will be dereferenced by the
     /// PLT entry then jumped to.
@@ -871,6 +878,30 @@ enum PltEntry {
 
 impl PltEntry {
     fn decode(plt_entry: &[u8], plt_base: u64, plt_offset: u64) -> Option<PltEntry> {
+        match plt_entry.len() {
+            8 => Self::decode_8(plt_entry, plt_base, plt_offset),
+            16 => Self::decode_16(plt_entry, plt_base, plt_offset),
+            _ => None,
+        }
+    }
+
+    fn decode_8(plt_entry: &[u8], plt_base: u64, plt_offset: u64) -> Option<PltEntry> {
+        const RIP_OFFSET: usize = 6;
+        // jmp *{relative GOT}(%rip)
+        // xchg %ax, %ax
+        if plt_entry.starts_with(&[0xff, 0x25]) && plt_entry.ends_with(&[0x66, 0x90]) {
+            let offset = u64::from(u32::from_le_bytes(
+                *plt_entry[RIP_OFFSET - 4..].first_chunk::<4>().unwrap(),
+            ));
+            return Some(PltEntry::DerefJmp(
+                (plt_base + plt_offset + RIP_OFFSET as u64).wrapping_add(offset),
+            ));
+        }
+        None
+    }
+
+    fn decode_16(plt_entry: &[u8], plt_base: u64, plt_offset: u64) -> Option<PltEntry> {
+        const PLT_ENTRY_LENGTH: usize = 0x10;
         {
             const PLT_ENTRY_TEMPLATE: &[u8; PLT_ENTRY_LENGTH] = &[
                 0xf3, 0x0f, 0x1e, 0xfa, // endbr64
