@@ -5,7 +5,7 @@
 
 use crate::args::OutputKind;
 use crate::resolution::ValueFlag;
-use enumflags2::BitFlags;
+use crate::resolution::ValueFlags;
 
 #[derive(Debug)]
 pub(crate) enum Relaxation {
@@ -53,7 +53,7 @@ impl Relaxation {
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
-        value_flags: BitFlags<ValueFlag>,
+        value_flags: ValueFlags,
         output_kind: OutputKind,
     ) -> Option<(Self, u32)> {
         let is_known_address = value_flags.contains(ValueFlag::Address);

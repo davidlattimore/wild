@@ -35,6 +35,7 @@ use crate::resolution::MergedStringResolution;
 use crate::resolution::ResolvedEpilogue;
 use crate::resolution::SectionSlot;
 use crate::resolution::ValueFlag;
+use crate::resolution::ValueFlags;
 use crate::sharding::split_slice;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
@@ -207,7 +208,7 @@ pub(crate) struct Resolution {
     pub(crate) plt_address: Option<NonZeroU64>,
     // TODO: Try to remove this.
     pub(crate) kind: BitFlags<ResolutionFlag>,
-    pub(crate) value_flags: BitFlags<ValueFlag>,
+    pub(crate) value_flags: ValueFlags,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -410,8 +411,8 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
 }
 
 fn allocate_resolution(
-    value_flags: BitFlags<ValueFlag, u8>,
-    resolution_flags: BitFlags<ResolutionFlag, u8>,
+    value_flags: ValueFlags,
+    resolution_flags: BitFlags<ResolutionFlag>,
     mem_sizes: &mut OutputSectionPartMap<u64>,
     args: &Args,
 ) {
@@ -2855,7 +2856,7 @@ impl<'state> GlobalAddressEmitter<'state> {
         &mut self,
         symbol_id: SymbolId,
         raw_value: u64,
-        value_flags: BitFlags<ValueFlag>,
+        value_flags: ValueFlags,
         resolutions_out: &mut [Option<Resolution>],
     ) -> Result {
         debug_assert_bail!(
@@ -2882,7 +2883,7 @@ impl<'state> GlobalAddressEmitter<'state> {
         &mut self,
         res_kind: BitFlags<ResolutionFlag>,
         raw_value: u64,
-        value_flags: BitFlags<ValueFlag>,
+        value_flags: ValueFlags,
     ) -> Result<Resolution> {
         let mut resolution = Resolution {
             raw_value,
@@ -2894,7 +2895,7 @@ impl<'state> GlobalAddressEmitter<'state> {
         if value_flags.contains(ValueFlag::IFunc) {
             debug_assert_bail!(
                 res_kind.contains(ResolutionFlag::Got),
-                "Missing GOT for ifunc {res_kind:?} -- {value_flags:?}"
+                "Missing GOT for ifunc {res_kind:?} -- {value_flags}"
             );
             debug_assert_bail!(
                 res_kind.contains(ResolutionFlag::Plt),
@@ -2962,7 +2963,7 @@ impl Resolution {
         Ok(self.plt_address.context("Missing PLT address")?.get())
     }
 
-    pub(crate) fn value_flags(self) -> BitFlags<ValueFlag> {
+    pub(crate) fn value_flags(self) -> ValueFlags {
         self.value_flags
     }
 
@@ -2976,7 +2977,7 @@ impl Resolution {
 
     pub(crate) fn address(&self) -> Result<u64> {
         if !self.value_flags.contains(ValueFlag::Address) {
-            bail!("Expected address, found {:?}", self.value_flags);
+            bail!("Expected address, found {}", self.value_flags);
         }
         Ok(self.raw_value)
     }
@@ -3158,9 +3159,10 @@ fn print_symbol_info(symbol_db: &SymbolDb, name: &str) {
                         Ok(sym) => {
                             println!(
                                 "  {}: symbol_id={symbol_id} Local #{local_index} \
-                                in File #{file_id} {}",
+                                in File #{file_id} {} ({})",
                                 crate::symbol::SymDebug(sym),
-                                o.input
+                                o.input,
+                                symbol_db.symbol_value_flags(symbol_id),
                             );
                         }
                         Err(e) => {

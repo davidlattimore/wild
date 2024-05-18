@@ -34,9 +34,14 @@ use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use crossbeam_utils::atomic::AtomicCell;
+use enumflags2::BitFlags;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::collections::BTreeMap;
+use std::fmt::Display;
+use std::ops::BitOrAssign;
+use std::ops::Deref;
+use std::ops::DerefMut;
 
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
 pub fn resolve_symbols_and_sections<'data>(
@@ -872,6 +877,60 @@ pub(crate) enum ValueFlag {
     /// a local. It's still treated as a global for name lookup purposes, but after that, it becomes
     /// local.
     DowngradeToLocal,
+}
+
+/// This wrapper mostly exists so that we can provide a nice Display implementation, since the Debug
+/// implementation for BitFlags is a little too verbose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ValueFlags {
+    bits: BitFlags<ValueFlag>,
+}
+
+impl Deref for ValueFlags {
+    type Target = BitFlags<ValueFlag>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.bits
+    }
+}
+
+impl DerefMut for ValueFlags {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.bits
+    }
+}
+
+impl From<ValueFlag> for ValueFlags {
+    fn from(value: ValueFlag) -> Self {
+        Self { bits: value.into() }
+    }
+}
+
+impl From<BitFlags<ValueFlag>> for ValueFlags {
+    fn from(bits: BitFlags<ValueFlag>) -> Self {
+        Self { bits }
+    }
+}
+
+impl BitOrAssign for ValueFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.bits |= rhs.bits
+    }
+}
+
+impl Display for ValueFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut first = true;
+        for bit in self.bits {
+            if first {
+                first = false;
+            } else {
+                write!(f, " | ")?;
+            }
+            write!(f, "{bit:?}")?;
+        }
+        Ok(())
+    }
 }
 
 impl<'data> SymbolDb<'data> {
