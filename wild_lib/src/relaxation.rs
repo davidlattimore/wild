@@ -185,7 +185,7 @@ impl Relaxation {
                 }
                 return Some((Relaxation::TlsGdToLocalExec, object::elf::R_X86_64_TPOFF32));
             }
-            object::elf::R_X86_64_TLSLD if output_kind.is_static_executable() => {
+            object::elf::R_X86_64_TLSLD if output_kind.is_executable() => {
                 if offset < 3 || section_bytes[offset - 3..offset] != [0x48, 0x8d, 0x3d] {
                     return None;
                 }

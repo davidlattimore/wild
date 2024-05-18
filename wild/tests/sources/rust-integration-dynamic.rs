@@ -1,4 +1,4 @@
-//#DiffIgnore:asm.*
+//#DiffIgnore:asm.__udivti3
 //#DiffIgnore:.dynamic.*
 //#CompArgs:default:-C debuginfo=2
 //#LinkArgs:dynamic:--cc=clang
