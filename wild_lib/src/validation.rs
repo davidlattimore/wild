@@ -29,7 +29,7 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
         .context("Missing .got from output file")?;
     let got_data = object.section_data(got)?;
     for (symbol_name, symbol_id) in &layout.symbol_db.global_names {
-        match layout.symbol_resolution(*symbol_id) {
+        match layout.local_symbol_resolution(*symbol_id) {
             None => {}
             Some(resolution) => {
                 validate_resolution(symbol_name.bytes(), resolution, got, got_data)?;

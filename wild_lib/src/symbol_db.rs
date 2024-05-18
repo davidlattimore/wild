@@ -279,8 +279,16 @@ impl<'data> SymbolDb<'data> {
         }
     }
 
-    pub(crate) fn symbol_value_flags(&self, symbol_id: SymbolId) -> ValueFlags {
+    /// Returns the value flags for the specified symbol without taking into consideration what
+    /// symbol is the definition.
+    pub(crate) fn local_symbol_value_flags(&self, symbol_id: SymbolId) -> ValueFlags {
         self.symbol_value_kinds[symbol_id.as_usize()]
+    }
+
+    pub(crate) fn symbol_value_flags(&self, symbol_id: SymbolId) -> ValueFlags {
+        let mut flags = self.local_symbol_value_flags(self.definition(symbol_id));
+        flags.merge(self.local_symbol_value_flags(symbol_id));
+        flags
     }
 
     pub(crate) fn num_symbols(&self) -> usize {
@@ -410,11 +418,11 @@ fn load_symbols<'data>(
         .zip(resolutions.iter_mut())
         .zip(value_kinds.values_mut())
     {
+        *value_kind = compute_value_flags(symbol);
         if symbol.is_undefined(e) {
             continue;
         }
         *resolution = symbol_id;
-        *value_kind = compute_value_flags(symbol);
 
         if symbol.is_local() {
             continue;
@@ -485,7 +493,7 @@ impl<'db, 'data> std::fmt::Display for SymbolDebug<'db, 'data> {
                 " defined as {definition} in file #{definition_file_id} ({definition_file})"
             )?;
         }
-        write!(f, " ({})", self.db.symbol_value_flags(symbol_id))?;
+        write!(f, " ({})", self.db.local_symbol_value_flags(symbol_id))?;
         Ok(())
     }
 }

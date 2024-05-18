@@ -388,7 +388,7 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         symbol_id: SymbolId,
         relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
-        if let Some(res) = self.layout.symbol_resolution(symbol_id) {
+        if let Some(res) = self.layout.local_symbol_resolution(symbol_id) {
             self.process_resolution(res, relocation_writer)?;
         }
         Ok(())
@@ -771,7 +771,7 @@ impl<'data> ObjectLayout<'data> {
                     } else {
                         bail!("Attempted to output a symtab entry with an unexpected section type")
                     };
-                let Some(res) = layout.symbol_resolution(symbol_id) else {
+                let Some(res) = layout.local_symbol_resolution(symbol_id) else {
                     bail!("Missing resolution for {}", layout.symbol_debug(symbol_id));
                 };
                 let mut symbol_value = res.value_for_symbol_table();
@@ -1019,8 +1019,8 @@ impl<'data> ObjectLayout<'data> {
             }
             // TODO: Check if reference is weak.
             new_resolution = Some(layout.internal().undefined_symbol_resolution);
-        } else if let Some(res) = layout.symbol_resolution(symbol_id) {
-            new_resolution = Some(*res);
+        } else if let Some(res) = layout.merged_symbol_resolution(local_symbol_id) {
+            new_resolution = Some(res);
         }
         Ok(new_resolution)
     }
@@ -1522,7 +1522,7 @@ fn write_internal_symbols(
         if !layout.symbol_db.is_definition(symbol_id) {
             continue;
         }
-        let Some(resolution) = layout.symbol_resolution(symbol_id) else {
+        let Some(resolution) = layout.local_symbol_resolution(symbol_id) else {
             continue;
         };
         let Some(section_id) = def_info.section_id() else {

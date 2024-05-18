@@ -375,7 +375,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
             if !symbol_db.is_definition(symbol_id) {
                 continue;
             }
-            let value_flags = symbol_db.symbol_value_flags(symbol_id);
+            let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
 
             if value_flags.contains(ValueFlag::IFunc) {
                 *resolution_flags |= ResolutionFlag::Got | ResolutionFlag::Plt;
@@ -809,9 +809,18 @@ impl<'data> Layout<'data> {
         self.symbol_db.symbol_debug(symbol_id)
     }
 
-    pub(crate) fn symbol_resolution(&self, symbol_id: SymbolId) -> Option<&Resolution> {
-        let canonical = self.symbol_db.definition(symbol_id);
-        self.symbol_resolutions.resolutions[canonical.as_usize()].as_ref()
+    pub(crate) fn merged_symbol_resolution(&self, symbol_id: SymbolId) -> Option<Resolution> {
+        self.local_symbol_resolution(self.symbol_db.definition(symbol_id))
+            .copied()
+            .map(|mut res| {
+                res.value_flags
+                    .merge(self.symbol_db.symbol_value_flags(symbol_id));
+                res
+            })
+    }
+
+    pub(crate) fn local_symbol_resolution(&self, symbol_id: SymbolId) -> Option<&Resolution> {
+        self.symbol_resolutions.resolutions[symbol_id.as_usize()].as_ref()
     }
 
     pub(crate) fn resolutions_in_range(
@@ -833,7 +842,7 @@ impl<'data> Layout<'data> {
             .internal()
             .entry_symbol_id
             .context("Entry point is undefined")?;
-        let resolution = self.symbol_resolution(symbol_id).with_context(|| {
+        let resolution = self.local_symbol_resolution(symbol_id).with_context(|| {
             format!(
                 "Entry point symbol was defined, but didn't get loaded. {}",
                 self.symbol_debug(symbol_id)
@@ -1700,7 +1709,7 @@ impl RelocationLayoutAction {
         symbol_id: SymbolId,
         args: &Args,
     ) -> Result<RelocationLayoutAction> {
-        let symbol_value_flags = symbol_db.symbol_value_flags(symbol_db.definition(symbol_id));
+        let symbol_value_flags = symbol_db.symbol_value_flags(symbol_id);
         let mut r_type = rel.r_type(LittleEndian, false);
         if let Some((_relaxation, new_r_type)) = Relaxation::new(
             r_type,
@@ -2522,7 +2531,7 @@ impl<'data> ObjectLayoutState<'data> {
             if !symbol_db.is_definition(symbol_id) {
                 continue;
             }
-            let value_flags = symbol_db.symbol_value_flags(symbol_id);
+            let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
             let raw_value = if let Some(section_index) = self
                 .object
                 .symbol_section(local_symbol, local_symbol_index)?
@@ -2586,7 +2595,7 @@ impl<'data> ObjectLayoutState<'data> {
         for (sym_index, sym) in self.object.symbols.enumerate() {
             if can_export_symbol(sym) {
                 let symbol_id = self.symbol_id_range().input_to_id(sym_index);
-                let value_flags = resources.symbol_db.symbol_value_flags(symbol_id);
+                let value_flags = resources.symbol_db.local_symbol_value_flags(symbol_id);
                 if value_flags.contains(ValueFlag::DowngradeToLocal) {
                     continue;
                 }
@@ -3162,7 +3171,7 @@ fn print_symbol_info(symbol_db: &SymbolDb, name: &str) {
                                 in File #{file_id} {} ({})",
                                 crate::symbol::SymDebug(sym),
                                 o.input,
-                                symbol_db.symbol_value_flags(symbol_id),
+                                symbol_db.local_symbol_value_flags(symbol_id),
                             );
                         }
                         Err(e) => {

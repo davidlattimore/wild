@@ -885,6 +885,18 @@ pub(crate) enum ValueFlag {
 pub(crate) struct ValueFlags {
     bits: BitFlags<ValueFlag>,
 }
+impl ValueFlags {
+    /// Returns self merged with `other` which should be the flags for the local (possibly
+    /// non-canonical symbol definition). Sometimes an object will reference a symbol that it
+    /// doesn't define and will mark that symbol as hidden however the object that defines the
+    /// symbol gives the symbol default visibility. In this case, we want references in the object
+    /// defining it as hidden to be allowed to bypass the GOT/PLT.
+    pub(crate) fn merge(&mut self, other: ValueFlags) {
+        if other.contains(ValueFlag::CanBypassGot) {
+            self.bits |= ValueFlag::CanBypassGot;
+        }
+    }
+}
 
 impl Deref for ValueFlags {
     type Target = BitFlags<ValueFlag>;
