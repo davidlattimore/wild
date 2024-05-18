@@ -292,6 +292,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             ..SectionDetails::default()
         },
+        min_alignment: alignment::USIZE,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
