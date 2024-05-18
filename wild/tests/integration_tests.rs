@@ -127,6 +127,7 @@ struct TestParameters {
     linker_args: Vec<ArgumentSet>,
     compiler_args: Vec<ArgumentSet>,
     diff_ignore: Vec<String>,
+    section_equiv: Vec<(String, String)>,
 }
 
 #[derive(Default)]
@@ -237,6 +238,7 @@ impl TestParameters {
         let mut does_not_contain = Vec::new();
         let mut contains_strings = Vec::new();
         let mut diff_ignore = Vec::new();
+        let mut section_equiv = Vec::new();
         for line in source.lines() {
             if let Some(rest) = line.trim().strip_prefix("//#") {
                 let (directive, arg) = rest.split_once(':').context("Missing arg")?;
@@ -260,6 +262,12 @@ impl TestParameters {
                     "DoesNotContain" => does_not_contain.push(arg.trim().to_owned()),
                     "Contains" => contains_strings.push(arg.trim().to_owned()),
                     "DiffIgnore" => diff_ignore.push(arg.trim().to_owned()),
+                    "SecEquiv" => section_equiv.push(
+                        arg.trim()
+                            .split_once('=')
+                            .ok_or_else(|| anyhow!("DiffIgnore missing '='"))
+                            .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
+                    ),
                     other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
                 }
             }
@@ -291,6 +299,7 @@ impl TestParameters {
             linker_args,
             compiler_args,
             diff_ignore,
+            section_equiv,
         })
     }
 }
@@ -1144,14 +1153,56 @@ fn diff_files(
 ) -> Result {
     let mut config = linker_diff::Config::default();
     config.ignore.clone_from(&instructions.diff_ignore);
+    config.ignore.extend(
+        [
+            // We don't currently support allocating space except in sections, so we have sections
+            // to hold the section and program headers. We then need to ignore them because GNU ld
+            // doesn't define such sections.
+            "section.shdr",
+            "section.phdr",
+            // We don't yet support these sections.
+            "section.data.rel.ro",
+            "section.debug*",
+            "section.stapsdt.base",
+            "section.note.*",
+            "section.gnu.version*",
+            // We do support this. TODO: Should definitely look into why we're seeing this missing
+            // in our output.
+            "section.rela.plt",
+            // We currently write 10 byte PLT entries in some cases where GNU ld writes 8 byte ones.
+            "section.plt.got.alignment",
+            // GNU ld sometimes makes this writable sometimes not. Presumably this depends on
+            // whether there are relocations or some flags.
+            "section.eh_frame.flags",
+        ]
+        .into_iter()
+        .map(|s| s.to_owned()),
+    );
+    config.equiv.clone_from(&instructions.section_equiv);
+    config
+        .equiv
+        .push((".got".to_owned(), ".got.plt".to_owned()));
+    // We don't currently define .plt.got and .plt.sec, we just put everything into .plt.
+    config
+        .equiv
+        .push((".plt".to_owned(), ".plt.got".to_owned()));
+    config
+        .equiv
+        .push((".plt".to_owned(), ".plt.sec".to_owned()));
     config.filenames = filenames;
     let report = linker_diff::Report::from_config(config.clone())?;
     if report.has_problems() {
         eprintln!("{report}");
         bail!(
             "Validation failed.\n{display}\n To revalidate:\ncargo run --bin linker-diff -- \
-             --ignore '{}' {}",
+             --ignore '{}' --equiv '{}' {}",
             config.ignore.join(","),
+            config
+                .equiv
+                .iter()
+                .map(|(a, b)| format!("{a}={b}"))
+                .collect::<Vec<_>>()
+                .join(","),
             config
                 .filenames
                 .iter()

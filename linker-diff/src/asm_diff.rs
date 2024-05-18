@@ -86,7 +86,6 @@ pub(crate) fn validate_got_plt(object: &Object) -> Result {
         return Ok(());
     };
     let got_plt_sec = object
-        .elf_file
         .section_by_name(".got.plt")
         .context(".got.plt missing")?;
     let got_plt: &[u64] = object::slice_from_all_bytes(got_plt_sec.data()?)

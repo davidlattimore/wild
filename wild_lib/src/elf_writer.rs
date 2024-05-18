@@ -1180,6 +1180,7 @@ fn apply_relocation(
         rel_info = RelocationKindInfo::from_raw(r_type)?;
         relaxation.apply(out, &mut offset_in_section, &mut addend, &mut next_modifier);
     } else {
+        tracing::trace!(%value_flags);
         rel_info = RelocationKindInfo::from_raw(r_type)?;
     }
     let value = match rel_info.kind {

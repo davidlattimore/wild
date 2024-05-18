@@ -1,6 +1,9 @@
 // The C compiler seems to always reference local symbols by offsets from the section containing the
 // symbol. We want to make sure that actual symbol references work properly too.
 
+// We don't apply the M flag to our .rodata
+//#DiffIgnore:section.rodata.flags
+
 .section        .rodata.x,"aM",@progbits,16
 .p2align        4, 0x0
 

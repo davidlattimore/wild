@@ -1,4 +1,5 @@
 use crate::slice_from_all_bytes;
+use crate::Config;
 use crate::Diff;
 use crate::DiffValues;
 use crate::Object;
@@ -8,6 +9,7 @@ use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context as _;
 use object::read::elf::Dyn;
+use object::read::elf::ElfSection64;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection as _;
@@ -16,6 +18,7 @@ use object::SectionFlags;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 enum Converter {
     None,
@@ -23,6 +26,7 @@ enum Converter {
     DynSymOffset,
     SymAddress,
     SectionIndex,
+    SectionFlags,
 }
 
 impl Converter {
@@ -82,6 +86,41 @@ impl Converter {
                 .section_by_index(object::SectionIndex(value as usize))?
                 .name()?
                 .to_owned()),
+            Converter::SectionFlags => {
+                let value = value as u32;
+                let mut flags = String::new();
+                if value & object::elf::SHF_WRITE != 0 {
+                    flags.push('W');
+                }
+                if value & object::elf::SHF_ALLOC != 0 {
+                    flags.push('A');
+                }
+                if value & object::elf::SHF_EXECINSTR != 0 {
+                    flags.push('X');
+                }
+                if value & object::elf::SHF_MERGE != 0 {
+                    flags.push('M');
+                }
+                if value & object::elf::SHF_STRINGS != 0 {
+                    flags.push('S');
+                }
+                if value & object::elf::SHF_INFO_LINK != 0 {
+                    flags.push('I');
+                }
+                if value & object::elf::SHF_LINK_ORDER != 0 {
+                    flags.push('L');
+                }
+                if value & object::elf::SHF_OS_NONCONFORMING != 0 {
+                    flags.push('O');
+                }
+                if value & object::elf::SHF_GROUP != 0 {
+                    flags.push('G');
+                }
+                if value & object::elf::SHF_TLS != 0 {
+                    flags.push('T');
+                }
+                Ok(flags)
+            }
         }
     }
 }
@@ -111,10 +150,77 @@ pub(crate) fn check_dynamic_headers(report: &mut Report, objects: &[crate::Objec
     report.add_diffs(diff_fields(objects, read_dynamic_fields, ".dynamic"));
 }
 
+pub(crate) fn report_section_diffs(report: &mut Report, objects: &[Object]) {
+    // Collect up the names of all sections in all objects. We ignore empty sections though, since
+    // Wild will output empty sections if they have start/stop symbols that are referenced.
+    let mut all_names: HashSet<&[u8]> = HashSet::new();
+    for obj in objects {
+        all_names.extend(
+            obj.sections_by_name
+                .iter()
+                .filter_map(|(name, info)| (info.size > 0).then_some(name)),
+        );
+    }
+    for name in all_names {
+        let table_name = format!(
+            "section{}{}",
+            if name.starts_with(b".") { "" } else { "." },
+            String::from_utf8_lossy(name)
+        );
+        report.add_diffs(diff_fields(
+            objects,
+            |object| {
+                let section = section_or_equiv(object, name, &report.config)
+                    .ok_or_else(|| anyhow!("Section missing"))?;
+                let mut values = FieldValues::default();
+                values.insert("alignment", section.align(), Converter::None, object);
+                let section_header = section.elf_section_header();
+                values.insert(
+                    "link",
+                    section_header.sh_link.get(LittleEndian),
+                    Converter::SectionIndex,
+                    object,
+                );
+                values.insert(
+                    "flags",
+                    section_header.sh_flags.get(LittleEndian),
+                    Converter::SectionFlags,
+                    object,
+                );
+                Ok(values)
+            },
+            &table_name,
+        ));
+    }
+}
+
+fn section_or_equiv<'data, 'file: 'data>(
+    object: &'file Object<'data>,
+    name: &[u8],
+    config: &Config,
+) -> Option<ElfSection64<'data, 'file, LittleEndian>> {
+    if let Some(section) = object.section_by_name_bytes(name) {
+        return Some(section);
+    }
+    for (a, b) in &config.equiv {
+        if name == a.as_bytes() {
+            if let Some(section) = object.section_by_name_bytes(b.as_bytes()) {
+                return Some(section);
+            }
+        }
+        if name == b.as_bytes() {
+            if let Some(section) = object.section_by_name_bytes(a.as_bytes()) {
+                return Some(section);
+            }
+        }
+    }
+    None
+}
+
 fn diff_fields(
     objects: &[Object<'_>],
-    get_fields_fn: fn(&Object<'_>) -> Result<FieldValues>,
-    table_name: &'static str,
+    get_fields_fn: impl Fn(&Object<'_>) -> Result<FieldValues>,
+    table_name: &str,
 ) -> Vec<Diff> {
     let dynamic_objects = objects
         .iter()
@@ -224,7 +330,6 @@ fn read_file_header_fields(obj: &Object) -> Result<FieldValues> {
 
 fn read_dynamic_fields(obj: &Object) -> Result<FieldValues> {
     let dynamic = obj
-        .elf_file
         .section_by_name(".dynamic")
         .with_context(|| format!("`{obj}` is missing .dynamic"))?;
 

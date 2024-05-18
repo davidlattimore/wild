@@ -171,7 +171,7 @@ impl SectionDetails<'static> {
         Self {
             name: &[],
             ty: elf::Sht::Null,
-            section_flags: elf::shf::ALLOC,
+            section_flags: 0,
             retain: false,
             element_size: 0,
             packed: false,
@@ -228,7 +228,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: ".shstrtab".as_bytes(),
             ty: elf::Sht::Strtab,
-            section_flags: elf::shf::STRINGS,
             ..SectionDetails::default()
         },
         keep_if_empty: true,
@@ -258,6 +257,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: ".got".as_bytes(),
             ty: elf::Sht::Progbits,
+            section_flags: elf::shf::WRITE | elf::shf::ALLOC,
             ..SectionDetails::default()
         },
         start_symbol_name: Some("_GLOBAL_OFFSET_TABLE_"),
@@ -278,7 +278,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: ".rela.plt".as_bytes(),
             ty: elf::Sht::Rela,
-            section_flags: elf::shf::ALLOC | elf::shf::WRITE,
+            section_flags: elf::shf::ALLOC | elf::shf::INFO_LINK,
             element_size: elf::RELA_ENTRY_SIZE,
             ..SectionDetails::default()
         },
@@ -292,7 +292,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: ".eh_frame".as_bytes(),
             ty: elf::Sht::Progbits,
-            section_flags: elf::shf::ALLOC | elf::shf::WRITE,
+            section_flags: elf::shf::ALLOC,
             ..SectionDetails::default()
         },
         min_alignment: alignment::USIZE,
@@ -312,7 +312,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: ".dynamic".as_bytes(),
             ty: elf::Sht::Progbits,
-            section_flags: elf::shf::ALLOC,
+            section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             ..SectionDetails::default()
         },
         link: &[DYNSTR],
@@ -380,6 +380,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: ".rodata".as_bytes(),
             ty: elf::Sht::Progbits,
+            section_flags: elf::shf::ALLOC,
             ..SectionDetails::default()
         },
         ..DEFAULT_DEFS
@@ -463,7 +464,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: ".tdata".as_bytes(),
             ty: elf::Sht::Progbits,
-            section_flags: elf::shf::ALLOC | elf::shf::TLS,
+            section_flags: elf::shf::WRITE | elf::shf::ALLOC | elf::shf::TLS,
             ..SectionDetails::default()
         },
         ..DEFAULT_DEFS
@@ -472,7 +473,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: ".tbss".as_bytes(),
             ty: elf::Sht::Nobits,
-            section_flags: elf::shf::ALLOC | elf::shf::TLS,
+            section_flags: elf::shf::WRITE | elf::shf::ALLOC | elf::shf::TLS,
             ..SectionDetails::default()
         },
         ..DEFAULT_DEFS
@@ -492,7 +493,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             name: ".comment".as_bytes(),
             ty: elf::Sht::Progbits,
             retain: true,
-            section_flags: 0,
+            section_flags: elf::shf::STRINGS | elf::shf::MERGE,
             ..SectionDetails::default()
         },
         ..DEFAULT_DEFS

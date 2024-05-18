@@ -15,9 +15,11 @@ use anyhow::bail;
 use anyhow::Context as _;
 use asm_diff::AddressIndex;
 use clap::Parser;
+use object::read::elf::ElfSection64;
 use object::read::elf::ProgramHeader as _;
 use object::LittleEndian;
 use object::Object as _;
+use object::ObjectSection;
 use object::ObjectSymbol as _;
 use section_map::IndexedLayout;
 use std::collections::HashMap;
@@ -28,8 +30,8 @@ use std::path::PathBuf;
 mod asm_diff;
 mod gnu_hash;
 mod header_diff;
-mod trace;
 pub(crate) mod section_map;
+mod trace;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
@@ -47,6 +49,10 @@ pub struct Config {
     #[arg(long, value_delimiter = ',')]
     pub only: Vec<String>,
 
+    /// Treat the sections with the specified names as equivalent. e.g. ".got.plt=.got"
+    #[arg(long, value_delimiter = ',', value_parser = parse_string_equality)]
+    pub equiv: Vec<(String, String)>,
+
     pub filenames: Vec<PathBuf>,
 }
 
@@ -58,6 +64,13 @@ pub struct Object<'data> {
     name_index: NameIndex<'data>,
     layout: Option<IndexedLayout>,
     trace: trace::Trace,
+    sections_by_name: HashMap<&'data [u8], SectionInfo>,
+}
+
+#[derive(Clone, Copy)]
+struct SectionInfo {
+    index: object::SectionIndex,
+    size: u64,
 }
 
 struct NameIndex<'data> {
@@ -80,6 +93,18 @@ impl<'data> Object<'data> {
         let address_index = AddressIndex::new(elf_file);
         let layout = crate::section_map::for_path(&path)?;
         let trace = trace::Trace::for_path(&path)?;
+        let sections_by_name = elf_file
+            .sections()
+            .map(|section| {
+                Ok((
+                    section.name_bytes()?,
+                    SectionInfo {
+                        index: section.index(),
+                        size: section.size(),
+                    },
+                ))
+            })
+            .collect::<Result<HashMap<&[u8], SectionInfo>>>()?;
         Ok(Self {
             name: name.to_owned(),
             elf_file,
@@ -88,6 +113,7 @@ impl<'data> Object<'data> {
             name_index: NameIndex::new(elf_file),
             layout,
             trace,
+            sections_by_name,
         })
     }
 
@@ -132,6 +158,15 @@ impl<'data> Object<'data> {
 
     fn resolve_input(&self, address: u64) -> Option<section_map::InputResolution> {
         self.layout.as_ref()?.resolve_address(address)
+    }
+
+    fn section_by_name(&self, name: &str) -> Option<ElfSection64<LittleEndian>> {
+        self.section_by_name_bytes(name.as_bytes())
+    }
+
+    fn section_by_name_bytes(&self, name: &[u8]) -> Option<ElfSection64<LittleEndian>> {
+        let index = self.sections_by_name.get(name)?.index;
+        self.elf_file.section_by_index(index).ok()
     }
 }
 
@@ -218,6 +253,7 @@ impl Report {
         header_diff::check_dynamic_headers(self, objects);
         header_diff::check_file_headers(self, objects);
         asm_diff::report_function_diffs(self, objects);
+        header_diff::report_section_diffs(self, objects);
     }
 
     fn add_diff(&mut self, diff: Diff) {
@@ -460,4 +496,13 @@ fn slice_from_all_bytes<T: object::Pod>(data: &[u8]) -> &[T] {
     object::slice_from_bytes(data, data.len() / core::mem::size_of::<T>())
         .unwrap()
         .0
+}
+
+fn parse_string_equality(
+    s: &str,
+) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync + 'static>> {
+    let (a, b) = s
+        .split_once('=')
+        .ok_or_else(|| format!("invalid key-value pair. No '=' found in `{s}`"))?;
+    Ok((a.to_owned(), b.to_owned()))
 }
