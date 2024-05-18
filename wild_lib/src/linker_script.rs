@@ -34,9 +34,10 @@ pub(crate) fn linker_script_to_inputs(
 }
 
 /// A version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
+#[derive(Default)]
 pub(crate) struct VersionScript {
     // For now, we only support a single version.
-    version: Version,
+    version: Option<Version>,
 }
 
 pub(crate) struct Version {
@@ -58,11 +59,13 @@ impl VersionScript {
         // should be global and what should be local.
         tokens.expect("{")?;
         let version = Version::parse(&mut tokens)?;
-        Ok(VersionScript { version })
+        Ok(VersionScript {
+            version: Some(version),
+        })
     }
 
     pub(crate) fn is_local(&self, name: &[u8]) -> bool {
-        self.version.is_local(name)
+        self.version.as_ref().is_some_and(|ver| ver.is_local(name))
     }
 }
 
@@ -355,7 +358,7 @@ mod tests {
     #[test]
     fn test_parse_version_script() {
         let script = VersionScript::parse("{global:\n foo; bar*; local: *; }").unwrap();
-        let version = script.version;
+        let version = script.version.unwrap();
         assert_eq!(
             version.globals,
             vec![

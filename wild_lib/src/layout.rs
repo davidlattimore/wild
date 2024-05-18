@@ -19,7 +19,6 @@ use crate::error::Result;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::INTERNAL_FILE_ID;
-use crate::linker_script::VersionScript;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
@@ -72,14 +71,12 @@ pub fn compute<'data>(
     symbol_db: &'data SymbolDb<'data>,
     file_states: Vec<resolution::ResolvedFile<'data>>,
     mut output_sections: OutputSections<'data>,
-    version_script: Option<&'data VersionScript>,
     output: &mut elf_writer::Output,
 ) -> Result<Layout<'data>> {
     if let Some(sym_info) = symbol_db.args.sym_info.as_deref() {
         print_symbol_info(symbol_db, sym_info);
     }
-    let mut layout_states =
-        find_required_sections(file_states, symbol_db, &output_sections, version_script)?;
+    let mut layout_states = find_required_sections(file_states, symbol_db, &output_sections)?;
     merge_dynamic_symbol_definitions(&mut layout_states)?;
     finalise_all_sizes(symbol_db, &output_sections, &mut layout_states)?;
     let section_part_sizes =
@@ -765,8 +762,6 @@ pub(crate) struct OutputRecordLayout {
 struct GraphResources<'data, 'scope> {
     symbol_db: &'scope SymbolDb<'data>,
 
-    version_script: Option<&'data VersionScript>,
-
     worker_slots: Vec<Mutex<WorkerSlot<'data>>>,
 
     errors: Mutex<Vec<Error>>,
@@ -1126,7 +1121,6 @@ fn find_required_sections<'data>(
     file_states: Vec<resolution::ResolvedFile<'data>>,
     symbol_db: &SymbolDb<'data>,
     output_sections: &OutputSections<'data>,
-    version_script: Option<&'data VersionScript>,
 ) -> Result<Vec<FileLayoutState<'data>>> {
     let num_workers = file_states.len();
     let (worker_slots, workers) = create_worker_slots(file_states, output_sections);
@@ -1144,7 +1138,6 @@ fn find_required_sections<'data>(
         idle_threads,
         done: AtomicBool::new(false),
         output_sections,
-        version_script,
     };
 
     workers
@@ -2528,7 +2521,7 @@ impl<'data> ObjectLayoutState<'data> {
             if !symbol_db.is_definition(symbol_id) {
                 continue;
             }
-            let value_flags = ValueFlag::from_elf_symbol(local_symbol);
+            let value_flags = symbol_db.symbol_value_flags(symbol_id);
             let raw_value = if let Some(section_index) = self
                 .object
                 .symbol_section(local_symbol, local_symbol_index)?
@@ -2591,14 +2584,12 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result {
         for (sym_index, sym) in self.object.symbols.enumerate() {
             if can_export_symbol(sym) {
-                let name = self.object.symbol_name(sym)?;
-                if resources
-                    .version_script
-                    .is_some_and(|script| script.is_local(name))
-                {
+                let symbol_id = self.symbol_id_range().input_to_id(sym_index);
+                let value_flags = resources.symbol_db.symbol_value_flags(symbol_id);
+                if value_flags.contains(ValueFlag::DowngradeToLocal) {
                     continue;
                 }
-                let symbol_id = self.symbol_id_range().input_to_id(sym_index);
+                let name = self.object.symbol_name(sym)?;
                 self.handle_symbol_request(
                     SymbolRequest {
                         symbol_id,

@@ -34,7 +34,6 @@ use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use crossbeam_utils::atomic::AtomicCell;
-use enumflags2::BitFlags;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::collections::BTreeMap;
@@ -868,22 +867,11 @@ pub(crate) enum ValueFlag {
     /// Whether the GOT can be bypassed for this value. Always true for non-symbols. For symbols,
     /// this indicates that the symbol cannot be interposed (overridden at runtime).
     CanBypassGot,
-}
 
-impl ValueFlag {
-    pub(crate) fn from_elf_symbol(sym: &crate::elf::Symbol) -> BitFlags<ValueFlag> {
-        let mut flags: BitFlags<ValueFlag> = if sym.is_absolute(LittleEndian) {
-            ValueFlag::Absolute.into()
-        } else if sym.st_type() == object::elf::STT_GNU_IFUNC {
-            ValueFlag::IFunc.into()
-        } else {
-            ValueFlag::Address.into()
-        };
-        if sym.st_visibility() != object::elf::STV_DEFAULT || sym.is_local() {
-            flags |= ValueFlag::CanBypassGot;
-        }
-        flags
-    }
+    /// We have a version script and the version script says that the symbol should be downgraded to
+    /// a local. It's still treated as a global for name lookup purposes, but after that, it becomes
+    /// local.
+    DowngradeToLocal,
 }
 
 impl<'data> SymbolDb<'data> {

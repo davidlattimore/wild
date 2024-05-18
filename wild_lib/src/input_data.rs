@@ -19,7 +19,7 @@ pub struct InputData<'config> {
     pub config: &'config Args,
     pub filenames: HashSet<PathBuf>,
     pub(crate) files: Vec<InputFile>,
-    pub(crate) version_script: Option<VersionScript>,
+    pub(crate) version_script: VersionScript,
 }
 
 /// Identifies an input file. IDs start from 0 which is reserved for our "internal" state file.
@@ -81,7 +81,8 @@ impl<'config> InputData<'config> {
             .version_script_path
             .as_ref()
             .map(|path| read_version_script(path))
-            .transpose()?;
+            .transpose()?
+            .unwrap_or_default();
         let mut input_data = Self {
             config,
             filenames: Default::default(),

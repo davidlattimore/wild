@@ -55,16 +55,11 @@ impl Linker {
         let input_data = input_data::InputData::from_args(&self.args)?;
         let inputs = archive_splitter::split_archives(&input_data)?;
         let files = parsing::parse_input_files(&inputs, &self.args)?;
-        let mut symbol_db = symbol_db::SymbolDb::build(&files, &self.args)?;
+        let mut symbol_db =
+            symbol_db::SymbolDb::build(&files, &input_data.version_script, &self.args)?;
         let (resolved_files, output_sections) =
             resolution::resolve_symbols_and_sections(&files, &mut symbol_db)?;
-        let layout = layout::compute(
-            &symbol_db,
-            resolved_files,
-            output_sections,
-            input_data.version_script.as_ref(),
-            &mut output,
-        )?;
+        let layout = layout::compute(&symbol_db, resolved_files, output_sections, &mut output)?;
         output.write(&layout)?;
 
         let scope = tracing::span!(tracing::Level::INFO, "Shutdown");
