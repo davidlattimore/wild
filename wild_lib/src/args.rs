@@ -34,6 +34,7 @@ pub(crate) struct Args {
     pub(crate) bind_now: bool,
     pub(crate) write_layout: bool,
     pub(crate) hash_style: Option<HashStyle>,
+    pub(crate) should_write_eh_frame_hdr: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,8 +82,6 @@ pub const WRITE_LAYOUT_ENV: &str = "WILD_WRITE_LAYOUT";
 // other linkers. On the other, we should perhaps somehow let the user know that we don't support a
 // feature.
 const IGNORED_FLAGS: &[&str] = &[
-    // TODO: Handle this flag. Right now, we always write an eh-frame-hdr.
-    "--eh-frame-hdr",
     // TODO: Support build-ids
     "--build-id",
     // TODO: We currently always GC sections. Support _not_ GCing them.
@@ -126,6 +125,7 @@ impl Args {
         let mut modifier_stack = vec![Modifiers::default()];
         let mut version_script_path = None;
         let mut debug_address = None;
+        let mut eh_frame_hdr = false;
         // Lazy binding isn't used so much these days, since it makes things less secure. It adds
         // quite a bit of complexity and we don't properly support it. We may eventually drop
         // support completely.
@@ -213,6 +213,8 @@ impl Args {
                 merge_strings = false;
             } else if arg == "-pie" {
                 pie = true;
+            } else if arg == "--eh-frame-hdr" {
+                eh_frame_hdr = true;
             } else if arg == "-shared" {
                 output_kind = Some(OutputKind::SharedObject);
             } else if arg.starts_with("-plugin-opt=") {
@@ -279,6 +281,7 @@ impl Args {
             bind_now,
             write_layout,
             hash_style,
+            should_write_eh_frame_hdr: eh_frame_hdr,
         })
     }
 

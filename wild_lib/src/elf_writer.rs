@@ -179,8 +179,10 @@ impl SizedOutput {
             crate::validation::validate_bytes(layout, &self.mmap)?;
         }
 
-        let mut section_buffers = split_output_into_sections(layout, &mut self.mmap);
-        sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
+        if layout.args().should_write_eh_frame_hdr {
+            let mut section_buffers = split_output_into_sections(layout, &mut self.mmap);
+            sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
+        }
         crate::fs::make_executable(&self.file)
             .with_context(|| format!("Failed to make `{}` executable", self.path.display()))?;
         Ok(())
@@ -904,18 +906,20 @@ impl<'data> ObjectLayout<'data> {
                                             prefix.cie_id, cie_pointer_pos
                                         )
                                     })?;
-                                let frame_ptr = (section_resolution.address()? + offset_in_section)
-                                    as i64
-                                    - eh_frame_hdr_address as i64;
-                                headers_out[header_offset] = EhFrameHdrEntry {
-                                    frame_ptr: i32::try_from(frame_ptr)
-                                        .context("32 bit overflow in frame_ptr")?,
-                                    frame_info_ptr: i32::try_from(
-                                        frame_info_ptr_base + output_pos as u64,
-                                    )
-                                    .context("32 bit overflow when computing frame_info_ptr")?,
-                                };
-                                header_offset += 1;
+                                if !headers_out.is_empty() {
+                                    let frame_ptr =
+                                        (section_resolution.address()? + offset_in_section) as i64
+                                            - eh_frame_hdr_address as i64;
+                                    headers_out[header_offset] = EhFrameHdrEntry {
+                                        frame_ptr: i32::try_from(frame_ptr)
+                                            .context("32 bit overflow in frame_ptr")?,
+                                        frame_info_ptr: i32::try_from(
+                                            frame_info_ptr_base + output_pos as u64,
+                                        )
+                                        .context("32 bit overflow when computing frame_info_ptr")?,
+                                    };
+                                    header_offset += 1;
+                                }
                                 // TODO: Experiment with skipping this lookup if the `input_cie_pos`
                                 // is the same as the previous entry.
                                 let output_cie_pos = cies_offset_conversion.get(&input_cie_pos).with_context(|| format!("FDE referenced CIE at {input_cie_pos}, but no CIE at that position"))?;
@@ -1252,7 +1256,9 @@ impl<'data> InternalLayout<'data> {
             self.write_symbol_table_entries(&mut buffers, layout)?;
         }
 
-        write_eh_frame_hdr(&mut buffers, layout)?;
+        if layout.args().should_write_eh_frame_hdr {
+            write_eh_frame_hdr(&mut buffers, layout)?;
+        }
 
         self.write_merged_strings(&mut buffers);
 

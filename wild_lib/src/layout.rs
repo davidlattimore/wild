@@ -1897,7 +1897,9 @@ impl<'data> InternalLayoutState<'data> {
                 .allocate_symbol_table_sizes(symbol_db, &mut self.common)?;
         }
 
-        self.common.mem_sizes.eh_frame_hdr += core::mem::size_of::<elf::EhFrameHdr>() as u64;
+        if symbol_db.args.should_write_eh_frame_hdr {
+            self.common.mem_sizes.eh_frame_hdr += core::mem::size_of::<elf::EhFrameHdr>() as u64;
+        }
 
         Ok(())
     }
@@ -2370,9 +2372,11 @@ impl<'data> ObjectLayoutState<'data> {
                     if let Some(frame_data) = self.section_frame_data.get(section_id.0) {
                         self.state.common.mem_sizes.eh_frame +=
                             u64::from(frame_data.total_fde_size);
-                        self.state.common.mem_sizes.eh_frame_hdr +=
-                            core::mem::size_of::<EhFrameHdrEntry>() as u64
-                                * u64::from(frame_data.num_fdes);
+                        if resources.symbol_db.args.should_write_eh_frame_hdr {
+                            self.state.common.mem_sizes.eh_frame_hdr +=
+                                core::mem::size_of::<EhFrameHdrEntry>() as u64
+                                    * u64::from(frame_data.num_fdes);
+                        }
                         // Request loading of any sections/symbols referenced by the FDEs for our
                         // section.
                         for action in &frame_data.relocation_actions {
