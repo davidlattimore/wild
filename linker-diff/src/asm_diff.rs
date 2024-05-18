@@ -453,6 +453,11 @@ enum AddressResolution<'data> {
     UndefinedTls,
     UnknownTls,
     TlsBlock,
+    PltWithUnresolvedGot(u64),
+    NullPlt,
+    PltWithInvalidGot(u64),
+    UnrecognisedPlt,
+    IFuncWithUnknownResolver,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -589,7 +594,7 @@ impl<'data> AddressIndex<'data> {
                 self.add_resolution(address.wrapping_sub(tls_segment_size), new_resolution);
             } else {
                 self.add_resolution(address + self.load_offset, new_resolution);
-                self.name_to_address.insert(name, address);
+                self.name_to_address.insert(name, address + self.load_offset);
             }
         }
     }
@@ -669,12 +674,12 @@ impl<'data> AddressIndex<'data> {
         let plt_base = section.address();
         let mut plt_offset = 0;
         for chunk in bytes.chunks(entry_length) {
+            let mut new_resolutions = Vec::new();
             if let Some(got_address) = PltEntry::decode(chunk, plt_base, plt_offset)
                 .map(|entry| self.got_address(entry))
                 .transpose()?
                 .map(|o| self.load_offset + o)
             {
-                let mut new_resolutions = Vec::new();
                 for res in self.resolve(got_address) {
                     if let AddressResolution::Basic(got_resolution) = res {
                         new_resolutions.push(AddressResolution::Plt(*got_resolution));
@@ -685,15 +690,29 @@ impl<'data> AddressIndex<'data> {
                     // value at that address.
                     if let Some(got_value) = read_address(elf_file, self, got_address) {
                         for res in self.resolve(got_value) {
-                            if let AddressResolution::Basic(got_resolution) = res {
-                                new_resolutions.push(AddressResolution::Plt(*got_resolution));
+                            match res {
+                                AddressResolution::Basic(got_resolution) => {
+                                    new_resolutions.push(AddressResolution::Plt(*got_resolution));
+                                }
+                                AddressResolution::Null => {
+                                    new_resolutions.push(AddressResolution::NullPlt);
+                                }
+                                _ => (),
                             }
                         }
+                        if new_resolutions.is_empty() {
+                            new_resolutions
+                                .push(AddressResolution::PltWithUnresolvedGot(got_address));
+                        }
+                    } else {
+                        new_resolutions.push(AddressResolution::PltWithInvalidGot(got_address));
                     }
                 }
-                for res in new_resolutions {
-                    self.add_resolution(plt_base + self.load_offset + plt_offset, res);
-                }
+            } else {
+                new_resolutions.push(AddressResolution::UnrecognisedPlt);
+            }
+            for res in new_resolutions {
+                self.add_resolution(plt_base + self.load_offset + plt_offset, res);
             }
             plt_offset += entry_length as u64;
         }
@@ -737,6 +756,9 @@ impl<'data> AddressIndex<'data> {
                     )));
                 }
             }
+            if new_resolutions.is_empty() {
+                new_resolutions.push(AddressResolution::IFuncWithUnknownResolver);
+            }
             let address = relocation.r_offset(e) + self.load_offset;
             for res in new_resolutions {
                 self.add_resolution(address, res);
@@ -756,7 +778,7 @@ impl<'data> AddressIndex<'data> {
         }
         // Everything else uses entries in the DYNAMIC segment.
         if let (Some(start), Some(len)) = (self.jmprel_address, self.jmprel_size) {
-            return Ok(read_bytes(elf_file, self, start, len));
+            return Ok(read_bytes(elf_file, self, start + self.load_offset, len));
         }
         Ok(None)
     }
@@ -901,6 +923,7 @@ impl PltEntry {
     }
 
     fn decode_16(plt_entry: &[u8], plt_base: u64, plt_offset: u64) -> Option<PltEntry> {
+        // TODO: We should perhaps report differences in which PLT template was used.
         const PLT_ENTRY_LENGTH: usize = 0x10;
         {
             const PLT_ENTRY_TEMPLATE: &[u8; PLT_ENTRY_LENGTH] = &[
@@ -1481,6 +1504,15 @@ impl Display for AddressResolution<'_> {
             AddressResolution::Null => write!(f, "null"),
             AddressResolution::UndefinedTls => write!(f, "undefined-TLS"),
             AddressResolution::UnknownTls => write!(f, "Unknown TLS"),
+            AddressResolution::PltWithUnresolvedGot(address) => {
+                write!(f, "PLT with unresolved GOT 0x{address:x}")
+            }
+            AddressResolution::NullPlt => write!(f, "Null PLT"),
+            AddressResolution::UnrecognisedPlt => write!(f, "Unrecognised PLT"),
+            AddressResolution::PltWithInvalidGot(address) => {
+                write!(f, "PLT with invalid GOT 0x{address:x}")
+            }
+            AddressResolution::IFuncWithUnknownResolver => write!(f, "IFunc with unknown resolver"),
             AddressResolution::TlsBlock => write!(f, "TLS"),
         }
     }
