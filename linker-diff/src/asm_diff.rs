@@ -657,7 +657,7 @@ impl<'data> AddressIndex<'data> {
             return Ok(());
         };
 
-        let plt_base = section.address() + self.load_offset;
+        let plt_base = section.address();
         let mut plt_offset = 0;
         for chunk in bytes.chunks(PLT_ENTRY_LENGTH) {
             if let Some(got_address) = PltEntry::decode(chunk, plt_base, plt_offset)
@@ -675,7 +675,7 @@ impl<'data> AddressIndex<'data> {
                     // If we don't have a resolution for the GOT address, then try just reading the
                     // value at that address.
                     if let Some(got_value) = read_address(elf_file, self, got_address) {
-                        for res in self.resolve(got_value + self.load_offset) {
+                        for res in self.resolve(got_value) {
                             if let AddressResolution::Basic(got_resolution) = res {
                                 new_resolutions.push(AddressResolution::Plt(*got_resolution));
                             }
@@ -683,7 +683,7 @@ impl<'data> AddressIndex<'data> {
                     }
                 }
                 for res in new_resolutions {
-                    self.add_resolution(plt_base + plt_offset, res);
+                    self.add_resolution(plt_base + self.load_offset + plt_offset, res);
                 }
             }
             plt_offset += PLT_ENTRY_LENGTH as u64;
