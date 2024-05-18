@@ -42,6 +42,10 @@ pub struct Config {
     #[arg(long, value_delimiter = ',')]
     pub ignore: Vec<String>,
 
+    /// Show only the specified keys.
+    #[arg(long, value_delimiter = ',')]
+    pub only: Vec<String>,
+
     pub filenames: Vec<PathBuf>,
 }
 
@@ -230,6 +234,15 @@ impl Report {
     }
 
     fn should_ignore(&self, key: &str) -> bool {
+        if !self.config.only.is_empty() {
+            return !self.config.only.iter().any(|i| {
+                if let Some(prefix) = i.strip_suffix('*') {
+                    key.starts_with(prefix)
+                } else {
+                    key == *i
+                }
+            });
+        }
         self.config.ignore.iter().any(|i| {
             if let Some(prefix) = i.strip_suffix('*') {
                 key.starts_with(prefix)
