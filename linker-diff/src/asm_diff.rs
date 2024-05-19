@@ -1272,10 +1272,12 @@ impl<'data> UnifiedInstruction<'data> {
         // We might have multiple resolutions. e.g. if there is more than one symbol at the address.
         // Try to find a resolution shared by all objects and use that.
         let mut common = UnifiedInstruction::all_resolved(first, first_object);
+        // If the first object has an instruction that we know is undefined behaviour, then we
+        // ignore the instructions from the other objects.
+        if let Some(ub) = extract_undefined_behaviour(&mut common) {
+            return Some(ub);
+        }
         for (ins, obj) in instructions[1..].iter().zip(&objects[1..]) {
-            if common.is_empty() {
-                break;
-            }
             let unified = UnifiedInstruction::all_resolved(ins, obj);
             common.retain(|u| unified.iter().any(|a| u == a));
         }
@@ -1362,6 +1364,22 @@ impl<'data> UnifiedInstruction<'data> {
         }
         resolutions
     }
+
+    fn is_undefined_behaviour(&self) -> bool {
+        self.instruction.mnemonic() == Mnemonic::Call
+            && self.resolution.is_some_and(|res| {
+                matches!(res, AddressResolution::Null | AddressResolution::NullPlt)
+            })
+    }
+}
+
+fn extract_undefined_behaviour<'data>(
+    unified: &mut Vec<UnifiedInstruction<'data>>,
+) -> Option<UnifiedInstruction<'data>> {
+    if unified.iter().any(|ins| ins.is_undefined_behaviour()) {
+        return unified.drain(..).find(|ins| ins.is_undefined_behaviour());
+    }
+    None
 }
 
 fn section_name_for_address<'data>(
