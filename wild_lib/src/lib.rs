@@ -19,6 +19,7 @@ pub(crate) mod linker_script;
 pub(crate) mod output_section_id;
 pub(crate) mod output_section_map;
 pub(crate) mod output_section_part_map;
+pub(crate) mod output_trace;
 pub(crate) mod parsing;
 pub(crate) mod program_segments;
 pub(crate) mod relaxation;
@@ -44,7 +45,11 @@ impl Linker {
     }
 
     pub fn run(&self) -> crate::error::Result {
-        timing::init_tracing(&self.args);
+        if self.args.time_phases {
+            timing::init_tracing();
+        } else if self.args.write_trace {
+            output_trace::init(&self.args);
+        }
         self.link()
     }
 

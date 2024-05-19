@@ -333,6 +333,7 @@ dependencies = [
  "clap",
  "iced-x86",
  "linker-layout",
+ "linker-trace",
  "object",
  "rayon",
  "symbolic-demangle",
@@ -340,6 +341,15 @@ dependencies = [
 
 [[package]]
 name = "linker-layout"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "postcard",
+ "serde",
+]
+
+[[package]]
+name = "linker-trace"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -679,6 +689,7 @@ dependencies = [
  "crossbeam-utils",
  "enumflags2",
  "linker-layout",
+ "linker-trace",
  "memchr",
  "memmap2",
  "object",

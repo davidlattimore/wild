@@ -99,14 +99,11 @@ where
     }
 }
 
-pub fn init_tracing(args: &crate::args::Args) {
+pub(crate) fn init_tracing() {
     use tracing_subscriber::prelude::*;
-
-    if args.time_phases {
-        let layer = TimingLayer::default();
-        let subscriber = tracing_subscriber::Registry::default().with(layer);
-        tracing::subscriber::set_global_default(subscriber).unwrap();
-    }
+    let layer = TimingLayer::default();
+    let subscriber = tracing_subscriber::Registry::default().with(layer);
+    tracing::subscriber::set_global_default(subscriber).unwrap();
 }
 
 struct Indent {

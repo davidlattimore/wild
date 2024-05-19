@@ -6,6 +6,7 @@ edition = "2021"
 
 [dependencies]
 linker-layout = { path = "../linker-layout" }
+linker-trace = { path = "../linker-trace" }
 object = { version = "0.35.0", default-features = false, features = [
     "elf",
     "read_core",

@@ -250,6 +250,7 @@ impl Display for FunctionVersions<'_> {
                 continue;
             }
             let mut input_resolution = None;
+            let mut trace_messages = Vec::new();
             for (value, obj) in values.iter().zip(self.objects) {
                 let Some(value) = value else {
                     continue;
@@ -284,6 +285,10 @@ impl Display for FunctionVersions<'_> {
                             write!(f, " {resolution}")?;
                         }
                     }
+                    let messages = obj
+                        .trace
+                        .messages_in(instruction.non_relocated_address_range());
+                    trace_messages.extend(messages);
                 }
                 writeln!(f)?;
             }
@@ -293,6 +298,9 @@ impl Display for FunctionVersions<'_> {
                 }
             } else {
                 writeln!(f, "       -- no input resolution --")?;
+            }
+            for msg in trace_messages {
+                writeln!(f, "TRACE           {msg}")?;
             }
         }
     }
@@ -594,7 +602,8 @@ impl<'data> AddressIndex<'data> {
                 self.add_resolution(address.wrapping_sub(tls_segment_size), new_resolution);
             } else {
                 self.add_resolution(address + self.load_offset, new_resolution);
-                self.name_to_address.insert(name, address + self.load_offset);
+                self.name_to_address
+                    .insert(name, address + self.load_offset);
             }
         }
     }
@@ -1235,6 +1244,13 @@ struct Instruction<'data> {
     offset: u64,
 
     bytes: &'data [u8],
+}
+
+impl Instruction<'_> {
+    fn non_relocated_address_range(&self) -> Range<u64> {
+        let base = self.base_address + self.offset;
+        base..base + self.bytes.len() as u64
+    }
 }
 
 #[derive(PartialEq, Eq)]

@@ -28,6 +28,7 @@ use std::path::PathBuf;
 mod asm_diff;
 mod gnu_hash;
 mod header_diff;
+mod trace;
 pub(crate) mod section_map;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
@@ -56,6 +57,7 @@ pub struct Object<'data> {
     address_index: AddressIndex<'data>,
     name_index: NameIndex<'data>,
     layout: Option<IndexedLayout>,
+    trace: trace::Trace,
 }
 
 struct NameIndex<'data> {
@@ -77,6 +79,7 @@ impl<'data> Object<'data> {
     ) -> Result<Self> {
         let address_index = AddressIndex::new(elf_file);
         let layout = crate::section_map::for_path(&path)?;
+        let trace = trace::Trace::for_path(&path)?;
         Ok(Self {
             name: name.to_owned(),
             elf_file,
@@ -84,6 +87,7 @@ impl<'data> Object<'data> {
             address_index,
             name_index: NameIndex::new(elf_file),
             layout,
+            trace,
         })
     }
 

@@ -143,7 +143,10 @@ impl Output {
                 self.create_file_non_lazily(file_size)?
             }
         };
-        sized_output.write(layout)
+        sized_output.write(layout)?;
+        // This triggers writing our .trace file if any. See output_trace module.
+        tracing::event!(tracing::Level::TRACE, output_write_complete = true);
+        Ok(())
     }
 
     #[tracing::instrument(skip_all, name = "Create output file")]
@@ -1157,11 +1160,12 @@ fn apply_relocation(
     out: &mut [u8],
     relocation_writer: &mut DynamicRelocationWriter,
 ) -> Result<RelocationModifier> {
+    let place = section_address + offset_in_section;
+    let _span = tracing::span!(tracing::Level::TRACE, "relocation", address = place).entered();
     let Some(resolution) = object_layout.get_resolution(rel, layout)? else {
         return Ok(RelocationModifier::Normal);
     };
     let value_flags = resolution.value_flags();
-    let place = section_address + offset_in_section;
     let e = LittleEndian;
     let mut addend = rel.r_addend.get(e) as u64;
     let mut next_modifier = RelocationModifier::Normal;
@@ -1171,6 +1175,7 @@ fn apply_relocation(
     if let Some((relaxation, r_type)) =
         Relaxation::new(r_type, out, offset_in_section, value_flags, output_kind)
     {
+        tracing::trace!(?relaxation, %value_flags);
         rel_info = RelocationKindInfo::from_raw(r_type)?;
         relaxation.apply(out, &mut offset_in_section, &mut addend, &mut next_modifier);
     } else {

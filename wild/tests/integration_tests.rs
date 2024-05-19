@@ -666,6 +666,7 @@ impl LinkCommand {
         }
         command.env(wild_lib::args::VALIDATE_ENV, "1");
         command.env(wild_lib::args::WRITE_LAYOUT_ENV, "1");
+        command.env(wild_lib::args::WRITE_TRACE_ENV, "1");
         LinkCommand {
             command,
             input_commands: inputs

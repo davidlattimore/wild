@@ -35,6 +35,7 @@ pub(crate) struct Args {
     pub(crate) write_layout: bool,
     pub(crate) hash_style: Option<HashStyle>,
     pub(crate) should_write_eh_frame_hdr: bool,
+    pub(crate) write_trace: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +77,7 @@ pub(crate) enum HashStyle {
 
 pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
 pub const WRITE_LAYOUT_ENV: &str = "WILD_WRITE_LAYOUT";
+pub const WRITE_TRACE_ENV: &str = "WILD_WRITE_TRACE";
 
 // These flags don't currently affect our behaviour. TODO: Assess whether we should error or warn if
 // these are given. This is tricky though. On the one hand we want to be a drop-in replacement for
@@ -121,6 +123,7 @@ impl Args {
         let mut debug_fuel = None;
         let mut validate_output = std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1");
         let mut write_layout = std::env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1");
+        let mut write_trace = std::env::var(WRITE_TRACE_ENV).is_ok_and(|v| v == "1");
         let mut pie = false;
         let mut modifier_stack = vec![Modifiers::default()];
         let mut version_script_path = None;
@@ -225,6 +228,8 @@ impl Args {
                 validate_output = true;
             } else if arg == "--write-layout" {
                 write_layout = true;
+            } else if arg == "--write-trace" {
+                write_trace = true;
             } else if let Some(rest) = arg.strip_prefix("--debug-address=") {
                 debug_address = Some(parse_number(rest).context("Invalid --debug-address")?);
             } else if let Some(rest) = arg.strip_prefix("--debug-fuel=") {
@@ -280,6 +285,7 @@ impl Args {
             debug_address,
             bind_now,
             write_layout,
+            write_trace,
             hash_style,
             should_write_eh_frame_hdr: eh_frame_hdr,
         })
