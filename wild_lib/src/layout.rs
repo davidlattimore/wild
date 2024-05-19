@@ -2027,9 +2027,9 @@ impl<'data> InternalLayoutState<'data> {
             got_address: Some(
                 NonZeroU64::new(memory_offsets.got).expect("GOT address must never be zero"),
             ),
-            // If anything ever actually tries to call the PLT for an undefined symbol, it's
-            // undefined behaviour, so we can put whatever pointer we like here.
-            plt_address: NonZeroU64::new(0xdead),
+            plt_address: Some(
+                NonZeroU64::new(memory_offsets.plt).expect("PLT address must never be zero"),
+            ),
             kind: ResolutionFlag::Direct | ResolutionFlag::Got | ResolutionFlag::Plt,
             value_flags: ValueFlag::Absolute.into(),
         };
