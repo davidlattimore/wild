@@ -37,7 +37,6 @@ use crossbeam_utils::atomic::AtomicCell;
 use enumflags2::BitFlags;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
-use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::ops::BitOrAssign;
 use std::ops::Deref;
@@ -48,7 +47,7 @@ pub fn resolve_symbols_and_sections<'data>(
     file_states: &'data [InputObject<'data>],
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result<(Vec<ResolvedFile<'data>>, OutputSections<'data>)> {
-    let (mut resolved, start_stop_sets, internal) =
+    let (mut resolved, undefined_symbols, internal) =
         resolve_symbols_in_files(file_states, symbol_db)?;
 
     let output_sections = assign_section_ids(&resolved, symbol_db.args)?;
@@ -59,13 +58,7 @@ pub fn resolve_symbols_and_sections<'data>(
         panic!("Epilogue must be the last input");
     };
 
-    allocate_start_stop_symbol_ids(
-        start_stop_sets,
-        &mut custom,
-        &mut resolved,
-        &output_sections,
-        symbol_db,
-    )?;
+    canonicalise_undefined_symbols(undefined_symbols, &mut custom, &output_sections, symbol_db)?;
 
     resolved.push(ResolvedFile::Epilogue(custom));
 
@@ -88,7 +81,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result<(
     Vec<ResolvedFile<'data>>,
-    SegQueue<StartStopSet<'data>>,
+    SegQueue<UndefinedSymbol<'data>>,
     &'data InternalInputObject,
 )> {
     let mut num_objects = 0;
@@ -153,7 +146,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
         resolved[file_id.as_usize()] = ResolvedFile::Object(obj);
     }
     let internal = internal.unwrap();
-    Ok((resolved, outputs.start_stop_sets, internal))
+    Ok((resolved, outputs.undefined_symbols, internal))
 }
 
 struct ResolutionResources<'data, 'definitions, 'outer_scope> {
@@ -428,8 +421,7 @@ struct Outputs<'data> {
     /// Any errors that we encountered.
     errors: ArrayQueue<Error>,
 
-    /// Start/stop references to custom sections.
-    start_stop_sets: SegQueue<StartStopSet<'data>>,
+    undefined_symbols: SegQueue<UndefinedSymbol<'data>>,
 }
 
 impl<'data> Outputs<'data> {
@@ -437,7 +429,7 @@ impl<'data> Outputs<'data> {
         Self {
             loaded: ArrayQueue::new(num_objects),
             errors: ArrayQueue::new(1),
-            start_stop_sets: SegQueue::new(),
+            undefined_symbols: SegQueue::new(),
         }
     }
 }
@@ -466,92 +458,80 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
         resources.symbol_db,
         request_file_id,
         definitions_out,
-        &resources.outputs.start_stop_sets,
+        &resources.outputs.undefined_symbols,
     )
     .with_context(|| format!("Failed to process {input}"))?;
     let _ = resources.outputs.loaded.push(res);
     Ok(())
 }
 
-struct StartStopSet<'data> {
-    start_stop_refs: AHashMap<&'data [u8], Vec<SymbolId>>,
+struct UndefinedSymbol<'data> {
+    name: PreHashed<SymbolName<'data>>,
+    symbol_id: SymbolId,
+    is_weak: bool,
 }
 
-#[tracing::instrument(skip_all, name = "Process custom section start/stop refs")]
-fn allocate_start_stop_symbol_ids<'data>(
-    start_stop_sets: SegQueue<StartStopSet<'data>>,
+#[tracing::instrument(skip_all, name = "Canonicalise undefined symbols")]
+fn canonicalise_undefined_symbols<'data>(
+    undefined_symbols: SegQueue<UndefinedSymbol<'data>>,
     epilogue: &mut ResolvedEpilogue,
-    objects: &mut [ResolvedFile],
     output_sections: &OutputSections,
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result {
-    let mut names: BTreeMap<&[u8], Vec<SymbolId>> = Default::default();
-    let start_stop_sets = Vec::from_iter(start_stop_sets);
-    for s in start_stop_sets {
-        for (name, symbol_indexes) in s.start_stop_refs {
-            let refs = names.entry(name).or_default();
-            for symbol_id in symbol_indexes {
-                refs.push(symbol_id);
+    let mut name_to_id: PassThroughHashMap<SymbolName<'data>, SymbolId> = Default::default();
+    let mut undefined_symbols = Vec::from_iter(undefined_symbols);
+    // Sort by symbol ID to ensure deterministic behaviour. This means that the canonical symbol ID
+    // for any given name will be the one for the earliest file that refers to that symbol.
+    undefined_symbols.sort_by_key(|u| u.symbol_id);
+    for undefined in undefined_symbols {
+        match name_to_id.entry(undefined.name) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let Some(symbol_id) = allocate_start_stop_symbol_id(
+                    undefined.name,
+                    symbol_db,
+                    epilogue,
+                    output_sections,
+                ) else {
+                    if undefined.is_weak {
+                        continue;
+                    }
+                    bail!("Undefined symbol `{}`", *undefined.name);
+                };
+                entry.insert(symbol_id);
+                symbol_db.replace_definition(undefined.symbol_id, symbol_id);
             }
-        }
-    }
-    for (symbol_name, refs) in names.into_iter() {
-        let (section_name, is_start) = if let Some(s) = symbol_name.strip_prefix(b"__start_") {
-            (s, true)
-        } else if let Some(s) = symbol_name.strip_prefix(b"__stop_") {
-            (s, false)
-        } else {
-            bail!(
-                "Internal error: Unexpected start/stop symbol `{}`",
-                String::from_utf8_lossy(symbol_name)
-            );
-        };
-        let section_id = if let Some(s) = output_sections.custom_name_to_id(section_name) {
-            s
-        } else {
-            if all_unresolved_weak(symbol_db, &refs, objects) {
-                // There's no output section with the appropriate name, but the references are all weak,
-                // so we ignore it.
-                continue;
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                symbol_db.replace_definition(undefined.symbol_id, *entry.get());
             }
-            bail!(
-                "Reference to undefined symbol `{}` and there's no custom section named `{}`",
-                String::from_utf8_lossy(symbol_name),
-                String::from_utf8_lossy(section_name),
-            )
-        };
-
-        let symbol_id = symbol_db.add_start_stop_symbol(symbol_name);
-        let def_info = if is_start {
-            InternalSymDefInfo::SectionStart(section_id)
-        } else {
-            InternalSymDefInfo::SectionEnd(section_id)
-        };
-        epilogue.symbol_definitions.push(def_info);
-        for local_symbol_id in refs {
-            symbol_db.replace_definition(local_symbol_id, symbol_id);
         }
     }
     Ok(())
 }
 
-/// Returns whether all the specified symbols in the specified files are unresolved weak references.
-fn all_unresolved_weak(
-    symbol_db: &SymbolDb,
-    refs: &[SymbolId],
-    objects: &mut [ResolvedFile<'_>],
-) -> bool {
-    refs.iter().all(|symbol_id| {
-        let file_id = symbol_db.file_id_for_symbol(*symbol_id);
-        if let ResolvedFile::Object(obj) = &objects[file_id.as_usize()] {
-            obj.object
-                .symbol(obj.symbol_id_range.id_to_input(*symbol_id))
-                .ok()
-                .is_some_and(|sym| sym.is_undefined(LittleEndian) && sym.is_weak())
-        } else {
-            unreachable!();
-        }
-    })
+fn allocate_start_stop_symbol_id<'data>(
+    name: PreHashed<SymbolName<'data>>,
+    symbol_db: &mut SymbolDb<'data>,
+    epilogue: &mut ResolvedEpilogue,
+    output_sections: &OutputSections,
+) -> Option<SymbolId> {
+    let symbol_name_bytes = name.bytes();
+    let (section_name, is_start) = if let Some(s) = symbol_name_bytes.strip_prefix(b"__start_") {
+        (s, true)
+    } else if let Some(s) = symbol_name_bytes.strip_prefix(b"__stop_") {
+        (s, false)
+    } else {
+        return None;
+    };
+    let section_id = output_sections.custom_name_to_id(section_name)?;
+
+    let symbol_id = symbol_db.add_start_stop_symbol(name);
+    let def_info = if is_start {
+        InternalSymDefInfo::SectionStart(section_id)
+    } else {
+        InternalSymDefInfo::SectionEnd(section_id)
+    };
+    epilogue.symbol_definitions.push(def_info);
+    Some(symbol_id)
 }
 
 impl<'data> ResolvedObject<'data> {
@@ -560,7 +540,7 @@ impl<'data> ResolvedObject<'data> {
         symbol_db: &SymbolDb<'data>,
         request_file_id: impl FnMut(FileId),
         definitions_out: &mut [SymbolId],
-        start_stop_sets: &SegQueue<StartStopSet<'data>>,
+        undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     ) -> Result<Self> {
         let mut non_dynamic = None;
 
@@ -569,7 +549,7 @@ impl<'data> ResolvedObject<'data> {
                 obj,
                 symbol_db,
                 request_file_id,
-                start_stop_sets,
+                undefined_symbols_out,
                 definitions_out,
             )
             .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
@@ -580,7 +560,7 @@ impl<'data> ResolvedObject<'data> {
                 obj,
                 symbol_db,
                 request_file_id,
-                start_stop_sets,
+                undefined_symbols_out,
                 definitions_out,
                 &mut sections,
             )
@@ -661,11 +641,10 @@ fn resolve_symbols<'data>(
     obj: &RegularInputObject<'data>,
     symbol_db: &SymbolDb<'data>,
     mut request_file_id: impl FnMut(FileId),
-    start_stop_sets: &SegQueue<StartStopSet<'data>>,
+    undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     definitions_out: &mut [SymbolId],
     sections: &mut [SectionSlot<'data>],
 ) -> Result {
-    let mut start_stop_refs: AHashMap<&'data [u8], Vec<SymbolId>> = AHashMap::new();
     obj.object
         .symbols
         .enumerate()
@@ -679,7 +658,7 @@ fn resolve_symbols<'data>(
                     symbol_db,
                     obj,
                     &mut request_file_id,
-                    &mut start_stop_refs,
+                    undefined_symbols_out,
                 )?;
 
                 if let Some(local_section_index) = obj
@@ -696,9 +675,6 @@ fn resolve_symbols<'data>(
                 Ok(())
             },
         )?;
-    if !start_stop_refs.is_empty() {
-        start_stop_sets.push(StartStopSet { start_stop_refs });
-    }
     Ok(())
 }
 
@@ -706,10 +682,9 @@ fn resolve_dynamic_symbols<'data>(
     obj: &RegularInputObject<'data>,
     symbol_db: &SymbolDb<'data>,
     mut request_file_id: impl FnMut(FileId),
-    start_stop_sets: &SegQueue<StartStopSet<'data>>,
+    undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     definitions_out: &mut [SymbolId],
 ) -> Result {
-    let mut start_stop_refs: AHashMap<&'data [u8], Vec<SymbolId>> = AHashMap::new();
     obj.object
         .symbols
         .enumerate()
@@ -723,13 +698,10 @@ fn resolve_dynamic_symbols<'data>(
                     symbol_db,
                     obj,
                     &mut request_file_id,
-                    &mut start_stop_refs,
+                    undefined_symbols_out,
                 )
             },
         )?;
-    if !start_stop_refs.is_empty() {
-        start_stop_sets.push(StartStopSet { start_stop_refs });
-    }
     Ok(())
 }
 
@@ -740,7 +712,7 @@ fn resolve_symbol<'data>(
     symbol_db: &SymbolDb<'data>,
     obj: &RegularInputObject<'data>,
     request_file_id: &mut impl FnMut(FileId),
-    start_stop_refs: &mut AHashMap<&'data [u8], Vec<SymbolId>>,
+    undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
 ) -> Result {
     // Don't try to resolve symbols that are already defined, e.g. locals and globals that we
     // define. Also don't try to resolve symbol zero - the undefined symbol.
@@ -754,10 +726,8 @@ fn resolve_symbol<'data>(
         String::from_utf8_lossy(name_bytes)
     );
     assert!(!local_symbol.is_definition(LittleEndian));
-    match symbol_db
-        .global_names
-        .get(&SymbolName::prehashed(name_bytes))
-    {
+    let prehashed_name = SymbolName::prehashed(name_bytes);
+    match symbol_db.global_names.get(&prehashed_name) {
         Some(&symbol_id) => {
             *definition_out = symbol_id;
             let symbol_file_id = symbol_db.file_id_for_symbol(symbol_id);
@@ -767,10 +737,12 @@ fn resolve_symbol<'data>(
         }
         None => {
             if name_bytes.starts_with(b"__start_") || name_bytes.starts_with(b"__stop_") {
-                start_stop_refs
-                    .entry(name_bytes)
-                    .or_default()
-                    .push(obj.symbol_id_range.input_to_id(local_symbol_index));
+                let local_symbol_id = obj.symbol_id_range.input_to_id(local_symbol_index);
+                undefined_symbols_out.push(UndefinedSymbol {
+                    name: prehashed_name,
+                    symbol_id: local_symbol_id,
+                    is_weak: local_symbol.is_weak(),
+                });
             }
         }
     }

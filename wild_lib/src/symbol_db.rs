@@ -245,15 +245,17 @@ impl<'data> SymbolDb<'data> {
         }
     }
 
-    pub(crate) fn add_start_stop_symbol(&mut self, symbol_name: &'data [u8]) -> SymbolId {
+    pub(crate) fn add_start_stop_symbol(
+        &mut self,
+        symbol_name: PreHashed<SymbolName<'data>>,
+    ) -> SymbolId {
         let symbol_id = SymbolId::from_usize(self.symbol_definitions.len());
         self.add_symbol(PendingSymbol {
             symbol_id,
-            name: SymbolName::prehashed(symbol_name),
+            name: symbol_name,
         });
         self.symbol_definitions.push(symbol_id);
-        self.start_stop_symbol_names
-            .push(SymbolName::new(symbol_name));
+        self.start_stop_symbol_names.push(*symbol_name);
         self.num_symbols_per_file[self.custom_sections_file_id.as_usize()] += 1;
         self.symbol_value_kinds.push(ValueFlag::Address.into());
         symbol_id
