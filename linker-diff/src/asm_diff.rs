@@ -1509,26 +1509,26 @@ impl Display for AddressResolution<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AddressResolution::Basic(res) => write!(f, "{res}"),
-            AddressResolution::Got(res) => write!(f, "GOT[{res}]"),
-            AddressResolution::Plt(res) => write!(f, "PLT[{res}]"),
-            AddressResolution::PointerTo(raw) => write!(f, "pointer to {raw}"),
+            AddressResolution::Got(res) => write!(f, "GOT({res})"),
+            AddressResolution::Plt(res) => write!(f, "PLT({res})"),
+            AddressResolution::PointerTo(raw) => write!(f, "POINTER-TO({raw})"),
             AddressResolution::FileHeaderOffset(offset) => write!(f, "FILE_HEADER[0x{offset:x}]"),
-            AddressResolution::TlsIdentifier(name) => write!(f, "TLS_IDENT[{name}]"),
+            AddressResolution::TlsIdentifier(name) => write!(f, "TLS-IDENT({name})"),
             AddressResolution::ProgramHeaderOffset(offset) => {
-                write!(f, "PROGRAM_HEADER[0x{offset:x}]")
+                write!(f, "PROGRAM-HEADER[0x{offset:x}]")
             }
-            AddressResolution::Null => write!(f, "null"),
-            AddressResolution::UndefinedTls => write!(f, "undefined-TLS"),
-            AddressResolution::UnknownTls => write!(f, "Unknown TLS"),
+            AddressResolution::Null => write!(f, "NULL"),
+            AddressResolution::UndefinedTls => write!(f, "UNDEFINED-TLS"),
+            AddressResolution::UnknownTls => write!(f, "UNKNOWN-TLS"),
             AddressResolution::PltWithUnresolvedGot(address) => {
-                write!(f, "PLT with unresolved GOT 0x{address:x}")
+                write!(f, "PLT-UNRESOLVED-GOT(0x{address:x})")
             }
-            AddressResolution::NullPlt => write!(f, "Null PLT"),
-            AddressResolution::UnrecognisedPlt => write!(f, "Unrecognised PLT"),
+            AddressResolution::NullPlt => write!(f, "NULL-PLT"),
+            AddressResolution::UnrecognisedPlt => write!(f, "UNRECOGNISED-PLT"),
             AddressResolution::PltWithInvalidGot(address) => {
-                write!(f, "PLT with invalid GOT 0x{address:x}")
+                write!(f, "PLT-INVALID-GOT(0x{address:x})")
             }
-            AddressResolution::IFuncWithUnknownResolver => write!(f, "IFunc with unknown resolver"),
+            AddressResolution::IFuncWithUnknownResolver => write!(f, "IFUNC-UNKNOWN"),
             AddressResolution::TlsBlock => write!(f, "TLS"),
         }
     }
@@ -1538,8 +1538,8 @@ impl Display for BasicResolution<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BasicResolution::Symbol(name) => write!(f, "{name}"),
-            BasicResolution::Dynamic(name) => write!(f, "Dynamic({name})"),
-            BasicResolution::IFunc(res) => write!(f, "IFunc[{res}]"),
+            BasicResolution::Dynamic(name) => write!(f, "DYNAMIC({name})"),
+            BasicResolution::IFunc(res) => write!(f, "IFUNC({res})"),
         }
     }
 }
