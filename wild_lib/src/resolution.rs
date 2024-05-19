@@ -474,9 +474,7 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
 }
 
 struct StartStopSet<'data> {
-    file_id: FileId,
-    // TODO: We should be able to switch to storing SymbolIds instead of FileId and SymbolIndex.
-    start_stop_refs: AHashMap<&'data [u8], Vec<object::SymbolIndex>>,
+    start_stop_refs: AHashMap<&'data [u8], Vec<SymbolId>>,
 }
 
 #[tracing::instrument(skip_all, name = "Process custom section start/stop refs")]
@@ -487,13 +485,13 @@ fn allocate_start_stop_symbol_ids<'data>(
     output_sections: &OutputSections,
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result {
-    let mut names: BTreeMap<&[u8], Vec<(FileId, object::SymbolIndex)>> = Default::default();
+    let mut names: BTreeMap<&[u8], Vec<SymbolId>> = Default::default();
     let start_stop_sets = Vec::from_iter(start_stop_sets);
     for s in start_stop_sets {
         for (name, symbol_indexes) in s.start_stop_refs {
             let refs = names.entry(name).or_default();
-            for sym_index in symbol_indexes {
-                refs.push((s.file_id, sym_index));
+            for symbol_id in symbol_indexes {
+                refs.push(symbol_id);
             }
         }
     }
@@ -511,7 +509,7 @@ fn allocate_start_stop_symbol_ids<'data>(
         let section_id = if let Some(s) = output_sections.custom_name_to_id(section_name) {
             s
         } else {
-            if all_unresolved_weak(&refs, objects) {
+            if all_unresolved_weak(symbol_db, &refs, objects) {
                 // There's no output section with the appropriate name, but the references are all weak,
                 // so we ignore it.
                 continue;
@@ -530,11 +528,8 @@ fn allocate_start_stop_symbol_ids<'data>(
             InternalSymDefInfo::SectionEnd(section_id)
         };
         epilogue.symbol_definitions.push(def_info);
-        for (file_id, sym_index) in refs {
-            if let ResolvedFile::Object(obj) = &mut objects[file_id.as_usize()] {
-                let local_symbol_id = obj.symbol_id_range.input_to_id(sym_index);
-                symbol_db.replace_definition(local_symbol_id, symbol_id);
-            }
+        for local_symbol_id in refs {
+            symbol_db.replace_definition(local_symbol_id, symbol_id);
         }
     }
     Ok(())
@@ -542,13 +537,15 @@ fn allocate_start_stop_symbol_ids<'data>(
 
 /// Returns whether all the specified symbols in the specified files are unresolved weak references.
 fn all_unresolved_weak(
-    refs: &[(FileId, object::SymbolIndex)],
+    symbol_db: &SymbolDb,
+    refs: &[SymbolId],
     objects: &mut [ResolvedFile<'_>],
 ) -> bool {
-    refs.iter().all(|(file_id, sym_index)| {
+    refs.iter().all(|symbol_id| {
+        let file_id = symbol_db.file_id_for_symbol(*symbol_id);
         if let ResolvedFile::Object(obj) = &objects[file_id.as_usize()] {
             obj.object
-                .symbol(*sym_index)
+                .symbol(obj.symbol_id_range.id_to_input(*symbol_id))
                 .ok()
                 .is_some_and(|sym| sym.is_undefined(LittleEndian) && sym.is_weak())
         } else {
@@ -668,7 +665,7 @@ fn resolve_symbols<'data>(
     definitions_out: &mut [SymbolId],
     sections: &mut [SectionSlot<'data>],
 ) -> Result {
-    let mut start_stop_refs: AHashMap<&'data [u8], Vec<object::SymbolIndex>> = AHashMap::new();
+    let mut start_stop_refs: AHashMap<&'data [u8], Vec<SymbolId>> = AHashMap::new();
     obj.object
         .symbols
         .enumerate()
@@ -700,10 +697,7 @@ fn resolve_symbols<'data>(
             },
         )?;
     if !start_stop_refs.is_empty() {
-        start_stop_sets.push(StartStopSet {
-            file_id: obj.file_id,
-            start_stop_refs,
-        });
+        start_stop_sets.push(StartStopSet { start_stop_refs });
     }
     Ok(())
 }
@@ -715,7 +709,7 @@ fn resolve_dynamic_symbols<'data>(
     start_stop_sets: &SegQueue<StartStopSet<'data>>,
     definitions_out: &mut [SymbolId],
 ) -> Result {
-    let mut start_stop_refs: AHashMap<&'data [u8], Vec<object::SymbolIndex>> = AHashMap::new();
+    let mut start_stop_refs: AHashMap<&'data [u8], Vec<SymbolId>> = AHashMap::new();
     obj.object
         .symbols
         .enumerate()
@@ -734,10 +728,7 @@ fn resolve_dynamic_symbols<'data>(
             },
         )?;
     if !start_stop_refs.is_empty() {
-        start_stop_sets.push(StartStopSet {
-            file_id: obj.file_id,
-            start_stop_refs,
-        });
+        start_stop_sets.push(StartStopSet { start_stop_refs });
     }
     Ok(())
 }
@@ -749,7 +740,7 @@ fn resolve_symbol<'data>(
     symbol_db: &SymbolDb<'data>,
     obj: &RegularInputObject<'data>,
     request_file_id: &mut impl FnMut(FileId),
-    start_stop_refs: &mut AHashMap<&'data [u8], Vec<object::SymbolIndex>>,
+    start_stop_refs: &mut AHashMap<&'data [u8], Vec<SymbolId>>,
 ) -> Result {
     // Don't try to resolve symbols that are already defined, e.g. locals and globals that we
     // define. Also don't try to resolve symbol zero - the undefined symbol.
@@ -779,7 +770,7 @@ fn resolve_symbol<'data>(
                 start_stop_refs
                     .entry(name_bytes)
                     .or_default()
-                    .push(local_symbol_index);
+                    .push(obj.symbol_id_range.input_to_id(local_symbol_index));
             }
         }
     }
