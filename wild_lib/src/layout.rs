@@ -1815,15 +1815,17 @@ impl<'data> InternalLayoutState<'data> {
             .regular_mut(output_section_id::COMMENT, alignment::MIN) +=
             layout.identity.len() as u64;
 
-        // The first entry in the symbol table must be null. Similarly, the first string in the
-        // strings table must be empty.
-        layout.common.mem_sizes.symtab_locals = size_of::<elf::SymtabEntry>() as u64;
-        layout.common.mem_sizes.symtab_strings = 1;
-
         layout
     }
 
     fn activate(&mut self, resources: &GraphResources) -> Result {
+        // The first entry in the symbol table must be null. Similarly, the first string in the
+        // strings table must be empty.
+        if !resources.symbol_db.args.strip_all {
+            self.common.mem_sizes.symtab_locals = size_of::<elf::SymtabEntry>() as u64;
+            self.common.mem_sizes.symtab_strings = 1;
+        }
+
         if resources.symbol_db.args.output_kind.is_executable() {
             self.load_entry_point(resources)?;
         }
