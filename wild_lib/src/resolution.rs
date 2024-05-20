@@ -468,7 +468,6 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
 struct UndefinedSymbol<'data> {
     name: PreHashed<SymbolName<'data>>,
     symbol_id: SymbolId,
-    is_weak: bool,
 }
 
 #[tracing::instrument(skip_all, name = "Canonicalise undefined symbols")]
@@ -486,17 +485,13 @@ fn canonicalise_undefined_symbols<'data>(
     for undefined in undefined_symbols {
         match name_to_id.entry(undefined.name) {
             std::collections::hash_map::Entry::Vacant(entry) => {
-                let Some(symbol_id) = allocate_start_stop_symbol_id(
+                let symbol_id = allocate_start_stop_symbol_id(
                     undefined.name,
                     symbol_db,
                     epilogue,
                     output_sections,
-                ) else {
-                    if undefined.is_weak {
-                        continue;
-                    }
-                    bail!("Undefined symbol `{}`", *undefined.name);
-                };
+                );
+                let symbol_id = symbol_id.unwrap_or(undefined.symbol_id);
                 entry.insert(symbol_id);
                 symbol_db.replace_definition(undefined.symbol_id, symbol_id);
             }
@@ -736,14 +731,10 @@ fn resolve_symbol<'data>(
             }
         }
         None => {
-            if name_bytes.starts_with(b"__start_") || name_bytes.starts_with(b"__stop_") {
-                let local_symbol_id = obj.symbol_id_range.input_to_id(local_symbol_index);
-                undefined_symbols_out.push(UndefinedSymbol {
-                    name: prehashed_name,
-                    symbol_id: local_symbol_id,
-                    is_weak: local_symbol.is_weak(),
-                });
-            }
+            undefined_symbols_out.push(UndefinedSymbol {
+                name: prehashed_name,
+                symbol_id: obj.symbol_id_range.input_to_id(local_symbol_index),
+            });
         }
     }
     Ok(())

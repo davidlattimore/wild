@@ -396,6 +396,8 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol) -> ValueFlags {
         ValueFlag::Absolute.into()
     } else if sym.st_type() == object::elf::STT_GNU_IFUNC {
         ValueFlag::IFunc.into()
+    } else if sym.is_undefined(LittleEndian) {
+        ValueFlag::Absolute.into()
     } else {
         ValueFlag::Address.into()
     };

@@ -2641,7 +2641,8 @@ impl<'data> SymbolCopyInfo<'data> {
         symbol_state: BitFlags<ResolutionFlag>,
         sections: &[SectionSlot],
     ) -> Option<SymbolCopyInfo<'data>> {
-        if !symbol_db.is_definition(symbol_id) {
+        let e = LittleEndian;
+        if !symbol_db.is_definition(symbol_id) || sym.is_undefined(e) {
             return None;
         }
         if let Ok(Some(section)) = object.symbol_section(sym, sym_index) {
@@ -2650,7 +2651,7 @@ impl<'data> SymbolCopyInfo<'data> {
                 return None;
             }
         }
-        if sym.is_common(LittleEndian) && symbol_state.is_empty() {
+        if sym.is_common(e) && symbol_state.is_empty() {
             return None;
         }
         // Reading the symbol name is slightly expensive, so we want to do that after all the other
