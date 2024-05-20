@@ -405,7 +405,7 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
         if let Some(got_address) = res.got_address {
-            if res.kind.contains(ResolutionFlag::GotTlsModule) {
+            if res.resolution_flags.contains(ResolutionFlag::GotTlsModule) {
                 let mod_got_entry = slice_take_prefix_mut(&mut self.got, 1);
                 if self.layout.args().output_kind.is_executable() {
                     mod_got_entry.copy_from_slice(&[elf::CURRENT_EXE_TLS_MOD]);
@@ -419,7 +419,7 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
                 return Ok(());
             }
             let mut res_value = res.resolution_value();
-            if res.kind.contains(ResolutionFlag::Tls) {
+            if res.resolution_flags.contains(ResolutionFlag::Tls) {
                 // Convert the address to an offset relative to the TCB which is the end of the TLS
                 // segment.
                 match res_value {
@@ -663,6 +663,11 @@ impl<'data> ObjectLayout<'data> {
         for rel in &self.plt_relocations {
             plt_got_writer.write_ifunc_relocation(rel)?;
         }
+        let mut dyn_str_tab = StrTabWriter {
+            next_offset: self.dynstr_start_offset,
+            out: buffers.dynstr,
+        };
+        let mut dynsym: &mut [SymtabEntry] = slice_from_all_bytes_mut(buffers.dynsym);
         for (symbol_id, resolution) in layout.resolutions_in_range(self.symbol_id_range) {
             if let Some(res) = resolution {
                 plt_got_writer
@@ -670,6 +675,14 @@ impl<'data> ObjectLayout<'data> {
                     .with_context(|| {
                         format!("Failed to process `{}`", layout.symbol_debug(symbol_id))
                     })?;
+                if res.value_flags.contains(ValueFlag::Dynamic)
+                    && res.resolution_flags.contains(ResolutionFlag::Got)
+                {
+                    let symbol = self
+                        .object
+                        .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
+                    write_dynamic_symtab_entry(self.object, symbol, &mut dynsym, &mut dyn_str_tab)?;
+                }
             }
         }
         if !layout.args().strip_all {
@@ -1303,7 +1316,7 @@ impl<'data> InternalLayout<'data> {
                         raw_value: crate::elf::CURRENT_EXE_TLS_MOD,
                         got_address: Some(got_address),
                         plt_address: None,
-                        kind: ResolutionFlag::Got.into(),
+                        resolution_flags: ResolutionFlag::Got.into(),
                         value_flags: ValueFlag::Absolute.into(),
                     },
                     &mut DynamicRelocationWriter::disabled(),
@@ -1317,7 +1330,7 @@ impl<'data> InternalLayout<'data> {
                     raw_value: 0,
                     got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
                     plt_address: None,
-                    kind: ResolutionFlag::Got.into(),
+                    resolution_flags: ResolutionFlag::Got.into(),
                     value_flags: ValueFlag::Absolute.into(),
                 },
                 &mut DynamicRelocationWriter::disabled(),

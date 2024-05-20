@@ -399,7 +399,13 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFl
     } else if sym.st_type() == object::elf::STT_GNU_IFUNC {
         ValueFlag::IFunc.into()
     } else if sym.is_undefined(LittleEndian) {
-        ValueFlag::Absolute.into()
+        if can_bypass_got {
+            ValueFlag::Absolute.into()
+        } else {
+            // If we can't bypass the GOT, then an undefined symbol might be able to be defined at
+            // runtime by a dynamic library that gets loaded.
+            ValueFlag::Dynamic.into()
+        }
     } else {
         ValueFlag::Address.into()
     };

@@ -206,8 +206,7 @@ pub(crate) struct Resolution {
 
     pub(crate) got_address: Option<NonZeroU64>,
     pub(crate) plt_address: Option<NonZeroU64>,
-    // TODO: Try to remove this.
-    pub(crate) kind: BitFlags<ResolutionFlag>,
+    pub(crate) resolution_flags: BitFlags<ResolutionFlag>,
     pub(crate) value_flags: ValueFlags,
 }
 
@@ -296,6 +295,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) symbol_states: Vec<BitFlags<ResolutionFlag>>,
     pub(crate) merged_string_resolutions: Vec<Option<MergedStringResolution>>,
+    pub(crate) dynstr_start_offset: u64,
 }
 
 pub(crate) struct InternalLayout<'data> {
@@ -358,7 +358,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         Ok(())
     }
 
-    fn finalise_symbol_sizes(&mut self, symbol_db: &SymbolDb) {
+    fn finalise_symbol_sizes(&mut self, symbol_db: &SymbolDb) -> Result {
         let symbol_id_range = self.symbol_id_range();
         let common = self.common_mut();
         for (local_index, resolution_flags) in common.symbol_states.iter_mut().enumerate() {
@@ -377,6 +377,14 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 *resolution_flags |= ResolutionFlag::Got;
             }
 
+            if value_flags.contains(ValueFlag::Dynamic)
+                && resolution_flags.contains(ResolutionFlag::Got)
+            {
+                let name = symbol_db.symbol_name(symbol_id)?;
+                common.mem_sizes.dynstr += name.len() as u64 + 1;
+                common.mem_sizes.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;
+            }
+
             allocate_resolution(
                 value_flags,
                 *resolution_flags,
@@ -384,6 +392,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 symbol_db.args,
             );
         }
+        Ok(())
     }
 
     fn symbol_id_range(&self) -> SymbolIdRange;
@@ -496,18 +505,10 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
     fn load_symbol<'scope>(
         &mut self,
         _symbol_id: SymbolId,
-        local_index: usize,
+        _local_index: usize,
         _resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
     ) -> Result {
-        // TODO: Reading symbol names involves finding the null terminator, which is slightly
-        // expensive. We do it up to three times. Once when we build the symbol DB, now, then when
-        // we write out the dynamic symbol table. Look into just storing the names the first time.
-        let object_symbol_index = self.common.symbol_id_range.offset_to_input(local_index);
-        let symbol = self.object.symbol(object_symbol_index)?;
-        let name = self.object.symbol_name(symbol)?;
-        self.common.mem_sizes.dynstr += name.len() as u64 + 1;
-        self.common.mem_sizes.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;
         Ok(())
     }
 }
@@ -1355,20 +1356,20 @@ impl<'data> FileLayoutState<'data> {
     fn finalise_sizes(&mut self, symbol_db: &SymbolDb, output_sections: &OutputSections) -> Result {
         match self {
             FileLayoutState::Object(s) => {
-                s.finalise_symbol_sizes(symbol_db);
+                s.finalise_symbol_sizes(symbol_db)?;
                 s.finalise_sizes(symbol_db, output_sections)
                     .with_context(|| format!("finalise_sizes failed for {s}"))?
             }
             FileLayoutState::Dynamic(s) => {
-                s.finalise_symbol_sizes(symbol_db);
+                s.finalise_symbol_sizes(symbol_db)?;
                 s.finalise_sizes()?
             }
             FileLayoutState::Internal(s) => {
-                s.finalise_symbol_sizes(symbol_db);
+                s.finalise_symbol_sizes(symbol_db)?;
                 s.finalise_sizes(symbol_db)?
             }
             FileLayoutState::Epilogue(s) => {
-                s.finalise_symbol_sizes(symbol_db);
+                s.finalise_symbol_sizes(symbol_db)?;
                 s.finalise_sizes(symbol_db)?
             }
             FileLayoutState::NotLoaded => {}
@@ -2446,6 +2447,8 @@ impl<'data> ObjectLayoutState<'data> {
         output_sections: &OutputSections,
         merged_string_start_addresses: &MergedStringStartAddresses,
     ) -> Result<ObjectLayout<'data>> {
+        let dynstr_start_offset =
+            memory_offsets.dynstr - section_layouts.get(output_section_id::DYNSTR).mem_offset;
         let symbol_id_range = self.symbol_id_range();
         let mut sections = self.state.sections;
 
@@ -2490,6 +2493,7 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
 
+        let mut dyn_sym_index = dynamic_symtab_index(memory_offsets, section_layouts)?;
         let e = LittleEndian;
         for ((local_symbol_index, local_symbol), symbol_state) in self
             .object
@@ -2505,7 +2509,7 @@ impl<'data> ObjectLayoutState<'data> {
                 continue;
             }
             let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
-            let raw_value = if let Some(section_index) = self
+            let mut raw_value = if let Some(section_index) = self
                 .object
                 .symbol_section(local_symbol, local_symbol_index)?
             {
@@ -2534,6 +2538,12 @@ impl<'data> ObjectLayoutState<'data> {
             } else {
                 local_symbol.st_value(e)
             };
+            if value_flags.contains(ValueFlag::Dynamic) {
+                // This is an undefined weak symbol. Emit it as a dynamic symbol so that it can be
+                // overridden at runtime.
+                raw_value = dyn_sym_index.into();
+                dyn_sym_index += 1;
+            }
             emitter.emit_resolution(symbol_id, raw_value, value_flags, resolutions_out)?;
         }
 
@@ -2557,6 +2567,7 @@ impl<'data> ObjectLayoutState<'data> {
             symbol_id_range,
             symbol_states: self.state.common.symbol_states,
             merged_string_resolutions: self.state.merged_string_resolutions,
+            dynstr_start_offset,
         })
     }
 
@@ -2872,7 +2883,7 @@ impl<'state> GlobalAddressEmitter<'state> {
             raw_value,
             got_address: None,
             plt_address: None,
-            kind: res_kind,
+            resolution_flags: res_kind,
             value_flags,
         };
         if value_flags.contains(ValueFlag::IFunc) {
@@ -3054,11 +3065,7 @@ impl<'data> DynamicLayoutState<'data> {
             .common
             .create_global_address_emitter(memory_offsets, symbol_db);
 
-        let mut next_symbol_index = u32::try_from(
-            (memory_offsets.dynsym - section_layouts.get(output_section_id::DYNSYM).mem_offset)
-                / crate::elf::SYMTAB_ENTRY_SIZE,
-        )
-        .context("Too many dynamic symbols")?;
+        let mut next_symbol_index = dynamic_symtab_index(memory_offsets, section_layouts)?;
 
         debug_assert_eq!(resolutions_out.len(), self.common.symbol_states.len());
 
@@ -3094,6 +3101,17 @@ impl<'data> DynamicLayoutState<'data> {
             symbol_id_range: self.common.symbol_id_range,
         })
     }
+}
+
+fn dynamic_symtab_index(
+    memory_offsets: &mut OutputSectionPartMap<u64>,
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+) -> Result<u32> {
+    u32::try_from(
+        (memory_offsets.dynsym - section_layouts.get(output_section_id::DYNSYM).mem_offset)
+            / crate::elf::SYMTAB_ENTRY_SIZE,
+    )
+    .context("Too many dynamic symbols")
 }
 
 impl<'data> Layout<'data> {

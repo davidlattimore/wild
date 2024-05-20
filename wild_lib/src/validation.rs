@@ -65,7 +65,7 @@ fn validate_resolution(
     got: &crate::elf::SectionHeader,
     got_data: &[u8],
 ) -> Result {
-    let res_kind = resolution.kind;
+    let res_kind = resolution.resolution_flags;
     let value_flags = resolution.value_flags;
     if value_flags.contains(ValueFlag::IFunc) || res_kind.contains(ResolutionFlag::Tls) {
         return Ok(());
