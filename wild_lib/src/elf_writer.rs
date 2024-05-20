@@ -1014,19 +1014,7 @@ impl<'data> ObjectLayout<'data> {
             bail!("Unsupported absolute relocation");
         };
         let local_symbol_id = self.symbol_id_range.input_to_id(symbol_index);
-        let symbol_id = layout.symbol_db.definition(local_symbol_id);
-        let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
-        if symbol_id == SymbolId::undefined() || !layout.is_file_loaded(file_id) {
-            let local_symbol = &self.object.symbol(symbol_index)?;
-            if !local_symbol.is_weak() {
-                bail!(
-                    "Undefined strong reference to `{}`",
-                    self.object.symbol_display_name(local_symbol)?
-                );
-            }
-            // TODO: Check if reference is weak.
-            new_resolution = Some(layout.internal().undefined_symbol_resolution);
-        } else if let Some(res) = layout.merged_symbol_resolution(local_symbol_id) {
+        if let Some(res) = layout.merged_symbol_resolution(local_symbol_id) {
             new_resolution = Some(res);
         }
         Ok(new_resolution)
@@ -1306,19 +1294,6 @@ impl<'data> InternalLayout<'data> {
         relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
         let mut plt_got_writer = PltGotWriter::new(layout, buffers);
-
-        // Our PLT entry for an undefined symbol doesn't really exist, so don't try to write an
-        // actual PLT entry for it.
-        let undefined_symbol_resolution = Resolution {
-            plt_address: None,
-            ..self.undefined_symbol_resolution
-        };
-        plt_got_writer
-            .process_resolution(
-                &undefined_symbol_resolution,
-                &mut DynamicRelocationWriter::disabled(),
-            )
-            .context("undefined symbol resolution")?;
 
         // Write a pair of GOT entries for use by any TLSLD or TLSGD relocations.
         if let Some(got_address) = self.tlsld_got_entry {

@@ -103,10 +103,6 @@ impl<'data> File<'data> {
         Ok(self.symbols.symbol_name(LittleEndian, symbol)?)
     }
 
-    pub(crate) fn symbol_display_name(&self, symbol: &Symbol) -> Result<Cow<'data, str>> {
-        Ok(String::from_utf8_lossy(self.symbol_name(symbol)?))
-    }
-
     pub(crate) fn symbol_section(
         &self,
         symbol: &Symbol,

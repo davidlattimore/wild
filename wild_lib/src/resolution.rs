@@ -29,7 +29,6 @@ use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use ahash::AHashMap;
-use anyhow::bail;
 use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
@@ -58,7 +57,13 @@ pub fn resolve_symbols_and_sections<'data>(
         panic!("Epilogue must be the last input");
     };
 
-    canonicalise_undefined_symbols(undefined_symbols, &mut custom, &output_sections, symbol_db)?;
+    canonicalise_undefined_symbols(
+        undefined_symbols,
+        &mut custom,
+        &output_sections,
+        &resolved,
+        symbol_db,
+    )?;
 
     resolved.push(ResolvedFile::Epilogue(custom));
 
@@ -466,6 +471,9 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
 }
 
 struct UndefinedSymbol<'data> {
+    /// If we have a file ID here and that file is loaded, then the symbol is actually defined and
+    /// this record can be ignored.
+    ignore_if_loaded: Option<FileId>,
     name: PreHashed<SymbolName<'data>>,
     symbol_id: SymbolId,
 }
@@ -475,6 +483,7 @@ fn canonicalise_undefined_symbols<'data>(
     undefined_symbols: SegQueue<UndefinedSymbol<'data>>,
     epilogue: &mut ResolvedEpilogue,
     output_sections: &OutputSections,
+    files: &[ResolvedFile],
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result {
     let mut name_to_id: PassThroughHashMap<SymbolName<'data>, SymbolId> = Default::default();
@@ -483,6 +492,14 @@ fn canonicalise_undefined_symbols<'data>(
     // for any given name will be the one for the earliest file that refers to that symbol.
     undefined_symbols.sort_by_key(|u| u.symbol_id);
     for undefined in undefined_symbols {
+        if undefined
+            .ignore_if_loaded
+            .is_some_and(|file_id| !matches!(files[file_id.as_usize()], ResolvedFile::NotLoaded))
+        {
+            // The archive entry that defined the symbol in question ended up being loaded, so the
+            // weak symbol is defined after all.
+            continue;
+        }
         match name_to_id.entry(undefined.name) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 let symbol_id = allocate_start_stop_symbol_id(
@@ -491,6 +508,9 @@ fn canonicalise_undefined_symbols<'data>(
                     epilogue,
                     output_sections,
                 );
+                // If the symbol isn't a start/stop symbol, then assign responsibility for the
+                // symbol to the first object that referenced it. This lets us have PLT/GOT entries
+                // for the symbol if they're needed.
                 let symbol_id = symbol_id.unwrap_or(undefined.symbol_id);
                 entry.insert(symbol_id);
                 symbol_db.replace_definition(undefined.symbol_id, symbol_id);
@@ -728,10 +748,23 @@ fn resolve_symbol<'data>(
             let symbol_file_id = symbol_db.file_id_for_symbol(symbol_id);
             if symbol_file_id != obj.file_id && !local_symbol.is_weak() {
                 request_file_id(symbol_file_id);
+            } else if symbol_file_id != INTERNAL_FILE_ID {
+                // The symbol is weak and we can't be sure that the file that defined it will end up
+                // being loaded, so the symbol might actually be undefined. Register it as an
+                // undefined symbol then later when we handle undefined symbols, we'll check if the
+                // file got loaded. TODO: If the file is a non-archived object, or possibly even if
+                // it's an archived object that we've already decided to load, then we could skip
+                // this.
+                undefined_symbols_out.push(UndefinedSymbol {
+                    ignore_if_loaded: Some(symbol_file_id),
+                    name: prehashed_name,
+                    symbol_id: obj.symbol_id_range.input_to_id(local_symbol_index),
+                });
             }
         }
         None => {
             undefined_symbols_out.push(UndefinedSymbol {
+                ignore_if_loaded: None,
                 name: prehashed_name,
                 symbol_id: obj.symbol_id_range.input_to_id(local_symbol_index),
             });

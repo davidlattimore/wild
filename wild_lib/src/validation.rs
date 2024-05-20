@@ -24,9 +24,9 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
         // currently validating is GOT entries and they'll all have dynamic relocations.
         return Ok(());
     }
-    let (_, got) = object
-        .section_by_name(".got")
-        .context("Missing .got from output file")?;
+    let Some((_, got)) = object.section_by_name(".got") else {
+        return Ok(());
+    };
     let got_data = object.section_data(got)?;
     for (symbol_name, symbol_id) in &layout.symbol_db.global_names {
         match layout.local_symbol_resolution(*symbol_id) {

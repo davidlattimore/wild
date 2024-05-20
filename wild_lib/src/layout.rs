@@ -301,15 +301,6 @@ pub(crate) struct ObjectLayout<'data> {
 pub(crate) struct InternalLayout<'data> {
     pub(crate) mem_sizes: OutputSectionPartMap<u64>,
     pub(crate) file_sizes: OutputSectionPartMap<usize>,
-    // TODO: Investigate if we should get rid of this. Right now, any weak symbols that are
-    // undefined use this resolution, which means they all share the same GOT entry. However the
-    // whole point of a GOT entry is generally that it can be overridden at runtime, so probably
-    // each undefined weak symbol should have a separate GOT entry. If the GOT entries can be
-    // overridden at runtime, then PLT entries might also be needed, since calling the function at
-    // runtime might now not be undefined behaviour. However, it's possible that we may still want
-    // this. Especially for statically linked executables in case we encounter GOT relocations that
-    // we can't optimise away.
-    pub(crate) undefined_symbol_resolution: Resolution,
     pub(crate) strings_offset_start: u32,
     pub(crate) entry_symbol_id: Option<SymbolId>,
     pub(crate) tlsld_got_entry: Option<NonZeroU64>,
@@ -878,10 +869,6 @@ impl<'data> Layout<'data> {
 
     pub(crate) fn size_of_section(&self, section_id: OutputSectionId) -> u64 {
         self.section_layouts.get(section_id).file_size as u64
-    }
-
-    pub(crate) fn is_file_loaded(&self, file_id: FileId) -> bool {
-        !matches!(self.file_layouts[file_id.as_usize()], FileLayout::NotLoaded)
     }
 
     pub(crate) fn has_data_in_section(&self, id: OutputSectionId) -> bool {
@@ -1832,9 +1819,6 @@ impl<'data> InternalLayoutState<'data> {
         layout.common.mem_sizes.symtab_locals = size_of::<elf::SymtabEntry>() as u64;
         layout.common.mem_sizes.symtab_strings = 1;
 
-        // Allocate a GOT entry that we can use for any references to undefined weak symbols.
-        layout.common.mem_sizes.got += elf::GOT_ENTRY_SIZE;
-
         layout
     }
 
@@ -2021,20 +2005,6 @@ impl<'data> InternalLayoutState<'data> {
         let header_layout = section_layouts.built_in(output_section_id::FILE_HEADER);
         assert_eq!(header_layout.file_offset, 0);
 
-        // We need a GOT address to use for any relocations that point to undefined weak symbols.
-        let undefined_symbol_resolution = Resolution {
-            raw_value: 0,
-            got_address: Some(
-                NonZeroU64::new(memory_offsets.got).expect("GOT address must never be zero"),
-            ),
-            plt_address: Some(
-                NonZeroU64::new(memory_offsets.plt).expect("PLT address must never be zero"),
-            ),
-            kind: ResolutionFlag::Direct | ResolutionFlag::Got | ResolutionFlag::Plt,
-            value_flags: ValueFlag::Absolute.into(),
-        };
-        memory_offsets.got += elf::GOT_ENTRY_SIZE;
-
         let tlsld_got_entry = self.needs_tlsld_got_entry.then(|| {
             let address =
                 NonZeroU64::new(memory_offsets.got).expect("GOT address must never be zero");
@@ -2055,7 +2025,6 @@ impl<'data> InternalLayoutState<'data> {
             file_sizes: compute_file_sizes(&self.common.mem_sizes, output_sections),
             mem_sizes: self.common.mem_sizes,
             internal_symbols: self.internal_symbols,
-            undefined_symbol_resolution,
             strings_offset_start,
             entry_symbol_id: self.entry_symbol_id,
             tlsld_got_entry,
