@@ -186,6 +186,7 @@ impl<'data> SymbolDb<'data> {
             version_script,
             &mut per_file_resolutions,
             &mut per_file_kinds,
+            args,
         )?;
         let custom_sections_file_id = FileId::from_usize(inputs.len() - 1)?;
         debug_assert!(matches!(
@@ -343,6 +344,7 @@ fn read_symbols<'data>(
     version_script: &VersionScript,
     per_file_resolutions: &mut [Shard<SymbolId, SymbolId>],
     per_file_value_kinds: &mut [Shard<SymbolId, ValueFlags>],
+    args: &Args,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
     let symbol_per_file = readers
         .par_iter()
@@ -350,7 +352,7 @@ fn read_symbols<'data>(
         .zip(per_file_value_kinds)
         .map(|((reader, resolutions), value_kinds)| {
             let filename = reader.filename();
-            load_symbols_from_file(reader, version_script, resolutions, value_kinds)
+            load_symbols_from_file(reader, version_script, resolutions, value_kinds, args)
                 .with_context(|| format!("Failed to load symbols from `{}`", filename.display()))
         })
         .collect::<Result<Vec<SymbolLoadOutputs>>>()?;
@@ -362,6 +364,7 @@ fn load_symbols_from_file<'data>(
     version_script: &VersionScript,
     resolutions: &mut Shard<SymbolId, SymbolId>,
     value_kinds: &mut Shard<SymbolId, ValueFlags>,
+    args: &Args,
 ) -> Result<SymbolLoadOutputs<'data>> {
     Ok(match reader {
         InputObject::Object(s) => {
@@ -374,13 +377,9 @@ fn load_symbols_from_file<'data>(
                     |_sym| ValueFlag::Dynamic.into(),
                 )?
             } else {
-                load_symbols(
-                    &s.object,
-                    version_script,
-                    resolutions,
-                    value_kinds,
-                    value_flags_from_elf_symbol,
-                )?
+                load_symbols(&s.object, version_script, resolutions, value_kinds, |sym| {
+                    value_flags_from_elf_symbol(sym, args)
+                })?
             }
         }
         InputObject::Internal(s) => s.load_symbols(resolutions, value_kinds)?,
@@ -391,7 +390,10 @@ fn load_symbols_from_file<'data>(
     })
 }
 
-fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol) -> ValueFlags {
+fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFlags {
+    let can_bypass_got = sym.st_visibility() != object::elf::STV_DEFAULT
+        || sym.is_local()
+        || args.output_kind.is_static_executable();
     let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {
         ValueFlag::Absolute.into()
     } else if sym.st_type() == object::elf::STT_GNU_IFUNC {
@@ -401,7 +403,7 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol) -> ValueFlags {
     } else {
         ValueFlag::Address.into()
     };
-    if sym.st_visibility() != object::elf::STV_DEFAULT || sym.is_local() {
+    if can_bypass_got {
         flags |= ValueFlag::CanBypassGot.into();
     }
     flags
