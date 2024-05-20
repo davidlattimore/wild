@@ -479,7 +479,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             ..SectionDetails::default()
         },
-        keep_if_empty: true,
         end_symbol_name: Some("_end"),
         ..DEFAULT_DEFS
     },
