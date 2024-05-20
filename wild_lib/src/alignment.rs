@@ -38,6 +38,9 @@ pub(crate) const PROGRAM_HEADER_ENTRY: Alignment = Alignment { exponent: 3 };
 /// The minimum alignment of loadable program segments.
 pub(crate) const PAGE: Alignment = Alignment { exponent: 12 };
 
+/// The minimum alignment of a PLT entry.
+pub(crate) const PLT: Alignment = Alignment { exponent: 4 };
+
 pub(crate) const USIZE: Alignment = Alignment { exponent: 3 };
 
 /// A map from alignments to some value.

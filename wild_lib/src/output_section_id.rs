@@ -270,6 +270,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             section_flags: elf::shf::ALLOC | elf::shf::EXECINSTR,
             ..SectionDetails::default()
         },
+        min_alignment: alignment::PLT,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
