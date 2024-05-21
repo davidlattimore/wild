@@ -150,7 +150,8 @@ pub(crate) struct SectionOutputInfo<'data> {
 
 pub(crate) struct BuiltInSectionDetails {
     details: SectionDetails<'static>,
-    pub(crate) link: Option<OutputSectionId>,
+    /// Sections to try to link to. The first section that we're outputting is the one used.
+    pub(crate) link: &'static [OutputSectionId],
     pub(crate) start_symbol_name: Option<&'static str>,
     pub(crate) end_symbol_name: Option<&'static str>,
     pub(crate) min_alignment: Alignment,
@@ -184,7 +185,7 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
         packed: false,
         ..SectionDetails::default()
     },
-    link: None,
+    link: &[],
     start_symbol_name: None,
     end_symbol_name: None,
     min_alignment: alignment::MIN,
@@ -241,7 +242,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             ..SectionDetails::default()
         },
         min_alignment: alignment::SYMTAB_ENTRY,
-        link: Some(STRTAB),
+        link: &[STRTAB],
         info_fn: Some(symtab_info),
         ..DEFAULT_DEFS
     },
@@ -281,6 +282,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             element_size: elf::RELA_ENTRY_SIZE,
             ..SectionDetails::default()
         },
+        link: &[DYNSYM, SYMTAB],
         min_alignment: alignment::RELA_ENTRY,
         start_symbol_name: Some("__rela_iplt_start"),
         end_symbol_name: Some("__rela_iplt_end"),
@@ -313,6 +315,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             section_flags: elf::shf::ALLOC,
             ..SectionDetails::default()
         },
+        link: &[DYNSTR],
         min_alignment: alignment::USIZE,
         start_symbol_name: Some("_DYNAMIC"),
         ..DEFAULT_DEFS
@@ -324,6 +327,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             section_flags: elf::shf::ALLOC,
             ..SectionDetails::default()
         },
+        link: &[DYNSYM],
         min_alignment: alignment::GNU_HASH,
         ..DEFAULT_DEFS
     },
@@ -335,7 +339,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             element_size: size_of::<elf::SymtabEntry>() as u64,
             ..SectionDetails::default()
         },
-        link: Some(DYNSTR),
+        link: &[DYNSTR],
         min_alignment: alignment::SYMTAB_ENTRY,
         info_fn: Some(dynsym_info),
         ..DEFAULT_DEFS
@@ -359,7 +363,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             ..SectionDetails::default()
         },
         min_alignment: alignment::RELA_ENTRY,
-        link: Some(DYNSYM),
+        link: &[DYNSYM],
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -507,7 +511,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     //     ty: elf::Sht::Dynamic,
     //     segment_type: SegmentType::Dynamic,
     //     indexing: SectionIndexing::element::<elf::DynamicEntry>(),
-    //     link: Some(DYNSTR),
+    //     link: &[DYNSTR),
     //     ..DEFAULT_DEFS
     // },
     // OutputSectionDef {
@@ -920,10 +924,11 @@ impl<'data> OutputSections<'data> {
         &self.output_info(id).details
     }
 
-    pub(crate) fn link_id(&self, section_id: OutputSectionId) -> Option<OutputSectionId> {
+    pub(crate) fn link_ids(&self, section_id: OutputSectionId) -> &[OutputSectionId] {
         SECTION_DEFINITIONS
             .get(section_id.as_usize())
-            .and_then(|def| def.link)
+            .map(|def| def.link)
+            .unwrap_or_default()
     }
 
     pub(crate) fn name(&self, section_id: OutputSectionId) -> &[u8] {

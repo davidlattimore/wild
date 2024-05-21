@@ -1795,12 +1795,12 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
             size = section_layout.mem_size;
             alignment = section_layout.alignment.value();
         };
-        let mut link = 0;
-        if let Some(link_id) = layout.output_sections.link_id(section_id) {
-            link = output_sections
-                .output_index_of_section(link_id)
-                .unwrap_or(0);
-        }
+        let link = layout
+            .output_sections
+            .link_ids(section_id)
+            .iter()
+            .find_map(|link_id| output_sections.output_index_of_section(*link_id))
+            .unwrap_or(0);
         let entry = entries.next().unwrap();
         let e = LittleEndian;
         entry.sh_name.set(e, name_offset);
