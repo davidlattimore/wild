@@ -324,7 +324,8 @@ fn map_alignment_map<T: Default + PartialEq, U: Default>(
     output_section_id: OutputSectionId,
 ) -> AlignmentMap<U> {
     // The maximum alignment is the alignment of the first non-default bucket when iterating the
-    // alignment buckets in reverse order. We cap alignment to at most this value.
+    // alignment buckets in reverse order. We cap alignment to at most this value unless the minimum
+    // alignment of the section is greater.
     let max_alignment = alignment_map
         .iter()
         .rev()
@@ -339,7 +340,7 @@ fn map_alignment_map<T: Default + PartialEq, U: Default>(
                 alignment,
                 cb(
                     output_section_id,
-                    max_alignment.min(alignment.max(output_section_id.min_alignment())),
+                    max_alignment.min(alignment).max(output_section_id.min_alignment()),
                     value,
                 ),
             )
