@@ -524,7 +524,7 @@ struct FunctionDef<'data> {
     bytes: &'data [u8],
 }
 
-const DEFAULT_LOAD_OFFSET: u64 = 0x3000_0000;
+pub(crate) const DEFAULT_LOAD_OFFSET: u64 = 0x3000_0000;
 
 impl<'data> AddressIndex<'data> {
     pub(crate) fn new(object: &'data ElfFile64<'data>) -> Self {
@@ -557,8 +557,8 @@ impl<'data> AddressIndex<'data> {
         self.address_resolutions
             .insert(0, vec![AddressResolution::Null]);
         self.index_symbols(object);
-        self.index_got(object).unwrap();
         self.index_dynamic_relocations(object);
+        self.index_got(object).unwrap();
         self.index_ifuncs(object)?;
         self.index_plt_sections(object)?;
         self.index_undefined_tls(object);
@@ -836,8 +836,14 @@ impl<'data> AddressIndex<'data> {
             .unwrap()
             .0;
         let mut new_resolutions = Vec::new();
-        let mut address = got.address() + self.load_offset;
-        for entry in entries {
+        let base_address = got.address() + self.load_offset;
+        for (entry, address) in entries.iter().zip((base_address..).step_by(entry_size)) {
+            // If there's already a resolution for our GOT entry (e.g. a dynamic relocation), then
+            // we assume that will overwrite whatever value is in the GOT entry in the file, so we
+            // ignore it.
+            if !self.resolve(address).is_empty() {
+                continue;
+            }
             new_resolutions.extend(self.resolve(*entry).iter().filter_map(|res| {
                 if let AddressResolution::Basic(basic) = res {
                     Some(AddressResolution::Got(*basic))
@@ -848,7 +854,6 @@ impl<'data> AddressIndex<'data> {
             for res in new_resolutions.drain(..) {
                 self.add_resolution(address, res);
             }
-            address += entry_size as u64;
         }
         Ok(())
     }

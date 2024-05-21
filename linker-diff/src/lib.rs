@@ -21,6 +21,7 @@ use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection;
 use object::ObjectSymbol as _;
+use object::RelocationFlags;
 use section_map::IndexedLayout;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -293,7 +294,7 @@ impl Report {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct RelativeRelocation {
     file_offset: usize,
     value: u64,
@@ -322,11 +323,20 @@ fn file_relative_relocations(file_bytes: &[u8]) -> Result<Vec<RelativeRelocation
     };
     Ok(relocations
         .filter_map(|(offset, rel)| {
+            let RelocationFlags::Elf { r_type } = rel.flags() else {
+                unreachable!()
+            };
+            if r_type != object::elf::R_X86_64_RELATIVE {
+                return None;
+            }
             load_segments
                 .file_offset_from_address(offset)
                 .map(|file_offset| RelativeRelocation {
                     file_offset,
-                    value: rel.addend() as u64,
+                    // We unconditionally apply the default load offset because the only
+                    // circumstance in which the load offset isn't the default is if the file isn't
+                    // relocatable, in which case we shouldn't have any dynamic relocations.
+                    value: rel.addend() as u64 + asm_diff::DEFAULT_LOAD_OFFSET,
                 })
         })
         .collect())
