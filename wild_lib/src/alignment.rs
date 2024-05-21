@@ -43,6 +43,8 @@ pub(crate) const PLT: Alignment = Alignment { exponent: 4 };
 
 pub(crate) const USIZE: Alignment = Alignment { exponent: 3 };
 
+pub(crate) const EH_FRAME_HDR: Alignment = Alignment { exponent: 2 };
+
 /// A map from alignments to some value.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AlignmentMap<T> {
