@@ -857,11 +857,11 @@ impl<'data> Layout<'data> {
     /// Returns the memory address of the end of the TLS segment including any padding required to
     /// make sure that the TCB will be usize-aligned.
     pub(crate) fn tls_end_address(&self) -> u64 {
-        let tbss = &self.section_layouts.built_in(output_section_id::TBSS);
+        let tbss = self.section_layouts.built_in(output_section_id::TBSS);
+        let tdata = self.section_layouts.built_in(output_section_id::TDATA);
         let tls_end = tbss.mem_offset + tbss.mem_size;
-        // If the end of the TLS segment isn't usize-aligned, then padding will be inserted so
-        // that the TCB is properly aligned.
-        alignment::USIZE.align_up(tls_end)
+        let alignment = tbss.alignment.max(tdata.alignment);
+        alignment.align_up(tls_end)
     }
 
     pub(crate) fn vma_of_section(&self, section_id: OutputSectionId) -> u64 {

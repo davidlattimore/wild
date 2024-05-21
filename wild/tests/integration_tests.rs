@@ -1055,7 +1055,10 @@ fn integration_test() -> Result {
             ],
         )?,
         ProgramInputs::new("trivial_asm", &["trivial_asm.s", "exit.c"])?,
-        ProgramInputs::new("libc-integration", &["libc-integration.c"])?,
+        ProgramInputs::new(
+            "libc-integration",
+            &["libc-integration.c", "libc-integration-0.c"],
+        )?,
         ProgramInputs::new("rust-integration", &["rust-integration.rs"])?,
         ProgramInputs::new(
             "rust-integration-dynamic",

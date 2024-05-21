@@ -998,7 +998,7 @@ fn get_tls_segment_size(object: &ElfFile64) -> u64 {
     let e = LittleEndian;
     for segment in object.elf_program_headers() {
         if segment.p_type(e) == object::elf::PT_TLS {
-            return segment.p_memsz(e).next_multiple_of(8);
+            return segment.p_memsz(e).next_multiple_of(segment.p_align(e));
         }
     }
     0
@@ -1008,7 +1008,7 @@ fn get_tls_end_address(object: &ElfFile64) -> u64 {
     let e = LittleEndian;
     for segment in object.elf_program_headers() {
         if segment.p_type(e) == object::elf::PT_TLS {
-            return (segment.p_vaddr(e) + segment.p_memsz(e)).next_multiple_of(8);
+            return (segment.p_vaddr(e) + segment.p_memsz(e)).next_multiple_of(segment.p_align(e));
         }
     }
     0
