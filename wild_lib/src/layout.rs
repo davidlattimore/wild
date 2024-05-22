@@ -50,6 +50,7 @@ use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use enumflags2::BitFlags;
 use object::elf::gnu_hash;
+use object::elf::Rela64;
 use object::read::elf::Rela as _;
 use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym as _;
@@ -636,9 +637,10 @@ struct ObjectLayoutState<'data> {
     input: InputRef<'data>,
     object: &'data File<'data>,
     state: ObjectLayoutMutableState<'data>,
-    section_frame_data: Vec<SectionFrameData>,
+    section_frame_data: Vec<SectionFrameData<'data>>,
     /// Dynamic symbols defined by this object.
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
+    eh_frame_section: Option<&'data object::elf::SectionHeader64<LittleEndian>>,
 }
 
 /// The parts of `ObjectLayoutState` that we mutate during layout. Separate so that we can pass
@@ -660,13 +662,12 @@ struct ObjectLayoutMutableState<'data> {
 }
 
 #[derive(Default)]
-struct SectionFrameData {
-    /// Outgoing references from the FDE(s) for our section. Generally we have one symbol per
-    /// section and each symbol has an associated FDE. The FDE generally has 1 or 2 references
-    /// (including the reference to the symbol that the FDE is for). The second reference is usually
-    /// an exception table. Since we expect that there's often 1 or 2 references, we avoid a
-    /// separate allocation for those cases.
-    relocation_actions: SmallVec<[RelocationLayoutAction; 2]>,
+struct SectionFrameData<'data> {
+    /// Outgoing references from the FDE(s) for our section. Generally all relocations for a section
+    /// would be contiguous, so we'd only need one slice. In theory though it's possible that there
+    /// could be more than one group, so we accommodate that, but optimise for the common case of
+    /// one group.
+    relocations: SmallVec<[&'data [Rela64<LittleEndian>]; 1]>,
 
     /// Number of FDEs associated with symbols in this section.
     num_fdes: u32,
@@ -1650,13 +1651,13 @@ impl<'data> Section<'data> {
 /// relocation. For regular sections we always create the action then apply it straight away,
 /// however for FDEs (frame description entries), we create them, store them and only later decide
 /// if we're going to apply them.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RelocationLayoutAction {
     kind: RelocationLayoutActionKind,
     dynamic_relocation_kind: DynamicRelocationKind,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DynamicRelocationKind {
     None,
     Relative,
@@ -1664,7 +1665,7 @@ enum DynamicRelocationKind {
 }
 
 /// An action that we need to perform if we decide to use a particular relocation.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RelocationLayoutActionKind {
     LoadSymbol(SymbolId, BitFlags<ResolutionFlag>),
 }
@@ -2254,6 +2255,7 @@ fn new_object_layout_state<'data>(
             object: input_state.object,
             section_frame_data: Default::default(),
             dynamic_symbol_definitions: Default::default(),
+            eh_frame_section: None,
             state: ObjectLayoutMutableState {
                 common,
                 sections: non_dynamic.sections,
@@ -2295,16 +2297,18 @@ impl<'data> ObjectLayoutState<'data> {
                 _ => (),
             }
         }
-        if let Some(eh_frame_section) = eh_frame_section {
+        if let Some(eh_frame_section_index) = eh_frame_section {
             process_eh_frame_data(
                 self.object,
                 self.symbol_id_range(),
                 &mut self.section_frame_data,
                 &mut self.state,
-                eh_frame_section,
+                eh_frame_section_index,
                 resources,
                 queue,
             )?;
+            let eh_frame_section = self.object.section(eh_frame_section_index)?;
+            self.eh_frame_section = Some(eh_frame_section);
         }
         if resources.symbol_db.args.output_kind == OutputKind::SharedObject {
             self.load_non_hidden_symbols(resources, queue)?;
@@ -2351,8 +2355,22 @@ impl<'data> ObjectLayoutState<'data> {
                         }
                         // Request loading of any sections/symbols referenced by the FDEs for our
                         // section.
-                        for action in &frame_data.relocation_actions {
-                            action.apply(resources, &mut self.state, queue);
+                        if let Some(eh_frame_section) = self.eh_frame_section {
+                            for relocations in &frame_data.relocations {
+                                for rel in *relocations {
+                                    let rel_offset = rel.r_offset.get(LittleEndian);
+                                    if let Some(action) = RelocationLayoutAction::new(
+                                        self.object,
+                                        rel,
+                                        eh_frame_section,
+                                        rel_offset,
+                                        &self.state,
+                                        resources.symbol_db,
+                                    )? {
+                                        action.apply(resources, &mut self.state, queue);
+                                    }
+                                }
+                            }
                         }
                     }
                     self.state.sections[section_id.0] = SectionSlot::Loaded(section);
@@ -2688,7 +2706,7 @@ impl MergedStringStartAddresses {
 fn process_eh_frame_data<'data>(
     object: &crate::elf::File<'data>,
     file_symbol_id_range: SymbolIdRange,
-    section_frame_data: &mut Vec<SectionFrameData>,
+    section_frame_data: &mut Vec<SectionFrameData<'data>>,
     state: &mut ObjectLayoutMutableState<'data>,
     eh_frame_section_index: object::SectionIndex,
     resources: &GraphResources,
@@ -2699,11 +2717,10 @@ fn process_eh_frame_data<'data>(
     let data = object.section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
     let e = LittleEndian;
-    let mut relocations = object
-        .relocations(eh_frame_section_index)?
-        .iter()
-        .peekable();
+    let relocations = object.relocations(eh_frame_section_index)?;
+    let mut rel_iter = relocations.iter().enumerate().peekable();
     let mut offset = 0;
+    let mut pending: Option<PendingEhFrameRelocations> = None;
     while offset + PREFIX_LEN <= data.len() {
         // Although the section data will be aligned within the object file, there's
         // no guarantee that the object is aligned within the archive to any more
@@ -2723,7 +2740,7 @@ fn process_eh_frame_data<'data>(
             // symbols it references. If however, it references something other than a symbol, then,
             // because we're not taking that into consideration, we disallow deduplication.
             let mut eligible_for_deduplication = true;
-            while let Some(rel) = relocations.peek() {
+            while let Some((_, rel)) = rel_iter.peek() {
                 let rel_offset = rel.r_offset.get(e);
                 if rel_offset >= next_offset as u64 {
                     // This relocation belongs to the next entry.
@@ -2748,7 +2765,7 @@ fn process_eh_frame_data<'data>(
                 } else {
                     eligible_for_deduplication = false;
                 }
-                relocations.next();
+                rel_iter.next();
             }
             state.cies.push(CieAtOffset {
                 offset: offset as u32,
@@ -2761,9 +2778,10 @@ fn process_eh_frame_data<'data>(
         } else {
             // This is an FDE
             let mut section_index = None;
-            let mut actions: SmallVec<[RelocationLayoutAction; 2]> = Default::default();
+            let rel_start_index = rel_iter.peek().map(|(i, _)| *i).unwrap_or(0);
+            let mut rel_end_index = 0;
 
-            while let Some(rel) = relocations.peek() {
+            while let Some((rel_index, rel)) = rel_iter.peek() {
                 let rel_offset = rel.r_offset.get(e);
                 if rel_offset < next_offset as u64 {
                     let is_pc_begin = (rel_offset as usize - offset) == elf::FDE_PC_BEGIN_OFFSET;
@@ -2774,34 +2792,67 @@ fn process_eh_frame_data<'data>(
                             section_index = object.symbol_section(elf_symbol, index)?;
                         }
                     }
-                    if let Some(action) = RelocationLayoutAction::new(
-                        object,
-                        rel,
-                        eh_frame_section,
-                        rel_offset,
-                        state,
-                        resources.symbol_db,
-                    )? {
-                        actions.push(action);
-                    }
-                    relocations.next();
+                    rel_end_index = rel_index + 1;
+                    rel_iter.next();
                 } else {
                     break;
                 }
             }
             if let Some(section_index) = section_index {
+                let new_pending = PendingEhFrameRelocations {
+                    section_index,
+                    start: rel_start_index,
+                    end: rel_end_index,
+                };
+                if let Some(p) = pending.as_mut() {
+                    if !p.merge(&new_pending) {
+                        p.apply(section_frame_data, relocations);
+                        pending = Some(new_pending);
+                    }
+                } else {
+                    pending = Some(new_pending);
+                }
                 let section_frame_data = &mut section_frame_data[section_index.0];
-                section_frame_data.relocation_actions.append(&mut actions);
                 section_frame_data.num_fdes += 1;
                 section_frame_data.total_fde_size += size as u32;
             }
         }
         offset = next_offset;
     }
+    if let Some(p) = pending {
+        p.apply(section_frame_data, relocations);
+    }
     // Allocate space for any remaining bytes in .eh_frame that aren't large enough to constitute an
     // actual entry. crtend.o has a single u32 equal to 0 as an end marker.
     state.common.mem_sizes.eh_frame += (data.len() - offset) as u64;
     Ok(())
+}
+
+struct PendingEhFrameRelocations {
+    section_index: object::SectionIndex,
+    start: usize,
+    end: usize,
+}
+
+impl PendingEhFrameRelocations {
+    fn apply<'data>(
+        &self,
+        section_frame_data: &mut [SectionFrameData<'data>],
+        relocations: &'data [Rela64<LittleEndian>],
+    ) {
+        let section_frame_data = &mut section_frame_data[self.section_index.0];
+        section_frame_data
+            .relocations
+            .push(&relocations[self.start..self.end]);
+    }
+
+    fn merge(&mut self, new_pending: &PendingEhFrameRelocations) -> bool {
+        if self.section_index != new_pending.section_index || new_pending.start != self.end {
+            return false;
+        }
+        self.end = new_pending.end;
+        true
+    }
 }
 
 /// A "common information entry". This is part of the .eh_frame data in ELF.
