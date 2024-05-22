@@ -1612,17 +1612,14 @@ impl<'data> Section<'data> {
         let size = object_section.sh_size(e);
         let section_data = worker.object.section_data(object_section)?;
         for rel in worker.object.relocations(section_id)? {
-            let rel_offset = rel.r_offset.get(LittleEndian);
-            if let Some(action) = RelocationLayoutAction::new(
+            apply_relocation(
                 worker.object,
                 rel,
                 object_section,
-                rel_offset,
-                &worker.state,
-                resources.symbol_db,
-            )? {
-                action.apply(resources, &mut worker.state, queue);
-            }
+                &mut worker.state,
+                resources,
+                queue,
+            )?;
         }
         let section = Section {
             index: section_id,
@@ -1647,58 +1644,20 @@ impl<'data> Section<'data> {
     }
 }
 
-/// Represents an action that we need to perform during layout if we decide that we need to apply a
-/// relocation. For regular sections we always create the action then apply it straight away,
-/// however for FDEs (frame description entries), we create them, store them and only later decide
-/// if we're going to apply them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct RelocationLayoutAction {
-    kind: RelocationLayoutActionKind,
-    dynamic_relocation_kind: DynamicRelocationKind,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DynamicRelocationKind {
-    None,
-    Relative,
-    Dynamic,
-}
-
-/// An action that we need to perform if we decide to use a particular relocation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RelocationLayoutActionKind {
-    LoadSymbol(SymbolId, BitFlags<ResolutionFlag>),
-}
-
-impl RelocationLayoutAction {
-    fn new(
-        object: &crate::elf::File<'_>,
-        rel: &elf::Rela,
-        section: &elf::SectionHeader,
-        rel_offset: u64,
-        state: &ObjectLayoutMutableState<'_>,
-        symbol_db: &SymbolDb,
-    ) -> Result<Option<Self>> {
-        let args = symbol_db.args;
-        if let Some(local_sym_index) = rel.symbol(LittleEndian, false) {
-            let symbol_id = state.common.symbol_id_range.input_to_id(local_sym_index);
-            return Ok(Some(Self::for_symbol(
-                object, rel, rel_offset, section, symbol_db, symbol_id, args,
-            )?));
-        }
-        Ok(None)
-    }
-
-    fn for_symbol(
-        object: &crate::elf::File<'_>,
-        rel: &elf::Rela,
-        rel_offset: u64,
-        section: &elf::SectionHeader,
-        symbol_db: &SymbolDb<'_>,
-        symbol_id: SymbolId,
-        args: &Args,
-    ) -> Result<RelocationLayoutAction> {
+fn apply_relocation(
+    object: &crate::elf::File<'_>,
+    rel: &Rela64<LittleEndian>,
+    section: &object::elf::SectionHeader64<LittleEndian>,
+    state: &mut ObjectLayoutMutableState<'_>,
+    resources: &GraphResources,
+    queue: &mut LocalWorkQueue,
+) -> Result {
+    let args = resources.symbol_db.args;
+    if let Some(local_sym_index) = rel.symbol(LittleEndian, false) {
+        let symbol_id = state.common.symbol_id_range.input_to_id(local_sym_index);
+        let symbol_db = resources.symbol_db;
         let symbol_value_flags = symbol_db.symbol_value_flags(symbol_id);
+        let rel_offset = rel.r_offset.get(LittleEndian);
         let mut r_type = rel.r_type(LittleEndian, false);
         if let Some((_relaxation, new_r_type)) = Relaxation::new(
             r_type,
@@ -1711,54 +1670,28 @@ impl RelocationLayoutAction {
         }
         let rel_info = RelocationKindInfo::from_raw(r_type)?;
         let resolution_kind = resolution_flags(rel_info.kind);
-        let dynamic_relocation_kind = match (args.is_relocatable(), rel_info.kind) {
+        match (args.is_relocatable(), rel_info.kind) {
             (true, RelocationKind::Absolute) if symbol_value_flags.contains(ValueFlag::Address) => {
-                DynamicRelocationKind::Relative
+                state.common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
             }
             (_, RelocationKind::Absolute | RelocationKind::Relative)
                 if symbol_value_flags.contains(ValueFlag::Dynamic) =>
             {
-                DynamicRelocationKind::Dynamic
-            }
-            _ => DynamicRelocationKind::None,
-        };
-        let relocation_layout_action = RelocationLayoutAction {
-            kind: RelocationLayoutActionKind::LoadSymbol(symbol_id, resolution_kind),
-            dynamic_relocation_kind,
-        };
-        Ok(relocation_layout_action)
-    }
-
-    fn apply(
-        &self,
-        resources: &GraphResources<'_, '_>,
-        state: &mut ObjectLayoutMutableState<'_>,
-        queue: &mut LocalWorkQueue,
-    ) {
-        match self.kind {
-            RelocationLayoutActionKind::LoadSymbol(symbol_id, resolution_kind) => {
-                let local_sym_index = symbol_id.to_offset(state.common.symbol_id_range);
-                if !state.common.symbol_states[local_sym_index].contains(resolution_kind) {
-                    let destination =
-                        queue.send_symbol_request(symbol_id, resolution_kind, resources);
-                    // For a symbol request that has a local destination, we'll update the symbol
-                    // state when we process the request.
-                    if destination == WorkDestination::Remote {
-                        state.common.symbol_states[local_sym_index] |= resolution_kind;
-                    }
-                }
-            }
-        }
-        match self.dynamic_relocation_kind {
-            DynamicRelocationKind::None => {}
-            DynamicRelocationKind::Relative => {
-                state.common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
-            }
-            DynamicRelocationKind::Dynamic => {
                 state.common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
             }
+            _ => {},
+        }
+        let local_sym_index = symbol_id.to_offset(state.common.symbol_id_range);
+        if !state.common.symbol_states[local_sym_index].contains(resolution_kind) {
+            let destination = queue.send_symbol_request(symbol_id, resolution_kind, resources);
+            // For a symbol request that has a local destination, we'll update the symbol
+            // state when we process the request.
+            if destination == WorkDestination::Remote {
+                state.common.symbol_states[local_sym_index] |= resolution_kind;
+            }
         }
     }
+    Ok(())
 }
 
 fn resolution_flags(rel_kind: RelocationKind) -> BitFlags<ResolutionFlag> {
@@ -2358,17 +2291,14 @@ impl<'data> ObjectLayoutState<'data> {
                         if let Some(eh_frame_section) = self.eh_frame_section {
                             for relocations in &frame_data.relocations {
                                 for rel in *relocations {
-                                    let rel_offset = rel.r_offset.get(LittleEndian);
-                                    if let Some(action) = RelocationLayoutAction::new(
+                                    apply_relocation(
                                         self.object,
                                         rel,
                                         eh_frame_section,
-                                        rel_offset,
-                                        &self.state,
-                                        resources.symbol_db,
-                                    )? {
-                                        action.apply(resources, &mut self.state, queue);
-                                    }
+                                        &mut self.state,
+                                        resources,
+                                        queue,
+                                    )?;
                                 }
                             }
                         }
@@ -2748,16 +2678,7 @@ fn process_eh_frame_data<'data>(
                 }
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                if let Some(action) = RelocationLayoutAction::new(
-                    object,
-                    rel,
-                    eh_frame_section,
-                    rel_offset,
-                    state,
-                    resources.symbol_db,
-                )? {
-                    action.apply(resources, state, queue);
-                }
+                apply_relocation(object, rel, eh_frame_section, state, resources, queue)?;
                 if let Some(local_sym_index) = rel.symbol(e, false) {
                     let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);
                     let definition = resources.symbol_db.definition(local_symbol_id);
