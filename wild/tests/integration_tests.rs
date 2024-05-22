@@ -104,6 +104,8 @@ struct LinkCommand {
     linker: Linker,
     can_skip: bool,
     invocation_mode: LinkerInvocationMode,
+    opt_save_dir: Option<PathBuf>,
+    output_path: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -619,6 +621,7 @@ impl LinkCommand {
                 .all(|input| is_newer(output_path, &input.path));
         let mut command;
         let mut invocation_mode = LinkerInvocationMode::Direct;
+        let mut opt_save_dir = None;
         if let Some((script, extra_inputs)) = get_script(inputs) {
             command = Command::new(script);
             command.env("OUT", output_path);
@@ -634,6 +637,15 @@ impl LinkCommand {
             {
                 invocation_mode = LinkerInvocationMode::Cc;
                 command = Command::new(cc);
+
+                // It's convenient when debugging to be able to run the linker via a script rather
+                // than by calling the C compiler, so we get wild to write out a script. In
+                // particular, this makes it easier to inspect the linker arguments, since they're
+                // in the script.
+                let save_dir = output_path.with_extension("save");
+                command.env("WILD_SAVE_DIR", &save_dir);
+                opt_save_dir = Some(save_dir);
+
                 match cc {
                     "clang" => {
                         command.arg(format!(
@@ -665,8 +677,10 @@ impl LinkCommand {
                 command.args(&linker_args.args[1..]);
             } else {
                 command = Command::new(linker_path);
-                command.arg("--gc-sections").arg("-static");
-                command.args(&linker_args.args);
+                command
+                    .arg("--gc-sections")
+                    .arg("-static")
+                    .args(&linker_args.args);
             }
             command.arg("-o").arg(output_path);
             for input in inputs {
@@ -685,6 +699,8 @@ impl LinkCommand {
             linker,
             can_skip,
             invocation_mode,
+            opt_save_dir,
+            output_path: output_path.to_owned(),
         }
     }
 
@@ -838,6 +854,18 @@ fn read_comments<'data>(obj: &ElfFile64<'data>) -> Result<Vec<std::borrow::Cow<'
 
 impl Display for LinkCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(save_dir) = self.opt_save_dir.as_ref() {
+            if save_dir.exists() && self.linker == Linker::Wild {
+                write!(
+                    f,
+                    "WILD_WRITE_LAYOUT=1 WILD_WRITE_TRACE=1 OUT={} {}/run-with cargo run \
+                     --bin wild --",
+                    self.output_path.display(),
+                    save_dir.display()
+                )?;
+                return Ok(());
+            }
+        }
         for sub in &self.input_commands {
             writeln!(f, "{sub}")?;
         }
@@ -964,6 +992,8 @@ impl Clone for LinkCommand {
             linker: self.linker,
             can_skip: self.can_skip,
             invocation_mode: self.invocation_mode,
+            opt_save_dir: self.opt_save_dir.clone(),
+            output_path: self.output_path.clone(),
         }
     }
 }
