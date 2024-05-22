@@ -18,6 +18,8 @@ __thread int tvar1 = 0;
 __thread int tvar2 = 70;
 extern __thread int tvar3;
 
+void set_tvar2(int v);
+
 int __attribute__ ((weak)) weak_fn1(void);
 int __attribute__ ((weak)) weak_fn2(void);
 
@@ -63,6 +65,11 @@ int main() {
     }
     if (tvar3 != 80) {
         return 105;
+    }
+
+    set_tvar2(77);
+    if (tvar2 != 77) {
+        return 106;
     }
 
     if (weak_fn1) {

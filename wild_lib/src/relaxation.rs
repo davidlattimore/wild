@@ -73,7 +73,8 @@ impl Relaxation {
             };
         }
 
-        let can_bypass_got = value_flags.contains(ValueFlag::CanBypassGot);
+        let can_bypass_got = value_flags.contains(ValueFlag::CanBypassGot)
+            && !value_flags.contains(ValueFlag::Dynamic);
 
         let offset = offset_in_section as usize;
         // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
