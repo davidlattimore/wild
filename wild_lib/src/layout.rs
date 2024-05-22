@@ -1612,14 +1612,7 @@ impl<'data> Section<'data> {
         let size = object_section.sh_size(e);
         let section_data = worker.object.section_data(object_section)?;
         for rel in worker.object.relocations(section_id)? {
-            apply_relocation(
-                worker.object,
-                rel,
-                object_section,
-                &mut worker.state,
-                resources,
-                queue,
-            )?;
+            apply_relocation(worker, rel, object_section, resources, queue)?;
         }
         let section = Section {
             index: section_id,
@@ -1645,14 +1638,14 @@ impl<'data> Section<'data> {
 }
 
 fn apply_relocation(
-    object: &crate::elf::File<'_>,
+    object: &mut ObjectLayoutState,
     rel: &Rela64<LittleEndian>,
     section: &object::elf::SectionHeader64<LittleEndian>,
-    state: &mut ObjectLayoutMutableState<'_>,
     resources: &GraphResources,
     queue: &mut LocalWorkQueue,
 ) -> Result {
     let args = resources.symbol_db.args;
+    let state = &mut object.state;
     if let Some(local_sym_index) = rel.symbol(LittleEndian, false) {
         let symbol_id = state.common.symbol_id_range.input_to_id(local_sym_index);
         let symbol_db = resources.symbol_db;
@@ -1661,7 +1654,7 @@ fn apply_relocation(
         let mut r_type = rel.r_type(LittleEndian, false);
         if let Some((_relaxation, new_r_type)) = Relaxation::new(
             r_type,
-            object.section_data(section)?,
+            object.object.section_data(section)?,
             rel_offset,
             symbol_value_flags,
             args.output_kind,
@@ -1679,7 +1672,7 @@ fn apply_relocation(
             {
                 state.common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
             }
-            _ => {},
+            _ => {}
         }
         let local_sym_index = symbol_id.to_offset(state.common.symbol_id_range);
         if !state.common.symbol_states[local_sym_index].contains(resolution_kind) {
@@ -2232,10 +2225,8 @@ impl<'data> ObjectLayoutState<'data> {
         }
         if let Some(eh_frame_section_index) = eh_frame_section {
             process_eh_frame_data(
-                self.object,
+                self,
                 self.symbol_id_range(),
-                &mut self.section_frame_data,
-                &mut self.state,
                 eh_frame_section_index,
                 resources,
                 queue,
@@ -2278,7 +2269,7 @@ impl<'data> ObjectLayoutState<'data> {
                     *allocation += section.capacity();
                     *self.state.common.sections_with_content.get_mut(sec_id) = true;
                     section.output_section_id = Some(sec_id);
-                    if let Some(frame_data) = self.section_frame_data.get(section_id.0) {
+                    if let Some(frame_data) = self.section_frame_data.get_mut(section_id.0) {
                         self.state.common.mem_sizes.eh_frame +=
                             u64::from(frame_data.total_fde_size);
                         if resources.symbol_db.args.should_write_eh_frame_hdr {
@@ -2286,16 +2277,19 @@ impl<'data> ObjectLayoutState<'data> {
                                 core::mem::size_of::<EhFrameHdrEntry>() as u64
                                     * u64::from(frame_data.num_fdes);
                         }
+                        // Take ownership of the section's frame data relocations. We only apply
+                        // these once when the section is loaded, so after this we won't need them
+                        // any more. By taking ownership, we drop our borrow of self.
+                        let frame_data_relocations = core::mem::take(&mut frame_data.relocations);
                         // Request loading of any sections/symbols referenced by the FDEs for our
                         // section.
                         if let Some(eh_frame_section) = self.eh_frame_section {
-                            for relocations in &frame_data.relocations {
+                            for relocations in &frame_data_relocations {
                                 for rel in *relocations {
                                     apply_relocation(
-                                        self.object,
+                                        self,
                                         rel,
                                         eh_frame_section,
-                                        &mut self.state,
                                         resources,
                                         queue,
                                     )?;
@@ -2633,21 +2627,21 @@ impl MergedStringStartAddresses {
     }
 }
 
-fn process_eh_frame_data<'data>(
-    object: &crate::elf::File<'data>,
+fn process_eh_frame_data(
+    object: &mut ObjectLayoutState,
     file_symbol_id_range: SymbolIdRange,
-    section_frame_data: &mut Vec<SectionFrameData<'data>>,
-    state: &mut ObjectLayoutMutableState<'data>,
     eh_frame_section_index: object::SectionIndex,
     resources: &GraphResources,
     queue: &mut LocalWorkQueue,
 ) -> Result {
-    section_frame_data.resize_with(state.sections.len(), Default::default);
-    let eh_frame_section = object.section(eh_frame_section_index)?;
-    let data = object.section_data(eh_frame_section)?;
+    object
+        .section_frame_data
+        .resize_with(object.state.sections.len(), Default::default);
+    let eh_frame_section = object.object.section(eh_frame_section_index)?;
+    let data = object.object.section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
     let e = LittleEndian;
-    let relocations = object.relocations(eh_frame_section_index)?;
+    let relocations = object.object.relocations(eh_frame_section_index)?;
     let mut rel_iter = relocations.iter().enumerate().peekable();
     let mut offset = 0;
     let mut pending: Option<PendingEhFrameRelocations> = None;
@@ -2678,7 +2672,7 @@ fn process_eh_frame_data<'data>(
                 }
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                apply_relocation(object, rel, eh_frame_section, state, resources, queue)?;
+                apply_relocation(object, rel, eh_frame_section, resources, queue)?;
                 if let Some(local_sym_index) = rel.symbol(e, false) {
                     let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);
                     let definition = resources.symbol_db.definition(local_symbol_id);
@@ -2688,7 +2682,7 @@ fn process_eh_frame_data<'data>(
                 }
                 rel_iter.next();
             }
-            state.cies.push(CieAtOffset {
+            object.state.cies.push(CieAtOffset {
                 offset: offset as u32,
                 cie: Cie {
                     bytes: &data[offset..next_offset],
@@ -2709,8 +2703,8 @@ fn process_eh_frame_data<'data>(
 
                     if is_pc_begin {
                         if let Some(index) = rel.symbol(e, false) {
-                            let elf_symbol = object.symbol(index)?;
-                            section_index = object.symbol_section(elf_symbol, index)?;
+                            let elf_symbol = object.object.symbol(index)?;
+                            section_index = object.object.symbol_section(elf_symbol, index)?;
                         }
                     }
                     rel_end_index = rel_index + 1;
@@ -2727,13 +2721,13 @@ fn process_eh_frame_data<'data>(
                 };
                 if let Some(p) = pending.as_mut() {
                     if !p.merge(&new_pending) {
-                        p.apply(section_frame_data, relocations);
+                        p.apply(&mut object.section_frame_data, relocations);
                         pending = Some(new_pending);
                     }
                 } else {
                     pending = Some(new_pending);
                 }
-                let section_frame_data = &mut section_frame_data[section_index.0];
+                let section_frame_data = &mut object.section_frame_data[section_index.0];
                 section_frame_data.num_fdes += 1;
                 section_frame_data.total_fde_size += size as u32;
             }
@@ -2741,11 +2735,11 @@ fn process_eh_frame_data<'data>(
         offset = next_offset;
     }
     if let Some(p) = pending {
-        p.apply(section_frame_data, relocations);
+        p.apply(&mut object.section_frame_data, relocations);
     }
     // Allocate space for any remaining bytes in .eh_frame that aren't large enough to constitute an
     // actual entry. crtend.o has a single u32 equal to 0 as an end marker.
-    state.common.mem_sizes.eh_frame += (data.len() - offset) as u64;
+    object.state.common.mem_sizes.eh_frame += (data.len() - offset) as u64;
     Ok(())
 }
 
