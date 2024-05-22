@@ -161,6 +161,10 @@ impl<'data> Object<'data> {
         self.layout.as_ref()?.resolve_address(address)
     }
 
+    fn input_file_in_range(&self, addresses: Range<u64>) -> Option<&section_map::InputFile> {
+        self.layout.as_ref()?.file_in_range(addresses)
+    }
+
     fn section_by_name(&self, name: &str) -> Option<ElfSection64<LittleEndian>> {
         self.section_by_name_bytes(name.as_bytes())
     }

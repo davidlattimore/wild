@@ -38,6 +38,32 @@ impl IndexedLayout {
         Ok(index)
     }
 
+    pub(crate) fn address_range(&self) -> Option<Range<u64>> {
+        let min = self.sections.iter().map(|s| s.addresses.start).min()?;
+        let max = self.sections.iter().map(|s| s.addresses.end).max()?;
+        Some(min..max)
+    }
+
+    /// Returns the first input file, if any that we can determine was mapped into the supplied
+    /// address range.
+    pub(crate) fn file_in_range(&self, addresses: Range<u64>) -> Option<&InputFile> {
+        let mut i = self
+            .sections
+            .binary_search_by_key(&addresses.start, |sec| sec.addresses.start)
+            .unwrap_or_else(|p| p);
+        while let Some(section) = self.sections.get(i) {
+            if section.addresses.start >= addresses.end {
+                return None;
+            }
+            if addresses.end <= section.addresses.start {
+                i += 1;
+            } else {
+                return Some(&self.files[section.file_index]);
+            }
+        }
+        None
+    }
+
     pub(crate) fn resolve_address(&self, address: u64) -> Option<InputResolution> {
         let i = self
             .sections

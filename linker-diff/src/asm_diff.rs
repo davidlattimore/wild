@@ -181,16 +181,27 @@ impl<'data> FunctionVersions<'data> {
         }
     }
 
-    fn determine_input_file(&self, values: &[Option<Line>]) -> Option<&section_map::InputFile> {
-        self.objects.iter().zip(values).find_map(|(obj, line)| {
-            if let Some(Line::Instruction(instruction)) = line {
-                let address = instruction.base_address;
-                let resolution = obj.resolve_input(address)?;
-                Some(resolution.file)
-            } else {
-                None
-            }
-        })
+    fn determine_input_file(&self) -> Result<&section_map::InputFile> {
+        let (obj, res) = self
+            .objects
+            .iter()
+            .zip(&self.resolutions)
+            .find(|(obj, _res)| obj.layout.is_some())
+            .ok_or_else(|| anyhow!("No layout files present"))?;
+
+        if let SymbolResolution::Function(function_def) = res {
+            let address = function_def.address;
+            let len = function_def.bytes.len() as u64;
+            let addresses = address..address + len;
+            obj.input_file_in_range(addresses.clone()).ok_or_else(|| {
+                anyhow!(
+                    "No trace information in range {addresses:x?} (has {:x?})",
+                    obj.layout.as_ref().and_then(|l| l.address_range())
+                )
+            })
+        } else {
+            bail!("Non-function resolution")
+        }
     }
 }
 
@@ -205,12 +216,19 @@ impl Display for FunctionVersions<'_> {
             .max()
             .unwrap_or(0)
             .max(ORIG.len());
+        match self.determine_input_file() {
+            Ok(input_file) => {
+                writeln!(f, "{ORIG:gutter_width$}            {input_file}")?;
+            }
+            Err(e) => {
+                writeln!(f, "{ORIG:gutter_width$}            {e}")?;
+            }
+        }
         let mut iterators = self
             .resolutions
             .iter()
             .map(|r| r.iter())
             .collect::<Vec<_>>();
-        let mut first = true;
         loop {
             let values = iterators.iter_mut().map(|i| i.next()).collect::<Vec<_>>();
             if values.iter().all(|v| v.is_none()) {
@@ -224,12 +242,6 @@ impl Display for FunctionVersions<'_> {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            if first {
-                first = false;
-                if let Some(input_file) = self.determine_input_file(&values) {
-                    writeln!(f, "{ORIG:gutter_width$}           {input_file}")?;
-                }
-            }
             if instructions.len() != self.objects.len() {
                 for (value, obj) in values.iter().zip(self.objects) {
                     let display_name = &obj.name;
