@@ -179,7 +179,7 @@ impl Relaxation {
             object::elf::R_X86_64_PLT32 if can_bypass_got => {
                 return Some((Relaxation::NoOp, object::elf::R_X86_64_PC32));
             }
-            object::elf::R_X86_64_TLSGD if output_kind.is_static_executable() => {
+            object::elf::R_X86_64_TLSGD if can_bypass_got => {
                 if offset < 4 || section_bytes[offset - 4..offset] != [0x66, 0x48, 0x8d, 0x3d] {
                     return None;
                 }
@@ -252,6 +252,7 @@ impl Relaxation {
                 section_bytes[offset - 4..offset + 8]
                     .copy_from_slice(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0x48, 0x8d, 0x80]);
                 *offset_in_section += 8;
+                *addend = 0;
                 *next_modifier = RelocationModifier::SkipNextRelocation;
             }
             Relaxation::TlsLdToLocalExec => {
