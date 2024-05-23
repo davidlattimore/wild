@@ -415,9 +415,16 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
                 relocation_writer.write_dtpmod(got_address.get())?;
             }
             let offset_entry = slice_take_prefix_mut(&mut self.got, 1);
-            // Convert the address to an offset within the TLS segment
-            let address = res.address()?;
-            offset_entry[0] = address - self.tls.start;
+            if res.value_flags.contains(ValueFlag::Dynamic) {
+                relocation_writer.write_dtpoff(
+                    got_address.get() + crate::elf::TLS_OFFSET_OFFSET,
+                    res.raw_value,
+                )?;
+            } else {
+                // Convert the address to an offset within the TLS segment
+                let address = res.address()?;
+                offset_entry[0] = address - self.tls.start;
+            }
             return Ok(());
         }
         let mut res_value = res.resolution_value();
@@ -434,7 +441,10 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
                     }
                     res_value = ResolutionValue::Absolute(address.wrapping_sub(self.tls.end));
                 }
-                other => bail!("Unexpected resolution value {other:?}"),
+                other => bail!(
+                    "Unexpected resolution value {other:?} value_flags={}",
+                    res.value_flags
+                ),
             }
         }
         if res.value_flags.contains(ValueFlag::IFunc) {
@@ -1123,6 +1133,16 @@ impl<'out> DynamicRelocationWriter<'out> {
         Ok(())
     }
 
+    fn write_dtpoff(&mut self, place: u64, dyn_sym_index: u64) -> Result {
+        let rela = self.take_glob_dat()?;
+        rela.r_offset.set(LittleEndian, place);
+        rela.r_info.set(
+            LittleEndian,
+            dyn_sym_index << 32 | u64::from(object::elf::R_X86_64_DTPOFF64),
+        );
+        Ok(())
+    }
+
     fn disabled() -> Self {
         Self {
             is_active: false,
@@ -1180,6 +1200,14 @@ fn apply_relocation(
         tracing::trace!(?relaxation, %value_flags);
         rel_info = RelocationKindInfo::from_raw(r_type)?;
         relaxation.apply(out, &mut offset_in_section, &mut addend, &mut next_modifier);
+        let new_address = section_address + offset_in_section;
+        if new_address != place {
+            // If the relaxation adjusted the offset, then log information for the new location too,
+            // otherwise we often miss that information when processing TLSGD relocations.
+            let _span = tracing::span!(tracing::Level::TRACE, "relocation", address = new_address)
+                .entered();
+            tracing::trace!(?relaxation, %value_flags);
+        }
     } else {
         tracing::trace!(%value_flags);
         rel_info = RelocationKindInfo::from_raw(r_type)?;

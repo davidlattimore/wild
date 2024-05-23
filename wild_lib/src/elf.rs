@@ -218,6 +218,9 @@ pub(crate) struct EhFrameHdr {
 // TODO: Use offset-of once it's stable.
 pub(crate) const FRAME_POINTER_FIELD_OFFSET: usize = 4;
 
+/// The offset of the offset within the structure passed to __tls_get_addr.
+pub(crate) const TLS_OFFSET_OFFSET: u64 = 8;
+
 #[derive(Zeroable, Pod, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct EhFrameHdrEntry {
