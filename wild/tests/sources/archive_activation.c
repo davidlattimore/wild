@@ -1,5 +1,8 @@
-//#CompArgs:sections:-ffunction-sections
-//#InputType: Archive
+//#CompArgs:-ffunction-sections
+//#Archive:archive_activation0.c
+//#Archive:archive_activation1.c
+//#Archive:exit.c
+//#Archive:empty.a
 
 #include "exit.h"
 

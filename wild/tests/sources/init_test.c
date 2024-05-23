@@ -1,5 +1,7 @@
+//#Object:init.c
+//#Object:exit.c
 //#CompArgs:default:
-//#CompArgs:static-pie:-static -pie
+//#CompArgs:-static -pie
 
 #include "exit.h"
 #include "init.h"

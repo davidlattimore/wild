@@ -2,9 +2,9 @@
 //#DiffIgnore:.dynamic.*
 // It looks like GNU ld sets .tdata's alignment to match .tbss's alignment
 //#DiffIgnore:section.tdata.alignment
-//#CompArgs:default:-C debuginfo=2
-//#LinkArgs:dynamic:--cc=clang
-//#InputType:Shared
+//#CompArgs:-C debuginfo=2
+//#LinkArgs:--cc=clang
+//#Shared:rdyn1.rs
 
 extern {
     fn foo() -> i32;

@@ -1,3 +1,5 @@
+//#Object:exit.c
+
 #include "exit.h"
 #include <stddef.h>
 

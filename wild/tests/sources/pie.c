@@ -2,8 +2,13 @@
 // a similar way to what libc would do. One advantage of doing this rather than actually using libc
 // is that we can give error codes when things aren't right that can help us debug what is wrong.
 
-//#CompArgs:pie:-static -pie -fno-stack-protector -ftls-model=global-dynamic
-//#LinkArgs:pie:-static -pie --no-dynamic-linker --hash-style=gnu -z now
+//#CompArgs:-static -pie -fno-stack-protector -ftls-model=global-dynamic
+//#LinkArgs:-static -pie --no-dynamic-linker --hash-style=gnu -z now
+//#Object:pie0.s
+//#Object:pie1.c
+//#Object:init.c
+//#Object:init_tls.c
+//#Object:exit.c
 
 #include "exit.h"
 #include "init.h"

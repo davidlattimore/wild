@@ -7,6 +7,10 @@
 // alignment. We can't do that here because then we'd end up with zero bytes in the middle of our
 // _init function.
 
+//#Object:old_init0.s
+//#Object:old_init1.s
+//#Object:exit.c
+
 #include "exit.h"
 
 int _init();

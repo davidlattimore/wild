@@ -1,6 +1,8 @@
 // This test does stuff with some of the linker-defined symbols. These symbols are generally used by
 // libc.
 
+//#Object:exit.c
+
 #include "exit.h"
 
 struct Rela {

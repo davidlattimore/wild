@@ -1,5 +1,7 @@
-//#CompArgs:no-stack-protector:-fno-stack-protector
-//#InputType: Archive
+//#AbstractConfig:default
+//#Archive:weak-vars1.c
+//#Object:exit.c
+//#CompArgs:-fno-stack-protector
 
 #include "exit.h"
 
@@ -59,15 +61,19 @@ void _start() {
     // 16: Variables undefined in second file
 
     int expected[24] = {
+        //#Config:0:default
         //#Variant: 0
         // Variables defined strongly in second file, no strong refs
         0,
+        //#Config:1:default
         //#Variant: 1
         // Variables defined weakly here then strongly in second, no strong refs
         2 + 8 + 32 + 1 + 16,
+        //#Config:2:default
         //#Variant: 2
         // Variables defined strongly in second file, strong ref to DATA
         64 + 32 + 4 + 128,
+        //#Config:3:default
         //#Variant: 3
         // Variables defined weakly here then strongly in second, strong ref to DATA
         64 + 8 + 32 + 4 + 16 + 128,
@@ -79,17 +85,21 @@ void _start() {
         0,
         // 7
         0,
+        //#Config:8:default
         //#Variant: 8
         // Variables defined weakly in second file, no strong refs
         0,
+        //#Config:9:default
         //#Variant: 9
         // Variables defined weakly here and in second file, no strong refs
         2 + 8 + 32 + 1 + 16,
+        //#Config:10:default
         //#Variant: 10
         // Variables defined weakly in second file, strong ref to DATA
         64 + 32 + 4 + 128,
         // 11
         0,
+        //#Config:12:default
         //#Variant: 12
         // Variables defined weakly here and in second file, strong ref to BSS
         64 + 32 + 4,
@@ -99,9 +109,11 @@ void _start() {
         0,
         // 15
         0,
+        //#Config:16:default
         //#Variant: 16
         // No weak variables defined in either file
         0,
+        //#Config:17:default
         //#Variant: 17
         // Variables weakly defined in this file only.
         2 + 8 + 32 + 1 + 16,

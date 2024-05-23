@@ -3,6 +3,7 @@
 
 // We don't apply the M flag to our .rodata
 //#DiffIgnore:section.rodata.flags
+//#Object:exit.c
 
 .section        .rodata.x,"aM",@progbits,16
 .p2align        4, 0x0

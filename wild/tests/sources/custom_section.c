@@ -1,4 +1,11 @@
-//#InputType: Object, Archive
+//#AbstractConfig:default
+//#Object:exit.c
+
+//#Config:archive:default
+//#Archive:custom_section0.c
+
+//#Config:object:default
+//#Object:custom_section0.c
 
 #include "exit.h"
 

@@ -1,14 +1,27 @@
 // This test links against libc and checks that various things work as expected.
 
+//#AbstractConfig:default
 //#DiffIgnore:.got.plt
 //#DiffIgnore:.dynamic.*
 //#DiffIgnore:asm.__sfp_handle_exceptions
-//#CompArgs:debug:-g
-//#LinkArgs:clang-static:--cc=clang -static -Wl,--strip-debug -Wl,--gc-sections
-//#LinkArgs:clang-static-pie:--cc=clang -static-pie -Wl,--strip-debug -Wl,--gc-sections
-//#LinkArgs:gcc-static:--cc=gcc -static -Wl,--strip-debug -Wl,--gc-sections
-//#LinkArgs:gcc-static-pie:--cc=gcc -static-pie -Wl,--strip-debug -Wl,--gc-sections
-//#LinkArgs:gcc-dynamic:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections
+//#CompArgs:-g
+//#DoesNotContain:.debug_str
+//#Object:libc-integration-0.c
+
+//#Config:clang-static:default
+//#LinkArgs:--cc=clang -static -Wl,--strip-debug -Wl,--gc-sections
+
+//#Config:clang-static-pie:default
+//#LinkArgs:--cc=clang -static-pie -Wl,--strip-debug -Wl,--gc-sections
+
+//#Config:gcc-static:default
+//#LinkArgs:--cc=gcc -static -Wl,--strip-debug -Wl,--gc-sections
+
+//#Config:gcc-static-pie:default
+//#LinkArgs:--cc=gcc -static-pie -Wl,--strip-debug -Wl,--gc-sections
+
+//#Config:gcc-dynamic:default
+//#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections
 
 #include <stdlib.h>
 #include <string.h>
@@ -81,5 +94,3 @@ int main() {
 
     return 42;
 }
-
-//#DoesNotContain:.debug_str

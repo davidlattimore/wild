@@ -1,3 +1,5 @@
+//#Object:exit.c
+
 .section        .data.foo
 .p2align        4, 0x0
 foo:

@@ -1,3 +1,6 @@
+//#Object:eh_frame_end.c
+//#Object:exit.c
+
 #include <stdint.h>
 
 #include "exit.h"

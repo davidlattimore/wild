@@ -1,7 +1,27 @@
-//#CompArgs:global-dynamic:-ftls-model=global-dynamic
-//#CompArgs:local-dynamic:-ftls-model=local-dynamic
-//#CompArgs:initial-exec:-ftls-model=initial-exec
-//#CompArgs:local-exec:-ftls-model=local-exec
+//#AbstractConfig:default
+//#Object:tls1.c
+//#Object:init_tls.c
+//#Object:exit.c
+
+//#Config:global-dynamic-0:default
+//#CompArgs:-ftls-model=global-dynamic
+//#Variant: 0
+
+//#Config:global-dynamic-1:global-dynamic-0
+//#Variant: 1
+
+//#Config:local-dynamic-0:default
+//#CompArgs:-ftls-model=local-dynamic
+//#Variant: 0
+
+//#Config:local-dynamic-1:local-dynamic-0
+//#Variant: 1
+
+//#Config:initial-exec:default
+//#CompArgs:-ftls-model=initial-exec
+
+//#Config:local-exec:default
+//#CompArgs:-ftls-model=local-exec
 
 #include "exit.h"
 #include "init_tls.h"
@@ -35,8 +55,6 @@ u8*** get_tcb(void);
 // When statically linking, glibc doesn't provide __tls_get_addr, however musl does. So we need to
 // make sure we work in either case.
 
-//#Variant: 0
-//#Variant: 1
 #if VARIANT == 1
 void* __tls_get_addr(size_t* mod_and_offset) {
     size_t mod = mod_and_offset[0];

@@ -40,7 +40,7 @@ fn build_dir() -> PathBuf {
 
 struct ProgramInputs {
     name: &'static str,
-    source_files: Vec<String>,
+    source_file: String,
 }
 
 struct Program<'a> {
@@ -122,17 +122,26 @@ enum LinkerInvocationMode {
     Script,
 }
 
-struct TestParameters {
-    input_type: Vec<InputType>,
-    variant_nums: Vec<u32>,
+#[derive(Clone, PartialEq, Eq)]
+struct Config {
+    name: String,
+    variant_num: Option<u32>,
     assertions: Assertions,
-    linker_args: Vec<ArgumentSet>,
-    compiler_args: Vec<ArgumentSet>,
+    linker_args: ArgumentSet,
+    compiler_args: ArgumentSet,
     diff_ignore: Vec<String>,
     section_equiv: Vec<(String, String)>,
+    is_abstract: bool,
+    deps: Vec<Dep>,
 }
 
-#[derive(Default)]
+#[derive(Clone, PartialEq, Eq)]
+struct Dep {
+    filename: String,
+    input_type: InputType,
+}
+
+#[derive(Default, Clone, PartialEq, Eq)]
 struct Assertions {
     expected_symtab_entries: Vec<ExpectedSymtabEntry>,
     expected_comments: Vec<String>,
@@ -140,6 +149,7 @@ struct Assertions {
     contains_strings: Vec<String>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
 struct ExpectedSymtabEntry {
     name: String,
     section_name: String,
@@ -158,51 +168,22 @@ impl ExpectedSymtabEntry {
     }
 }
 
-#[derive(Clone, Debug)]
-struct CompilationVariant {
-    variant_num: u32,
-    compiler_args: ArgumentSet,
-}
-
-#[derive(Clone, Debug)]
-struct Variant {
-    input_type: InputType,
-    compilation: CompilationVariant,
-    linker_args: ArgumentSet,
-}
-
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum InputType {
     Object,
     Archive,
     SharedObject,
 }
 
-impl InputType {
-    fn parse(arg: &str) -> Result<Self> {
-        Ok(match arg {
-            "Object" => Self::Object,
-            "Archive" => Self::Archive,
-            "Shared" => Self::SharedObject,
-            other => bail!("Unknown LinkKind `{other}`"),
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ArgumentSet {
-    name: String,
     args: Vec<String>,
 }
 
 impl ArgumentSet {
     fn parse(s: &str) -> Result<ArgumentSet> {
-        let (name, rest) = s
-            .split_once(':')
-            .with_context(|| format!("Missing ':' in LinkArg `{s}`"))?;
         Ok(ArgumentSet {
-            name: name.to_owned(),
-            args: rest
+            args: s
                 .split(' ')
                 .map(str::to_owned)
                 .filter(|s| !s.is_empty())
@@ -211,99 +192,126 @@ impl ArgumentSet {
     }
 
     fn default_for_linking() -> Self {
-        Self {
-            name: "default".to_owned(),
-            args: Vec::new(),
-        }
+        Self { args: Vec::new() }
     }
 
     fn default_for_compiling() -> Self {
+        Self { args: Vec::new() }
+    }
+}
+
+impl Default for Config {
+    fn default() -> Self {
         Self {
             name: "default".to_owned(),
-            args: Vec::new(),
+            variant_num: None,
+            assertions: Default::default(),
+            linker_args: ArgumentSet::default_for_linking(),
+            compiler_args: ArgumentSet::default_for_compiling(),
+            diff_ignore: Default::default(),
+            section_equiv: Default::default(),
+            is_abstract: false,
+            deps: Default::default(),
         }
     }
 }
 
-impl TestParameters {
-    fn from_source(src_filename: &Path) -> Result<TestParameters> {
-        let source = std::fs::read_to_string(src_filename)
-            .with_context(|| format!("Failed to read {}", src_filename.display()))?;
+fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
+    let source = std::fs::read_to_string(src_filename)
+        .with_context(|| format!("Failed to read {}", src_filename.display()))?;
 
-        let mut input_type = Vec::new();
-        let mut tls_models = Vec::new();
-        let mut variants = Vec::new();
-        let mut linker_args = Vec::new();
-        let mut compiler_args = Vec::new();
-        let mut expected_symtab_entries = Vec::new();
-        let mut expected_comments = Vec::new();
-        let mut does_not_contain = Vec::new();
-        let mut contains_strings = Vec::new();
-        let mut diff_ignore = Vec::new();
-        let mut section_equiv = Vec::new();
-        for line in source.lines() {
-            if let Some(rest) = line.trim().strip_prefix("//#") {
-                let (directive, arg) = rest.split_once(':').context("Missing arg")?;
-                let arg = arg.trim();
-                match directive {
-                    "InputType" => {
-                        for p in arg.split(',').map(|p| p.trim()).filter(|p| !p.is_empty()) {
-                            input_type.push(InputType::parse(p)?);
-                        }
+    let mut config_by_name = HashMap::new();
+    let mut config = Config::default();
+
+    for line in source.lines() {
+        if let Some(rest) = line.trim().strip_prefix("//#") {
+            let (directive, arg) = rest.split_once(':').context("Missing arg")?;
+            let arg = arg.trim();
+            match directive {
+                "Config" | "AbstractConfig" => {
+                    if config != Config::default() {
+                        config_by_name.insert(config.name.clone(), config);
                     }
-                    "Variant" => variants.push(
+                    let name = if let Some((name, inherit)) = arg.split_once(':') {
+                        config = config_by_name
+                            .get(inherit)
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "Config `{name}` inherits from unknown config named `{inherit}`"
+                                )
+                            })?
+                            .clone();
+
+                        // Clear any fields that we want to not inherit.
+                        config.variant_num = None;
+
+                        name
+                    } else {
+                        config = Config::default();
+                        arg
+                    };
+                    config.is_abstract = directive == "AbstractConfig";
+                    if config_by_name.contains_key(name) {
+                        bail!("Duplicate config `{name}`");
+                    }
+                    name.clone_into(&mut config.name);
+                }
+                "Variant" => {
+                    if config.variant_num.is_some() {
+                        bail!("Variant can only be specified once per config");
+                    }
+                    config.variant_num = Some(
                         arg.parse()
                             .with_context(|| format!("Failed to parse '{arg}'"))?,
-                    ),
-                    "LinkArgs" => linker_args.push(ArgumentSet::parse(arg)?),
-                    "CompArgs" => compiler_args.push(ArgumentSet::parse(arg)?),
-                    "ExpectSym" => {
-                        expected_symtab_entries.push(ExpectedSymtabEntry::parse(arg.trim())?)
-                    }
-                    "ExpectComment" => expected_comments.push(arg.trim().to_owned()),
-                    "DoesNotContain" => does_not_contain.push(arg.trim().to_owned()),
-                    "Contains" => contains_strings.push(arg.trim().to_owned()),
-                    "DiffIgnore" => diff_ignore.push(arg.trim().to_owned()),
-                    "SecEquiv" => section_equiv.push(
-                        arg.trim()
-                            .split_once('=')
-                            .ok_or_else(|| anyhow!("DiffIgnore missing '='"))
-                            .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
-                    ),
-                    other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
+                    )
                 }
+                "LinkArgs" => config.linker_args = ArgumentSet::parse(arg)?,
+                "CompArgs" => config.compiler_args = ArgumentSet::parse(arg)?,
+                "ExpectSym" => config
+                    .assertions
+                    .expected_symtab_entries
+                    .push(ExpectedSymtabEntry::parse(arg.trim())?),
+                "ExpectComment" => config
+                    .assertions
+                    .expected_comments
+                    .push(arg.trim().to_owned()),
+                "DoesNotContain" => config
+                    .assertions
+                    .does_not_contain
+                    .push(arg.trim().to_owned()),
+                "Contains" => config
+                    .assertions
+                    .contains_strings
+                    .push(arg.trim().to_owned()),
+                "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
+                "SecEquiv" => config.section_equiv.push(
+                    arg.trim()
+                        .split_once('=')
+                        .ok_or_else(|| anyhow!("DiffIgnore missing '='"))
+                        .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
+                ),
+                "Object" => config.deps.push(Dep {
+                    filename: arg.to_owned(),
+                    input_type: InputType::Object,
+                }),
+                "Archive" => config.deps.push(Dep {
+                    filename: arg.to_owned(),
+                    input_type: InputType::Archive,
+                }),
+                "Shared" => config.deps.push(Dep {
+                    filename: arg.to_owned(),
+                    input_type: InputType::SharedObject,
+                }),
+                other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
             }
         }
-        if linker_args.is_empty() {
-            linker_args.push(ArgumentSet::default_for_linking());
-        }
-        if compiler_args.is_empty() {
-            compiler_args.push(ArgumentSet::default_for_compiling());
-        }
-        if variants.is_empty() {
-            variants.push(0);
-        }
-        if input_type.is_empty() {
-            input_type.push(InputType::Object);
-        }
-        if tls_models.is_empty() {
-            tls_models.push(String::new());
-        }
-        Ok(TestParameters {
-            input_type,
-            variant_nums: variants,
-            assertions: Assertions {
-                expected_symtab_entries,
-                expected_comments,
-                does_not_contain,
-                contains_strings,
-            },
-            linker_args,
-            compiler_args,
-            diff_ignore,
-            section_equiv,
-        })
     }
+    let mut configs = config_by_name
+        .into_values()
+        .filter(|c| !c.is_abstract)
+        .collect::<Vec<_>>();
+    configs.push(config);
+    Ok(configs)
 }
 
 #[derive(Default)]
@@ -348,44 +356,41 @@ enum FilePlacement {
 }
 
 impl ProgramInputs {
-    fn new(name: &'static str, sources: &[&str]) -> Result<Self> {
+    fn new(name: &'static str, source_file: &str) -> Result<Self> {
         std::fs::create_dir_all(build_dir())?;
         Ok(Self {
             name,
-            source_files: sources.iter().map(|s| str::to_owned(s)).collect(),
+            source_file: source_file.to_owned(),
         })
     }
 
-    fn build<'a>(
-        &self,
-        linker: Linker,
-        variant: &Variant,
-        assertions: &'a Assertions,
-    ) -> Result<Program<'a>> {
-        let inputs = self
-            .source_files
-            .iter()
-            .enumerate()
-            .map(|(i, source)| {
-                let mut variant_for_file = variant.clone();
-                let placement = if i == 0 {
-                    // For the first input file, we always compile as an object, never an archive.
-                    variant_for_file.input_type = InputType::Object;
-                    FilePlacement::Primary
-                } else {
-                    FilePlacement::Secondary
-                };
-                build_linker_input(source, &variant_for_file, placement, linker)
-            })
-            .collect::<Result<Vec<LinkerInput>>>()?;
-        let link_output = linker.link(self.name, &inputs, variant)?;
+    fn build<'a>(&self, linker: Linker, config: &'a Config) -> Result<Program<'a>> {
+        let primary = build_linker_input(
+            &Dep {
+                filename: self.source_file.clone(),
+                input_type: InputType::Object,
+            },
+            config,
+            FilePlacement::Primary,
+            linker,
+        );
+        let inputs = std::iter::once(primary)
+            .chain(
+                config
+                    .deps
+                    .iter()
+                    .map(|dep| build_linker_input(dep, config, FilePlacement::Secondary, linker)),
+            )
+            .collect::<Result<Vec<_>>>()?;
+
+        let link_output = linker.link(self.name, &inputs, config)?;
         let shared_objects = inputs
             .into_iter()
             .filter(|input| input.path.extension().is_some_and(|ext| ext == "so"))
             .collect();
         Ok(Program {
             link_output,
-            assertions,
+            assertions: &config.assertions,
             shared_objects,
         })
     }
@@ -449,18 +454,18 @@ impl LinkerInput {
 
 /// Creates a linker input from a source file. This will be either an object file or an archive.
 fn build_linker_input(
-    filename: &str,
-    variant: &Variant,
+    dep: &Dep,
+    config: &Config,
     placement: FilePlacement,
     linker: Linker,
 ) -> Result<LinkerInput> {
-    let src_path = src_path(filename);
-    if filename.ends_with(".a") {
+    let src_path = src_path(&dep.filename);
+    if dep.filename.ends_with(".a") {
         return Ok(LinkerInput::new(src_path));
     }
-    let obj_path = build_obj(filename, variant, placement)?;
+    let obj_path = build_obj(dep, config, placement)?;
 
-    match variant.input_type {
+    match dep.input_type {
         InputType::Archive => {
             let archive_path = obj_path.with_extension("a");
             if !is_newer(&archive_path, &obj_path) {
@@ -488,9 +493,8 @@ enum CompilerKind {
 }
 
 /// Builds some C source and returns the path to the object file.
-fn build_obj(filename: &str, variant: &Variant, placement: FilePlacement) -> Result<PathBuf> {
-    let variant_num = variant.compilation.variant_num;
-    let src_path = src_path(filename);
+fn build_obj(dep: &Dep, config: &Config, placement: FilePlacement) -> Result<PathBuf> {
+    let src_path = src_path(&dep.filename);
     let extension = src_path
         .extension()
         .context("Missing extension")?
@@ -511,7 +515,7 @@ fn build_obj(filename: &str, variant: &Variant, placement: FilePlacement) -> Res
         CompilerKind::Rust => "",
     };
     let output_path = build_dir()
-        .join(Path::new(filename).with_extension(format!("{}{suffix}", variant.compilation)));
+        .join(Path::new(&dep.filename).with_extension(format!("{}{suffix}", config.name)));
     // Skip rebuilding if our output already exists and is newer than our source.
     if is_newer(&output_path, &src_path) {
         return Ok(output_path);
@@ -519,11 +523,10 @@ fn build_obj(filename: &str, variant: &Variant, placement: FilePlacement) -> Res
     let mut command = Command::new(compiler);
     match compiler_kind {
         CompilerKind::C => {
-            command
-                .arg("-c")
-                .arg(format!("-DVARIANT={variant_num}"))
-                .arg("-o")
-                .arg(&output_path);
+            if let Some(v) = config.variant_num {
+                command.arg(format!("-DVARIANT={v}"));
+            }
+            command.arg("-c").arg("-o").arg(&output_path);
         }
         CompilerKind::Rust => {
             let wild = wild_path().to_str().context("Need UTF-8 path")?.to_owned();
@@ -540,7 +543,7 @@ fn build_obj(filename: &str, variant: &Variant, placement: FilePlacement) -> Res
     if let Some(args) = override_parameters.compiler_args.as_ref() {
         command.args(args);
     } else {
-        command.args(&variant.compilation.compiler_args.args);
+        command.args(&config.compiler_args.args);
     }
     let status = command.status()?;
     if !status.success() {
@@ -572,9 +575,9 @@ fn is_newer(output_path: &Path, src_path: &Path) -> bool {
 impl Linker {
     /// Links the supplied object files with this configuration and returns the path to the
     /// resulting binary.
-    fn link(self, basename: &str, inputs: &[LinkerInput], variant: &Variant) -> Result<LinkOutput> {
-        let output_path = self.output_path(basename, variant);
-        let mut command = LinkCommand::new(self, inputs, &output_path, &variant.linker_args);
+    fn link(self, basename: &str, inputs: &[LinkerInput], config: &Config) -> Result<LinkOutput> {
+        let output_path = self.output_path(basename, config);
+        let mut command = LinkCommand::new(self, inputs, &output_path, &config.linker_args);
         if !command.can_skip {
             command.run()?;
         }
@@ -585,12 +588,8 @@ impl Linker {
         })
     }
 
-    fn output_path(&self, basename: &str, variant: &Variant) -> PathBuf {
-        build_dir().join(format!("{basename}-{variant}.{}", self.config_name()))
-    }
-
-    fn config_name(&self) -> String {
-        self.to_string()
+    fn output_path(&self, basename: &str, config: &Config) -> PathBuf {
+        build_dir().join(format!("{basename}-{}.{self}", config.name))
     }
 }
 
@@ -941,26 +940,6 @@ impl Display for InputType {
     }
 }
 
-impl Display for Variant {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(&self.compilation, f)?;
-        Display::fmt(&'-', f)?;
-        Display::fmt(&self.input_type, f)?;
-        Display::fmt(&'-', f)?;
-        Display::fmt(&self.linker_args.name, f)?;
-        Ok(())
-    }
-}
-
-impl Display for CompilationVariant {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(&self.variant_num, f)?;
-        Display::fmt(&'-', f)?;
-        Display::fmt(&self.compiler_args.name, f)?;
-        Ok(())
-    }
-}
-
 impl Display for ThirdPartyLinker {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self.name, f)
@@ -1005,95 +984,33 @@ fn integration_test() -> Result {
     // ordering here, since we can put more basic tests earlier such that when we fail, we report
     // the most basic test that failed.
     let programs = [
-        ProgramInputs::new("trivial", &["trivial.c", "exit.c"])?,
-        ProgramInputs::new("link_args", &["link_args.c", "exit.c"])?,
-        ProgramInputs::new(
-            "global_vars",
-            &["global_definitions.c", "global_references.c", "exit.c"],
-        )?,
-        ProgramInputs::new("data", &["data.c", "exit.c"])?,
-        ProgramInputs::new("weak-vars", &["weak-vars.c", "weak-vars1.c", "exit.c"])?,
-        ProgramInputs::new(
-            "weak-vars-archive",
-            &["weak-vars-archive.c", "weak-vars1.c", "exit.c"],
-        )?,
-        ProgramInputs::new("weak-fns", &["weak-fns.c", "weak-fns1.c", "exit.c"])?,
-        ProgramInputs::new(
-            "weak-fns-archive",
-            &["weak-fns-archive.c", "weak-fns1.c", "exit.c"],
-        )?,
-        ProgramInputs::new("init_test", &["init_test.c", "init.c", "exit.c"])?,
-        ProgramInputs::new("ifunc", &["ifunc.c", "ifunc1.c", "ifunc_init.c", "exit.c"])?,
-        ProgramInputs::new("internal-syms", &["internal-syms.c", "exit.c"])?,
-        ProgramInputs::new("tls", &["tls.c", "tls1.c", "init_tls.c", "exit.c"])?,
-        ProgramInputs::new(
-            "old_init",
-            &["old_init.c", "old_init0.s", "old_init1.s", "exit.c"],
-        )?,
-        ProgramInputs::new(
-            "custom_section",
-            &["custom_section.c", "custom_section0.c", "exit.c"],
-        )?,
-        ProgramInputs::new("stack_alignment", &["stack_alignment.s", "exit.c"])?,
-        ProgramInputs::new(
-            "got_ref_to_local",
-            &["got_ref_to_local.c", "got_ref_to_local-1.s", "exit.c"],
-        )?,
-        ProgramInputs::new("local_symbol_refs", &["local_symbol_refs.s", "exit.c"])?,
-        ProgramInputs::new(
-            "archive_activation",
-            &[
-                "archive_activation.c",
-                "archive_activation0.c",
-                "archive_activation1.c",
-                "exit.c",
-                "empty.a",
-            ],
-        )?,
-        ProgramInputs::new(
-            "common_section",
-            &[
-                "common_section.c",
-                "common_section0.c",
-                "common_section1.c",
-                "exit.c",
-            ],
-        )?,
-        ProgramInputs::new(
-            "string_merging",
-            &[
-                "string_merging.c",
-                "string_merging1.s",
-                "string_merging2.s",
-                "exit.c",
-            ],
-        )?,
-        ProgramInputs::new(
-            "comments",
-            &["comments.c", "comments0.c", "comments1.c", "exit.c"],
-        )?,
-        ProgramInputs::new("eh_frame", &["eh_frame.c", "eh_frame_end.c", "exit.c"])?,
-        ProgramInputs::new(
-            "pie",
-            &[
-                "pie.c",
-                "pie0.s",
-                "pie1.c",
-                "init.c",
-                "init_tls.c",
-                "exit.c",
-            ],
-        )?,
-        ProgramInputs::new("trivial_asm", &["trivial_asm.s", "exit.c"])?,
-        ProgramInputs::new(
-            "libc-integration",
-            &["libc-integration.c", "libc-integration-0.c"],
-        )?,
-        ProgramInputs::new("rust-integration", &["rust-integration.rs"])?,
-        ProgramInputs::new(
-            "rust-integration-dynamic",
-            &["rust-integration-dynamic.rs", "rdyn1.rs"],
-        )?,
+        ProgramInputs::new("trivial", "trivial.c")?,
+        ProgramInputs::new("link_args", "link_args.c")?,
+        ProgramInputs::new("global_vars", "global_definitions.c")?,
+        ProgramInputs::new("data", "data.c")?,
+        ProgramInputs::new("weak-vars", "weak-vars.c")?,
+        ProgramInputs::new("weak-vars-archive", "weak-vars-archive.c")?,
+        ProgramInputs::new("weak-fns", "weak-fns.c")?,
+        ProgramInputs::new("weak-fns-archive", "weak-fns-archive.c")?,
+        ProgramInputs::new("init_test", "init_test.c")?,
+        ProgramInputs::new("ifunc", "ifunc.c")?,
+        ProgramInputs::new("internal-syms", "internal-syms.c")?,
+        ProgramInputs::new("tls", "tls.c")?,
+        ProgramInputs::new("old_init", "old_init.c")?,
+        ProgramInputs::new("custom_section", "custom_section.c")?,
+        ProgramInputs::new("stack_alignment", "stack_alignment.s")?,
+        ProgramInputs::new("got_ref_to_local", "got_ref_to_local.c")?,
+        ProgramInputs::new("local_symbol_refs", "local_symbol_refs.s")?,
+        ProgramInputs::new("archive_activation", "archive_activation.c")?,
+        ProgramInputs::new("common_section", "common_section.c")?,
+        ProgramInputs::new("string_merging", "string_merging.c")?,
+        ProgramInputs::new("comments", "comments.c")?,
+        ProgramInputs::new("eh_frame", "eh_frame.c")?,
+        ProgramInputs::new("pie", "pie.c")?,
+        ProgramInputs::new("trivial_asm", "trivial_asm.s")?,
+        ProgramInputs::new("libc-integration", "libc-integration.c")?,
+        ProgramInputs::new("rust-integration", "rust-integration.rs")?,
+        ProgramInputs::new("rust-integration-dynamic", "rust-integration-dynamic.rs")?,
     ];
 
     let linkers = [
@@ -1108,37 +1025,30 @@ fn integration_test() -> Result {
     setup_wild_ld_symlink()?;
 
     for program_inputs in &programs {
-        let filename = program_inputs.source_files.first().unwrap();
-        let instructions = TestParameters::from_source(&src_path(filename))
+        let filename = &program_inputs.source_file;
+        let configs = parse_configs(&src_path(filename))
             .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
-        for &link_kind in &instructions.input_type {
-            for link_args in &instructions.linker_args {
-                for compiler_args in &instructions.compiler_args {
-                    for &variant_num in &instructions.variant_nums {
-                        let variant = Variant {
-                            input_type: link_kind,
-                            linker_args: link_args.clone(),
-                            compilation: CompilationVariant {
-                                variant_num,
-                                compiler_args: compiler_args.clone(),
-                            },
-                        };
-                        let programs = linkers.iter().map(|linker| {
-                            program_inputs.build(*linker, &variant, &instructions.assertions).with_context(|| {
-                                format!("Failed to build program `{program_inputs}` with linker `{linker}` variant #{variant}")
-                            })
-                        }).collect::<Result<Vec<_>>>()?;
+        for config in configs {
+            let programs = linkers
+                .iter()
+                .map(|linker| {
+                    program_inputs.build(*linker, &config).with_context(|| {
+                        format!(
+                            "Failed to build program `{program_inputs}` \
+                                    with linker `{linker}` config {}",
+                            config.name
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
 
-                        diff_shared_objects(&instructions, &programs)?;
-                        diff_executables(&instructions, &programs)?;
+            diff_shared_objects(&config, &programs)?;
+            diff_executables(&config, &programs)?;
 
-                        for program in programs {
-                            program
-                                .run()
-                                .with_context(|| format!("Failed to run program. {program}"))?;
-                        }
-                    }
-                }
+            for program in programs {
+                program
+                    .run()
+                    .with_context(|| format!("Failed to run program. {program}"))?;
             }
         }
     }
@@ -1146,7 +1056,7 @@ fn integration_test() -> Result {
     Ok(())
 }
 
-fn diff_shared_objects(instructions: &TestParameters, programs: &[Program]) -> Result {
+fn diff_shared_objects(instructions: &Config, programs: &[Program]) -> Result {
     // All our programs should have the same number of shared objects and they should be in the same
     // order. We use this to group shared objects at the corresponding index so that we can then
     // diff them.
@@ -1171,7 +1081,7 @@ fn diff_shared_objects(instructions: &TestParameters, programs: &[Program]) -> R
     Ok(())
 }
 
-fn diff_executables(instructions: &TestParameters, programs: &[Program]) -> Result {
+fn diff_executables(instructions: &Config, programs: &[Program]) -> Result {
     let filenames = programs
         .iter()
         .map(|p| p.link_output.binary.clone())
@@ -1179,11 +1089,7 @@ fn diff_executables(instructions: &TestParameters, programs: &[Program]) -> Resu
     diff_files(instructions, filenames, programs.last().unwrap())
 }
 
-fn diff_files(
-    instructions: &TestParameters,
-    filenames: Vec<PathBuf>,
-    display: &dyn Display,
-) -> Result {
+fn diff_files(instructions: &Config, filenames: Vec<PathBuf>, display: &dyn Display) -> Result {
     let mut config = linker_diff::Config::default();
     config.ignore.clone_from(&instructions.diff_ignore);
     config.ignore.extend(

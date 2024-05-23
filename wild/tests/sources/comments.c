@@ -1,3 +1,7 @@
+//#Object:comments0.c
+//#Object:comments1.c
+//#Object:exit.c
+
 #include "exit.h"
 
 int v0(void);

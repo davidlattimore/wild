@@ -1,3 +1,7 @@
+//#Object:ifunc1.c
+//#Object:ifunc_init.c
+//#Object:exit.c
+
 #include "exit.h"
 #include "init.h"
 #include "ifunc_init.h"
