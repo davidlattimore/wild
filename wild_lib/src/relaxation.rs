@@ -33,11 +33,14 @@ pub(crate) enum Relaxation {
     /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
     NoOp,
 
-    /// Transform GD (general dynamic) into LE (local exec).
+    /// Transform general dynamic (GD) into local exec.
     TlsGdToLocalExec,
 
-    /// Transform LD (local dynamic) into LE (local exec).
+    /// Transform local dynamic (LD) into local exec.
     TlsLdToLocalExec,
+
+    /// Transform general dynamic (GD) into initial exec
+    TlsGdToInitialExec,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -185,6 +188,17 @@ impl Relaxation {
                 }
                 return Some((Relaxation::TlsGdToLocalExec, object::elf::R_X86_64_TPOFF32));
             }
+            object::elf::R_X86_64_TLSGD
+                if output_kind.is_executable() && !value_flags.contains(ValueFlag::Dynamic) =>
+            {
+                if offset < 4 || section_bytes[offset - 4..offset] != [0x66, 0x48, 0x8d, 0x3d] {
+                    return None;
+                }
+                return Some((
+                    Relaxation::TlsGdToInitialExec,
+                    object::elf::R_X86_64_GOTTPOFF,
+                ));
+            }
             object::elf::R_X86_64_TLSLD if output_kind.is_executable() => {
                 if offset < 3 || section_bytes[offset - 3..offset] != [0x48, 0x8d, 0x3d] {
                     return None;
@@ -249,8 +263,17 @@ impl Relaxation {
                 section_bytes[offset - 2..offset].copy_from_slice(&[0x67, 0xe8]);
             }
             Relaxation::TlsGdToLocalExec => {
+                // mov %fs:0,%rax
+                // lea {offset}(%rax),%rax
                 section_bytes[offset - 4..offset + 8]
                     .copy_from_slice(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0x48, 0x8d, 0x80]);
+                *offset_in_section += 8;
+                *addend = 0;
+                *next_modifier = RelocationModifier::SkipNextRelocation;
+            }
+            Relaxation::TlsGdToInitialExec => {
+                section_bytes[offset - 4..offset + 8]
+                    .copy_from_slice(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0x48, 0x03, 0x05]);
                 *offset_in_section += 8;
                 *addend = 0;
                 *next_modifier = RelocationModifier::SkipNextRelocation;

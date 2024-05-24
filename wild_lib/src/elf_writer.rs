@@ -441,6 +441,10 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
                     }
                     res_value = ResolutionValue::Absolute(address.wrapping_sub(self.tls.end));
                 }
+                ResolutionValue::Dynamic(dyn_sym_index) => {
+                    self.take_next_got_entry()?;
+                    return relocation_writer.write_tpoff(got_address.get(), dyn_sym_index);
+                }
                 other => bail!(
                     "Unexpected resolution value {other:?} value_flags={}",
                     res.value_flags
@@ -1139,6 +1143,16 @@ impl<'out> DynamicRelocationWriter<'out> {
         rela.r_info.set(
             LittleEndian,
             dyn_sym_index << 32 | u64::from(object::elf::R_X86_64_DTPOFF64),
+        );
+        Ok(())
+    }
+
+    fn write_tpoff(&mut self, place: u64, dyn_sym_index: u32) -> Result {
+        let rela = self.take_glob_dat()?;
+        rela.r_offset.set(LittleEndian, place);
+        rela.r_info.set(
+            LittleEndian,
+            u64::from(dyn_sym_index) << 32 | u64::from(object::elf::R_X86_64_TPOFF64),
         );
         Ok(())
     }
