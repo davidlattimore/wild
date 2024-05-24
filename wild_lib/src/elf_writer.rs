@@ -562,8 +562,6 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         output_section_id: OutputSectionId,
         value: u64,
     ) -> Result {
-        let e = LittleEndian;
-        let is_local = sym.is_local();
         let shndx = self
             .output_sections
             .output_index_of_section(output_section_id)
@@ -575,6 +573,18 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
                     output_section_id,
                 )
             })?;
+        self.copy_symbol_shndx(sym, name, shndx, value)
+    }
+
+    fn copy_symbol_shndx(
+        &mut self,
+        sym: &crate::elf::Symbol,
+        name: &[u8],
+        shndx: u16,
+        value: u64,
+    ) -> Result {
+        let e = LittleEndian;
+        let is_local = sym.is_local();
         let size = sym.st_size(e);
         let entry = self.define_symbol(is_local, shndx, value, size, name)?;
         entry.st_info = sym.st_info();
@@ -1525,31 +1535,49 @@ fn write_dynamic_symbol_definitions(
         let file_id = layout.symbol_db.file_id_for_symbol(sym_def.symbol_id);
         let file_layout = &layout.file_layouts[file_id.as_usize()];
         let FileLayout::Object(object) = file_layout else {
-            bail!("Internal error: only objects should define dynamic symbols");
+            bail!(
+                "Internal error: only objects should define dynamic symbols, got {:?}. {}",
+                file_layout,
+                layout.symbol_debug(sym_def.symbol_id)
+            );
         };
         let sym_index = sym_def.symbol_id.to_input(object.symbol_id_range);
         let sym = object.object.symbol(sym_index)?;
-        let section_index = object
-            .object
-            .symbol_section(sym, sym_index)?
-            .context("Internal error: Symbols should only be defined if they have a section")?;
-        let SectionSlot::Loaded(section) = &object.sections[section_index.0] else {
-            bail!("Internal error: Defined symbols should always be for a loaded section");
-        };
-        let output_section_id = section.output_section_id.unwrap();
-        let section_address = object.section_resolutions[section_index.0]
-            .as_ref()
-            .unwrap()
-            .address()?;
         let name = object.object.symbol_name(sym)?;
-        dynamic_symbol_writer
-            .copy_symbol(sym, name, output_section_id, section_address)
-            .with_context(|| {
-                format!(
-                    "Failed to copy dynamic {}",
-                    layout.symbol_debug(sym_def.symbol_id)
-                )
-            })?;
+        if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
+            let SectionSlot::Loaded(section) = &object.sections[section_index.0] else {
+                bail!("Internal error: Defined symbols should always be for a loaded section");
+            };
+            let output_section_id = section.output_section_id.unwrap();
+            let mut symbol_value = object.section_resolutions[section_index.0]
+                .as_ref()
+                .unwrap()
+                .address()?;
+            if sym.st_type() == object::elf::STT_TLS {
+                let tls_start_address = layout
+                    .segment_layouts
+                    .tls_start_address
+                    .context("Writing TLS variable to symtab, but we don't have a TLS segment")?;
+                symbol_value -= tls_start_address;
+            }
+            dynamic_symbol_writer
+                .copy_symbol(sym, name, output_section_id, symbol_value)
+                .with_context(|| {
+                    format!(
+                        "Failed to copy dynamic {}",
+                        layout.symbol_debug(sym_def.symbol_id)
+                    )
+                })?;
+        } else {
+            dynamic_symbol_writer
+                .copy_symbol_shndx(sym, name, 0, 0)
+                .with_context(|| {
+                    format!(
+                        "Failed to copy dynamic {}",
+                        layout.symbol_debug(sym_def.symbol_id)
+                    )
+                })?;
+        }
     }
 
     Ok(())

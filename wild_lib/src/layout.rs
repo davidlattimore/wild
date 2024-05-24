@@ -141,8 +141,8 @@ fn finalise_all_sizes(
 fn merge_dynamic_symbol_definitions(layout_states: &mut [FileLayoutState]) -> Result {
     let mut dynamic_symbol_definitions = Vec::new();
     for state in layout_states.iter() {
-        if let FileLayoutState::Object(s) = state {
-            dynamic_symbol_definitions.extend(s.dynamic_symbol_definitions.iter().copied())
+        if let Some(common) = state.common() {
+            dynamic_symbol_definitions.extend(common.dynamic_symbol_definitions.iter().copied());
         }
     }
     let Some(FileLayoutState::Epilogue(epilogue)) = layout_states.last_mut() else {
@@ -245,7 +245,7 @@ enum FileLayoutState<'data> {
 
 /// Data that doesn't come from any input files, but needs to be written by the linker.
 struct InternalLayoutState<'data> {
-    common: CommonLayoutState,
+    common: CommonLayoutState<'data>,
     internal_symbols: InternalSymbols,
     entry_symbol_id: Option<SymbolId>,
     needs_tlsld_got_entry: bool,
@@ -256,7 +256,7 @@ struct InternalLayoutState<'data> {
 }
 
 pub(crate) struct EpilogueLayoutState<'data> {
-    common: CommonLayoutState,
+    common: CommonLayoutState<'data>,
     internal_symbols: InternalSymbols,
 
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
@@ -351,8 +351,14 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         let local_index = symbol_request.symbol_id.to_offset(self.symbol_id_range());
         let mut common = self.common_mut();
         let target_resolution_kind = symbol_request.target_resolution_kind;
-        if common.symbol_states[local_index].is_empty() {
+        let sym_state = common.symbol_states[local_index];
+        if sym_state.is_empty() {
             self.load_symbol(symbol_id, local_index, resources, queue)?;
+        }
+        if target_resolution_kind.contains(ResolutionFlag::ExportDynamic)
+            && !sym_state.contains(ResolutionFlag::ExportDynamic)
+        {
+            self.export_dynamic(symbol_id, resources)?;
         }
         common = self.common_mut();
         common.symbol_states[local_index] |= target_resolution_kind;
@@ -396,9 +402,21 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
 
     fn symbol_id_range(&self) -> SymbolIdRange;
 
-    fn common_mut(&mut self) -> &mut CommonLayoutState;
+    fn common_mut(&mut self) -> &mut CommonLayoutState<'data>;
 
     fn file_id(&self) -> FileId;
+
+    fn export_dynamic<'scope>(
+        &mut self,
+        symbol_id: SymbolId,
+        graph_resources: &GraphResources<'data, 'scope>,
+    ) -> Result {
+        let name = graph_resources.symbol_db.symbol_name(symbol_id)?;
+        self.common_mut()
+            .dynamic_symbol_definitions
+            .push(DynamicSymbolDefinition::new(symbol_id, name.bytes()));
+        Ok(())
+    }
 
     fn load_symbol<'scope>(
         &mut self,
@@ -438,7 +456,7 @@ fn allocate_resolution(
 }
 
 impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
-    fn common_mut(&mut self) -> &mut CommonLayoutState {
+    fn common_mut(&mut self) -> &mut CommonLayoutState<'data> {
         &mut self.state.common
     }
 
@@ -493,7 +511,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         self.common.symbol_id_range
     }
 
-    fn common_mut(&mut self) -> &mut CommonLayoutState {
+    fn common_mut(&mut self) -> &mut CommonLayoutState<'data> {
         &mut self.common
     }
 
@@ -510,10 +528,19 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
     ) -> Result {
         Ok(())
     }
+
+    fn export_dynamic<'scope>(
+        &mut self,
+        _symbol_id: SymbolId,
+        _resources: &GraphResources<'data, 'scope>,
+    ) -> Result {
+        // Nothing to do. We're a dynamic object that presumably already exports this symbol.
+        Ok(())
+    }
 }
 
 impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
-    fn common_mut(&mut self) -> &mut CommonLayoutState {
+    fn common_mut(&mut self) -> &mut CommonLayoutState<'data> {
         &mut self.common
     }
 
@@ -527,6 +554,14 @@ impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
         _local_index: usize,
         _resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
+    ) -> Result {
+        Ok(())
+    }
+
+    fn export_dynamic<'scope>(
+        &mut self,
+        _symbol_id: SymbolId,
+        _graph_resources: &GraphResources<'data, 'scope>,
     ) -> Result {
         Ok(())
     }
@@ -537,7 +572,7 @@ impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
 }
 
 impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState<'data> {
-    fn common_mut(&mut self) -> &mut CommonLayoutState {
+    fn common_mut(&mut self) -> &mut CommonLayoutState<'data> {
         &mut self.common
     }
 
@@ -560,7 +595,7 @@ impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState<'data> {
     }
 }
 
-struct CommonLayoutState {
+struct CommonLayoutState<'data> {
     file_id: FileId,
     mem_sizes: OutputSectionPartMap<u64>,
 
@@ -576,9 +611,12 @@ struct CommonLayoutState {
     symbol_states: Vec<BitFlags<ResolutionFlag>>,
 
     symbol_id_range: SymbolIdRange,
+
+    /// Dynamic symbols defined by this object.
+    dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
 }
 
-impl CommonLayoutState {
+impl CommonLayoutState<'_> {
     fn new(
         file_id: FileId,
         output_sections: &OutputSections,
@@ -590,6 +628,7 @@ impl CommonLayoutState {
             sections_with_content: OutputSectionMap::with_size(output_sections.len()),
             symbol_states: vec![Default::default(); symbol_id_range.len()],
             symbol_id_range,
+            dynamic_symbol_definitions: Default::default(),
         }
     }
 
@@ -636,8 +675,6 @@ struct ObjectLayoutState<'data> {
     object: &'data File<'data>,
     state: ObjectLayoutMutableState<'data>,
     section_frame_data: Vec<SectionFrameData<'data>>,
-    /// Dynamic symbols defined by this object.
-    dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     eh_frame_section: Option<&'data object::elf::SectionHeader64<LittleEndian>>,
 }
 
@@ -645,7 +682,7 @@ struct ObjectLayoutState<'data> {
 /// mutable references to it while holding shared references to the other bits of
 /// `ObjectLayoutState`.
 struct ObjectLayoutMutableState<'data> {
-    common: CommonLayoutState,
+    common: CommonLayoutState<'data>,
 
     /// Info about each of our sections. Empty until this object has been activated. Indexed the
     /// same as the sections in the input object.
@@ -703,12 +740,16 @@ pub(crate) enum ResolutionFlag {
     GotTlsModule,
 
     Tls,
+
+    /// The request originated from a dynamic object, so the symbol should be put into the dynamic
+    /// symbol table.
+    ExportDynamic,
 }
 
 struct DynamicLayoutState<'data> {
     object: &'data File<'data>,
     input: InputRef<'data>,
-    common: CommonLayoutState,
+    common: CommonLayoutState<'data>,
     lib_name: &'data [u8],
 }
 
@@ -1255,7 +1296,7 @@ impl<'data> FileWorker<'data> {
         match &mut self.state {
             FileLayoutState::Object(s) => s.activate(resources, &mut self.queue),
             FileLayoutState::Internal(s) => s.activate(resources),
-            FileLayoutState::Dynamic(s) => s.activate(),
+            FileLayoutState::Dynamic(s) => s.activate(resources, &mut self.queue),
             FileLayoutState::NotLoaded => Ok(()),
             FileLayoutState::Epilogue(_) => Ok(()),
         }
@@ -1428,7 +1469,7 @@ impl<'data> FileLayoutState<'data> {
         }
     }
 
-    pub(crate) fn common(&self) -> Option<&CommonLayoutState> {
+    pub(crate) fn common(&self) -> Option<&CommonLayoutState<'data>> {
         match self {
             Self::Object(s) => Some(&s.state.common),
             Self::Internal(s) => Some(&s.common),
@@ -2178,7 +2219,6 @@ fn new_object_layout_state<'data>(
             input: input_state.input,
             object: input_state.object,
             section_frame_data: Default::default(),
-            dynamic_symbol_definitions: Default::default(),
             eh_frame_section: None,
             state: ObjectLayoutMutableState {
                 common,
@@ -2525,21 +2565,14 @@ impl<'data> ObjectLayoutState<'data> {
                 if value_flags.contains(ValueFlag::DowngradeToLocal) {
                     continue;
                 }
-                let name = self.object.symbol_name(sym)?;
                 self.handle_symbol_request(
                     SymbolRequest {
                         symbol_id,
-                        target_resolution_kind: ResolutionFlag::Direct.into(),
+                        target_resolution_kind: ResolutionFlag::ExportDynamic.into(),
                     },
                     resources,
                     queue,
                 )?;
-                self.dynamic_symbol_definitions
-                    .push(DynamicSymbolDefinition {
-                        symbol_id,
-                        name,
-                        hash: gnu_hash(name),
-                    });
             }
         }
         Ok(())
@@ -3006,9 +3039,23 @@ fn layout_section_parts(
 }
 
 impl<'data> DynamicLayoutState<'data> {
-    fn activate(&mut self) -> Result {
+    fn activate(&mut self, resources: &GraphResources, queue: &mut LocalWorkQueue) -> Result {
         self.common.mem_sizes.dynamic += core::mem::size_of::<crate::elf::DynamicEntry>() as u64;
         self.common.mem_sizes.dynstr += self.lib_name.len() as u64 + 1;
+        self.request_all_undefined_symbols(resources, queue)
+    }
+
+    fn request_all_undefined_symbols(
+        &self,
+        resources: &GraphResources,
+        queue: &mut LocalWorkQueue,
+    ) -> Result {
+        for symbol_id in self.symbol_id_range() {
+            if resources.symbol_db.is_canonical(symbol_id) {
+                continue;
+            }
+            queue.send_symbol_request(symbol_id, ResolutionFlag::ExportDynamic.into(), resources);
+        }
         Ok(())
     }
 
@@ -3165,6 +3212,16 @@ impl Display for SectionDebug {
 impl GnuHashLayout {
     pub(crate) fn bucket_for_hash(&self, hash: u32) -> u32 {
         (hash & ((1 << self.bloom_shift) - 1)) % self.bucket_count
+    }
+}
+
+impl<'data> DynamicSymbolDefinition<'data> {
+    fn new(symbol_id: SymbolId, name: &'data [u8]) -> Self {
+        Self {
+            symbol_id,
+            name,
+            hash: gnu_hash(name),
+        }
     }
 }
 

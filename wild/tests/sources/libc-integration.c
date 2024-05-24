@@ -4,24 +4,34 @@
 //#DiffIgnore:.got.plt
 //#DiffIgnore:.dynamic.*
 //#DiffIgnore:asm.__sfp_handle_exceptions
-//#CompArgs:-g
+//#CompArgs:-g -ftls-model=global-dynamic
 //#DoesNotContain:.debug_str
-//#Object:libc-integration-0.c
 
 //#Config:clang-static:default
 //#LinkArgs:--cc=clang -static -Wl,--strip-debug -Wl,--gc-sections
+//#Object:libc-integration-0.c
 
 //#Config:clang-static-pie:default
 //#LinkArgs:--cc=clang -static-pie -Wl,--strip-debug -Wl,--gc-sections
+//#Object:libc-integration-0.c
 
 //#Config:gcc-static:default
 //#LinkArgs:--cc=gcc -static -Wl,--strip-debug -Wl,--gc-sections
+//#Object:libc-integration-0.c
 
 //#Config:gcc-static-pie:default
 //#LinkArgs:--cc=gcc -static-pie -Wl,--strip-debug -Wl,--gc-sections
+//#Object:libc-integration-0.c
 
 //#Config:gcc-dynamic:default
 //#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections
+//#Shared:libc-integration-0.c
+
+//TODO: Enable
+// #Config:gcc-dynamic-pic:default
+// #CompArgs:-g -ftls-model=global-dynamic -fpic
+// #LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections
+// #Shared:libc-integration-0.c
 
 #include <stdlib.h>
 #include <string.h>

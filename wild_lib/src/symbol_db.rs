@@ -151,6 +151,35 @@ impl SymbolIdRange {
     }
 }
 
+impl IntoIterator for SymbolIdRange {
+    type Item = SymbolId;
+
+    type IntoIter = SymbolIdRangeIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        SymbolIdRangeIterator {
+            remaining: self.len(),
+            next: self.start_symbol_id,
+        }
+    }
+}
+
+pub(crate) struct SymbolIdRangeIterator {
+    remaining: usize,
+    next: SymbolId,
+}
+
+impl Iterator for SymbolIdRangeIterator {
+    type Item = SymbolId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.remaining = self.remaining.checked_sub(1)?;
+        let value = self.next;
+        self.next = value.next();
+        Some(value)
+    }
+}
+
 struct SymbolLoadOutputs<'data> {
     pending_symbols: Vec<PendingSymbol<'data>>,
 }
@@ -270,7 +299,7 @@ impl<'data> SymbolDb<'data> {
         }
     }
 
-    pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> Result<SymbolName> {
+    pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> Result<SymbolName<'data>> {
         let file_id = self.file_id_for_symbol(symbol_id);
         let input_object = &self.inputs[file_id.as_usize()];
         match input_object {
@@ -541,6 +570,10 @@ impl SymbolId {
 
     pub(crate) fn is_undefined(&self) -> bool {
         self.0 == 0
+    }
+
+    pub(crate) fn next(self) -> Self {
+        Self(self.0 + 1)
     }
 }
 

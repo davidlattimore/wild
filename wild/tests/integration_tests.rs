@@ -70,12 +70,14 @@ impl Linker {
         }
     }
 
-    fn link_shared(&self, obj_path: &Path, so_path: &Path) -> Result<LinkerInput> {
+    fn link_shared(&self, obj_path: &Path, so_path: &Path, config: &Config) -> Result<LinkerInput> {
+        let mut linker_args = config.linker_args.clone();
+        linker_args.args.push("-shared".to_owned());
         let mut command = LinkCommand::new(
             *self,
             &[LinkerInput::new(obj_path.to_owned())],
             so_path,
-            &ArgumentSet::default_for_linking(),
+            &linker_args,
         );
         if self.is_wild() || !is_newer(so_path, obj_path) {
             command.run()?;
@@ -476,7 +478,7 @@ fn build_linker_input(
         InputType::Object => Ok(LinkerInput::new(obj_path)),
         InputType::SharedObject => {
             let so_path = obj_path.with_extension(format!("{linker}.so"));
-            let out = linker.link_shared(&obj_path, &so_path)?;
+            let out = linker.link_shared(&obj_path, &so_path, config)?;
             let assertions = Assertions::default();
             assertions
                 .check_path(&out.path, linker)

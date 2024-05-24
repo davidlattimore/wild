@@ -1,5 +1,3 @@
-//#OverrideCompArgs:-ftls-model=global-dynamic -fpic
-
 __thread int tvar3 = 80;
 
 extern __thread int tvar2;

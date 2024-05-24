@@ -162,7 +162,7 @@ impl<'data> InputObject<'data> {
         match self {
             InputObject::Object(s) => s.filename(),
             InputObject::Internal(_) => Path::new("<<internal>>"),
-            InputObject::Epilogue(_) => Path::new("<<custom sections>>"),
+            InputObject::Epilogue(_) => Path::new("<<epilogue>>"),
         }
     }
 
