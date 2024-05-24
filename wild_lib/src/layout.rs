@@ -378,9 +378,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 *resolution_flags |= ResolutionFlag::Got;
             }
 
-            if value_flags.contains(ValueFlag::Dynamic)
-                && resolution_flags.contains(ResolutionFlag::Got)
-            {
+            if value_flags.contains(ValueFlag::Dynamic) && !resolution_flags.is_empty() {
                 let name = symbol_db.symbol_name(symbol_id)?;
                 common.mem_sizes.dynstr += name.len() as u64 + 1;
                 common.mem_sizes.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;

@@ -163,7 +163,7 @@ impl Relaxation {
                 return None;
             }
             object::elf::R_X86_64_GOTTPOFF => {
-                if offset < 3 {
+                if offset < 3 || value_flags.contains(ValueFlag::Dynamic) {
                     return None;
                 }
                 match section_bytes[offset - 3..offset - 1] {
