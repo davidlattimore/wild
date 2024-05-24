@@ -1562,7 +1562,7 @@ fn write_internal_symbols(
 ) -> Result {
     for (local_index, def_info) in internal_symbols.symbol_definitions.iter().enumerate() {
         let symbol_id = internal_symbols.start_symbol_id.add_usize(local_index);
-        if !layout.symbol_db.is_definition(symbol_id) {
+        if !layout.symbol_db.is_canonical(symbol_id) {
             continue;
         }
         let Some(resolution) = layout.local_symbol_resolution(symbol_id) else {
@@ -1901,7 +1901,7 @@ fn write_internal_symbols_plt_got_entries(
 ) -> Result {
     for i in 0..internal_symbols.symbol_definitions.len() {
         let symbol_id = internal_symbols.start_symbol_id.add_usize(i);
-        if !layout.symbol_db.is_definition(symbol_id) {
+        if !layout.symbol_db.is_canonical(symbol_id) {
             continue;
         }
         plt_got_writer

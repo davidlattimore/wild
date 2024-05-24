@@ -364,7 +364,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         let common = self.common_mut();
         for (local_index, resolution_flags) in common.symbol_states.iter_mut().enumerate() {
             let symbol_id = symbol_id_range.offset_to_id(local_index);
-            if !symbol_db.is_definition(symbol_id) {
+            if !symbol_db.is_canonical(symbol_id) {
                 continue;
             }
             let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
@@ -450,7 +450,7 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
         queue: &mut LocalWorkQueue,
     ) -> Result {
         debug_assert_bail!(
-            resources.symbol_db.is_definition(symbol_id),
+            resources.symbol_db.is_canonical(symbol_id),
             "Tried to load symbol in a file that doesn't hold the definition: {}",
             resources.symbol_db.symbol_debug(symbol_id)
         );
@@ -1975,7 +1975,7 @@ impl InternalSymbols {
         // Allocate space in the symbol table for the symbols that we define.
         for index in 0..self.symbol_definitions.len() {
             let symbol_id = self.start_symbol_id.add_usize(index);
-            if !symbol_db.is_definition(symbol_id) || symbol_id.is_undefined() {
+            if !symbol_db.is_canonical(symbol_id) || symbol_id.is_undefined() {
                 continue;
             }
             let sym_state = &common.symbol_states[index];
@@ -2004,7 +2004,7 @@ impl InternalSymbols {
         let mut emitter = common.create_global_address_emitter(memory_offsets, symbol_db);
         for (local_index, def_info) in self.symbol_definitions.iter().enumerate() {
             let symbol_id = self.start_symbol_id.add_usize(local_index);
-            if !symbol_db.is_definition(symbol_id) {
+            if !symbol_db.is_canonical(symbol_id) {
                 continue;
             }
             let sym_state = &common.symbol_states[local_index];
@@ -2447,7 +2447,7 @@ impl<'data> ObjectLayoutState<'data> {
                 continue;
             }
             let symbol_id = symbol_id_range.input_to_id(local_symbol_index);
-            if !symbol_db.is_definition(symbol_id) {
+            if !symbol_db.is_canonical(symbol_id) {
                 continue;
             }
             let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
@@ -2564,7 +2564,7 @@ impl<'data> SymbolCopyInfo<'data> {
         sections: &[SectionSlot],
     ) -> Option<SymbolCopyInfo<'data>> {
         let e = LittleEndian;
-        if !symbol_db.is_definition(symbol_id) || sym.is_undefined(e) {
+        if !symbol_db.is_canonical(symbol_id) || sym.is_undefined(e) {
             return None;
         }
         if let Ok(Some(section)) = object.symbol_section(sym, sym_index) {

@@ -316,9 +316,9 @@ impl<'data> SymbolDb<'data> {
             .unwrap_or(self.custom_sections_file_id)
     }
 
-    /// Returns whether the supplied symbol ID is a definition. A symbol won't be a definition, if
-    /// it resolves to a different symbol.
-    pub(crate) fn is_definition(&self, symbol_id: SymbolId) -> bool {
+    /// Returns whether the supplied symbol ID is the canonical ID. A symbol won't be canonical, if
+    /// it resolves to a different symbol. The symbol may still be undefined.
+    pub(crate) fn is_canonical(&self, symbol_id: SymbolId) -> bool {
         let resolution = self.symbol_definitions[symbol_id.as_usize()];
         resolution == symbol_id
     }
