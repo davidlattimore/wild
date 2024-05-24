@@ -404,51 +404,52 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         res: &Resolution,
         relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
-        if let Some(got_address) = res.got_address {
-            if res.resolution_flags.contains(ResolutionFlag::GotTlsModule) {
-                let mod_got_entry = slice_take_prefix_mut(&mut self.got, 1);
-                if self.layout.args().output_kind.is_executable() {
-                    mod_got_entry.copy_from_slice(&[elf::CURRENT_EXE_TLS_MOD]);
-                } else {
-                    relocation_writer.write_dtpmod(got_address.get())?;
-                }
-                let offset_entry = slice_take_prefix_mut(&mut self.got, 1);
-                // Convert the address to an offset within the TLS segment
-                let address = res.address()?;
-                offset_entry[0] = address - self.tls.start;
-                return Ok(());
+        let Some(got_address) = res.got_address else {
+            return Ok(());
+        };
+        if res.resolution_flags.contains(ResolutionFlag::GotTlsModule) {
+            let mod_got_entry = slice_take_prefix_mut(&mut self.got, 1);
+            if self.layout.args().output_kind.is_executable() {
+                mod_got_entry.copy_from_slice(&[elf::CURRENT_EXE_TLS_MOD]);
+            } else {
+                relocation_writer.write_dtpmod(got_address.get())?;
             }
-            let mut res_value = res.resolution_value();
-            if res.resolution_flags.contains(ResolutionFlag::Tls) {
-                // Convert the address to an offset relative to the TCB which is the end of the TLS
-                // segment.
-                match res_value {
-                    ResolutionValue::Address(address) => {
-                        if !self.tls.contains(&address) {
-                            bail!(
-                                "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
-                                address
-                            );
-                        }
-                        res_value = ResolutionValue::Absolute(address.wrapping_sub(self.tls.end));
-                    }
-                    other => bail!("Unexpected resolution value {other:?}"),
-                }
-            }
-            if res.value_flags.contains(ValueFlag::IFunc) {
-                res_value = ResolutionValue::Absolute(0);
-            }
-            let got_entry = self.take_next_got_entry()?;
-            relocation_writer.write_relocation(got_address.get(), res_value, 0)?;
+            let offset_entry = slice_take_prefix_mut(&mut self.got, 1);
+            // Convert the address to an offset within the TLS segment
+            let address = res.address()?;
+            offset_entry[0] = address - self.tls.start;
+            return Ok(());
+        }
+        let mut res_value = res.resolution_value();
+        if res.resolution_flags.contains(ResolutionFlag::Tls) {
+            // Convert the address to an offset relative to the TCB which is the end of the TLS
+            // segment.
             match res_value {
-                ResolutionValue::Absolute(v) => *got_entry = v,
-                ResolutionValue::Address(v) => *got_entry = v,
-                ResolutionValue::Iplt(_) => {}
-                ResolutionValue::Dynamic(_) => {}
+                ResolutionValue::Address(address) => {
+                    if !self.tls.contains(&address) {
+                        bail!(
+                            "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
+                            address
+                        );
+                    }
+                    res_value = ResolutionValue::Absolute(address.wrapping_sub(self.tls.end));
+                }
+                other => bail!("Unexpected resolution value {other:?}"),
             }
-            if let Some(plt_address) = res.plt_address {
-                self.write_plt_entry(got_address.get(), plt_address.get())?;
-            }
+        }
+        if res.value_flags.contains(ValueFlag::IFunc) {
+            res_value = ResolutionValue::Absolute(0);
+        }
+        let got_entry = self.take_next_got_entry()?;
+        relocation_writer.write_relocation(got_address.get(), res_value, 0)?;
+        match res_value {
+            ResolutionValue::Absolute(v) => *got_entry = v,
+            ResolutionValue::Address(v) => *got_entry = v,
+            ResolutionValue::Iplt(_) => {}
+            ResolutionValue::Dynamic(_) => {}
+        }
+        if let Some(plt_address) = res.plt_address {
+            self.write_plt_entry(got_address.get(), plt_address.get())?;
         }
         Ok(())
     }
