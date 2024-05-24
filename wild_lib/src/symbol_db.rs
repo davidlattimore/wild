@@ -395,10 +395,8 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFl
     let can_bypass_got = sym.st_visibility() != object::elf::STV_DEFAULT
         || sym.is_local()
         || args.output_kind.is_static_executable()
-        // I'm not 100% sure if it's really OK to bypass the GOT in a dynamically linked executable
-        // for a defined symbol with default visibility, but GNU ld appears to be bypassing a PLT32
-        // relocation and this makes us match that, so until we find some different criteria that's
-        // more correct, this is what we'll go with.
+        // Symbols defined in an executable cannot be interposed since the executable is always the
+        // first place checked for a symbol by the dynamic loader.
         || (args.output_kind.is_executable() && !is_undefined);
     let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {
         ValueFlag::Absolute.into()
