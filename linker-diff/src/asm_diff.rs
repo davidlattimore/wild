@@ -195,7 +195,7 @@ impl<'data> FunctionVersions<'data> {
             let addresses = address..address + len;
             obj.input_file_in_range(addresses.clone()).ok_or_else(|| {
                 anyhow!(
-                    "No trace information in range {addresses:x?} (has {:x?})",
+                    "No layout information in range {addresses:x?} (has {:x?})",
                     obj.layout.as_ref().and_then(|l| l.address_range())
                 )
             })

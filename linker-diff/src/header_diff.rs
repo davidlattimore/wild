@@ -126,6 +126,9 @@ impl Converter {
 }
 
 fn symbol_with_address(obj: &Object, address: u64, allow_empty: bool) -> Option<String> {
+    if address == 0 {
+        return None;
+    }
     // If we want this to be faster, we could build an index ahead of time.
     for sym in obj.elf_file.symbols() {
         if !allow_empty && sym.size() == 0 {
