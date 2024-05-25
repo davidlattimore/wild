@@ -39,8 +39,7 @@ fn build_dir() -> PathBuf {
 }
 
 struct ProgramInputs {
-    name: &'static str,
-    source_file: String,
+    source_file: &'static str,
 }
 
 struct Program<'a> {
@@ -358,18 +357,15 @@ enum FilePlacement {
 }
 
 impl ProgramInputs {
-    fn new(name: &'static str, source_file: &str) -> Result<Self> {
+    fn new(source_file: &'static str) -> Result<Self> {
         std::fs::create_dir_all(build_dir())?;
-        Ok(Self {
-            name,
-            source_file: source_file.to_owned(),
-        })
+        Ok(Self { source_file })
     }
 
     fn build<'a>(&self, linker: Linker, config: &'a Config) -> Result<Program<'a>> {
         let primary = build_linker_input(
             &Dep {
-                filename: self.source_file.clone(),
+                filename: self.source_file.to_owned(),
                 input_type: InputType::Object,
             },
             config,
@@ -385,7 +381,7 @@ impl ProgramInputs {
             )
             .collect::<Result<Vec<_>>>()?;
 
-        let link_output = linker.link(self.name, &inputs, config)?;
+        let link_output = linker.link(self.name(), &inputs, config)?;
         let shared_objects = inputs
             .into_iter()
             .filter(|input| input.path.extension().is_some_and(|ext| ext == "so"))
@@ -395,6 +391,10 @@ impl ProgramInputs {
             assertions: &config.assertions,
             shared_objects,
         })
+    }
+
+    fn name(&self) -> &str {
+        self.source_file
     }
 }
 
@@ -919,7 +919,7 @@ impl Display for LinkCommand {
 
 impl Display for ProgramInputs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(&self.name, f)
+        Display::fmt(&self.name(), f)
     }
 }
 
@@ -981,38 +981,39 @@ impl Clone for LinkCommand {
 
 #[test]
 fn integration_test() -> Result {
-    // TODO: We should probably just discover the source files, then work out which ones are main
-    // programs and get their dependencies via comments. That said, it's somewhat handy having an
-    // ordering here, since we can put more basic tests earlier such that when we fail, we report
-    // the most basic test that failed.
+    // We could potentially just discover the source files, but having a hand-written ordering is
+    // nice, since it means we can run the more basic tests first. If we do ever implement automatic
+    // discovery, then we need a way to mitigate the possibility of creating a source file and
+    // having it not get run because of a typo. e.g. we should make sure that all files in the
+    // source directory get used either as test roots or test dependencies.
     let programs = [
-        ProgramInputs::new("trivial", "trivial.c")?,
-        ProgramInputs::new("link_args", "link_args.c")?,
-        ProgramInputs::new("global_vars", "global_definitions.c")?,
-        ProgramInputs::new("data", "data.c")?,
-        ProgramInputs::new("weak-vars", "weak-vars.c")?,
-        ProgramInputs::new("weak-vars-archive", "weak-vars-archive.c")?,
-        ProgramInputs::new("weak-fns", "weak-fns.c")?,
-        ProgramInputs::new("weak-fns-archive", "weak-fns-archive.c")?,
-        ProgramInputs::new("init_test", "init_test.c")?,
-        ProgramInputs::new("ifunc", "ifunc.c")?,
-        ProgramInputs::new("internal-syms", "internal-syms.c")?,
-        ProgramInputs::new("tls", "tls.c")?,
-        ProgramInputs::new("old_init", "old_init.c")?,
-        ProgramInputs::new("custom_section", "custom_section.c")?,
-        ProgramInputs::new("stack_alignment", "stack_alignment.s")?,
-        ProgramInputs::new("got_ref_to_local", "got_ref_to_local.c")?,
-        ProgramInputs::new("local_symbol_refs", "local_symbol_refs.s")?,
-        ProgramInputs::new("archive_activation", "archive_activation.c")?,
-        ProgramInputs::new("common_section", "common_section.c")?,
-        ProgramInputs::new("string_merging", "string_merging.c")?,
-        ProgramInputs::new("comments", "comments.c")?,
-        ProgramInputs::new("eh_frame", "eh_frame.c")?,
-        ProgramInputs::new("pie", "pie.c")?,
-        ProgramInputs::new("trivial_asm", "trivial_asm.s")?,
-        ProgramInputs::new("libc-integration", "libc-integration.c")?,
-        ProgramInputs::new("rust-integration", "rust-integration.rs")?,
-        ProgramInputs::new("rust-integration-dynamic", "rust-integration-dynamic.rs")?,
+        ProgramInputs::new("trivial.c")?,
+        ProgramInputs::new("link_args.c")?,
+        ProgramInputs::new("global_definitions.c")?,
+        ProgramInputs::new("data.c")?,
+        ProgramInputs::new("weak-vars.c")?,
+        ProgramInputs::new("weak-vars-archive.c")?,
+        ProgramInputs::new("weak-fns.c")?,
+        ProgramInputs::new("weak-fns-archive.c")?,
+        ProgramInputs::new("init_test.c")?,
+        ProgramInputs::new("ifunc.c")?,
+        ProgramInputs::new("internal-syms.c")?,
+        ProgramInputs::new("tls.c")?,
+        ProgramInputs::new("old_init.c")?,
+        ProgramInputs::new("custom_section.c")?,
+        ProgramInputs::new("stack_alignment.s")?,
+        ProgramInputs::new("got_ref_to_local.c")?,
+        ProgramInputs::new("local_symbol_refs.s")?,
+        ProgramInputs::new("archive_activation.c")?,
+        ProgramInputs::new("common_section.c")?,
+        ProgramInputs::new("string_merging.c")?,
+        ProgramInputs::new("comments.c")?,
+        ProgramInputs::new("eh_frame.c")?,
+        ProgramInputs::new("pie.c")?,
+        ProgramInputs::new("trivial_asm.s")?,
+        ProgramInputs::new("libc-integration.c")?,
+        ProgramInputs::new("rust-integration.rs")?,
+        ProgramInputs::new("rust-integration-dynamic.rs")?,
     ];
 
     let linkers = [
