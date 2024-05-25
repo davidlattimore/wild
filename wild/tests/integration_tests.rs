@@ -26,6 +26,7 @@ use std::fmt::Display;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Instant;
 use wait_timeout::ChildExt;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
@@ -425,6 +426,12 @@ impl<'a> Display for Program<'a> {
             self.link_output.binary.display(),
             self.link_output.command
         )
+    }
+}
+
+impl Display for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.name.fmt(f)
     }
 }
 
@@ -1140,6 +1147,8 @@ fn integration_test() -> Result {
 
     setup_wild_ld_symlink()?;
 
+    let print_timing = std::env::var("WILD_TEST_PRINT_TIMING").is_ok();
+
     for program_inputs in &programs {
         let filename = &program_inputs.source_file;
         let configs = parse_configs(&src_path(filename))
@@ -1149,18 +1158,36 @@ fn integration_test() -> Result {
                 .iter()
                 .filter(|linker| config.is_linker_enabled(**linker))
                 .map(|linker| {
-                    program_inputs.build(*linker, &config).with_context(|| {
+                    let start = Instant::now();
+                    let result = program_inputs.build(*linker, &config).with_context(|| {
                         format!(
                             "Failed to build program `{program_inputs}` \
                                     with linker `{linker}` config {}",
                             config.name
                         )
-                    })
+                    });
+                    let is_cache_hit = result
+                        .as_ref()
+                        .is_ok_and(|p| p.link_output.command.can_skip);
+                    if !is_cache_hit && print_timing {
+                        println!(
+                            "{program_inputs}-{config} with {linker} took {} ms",
+                            start.elapsed().as_millis()
+                        );
+                    }
+                    result
                 })
                 .collect::<Result<Vec<_>>>()?;
 
+            let start = Instant::now();
             diff_shared_objects(&config, &programs)?;
             diff_executables(&config, &programs)?;
+            if print_timing {
+                println!(
+                    "{program_inputs}-{config} diff took {} ms",
+                    start.elapsed().as_millis()
+                );
+            }
 
             for program in programs {
                 program
