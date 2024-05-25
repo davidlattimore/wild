@@ -57,6 +57,9 @@ where
         id: &tracing::span::Id,
         ctx: tracing_subscriber::layer::Context<S>,
     ) {
+        if *attributes.metadata().level() > tracing::Level::INFO {
+            return;
+        }
         let span = ctx.span(id).expect("valid span ID");
 
         let mut formatted = ValuesFormatter::default();
@@ -71,6 +74,10 @@ where
 
     fn on_close(&self, id: tracing::span::Id, ctx: tracing_subscriber::layer::Context<S>) {
         let span = ctx.span(&id).expect("valid span ID");
+        let metadata = span.metadata();
+        if *metadata.level() > tracing::Level::INFO {
+            return;
+        }
 
         let parent_child_count = span
             .parent()
@@ -87,7 +94,7 @@ where
 
         if let Some(data) = span.extensions().get::<Data>() {
             let scope_depth = span.scope().count() - 1;
-            let name = span.metadata().name();
+            let name = metadata.name();
             let ms = data.start.elapsed().as_secs_f64() * 1000.0;
             let indent = Indent {
                 scope_depth,
