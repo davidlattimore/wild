@@ -10,6 +10,7 @@
 //#Object:old_init0.s
 //#Object:old_init1.s
 //#Object:exit.c
+//#EnableLinker:lld
 
 #include "exit.h"
 

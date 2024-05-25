@@ -1,6 +1,7 @@
 //#Object:exit.c
 //#ExpectSym: _start .text
 //#ExpectSym: exit_syscall .text
+//#EnableLinker:lld
 
 #include "exit.h"
 

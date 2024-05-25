@@ -21,6 +21,7 @@ use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Display;
 use std::path::Path;
 use std::path::PathBuf;
@@ -59,6 +60,7 @@ struct ThirdPartyLinker {
     name: &'static str,
     gcc_name: &'static str,
     path: &'static str,
+    enabled_by_default: bool,
 }
 
 impl Linker {
@@ -86,6 +88,20 @@ impl Linker {
 
     fn is_wild(&self) -> bool {
         *self == Linker::Wild
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            Linker::Wild => "wild",
+            Linker::ThirdParty(l) => l.name,
+        }
+    }
+
+    fn enabled_by_default(&self) -> bool {
+        match self {
+            Linker::Wild => true,
+            Linker::ThirdParty(l) => l.enabled_by_default,
+        }
     }
 }
 
@@ -131,9 +147,22 @@ struct Config {
     linker_args: ArgumentSet,
     compiler_args: ArgumentSet,
     diff_ignore: Vec<String>,
+    skip_linkers: HashSet<String>,
+    enabled_linkers: HashSet<String>,
     section_equiv: Vec<(String, String)>,
     is_abstract: bool,
     deps: Vec<Dep>,
+}
+impl Config {
+    fn is_linker_enabled(&self, linker: Linker) -> bool {
+        if self.skip_linkers.contains(linker.name()) {
+            return false;
+        }
+        if self.enabled_linkers.contains(linker.name()) {
+            return true;
+        }
+        linker.enabled_by_default()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -210,6 +239,8 @@ impl Default for Config {
             linker_args: ArgumentSet::default_for_linking(),
             compiler_args: ArgumentSet::default_for_compiling(),
             diff_ignore: Default::default(),
+            skip_linkers: Default::default(),
+            enabled_linkers: Default::default(),
             section_equiv: Default::default(),
             is_abstract: false,
             deps: Default::default(),
@@ -285,6 +316,12 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                     .contains_strings
                     .push(arg.trim().to_owned()),
                 "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
+                "SkipLinker" => {
+                    config.skip_linkers.insert(arg.trim().to_owned());
+                }
+                "EnableLinker" => {
+                    config.enabled_linkers.insert(arg.trim().to_owned());
+                }
                 "SecEquiv" => config.section_equiv.push(
                     arg.trim()
                         .split_once('=')
@@ -972,6 +1009,13 @@ fn integration_test() -> Result {
             name: "ld",
             gcc_name: "bfd",
             path: "/usr/bin/ld",
+            enabled_by_default: true,
+        }),
+        Linker::ThirdParty(ThirdPartyLinker {
+            name: "lld",
+            gcc_name: "lld",
+            path: "/usr/bin/ld.lld-15",
+            enabled_by_default: false,
         }),
         Linker::Wild,
     ];
@@ -985,6 +1029,7 @@ fn integration_test() -> Result {
         for config in configs {
             let programs = linkers
                 .iter()
+                .filter(|linker| config.is_linker_enabled(**linker))
                 .map(|linker| {
                     program_inputs.build(*linker, &config).with_context(|| {
                         format!(

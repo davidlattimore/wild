@@ -2,6 +2,7 @@
 //#Object:common_section0.c
 //#Object:common_section1.c
 //#Object:exit.c
+//#EnableLinker:lld
 
 #include "exit.h"
 

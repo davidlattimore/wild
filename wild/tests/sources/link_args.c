@@ -1,6 +1,7 @@
 //#Config:strip-all
 //#Object:exit.c
 //#LinkArgs:--strip-all
+//#EnableLinker:lld
 
 #include "exit.h"
 

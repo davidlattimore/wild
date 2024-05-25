@@ -1,5 +1,6 @@
 //#Object:global_references.c
 //#Object:exit.c
+//#EnableLinker:lld
 
 int global_value = 38;
 int global_values[4] = {1, 2, 3, 4};

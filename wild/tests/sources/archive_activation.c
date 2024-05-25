@@ -3,6 +3,7 @@
 //#Archive:archive_activation1.c
 //#Archive:exit.c
 //#Archive:empty.a
+//#EnableLinker:lld
 
 #include "exit.h"
 

@@ -1,4 +1,5 @@
 //#Object:exit.c
+//#EnableLinker:lld
 
 #include "exit.h"
 #include <stddef.h>
