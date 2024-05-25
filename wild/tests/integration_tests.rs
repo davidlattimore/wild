@@ -315,47 +315,6 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
     Ok(configs)
 }
 
-#[derive(Default)]
-struct FileOverrides {
-    compiler_args: Option<Vec<String>>,
-}
-
-impl FileOverrides {
-    fn from_source(src_filename: &Path, placement: FilePlacement) -> Result<Self> {
-        if matches!(placement, FilePlacement::Primary) {
-            return Ok(Default::default());
-        }
-        let source = std::fs::read_to_string(src_filename)
-            .with_context(|| format!("Failed to read {}", src_filename.display()))?;
-
-        let mut compiler_args = None;
-        for line in source.lines() {
-            if let Some(rest) = line.trim().strip_prefix("//#") {
-                let (directive, arg) = rest.split_once(':').context("Missing arg")?;
-                let arg = arg.trim();
-                match directive {
-                    "OverrideCompArgs" => {
-                        compiler_args = Some(
-                            arg.split(' ')
-                                .filter(|a| !a.is_empty())
-                                .map(str::to_owned)
-                                .collect(),
-                        )
-                    }
-                    other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
-                }
-            }
-        }
-        Ok(Self { compiler_args })
-    }
-}
-
-#[derive(Clone, Copy)]
-enum FilePlacement {
-    Primary,
-    Secondary,
-}
-
 impl ProgramInputs {
     fn new(source_file: &'static str) -> Result<Self> {
         std::fs::create_dir_all(build_dir())?;
@@ -369,7 +328,6 @@ impl ProgramInputs {
                 input_type: InputType::Object,
             },
             config,
-            FilePlacement::Primary,
             linker,
         );
         let inputs = std::iter::once(primary)
@@ -377,7 +335,7 @@ impl ProgramInputs {
                 config
                     .deps
                     .iter()
-                    .map(|dep| build_linker_input(dep, config, FilePlacement::Secondary, linker)),
+                    .map(|dep| build_linker_input(dep, config, linker)),
             )
             .collect::<Result<Vec<_>>>()?;
 
@@ -455,17 +413,12 @@ impl LinkerInput {
 }
 
 /// Creates a linker input from a source file. This will be either an object file or an archive.
-fn build_linker_input(
-    dep: &Dep,
-    config: &Config,
-    placement: FilePlacement,
-    linker: Linker,
-) -> Result<LinkerInput> {
+fn build_linker_input(dep: &Dep, config: &Config, linker: Linker) -> Result<LinkerInput> {
     let src_path = src_path(&dep.filename);
     if dep.filename.ends_with(".a") {
         return Ok(LinkerInput::new(src_path));
     }
-    let obj_path = build_obj(dep, config, placement)?;
+    let obj_path = build_obj(dep, config, dep.input_type)?;
 
     match dep.input_type {
         InputType::Archive => {
@@ -495,7 +448,7 @@ enum CompilerKind {
 }
 
 /// Builds some C source and returns the path to the object file.
-fn build_obj(dep: &Dep, config: &Config, placement: FilePlacement) -> Result<PathBuf> {
+fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBuf> {
     let src_path = src_path(&dep.filename);
     let extension = src_path
         .extension()
@@ -538,15 +491,13 @@ fn build_obj(dep: &Dep, config: &Config, placement: FilePlacement) -> Result<Pat
                 .arg("+nightly")
                 .args(["-C", "linker=clang"])
                 .args(["-C", &format!("link-arg=--ld-path={wild}")]);
+            if input_type == InputType::SharedObject {
+                command.arg("--crate-type").arg("cdylib");
+            }
         }
     }
     command.arg(&src_path);
-    let override_parameters = FileOverrides::from_source(&src_path, placement)?;
-    if let Some(args) = override_parameters.compiler_args.as_ref() {
-        command.args(args);
-    } else {
-        command.args(&config.compiler_args.args);
-    }
+    command.args(&config.compiler_args.args);
     let status = command.status()?;
     if !status.success() {
         bail!("Compilation failed");

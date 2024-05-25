@@ -1,5 +1,3 @@
-//#OverrideCompArgs:--crate-type cdylib
-
 use std::cell::Cell;
 
 #[no_mangle]
