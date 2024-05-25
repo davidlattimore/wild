@@ -977,9 +977,10 @@ impl PltEntry {
                 0xf2, 0xe9, 0, 0, 0, 0,    // bnd jmp {plt[0]}(%rip)
                 0x90, // nop
             ];
-            if plt_entry[..5] == PLT_ENTRY_TEMPLATE[..5]
-                && plt_entry[9..11] == PLT_ENTRY_TEMPLATE[9..11]
-            {
+            // Note: Some variants use jmp instead of bnd jmp, then a different padding instruction.
+            // Because we use the index that gets pushed, we ignore the bytes of the later
+            // instructions, so that we support these variants.
+            if plt_entry[..5] == PLT_ENTRY_TEMPLATE[..5] {
                 let index = u32::from_le_bytes(*plt_entry[5..].first_chunk::<4>().unwrap());
                 return Some(PltEntry::GotIndex(index));
             }
@@ -1005,6 +1006,35 @@ impl PltEntry {
                     (plt_base + plt_offset + RIP_OFFSET as u64).wrapping_add(offset),
                 ));
             }
+        }
+
+        {
+            const PLT_ENTRY_TEMPLATE: &[u8; PLT_ENTRY_LENGTH] = &[
+                0x41, 0xbb, 0, 0, 0, 0, // mov $X, %r11d
+                0xff, 0x25, 0, 0, 0, 0, // jmp indirect relative
+                0xcc, 0xcc, 0xcc, 0xcc, // int3 x 4
+            ];
+            if plt_entry[..2] == PLT_ENTRY_TEMPLATE[..2]
+                && plt_entry[6..8] == PLT_ENTRY_TEMPLATE[6..8]
+                && plt_entry[12..16] == PLT_ENTRY_TEMPLATE[12..16]
+            {
+                const RIP_OFFSET: usize = 12;
+                let offset = u64::from(u32::from_le_bytes(
+                    *plt_entry[RIP_OFFSET - 4..].first_chunk::<4>().unwrap(),
+                ));
+                return Some(PltEntry::DerefJmp(
+                    (plt_base + plt_offset + RIP_OFFSET as u64).wrapping_add(offset),
+                ));
+            }
+        }
+
+        // endbr, jmp indirect relative
+        let prefix = &[0xf3, 0x0f, 0x1e, 0xfa, 0xff, 0x25];
+        if let Some(rest) = plt_entry.strip_prefix(prefix) {
+            let offset = u64::from(u32::from_le_bytes(*rest.first_chunk::<4>().unwrap()));
+            return Some(PltEntry::DerefJmp(
+                (plt_base + plt_offset + prefix.len() as u64 + 4).wrapping_add(offset),
+            ));
         }
 
         None
