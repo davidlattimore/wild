@@ -967,94 +967,6 @@ impl Clone for LinkCommand {
     }
 }
 
-#[test]
-fn integration_test() -> Result {
-    // We could potentially just discover the source files, but having a hand-written ordering is
-    // nice, since it means we can run the more basic tests first. If we do ever implement automatic
-    // discovery, then we need a way to mitigate the possibility of creating a source file and
-    // having it not get run because of a typo. e.g. we should make sure that all files in the
-    // source directory get used either as test roots or test dependencies.
-    let programs = [
-        ProgramInputs::new("trivial.c")?,
-        ProgramInputs::new("link_args.c")?,
-        ProgramInputs::new("global_definitions.c")?,
-        ProgramInputs::new("data.c")?,
-        ProgramInputs::new("weak-vars.c")?,
-        ProgramInputs::new("weak-vars-archive.c")?,
-        ProgramInputs::new("weak-fns.c")?,
-        ProgramInputs::new("weak-fns-archive.c")?,
-        ProgramInputs::new("init_test.c")?,
-        ProgramInputs::new("ifunc.c")?,
-        ProgramInputs::new("internal-syms.c")?,
-        ProgramInputs::new("tls.c")?,
-        ProgramInputs::new("old_init.c")?,
-        ProgramInputs::new("custom_section.c")?,
-        ProgramInputs::new("stack_alignment.s")?,
-        ProgramInputs::new("got_ref_to_local.c")?,
-        ProgramInputs::new("local_symbol_refs.s")?,
-        ProgramInputs::new("archive_activation.c")?,
-        ProgramInputs::new("common_section.c")?,
-        ProgramInputs::new("string_merging.c")?,
-        ProgramInputs::new("comments.c")?,
-        ProgramInputs::new("eh_frame.c")?,
-        ProgramInputs::new("pie.c")?,
-        ProgramInputs::new("trivial_asm.s")?,
-        ProgramInputs::new("libc-integration.c")?,
-        ProgramInputs::new("rust-integration.rs")?,
-        ProgramInputs::new("rust-integration-dynamic.rs")?,
-    ];
-
-    let linkers = [
-        Linker::ThirdParty(ThirdPartyLinker {
-            name: "ld",
-            gcc_name: "bfd",
-            path: "/usr/bin/ld",
-            enabled_by_default: true,
-        }),
-        Linker::ThirdParty(ThirdPartyLinker {
-            name: "lld",
-            gcc_name: "lld",
-            path: "/usr/bin/ld.lld-15",
-            enabled_by_default: false,
-        }),
-        Linker::Wild,
-    ];
-
-    setup_wild_ld_symlink()?;
-
-    for program_inputs in &programs {
-        let filename = &program_inputs.source_file;
-        let configs = parse_configs(&src_path(filename))
-            .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
-        for config in configs {
-            let programs = linkers
-                .iter()
-                .filter(|linker| config.is_linker_enabled(**linker))
-                .map(|linker| {
-                    program_inputs.build(*linker, &config).with_context(|| {
-                        format!(
-                            "Failed to build program `{program_inputs}` \
-                                    with linker `{linker}` config {}",
-                            config.name
-                        )
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
-
-            diff_shared_objects(&config, &programs)?;
-            diff_executables(&config, &programs)?;
-
-            for program in programs {
-                program
-                    .run()
-                    .with_context(|| format!("Failed to run program. {program}"))?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 fn diff_shared_objects(instructions: &Config, programs: &[Program]) -> Result {
     // All our programs should have the same number of shared objects and they should be in the same
     // order. We use this to group shared objects at the corresponding index so that we can then
@@ -1164,5 +1076,93 @@ fn setup_wild_ld_symlink() -> Result {
             )
         })?;
     }
+    Ok(())
+}
+
+#[test]
+fn integration_test() -> Result {
+    // We could potentially just discover the source files, but having a hand-written ordering is
+    // nice, since it means we can run the more basic tests first. If we do ever implement automatic
+    // discovery, then we need a way to mitigate the possibility of creating a source file and
+    // having it not get run because of a typo. e.g. we should make sure that all files in the
+    // source directory get used either as test roots or test dependencies.
+    let programs = [
+        ProgramInputs::new("trivial.c")?,
+        ProgramInputs::new("link_args.c")?,
+        ProgramInputs::new("global_definitions.c")?,
+        ProgramInputs::new("data.c")?,
+        ProgramInputs::new("weak-vars.c")?,
+        ProgramInputs::new("weak-vars-archive.c")?,
+        ProgramInputs::new("weak-fns.c")?,
+        ProgramInputs::new("weak-fns-archive.c")?,
+        ProgramInputs::new("init_test.c")?,
+        ProgramInputs::new("ifunc.c")?,
+        ProgramInputs::new("internal-syms.c")?,
+        ProgramInputs::new("tls.c")?,
+        ProgramInputs::new("old_init.c")?,
+        ProgramInputs::new("custom_section.c")?,
+        ProgramInputs::new("stack_alignment.s")?,
+        ProgramInputs::new("got_ref_to_local.c")?,
+        ProgramInputs::new("local_symbol_refs.s")?,
+        ProgramInputs::new("archive_activation.c")?,
+        ProgramInputs::new("common_section.c")?,
+        ProgramInputs::new("string_merging.c")?,
+        ProgramInputs::new("comments.c")?,
+        ProgramInputs::new("eh_frame.c")?,
+        ProgramInputs::new("pie.c")?,
+        ProgramInputs::new("trivial_asm.s")?,
+        ProgramInputs::new("libc-integration.c")?,
+        ProgramInputs::new("rust-integration.rs")?,
+        ProgramInputs::new("rust-integration-dynamic.rs")?,
+    ];
+
+    let linkers = [
+        Linker::ThirdParty(ThirdPartyLinker {
+            name: "ld",
+            gcc_name: "bfd",
+            path: "/usr/bin/ld",
+            enabled_by_default: true,
+        }),
+        Linker::ThirdParty(ThirdPartyLinker {
+            name: "lld",
+            gcc_name: "lld",
+            path: "/usr/bin/ld.lld-15",
+            enabled_by_default: false,
+        }),
+        Linker::Wild,
+    ];
+
+    setup_wild_ld_symlink()?;
+
+    for program_inputs in &programs {
+        let filename = &program_inputs.source_file;
+        let configs = parse_configs(&src_path(filename))
+            .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
+        for config in configs {
+            let programs = linkers
+                .iter()
+                .filter(|linker| config.is_linker_enabled(**linker))
+                .map(|linker| {
+                    program_inputs.build(*linker, &config).with_context(|| {
+                        format!(
+                            "Failed to build program `{program_inputs}` \
+                                    with linker `{linker}` config {}",
+                            config.name
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            diff_shared_objects(&config, &programs)?;
+            diff_executables(&config, &programs)?;
+
+            for program in programs {
+                program
+                    .run()
+                    .with_context(|| format!("Failed to run program. {program}"))?;
+            }
+        }
+    }
+
     Ok(())
 }
