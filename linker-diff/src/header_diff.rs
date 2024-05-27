@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
-enum Converter {
+pub(crate) enum Converter {
     None,
     SectionAddress,
     DynSymOffset,
@@ -146,11 +146,21 @@ fn symbol_with_address(obj: &Object, address: u64, allow_empty: bool) -> Option<
 }
 
 pub(crate) fn check_file_headers(report: &mut Report, objects: &[crate::Object]) {
-    report.add_diffs(diff_fields(objects, read_file_header_fields, "file-header"))
+    report.add_diffs(diff_fields(
+        objects,
+        read_file_header_fields,
+        "file-header",
+        DiffMode::IgnoreIfAllErrors,
+    ))
 }
 
 pub(crate) fn check_dynamic_headers(report: &mut Report, objects: &[crate::Object]) {
-    report.add_diffs(diff_fields(objects, read_dynamic_fields, ".dynamic"));
+    report.add_diffs(diff_fields(
+        objects,
+        read_dynamic_fields,
+        ".dynamic",
+        DiffMode::IgnoreIfAllErrors,
+    ));
 }
 
 pub(crate) fn report_section_diffs(report: &mut Report, objects: &[Object]) {
@@ -193,6 +203,7 @@ pub(crate) fn report_section_diffs(report: &mut Report, objects: &[Object]) {
                 Ok(values)
             },
             &table_name,
+            DiffMode::IgnoreIfAllErrors,
         ));
     }
 }
@@ -220,23 +231,29 @@ fn section_or_equiv<'data, 'file: 'data>(
     None
 }
 
-fn diff_fields(
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DiffMode {
+    Normal,
+    IgnoreIfAllErrors,
+}
+
+pub(crate) fn diff_fields(
     objects: &[Object<'_>],
     get_fields_fn: impl Fn(&Object<'_>) -> Result<FieldValues>,
     table_name: &str,
+    diff_mode: DiffMode,
 ) -> Vec<Diff> {
-    let dynamic_objects = objects
+    let field_values = objects
         .iter()
         .map(get_fields_fn)
         .collect::<Vec<Result<FieldValues>>>();
-    if dynamic_objects.iter().all(|d| d.is_err()) {
-        // All errors, so we're probably not expected to have a .dynamic section for this file.
+    if diff_mode == DiffMode::IgnoreIfAllErrors && field_values.iter().all(|d| d.is_err()) {
         return vec![];
     }
     let mut ok = Vec::new();
     let mut errors = Vec::new();
     let mut has_errors = false;
-    for d in dynamic_objects {
+    for d in field_values {
         match d {
             Ok(o) => {
                 ok.push(o);
@@ -276,12 +293,12 @@ fn diff_fields(
 }
 
 #[derive(Default)]
-struct FieldValues {
+pub(crate) struct FieldValues {
     values: HashMap<Cow<'static, str>, Vec<String>>,
 }
 
 impl FieldValues {
-    fn insert(
+    pub(crate) fn insert(
         &mut self,
         key: &'static str,
         value: impl Into<u64>,
@@ -293,6 +310,10 @@ impl FieldValues {
             .entry(Cow::Borrowed(key))
             .or_default()
             .push(converter.convert(value, obj));
+    }
+
+    pub(crate) fn insert_string_owned(&mut self, key: String, value: String) {
+        self.values.entry(Cow::Owned(key)).or_default().push(value);
     }
 
     fn insert_string(&mut self, key: &'static str, value: String) {

@@ -29,6 +29,7 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 mod asm_diff;
+mod eh_frame_diff;
 mod gnu_hash;
 mod header_diff;
 pub(crate) mod section_map;
@@ -259,6 +260,7 @@ impl Report {
         header_diff::check_file_headers(self, objects);
         asm_diff::report_function_diffs(self, objects);
         header_diff::report_section_diffs(self, objects);
+        eh_frame_diff::report_diffs(self, objects);
     }
 
     fn add_diff(&mut self, diff: Diff) {
