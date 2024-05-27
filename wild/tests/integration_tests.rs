@@ -1129,6 +1129,12 @@ fn integration_test() -> Result {
             path: "/usr/bin/ld.lld-15",
             enabled_by_default: false,
         }),
+        Linker::ThirdParty(ThirdPartyLinker {
+            name: "mold",
+            gcc_name: "mold",
+            path: "/usr/local/bin/mold",
+            enabled_by_default: false,
+        }),
         Linker::Wild,
     ];
 

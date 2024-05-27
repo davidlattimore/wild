@@ -57,6 +57,11 @@ pub(crate) fn report_function_diffs(report: &mut Report, objects: &[Object]) {
                     if report.should_ignore(&diff_key_for_symbol(name)) {
                         continue;
                     }
+                    // Mold creates symbols for PLT and GOT. This is neat, but the other linkers
+                    // don't do this, so we ignore them.
+                    if name.ends_with(b"$plt") || name.ends_with(b"$pltgot") {
+                        continue;
+                    }
                     all_symbols.insert(name);
                 }
             }
