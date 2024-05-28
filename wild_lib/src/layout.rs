@@ -114,6 +114,7 @@ pub fn compute<'data>(
         &output_sections,
         &mut resolutions_by_file,
     )?;
+    crate::gc_stats::maybe_write_gc_stats(&file_layouts, symbol_db.args)?;
 
     Ok(Layout {
         symbol_db,

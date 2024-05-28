@@ -36,6 +36,13 @@ pub(crate) struct Args {
     pub(crate) hash_style: Option<HashStyle>,
     pub(crate) should_write_eh_frame_hdr: bool,
     pub(crate) write_trace: bool,
+
+    /// If set, GC stats will be written to the specified filename.
+    pub(crate) write_gc_stats: Option<PathBuf>,
+
+    /// If set and we're writing GC stats, then ignore any input files that contain any of the
+    /// specified substrings.
+    pub(crate) gc_stats_ignore: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +136,8 @@ impl Args {
         let mut version_script_path = None;
         let mut debug_address = None;
         let mut eh_frame_hdr = false;
+        let mut write_gc_stats = None;
+        let mut gc_stats_ignore = Vec::new();
         // Lazy binding isn't used so much these days, since it makes things less secure. It adds
         // quite a bit of complexity and we don't properly support it. We may eventually drop
         // support completely.
@@ -230,6 +239,10 @@ impl Args {
                 write_layout = true;
             } else if arg == "--write-trace" {
                 write_trace = true;
+            } else if let Some(rest) = arg.strip_prefix("--write-gc-stats=") {
+                write_gc_stats = Some(PathBuf::from(rest));
+            } else if let Some(rest) = arg.strip_prefix("--gc-stats-ignore=") {
+                gc_stats_ignore.push(rest.to_owned());
             } else if let Some(rest) = arg.strip_prefix("--debug-address=") {
                 debug_address = Some(parse_number(rest).context("Invalid --debug-address")?);
             } else if let Some(rest) = arg.strip_prefix("--debug-fuel=") {
@@ -288,6 +301,8 @@ impl Args {
             write_trace,
             hash_style,
             should_write_eh_frame_hdr: eh_frame_hdr,
+            write_gc_stats,
+            gc_stats_ignore,
         })
     }
 
