@@ -58,9 +58,21 @@ impl Layout {
 }
 
 pub fn layout_path(base_path: &Path) -> PathBuf {
-    let mut new_extension = base_path.extension().unwrap_or_default().to_owned();
-    new_extension.push(".layout");
-    base_path.with_extension(new_extension)
+    // We always want to append, not use with_extension, since we don't want to remove any existing
+    // extension, otherwise we'd likely get collisions.
+    let mut s = base_path.as_os_str().to_owned();
+    s.push(".layout");
+    PathBuf::from(s)
+}
+
+impl std::fmt::Display for InputFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.path.display().fmt(f)?;
+        if let Some(e) = self.archive_entry.as_ref() {
+            write!(f, " @ {}", String::from_utf8_lossy(&e.identifier))?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
