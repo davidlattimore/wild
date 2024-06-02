@@ -43,6 +43,8 @@ pub(crate) struct Args {
     /// If set and we're writing GC stats, then ignore any input files that contain any of the
     /// specified substrings.
     pub(crate) gc_stats_ignore: Vec<String>,
+
+    pub(crate) verbose_gc_stats: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +140,7 @@ impl Args {
         let mut eh_frame_hdr = false;
         let mut write_gc_stats = None;
         let mut gc_stats_ignore = Vec::new();
+        let mut verbose_gc_stats = false;
         // Lazy binding isn't used so much these days, since it makes things less secure. It adds
         // quite a bit of complexity and we don't properly support it. We may eventually drop
         // support completely.
@@ -243,6 +246,8 @@ impl Args {
                 write_gc_stats = Some(PathBuf::from(rest));
             } else if let Some(rest) = arg.strip_prefix("--gc-stats-ignore=") {
                 gc_stats_ignore.push(rest.to_owned());
+            } else if arg == "--verbose-gc-stats" {
+                verbose_gc_stats = true;
             } else if let Some(rest) = arg.strip_prefix("--debug-address=") {
                 debug_address = Some(parse_number(rest).context("Invalid --debug-address")?);
             } else if let Some(rest) = arg.strip_prefix("--debug-fuel=") {
@@ -303,6 +308,7 @@ impl Args {
             should_write_eh_frame_hdr: eh_frame_hdr,
             write_gc_stats,
             gc_stats_ignore,
+            verbose_gc_stats,
         })
     }
 

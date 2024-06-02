@@ -10,8 +10,14 @@
 //! `--gc-stats-ignore=some-string`. Any files that contain `some-string` in their filename will be
 //! ignored.
 //!
-//! You can get rustc to pass arguments to the linker, like
-//! `-Clink-arg=-Wl,--write-gc-stats=/path-to-file.txt`.
+//! By default, only the stats per input file and the totals for all input files are shown. If you'd
+//! like to also see what sections are discarded, you can run with `--verbose-gc-stats`.
+//!
+//! Example usage:
+//!
+//! ```sh
+//! cargo rustc --bin rg -- -Clinker=/usr/bin/clang-15 -Clink-arg=--ld-path=wild -Clink-arg=-Wl,--write-gc-stats=/tmp/gc-stats.txt -Clink-arg=-Wl,--verbose-gc-stats
+//! ```
 
 use crate::args::Args;
 use crate::error::Result;
@@ -32,10 +38,11 @@ pub(crate) fn maybe_write_gc_stats(file_layouts: &[FileLayout], args: &Args) -> 
         .with_context(|| format!("Failed to write GC stats to `{}`", stats_file.display()))
 }
 
-struct InputFile {
+struct InputFile<'data> {
     path: PathBuf,
     kept: u64,
     discarded: u64,
+    discarded_names: Vec<&'data [u8]>,
 }
 
 fn write_gc_stats(
@@ -68,6 +75,18 @@ fn write_gc_stats(
         {
             continue;
         }
+
+        // Group by input filename. If the file is an archive (e.g. an rlib), then there can be
+        // multiple objects within it.
+        let file_record = files
+            .entry(&obj.input.file.filename)
+            .or_insert_with(|| InputFile {
+                path: obj.input.file.filename.clone(),
+                kept: 0,
+                discarded: 0,
+                discarded_names: Default::default(),
+            });
+
         let mut file_kept = 0;
         let mut file_discarded = 0;
         for (slot, section) in obj.sections.iter().zip(obj.object.sections.iter()) {
@@ -76,6 +95,11 @@ fn write_gc_stats(
                     TemporaryOutputSectionId::BuiltIn(id) => {
                         if id == output_section_id::TEXT {
                             file_discarded += section.sh_size.get(LittleEndian);
+                            if args.verbose_gc_stats {
+                                file_record
+                                    .discarded_names
+                                    .push(obj.object.section_name(section)?);
+                            }
                         }
                     }
                     _ => {}
@@ -89,15 +113,6 @@ fn write_gc_stats(
             }
         }
 
-        // Group by input filename. If the file is an archive (e.g. an rlib), then there can be
-        // multiple objects within it.
-        let file_record = files
-            .entry(&obj.input.file.filename)
-            .or_insert_with(|| InputFile {
-                path: obj.input.file.filename.clone(),
-                kept: 0,
-                discarded: 0,
-            });
         file_record.kept += file_kept;
         file_record.discarded += file_discarded;
 
@@ -129,6 +144,9 @@ fn write_gc_stats(
             Bytes(total),
             f.path.display()
         )?;
+        for section_name in &f.discarded_names {
+            writeln!(&mut out, "  {}", String::from_utf8_lossy(section_name))?;
+        }
     }
 
     let total = kept + discarded;
