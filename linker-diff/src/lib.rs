@@ -29,7 +29,6 @@ use std::ops::Range;
 use std::path::PathBuf;
 
 mod asm_diff;
-mod eh_frame_diff;
 mod gnu_hash;
 mod header_diff;
 pub(crate) mod section_map;
@@ -256,17 +255,10 @@ impl Report {
         validate_objects(self, objects, ".gnu.hash", gnu_hash::check_object);
         validate_objects(self, objects, "index", asm_diff::validate_indexes);
         validate_objects(self, objects, ".got.plt", asm_diff::validate_got_plt);
-        validate_objects(
-            self,
-            objects,
-            ".eh_frame_hdr",
-            eh_frame_diff::validate_eh_frame_hdr,
-        );
         header_diff::check_dynamic_headers(self, objects);
         header_diff::check_file_headers(self, objects);
         asm_diff::report_function_diffs(self, objects);
         header_diff::report_section_diffs(self, objects);
-        eh_frame_diff::report_diffs(self, objects);
     }
 
     fn add_diff(&mut self, diff: Diff) {
