@@ -1,6 +1,8 @@
 use crate::Result;
 use anyhow::bail;
 use anyhow::Context;
+use bytemuck::Pod;
+use bytemuck::Zeroable;
 use object::elf::ProgramHeader64;
 use object::read::elf::ProgramHeader;
 use object::LittleEndian;

@@ -330,6 +330,7 @@ name = "linker-diff"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "clap",
  "iced-x86",
  "linker-layout",
