@@ -1493,11 +1493,6 @@ fn split_value(object: &Object, instruction: &Instruction) -> Option<(iced_x86::
                     value = instruction.base_address.wrapping_add(displacement)
                         + object.address_index.load_offset;
                 }
-                // Ignore displacements relative to the stack pointer. There's probably an immediate
-                // value that's what we actually want.
-                if instruction.raw_instruction.memory_base() == Register::RSP {
-                    continue;
-                }
                 return Some((clear_displacement(instruction.raw_instruction), value));
             }
             _ => {}
