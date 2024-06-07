@@ -951,13 +951,15 @@ impl<'data> ObjectLayout<'data> {
                                     let frame_ptr =
                                         (section_resolution.address()? + offset_in_section) as i64
                                             - eh_frame_hdr_address as i64;
+                                    let frame_info_ptr = (frame_info_ptr_base + output_pos as u64)
+                                        as i64
+                                        - eh_frame_hdr_address as i64;
                                     headers_out[header_offset] = EhFrameHdrEntry {
                                         frame_ptr: i32::try_from(frame_ptr)
                                             .context("32 bit overflow in frame_ptr")?,
-                                        frame_info_ptr: i32::try_from(
-                                            frame_info_ptr_base + output_pos as u64,
-                                        )
-                                        .context("32 bit overflow when computing frame_info_ptr")?,
+                                        frame_info_ptr: i32::try_from(frame_info_ptr).context(
+                                            "32 bit overflow when computing frame_info_ptr",
+                                        )?,
                                     };
                                     header_offset += 1;
                                 }
