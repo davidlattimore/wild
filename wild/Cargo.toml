@@ -10,7 +10,7 @@ tracing = "0.1.40"
 
 [dev-dependencies]
 wait-timeout = "0.2.0"
-object = { version = "0.35.0", default-features = false, features = [
+object = { version = "0.36.0", default-features = false, features = [
     "elf",
     "read_core",
     "std",
