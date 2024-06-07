@@ -933,7 +933,8 @@ impl<'data> ObjectLayout<'data> {
                             else {
                                 bail!(".eh_frame pc-begin refers to symbol that's not defined in file");
                             };
-                            let offset_in_section = elf_symbol.st_value(e);
+                            let offset_in_section =
+                                (elf_symbol.st_value(e) as i64 + rel.r_addend.get(e)) as u64;
                             if let Some(section_resolution) =
                                 &self.section_resolutions[section_index.0]
                             {
