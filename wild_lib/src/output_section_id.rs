@@ -13,6 +13,7 @@ use core::mem::size_of;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use crate::elf::DynamicEntry;
+use crate::elf::Versym;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TemporaryOutputSectionId<'data> {
@@ -68,9 +69,11 @@ pub(crate) const DYNSYM: OutputSectionId = OutputSectionId(13);
 pub(crate) const DYNSTR: OutputSectionId = OutputSectionId(14);
 pub(crate) const RELA_DYN: OutputSectionId = OutputSectionId(15);
 pub(crate) const INTERP: OutputSectionId = OutputSectionId(16);
+pub(crate) const GNU_VERSION: OutputSectionId = OutputSectionId(17);
+pub(crate) const GNU_VERSION_R: OutputSectionId = OutputSectionId(18);
 
 /// Regular sections are sections that come from input files and can contain a mix of alignments.
-pub(crate) const NUM_GENERATED_SECTIONS: usize = 17;
+pub(crate) const NUM_GENERATED_SECTIONS: usize = 19;
 
 // Sections that need to be referenced from code. When adding new sections here, be sure to update
 // `test_constant_ids`.
@@ -377,6 +380,30 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             section_flags: elf::shf::ALLOC,
             ..SectionDetails::default()
         },
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: ".gnu.version".as_bytes(),
+            ty: elf::Sht::GnuVersym,
+            section_flags: elf::shf::ALLOC,
+            element_size: core::mem::size_of::<Versym>() as u64,
+            ..SectionDetails::default()
+        },
+        min_alignment: alignment::VERSYM,
+        link: &[DYNSYM],
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: ".gnu.version_r".as_bytes(),
+            ty: elf::Sht::GnuVerneed,
+            section_flags: elf::shf::ALLOC,
+            ..SectionDetails::default()
+        },
+        info_fn: Some(version_r_info),
+        min_alignment: alignment::VERSION_R,
+        link: &[DYNSTR],
         ..DEFAULT_DEFS
     },
     // Start of regular sections
@@ -836,6 +863,8 @@ impl<'data> OutputSections<'data> {
         cb(GNU_HASH.event());
         cb(DYNSYM.event());
         cb(DYNSTR.event());
+        cb(GNU_VERSION.event());
+        cb(GNU_VERSION_R.event());
         cb(RELA_DYN.event());
         cb(RODATA.event());
         cb(OrderEvent::SegmentStart(crate::program_segments::EH_FRAME));
@@ -1006,6 +1035,10 @@ fn symtab_info(layout: &Layout) -> u32 {
     (layout.section_part_layouts.symtab_locals.file_size / size_of::<elf::SymtabEntry>()) as u32
 }
 
+fn version_r_info(layout: &Layout) -> u32 {
+    layout.non_addressable_counts.verneed_count as u32
+}
+
 fn dynsym_info(_layout: &Layout) -> u32 {
     // For now, we're not putting anything in dynstr, so the only "local" is the null symbol.
     1
@@ -1041,6 +1074,8 @@ fn test_constant_ids() {
         (RELA_DYN, ".rela.dyn"),
         (GCC_EXCEPT_TABLE, ".gcc_except_table"),
         (INTERP, ".interp"),
+        (GNU_VERSION, ".gnu.version"),
+        (GNU_VERSION_R, ".gnu.version_r"),
         (PROGRAM_HEADERS, ".phdr"),
         (SECTION_HEADERS, ".shdr"),
         (GNU_HASH, ".gnu.hash"),

@@ -559,7 +559,7 @@ impl<'data> ResolvedObject<'data> {
     ) -> Result<Self> {
         let mut non_dynamic = None;
 
-        if obj.is_dynamic {
+        if obj.is_dynamic() {
             resolve_dynamic_symbols(
                 obj,
                 symbol_db,
@@ -868,7 +868,7 @@ pub(crate) enum ValueFlag {
 
 /// This wrapper mostly exists so that we can provide a nice Display implementation, since the Debug
 /// implementation for BitFlags is a little too verbose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct ValueFlags {
     bits: BitFlags<ValueFlag>,
 }

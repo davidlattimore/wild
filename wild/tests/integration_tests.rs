@@ -1022,10 +1022,12 @@ fn diff_files(instructions: &Config, filenames: Vec<PathBuf>, display: &dyn Disp
             "section.debug*",
             "section.stapsdt.base",
             "section.note.*",
-            "section.gnu.version*",
             // We set this to 8. GNU ld sometimes does too, but sometimes to 0.
             "section.got.entsize",
             "section.plt.got.entsize",
+            // We currently output version info when linking against the interpreter
+            // (ld-linux-x86-64.so.2). GNU ld doesn't.
+            ".dynamic.DT_VERNEEDNUM",
             // We do support this. TODO: Should definitely look into why we're seeing this missing
             // in our output.
             "section.rela.plt",

@@ -11,8 +11,10 @@ use crate::debug_assert_bail;
 use crate::elf;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
+use crate::elf::FileHeader;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
+use crate::elf::Versym;
 use crate::elf_writer;
 use crate::error::Error;
 use crate::error::Result;
@@ -51,9 +53,11 @@ use crossbeam_queue::ArrayQueue;
 use enumflags2::BitFlags;
 use object::elf::gnu_hash;
 use object::elf::Rela64;
+use object::read::elf::Dyn;
 use object::read::elf::Rela as _;
 use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym as _;
+use object::read::elf::VerdefIterator;
 use object::LittleEndian;
 use rayon::prelude::IndexedParallelIterator;
 use rayon::prelude::IntoParallelIterator;
@@ -81,6 +85,7 @@ pub fn compute<'data>(
     let mut layout_states = find_required_sections(file_states, symbol_db, &output_sections)?;
     merge_dynamic_symbol_definitions(&mut layout_states)?;
     finalise_all_sizes(symbol_db, &output_sections, &mut layout_states)?;
+    let non_addressable_counts = apply_non_addressable_indexes(&mut layout_states, symbol_db.args)?;
     let section_part_sizes =
         compute_total_section_part_sizes(&mut layout_states, &mut output_sections);
     let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections);
@@ -124,6 +129,7 @@ pub fn compute<'data>(
         section_layouts,
         file_layouts,
         output_sections,
+        non_addressable_counts,
     })
 }
 
@@ -169,6 +175,7 @@ pub struct Layout<'data> {
     pub(crate) file_layouts: Vec<FileLayout<'data>>,
     pub(crate) segment_layouts: SegmentLayouts,
     pub(crate) output_sections: OutputSections<'data>,
+    pub(crate) non_addressable_counts: NonAddressableCounts,
 }
 
 pub(crate) struct SegmentLayouts {
@@ -332,6 +339,15 @@ pub(crate) struct DynamicLayout<'data> {
     pub(crate) symbol_id_range: SymbolIdRange,
 
     pub(crate) object: &'data crate::elf::File<'data>,
+
+    /// Mapping from local symbol indexes to versions in the input file.
+    pub(crate) input_symbol_versions: &'data [Versym],
+
+    pub(crate) version_mapping: Vec<u16>,
+    pub(crate) verdef_info: Option<VerdefInfo<'data>>,
+
+    /// Whether this is the last DynamicLayout that puts content into .gnu.version_r.
+    pub(crate) is_last_verneed: bool,
 }
 
 #[derive(Debug)]
@@ -397,6 +413,10 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 &mut common.mem_sizes,
                 symbol_db.args,
             );
+        }
+        if symbol_db.args.should_output_symbol_versions() {
+            let num_dynamic_symbols = common.mem_sizes.dynsym / crate::elf::SYMTAB_ENTRY_SIZE;
+            common.mem_sizes.gnu_version = num_dynamic_symbols * crate::elf::GNU_VERSION_ENTRY_SIZE;
         }
         Ok(())
     }
@@ -523,10 +543,20 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
     fn load_symbol<'scope>(
         &mut self,
         _symbol_id: SymbolId,
-        _local_index: usize,
+        local_index: usize,
         _resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
     ) -> Result {
+        if let Some(&version_index) = self.symbol_versions.get(local_index) {
+            let version_index = version_index.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
+            if version_index > 0 {
+                *self
+                    .symbol_versions_needed
+                    .get_mut(version_index as usize - 1)
+                    .with_context(|| format!("Invalid symbol version index {version_index}"))? =
+                    true;
+            }
+        }
         Ok(())
     }
 
@@ -752,6 +782,26 @@ struct DynamicLayoutState<'data> {
     input: InputRef<'data>,
     common: CommonLayoutState<'data>,
     lib_name: &'data [u8],
+
+    /// Which symbol versions are needed. A symbol version is needed if a symbol with that version
+    /// has been loaded. The first version has index 1, so we store it at offset 0.
+    symbol_versions_needed: Vec<bool>,
+
+    /// The contents of the .gnu.version section. Maps from symbol index to symbol version index.
+    symbol_versions: &'data [Versym],
+
+    verdef_info: Option<VerdefInfo<'data>>,
+
+    non_addressable_indexes: NonAddressableIndexes,
+}
+
+pub(crate) struct VerdefInfo<'data> {
+    pub(crate) defs: VerdefIterator<'data, FileHeader>,
+    pub(crate) string_table_index: object::SectionIndex,
+
+    /// Number of symbol versions that we're going to emit. This is the number of entries in
+    /// `symbol_versions_needed` that are true. Computed after graph traversal.
+    pub(crate) version_count: u16,
 }
 
 #[derive(Clone, Copy)]
@@ -1140,6 +1190,54 @@ fn compute_total_section_part_sizes(
     total_sizes
 }
 
+/// This is similar to computing start addresses, but is used for things that aren't addressable,
+/// but which need to be unique. It's non parallel. It could potentially be run in parallel with
+/// some of the stages that run after it, that don't need access to the file states.
+#[tracing::instrument(skip_all, name = "Apply non-addressable indexes")]
+fn apply_non_addressable_indexes(
+    layout_states: &mut [FileLayoutState],
+    args: &Args,
+) -> Result<NonAddressableCounts> {
+    let mut indexes = NonAddressableIndexes {
+        gnu_version_r_index: 1,
+    };
+    let mut counts = NonAddressableCounts { verneed_count: 0 };
+    for s in layout_states.iter_mut() {
+        match s {
+            FileLayoutState::Dynamic(s) => {
+                s.apply_non_addressable_indexes(&mut indexes, &mut counts)?
+            }
+            _ => {}
+        }
+    }
+
+    // If we were going to output symbol versions, but we didn't actually use any, then we drop all
+    // versym allocations. This is partly to avoid wasting unnecessary space in the output file, but
+    // mostly in order match what GNU ld does.
+    if counts.verneed_count == 0 && args.should_output_symbol_versions() {
+        for s in layout_states {
+            match s {
+                FileLayoutState::Internal(s) => s.common.mem_sizes.gnu_version = 0,
+                FileLayoutState::Object(s) => s.state.common.mem_sizes.gnu_version = 0,
+                FileLayoutState::Dynamic(s) => s.common.mem_sizes.gnu_version = 0,
+                FileLayoutState::Epilogue(s) => s.common.mem_sizes.gnu_version = 0,
+                _ => {}
+            }
+        }
+    }
+    Ok(counts)
+}
+
+#[derive(Clone, Copy, Default)]
+struct NonAddressableIndexes {
+    gnu_version_r_index: u16,
+}
+
+pub(crate) struct NonAddressableCounts {
+    /// The number of shared objects that want to emit a verneed record.
+    pub(crate) verneed_count: u64,
+}
+
 /// Returns the starting memory address for each alignment within each segment.
 #[tracing::instrument(skip_all, name = "Compute per-alignment offsets")]
 fn starting_memory_offsets(
@@ -1182,7 +1280,9 @@ fn find_required_sections<'data>(
     workers
         .into_par_iter()
         .try_for_each(|mut worker| -> Result {
-            worker.activate(resources)?;
+            worker
+                .activate(resources)
+                .with_context(|| format!("Failed to activate {}", worker.state))?;
             let _ = resources.waiting_workers.push(worker);
             Ok(())
         })?;
@@ -1397,24 +1497,25 @@ impl<'data> FileLayoutState<'data> {
     fn finalise_sizes(&mut self, symbol_db: &SymbolDb, output_sections: &OutputSections) -> Result {
         match self {
             FileLayoutState::Object(s) => {
-                s.finalise_symbol_sizes(symbol_db)?;
                 s.finalise_sizes(symbol_db, output_sections)
-                    .with_context(|| format!("finalise_sizes failed for {s}"))?
+                    .with_context(|| format!("finalise_sizes failed for {s}"))?;
+                s.finalise_symbol_sizes(symbol_db)?;
             }
             FileLayoutState::Dynamic(s) => {
+                s.finalise_sizes()?;
                 s.finalise_symbol_sizes(symbol_db)?;
-                s.finalise_sizes()?
             }
             FileLayoutState::Internal(s) => {
+                s.finalise_sizes(symbol_db)?;
                 s.finalise_symbol_sizes(symbol_db)?;
-                s.finalise_sizes(symbol_db)?
             }
             FileLayoutState::Epilogue(s) => {
+                s.finalise_sizes(symbol_db)?;
                 s.finalise_symbol_sizes(symbol_db)?;
-                s.finalise_sizes(symbol_db)?
             }
             FileLayoutState::NotLoaded => {}
         }
+        self.validate_sizes()?;
         Ok(())
     }
 
@@ -1522,6 +1623,23 @@ impl<'data> FileLayoutState<'data> {
             Self::NotLoaded => FileLayout::NotLoaded,
         };
         Ok(file_layout)
+    }
+
+    fn validate_sizes(&self) -> Result {
+        if let Some(common) = self.common() {
+            if common.mem_sizes.gnu_version > 0 {
+                let num_dynamic_symbols = common.mem_sizes.dynsym / crate::elf::SYMTAB_ENTRY_SIZE;
+                let num_versym =
+                    common.mem_sizes.gnu_version / core::mem::size_of::<Versym>() as u64;
+                if num_versym != num_dynamic_symbols {
+                    bail!(
+                        "Object has {num_dynamic_symbols} dynamic symbols, but \
+                         has versym {num_versym} entries"
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -2210,6 +2328,10 @@ fn new_object_layout_state<'data>(
     input_state: resolution::ResolvedObject<'data>,
     output_sections: &OutputSections,
 ) -> FileLayoutState<'data> {
+    // Note, this function is called for all objects from a single thread, so don't be tempted to do
+    // significant work here. Do work when activate is called instead. Doing it there also means
+    // that we don't do the work unless the object is actually needed.
+
     let common = CommonLayoutState::new(
         input_state.file_id,
         output_sections,
@@ -2232,9 +2354,17 @@ fn new_object_layout_state<'data>(
     } else {
         FileLayoutState::Dynamic(Box::new(DynamicLayoutState {
             lib_name: input_state.input.lib_name(),
+            symbol_versions: input_state.object.versym,
             object: input_state.object,
             input: input_state.input,
             common,
+
+            // These fields are filled in properly when we activate.
+            symbol_versions_needed: Default::default(),
+
+            // These fields are filled in when we finalise sizes.
+            verdef_info: None,
+            non_addressable_indexes: Default::default(),
         }))
     }
 }
@@ -3041,6 +3171,11 @@ fn layout_section_parts(
 
 impl<'data> DynamicLayoutState<'data> {
     fn activate(&mut self, resources: &GraphResources, queue: &mut LocalWorkQueue) -> Result {
+        let dt_info = DynamicTagValues::read(self.object)?;
+        self.symbol_versions_needed = vec![false; dt_info.verdefnum as usize];
+        if let Some(soname) = dt_info.soname {
+            self.lib_name = soname;
+        }
         self.common.mem_sizes.dynamic += core::mem::size_of::<crate::elf::DynamicEntry>() as u64;
         self.common.mem_sizes.dynstr += self.lib_name.len() as u64 + 1;
         self.request_all_undefined_symbols(resources, queue)
@@ -3061,6 +3196,70 @@ impl<'data> DynamicLayoutState<'data> {
     }
 
     fn finalise_sizes(&mut self) -> Result {
+        let e = LittleEndian;
+        let mut version_count = 0;
+
+        if let Some((mut verdef_iterator, link)) = self.object.verdef.clone() {
+            let defs = verdef_iterator.clone();
+
+            let strings = self.object.sections.strings(e, self.object.data, link)?;
+            while let Some((verdef, mut aux_iterator)) = verdef_iterator.next()? {
+                let version_index = verdef.vd_ndx.get(e);
+                if version_index == 0 {
+                    bail!("Invalid version index");
+                }
+                let flags = verdef.vd_flags.get(e);
+                let is_base = (flags & object::elf::VER_FLG_BASE) != 0;
+                // Keep the base version and any versions that are referenced.
+                let needed = is_base
+                    || *self
+                        .symbol_versions_needed
+                        .get(usize::from(version_index - 1))
+                        .context("Invalid version index")?;
+                if needed {
+                    // The base version doesn't count as a version. We emit it as a Verneed, whereas
+                    // the actual versions are emitted as Vernaux.
+                    if !is_base {
+                        version_count += 1;
+                    }
+                    // Every VERDEF entry should have at least one AUX entry.
+                    let aux = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
+                    let name = aux.name(e, strings)?;
+                    self.common.mem_sizes.dynstr += name.len() as u64 + 1;
+                }
+            }
+
+            if version_count > 0 {
+                self.common.mem_sizes.gnu_version_r += core::mem::size_of::<crate::elf::Verneed>()
+                    as u64
+                    + u64::from(version_count) * core::mem::size_of::<crate::elf::Vernaux>() as u64;
+
+                self.verdef_info = Some(VerdefInfo {
+                    defs,
+                    string_table_index: link,
+                    version_count,
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    fn apply_non_addressable_indexes(
+        &mut self,
+        indexes: &mut NonAddressableIndexes,
+        counts: &mut NonAddressableCounts,
+    ) -> Result {
+        self.non_addressable_indexes = *indexes;
+        if let Some(info) = self.verdef_info.as_ref() {
+            if info.version_count > 0 {
+                counts.verneed_count += 1;
+                indexes.gnu_version_r_index = indexes
+                    .gnu_version_r_index
+                    .checked_add(info.version_count)
+                    .context("Symbol versions overflowed 2**16")?;
+            }
+        }
         Ok(())
     }
 
@@ -3072,6 +3271,8 @@ impl<'data> DynamicLayoutState<'data> {
         output_sections: &OutputSections,
         symbol_db: &SymbolDb,
     ) -> Result<DynamicLayout<'data>> {
+        let version_mapping = self.compute_version_mapping();
+
         let dynstr_start_offset =
             memory_offsets.dynstr - section_layouts.get(output_section_id::DYNSTR).mem_offset;
 
@@ -3102,6 +3303,10 @@ impl<'data> DynamicLayoutState<'data> {
             next_symbol_index += 1;
         }
 
+        let gnu_version_r_layout = section_layouts.get(output_section_id::GNU_VERSION_R);
+        let is_last_verneed = memory_offsets.gnu_version_r + self.common.mem_sizes.gnu_version_r
+            == gnu_version_r_layout.mem_offset + gnu_version_r_layout.mem_size;
+
         Ok(DynamicLayout {
             file_id: self.file_id(),
             input: self.input,
@@ -3113,7 +3318,58 @@ impl<'data> DynamicLayoutState<'data> {
             dynstr_start_offset,
             object: self.object,
             symbol_id_range: self.common.symbol_id_range,
+            input_symbol_versions: self.symbol_versions,
+            version_mapping,
+            verdef_info: self.verdef_info,
+            is_last_verneed,
         })
+    }
+
+    /// Computes a mapping from input versions to output versions.
+    fn compute_version_mapping(&self) -> Vec<u16> {
+        let mut out = vec![0; self.symbol_versions_needed.len()];
+        let mut next_output_version = self.non_addressable_indexes.gnu_version_r_index;
+        for (input_version, needed) in self.symbol_versions_needed.iter().enumerate() {
+            if *needed {
+                out[input_version] = next_output_version;
+                next_output_version += 1;
+            }
+        }
+        out
+    }
+}
+
+#[derive(Default)]
+struct DynamicTagValues<'data> {
+    verdefnum: u64,
+    soname: Option<&'data [u8]>,
+}
+
+impl<'data> DynamicTagValues<'data> {
+    fn read(file: &File<'data>) -> Result<Self> {
+        let mut values = DynamicTagValues::default();
+        let Ok(dynamic_tags) = file.dynamic_tags() else {
+            return Ok(values);
+        };
+        let e = LittleEndian;
+        for entry in dynamic_tags {
+            let value = entry.d_val(e);
+            match entry.d_tag(e) as u32 {
+                object::elf::DT_VERDEFNUM => {
+                    values.verdefnum = value;
+                }
+                object::elf::DT_SONAME => {
+                    values.soname = Some(
+                        file.symbols
+                            .strings()
+                            .get(value as u32)
+                            .map_err(|()| anyhow!("Invalid DT_SONAME 0x{value:x}"))?,
+                    );
+                }
+                _ => {}
+            }
+        }
+        Ok(values)
     }
 }
 

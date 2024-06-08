@@ -397,18 +397,14 @@ fn load_symbols_from_file<'data>(
 ) -> Result<SymbolLoadOutputs<'data>> {
     Ok(match reader {
         InputObject::Object(s) => {
-            if s.is_dynamic {
-                load_symbols(
-                    &s.object,
-                    &VersionScript::default(),
-                    resolutions,
-                    value_kinds,
-                    |_sym| ValueFlag::Dynamic.into(),
-                )?
+            if s.is_dynamic() {
+                DynamicObjectSymbolLoader.load_symbols(&s.object, resolutions, value_kinds)?
             } else {
-                load_symbols(&s.object, version_script, resolutions, value_kinds, |sym| {
-                    value_flags_from_elf_symbol(sym, args)
-                })?
+                RegularObjectSymbolLoader {
+                    args,
+                    version_script,
+                }
+                .load_symbols(&s.object, resolutions, value_kinds)?
             }
         }
         InputObject::Internal(s) => s.load_symbols(resolutions, value_kinds)?,
@@ -448,38 +444,87 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFl
     flags
 }
 
-fn load_symbols<'data>(
-    object: &crate::elf::File<'data>,
-    version_script: &VersionScript,
-    resolutions: &mut Shard<'_, SymbolId, SymbolId>,
-    value_kinds: &mut Shard<'_, SymbolId, ValueFlags>,
-    compute_value_flags: impl Fn(&crate::elf::SymtabEntry) -> ValueFlags,
-) -> Result<SymbolLoadOutputs<'data>> {
-    let e = LittleEndian;
-    let mut pending_symbols = Vec::new();
-    for ((symbol, (symbol_id, resolution)), value_kind) in object
-        .symbols
-        .iter()
-        .zip(resolutions.iter_mut())
-        .zip(value_kinds.values_mut())
-    {
-        *value_kind = compute_value_flags(symbol);
-        if symbol.is_undefined(e) {
-            continue;
-        }
-        *resolution = symbol_id;
+trait SymbolLoader {
+    fn load_symbols<'data>(
+        &self,
+        object: &crate::elf::File<'data>,
+        resolutions: &mut Shard<'_, SymbolId, SymbolId>,
+        value_kinds: &mut Shard<'_, SymbolId, ValueFlags>,
+    ) -> Result<SymbolLoadOutputs<'data>> {
+        let e = LittleEndian;
+        let mut pending_symbols = Vec::new();
+        let base_symbol_id = resolutions.start_key;
+        for ((symbol, (symbol_id, resolution)), value_kind) in object
+            .symbols
+            .iter()
+            .zip(resolutions.iter_mut())
+            .zip(value_kinds.values_mut())
+        {
+            *value_kind = self.compute_value_flags(symbol);
+            if symbol.is_undefined(e) {
+                continue;
+            }
+            *resolution = symbol_id;
 
-        if symbol.is_local() {
-            continue;
+            if symbol.is_local()
+                || self.is_hidden_version(symbol_id.offset_from(base_symbol_id), object)
+            {
+                continue;
+            }
+            let name = object.symbol_name(symbol)?;
+            *value_kind |= self.value_flags_for_name(name);
+            let pending = PendingSymbol::new(symbol_id, name);
+            pending_symbols.push(pending);
         }
-        let name = object.symbol_name(symbol)?;
-        if version_script.is_local(name) {
-            *value_kind |= ValueFlags::from(ValueFlag::DowngradeToLocal | ValueFlag::CanBypassGot);
-        }
-        let pending = PendingSymbol::new(symbol_id, name);
-        pending_symbols.push(pending);
+        Ok(SymbolLoadOutputs { pending_symbols })
     }
-    Ok(SymbolLoadOutputs { pending_symbols })
+
+    fn compute_value_flags(&self, symbol: &crate::elf::Symbol) -> ValueFlags;
+
+    /// Second phase of value flag computation. This is separate from `compute_value_flags` because
+    /// it requires the symbol name, which is slightly expensive to get, so we'd rather not get it
+    /// if we don't have to.
+    fn value_flags_for_name(&self, _name: &[u8]) -> ValueFlags {
+        Default::default()
+    }
+
+    fn is_hidden_version(&self, _symbol_index: usize, _object: &crate::elf::File) -> bool {
+        false
+    }
+}
+
+struct RegularObjectSymbolLoader<'a> {
+    args: &'a Args,
+    version_script: &'a VersionScript,
+}
+
+struct DynamicObjectSymbolLoader;
+
+impl SymbolLoader for RegularObjectSymbolLoader<'_> {
+    fn compute_value_flags(&self, symbol: &crate::elf::Symbol) -> ValueFlags {
+        value_flags_from_elf_symbol(symbol, self.args)
+    }
+
+    fn value_flags_for_name(&self, name: &[u8]) -> ValueFlags {
+        if self.version_script.is_local(name) {
+            ValueFlags::from(ValueFlag::DowngradeToLocal | ValueFlag::CanBypassGot)
+        } else {
+            Default::default()
+        }
+    }
+}
+
+impl SymbolLoader for DynamicObjectSymbolLoader {
+    fn compute_value_flags(&self, _symbol: &crate::elf::Symbol) -> ValueFlags {
+        ValueFlag::Dynamic.into()
+    }
+
+    fn is_hidden_version(&self, symbol_index: usize, object: &crate::elf::File) -> bool {
+        object
+            .versym
+            .get(symbol_index)
+            .is_some_and(|versym| versym.0.get(LittleEndian) & object::elf::VERSYM_HIDDEN != 0)
+    }
 }
 
 #[derive(Clone, Copy)]

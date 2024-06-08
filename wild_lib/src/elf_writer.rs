@@ -13,6 +13,9 @@ use crate::elf::RelocationKindInfo;
 use crate::elf::SectionHeader;
 use crate::elf::SegmentType;
 use crate::elf::SymtabEntry;
+use crate::elf::Vernaux;
+use crate::elf::Verneed;
+use crate::elf::Versym;
 use crate::elf::PLT_ENTRY_TEMPLATE;
 use crate::error::Result;
 use crate::layout::DynamicLayout;
@@ -1723,6 +1726,21 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         core::mem::size_of::<elf::SymtabEntry>() as u64
     }),
     DynamicEntryWriter::optional(
+        object::elf::DT_VERNEED,
+        |layout| layout.section_part_layouts.gnu_version_r.mem_size > 0,
+        |layout| layout.vma_of_section(output_section_id::GNU_VERSION_R),
+    ),
+    DynamicEntryWriter::optional(
+        object::elf::DT_VERNEEDNUM,
+        |layout| layout.section_part_layouts.gnu_version_r.mem_size > 0,
+        |layout| layout.non_addressable_counts.verneed_count,
+    ),
+    DynamicEntryWriter::optional(
+        object::elf::DT_VERSYM,
+        |layout| layout.section_part_layouts.gnu_version.mem_size > 0,
+        |layout| layout.vma_of_section(output_section_id::GNU_VERSION),
+    ),
+    DynamicEntryWriter::optional(
         object::elf::DT_DEBUG,
         |layout| {
             // Not sure why, but GNU ld seems to emit this for executables but not for shared
@@ -1946,20 +1964,28 @@ impl<'data> DynamicLayout<'data> {
     fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
         let mut plt_got_writer = PltGotWriter::new(layout, &mut buffers);
         let mut relocation_writer = DynamicRelocationWriter::new(true, &mut buffers);
-        let mut strtab = StrTabWriter {
+        let mut strings_out = StrTabWriter {
             next_offset: self.dynstr_start_offset,
             out: buffers.dynstr,
         };
 
-        self.write_so_name(buffers.dynamic, &mut strtab)?;
+        self.write_so_name(buffers.dynamic, &mut strings_out)?;
 
         let mut dynsym: &mut [SymtabEntry] = slice_from_all_bytes_mut(buffers.dynsym);
+        let mut versym: &mut [Versym] = slice_from_all_bytes_mut(buffers.gnu_version);
         for ((symbol_id, resolution), symbol) in layout
             .resolutions_in_range(self.symbol_id_range)
             .zip(self.object.symbols.iter())
         {
             if let Some(res) = resolution {
-                write_dynamic_symtab_entry(self.object, symbol, &mut dynsym, &mut strtab)?;
+                write_dynamic_symtab_entry(self.object, symbol, &mut dynsym, &mut strings_out)?;
+
+                write_symbol_version(
+                    self.input_symbol_versions,
+                    self.symbol_id_range.id_to_offset(symbol_id),
+                    &self.version_mapping,
+                    &mut versym,
+                )?;
 
                 plt_got_writer
                     .process_resolution(res, &mut relocation_writer)
@@ -1969,6 +1995,76 @@ impl<'data> DynamicLayout<'data> {
                             layout.symbol_db.symbol_debug(symbol_id)
                         )
                     })?;
+            }
+        }
+
+        if let Some(verdef_info) = &self.verdef_info {
+            let mut verdefs = verdef_info.defs.clone();
+            let e = LittleEndian;
+            let strings = self.object.sections.strings(
+                e,
+                self.object.data,
+                verdef_info.string_table_index,
+            )?;
+            let (ver_need, aux_bytes) = object::from_bytes_mut::<Verneed>(buffers.gnu_version_r)
+                .map_err(|_| anyhow!("Insufficient .gnu.version_r allocation"))?;
+            let next_verneed_offset = if self.is_last_verneed {
+                0
+            } else {
+                (core::mem::size_of::<Verneed>()
+                    + core::mem::size_of::<Vernaux>() * verdef_info.version_count as usize)
+                    as u32
+            };
+            ver_need.vn_version.set(e, 1);
+            ver_need.vn_cnt.set(e, verdef_info.version_count);
+            ver_need
+                .vn_aux
+                .set(e, core::mem::size_of::<Verneed>() as u32);
+            ver_need.vn_next.set(e, next_verneed_offset);
+
+            let auxes = object::slice_from_all_bytes_mut::<Vernaux>(aux_bytes)
+                .map_err(|_| anyhow!("Invalid .gnu.version_r allocation"))?;
+            let mut aux_index = 0;
+            while let Some((verdef, mut aux_iterator)) = verdefs.next()? {
+                let input_version = verdef.vd_ndx.get(e);
+                let flags = verdef.vd_flags.get(e);
+                let is_base = (flags & object::elf::VER_FLG_BASE) != 0;
+                if is_base {
+                    let aux_in = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
+                    let name = aux_in.name(e, strings)?;
+                    let name_offset = strings_out.write_str(name);
+                    ver_need.vn_file.set(e, name_offset as u32);
+                    continue;
+                }
+                if input_version == 0 {
+                    bail!("Invalid version index");
+                }
+                let output_version = self
+                    .version_mapping
+                    .get(usize::from(input_version - 1))
+                    .copied()
+                    .unwrap_or_default();
+                if output_version != 0 {
+                    // Every VERDEF entry should have at least one AUX entry.
+                    let aux_in = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
+                    let name = aux_in.name(e, strings)?;
+                    let name_offset = strings_out.write_str(name);
+                    let sysv_name_hash = object::elf::hash(name);
+                    let is_last_aux = aux_index + 1 == auxes.len();
+                    let aux_out = auxes
+                        .get_mut(aux_index)
+                        .context("Insufficient vernaux allocation")?;
+                    let vna_next = if is_last_aux {
+                        0
+                    } else {
+                        core::mem::size_of::<Vernaux>() as u32
+                    };
+                    aux_out.vna_next.set(e, vna_next);
+                    aux_out.vna_other.set(e, output_version);
+                    aux_out.vna_name.set(e, name_offset as u32);
+                    aux_out.vna_hash.set(e, sysv_name_hash);
+                    aux_index += 1;
+                }
             }
         }
 
@@ -1982,6 +2078,27 @@ impl<'data> DynamicLayout<'data> {
         dynamic_out.write(object::elf::DT_NEEDED, needed_offset)?;
         Ok(())
     }
+}
+
+fn write_symbol_version(
+    versym_in: &[Versym],
+    local_symbol_index: usize,
+    version_mapping: &[u16],
+    versym_out: &mut &mut [Versym],
+) -> Result {
+    let Some(versym) = versym_in.get(local_symbol_index) else {
+        return Ok(());
+    };
+    let input_version = versym.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
+    let output_version = if input_version == object::elf::VER_NDX_LOCAL {
+        object::elf::VER_NDX_LOCAL
+    } else {
+        version_mapping[usize::from(input_version) - 1]
+    };
+    let version_out =
+        crate::slice::take_first_mut(versym_out).context("Insufficient .gnu.version allocation")?;
+    version_out.0.set(LittleEndian, output_version);
+    Ok(())
 }
 
 fn write_dynamic_symtab_entry(
@@ -2022,6 +2139,8 @@ struct StrTabWriter<'out> {
 }
 
 impl<'out> StrTabWriter<'out> {
+    /// Writes a string to the string table. Returns the offset within the string table at which the
+    /// string was written.
     fn write_str(&mut self, str: &[u8]) -> u64 {
         let len_with_terminator = str.len() + 1;
         let lib_name_out = slice_take_prefix_mut(&mut self.out, len_with_terminator);

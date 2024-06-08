@@ -2,7 +2,13 @@
 
 //#AbstractConfig:default
 //#DiffIgnore:.got.plt
-//#DiffIgnore:.dynamic.*
+//#DiffIgnore:.dynamic.DT_PLTGOT
+//#DiffIgnore:.dynamic.DT_JMPREL
+//#DiffIgnore:.dynamic.DT_NEEDED
+//#DiffIgnore:.dynamic.DT_PLTREL
+// TODO: Figure out these flags
+//#DiffIgnore:.dynamic.DT_FLAGS
+//#DiffIgnore:.dynamic.DT_FLAGS_1
 //#DiffIgnore:asm.__sfp_handle_exceptions
 //#DiffIgnore:section.plt.entsize
 //#CompArgs:-g -ftls-model=global-dynamic

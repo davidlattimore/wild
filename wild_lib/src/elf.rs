@@ -1,8 +1,11 @@
 use crate::error::Result;
+use anyhow::anyhow;
 use anyhow::bail;
+use anyhow::Context;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
 use object::read::elf::FileHeader as _;
+use object::read::elf::ProgramHeader as _;
 use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
 use object::LittleEndian;
@@ -22,6 +25,10 @@ pub(crate) type SymtabEntry = object::elf::Sym64<LittleEndian>;
 pub(crate) type DynamicEntry = object::elf::Dyn64<LittleEndian>;
 pub(crate) type Rela = object::elf::Rela64<LittleEndian>;
 pub(crate) type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
+pub(crate) type Verneed = object::elf::Verneed<LittleEndian>;
+pub(crate) type Vernaux = object::elf::Vernaux<LittleEndian>;
+pub(crate) type Versym = object::elf::Versym<LittleEndian>;
+pub(crate) type VerdefIterator<'data> = object::read::elf::VerdefIterator<'data, FileHeader>;
 
 type SectionTable<'data> = object::read::elf::SectionTable<'data, FileHeader>;
 type SymbolTable<'data> = object::read::elf::SymbolTable<'data, FileHeader>;
@@ -32,6 +39,11 @@ pub(crate) struct File<'data> {
     /// This may be symtab or dynsym depending on the file type.
     pub(crate) symbols: SymbolTable<'data>,
     pub(crate) relocations: RelocationSections,
+    pub(crate) program_headers: &'data [ProgramHeader],
+    pub(crate) versym: &'data [Versym],
+
+    /// An iterator over the version definitions and the corresponding linked string table index.
+    pub(crate) verdef: Option<(VerdefIterator<'data>, object::SectionIndex)>,
 }
 
 impl<'data> File<'data> {
@@ -39,22 +51,49 @@ impl<'data> File<'data> {
         let header = FileHeader::parse(data)?;
         let endian = header.endian()?;
         let sections = header.sections(endian, data)?;
-        let sh_type = if is_dynamic {
-            object::elf::SHT_DYNSYM
-        } else {
-            object::elf::SHT_SYMTAB
-        };
-        let symbols = sections.symbols(endian, data, sh_type)?;
+
+        let mut symbols = SymbolTable::default();
+        let mut versym: &[Versym] = &[];
+        let mut verdef = None;
+
+        // Find all the sections that we're interested in in a single scan of the section table so
+        // as to avoid multiple scans.
+        for (section_index, section) in sections.enumerate() {
+            match section.sh_type(endian) {
+                object::elf::SHT_DYNSYM if is_dynamic => {
+                    symbols = SymbolTable::parse(endian, data, &sections, section_index, section)?;
+                }
+                object::elf::SHT_SYMTAB if !is_dynamic => {
+                    symbols = SymbolTable::parse(endian, data, &sections, section_index, section)?;
+                }
+                object::elf::SHT_GNU_VERSYM => {
+                    versym = section.data_as_array(endian, data)?;
+                }
+                object::elf::SHT_GNU_VERDEF => {
+                    verdef = section.gnu_verdef(endian, data)?;
+                }
+                _ => {}
+            }
+        }
         let relocations = if is_dynamic {
             RelocationSections::default()
         } else {
             sections.relocation_sections(endian, symbols.section())?
         };
+        let program_headers = get_entries(
+            data,
+            header.e_phoff(endian) as usize,
+            header.e_phnum(endian) as usize,
+        )
+        .context("Failed to read program headers")?;
         Ok(Self {
             data,
             sections,
             symbols,
             relocations,
+            program_headers,
+            versym,
+            verdef,
         })
     }
 
@@ -110,6 +149,43 @@ impl<'data> File<'data> {
     ) -> Result<Option<object::SectionIndex>> {
         Ok(self.symbols.symbol_section(LittleEndian, symbol, index)?)
     }
+
+    pub(crate) fn dynamic_tags(&self) -> Result<&'data [DynamicEntry]> {
+        let e = LittleEndian;
+        for header in self.program_headers {
+            if header.p_type(e) == object::elf::PT_DYNAMIC {
+                return get_entries(
+                    self.data,
+                    header.p_offset(e) as usize,
+                    header.p_filesz(e) as usize / core::mem::size_of::<DynamicEntry>(),
+                )
+                .context("Failed to read dynamic table");
+            }
+        }
+        Ok(&[])
+    }
+}
+
+/// Get some entries from `data` as a slice of some Pod type. Alignment of `T` must be 1.
+pub(crate) fn get_entries<T: object::Pod>(
+    data: &[u8],
+    offset: usize,
+    entry_count: usize,
+) -> Result<&[T]> {
+    debug_assert_eq!(core::mem::align_of::<T>(), 1);
+    if offset >= data.len() {
+        bail!("Invalid offset 0x{offset}");
+    }
+    Ok(object::slice_from_bytes(&data[offset..], entry_count)
+        .map_err(|()| {
+            anyhow!(
+                "Tried to extract 0x{:x} entries of size 0x{:x} from 0x{:x}",
+                entry_count,
+                core::mem::size_of::<T>(),
+                data.len(),
+            )
+        })?
+        .0)
 }
 
 /// The module number for TLS variables in the current executable.
@@ -168,6 +244,8 @@ pub(crate) enum Sht {
     SymtabShndx = 0x12,
     Num = 0x13,
     GnuHash = object::elf::SHT_GNU_HASH,
+    GnuVersym = object::elf::SHT_GNU_VERSYM,
+    GnuVerneed = object::elf::SHT_GNU_VERNEED,
 }
 
 #[allow(unused)]
@@ -287,6 +365,7 @@ pub(crate) const PLT_ENTRY_SIZE: u64 = PLT_ENTRY_TEMPLATE.len() as u64;
 pub(crate) const RELA_ENTRY_SIZE: u64 = 0x18;
 
 pub(crate) const SYMTAB_ENTRY_SIZE: u64 = core::mem::size_of::<SymtabEntry>() as u64;
+pub(crate) const GNU_VERSION_ENTRY_SIZE: u64 = core::mem::size_of::<Versym>() as u64;
 
 pub(crate) const SYMBOL_TYPE_MASK: u8 = 0xf;
 pub(crate) const SYMBOL_VISIBILITY_MASK: u8 = 0xf0;

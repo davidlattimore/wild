@@ -112,11 +112,15 @@ impl<'data> RegularInputObject<'data> {
         })
     }
 
+    pub(crate) fn is_dynamic(&self) -> bool {
+        self.is_dynamic
+    }
+
     /// Returns whether this input should be skipped if there are no non-weak reference to symbols
     /// it defines. This is true for archive entries and shared objects for which --as-needed is
     /// true.
     pub(crate) fn is_optional(&self) -> bool {
-        self.input.entry.is_some() || (self.is_dynamic && self.modifiers.as_needed)
+        self.input.entry.is_some() || (self.is_dynamic() && self.modifiers.as_needed)
     }
 
     fn filename(&self) -> &'data Path {

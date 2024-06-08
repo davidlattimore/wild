@@ -377,6 +377,13 @@ impl Args {
         self.debug_address
             .is_some_and(|a| address >= a && address < a + 8)
     }
+
+    pub(crate) fn should_output_symbol_versions(&self) -> bool {
+        matches!(
+            self.output_kind,
+            OutputKind::DynamicExecutable | OutputKind::SharedObject
+        )
+    }
 }
 
 fn parse_number(s: &str) -> Result<u64> {

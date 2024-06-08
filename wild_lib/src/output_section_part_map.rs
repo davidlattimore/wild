@@ -33,6 +33,8 @@ pub(crate) struct OutputSectionPartMap<T> {
     pub(crate) rela_dyn_relative: T,
     pub(crate) rela_dyn_glob_dat: T,
     pub(crate) interp: T,
+    pub(crate) gnu_version: T,
+    pub(crate) gnu_version_r: T,
 }
 
 impl<T: Default> OutputSectionPartMap<T> {
@@ -57,6 +59,8 @@ impl<T: Default> OutputSectionPartMap<T> {
             gnu_hash: Default::default(),
             dynsym: Default::default(),
             dynstr: Default::default(),
+            gnu_version: Default::default(),
+            gnu_version_r: Default::default(),
             rela_dyn_relative: Default::default(),
             rela_dyn_glob_dat: Default::default(),
             interp: Default::default(),
@@ -127,6 +131,16 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             output_section_id::DYNSTR,
             output_section_id::DYNSTR.min_alignment(),
             &self.dynstr,
+        );
+        let gnu_version = cb(
+            output_section_id::GNU_VERSION,
+            output_section_id::GNU_VERSION.min_alignment(),
+            &self.gnu_version,
+        );
+        let gnu_version_r = cb(
+            output_section_id::GNU_VERSION_R,
+            output_section_id::GNU_VERSION_R.min_alignment(),
+            &self.gnu_version_r,
         );
         let rela_dyn_relative = cb(
             output_section_id::RELA_DYN,
@@ -232,6 +246,8 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             gnu_hash,
             dynsym,
             dynstr,
+            gnu_version,
+            gnu_version_r,
             rela_dyn_relative,
             rela_dyn_glob_dat,
             interp,
@@ -304,6 +320,8 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             gnu_hash: cb(&mut self.gnu_hash, &other.gnu_hash),
             dynsym: cb(&mut self.dynsym, &other.dynsym),
             dynstr: cb(&mut self.dynstr, &other.dynstr),
+            gnu_version: cb(&mut self.gnu_version, &other.gnu_version),
+            gnu_version_r: cb(&mut self.gnu_version_r, &other.gnu_version_r),
             rela_dyn_relative: cb(&mut self.rela_dyn_relative, &other.rela_dyn_relative),
             rela_dyn_glob_dat: cb(&mut self.rela_dyn_glob_dat, &other.rela_dyn_glob_dat),
             interp: cb(&mut self.interp, &other.interp),
@@ -340,7 +358,9 @@ fn map_alignment_map<T: Default + PartialEq, U: Default>(
                 alignment,
                 cb(
                     output_section_id,
-                    max_alignment.min(alignment).max(output_section_id.min_alignment()),
+                    max_alignment
+                        .min(alignment)
+                        .max(output_section_id.min_alignment()),
                     value,
                 ),
             )
@@ -382,6 +402,8 @@ impl<T: Copy> OutputSectionPartMap<T> {
             &[self.rela_dyn_relative, self.rela_dyn_glob_dat],
         );
         update(output_section_id::INTERP, &[self.interp]);
+        update(output_section_id::GNU_VERSION, &[self.gnu_version]);
+        update(output_section_id::GNU_VERSION_R, &[self.gnu_version_r]);
         values_out.extend(self.regular.iter().map(|parts| cb(parts.raw_values())));
         debug_assert!(
             values_out.len() == values_out.capacity(),
@@ -416,6 +438,8 @@ impl<T: AddAssign + Copy + Default> OutputSectionPartMap<T> {
         self.gnu_hash += rhs.gnu_hash;
         self.dynsym += rhs.dynsym;
         self.dynstr += rhs.dynstr;
+        self.gnu_version += rhs.gnu_version;
+        self.gnu_version_r += rhs.gnu_version_r;
         self.rela_dyn_relative += rhs.rela_dyn_relative;
         self.rela_dyn_glob_dat += rhs.rela_dyn_glob_dat;
         self.interp += rhs.interp;

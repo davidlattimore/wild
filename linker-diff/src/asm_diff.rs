@@ -24,7 +24,6 @@ use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection;
 use object::ObjectSymbol;
-use object::ObjectSymbolTable as _;
 use object::RelocationTarget;
 use object::SymbolKind;
 use rayon::iter::IntoParallelIterator;
@@ -66,6 +65,14 @@ pub(crate) fn report_function_diffs(report: &mut Report, objects: &[Object]) {
                 }
             }
         }
+    }
+    // If we got an error building our index, then don't try to diff functions. We'd just get heaps
+    // of diffs due to an incomplete index.
+    if objects
+        .iter()
+        .any(|o| o.address_index.index_error.is_some())
+    {
+        return;
     }
     report.add_diffs(
         all_symbols
@@ -516,6 +523,7 @@ enum BasicResolution<'data> {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct SymbolName<'data> {
     bytes: &'data [u8],
+    version: Option<&'data [u8]>,
 }
 
 #[derive(Clone, Copy)]
@@ -526,7 +534,11 @@ enum Data<'data> {
 
 impl<'data> std::fmt::Debug for SymbolName<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", String::from_utf8_lossy(self.bytes))
+        write!(f, "{}", String::from_utf8_lossy(self.bytes))?;
+        if let Some(version) = self.version {
+            write!(f, "@{}", String::from_utf8_lossy(version))?;
+        }
+        Ok(())
     }
 }
 
@@ -540,9 +552,16 @@ pub(crate) struct AddressIndex<'data> {
     jmprel_address: Option<u64>,
     jmprel_size: Option<u64>,
     got_plt_address: Option<u64>,
+    versym_address: Option<u64>,
     dynamic_segment_address: Option<u64>,
     tls_segment_size: u64,
     load_offset: u64,
+
+    /// Version names by their index.
+    verneed: Vec<Option<&'data [u8]>>,
+
+    /// Dynamic symbol names by their index.
+    dynamic_symbol_names: Vec<SymbolName<'data>>,
 }
 
 struct FunctionDef<'data> {
@@ -564,9 +583,12 @@ impl<'data> AddressIndex<'data> {
             jmprel_address: None,
             jmprel_size: None,
             got_plt_address: None,
+            versym_address: None,
             dynamic_segment_address: None,
             tls_segment_size: 0,
+            verneed: Default::default(),
             load_offset: DEFAULT_LOAD_OFFSET,
+            dynamic_symbol_names: Default::default(),
         };
 
         if let Err(error) = info.build_indexes(object) {
@@ -582,7 +604,9 @@ impl<'data> AddressIndex<'data> {
         self.index_headers(object);
         self.address_resolutions
             .insert(0, vec![AddressResolution::Null]);
+        self.index_verneed(object)?;
         self.index_symbols(object);
+        self.index_dynamic_symbols(object)?;
         self.index_dynamic_relocations(object);
         self.index_got(object).unwrap();
         self.index_ifuncs(object)?;
@@ -601,6 +625,78 @@ impl<'data> AddressIndex<'data> {
             .push(new_resolution);
     }
 
+    fn index_verneed(&mut self, object: &ElfFile64<'data>) -> Result {
+        let e = LittleEndian;
+        let mut versions = Vec::new();
+        let maybe_verneed = object
+            .sections()
+            .find_map(|section| {
+                section
+                    .elf_section_header()
+                    .gnu_verneed(e, object.data())
+                    .transpose()
+            })
+            .transpose()?;
+        let Some((mut verneed_iterator, strings_index)) = maybe_verneed else {
+            return Ok(());
+        };
+        let strings = object
+            .elf_section_table()
+            .strings(e, object.data(), strings_index)?;
+        while let Some((_verneed, mut aux_iterator)) = verneed_iterator.next()? {
+            while let Some(aux) = aux_iterator.next()? {
+                let name = aux.name(e, strings)?;
+                let index = aux.vna_other.get(e) as usize;
+                if index >= versions.len() {
+                    versions.resize(index + 1, None);
+                }
+                versions[index] = Some(name);
+            }
+        }
+        self.verneed = versions;
+        Ok(())
+    }
+
+    fn index_dynamic_symbols(&mut self, object: &ElfFile64<'data>) -> Result {
+        let symbol_version_indexes: Option<&[u16]> = self
+            .versym_address
+            .and_then(|address| {
+                object
+                    .sections()
+                    .find(|section| section.address() == address)
+            })
+            .and_then(|section| section.data().ok())
+            .and_then(|data| object::slice_from_all_bytes(data).ok());
+        let mut dynamic_symbol_names = Vec::new();
+        let mut max_index = 0;
+        for sym in object.dynamic_symbols() {
+            let sym_index = sym.index().0;
+            max_index = max_index.max(sym_index);
+            let version = symbol_version_indexes
+                .and_then(|indexes| indexes.get(sym_index))
+                .and_then(|&ver_index| self.verneed.get(ver_index as usize).copied().flatten());
+            while dynamic_symbol_names.len() < sym_index {
+                dynamic_symbol_names.push(SymbolName {
+                    bytes: &[],
+                    version: None,
+                });
+            }
+            dynamic_symbol_names.push(SymbolName {
+                bytes: sym.name_bytes()?,
+                version,
+            });
+        }
+        if let Some(versym) = symbol_version_indexes {
+            let versym_len = versym.len();
+            let num_symbols = max_index + 1;
+            if versym_len != num_symbols {
+                bail!(".gnu.version contains {versym_len}, but .dynsym contains {num_symbols}");
+            }
+        }
+        self.dynamic_symbol_names = dynamic_symbol_names;
+        Ok(())
+    }
+
     fn index_symbols(&mut self, object: &ElfFile64<'data>) {
         let tls_segment_size = get_tls_segment_size(object);
         self.tls_segment_size = tls_segment_size;
@@ -616,8 +712,10 @@ impl<'data> AddressIndex<'data> {
             if symbol.section_index().is_none() {
                 continue;
             }
-            let new_resolution =
-                AddressResolution::Basic(BasicResolution::Symbol(SymbolName { bytes: name }));
+            let new_resolution = AddressResolution::Basic(BasicResolution::Symbol(SymbolName {
+                bytes: name,
+                version: None,
+            }));
             let address = symbol.address();
             if symbol.kind() == SymbolKind::Tls {
                 self.tls_by_offset.insert(address, name);
@@ -634,25 +732,18 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn index_dynamic_relocations(&mut self, elf_file: &ElfFile64<'data>) {
-        let (Some(dynamic_symbol_table), Some(relocations)) = (
-            elf_file.dynamic_symbol_table(),
-            elf_file.dynamic_relocations(),
-        ) else {
+        let Some(relocations) = elf_file.dynamic_relocations() else {
             return;
         };
         for (address, rel) in relocations {
             if let RelocationTarget::Symbol(symbol_index) = rel.target() {
-                if let Ok(symbol_name) = dynamic_symbol_table
-                    .symbol_by_index(symbol_index)
-                    .and_then(|sym| sym.name_bytes())
-                {
-                    self.add_resolution(
-                        address + self.load_offset,
-                        AddressResolution::Basic(BasicResolution::Dynamic(SymbolName {
-                            bytes: symbol_name,
-                        })),
-                    );
-                }
+                let Some(symbol_name) = self.dynamic_symbol_names.get(symbol_index.0) else {
+                    continue;
+                };
+                self.add_resolution(
+                    address + self.load_offset,
+                    AddressResolution::Basic(BasicResolution::Dynamic(*symbol_name)),
+                );
             }
         }
 
@@ -676,7 +767,10 @@ impl<'data> AddressIndex<'data> {
                     self.add_resolution(address, AddressResolution::TlsBlock);
                 }
                 if let Some(tls_name) = self.tls_by_offset.get(&tls_offset) {
-                    let symbol = SymbolName { bytes: tls_name };
+                    let symbol = SymbolName {
+                        bytes: tls_name,
+                        version: None,
+                    };
                     self.add_resolution(address, AddressResolution::TlsIdentifier(symbol));
                 }
             }
@@ -920,6 +1014,9 @@ impl<'data> AddressIndex<'data> {
                 }
                 object::elf::DT_PLTGOT => {
                     self.got_plt_address = Some(entry.d_val.get(e));
+                }
+                object::elf::DT_VERSYM => {
+                    self.versym_address = Some(entry.d_val.get(e));
                 }
                 _ => {}
             });
@@ -1633,7 +1730,11 @@ impl Display for SymbolName<'_> {
             f,
             "{}",
             symbolic_demangle::demangle(&String::from_utf8_lossy(self.bytes))
-        )
+        )?;
+        if let Some(version) = self.version {
+            write!(f, "@{}", String::from_utf8_lossy(version))?;
+        }
+        Ok(())
     }
 }
 

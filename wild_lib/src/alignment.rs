@@ -41,6 +41,9 @@ pub(crate) const PAGE: Alignment = Alignment { exponent: 12 };
 /// The minimum alignment of a PLT entry.
 pub(crate) const PLT: Alignment = Alignment { exponent: 4 };
 
+pub(crate) const VERSION_R: Alignment = Alignment { exponent: 3 };
+pub(crate) const VERSYM: Alignment = Alignment { exponent: 1 };
+
 pub(crate) const USIZE: Alignment = Alignment { exponent: 3 };
 
 pub(crate) const EH_FRAME_HDR: Alignment = Alignment { exponent: 2 };
