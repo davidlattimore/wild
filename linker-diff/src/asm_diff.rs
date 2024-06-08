@@ -110,13 +110,22 @@ pub(crate) fn validate_got_plt(object: &Object) -> Result {
 
 fn diff_symbol(symbol_name: &[u8], objects: &[Object]) -> Option<Diff> {
     let function_versions = FunctionVersions::new(symbol_name, objects);
-    if function_versions.all_the_same() {
+    if function_versions.all_the_same() && !should_force_show_fn(symbol_name) {
         return None;
     }
     Some(Diff {
         key: diff_key_for_symbol(symbol_name),
         values: DiffValues::PreFormatted(function_versions.to_string()),
     })
+}
+
+/// Sometimes we don't find a difference when we think that we should. In that case, we provide a
+/// mechanism to force showing of a particular symbol.
+fn should_force_show_fn(symbol_name: &[u8]) -> bool {
+    let Ok(show) = std::env::var("LINKER_DIFF_SHOW_SYM") else {
+        return false;
+    };
+    show.as_bytes() == symbol_name
 }
 
 struct FunctionVersions<'data> {
