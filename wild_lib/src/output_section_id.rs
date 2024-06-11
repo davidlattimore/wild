@@ -12,6 +12,7 @@ use anyhow::Context as _;
 use core::mem::size_of;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
+use crate::elf::DynamicEntry;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TemporaryOutputSectionId<'data> {
@@ -258,6 +259,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             name: ".got".as_bytes(),
             ty: elf::Sht::Progbits,
             section_flags: elf::shf::WRITE | elf::shf::ALLOC,
+            element_size: core::mem::size_of::<u64>() as u64,
             ..SectionDetails::default()
         },
         start_symbol_name: Some("_GLOBAL_OFFSET_TABLE_"),
@@ -269,6 +271,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             name: ".plt".as_bytes(),
             ty: elf::Sht::Progbits,
             section_flags: elf::shf::ALLOC | elf::shf::EXECINSTR,
+            element_size: crate::elf::PLT_ENTRY_SIZE,
             ..SectionDetails::default()
         },
         min_alignment: alignment::PLT,
@@ -313,6 +316,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             name: ".dynamic".as_bytes(),
             ty: elf::Sht::Dynamic,
             section_flags: elf::shf::ALLOC | elf::shf::WRITE,
+            element_size: core::mem::size_of::<DynamicEntry>() as u64,
             ..SectionDetails::default()
         },
         link: &[DYNSTR],
@@ -391,6 +395,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             ty: elf::Sht::InitArray,
             section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             retain: true,
+            element_size: core::mem::size_of::<u64>() as u64,
             ..SectionDetails::default()
         },
         start_symbol_name: Some("__init_array_start"),
@@ -403,6 +408,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             ty: elf::Sht::FiniArray,
             section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             retain: true,
+            element_size: core::mem::size_of::<u64>() as u64,
             ..SectionDetails::default()
         },
         start_symbol_name: Some("__fini_array_start"),
@@ -494,6 +500,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             ty: elf::Sht::Progbits,
             retain: true,
             section_flags: elf::shf::STRINGS | elf::shf::MERGE,
+            element_size: 1,
             ..SectionDetails::default()
         },
         ..DEFAULT_DEFS
