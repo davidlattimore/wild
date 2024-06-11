@@ -200,10 +200,16 @@ pub(crate) fn report_section_diffs(report: &mut Report, objects: &[Object]) {
                     Converter::SectionFlags,
                     object,
                 );
+                values.insert(
+                    "type",
+                    section_header.sh_type.get(LittleEndian),
+                    Converter::None,
+                    object,
+                );
                 Ok(values)
             },
             &table_name,
-            DiffMode::IgnoreIfAllErrors,
+            DiffMode::Normal,
         ));
     }
 }
