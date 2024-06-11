@@ -3,6 +3,7 @@
 
 // We don't apply the M flag to our .rodata
 //#DiffIgnore:section.rodata.flags
+//#DiffIgnore:section.rodata.entsize
 //#Object:exit.c
 //#EnableLinker:lld
 

@@ -206,6 +206,12 @@ pub(crate) fn report_section_diffs(report: &mut Report, objects: &[Object]) {
                     Converter::None,
                     object,
                 );
+                values.insert(
+                    "entsize",
+                    section_header.sh_entsize.get(LittleEndian),
+                    Converter::None,
+                    object,
+                );
                 Ok(values)
             },
             &table_name,

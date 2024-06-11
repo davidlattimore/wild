@@ -4,6 +4,7 @@
 //#DiffIgnore:.got.plt
 //#DiffIgnore:.dynamic.*
 //#DiffIgnore:asm.__sfp_handle_exceptions
+//#DiffIgnore:section.plt.entsize
 //#CompArgs:-g -ftls-model=global-dynamic
 //#DoesNotContain:.debug_str
 

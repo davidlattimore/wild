@@ -1,3 +1,4 @@
+//#DiffIgnore:section.plt.entsize
 //#Object:ifunc1.c
 //#Object:ifunc_init.c
 //#Object:exit.c
