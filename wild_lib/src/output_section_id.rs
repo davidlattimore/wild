@@ -311,7 +311,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         details: SectionDetails {
             name: ".dynamic".as_bytes(),
-            ty: elf::Sht::Progbits,
+            ty: elf::Sht::Dynamic,
             section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             ..SectionDetails::default()
         },
@@ -323,7 +323,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         details: SectionDetails {
             name: ".gnu.hash".as_bytes(),
-            ty: elf::Sht::Progbits,
+            ty: elf::Sht::GnuHash,
             section_flags: elf::shf::ALLOC,
             ..SectionDetails::default()
         },
