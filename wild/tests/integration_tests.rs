@@ -252,6 +252,7 @@ impl Default for Config {
 fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
     let source = std::fs::read_to_string(src_filename)
         .with_context(|| format!("Failed to read {}", src_filename.display()))?;
+    let is_rust = src_filename.extension().is_some_and(|ext| ext == "rs");
 
     let mut config_by_name = HashMap::new();
     let mut config = Config::default();
@@ -298,7 +299,12 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                             .with_context(|| format!("Failed to parse '{arg}'"))?,
                     )
                 }
-                "LinkArgs" => config.linker_args = ArgumentSet::parse(arg)?,
+                "LinkArgs" => {
+                    if is_rust {
+                        bail!("LinkArgs is not used when building Rust code");
+                    }
+                    config.linker_args = ArgumentSet::parse(arg)?
+                }
                 "CompArgs" => config.compiler_args = ArgumentSet::parse(arg)?,
                 "ExpectSym" => config
                     .assertions

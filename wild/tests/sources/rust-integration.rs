@@ -3,15 +3,12 @@
 
 //#Config:llvm-static:default
 //#CompArgs:--target x86_64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2
-//#LinkArgs:static:--cc=clang -static
 
 //#Config:cranelift-static:default
 //#CompArgs:-Zcodegen-backend=cranelift --target x86_64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2 --cfg cranelift
-//#LinkArgs:static:--cc=clang -static
 
 //#Config:llvm-dynamic:default
 //#CompArgs:-C debuginfo=2
-//#LinkArgs:static:--cc=clang
 //#DiffIgnore:.dynamic.DT_JMPREL
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic.DT_PLTGOT
