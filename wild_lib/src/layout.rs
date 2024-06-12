@@ -549,7 +549,8 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
     ) -> Result {
         if let Some(&version_index) = self.symbol_versions.get(local_index) {
             let version_index = version_index.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
-            if version_index > 0 {
+            // Versions 0 and 1 are local and global. We care about the versions after that.
+            if version_index > object::elf::VER_NDX_GLOBAL {
                 *self
                     .symbol_versions_needed
                     .get_mut(version_index as usize - 1)
@@ -1199,7 +1200,8 @@ fn apply_non_addressable_indexes(
     args: &Args,
 ) -> Result<NonAddressableCounts> {
     let mut indexes = NonAddressableIndexes {
-        gnu_version_r_index: 1,
+        // Allocate version indexes starting from after the local and global indexes.
+        gnu_version_r_index: object::elf::VER_NDX_GLOBAL + 1,
     };
     let mut counts = NonAddressableCounts { verneed_count: 0 };
     for s in layout_states.iter_mut() {

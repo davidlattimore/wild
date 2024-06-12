@@ -2090,8 +2090,8 @@ fn write_symbol_version(
         return Ok(());
     };
     let input_version = versym.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
-    let output_version = if input_version == object::elf::VER_NDX_LOCAL {
-        object::elf::VER_NDX_LOCAL
+    let output_version = if input_version <= object::elf::VER_NDX_GLOBAL {
+        input_version
     } else {
         version_mapping[usize::from(input_version) - 1]
     };
