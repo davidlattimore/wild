@@ -207,7 +207,7 @@ impl<'data> FunctionVersions<'data> {
             .objects
             .iter()
             .zip(&self.resolutions)
-            .find(|(obj, _res)| obj.layout.is_some())
+            .find(|(obj, _res)| obj.indexed_layout.is_some())
             .ok_or_else(|| anyhow!("No layout files present"))?;
 
         if let SymbolResolution::Function(function_def) = res {
@@ -217,7 +217,7 @@ impl<'data> FunctionVersions<'data> {
             obj.input_file_in_range(addresses.clone()).ok_or_else(|| {
                 anyhow!(
                     "No layout information in range {addresses:x?} (has {:x?})",
-                    obj.layout.as_ref().and_then(|l| l.address_range())
+                    obj.indexed_layout.as_ref().and_then(|l| l.address_range())
                 )
             })
         } else {
@@ -343,8 +343,7 @@ fn display_input_resolution(
     f: &mut std::fmt::Formatter,
     gutter_width: usize,
 ) -> Result {
-    let object_bytes = res.file.read_object_bytes()?;
-    let elf_file = &ElfFile64::parse(&object_bytes)?;
+    let elf_file = &res.file.elf_file;
     let section = elf_file.section_by_index(res.section_index())?;
     let section_data = section.data()?;
     let mut decoder = AsmDecoder::new(0, &section_data[res.offset_in_section as usize..]);

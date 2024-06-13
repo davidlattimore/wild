@@ -1,3 +1,4 @@
+use crate::ElfFile64;
 use crate::Result;
 use anyhow::bail;
 use anyhow::Context;
@@ -6,26 +7,57 @@ use std::fmt::Display;
 use std::io::Read;
 use std::ops::Range;
 use std::os::unix::fs::FileExt;
-use std::path::PathBuf;
+use std::path::Path;
 
-pub(crate) struct IndexedLayout {
-    files: Vec<InputFile>,
+pub(crate) struct LayoutAndFiles {
+    layout: linker_layout::Layout,
+    /// The bytes of each file in the layout.
+    files: Vec<Vec<u8>>,
+}
+
+impl LayoutAndFiles {
+    pub(crate) fn from_base_path(base_path: &Path) -> Result<Option<Self>> {
+        let layout_path = linker_layout::layout_path(base_path);
+        if !layout_path.exists() {
+            return Ok(None);
+        }
+        let layout_bytes = std::fs::read(layout_path)
+            .with_context(|| format!("Failed to read `{}`", base_path.display()))?;
+        let layout = linker_layout::Layout::from_bytes(&layout_bytes)?;
+        let files = layout
+            .files
+            .iter()
+            .map(read_object_bytes)
+            .collect::<Result<Vec<Vec<u8>>>>()?;
+        Ok(Some(Self { layout, files }))
+    }
+}
+
+pub(crate) struct IndexedLayout<'data> {
+    files: Vec<InputFile<'data>>,
     sections: Vec<SectionInfo>,
 }
 
-impl IndexedLayout {
-    fn new(layout: linker_layout::Layout) -> Result<IndexedLayout> {
-        let mut files = Vec::with_capacity(layout.files.len());
+impl<'data> IndexedLayout<'data> {
+    pub(crate) fn new(layout_and_files: &'data LayoutAndFiles) -> Result<IndexedLayout> {
+        let mut files = Vec::with_capacity(layout_and_files.layout.files.len());
         let mut sections = Vec::new();
-        for (file_index, file) in layout.files.into_iter().enumerate() {
+        for ((file_index, file), object_bytes) in layout_and_files
+            .layout
+            .files
+            .iter()
+            .enumerate()
+            .zip(&layout_and_files.files)
+        {
             files.push(InputFile {
-                filename: file.path,
-                archive_entry: file.archive_entry,
+                filename: file.path.as_path(),
+                archive_entry: file.archive_entry.as_ref(),
+                elf_file: crate::ElfFile64::parse(object_bytes)?,
             });
-            sections.extend(file.sections.into_iter().enumerate().filter_map(
+            sections.extend(file.sections.iter().enumerate().filter_map(
                 |(section_index, maybe_sec)| {
-                    maybe_sec.map(|sec| SectionInfo {
-                        addresses: sec.mem_range,
+                    maybe_sec.as_ref().map(|sec| SectionInfo {
+                        addresses: sec.mem_range.clone(),
                         file_index,
                         section_index,
                     })
@@ -98,40 +130,28 @@ impl IndexedLayout {
     }
 }
 
-struct DisplaySection {
+struct DisplaySection<'data> {
     info: SectionInfo,
-    file: InputFile,
+    file: &'data InputFile<'data>,
 }
 
-impl DisplaySection {
-    fn new(info: &SectionInfo, files: &[InputFile]) -> Self {
+impl<'data> DisplaySection<'data> {
+    fn new(info: &SectionInfo, files: &'data [InputFile]) -> Self {
         Self {
             info: info.clone(),
-            file: files[info.section_index].clone(),
+            file: &files[info.section_index],
         }
     }
 }
 
-impl Display for DisplaySection {
+impl Display for DisplaySection<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use object::Object as _;
         use object::ObjectSection as _;
 
-        let object_bytes = match self.file.read_object_bytes() {
-            Ok(b) => b,
-            Err(error) => {
-                write!(f, "<{error}>")?;
-                return Ok(());
-            }
-        };
-        let elf_file = match crate::ElfFile64::parse(&object_bytes) {
-            Ok(f) => f,
-            Err(error) => {
-                write!(f, "<{error}>")?;
-                return Ok(());
-            }
-        };
-        if let Ok(section_name) = elf_file
+        if let Ok(section_name) = self
+            .file
+            .elf_file
             .section_by_index(self.info.index())
             .and_then(|section| section.name())
         {
@@ -152,31 +172,29 @@ pub(crate) struct SectionInfo {
     section_index: usize,
 }
 
-#[derive(Clone)]
-pub(crate) struct InputFile {
-    filename: PathBuf,
-    archive_entry: Option<ArchiveEntryInfo>,
+pub(crate) struct InputFile<'data> {
+    filename: &'data Path,
+    archive_entry: Option<&'data ArchiveEntryInfo>,
+    pub(crate) elf_file: ElfFile64<'data>,
 }
 
 pub(crate) struct InputResolution<'obj> {
-    pub(crate) file: &'obj InputFile,
+    pub(crate) file: &'obj InputFile<'obj>,
     section: &'obj SectionInfo,
     pub(crate) offset_in_section: u64,
 }
 
-impl InputFile {
-    pub(crate) fn read_object_bytes(&self) -> Result<Vec<u8>> {
-        let mut file = std::fs::File::open(&self.filename)
-            .with_context(|| format!("Failed to open `{}`", self.filename.display()))?;
-        let mut buffer = Vec::new();
-        if let Some(entry) = self.archive_entry.as_ref() {
-            buffer.resize(entry.range.end - entry.range.start, 0);
-            file.read_exact_at(&mut buffer, entry.range.start as u64)?;
-        } else {
-            file.read_to_end(&mut buffer)?;
-        }
-        Ok(buffer)
+fn read_object_bytes(input_file: &linker_layout::InputFile) -> Result<Vec<u8>> {
+    let mut file = std::fs::File::open(&input_file.path)
+        .with_context(|| format!("Failed to open `{}`", input_file.path.display()))?;
+    let mut buffer = Vec::new();
+    if let Some(entry) = input_file.archive_entry.as_ref() {
+        buffer.resize(entry.range.end - entry.range.start, 0);
+        file.read_exact_at(&mut buffer, entry.range.start as u64)?;
+    } else {
+        file.read_to_end(&mut buffer)?;
     }
+    Ok(buffer)
 }
 
 impl InputResolution<'_> {
@@ -191,19 +209,7 @@ impl SectionInfo {
     }
 }
 
-pub(crate) fn for_path(path: &std::path::Path) -> Result<Option<IndexedLayout>> {
-    let layout_path = linker_layout::layout_path(path);
-    layout_path
-        .exists()
-        .then(|| std::fs::read(layout_path))
-        .transpose()?
-        .map(|layout_bytes| linker_layout::Layout::from_bytes(&layout_bytes))
-        .transpose()?
-        .map(IndexedLayout::new)
-        .transpose()
-}
-
-impl Display for InputFile {
+impl Display for InputFile<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "`{}`", self.filename.display())?;
         if let Some(entry) = self.archive_entry.as_ref() {

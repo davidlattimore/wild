@@ -23,6 +23,7 @@ use object::ObjectSection;
 use object::ObjectSymbol as _;
 use object::RelocationFlags;
 use section_map::IndexedLayout;
+use section_map::LayoutAndFiles;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::ops::Range;
@@ -70,7 +71,7 @@ pub struct Object<'data> {
     elf_file: &'data ElfFile64<'data>,
     address_index: AddressIndex<'data>,
     name_index: NameIndex<'data>,
-    layout: Option<IndexedLayout>,
+    indexed_layout: Option<IndexedLayout<'data>>,
     trace: trace::Trace,
     sections_by_name: HashMap<&'data [u8], SectionInfo>,
 }
@@ -163,9 +164,10 @@ impl<'data> Object<'data> {
         elf_file: &'data ElfFile64<'data>,
         name: String,
         path: PathBuf,
+        layout_and_files: Option<&'data LayoutAndFiles>,
     ) -> Result<Self> {
         let address_index = AddressIndex::new(elf_file);
-        let layout = crate::section_map::for_path(&path)?;
+        let indexed_layout = layout_and_files.map(IndexedLayout::new).transpose()?;
         let trace = trace::Trace::for_path(&path)?;
         let sections_by_name = elf_file
             .sections()
@@ -185,7 +187,7 @@ impl<'data> Object<'data> {
             path,
             address_index,
             name_index: NameIndex::new(elf_file),
-            layout,
+            indexed_layout,
             trace,
             sections_by_name,
         })
@@ -231,11 +233,11 @@ impl<'data> Object<'data> {
     }
 
     fn resolve_input(&self, address: u64) -> Option<section_map::InputResolution> {
-        self.layout.as_ref()?.resolve_address(address)
+        self.indexed_layout.as_ref()?.resolve_address(address)
     }
 
     fn input_file_in_range(&self, addresses: Range<u64>) -> Option<&section_map::InputFile> {
-        self.layout.as_ref()?.file_in_range(addresses)
+        self.indexed_layout.as_ref()?.file_in_range(addresses)
     }
 
     fn section_by_name(&self, name: &str) -> Option<ElfSection64<LittleEndian>> {
@@ -311,12 +313,19 @@ impl Report {
             .map(|bytes| -> Result<ElfFile64> { Ok(ElfFile64::parse(bytes.as_slice())?) })
             .collect::<Result<Vec<_>>>()?;
 
+        let layouts = config
+            .filenames
+            .iter()
+            .map(|p| LayoutAndFiles::from_base_path(p))
+            .collect::<Result<Vec<_>>>()?;
+
         let objects = elf_files
             .iter()
             .zip(display_names)
             .zip(&config.filenames)
-            .map(|((elf_file, name), path)| -> Result<Object> {
-                Object::new(elf_file, name, path.clone())
+            .zip(&layouts)
+            .map(|(((elf_file, name), path), layout)| -> Result<Object> {
+                Object::new(elf_file, name, path.clone(), layout.as_ref())
             })
             .collect::<Result<Vec<_>>>()?;
 
