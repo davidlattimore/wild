@@ -56,6 +56,11 @@ pub struct Config {
     #[arg(long, value_delimiter = ',', value_parser = parse_string_equality)]
     pub equiv: Vec<(String, String)>,
 
+    /// Apply defaults for things that should be ignored currently for Wild. These defaults are
+    /// subject to change as Wild changes.
+    #[arg(long)]
+    pub wild_defaults: bool,
+
     pub filenames: Vec<PathBuf>,
 }
 
@@ -86,9 +91,8 @@ impl Config {
         Self::parse()
     }
 
-    pub fn current_wild_defaults() -> Self {
-        let mut config = Self::default();
-        config.ignore.extend(
+    fn apply_wild_defaults(&mut self) {
+        self.ignore.extend(
             [
                 // We don't currently support allocating space except in sections, so we have sections
                 // to hold the section and program headers. We then need to ignore them because GNU ld
@@ -118,17 +122,39 @@ impl Config {
             .into_iter()
             .map(|s| s.to_owned()),
         );
-        config
-            .equiv
-            .push((".got".to_owned(), ".got.plt".to_owned()));
+        self.equiv.push((".got".to_owned(), ".got.plt".to_owned()));
         // We don't currently define .plt.got and .plt.sec, we just put everything into .plt.
-        config
-            .equiv
-            .push((".plt".to_owned(), ".plt.got".to_owned()));
-        config
-            .equiv
-            .push((".plt".to_owned(), ".plt.sec".to_owned()));
-        config
+        self.equiv.push((".plt".to_owned(), ".plt.got".to_owned()));
+        self.equiv.push((".plt".to_owned(), ".plt.sec".to_owned()));
+    }
+
+    pub fn to_arg_string(&self) -> String {
+        let mut out = String::new();
+        if self.wild_defaults {
+            out.push_str("--wild-defaults ");
+        }
+        if !self.ignore.is_empty() {
+            out.push_str("--ignore '");
+            out.push_str(&self.ignore.join(","));
+            out.push_str("' ");
+        }
+        if !self.equiv.is_empty() {
+            out.push_str("--equiv '");
+            let parts = self
+                .equiv
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>();
+            out.push_str(&parts.join(","));
+            out.push_str("' ");
+        }
+        for file in &self.filenames {
+            out.push_str(&file.to_string_lossy());
+            out.push(' ');
+        }
+        // Remove last trailing space if any.
+        out.pop();
+        out
     }
 }
 
@@ -258,7 +284,13 @@ pub struct Report {
 }
 
 impl Report {
-    pub fn from_config(config: Config) -> Result<Report> {
+    pub fn from_config(mut config: Config) -> Result<Report> {
+        if config.filenames.is_empty() {
+            bail!("Need at least 1, ideally 2 input files");
+        }
+        if config.wild_defaults {
+            config.apply_wild_defaults();
+        }
         let display_names = short_file_display_names(&config.filenames);
 
         let file_bytes = config
@@ -487,6 +519,9 @@ impl Display for Object<'_> {
 }
 
 fn short_file_display_names(paths: &[PathBuf]) -> Vec<String> {
+    if paths.is_empty() {
+        return vec![];
+    }
     // This is not quite right, since we might split in the middle of a multibyte character.
     // But this is a dev tool, so we'll punt on that for now.
     let mut iterators = paths

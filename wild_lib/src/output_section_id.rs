@@ -2,7 +2,9 @@ use crate::alignment;
 use crate::alignment::Alignment;
 use crate::args::Args;
 use crate::elf;
+use crate::elf::DynamicEntry;
 use crate::elf::SectionHeader;
+use crate::elf::Versym;
 use crate::error::Result;
 use crate::layout::Layout;
 use crate::program_segments::ProgramSegmentId;
@@ -12,8 +14,6 @@ use anyhow::Context as _;
 use core::mem::size_of;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
-use crate::elf::DynamicEntry;
-use crate::elf::Versym;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TemporaryOutputSectionId<'data> {

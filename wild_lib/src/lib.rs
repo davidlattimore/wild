@@ -6,10 +6,6 @@ pub(crate) mod alignment;
 pub(crate) mod archive;
 pub(crate) mod archive_splitter;
 pub mod args;
-#[cfg(feature = "linker-diff")]
-pub(crate) mod diff;
-#[cfg(not(feature = "linker-diff"))]
-#[path = "diff_disabled.rs"]
 pub(crate) mod diff;
 pub(crate) mod elf;
 pub(crate) mod elf_writer;

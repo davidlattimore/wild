@@ -1014,7 +1014,8 @@ fn diff_executables(instructions: &Config, programs: &[Program]) -> Result {
 }
 
 fn diff_files(instructions: &Config, filenames: Vec<PathBuf>, display: &dyn Display) -> Result {
-    let mut config = linker_diff::Config::current_wild_defaults();
+    let mut config = linker_diff::Config::default();
+    config.wild_defaults = true;
     config
         .ignore
         .extend(instructions.diff_ignore.iter().cloned());
@@ -1027,20 +1028,8 @@ fn diff_files(instructions: &Config, filenames: Vec<PathBuf>, display: &dyn Disp
         eprintln!("{report}");
         bail!(
             "Validation failed.\n{display}\n To revalidate:\ncargo run --bin linker-diff -- \
-             --ignore '{}' --equiv '{}' {}",
-            config.ignore.join(","),
-            config
-                .equiv
-                .iter()
-                .map(|(a, b)| format!("{a}={b}"))
-                .collect::<Vec<_>>()
-                .join(","),
-            config
-                .filenames
-                .iter()
-                .map(|f| f.to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join(" ")
+             {}",
+            config.to_arg_string()
         );
     }
     Ok(())

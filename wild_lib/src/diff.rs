@@ -4,14 +4,20 @@
 //! outputs and report any unexpected differences found. Setting the environment variable will also
 //! enable writing of trace and layout files by the Wild linker, which allow additional information
 //! to be added to the diff outputs.
+//!
+//! For this to work, the linker-diff binary needs to be installed in the same directory as wild.
 
 use crate::error::Result;
 use anyhow::bail;
+use anyhow::Context;
 use std::path::PathBuf;
+use std::process::Command;
 
 pub(crate) fn maybe_diff() -> Result {
     if let Ok(reference_linker) = std::env::var(crate::args::REFERENCE_LINKER_ENV) {
-        run_with_linker(&reference_linker)?;
+        if let Some(paths) = run_with_linker(&reference_linker)? {
+            run_diff(&paths).context("Failed to run linker-diff")?;
+        }
     }
     Ok(())
 }
@@ -21,8 +27,8 @@ struct BinPaths {
     reference_output: PathBuf,
 }
 
-fn run_with_linker(reference_linker: &str) -> Result {
-    let mut command = std::process::Command::new(reference_linker);
+fn run_with_linker(reference_linker: &str) -> Result<Option<BinPaths>> {
+    let mut command = Command::new(reference_linker);
     let mut next_is_output = false;
     let mut paths = None;
     for mut arg in std::env::args().skip(1) {
@@ -39,20 +45,29 @@ fn run_with_linker(reference_linker: &str) -> Result {
     }
     // If the linker was run without -o, then there's nothing to diff
     let Some(paths) = paths else {
-        return Ok(());
+        return Ok(None);
     };
-    let status = command.status()?;
+    let status = command
+        .status()
+        .with_context(|| format!("Failed to run `{reference_linker}`"))?;
     if !status.success() {
         bail!("Reference linker exited with non-zero status");
     }
+    Ok(Some(paths))
+}
 
-    let mut config = linker_diff::Config::current_wild_defaults();
-    config.filenames.push(paths.reference_output);
-    config.filenames.push(paths.our_output);
-    let report = linker_diff::Report::from_config(config.clone())?;
-    if report.has_problems() {
-        eprintln!("{report}");
-        bail!("Differences found when compared with output of {reference_linker}");
+fn run_diff(paths: &BinPaths) -> Result {
+    let linker_diff_path = std::env::current_exe()?.with_file_name("linker-diff");
+    if !linker_diff_path.exists() {
+        bail!("linker-diff binary needs to be in the same directory as wild")
+    }
+    let status = Command::new(linker_diff_path)
+        .arg("--wild-defaults")
+        .arg(&paths.reference_output)
+        .arg(&paths.our_output)
+        .status()?;
+    if !status.success() {
+        bail!("linker-diff exited with non-zero status");
     }
     Ok(())
 }
