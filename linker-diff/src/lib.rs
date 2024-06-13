@@ -33,6 +33,7 @@ mod eh_frame_diff;
 mod gnu_hash;
 mod header_diff;
 pub(crate) mod section_map;
+mod symtab;
 mod trace;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
@@ -256,6 +257,8 @@ impl Report {
         validate_objects(self, objects, ".gnu.hash", gnu_hash::check_object);
         validate_objects(self, objects, "index", asm_diff::validate_indexes);
         validate_objects(self, objects, ".got.plt", asm_diff::validate_got_plt);
+        validate_objects(self, objects, ".symtab", symtab::validate_debug);
+        validate_objects(self, objects, ".dynsym", symtab::validate_dynamic);
         header_diff::check_dynamic_headers(self, objects);
         header_diff::check_file_headers(self, objects);
         asm_diff::report_function_diffs(self, objects);
