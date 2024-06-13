@@ -17,3 +17,8 @@ object = { version = "0.36.0", default-features = false, features = [
     "unaligned",
 ] }
 linker-diff = { path = "../linker-diff" }
+
+[features]
+
+# See wild_lib/src/diff.rs. Not enabled by default because it more than doubles the binary size.
+linker-diff = ["wild_lib/linker-diff"]

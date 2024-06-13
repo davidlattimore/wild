@@ -87,6 +87,7 @@ pub(crate) enum HashStyle {
 pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
 pub const WRITE_LAYOUT_ENV: &str = "WILD_WRITE_LAYOUT";
 pub const WRITE_TRACE_ENV: &str = "WILD_WRITE_TRACE";
+pub const REFERENCE_LINKER_ENV: &str = "WILD_REFERENCE_LINKER";
 
 // These flags don't currently affect our behaviour. TODO: Assess whether we should error or warn if
 // these are given. This is tricky though. On the one hand we want to be a drop-in replacement for
@@ -141,6 +142,10 @@ impl Args {
         let mut write_gc_stats = None;
         let mut gc_stats_ignore = Vec::new();
         let mut verbose_gc_stats = false;
+        if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
+            write_layout = true;
+            write_trace = true;
+        }
         // Lazy binding isn't used so much these days, since it makes things less secure. It adds
         // quite a bit of complexity and we don't properly support it. We may eventually drop
         // support completely.

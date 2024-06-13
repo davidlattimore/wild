@@ -690,6 +690,7 @@ dependencies = [
  "crossbeam-queue",
  "crossbeam-utils",
  "enumflags2",
+ "linker-diff",
  "linker-layout",
  "linker-trace",
  "memchr",

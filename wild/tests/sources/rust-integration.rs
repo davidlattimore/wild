@@ -25,7 +25,8 @@ fn main() {
         std::process::exit(101);
     }
 
-    // Make sure we can canonicalise a path. This was failing at one point.
+    // Make sure we can canonicalise a path. This was failing at one point due to the incorrect
+    // version of a libc function being called. Implementing symbol versioning fixed it.
     let current_dir = match std::fs::canonicalize(".") {
         Ok(p) => p,
         Err(e) => {

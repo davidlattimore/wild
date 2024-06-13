@@ -85,6 +85,51 @@ impl Config {
     pub fn from_env() -> Self {
         Self::parse()
     }
+
+    pub fn current_wild_defaults() -> Self {
+        let mut config = Self::default();
+        config.ignore.extend(
+            [
+                // We don't currently support allocating space except in sections, so we have sections
+                // to hold the section and program headers. We then need to ignore them because GNU ld
+                // doesn't define such sections.
+                "section.shdr",
+                "section.phdr",
+                // We don't yet support these sections.
+                "section.data.rel.ro",
+                "section.debug*",
+                "section.stapsdt.base",
+                "section.note.*",
+                // We set this to 8. GNU ld sometimes does too, but sometimes to 0.
+                "section.got.entsize",
+                "section.plt.got.entsize",
+                // We currently output version info when linking against the interpreter
+                // (ld-linux-x86-64.so.2). GNU ld doesn't.
+                ".dynamic.DT_VERNEEDNUM",
+                // We do support this. TODO: Should definitely look into why we're seeing this missing
+                // in our output.
+                "section.rela.plt",
+                // We currently write 10 byte PLT entries in some cases where GNU ld writes 8 byte ones.
+                "section.plt.got.alignment",
+                // GNU ld sometimes makes this writable sometimes not. Presumably this depends on
+                // whether there are relocations or some flags.
+                "section.eh_frame.flags",
+            ]
+            .into_iter()
+            .map(|s| s.to_owned()),
+        );
+        config
+            .equiv
+            .push((".got".to_owned(), ".got.plt".to_owned()));
+        // We don't currently define .plt.got and .plt.sec, we just put everything into .plt.
+        config
+            .equiv
+            .push((".plt".to_owned(), ".plt.got".to_owned()));
+        config
+            .equiv
+            .push((".plt".to_owned(), ".plt.sec".to_owned()));
+        config
+    }
 }
 
 impl<'data> Object<'data> {

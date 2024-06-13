@@ -10,6 +10,7 @@ bytemuck = { version = "1.14.0", features = ["derive"] }
 crossbeam-queue = "0.3.8"
 crossbeam-utils = "0.8.18"
 enumflags2 = "0.7.9"
+linker-diff = { path = "../linker-diff", optional = true}
 linker-layout = { path = "../linker-layout" }
 linker-trace = { path = "../linker-trace" }
 memchr = "2.7.1"
