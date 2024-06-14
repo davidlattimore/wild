@@ -62,6 +62,10 @@ pub struct Config {
     #[arg(long)]
     pub wild_defaults: bool,
 
+    /// Display names for input files.
+    #[arg(long, value_delimiter = ',')]
+    pub display_names: Vec<String>,
+
     pub filenames: Vec<PathBuf>,
 }
 
@@ -148,6 +152,11 @@ impl Config {
                 .collect::<Vec<_>>();
             out.push_str(&parts.join(","));
             out.push_str("' ");
+        }
+        if !self.display_names.is_empty() {
+            out.push_str("--display-names ");
+            out.push_str(&self.display_names.join(","));
+            out.push(' ');
         }
         for file in &self.filenames {
             out.push_str(&file.to_string_lossy());
@@ -293,7 +302,7 @@ impl Report {
         if config.wild_defaults {
             config.apply_wild_defaults();
         }
-        let display_names = short_file_display_names(&config.filenames);
+        let display_names = short_file_display_names(&config)?;
 
         let file_bytes = config
             .filenames
@@ -527,9 +536,20 @@ impl Display for Object<'_> {
     }
 }
 
-fn short_file_display_names(paths: &[PathBuf]) -> Vec<String> {
+fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
+    if !config.display_names.is_empty() {
+        if config.display_names.len() != config.filenames.len() {
+            bail!(
+                "--display-names has {} names, but {} filenames were provided",
+                config.display_names.len(),
+                config.filenames.len()
+            );
+        }
+        return Ok(config.display_names.clone());
+    }
+    let paths = &config.filenames;
     if paths.is_empty() {
-        return vec![];
+        return Ok(vec![]);
     }
     // This is not quite right, since we might split in the middle of a multibyte character.
     // But this is a dev tool, so we'll punt on that for now.
@@ -561,7 +581,7 @@ fn short_file_display_names(paths: &[PathBuf]) -> Vec<String> {
             .map(|n| n.strip_suffix(".so").unwrap().to_owned())
             .collect();
     }
-    names
+    Ok(names)
 }
 
 /// Returns whether all values yielded by the supplied iterator are equal.
