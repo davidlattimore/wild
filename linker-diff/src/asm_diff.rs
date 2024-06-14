@@ -497,6 +497,7 @@ enum AddressResolution<'data> {
     PltWithInvalidGot(u64),
     UnrecognisedPlt,
     IFuncWithUnknownResolver,
+    AnonymousData,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -1440,7 +1441,11 @@ impl<'data> UnifiedInstruction<'data> {
 
         // In case there's still multiple resolutions, select one in a deterministic way.
         common.sort_by_key(|u| u.resolution);
-        common.pop()
+        if let Some(selected) = common.pop() {
+            return Some(selected);
+        }
+
+        Self::try_resolve_anon(instructions, objects)
     }
 
     fn all_resolved(instruction: &Instruction, object: &'data Object<'data>) -> Vec<Self> {
@@ -1526,6 +1531,48 @@ impl<'data> UnifiedInstruction<'data> {
             && self.resolution.is_some_and(|res| {
                 matches!(res, AddressResolution::Null | AddressResolution::NullPlt)
             })
+    }
+
+    /// If one of our objects has a layout associated with it, finds the original instruction and
+    /// relocation. If the relocation points to a local symbol without a name, or starting with
+    /// ".L", then that would have been discarded by the linkers, so we then use that as the
+    /// resolution.
+    fn try_resolve_anon(
+        instructions: &[Instruction],
+        objects: &[Object<'data>],
+    ) -> Option<UnifiedInstruction<'data>> {
+        let res = instructions
+            .iter()
+            .zip(objects)
+            .find_map(|(instruction, object)| {
+                object.resolve_input(instruction.base_address + instruction.offset)
+            })?;
+
+        let elf_file = &res.file.elf_file;
+        let section = elf_file.section_by_index(res.section_index()).ok()?;
+        let section_data = section.data().ok()?;
+        let mut decoder = AsmDecoder::new(0, &section_data[res.offset_in_section as usize..]);
+        if let Some(orig_instruction) = decoder.next() {
+            if let Some(rel) = find_relocation(
+                &section,
+                res.offset_in_section
+                    ..res.offset_in_section + orig_instruction.raw_instruction.len() as u64,
+            ) {
+                if let RelocationTarget::Symbol(symbol_index) = rel.target() {
+                    let symbol = elf_file.symbol_by_index(symbol_index).ok()?;
+                    let symbol_name = symbol.name_bytes().ok()?;
+                    if symbol.is_local()
+                        && (symbol_name.is_empty() || symbol_name.starts_with(b".L"))
+                    {
+                        return Some(UnifiedInstruction {
+                            instruction: orig_instruction.raw_instruction,
+                            resolution: Some(AddressResolution::AnonymousData),
+                        });
+                    }
+                }
+            }
+        }
+        None
     }
 }
 
@@ -1709,6 +1756,7 @@ impl Display for AddressResolution<'_> {
             }
             AddressResolution::IFuncWithUnknownResolver => write!(f, "IFUNC-UNKNOWN"),
             AddressResolution::TlsBlock => write!(f, "TLS"),
+            AddressResolution::AnonymousData => write!(f, "ANON-DATA"),
         }
     }
 }

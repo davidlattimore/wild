@@ -9,7 +9,6 @@
 // TODO: Figure out these flags
 //#DiffIgnore:.dynamic.DT_FLAGS
 //#DiffIgnore:.dynamic.DT_FLAGS_1
-//#DiffIgnore:asm.__sfp_handle_exceptions
 //#DiffIgnore:section.plt.entsize
 //#CompArgs:-g -ftls-model=global-dynamic
 //#DoesNotContain:.debug_str
