@@ -1013,7 +1013,8 @@ fn diff_executables(instructions: &Config, programs: &[Program]) -> Result {
     diff_files(instructions, filenames, programs.last().unwrap())
 }
 
-fn diff_files(instructions: &Config, filenames: Vec<PathBuf>, display: &dyn Display) -> Result {
+/// Diff the supplied files. The last file should be the one that we produced.
+fn diff_files(instructions: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Result {
     let mut config = linker_diff::Config::default();
     config.wild_defaults = true;
     config
@@ -1022,7 +1023,11 @@ fn diff_files(instructions: &Config, filenames: Vec<PathBuf>, display: &dyn Disp
     config
         .equiv
         .extend(instructions.section_equiv.iter().cloned());
-    config.filenames = filenames;
+    config.references = files;
+    config.file = config
+        .references
+        .pop()
+        .context("Tried to diff zero files")?;
     let report = linker_diff::Report::from_config(config.clone())?;
     if report.has_problems() {
         eprintln!("{report}");

@@ -63,10 +63,15 @@ pub struct Config {
     pub wild_defaults: bool,
 
     /// Display names for input files.
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long, value_delimiter = ',', value_name = "NAME,NAME...")]
     pub display_names: Vec<String>,
 
-    pub filenames: Vec<PathBuf>,
+    /// Files to compare against
+    #[arg(long = "ref", value_name = "FILE")]
+    pub references: Vec<PathBuf>,
+
+    /// Primary file that we're validating against the reference file(s)
+    pub file: PathBuf,
 }
 
 pub struct Object<'data> {
@@ -162,13 +167,19 @@ impl Config {
             out.push_str(&self.display_names.join(","));
             out.push(' ');
         }
-        for file in &self.filenames {
+        for file in &self.references {
+            out.push_str("--ref ");
             out.push_str(&file.to_string_lossy());
             out.push(' ');
         }
-        // Remove last trailing space if any.
-        out.pop();
+        out.push_str(&self.file.to_string_lossy());
         out
+    }
+
+    fn filenames(&self) -> impl Iterator<Item = &PathBuf> {
+        // We always put our file first, since it makes it easier to treat it differently. e.g. when
+        // we compare a value from our file against each of the values from the other files.
+        std::iter::once(&self.file).chain(&self.references)
     }
 }
 
@@ -282,7 +293,7 @@ fn validate_objects(
             Err(e) => e.to_string(),
         })
         .collect::<Vec<_>>();
-    if all_equal(values.iter()) {
+    if first_equals_any(values.iter()) {
         return;
     }
     report.add_diff(Diff {
@@ -300,17 +311,13 @@ pub struct Report {
 
 impl Report {
     pub fn from_config(mut config: Config) -> Result<Report> {
-        if config.filenames.is_empty() {
-            bail!("Need at least 1, ideally 2 input files");
-        }
         if config.wild_defaults {
             config.apply_wild_defaults();
         }
         let display_names = short_file_display_names(&config)?;
 
         let file_bytes = config
-            .filenames
-            .iter()
+            .filenames()
             .map(|filename| -> Result<Vec<u8>> {
                 let mut bytes = std::fs::read(filename)
                     .with_context(|| format!("Failed to read `{}`", filename.display()))?;
@@ -327,15 +334,14 @@ impl Report {
             .collect::<Result<Vec<_>>>()?;
 
         let layouts = config
-            .filenames
-            .iter()
+            .filenames()
             .map(|p| LayoutAndFiles::from_base_path(p))
             .collect::<Result<Vec<_>>>()?;
 
         let objects = elf_files
             .iter()
             .zip(display_names)
-            .zip(&config.filenames)
+            .zip(config.filenames())
             .zip(&layouts)
             .map(|(((elf_file, name), path), layout)| -> Result<Object> {
                 Object::new(elf_file, name, path.clone(), layout.as_ref())
@@ -541,17 +547,17 @@ impl Display for Object<'_> {
 }
 
 fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
+    let paths: Vec<&PathBuf> = config.filenames().collect();
     if !config.display_names.is_empty() {
-        if config.display_names.len() != config.filenames.len() {
+        if config.display_names.len() != paths.len() {
             bail!(
                 "--display-names has {} names, but {} filenames were provided",
                 config.display_names.len(),
-                config.filenames.len()
+                paths.len()
             );
         }
         return Ok(config.display_names.clone());
     }
-    let paths = &config.filenames;
     if paths.is_empty() {
         return Ok(vec![]);
     }
@@ -562,7 +568,7 @@ fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
         .map(|p| p.as_os_str().as_encoded_bytes().iter())
         .collect::<Vec<_>>();
     let mut n = 0;
-    while all_equal(iterators.iter_mut().map(|i| i.next())) {
+    while first_equals_any(iterators.iter_mut().map(|i| i.next())) {
         n += 1;
     }
     let mut names = paths
@@ -588,17 +594,17 @@ fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
     Ok(names)
 }
 
-/// Returns whether all values yielded by the supplied iterator are equal.
-fn all_equal<T: PartialEq>(mut inputs: impl Iterator<Item = T>) -> bool {
+/// Returns whether the first input is equal to at least one of the remaining values.
+fn first_equals_any<T: PartialEq>(mut inputs: impl Iterator<Item = T>) -> bool {
     let Some(first) = inputs.next() else {
         return true;
     };
     for next in inputs {
-        if next != first {
-            return false;
+        if next == first {
+            return true;
         }
     }
-    true
+    false
 }
 
 impl<'data> NameIndex<'data> {

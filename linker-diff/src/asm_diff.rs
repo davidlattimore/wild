@@ -1,4 +1,4 @@
-use crate::all_equal;
+use crate::first_equals_any;
 use crate::section_map;
 use crate::section_map::InputResolution;
 use crate::slice_from_all_bytes;
@@ -1420,7 +1420,7 @@ impl<'data> UnifiedInstruction<'data> {
     fn new(instructions: &[Instruction], objects: &'data [Object<'data>]) -> Option<Self> {
         let first = instructions.first()?;
         let first_object = objects.first()?;
-        if all_equal(instructions.iter().map(|i| i.raw_instruction)) {
+        if first_equals_any(instructions.iter().map(|i| i.raw_instruction)) {
             return Some(UnifiedInstruction {
                 instruction: first.raw_instruction,
                 resolution: None,
@@ -1429,13 +1429,13 @@ impl<'data> UnifiedInstruction<'data> {
         // We might have multiple resolutions. e.g. if there is more than one symbol at the address.
         // Try to find a resolution shared by all objects and use that.
         let mut common = UnifiedInstruction::all_resolved(first, first_object);
-        // If the first object has an instruction that we know is undefined behaviour, then we
-        // ignore the instructions from the other objects.
-        if let Some(ub) = extract_undefined_behaviour(&mut common) {
-            return Some(ub);
-        }
         for (ins, obj) in instructions[1..].iter().zip(&objects[1..]) {
-            let unified = UnifiedInstruction::all_resolved(ins, obj);
+            let mut unified = UnifiedInstruction::all_resolved(ins, obj);
+            // If any reference object has an instruction that we know is undefined behaviour, then
+            // we ignore the instructions from the other objects.
+            if let Some(ub) = extract_undefined_behaviour(&mut unified) {
+                return Some(ub);
+            }
             common.retain(|u| unified.iter().any(|a| u == a));
         }
 
