@@ -283,6 +283,7 @@ impl Display for FunctionVersions<'_> {
             }
             let mut input_resolution = None;
             let mut trace_messages = Vec::new();
+            writeln!(f)?;
             for (value, obj) in values.iter().zip(self.objects) {
                 let Some(value) = value else {
                     continue;
@@ -334,6 +335,7 @@ impl Display for FunctionVersions<'_> {
             for msg in trace_messages {
                 writeln!(f, "TRACE           {msg}")?;
             }
+            writeln!(f)?;
         }
     }
 }
