@@ -51,7 +51,7 @@ use anyhow::bail;
 use anyhow::Context;
 use memmap2::MmapOptions;
 use object::from_bytes_mut;
-use object::read::elf::Rela as _;
+use object::read::elf::Rela;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use rayon::prelude::*;
@@ -415,13 +415,14 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
             if self.layout.args().output_kind.is_executable() {
                 mod_got_entry.copy_from_slice(&[elf::CURRENT_EXE_TLS_MOD]);
             } else {
-                relocation_writer.write_dtpmod(got_address.get())?;
+                let dynamic_symbol_index = res.dynamic_symbol_index.map(|i| i.get()).unwrap_or(0);
+                relocation_writer.write_dtpmod(got_address.get(), dynamic_symbol_index)?;
             }
             let offset_entry = slice_take_prefix_mut(&mut self.got, 1);
-            if res.value_flags.contains(ValueFlag::Dynamic) {
+            if let Some(sym_index) = res.dynamic_symbol_index {
                 relocation_writer.write_dtpoff(
                     got_address.get() + crate::elf::TLS_OFFSET_OFFSET,
-                    res.raw_value,
+                    sym_index.get(),
                 )?;
             } else {
                 // Convert the address to an offset within the TLS segment
@@ -432,8 +433,6 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         }
         let mut res_value = res.resolution_value();
         if res.resolution_flags.contains(ResolutionFlag::Tls) {
-            // Convert the address to an offset relative to the TCB which is the end of the TLS
-            // segment.
             match res_value {
                 ResolutionValue::Address(address) => {
                     if !self.tls.contains(&address) {
@@ -442,6 +441,8 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
                             address
                         );
                     }
+                    // Convert the address to an offset relative to the TCB which is the end of the
+                    // TLS segment.
                     res_value = ResolutionValue::Absolute(address.wrapping_sub(self.tls.end));
                 }
                 ResolutionValue::Dynamic(dyn_sym_index) => {
@@ -1145,20 +1146,24 @@ impl<'out> DynamicRelocationWriter<'out> {
             .context("insufficient allocation to .rela.dyn (glob-dat)")
     }
 
-    fn write_dtpmod(&mut self, place: u64) -> Result {
+    fn write_dtpmod(&mut self, place: u64, dynamic_symbol_index: u32) -> Result {
         let rela = self.take_glob_dat()?;
         rela.r_offset.set(LittleEndian, place);
-        rela.r_info
-            .set(LittleEndian, object::elf::R_X86_64_DTPMOD64.into());
+        rela.set_r_info(
+            LittleEndian,
+            false,
+            dynamic_symbol_index,
+            object::elf::R_X86_64_DTPMOD64,
+        );
         Ok(())
     }
 
-    fn write_dtpoff(&mut self, place: u64, dyn_sym_index: u64) -> Result {
+    fn write_dtpoff(&mut self, place: u64, dyn_sym_index: u32) -> Result {
         let rela = self.take_glob_dat()?;
         rela.r_offset.set(LittleEndian, place);
         rela.r_info.set(
             LittleEndian,
-            dyn_sym_index << 32 | u64::from(object::elf::R_X86_64_DTPOFF64),
+            u64::from(dyn_sym_index) << 32 | u64::from(object::elf::R_X86_64_DTPOFF64),
         );
         Ok(())
     }
@@ -1374,6 +1379,7 @@ impl<'data> InternalLayout<'data> {
                 plt_got_writer.process_resolution(
                     &Resolution {
                         raw_value: crate::elf::CURRENT_EXE_TLS_MOD,
+                        dynamic_symbol_index: None,
                         got_address: Some(got_address),
                         plt_address: None,
                         resolution_flags: ResolutionFlag::Got.into(),
@@ -1383,11 +1389,12 @@ impl<'data> InternalLayout<'data> {
                 )?;
             } else {
                 plt_got_writer.take_next_got_entry()?;
-                relocation_writer.write_dtpmod(got_address.get())?;
+                relocation_writer.write_dtpmod(got_address.get(), 0)?;
             }
             plt_got_writer.process_resolution(
                 &Resolution {
                     raw_value: 0,
+                    dynamic_symbol_index: None,
                     got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
                     plt_address: None,
                     resolution_flags: ResolutionFlag::Got.into(),
@@ -1555,10 +1562,14 @@ fn write_dynamic_symbol_definitions(
                 bail!("Internal error: Defined symbols should always be for a loaded section");
             };
             let output_section_id = section.output_section_id.unwrap();
-            let mut symbol_value = object.section_resolutions[section_index.0]
-                .as_ref()
-                .unwrap()
-                .address()?;
+            let symbol_id = sym_def.symbol_id;
+            let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
+                format!(
+                    "Tried to write dynamic symbol definition without a resolution: {}",
+                    layout.symbol_debug(symbol_id)
+                )
+            })?;
+            let mut symbol_value = resolution.raw_value;
             if sym.st_type() == object::elf::STT_TLS {
                 let tls_start_address = layout
                     .segment_layouts
@@ -1569,10 +1580,7 @@ fn write_dynamic_symbol_definitions(
             dynamic_symbol_writer
                 .copy_symbol(sym, name, output_section_id, symbol_value)
                 .with_context(|| {
-                    format!(
-                        "Failed to copy dynamic {}",
-                        layout.symbol_debug(sym_def.symbol_id)
-                    )
+                    format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
                 })?;
         } else {
             dynamic_symbol_writer

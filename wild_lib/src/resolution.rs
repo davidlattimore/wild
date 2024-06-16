@@ -737,7 +737,7 @@ fn resolve_symbol<'data>(
     let name_bytes = obj.object.symbol_name(local_symbol)?;
     debug_assert_bail!(
         !local_symbol.is_local(),
-        "Only globals should be undefined, found symbol `{}`",
+        "Only globals should be undefined, found symbol `{}` ({local_symbol_index})",
         String::from_utf8_lossy(name_bytes)
     );
     assert!(!local_symbol.is_definition(LittleEndian));

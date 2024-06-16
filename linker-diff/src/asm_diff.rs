@@ -493,7 +493,6 @@ enum AddressResolution<'data> {
     Null,
     UndefinedTls,
     UnknownTls,
-    TlsBlock,
     PltWithUnresolvedGot(u64),
     NullPlt,
     PltWithInvalidGot(u64),
@@ -683,10 +682,47 @@ impl<'data> AddressIndex<'data> {
                     version: None,
                 });
             }
+            let name_bytes = sym.name_bytes()?;
             dynamic_symbol_names.push(SymbolName {
-                bytes: sym.name_bytes()?,
+                bytes: name_bytes,
                 version,
             });
+            if version.is_none() && !sym.is_undefined() {
+                let sym_address = sym.address();
+                if sym.kind() == SymbolKind::Tls {
+                    if let Some(debug_tls_name) = self.tls_by_offset.get(&sym_address) {
+                        if *debug_tls_name != name_bytes {
+                            bail!(
+                                "Dynamic TLS symbol `{}` has offset 0x{sym_address:x}, but \
+                                 debug symbol `{}` is at that offset",
+                                String::from_utf8_lossy(name_bytes),
+                                String::from_utf8_lossy(debug_tls_name)
+                            );
+                        }
+                    }
+                } else {
+                    let resolutions = self
+                        .address_resolutions
+                        .get(&(sym_address + self.load_offset))
+                        .map(|r| r.as_slice())
+                        .unwrap_or_default();
+                    let matches_debug_sym = resolutions.iter().any(|res| {
+                        if let AddressResolution::Basic(BasicResolution::Symbol(debug_symbol)) = res
+                        {
+                            debug_symbol.bytes == name_bytes
+                        } else {
+                            false
+                        }
+                    });
+                    if !matches_debug_sym {
+                        bail!(
+                        "Dynamic symbol `{}` points to 0x{sym_address:x}, but that address resolves to: {}",
+                        String::from_utf8_lossy(name_bytes),
+                        resolutions.iter().map(|r| r.to_string()).collect::<Vec<_>>().join(", ")
+                    );
+                    }
+                }
+            }
         }
         if let Some(versym) = symbol_version_indexes {
             let versym_len = versym.len();
@@ -762,19 +798,25 @@ impl<'data> AddressIndex<'data> {
         for rel in rela_dyn {
             if rel.r_type(e, false) == object::elf::R_X86_64_DTPMOD64 {
                 let address = self.load_offset + rel.r_offset(e);
-                let Some(tls_offset) = read_address(elf_file, self, address + 8) else {
+                let symbol_index = rel.r_sym(e, false);
+                if symbol_index != 0 {
+                    // We already handled relocations that referred to symbols above, so no need to
+                    // do it again here.
                     continue;
-                };
-                if tls_offset == 0 {
-                    self.add_resolution(address, AddressResolution::TlsBlock);
                 }
-                if let Some(tls_name) = self.tls_by_offset.get(&tls_offset) {
-                    let symbol = SymbolName {
-                        bytes: tls_name,
-                        version: None,
-                    };
-                    self.add_resolution(address, AddressResolution::TlsIdentifier(symbol));
-                }
+                // Since we have no symbol associated with the DTPMOD, we assume that there's no
+                // relocation for the offset, but instead an absolute TLS offset.
+                let tls_offset_address = address + 8;
+                let resolution = read_address(elf_file, self, tls_offset_address)
+                    .and_then(|tls_offset| self.tls_by_offset.get(&tls_offset))
+                    .map(|tls_name| {
+                        AddressResolution::TlsIdentifier(SymbolName {
+                            bytes: tls_name,
+                            version: None,
+                        })
+                    })
+                    .unwrap_or(AddressResolution::UndefinedTls);
+                self.add_resolution(address, resolution);
             }
         }
     }
@@ -1757,7 +1799,6 @@ impl Display for AddressResolution<'_> {
                 write!(f, "PLT-INVALID-GOT(0x{address:x})")
             }
             AddressResolution::IFuncWithUnknownResolver => write!(f, "IFUNC-UNKNOWN"),
-            AddressResolution::TlsBlock => write!(f, "TLS"),
             AddressResolution::AnonymousData => write!(f, "ANON-DATA"),
         }
     }

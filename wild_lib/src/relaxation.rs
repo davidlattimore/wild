@@ -76,8 +76,7 @@ impl Relaxation {
             };
         }
 
-        let can_bypass_got = value_flags.contains(ValueFlag::CanBypassGot)
-            && !value_flags.contains(ValueFlag::Dynamic);
+        let can_bypass_got = value_flags.contains(ValueFlag::CanBypassGot);
 
         let offset = offset_in_section as usize;
         // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
@@ -165,8 +164,8 @@ impl Relaxation {
                 }
                 return None;
             }
-            object::elf::R_X86_64_GOTTPOFF => {
-                if offset < 3 || value_flags.contains(ValueFlag::Dynamic) {
+            object::elf::R_X86_64_GOTTPOFF if can_bypass_got => {
+                if offset < 3 {
                     return None;
                 }
                 match section_bytes[offset - 3..offset - 1] {
@@ -182,15 +181,13 @@ impl Relaxation {
             object::elf::R_X86_64_PLT32 if can_bypass_got => {
                 return Some((Relaxation::NoOp, object::elf::R_X86_64_PC32));
             }
-            object::elf::R_X86_64_TLSGD if can_bypass_got => {
+            object::elf::R_X86_64_TLSGD if can_bypass_got && output_kind.is_executable() => {
                 if offset < 4 || section_bytes[offset - 4..offset] != [0x66, 0x48, 0x8d, 0x3d] {
                     return None;
                 }
                 return Some((Relaxation::TlsGdToLocalExec, object::elf::R_X86_64_TPOFF32));
             }
-            object::elf::R_X86_64_TLSGD
-                if output_kind.is_executable() && !value_flags.contains(ValueFlag::Dynamic) =>
-            {
+            object::elf::R_X86_64_TLSGD if output_kind.is_executable() => {
                 if offset < 4 || section_bytes[offset - 4..offset] != [0x66, 0x48, 0x8d, 0x3d] {
                     return None;
                 }
@@ -275,7 +272,7 @@ impl Relaxation {
                 section_bytes[offset - 4..offset + 8]
                     .copy_from_slice(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0x48, 0x03, 0x05]);
                 *offset_in_section += 8;
-                *addend = 0;
+                *addend = -12_i64 as u64;
                 *next_modifier = RelocationModifier::SkipNextRelocation;
             }
             Relaxation::TlsLdToLocalExec => {

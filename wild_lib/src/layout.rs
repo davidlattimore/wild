@@ -67,6 +67,7 @@ use smallvec::SmallVec;
 use std::ffi::CString;
 use std::fmt::Display;
 use std::mem::size_of;
+use std::num::NonZeroU32;
 use std::num::NonZeroU64;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
@@ -119,6 +120,7 @@ pub fn compute<'data>(
         &output_sections,
         &mut resolutions_by_file,
     )?;
+    update_dynamic_symbol_resolutions(&file_layouts, &mut symbol_resolutions.resolutions);
     crate::gc_stats::maybe_write_gc_stats(&file_layouts, symbol_db.args)?;
 
     Ok(Layout {
@@ -131,6 +133,24 @@ pub fn compute<'data>(
         output_sections,
         non_addressable_counts,
     })
+}
+
+/// Update resolutions for all dynamic symbols that our output file defines.
+#[tracing::instrument(skip_all, name = "Update dynamic symbol resolutions")]
+fn update_dynamic_symbol_resolutions(
+    layouts: &[FileLayout],
+    resolutions: &mut [Option<Resolution>],
+) {
+    let Some(FileLayout::Epilogue(epilogue)) = layouts.last() else {
+        panic!("Epilogue should be the last file");
+    };
+    for (index, sym) in epilogue.dynamic_symbol_definitions.iter().enumerate() {
+        let dynamic_symbol_index = NonZeroU32::try_from(epilogue.dynsym_start_index + index as u32)
+            .expect("Dynamic symbol definitions should start > 0");
+        if let Some(res) = &mut resolutions[sym.symbol_id.as_usize()] {
+            res.dynamic_symbol_index = Some(dynamic_symbol_index);
+        }
+    }
 }
 
 #[tracing::instrument(skip_all, name = "Finalise per-object sizes")]
@@ -211,7 +231,10 @@ pub(crate) struct MergedStringStartAddresses {
 /// Address information for a symbol or section.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) struct Resolution {
+    /// An address or absolute value.
     pub(crate) raw_value: u64,
+
+    pub(crate) dynamic_symbol_index: Option<NonZeroU32>,
 
     pub(crate) got_address: Option<NonZeroU64>,
     pub(crate) plt_address: Option<NonZeroU64>,
@@ -287,6 +310,7 @@ pub(crate) struct EpilogueLayout<'data> {
     pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     pub(crate) dynstr_offset_start: u32,
+    dynsym_start_index: u32,
 }
 
 pub(crate) struct ObjectLayout<'data> {
@@ -457,7 +481,9 @@ fn allocate_resolution(
     if resolution_flags.contains(ResolutionFlag::Got) {
         mem_sizes.got += elf::GOT_ENTRY_SIZE;
         if args.is_relocatable() && !value_flags.contains(ValueFlag::IFunc) {
-            if value_flags.contains(ValueFlag::Dynamic) {
+            if value_flags.contains(ValueFlag::Dynamic)
+                || resolution_flags.contains(ResolutionFlag::ExportDynamic)
+            {
                 mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
             } else if value_flags.contains(ValueFlag::Address)
                 && !resolution_flags.contains(ResolutionFlag::Tls)
@@ -644,7 +670,8 @@ struct CommonLayoutState<'data> {
 
     symbol_id_range: SymbolIdRange,
 
-    /// Dynamic symbols defined by this object.
+    /// Dynamic symbols defined by this object. Because of the ordering requirements for symbol
+    /// hashes, these get defined by the epilogue.
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
 }
 
@@ -1828,7 +1855,8 @@ fn apply_relocation(
                 state.common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
             }
             (_, RelocationKind::Absolute | RelocationKind::Relative)
-                if symbol_value_flags.contains(ValueFlag::Dynamic) =>
+                if symbol_value_flags.contains(ValueFlag::Dynamic)
+                    || resolution_kind.contains(ResolutionFlag::ExportDynamic) =>
             {
                 state.common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
             }
@@ -2187,7 +2215,7 @@ impl InternalSymbols {
                     (sec.mem_offset + sec.mem_size, ValueFlag::Address.into())
                 }
             };
-            emitter.emit_resolution(symbol_id, raw_value, value_flags, resolutions_out)?;
+            emitter.emit_resolution(symbol_id, raw_value, None, value_flags, resolutions_out)?;
         }
         Ok(())
     }
@@ -2297,6 +2325,13 @@ impl<'data> EpilogueLayoutState<'data> {
                 .try_into()
                 .context("Too many dynamic symbols")?;
         }
+
+        let dynsym_start_index = ((memory_offsets.dynsym
+            - section_layouts
+                .built_in(output_section_id::DYNSYM)
+                .mem_offset)
+            / elf::SYMTAB_ENTRY_SIZE) as u32;
+
         Ok(EpilogueLayout {
             file_sizes: compute_file_sizes(&self.common.mem_sizes, output_sections),
             mem_sizes: self.common.mem_sizes,
@@ -2305,6 +2340,7 @@ impl<'data> EpilogueLayoutState<'data> {
             gnu_hash_layout: self.gnu_hash_layout,
             dynamic_symbol_definitions: self.dynamic_symbol_definitions,
             dynstr_offset_start,
+            dynsym_start_index,
         })
     }
 }
@@ -2588,6 +2624,7 @@ impl<'data> ObjectLayoutState<'data> {
                     section_resolutions.push(Some(emitter.create_resolution(
                         sec.resolution_kind,
                         *address,
+                        None,
                         ValueFlag::Address.into(),
                     )?));
                     *address += sec.capacity();
@@ -2599,6 +2636,7 @@ impl<'data> ObjectLayoutState<'data> {
                     section_resolutions.push(Some(emitter.create_resolution(
                         ResolutionFlag::Direct.into(),
                         memory_offsets.eh_frame,
+                        None,
                         ValueFlag::Address.into(),
                     )?));
                 }
@@ -2624,7 +2662,7 @@ impl<'data> ObjectLayoutState<'data> {
                 continue;
             }
             let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
-            let mut raw_value = if let Some(section_index) = self
+            let raw_value = if let Some(section_index) = self
                 .object
                 .symbol_section(local_symbol, local_symbol_index)?
             {
@@ -2653,13 +2691,23 @@ impl<'data> ObjectLayoutState<'data> {
             } else {
                 local_symbol.st_value(e)
             };
+            let mut dynamic_symbol_index = None;
             if value_flags.contains(ValueFlag::Dynamic) {
                 // This is an undefined weak symbol. Emit it as a dynamic symbol so that it can be
                 // overridden at runtime.
-                raw_value = dyn_sym_index.into();
+                dynamic_symbol_index = Some(
+                    NonZeroU32::new(dyn_sym_index)
+                        .context("Attempted to create dynamic symbol index 0")?,
+                );
                 dyn_sym_index += 1;
             }
-            emitter.emit_resolution(symbol_id, raw_value, value_flags, resolutions_out)?;
+            emitter.emit_resolution(
+                symbol_id,
+                raw_value,
+                dynamic_symbol_index,
+                value_flags,
+                resolutions_out,
+            )?;
         }
 
         let plt_relocations = emitter.plt_relocations;
@@ -2982,6 +3030,7 @@ impl<'state> GlobalAddressEmitter<'state> {
         &mut self,
         symbol_id: SymbolId,
         raw_value: u64,
+        dynamic_symbol_index: Option<NonZeroU32>,
         value_flags: ValueFlags,
         resolutions_out: &mut [Option<Resolution>],
     ) -> Result {
@@ -2999,6 +3048,7 @@ impl<'state> GlobalAddressEmitter<'state> {
         let resolution = self.create_resolution(
             self.symbol_states[local_symbol_index],
             raw_value,
+            dynamic_symbol_index,
             value_flags,
         )?;
         resolutions_out[local_symbol_index] = Some(resolution);
@@ -3009,10 +3059,12 @@ impl<'state> GlobalAddressEmitter<'state> {
         &mut self,
         res_kind: BitFlags<ResolutionFlag>,
         raw_value: u64,
+        dynamic_symbol_index: Option<NonZeroU32>,
         value_flags: ValueFlags,
     ) -> Result<Resolution> {
         let mut resolution = Resolution {
             raw_value,
+            dynamic_symbol_index,
             got_address: None,
             plt_address: None,
             resolution_flags: res_kind,
@@ -3110,7 +3162,11 @@ impl Resolution {
 
     pub(crate) fn resolution_value(&self) -> ResolutionValue {
         if self.value_flags.contains(ValueFlag::Dynamic) {
-            ResolutionValue::Dynamic(self.raw_value as u32)
+            ResolutionValue::Dynamic(
+                self.dynamic_symbol_index
+                    .expect("Dynamic resolution with dynamic_symbol_index not populated")
+                    .get(),
+            )
         } else if self.value_flags.contains(ValueFlag::IFunc) {
             ResolutionValue::Iplt(self.raw_value)
         } else if self.value_flags.contains(ValueFlag::Absolute) {
@@ -3296,11 +3352,17 @@ impl<'data> DynamicLayoutState<'data> {
             if symbol_state.is_empty() {
                 continue;
             }
-            *resolution = Some(emitter.create_resolution(
-                *symbol_state,
-                u64::from(next_symbol_index),
-                ValueFlag::Dynamic.into(),
-            )?);
+            *resolution = Some(
+                emitter.create_resolution(
+                    *symbol_state,
+                    0,
+                    Some(
+                        NonZeroU32::new(next_symbol_index)
+                            .context("Tried to create dynamic symbol index 0")?,
+                    ),
+                    ValueFlag::Dynamic.into(),
+                )?,
+            );
 
             next_symbol_index += 1;
         }
