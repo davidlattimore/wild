@@ -29,15 +29,11 @@
 //#LinkArgs:--cc=gcc -static-pie -Wl,--strip-debug -Wl,--gc-sections
 //#Object:libc-integration-0.c
 
-//#Config:gcc-dynamic:default
-//#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections
+//#Config:clang-dynamic:default
+//#CompArgs:-g -fPIC
+//#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections
+//#EnableLinker:lld
 //#Shared:libc-integration-0.c
-
-//TODO: Enable
-// #Config:gcc-dynamic-pic:default
-// #CompArgs:-g -ftls-model=global-dynamic -fpic
-// #LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections
-// #Shared:libc-integration-0.c
 
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +47,9 @@ void set_tvar2(int v);
 
 int __attribute__ ((weak)) weak_fn1(void);
 int __attribute__ ((weak)) weak_fn2(void);
+
+void set_tvar_local(int v);
+int get_tvar_local(void);
 
 void *thread_function(void *data) {
     if (tvar1 != 0) {
@@ -106,6 +105,14 @@ int main() {
     }
     if (weak_fn2) {
         return weak_fn2();
+    }
+
+    if (get_tvar_local() != 8) {
+        return 107;
+    }
+    set_tvar_local(99);
+    if (get_tvar_local() != 99) {
+        return 108;
     }
 
     return 42;
