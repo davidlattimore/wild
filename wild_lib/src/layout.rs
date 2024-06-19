@@ -482,7 +482,8 @@ fn allocate_resolution(
         mem_sizes.got += elf::GOT_ENTRY_SIZE;
         if args.is_relocatable() && !value_flags.contains(ValueFlag::IFunc) {
             if value_flags.contains(ValueFlag::Dynamic)
-                || resolution_flags.contains(ResolutionFlag::ExportDynamic)
+                || (resolution_flags.contains(ResolutionFlag::ExportDynamic)
+                    && !value_flags.contains(ValueFlag::CanBypassGot))
             {
                 mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
             } else if value_flags.contains(ValueFlag::Address)
