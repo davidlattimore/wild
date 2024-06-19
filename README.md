@@ -4,7 +4,7 @@ Wild is a linker with the goal of being very fast for iterative development.
 
 It's still very much a work-in-progress and definitely shouldn't be used for linking any production
 binaries. It's probably not really ready for development purposes yet, since there's a bunch of
-important stuff it can't yet do like debug info and dynamic linking.
+important stuff it can't yet do like debug info.
 
 ## Q&A
 
@@ -20,8 +20,6 @@ Lots of stuff. Here are some of the larger things that aren't yet done, roughly 
 priority:
 
 * Debug info
-* Support for position-independent static executables
-* Dynamic linking
 * Incremental linking
 * Mac support
 * Windows support
@@ -104,13 +102,13 @@ they're currently doing. If you know of such flags, please let me know.
 
 ## Linking Rust code
 
-Currently Wild only works with somewhat specific compilation and linking options. The following is a
-`cargo test` command-line that can be used to build and test a crate using Wild. This has been run
-successfully on a few popular crates (e.g. ripgrep, serde, tokio, rand, bitflags). It assumes that
-the "wild" binary is on your path.
+The following is a `cargo test` command-line that can be used to build and test a crate using Wild.
+This has been run successfully on a few popular crates (e.g. ripgrep, serde, tokio, rand, bitflags).
+It assumes that the "wild" binary is on your path. It also depends on the Clang compiler being
+installed, since GCC doesn't allow using an arbitrary linker.
 
 ```sh
-cargo test --target x86_64-unknown-linux-musl --config 'target.x86_64-unknown-linux-musl.linker="/usr/bin/clang-15"' --config 'target.x86_64-unknown-linux-musl.rustflags=["-C", "relocation-model=static", "-C", "target-feature=+crt-static", "-C", "debuginfo=0", "-C", "link-arg=--ld-path=wild"]'
+RUSTFLAGS="-Clinker=clang -Clink-args=--ld-path=wild" cargo test
 ```
 
 ### Contributing
