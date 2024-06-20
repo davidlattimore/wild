@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [ '**' ]
+  pull_request:
+    branches: [ '**' ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: '-D warnings'
+
+jobs:
+  test-nightly:
+    name: Test x86_64-linux nightly
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        id: rust-toolchain
+        with:
+          targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl
+          components: rustc-codegen-cranelift-preview
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+      - run: sudo apt install bubblewrap
+      - run: cargo build --no-default-features
+      - run: cargo test
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      id: rust-toolchain
+      with:
+        components: clippy
+    - uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-clippy-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+    - run: cargo clippy --target x86_64-unknown-linux-gnu
+
+  rustfmt:
+    name: Check formatting
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rustfmt
+    - run: cargo fmt --all -- --check
