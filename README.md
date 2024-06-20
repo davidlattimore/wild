@@ -21,11 +21,11 @@ priority:
 
 * Debug info
 * Incremental linking
-* Mac support
-* Windows support
 * Support for architectures other than x86-64
 * Support for a wider range of linker flags
 * Linker scripts
+* Mac support
+* Windows support
 * LTO
 
 ### How can I verify that Wild was used to link a binary?
@@ -51,8 +51,8 @@ strings my-executable | grep Linker
 ### Where did the name come from?
 
 It's somewhat of a tradition for linkers to end with the letters "ld". e.g. "GNU ld, "gold", "lld",
-"mold". Since the end-goal is for the linker to be incremental, an "I" is added. The "W" doesn't
-stand for anything and was just selected based on it giving an interesting word.
+"mold". Since the end-goal is for the linker to be incremental, an "I" is added. Let's say the "W"
+stands for "Wild", since recursive acronyms are popular in open-source projects.
 
 ### Benchmarks
 
@@ -95,7 +95,6 @@ should ensure that the other linkers aren't doing work on something that Wild do
 particular:
 
 * No debug info should be linked. e.g. pass --strip-debug to all linkers
-* A non-PIE binary should be produced. i.e. pass --no-pie
 
 There might be other flags that speed up the other linkers by letting them avoid some work that
 they're currently doing. If you know of such flags, please let me know.
