@@ -50,17 +50,17 @@ struct Program<'a> {
     shared_objects: Vec<LinkerInput>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Linker {
     Wild,
     ThirdParty(ThirdPartyLinker),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct ThirdPartyLinker {
     name: &'static str,
     gcc_name: &'static str,
-    path: &'static str,
+    path: PathBuf,
     enabled_by_default: bool,
 }
 
@@ -68,7 +68,7 @@ impl Linker {
     fn path(&self) -> &Path {
         match self {
             Linker::Wild => wild_path(),
-            Linker::ThirdParty(info) => Path::new(info.path),
+            Linker::ThirdParty(info) => &info.path,
         }
     }
 
@@ -76,7 +76,7 @@ impl Linker {
         let mut linker_args = config.linker_args.clone();
         linker_args.args.push("-shared".to_owned());
         let mut command = LinkCommand::new(
-            *self,
+            self,
             &[LinkerInput::new(obj_path.to_owned())],
             so_path,
             &linker_args,
@@ -155,7 +155,7 @@ struct Config {
     deps: Vec<Dep>,
 }
 impl Config {
-    fn is_linker_enabled(&self, linker: Linker) -> bool {
+    fn is_linker_enabled(&self, linker: &Linker) -> bool {
         if self.skip_linkers.contains(linker.name()) {
             return false;
         }
@@ -365,7 +365,7 @@ impl ProgramInputs {
         Ok(Self { source_file })
     }
 
-    fn build<'a>(&self, linker: Linker, config: &'a Config) -> Result<Program<'a>> {
+    fn build<'a>(&self, linker: &Linker, config: &'a Config) -> Result<Program<'a>> {
         let primary = build_linker_input(
             &Dep {
                 filename: self.source_file.to_owned(),
@@ -463,7 +463,7 @@ impl LinkerInput {
 }
 
 /// Creates a linker input from a source file. This will be either an object file or an archive.
-fn build_linker_input(dep: &Dep, config: &Config, linker: Linker) -> Result<LinkerInput> {
+fn build_linker_input(dep: &Dep, config: &Config, linker: &Linker) -> Result<LinkerInput> {
     let src_path = src_path(&dep.filename);
     if dep.filename.ends_with(".a") {
         return Ok(LinkerInput::new(src_path));
@@ -578,7 +578,7 @@ fn is_newer(output_path: &Path, src_path: &Path) -> bool {
 impl Linker {
     /// Links the supplied object files with this configuration and returns the path to the
     /// resulting binary.
-    fn link(self, basename: &str, inputs: &[LinkerInput], config: &Config) -> Result<LinkOutput> {
+    fn link(&self, basename: &str, inputs: &[LinkerInput], config: &Config) -> Result<LinkOutput> {
         let output_path = self.output_path(basename, config);
         let mut command = LinkCommand::new(self, inputs, &output_path, &config.linker_args);
         if !command.can_skip {
@@ -587,7 +587,7 @@ impl Linker {
         Ok(LinkOutput {
             binary: output_path,
             command,
-            linker_used: self,
+            linker_used: self.clone(),
         })
     }
 
@@ -609,7 +609,7 @@ fn make_archive(archive_path: &Path, path: &Path) -> Result {
 
 impl LinkCommand {
     fn new(
-        linker: Linker,
+        linker: &Linker,
         inputs: &[LinkerInput],
         output_path: &Path,
         linker_args: &ArgumentSet,
@@ -617,7 +617,7 @@ impl LinkCommand {
         // We allow skipping linking if all the object files are the unchanged and are older than
         // our output file, but not if we're linking with our linker, since we're always changing
         // that.
-        let can_skip = linker != Linker::Wild
+        let can_skip = !matches!(linker, Linker::Wild)
             && inputs
                 .iter()
                 .all(|input| is_newer(output_path, &input.path));
@@ -698,7 +698,7 @@ impl LinkCommand {
                 .iter()
                 .filter_map(|input| input.command.as_ref().cloned())
                 .collect(),
-            linker,
+            linker: linker.clone(),
             can_skip,
             invocation_mode,
             opt_save_dir,
@@ -728,10 +728,10 @@ fn get_script(inputs: &[LinkerInput]) -> Option<(PathBuf, &[LinkerInput])> {
 
 impl Assertions {
     fn check(&self, link_output: &LinkOutput) -> Result {
-        self.check_path(&link_output.binary, link_output.linker_used)
+        self.check_path(&link_output.binary, &link_output.linker_used)
     }
 
-    fn check_path(&self, path: &PathBuf, linker_used: Linker) -> Result {
+    fn check_path(&self, path: &PathBuf, linker_used: &Linker) -> Result {
         let bytes = std::fs::read(path)?;
         let obj = ElfFile64::parse(bytes.as_slice())?;
 
@@ -771,7 +771,7 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_comment_section(&self, obj: &ElfFile64, linker_used: Linker) -> Result {
+    fn verify_comment_section(&self, obj: &ElfFile64, linker_used: &Linker) -> Result {
         if self.expected_comments.is_empty() {
             match linker_used {
                 Linker::Wild => {
@@ -876,7 +876,7 @@ impl Display for LinkCommand {
             .get_args()
             .map(|a| a.to_string_lossy())
             .collect();
-        match (self.invocation_mode, self.linker) {
+        match (self.invocation_mode, &self.linker) {
             (LinkerInvocationMode::Cc, Linker::Wild) => {
                 write!(
                     f,
@@ -971,7 +971,7 @@ impl Clone for LinkCommand {
         Self {
             command: clone_command(&self.command),
             input_commands: self.input_commands.to_vec(),
-            linker: self.linker,
+            linker: self.linker.clone(),
             can_skip: self.can_skip,
             invocation_mode: self.invocation_mode,
             opt_save_dir: self.opt_save_dir.clone(),
@@ -1055,6 +1055,18 @@ fn setup_wild_ld_symlink() -> Result {
     Ok(())
 }
 
+fn find_bin(names: &[&str]) -> Result<PathBuf> {
+    names
+        .iter()
+        .find_map(|n| which::which(n).ok())
+        .with_context(|| {
+            format!(
+                "Failed to find any of the following on the path: {}",
+                names.join(", ")
+            )
+        })
+}
+
 #[test]
 fn integration_test() -> Result {
     // We could potentially just discover the source files, but having a hand-written ordering is
@@ -1092,27 +1104,41 @@ fn integration_test() -> Result {
         ProgramInputs::new("rust-integration-dynamic.rs")?,
     ];
 
-    let linkers = [
+    let mut linkers = vec![
         Linker::ThirdParty(ThirdPartyLinker {
             name: "ld",
             gcc_name: "bfd",
-            path: "/usr/bin/ld",
+            path: find_bin(&["ld"])?,
             enabled_by_default: true,
         }),
         Linker::ThirdParty(ThirdPartyLinker {
             name: "lld",
             gcc_name: "lld",
-            path: "/usr/bin/ld.lld-15",
+            path: find_bin(&["ld.lld-18", "ld.lld-17", "ld.lld-16", "ld.lld-15"])?,
             enabled_by_default: false,
         }),
-        Linker::ThirdParty(ThirdPartyLinker {
+    ];
+
+    // We don't need gold and mold for our tests, they're just there for the odd occasion when we're
+    // curious and looking for extra data points as to how other linkers handle a particular case.
+    if let Ok(path) = find_bin(&["gold"]) {
+        linkers.push(Linker::ThirdParty(ThirdPartyLinker {
+            name: "gold",
+            gcc_name: "gold",
+            path,
+            enabled_by_default: false,
+        }));
+    }
+    if let Ok(path) = find_bin(&["mold"]) {
+        linkers.push(Linker::ThirdParty(ThirdPartyLinker {
             name: "mold",
             gcc_name: "mold",
-            path: "/usr/local/bin/mold",
+            path,
             enabled_by_default: false,
-        }),
-        Linker::Wild,
-    ];
+        }));
+    }
+
+    linkers.push(Linker::Wild);
 
     setup_wild_ld_symlink()?;
 
@@ -1125,10 +1151,10 @@ fn integration_test() -> Result {
         for config in configs {
             let programs = linkers
                 .iter()
-                .filter(|linker| config.is_linker_enabled(**linker))
+                .filter(|linker| config.is_linker_enabled(linker))
                 .map(|linker| {
                     let start = Instant::now();
-                    let result = program_inputs.build(*linker, &config).with_context(|| {
+                    let result = program_inputs.build(linker, &config).with_context(|| {
                         format!(
                             "Failed to build program `{program_inputs}` \
                                     with linker `{linker}` config {}",

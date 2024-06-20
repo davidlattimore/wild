@@ -17,3 +17,4 @@ object = { version = "0.36.0", default-features = false, features = [
     "unaligned",
 ] }
 linker-diff = { path = "../linker-diff" }
+which = "6.0.1"
