@@ -242,21 +242,6 @@ pub(crate) struct Resolution {
     pub(crate) value_flags: ValueFlags,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) enum ResolutionValue {
-    /// An absolute value.
-    Absolute(u64),
-
-    /// An address of something.
-    Address(u64),
-
-    /// A dynamic symbol index.
-    Dynamic(u32),
-
-    /// The address of an IPLT entry for an ifunc.
-    Iplt(u64),
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TlsMode {
     /// Convert TLS access to local-exec mode.
@@ -3161,28 +3146,19 @@ impl Resolution {
         Ok(self.raw_value)
     }
 
-    pub(crate) fn resolution_value(&self) -> ResolutionValue {
-        if self.value_flags.contains(ValueFlag::Dynamic) {
-            ResolutionValue::Dynamic(
-                self.dynamic_symbol_index
-                    .expect("Dynamic resolution with dynamic_symbol_index not populated")
-                    .get(),
-            )
-        } else if self.value_flags.contains(ValueFlag::IFunc) {
-            ResolutionValue::Iplt(self.raw_value)
-        } else if self.value_flags.contains(ValueFlag::Absolute) {
-            ResolutionValue::Absolute(self.raw_value)
-        } else {
-            ResolutionValue::Address(self.raw_value)
-        }
-    }
-
     pub(crate) fn value_for_symbol_table(&self) -> u64 {
         self.raw_value
     }
 
     pub(crate) fn is_absolute(&self) -> bool {
         self.value_flags.contains(ValueFlag::Absolute)
+    }
+
+    pub(crate) fn dynamic_symbol_index(&self) -> Result<u32> {
+        Ok(self
+            .dynamic_symbol_index
+            .context("Missing dynamic_symbol_index")?
+            .get())
     }
 }
 

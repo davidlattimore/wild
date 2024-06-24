@@ -28,7 +28,6 @@ use crate::layout::Layout;
 use crate::layout::ObjectLayout;
 use crate::layout::Resolution;
 use crate::layout::ResolutionFlag;
-use crate::layout::ResolutionValue;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
 use crate::output_section_id;
@@ -431,35 +430,37 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
             }
             return Ok(());
         }
-        let mut res_value = res.resolution_value();
         if res.resolution_flags.contains(ResolutionFlag::Tls) {
-            match res_value {
-                ResolutionValue::Address(address) => {
-                    if !self.tls.contains(&address) {
-                        bail!(
-                            "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
-                            address
-                        );
-                    }
-                    // Convert the address to an offset relative to the TCB which is the end of the
-                    // TLS segment.
-                    res_value = ResolutionValue::Absolute(address.wrapping_sub(self.tls.end));
-                }
-                ResolutionValue::Dynamic(dyn_sym_index) => {
-                    return relocation_writer.write_tpoff(got_address.get(), dyn_sym_index);
-                }
-                other => bail!(
-                    "Unexpected resolution value {other:?} value_flags={}",
-                    res.value_flags
-                ),
+            if res.value_flags.contains(ValueFlag::Dynamic) {
+                return relocation_writer
+                    .write_tpoff(got_address.get(), res.dynamic_symbol_index()?);
             }
+            let address = res.raw_value;
+            if !self.tls.contains(&address) {
+                bail!(
+                    "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
+                    address
+                );
+            }
+            // Convert the address to an offset relative to the TCB which is the end of the
+            // TLS segment.
+            *got_entry = address.wrapping_sub(self.tls.end);
+            return Ok(());
         }
-        relocation_writer.write_relocation(got_address.get(), res_value, 0)?;
-        match res_value {
-            ResolutionValue::Absolute(v) => *got_entry = v,
-            ResolutionValue::Address(v) => *got_entry = v,
-            ResolutionValue::Iplt(_) => {}
-            ResolutionValue::Dynamic(_) => {}
+        if res.value_flags.contains(ValueFlag::Dynamic) {
+            relocation_writer.write_dynamic_symbol_relocation(
+                got_address.get(),
+                0,
+                res.dynamic_symbol_index()?,
+            )?;
+        } else if res.value_flags.contains(ValueFlag::IFunc) {
+            // Nothing to do here
+        } else {
+            *got_entry = res.raw_value;
+            if res.value_flags.contains(ValueFlag::Address) {
+                relocation_writer
+                    .write_address_relocation(got_address.get(), res.raw_value as i64)?;
+            }
         }
         if let Some(plt_address) = res.plt_address {
             self.write_plt_entry(got_address.get(), plt_address.get())?;
@@ -1106,36 +1107,42 @@ impl<'out> DynamicRelocationWriter<'out> {
         }
     }
 
-    fn write_relocation(&mut self, place: u64, res_value: ResolutionValue, addend: u64) -> Result {
+    fn write_dynamic_symbol_relocation(
+        &mut self,
+        place: u64,
+        addend: u64,
+        symbol_index: u32,
+    ) -> Result<(), anyhow::Error> {
         if !self.is_active {
             return Ok(());
         }
         let e = LittleEndian;
-        match res_value {
-            ResolutionValue::Absolute(_) | ResolutionValue::Iplt(_) => {}
-            ResolutionValue::Address(address) => {
-                let rela = crate::slice::take_first_mut(&mut self.rela_dyn_relative)
-                    .context("insufficient allocation to .rela.dyn (relative)")?;
-                rela.r_offset.set(e, place);
-                rela.r_addend.set(e, address.wrapping_add(addend) as i64);
-                rela.r_info.set(e, object::elf::R_X86_64_RELATIVE.into());
-            }
-            ResolutionValue::Dynamic(symbol_index) => {
-                let rela = self.take_glob_dat()?;
-                rela.r_offset.set(e, place);
-                rela.r_addend.set(e, addend as i64);
-                // We could plausibly use R_X86_64_JUMP_SLOT here in cases where we have only PLT
-                // references to a symbol and no GOT references. If we did that, we'd need to put
-                // the relocation in .rela.plt not .rela.dyn. Right now, we don't track whether a
-                // symbol has only PLT references and no GOT references. Also, we currently set the
-                // BIND_NOW flag, which means all the PLT relocations would be eagerly bound, making
-                // use of JUMP_SLOT relocations pointless.
-                rela.r_info.set(
-                    e,
-                    u64::from(symbol_index) << 32 | u64::from(object::elf::R_X86_64_GLOB_DAT),
-                );
-            }
+        let rela = self.take_glob_dat()?;
+        rela.r_offset.set(e, place);
+        rela.r_addend.set(e, addend as i64);
+        // We could plausibly use R_X86_64_JUMP_SLOT here in cases where we have only PLT
+        // references to a symbol and no GOT references. If we did that, we'd need to put
+        // the relocation in .rela.plt not .rela.dyn. Right now, we don't track whether a
+        // symbol has only PLT references and no GOT references. Also, we currently set the
+        // BIND_NOW flag, which means all the PLT relocations would be eagerly bound, making
+        // use of JUMP_SLOT relocations pointless.
+        rela.r_info.set(
+            e,
+            u64::from(symbol_index) << 32 | u64::from(object::elf::R_X86_64_GLOB_DAT),
+        );
+        Ok(())
+    }
+
+    fn write_address_relocation(&mut self, place: u64, relative_address: i64) -> Result {
+        if !self.is_active {
+            return Ok(());
         }
+        let e = LittleEndian;
+        let rela = crate::slice::take_first_mut(&mut self.rela_dyn_relative)
+            .context("insufficient allocation to .rela.dyn (relative)")?;
+        rela.r_offset.set(e, place);
+        rela.r_addend.set(e, relative_address);
+        rela.r_info.set(e, object::elf::R_X86_64_RELATIVE.into());
         Ok(())
     }
 
@@ -1248,7 +1255,18 @@ fn apply_relocation(
     let value = match rel_info.kind {
         RelocationKind::Absolute => {
             if relocation_writer.is_active && !resolution.is_absolute() {
-                relocation_writer.write_relocation(place, resolution.resolution_value(), addend)?;
+                if resolution.value_flags.contains(ValueFlag::Dynamic) {
+                    relocation_writer.write_dynamic_symbol_relocation(
+                        place,
+                        addend,
+                        resolution.dynamic_symbol_index()?,
+                    )?;
+                } else {
+                    relocation_writer.write_address_relocation(
+                        place,
+                        resolution.raw_value.wrapping_add(addend) as i64,
+                    )?;
+                }
                 0
             } else {
                 resolution.value().wrapping_add(addend)

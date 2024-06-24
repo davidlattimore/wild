@@ -3,7 +3,6 @@
 use crate::error::Result;
 use crate::layout::Layout;
 use crate::layout::ResolutionFlag;
-use crate::layout::ResolutionValue;
 use crate::resolution::ValueFlag;
 use anyhow::bail;
 use anyhow::Context;
@@ -76,10 +75,12 @@ fn validate_resolution(
         if end_offset > got_data.len() {
             bail!("GOT offset beyond end of GOT 0x{end_offset}");
         }
-        let expected = match resolution.resolution_value() {
-            ResolutionValue::Absolute(v) | ResolutionValue::Address(v) => v,
-            ResolutionValue::Dynamic(_) | ResolutionValue::Iplt(_) => return Ok(()),
-        };
+        if resolution.value_flags.contains(ValueFlag::Dynamic)
+            || resolution.value_flags.contains(ValueFlag::IFunc)
+        {
+            return Ok(());
+        }
+        let expected = resolution.raw_value;
         let address = bytemuck::pod_read_unaligned(&got_data[start_offset..end_offset]);
         if expected != address {
             let name = String::from_utf8_lossy(name);
