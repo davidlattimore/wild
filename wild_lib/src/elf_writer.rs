@@ -697,7 +697,10 @@ impl<'data> ObjectLayout<'data> {
                 plt_got_writer
                     .process_resolution(res, &mut relocation_writer)
                     .with_context(|| {
-                        format!("Failed to process `{}`", layout.symbol_debug(symbol_id))
+                        format!(
+                            "Failed to process `{}` with resolution {res:?}",
+                            layout.symbol_debug(symbol_id)
+                        )
                     })?;
                 if res.value_flags.contains(ValueFlag::Dynamic)
                     && res.resolution_flags.contains(ResolutionFlag::Got)
