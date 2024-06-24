@@ -47,6 +47,15 @@ pub(crate) struct Args {
     pub(crate) verbose_gc_stats: bool,
 }
 
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum Action {
+    /// The default. Link something.
+    Link(Args),
+
+    /// Print the linker version.
+    Version,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutputKind {
     NonRelocatableStaticExecutable,
@@ -109,214 +118,220 @@ const IGNORED_FLAGS: &[&str] = &[
     "--no-undefined-version",
 ];
 
-impl Args {
-    pub(crate) fn from_env() -> Result<Self> {
-        Self::parse(std::env::args())
-    }
+pub(crate) fn from_env() -> Result<Action> {
+    parse(std::env::args())
+}
 
-    // Parse the supplied input arguments, which should not include the program name.
-    #[allow(clippy::if_same_then_else)]
-    pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Result<Self> {
-        let mut lib_search_path = Vec::new();
-        let mut inputs = Vec::new();
-        let mut output = None;
-        let mut dynamic_linker = None;
-        let mut output_kind = None;
-        let mut time_phases = false;
-        let mut num_threads = None;
-        let mut strip_all = false;
-        let mut strip_debug = false;
-        let mut prepopulate_maps = false;
-        let mut save_dir = SaveDir::new()?;
-        let mut sym_info = None;
-        let mut merge_strings = true;
-        let mut debug_fuel = None;
-        let mut validate_output = std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1");
-        let mut write_layout = std::env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1");
-        let mut write_trace = std::env::var(WRITE_TRACE_ENV).is_ok_and(|v| v == "1");
-        let mut pie = false;
-        let mut modifier_stack = vec![Modifiers::default()];
-        let mut version_script_path = None;
-        let mut debug_address = None;
-        let mut eh_frame_hdr = false;
-        let mut write_gc_stats = None;
-        let mut gc_stats_ignore = Vec::new();
-        let mut verbose_gc_stats = false;
-        if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
+// Parse the supplied input arguments, which should not include the program name.
+#[allow(clippy::if_same_then_else)]
+pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Result<Action> {
+    let mut lib_search_path = Vec::new();
+    let mut inputs = Vec::new();
+    let mut output = None;
+    let mut dynamic_linker = None;
+    let mut output_kind = None;
+    let mut time_phases = false;
+    let mut num_threads = None;
+    let mut strip_all = false;
+    let mut strip_debug = false;
+    let mut prepopulate_maps = false;
+    let mut save_dir = SaveDir::new()?;
+    let mut sym_info = None;
+    let mut merge_strings = true;
+    let mut debug_fuel = None;
+    let mut validate_output = std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1");
+    let mut write_layout = std::env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1");
+    let mut write_trace = std::env::var(WRITE_TRACE_ENV).is_ok_and(|v| v == "1");
+    let mut pie = false;
+    let mut modifier_stack = vec![Modifiers::default()];
+    let mut version_script_path = None;
+    let mut debug_address = None;
+    let mut eh_frame_hdr = false;
+    let mut write_gc_stats = None;
+    let mut gc_stats_ignore = Vec::new();
+    let mut verbose_gc_stats = false;
+    let mut action = None;
+    if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
+        write_layout = true;
+        write_trace = true;
+    }
+    // Lazy binding isn't used so much these days, since it makes things less secure. It adds
+    // quite a bit of complexity and we don't properly support it. We may eventually drop
+    // support completely.
+    let mut bind_now = true;
+    let mut hash_style = None;
+    // Skip program name
+    input.next();
+    while let Some(arg) = input.next() {
+        let arg = arg.as_ref();
+        if let Some(rest) = arg.strip_prefix("-L") {
+            if rest.is_empty() {
+                if let Some(next) = input.next() {
+                    lib_search_path.push(Box::from(Path::new(next.as_ref())));
+                }
+            } else {
+                lib_search_path.push(Box::from(Path::new(rest)));
+            }
+        } else if let Some(rest) = arg.strip_prefix("-l") {
+            inputs.push(Input {
+                spec: InputSpec::Lib(Box::from(rest)),
+                search_first: None,
+                modifiers: *modifier_stack.last().unwrap(),
+            });
+        } else if arg == "-static" || arg == "-Bstatic" {
+            modifier_stack.last_mut().unwrap().allow_shared = false;
+        } else if arg == "-Bdynamic" {
+            modifier_stack.last_mut().unwrap().allow_shared = true;
+        } else if arg == "-o" {
+            output = input.next().map(|a| Arc::from(Path::new(a.as_ref())));
+        } else if arg == "--dynamic-linker" || arg == "-dynamic-linker" {
+            output_kind = Some(OutputKind::DynamicExecutable);
+            dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
+        } else if arg == "--no-dynamic-linker" {
+            dynamic_linker = None;
+        } else if let Some(style) = arg.strip_prefix("--hash-style=") {
+            hash_style = Some(HashStyle::Gnu);
+            if style != "gnu" {
+                bail!("Unsupported hash-style `{style}`");
+            }
+        } else if arg.starts_with("--build-id=") {
+        } else if arg == "--time" {
+            time_phases = true;
+        } else if let Some(rest) = arg.strip_prefix("--threads=") {
+            num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
+        } else if arg == "--strip-all" {
+            strip_all = true;
+            strip_debug = true;
+        } else if arg == "--strip-debug" {
+            strip_debug = true;
+        } else if arg == "-m" {
+            // TODO: Handle these flags
+            input.next();
+        } else if arg == "-z" {
+            if let Some(z) = input.next() {
+                match z.as_ref() {
+                    "now" => bind_now = true,
+                    _ => {
+                        // TODO: Handle these
+                    }
+                }
+            }
+        } else if let Some(_rest) = arg.strip_prefix("-O") {
+            // We don't use opt-level for now.
+        } else if arg == "--prepopulate-maps" {
+            prepopulate_maps = true;
+        } else if arg == "--sym-info" {
+            sym_info = input.next().map(|a| a.as_ref().to_owned());
+        } else if arg == "--as-needed" {
+            modifier_stack.last_mut().unwrap().as_needed = true;
+        } else if arg == "--no-as-needed" {
+            modifier_stack.last_mut().unwrap().as_needed = false;
+        } else if arg == "--push-state" {
+            modifier_stack.push(*modifier_stack.last().unwrap());
+        } else if arg == "--pop-state" {
+            modifier_stack.pop();
+            // We put the initial value on the stack, so if it's ever empty, then the arguments
+            // are invalid.
+            if modifier_stack.is_empty() {
+                bail!("Mismatched --pop-state");
+            }
+        } else if let Some(script) = arg.strip_prefix("--version-script=") {
+            save_dir.handle_file(script)?;
+            version_script_path = Some(PathBuf::from(script));
+        } else if arg == "--no-string-merge" {
+            merge_strings = false;
+        } else if arg == "-pie" {
+            pie = true;
+        } else if arg == "--eh-frame-hdr" {
+            eh_frame_hdr = true;
+        } else if arg == "-shared" {
+            output_kind = Some(OutputKind::SharedObject);
+        } else if arg.starts_with("-plugin-opt=") {
+            // TODO: Implement support for linker plugins.
+        } else if arg == "-plugin" {
+            input.next();
+        } else if arg == "--validate-output" {
+            validate_output = true;
+        } else if arg == "--write-layout" {
             write_layout = true;
+        } else if arg == "--write-trace" {
             write_trace = true;
+        } else if let Some(rest) = arg.strip_prefix("--write-gc-stats=") {
+            write_gc_stats = Some(PathBuf::from(rest));
+        } else if let Some(rest) = arg.strip_prefix("--gc-stats-ignore=") {
+            gc_stats_ignore.push(rest.to_owned());
+        } else if arg == "--version" {
+            action = Some(Action::Version);
+        } else if arg == "--verbose-gc-stats" {
+            verbose_gc_stats = true;
+        } else if let Some(rest) = arg.strip_prefix("--debug-address=") {
+            debug_address = Some(parse_number(rest).context("Invalid --debug-address")?);
+        } else if let Some(rest) = arg.strip_prefix("--debug-fuel=") {
+            debug_fuel = Some(AtomicI64::new(rest.parse()?));
+            // Using debug fuel with more than one thread would likely give non-deterministic
+            // results.
+            num_threads = Some(NonZeroUsize::new(1).unwrap());
+        } else if arg == "--help" {
+            bail!("Sorry, help isn't implemented yet");
+        } else if IGNORED_FLAGS.contains(&arg) {
+        } else if arg.starts_with('-') {
+            bail!("Unrecognised argument `{arg}`");
+        } else {
+            save_dir.handle_file(arg)?;
+            inputs.push(Input {
+                spec: InputSpec::File(Box::from(Path::new(arg))),
+                search_first: None,
+                modifiers: *modifier_stack.last().unwrap(),
+            });
         }
-        // Lazy binding isn't used so much these days, since it makes things less secure. It adds
-        // quite a bit of complexity and we don't properly support it. We may eventually drop
-        // support completely.
-        let mut bind_now = true;
-        let mut hash_style = None;
-        // Skip program name
-        input.next();
-        while let Some(arg) = input.next() {
-            let arg = arg.as_ref();
-            if let Some(rest) = arg.strip_prefix("-L") {
-                if rest.is_empty() {
-                    if let Some(next) = input.next() {
-                        lib_search_path.push(Box::from(Path::new(next.as_ref())));
-                    }
-                } else {
-                    lib_search_path.push(Box::from(Path::new(rest)));
-                }
-            } else if let Some(rest) = arg.strip_prefix("-l") {
-                inputs.push(Input {
-                    spec: InputSpec::Lib(Box::from(rest)),
-                    search_first: None,
-                    modifiers: *modifier_stack.last().unwrap(),
-                });
-            } else if arg == "-static" || arg == "-Bstatic" {
-                modifier_stack.last_mut().unwrap().allow_shared = false;
-            } else if arg == "-Bdynamic" {
-                modifier_stack.last_mut().unwrap().allow_shared = true;
-            } else if arg == "-o" {
-                output = input.next().map(|a| Arc::from(Path::new(a.as_ref())));
-            } else if arg == "--dynamic-linker" || arg == "-dynamic-linker" {
-                output_kind = Some(OutputKind::DynamicExecutable);
-                dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
-            } else if arg == "--no-dynamic-linker" {
-                dynamic_linker = None;
-            } else if let Some(style) = arg.strip_prefix("--hash-style=") {
-                hash_style = Some(HashStyle::Gnu);
-                if style != "gnu" {
-                    bail!("Unsupported hash-style `{style}`");
-                }
-            } else if arg.starts_with("--build-id=") {
-            } else if arg == "--time" {
-                time_phases = true;
-            } else if let Some(rest) = arg.strip_prefix("--threads=") {
-                num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
-            } else if arg == "--strip-all" {
-                strip_all = true;
-                strip_debug = true;
-            } else if arg == "--strip-debug" {
-                strip_debug = true;
-            } else if arg == "-m" {
-                // TODO: Handle these flags
-                input.next();
-            } else if arg == "-z" {
-                if let Some(z) = input.next() {
-                    match z.as_ref() {
-                        "now" => bind_now = true,
-                        _ => {
-                            // TODO: Handle these
-                        }
-                    }
-                }
-            } else if let Some(_rest) = arg.strip_prefix("-O") {
-                // We don't use opt-level for now.
-            } else if arg == "--prepopulate-maps" {
-                prepopulate_maps = true;
-            } else if arg == "--sym-info" {
-                sym_info = input.next().map(|a| a.as_ref().to_owned());
-            } else if arg == "--as-needed" {
-                modifier_stack.last_mut().unwrap().as_needed = true;
-            } else if arg == "--no-as-needed" {
-                modifier_stack.last_mut().unwrap().as_needed = false;
-            } else if arg == "--push-state" {
-                modifier_stack.push(*modifier_stack.last().unwrap());
-            } else if arg == "--pop-state" {
-                modifier_stack.pop();
-                // We put the initial value on the stack, so if it's ever empty, then the arguments
-                // are invalid.
-                if modifier_stack.is_empty() {
-                    bail!("Mismatched --pop-state");
-                }
-            } else if let Some(script) = arg.strip_prefix("--version-script=") {
-                save_dir.handle_file(script)?;
-                version_script_path = Some(PathBuf::from(script));
-            } else if arg == "--no-string-merge" {
-                merge_strings = false;
-            } else if arg == "-pie" {
-                pie = true;
-            } else if arg == "--eh-frame-hdr" {
-                eh_frame_hdr = true;
-            } else if arg == "-shared" {
-                output_kind = Some(OutputKind::SharedObject);
-            } else if arg.starts_with("-plugin-opt=") {
-                // TODO: Implement support for linker plugins.
-            } else if arg == "-plugin" {
-                input.next();
-            } else if arg == "--validate-output" {
-                validate_output = true;
-            } else if arg == "--write-layout" {
-                write_layout = true;
-            } else if arg == "--write-trace" {
-                write_trace = true;
-            } else if let Some(rest) = arg.strip_prefix("--write-gc-stats=") {
-                write_gc_stats = Some(PathBuf::from(rest));
-            } else if let Some(rest) = arg.strip_prefix("--gc-stats-ignore=") {
-                gc_stats_ignore.push(rest.to_owned());
-            } else if arg == "--verbose-gc-stats" {
-                verbose_gc_stats = true;
-            } else if let Some(rest) = arg.strip_prefix("--debug-address=") {
-                debug_address = Some(parse_number(rest).context("Invalid --debug-address")?);
-            } else if let Some(rest) = arg.strip_prefix("--debug-fuel=") {
-                debug_fuel = Some(AtomicI64::new(rest.parse()?));
-                // Using debug fuel with more than one thread would likely give non-deterministic
-                // results.
-                num_threads = Some(NonZeroUsize::new(1).unwrap());
-            } else if arg == "--help" {
-                bail!("Sorry, help isn't implemented yet");
-            } else if IGNORED_FLAGS.contains(&arg) {
-            } else if arg.starts_with('-') {
-                bail!("Unrecognised argument `{arg}`");
-            } else {
-                save_dir.handle_file(arg)?;
-                inputs.push(Input {
-                    spec: InputSpec::File(Box::from(Path::new(arg))),
-                    search_first: None,
-                    modifiers: *modifier_stack.last().unwrap(),
-                });
-            }
-        }
-        let num_threads = num_threads.unwrap_or_else(|| {
-            std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap())
-        });
-        let output_kind = output_kind.unwrap_or({
-            if pie {
-                OutputKind::PositionIndependentStaticExecutable
-            } else {
-                OutputKind::NonRelocatableStaticExecutable
-            }
-        });
-        if output_kind == OutputKind::NonRelocatableStaticExecutable {
-            hash_style = None;
-        }
-        save_dir.finish()?;
-        Ok(Args {
-            lib_search_path,
-            inputs,
-            output: output.ok_or_else(|| anyhow!("Missing required argument -o"))?,
-            dynamic_linker,
-            output_kind,
-            time_phases,
-            num_threads,
-            strip_all,
-            strip_debug,
-            prepopulate_maps,
-            sym_info,
-            merge_strings,
-            debug_fuel,
-            pie,
-            validate_output,
-            version_script_path,
-            debug_address,
-            bind_now,
-            write_layout,
-            write_trace,
-            hash_style,
-            should_write_eh_frame_hdr: eh_frame_hdr,
-            write_gc_stats,
-            gc_stats_ignore,
-            verbose_gc_stats,
-        })
     }
+    let num_threads = num_threads.unwrap_or_else(|| {
+        std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap())
+    });
+    let output_kind = output_kind.unwrap_or({
+        if pie {
+            OutputKind::PositionIndependentStaticExecutable
+        } else {
+            OutputKind::NonRelocatableStaticExecutable
+        }
+    });
+    if output_kind == OutputKind::NonRelocatableStaticExecutable {
+        hash_style = None;
+    }
+    save_dir.finish()?;
+    if let Some(a) = action {
+        return Ok(a);
+    }
+    Ok(Action::Link(Args {
+        lib_search_path,
+        inputs,
+        output: output.ok_or_else(|| anyhow!("Missing required argument -o"))?,
+        dynamic_linker,
+        output_kind,
+        time_phases,
+        num_threads,
+        strip_all,
+        strip_debug,
+        prepopulate_maps,
+        sym_info,
+        merge_strings,
+        debug_fuel,
+        pie,
+        validate_output,
+        version_script_path,
+        debug_address,
+        bind_now,
+        write_layout,
+        write_trace,
+        hash_style,
+        should_write_eh_frame_hdr: eh_frame_hdr,
+        write_gc_stats,
+        gc_stats_ignore,
+        verbose_gc_stats,
+    }))
+}
 
+impl Args {
     pub(crate) fn setup_thread_pool(&self) -> Result {
         rayon::ThreadPoolBuilder::new()
             .num_threads(self.num_threads.get())
@@ -424,6 +439,7 @@ impl OutputKind {
 
 #[cfg(test)]
 mod tests {
+    use crate::args::Action;
     use crate::args::InputSpec;
     use std::path::Path;
 
@@ -512,7 +528,10 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let args = super::Args::parse(INPUT1.iter()).unwrap();
+        let Action::Link(args) = super::parse(INPUT1.iter()).unwrap() else {
+            panic!("Unexpected action");
+        };
+
         assert_eq!(
             args.inputs
                 .iter()
