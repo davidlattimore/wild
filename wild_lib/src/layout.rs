@@ -420,7 +420,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 value_flags,
                 *resolution_flags,
                 &mut common.mem_sizes,
-                symbol_db.args,
+                symbol_db.args.output_kind,
             );
         }
         if symbol_db.args.should_output_symbol_versions() {
@@ -461,11 +461,11 @@ fn allocate_resolution(
     value_flags: ValueFlags,
     resolution_flags: BitFlags<ResolutionFlag>,
     mem_sizes: &mut OutputSectionPartMap<u64>,
-    args: &Args,
+    output_kind: OutputKind,
 ) {
     if resolution_flags.contains(ResolutionFlag::Got) {
         mem_sizes.got += elf::GOT_ENTRY_SIZE;
-        if args.is_relocatable() && !value_flags.contains(ValueFlag::IFunc) {
+        if output_kind.is_relocatable() && !value_flags.contains(ValueFlag::IFunc) {
             if value_flags.contains(ValueFlag::Dynamic)
                 || (resolution_flags.contains(ResolutionFlag::ExportDynamic)
                     && !value_flags.contains(ValueFlag::CanBypassGot))
@@ -482,7 +482,7 @@ fn allocate_resolution(
         mem_sizes.got += elf::GOT_ENTRY_SIZE;
         // For executables, the TLS module ID is known at link time. For shared objects, we
         // need a runtime relocation to fill it in.
-        if !args.output_kind.is_executable() {
+        if !output_kind.is_executable() {
             mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
         }
     }
@@ -2517,7 +2517,7 @@ impl<'data> ObjectLayoutState<'data> {
         if !symbol_db.args.strip_all {
             self.allocate_symtab_space(symbol_db)?;
         }
-        let args = symbol_db.args;
+        let output_kind = symbol_db.args.output_kind;
         let mem_sizes = &mut self.state.common.mem_sizes;
         for slot in &mut self.state.sections {
             if let SectionSlot::Loaded(section) = slot {
@@ -2525,7 +2525,7 @@ impl<'data> ObjectLayoutState<'data> {
                     ValueFlag::Address.into(),
                     section.resolution_kind,
                     mem_sizes,
-                    args,
+                    output_kind,
                 );
             }
         }

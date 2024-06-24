@@ -384,7 +384,7 @@ impl Args {
     }
 
     pub(crate) fn is_relocatable(&self) -> bool {
-        self.output_kind != OutputKind::NonRelocatableStaticExecutable
+        self.output_kind.is_relocatable()
     }
 
     /// Returns whether we need a dynamic section.
@@ -434,6 +434,10 @@ impl OutputKind {
             OutputKind::NonRelocatableStaticExecutable
                 | OutputKind::PositionIndependentStaticExecutable
         )
+    }
+
+    pub(crate) fn is_relocatable(self) -> bool {
+        self != OutputKind::NonRelocatableStaticExecutable
     }
 }
 
