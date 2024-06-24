@@ -410,15 +410,15 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         let Some(got_address) = res.got_address else {
             return Ok(());
         };
+        let got_entry = self.take_next_got_entry()?;
         if res.resolution_flags.contains(ResolutionFlag::GotTlsModule) {
-            let mod_got_entry = slice_take_prefix_mut(&mut self.got, 1);
             if self.layout.args().output_kind.is_executable() {
-                mod_got_entry.copy_from_slice(&[elf::CURRENT_EXE_TLS_MOD]);
+                *got_entry = elf::CURRENT_EXE_TLS_MOD;
             } else {
                 let dynamic_symbol_index = res.dynamic_symbol_index.map(|i| i.get()).unwrap_or(0);
                 relocation_writer.write_dtpmod(got_address.get(), dynamic_symbol_index)?;
             }
-            let offset_entry = slice_take_prefix_mut(&mut self.got, 1);
+            let offset_entry = self.take_next_got_entry()?;
             if let Some(sym_index) = res.dynamic_symbol_index {
                 relocation_writer.write_dtpoff(
                     got_address.get() + crate::elf::TLS_OFFSET_OFFSET,
@@ -427,7 +427,7 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
             } else {
                 // Convert the address to an offset within the TLS segment
                 let address = res.address()?;
-                offset_entry[0] = address - self.tls.start;
+                *offset_entry = address - self.tls.start;
             }
             return Ok(());
         }
@@ -446,7 +446,6 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
                     res_value = ResolutionValue::Absolute(address.wrapping_sub(self.tls.end));
                 }
                 ResolutionValue::Dynamic(dyn_sym_index) => {
-                    self.take_next_got_entry()?;
                     return relocation_writer.write_tpoff(got_address.get(), dyn_sym_index);
                 }
                 other => bail!(
@@ -455,10 +454,6 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
                 ),
             }
         }
-        if res.value_flags.contains(ValueFlag::IFunc) {
-            res_value = ResolutionValue::Absolute(0);
-        }
-        let got_entry = self.take_next_got_entry()?;
         relocation_writer.write_relocation(got_address.get(), res_value, 0)?;
         match res_value {
             ResolutionValue::Absolute(v) => *got_entry = v,
@@ -485,7 +480,7 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         Ok(())
     }
 
-    fn take_next_got_entry(&mut self) -> Result<&mut u64> {
+    fn take_next_got_entry(&mut self) -> Result<&'out mut u64> {
         crate::slice::take_first_mut(&mut self.got).context("Insufficient GOT allocation")
     }
 
