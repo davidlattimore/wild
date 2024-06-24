@@ -43,7 +43,6 @@ use crate::sharding::ShardKey;
 use crate::slice::slice_take_prefix_mut;
 use crate::slice::take_first_mut;
 use crate::symbol_db::SymbolDb;
-use crate::symbol_db::SymbolId;
 use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -368,37 +367,26 @@ impl<'data> FileLayout<'data> {
     }
 }
 
-struct PltGotWriter<'data, 'out> {
-    layout: &'data Layout<'data>,
+struct PltGotWriter<'out> {
+    output_kind: OutputKind,
     got: &'out mut [u64],
     plt: &'out mut [u8],
     rela_plt: &'out mut [elf::Rela],
     tls: Range<u64>,
 }
 
-impl<'data, 'out> PltGotWriter<'data, 'out> {
+impl<'out> PltGotWriter<'out> {
     fn new(
-        layout: &'data Layout,
+        layout: &Layout,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
-    ) -> PltGotWriter<'data, 'out> {
+    ) -> PltGotWriter<'out> {
         PltGotWriter {
-            layout,
+            output_kind: layout.args().output_kind,
             got: bytemuck::cast_slice_mut(core::mem::take(&mut buffers.got)),
             plt: core::mem::take(&mut buffers.plt),
             rela_plt: slice_from_all_bytes_mut(core::mem::take(&mut buffers.rela_plt)),
             tls: layout.tls_start_address()..layout.tls_end_address(),
         }
-    }
-
-    fn process_symbol(
-        &mut self,
-        symbol_id: SymbolId,
-        relocation_writer: &mut DynamicRelocationWriter,
-    ) -> Result {
-        if let Some(res) = self.layout.local_symbol_resolution(symbol_id) {
-            self.process_resolution(res, relocation_writer)?;
-        }
-        Ok(())
     }
 
     fn process_resolution(
@@ -411,7 +399,7 @@ impl<'data, 'out> PltGotWriter<'data, 'out> {
         };
         let got_entry = self.take_next_got_entry()?;
         if res.resolution_flags.contains(ResolutionFlag::GotTlsModule) {
-            if self.layout.args().output_kind.is_executable() {
+            if self.output_kind.is_executable() {
                 *got_entry = elf::CURRENT_EXE_TLS_MOD;
             } else {
                 let dynamic_symbol_index = res.dynamic_symbol_index.map(|i| i.get()).unwrap_or(0);
@@ -726,7 +714,7 @@ impl<'data> ObjectLayout<'data> {
         layout: &Layout<'_>,
         sec: &Section<'_>,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
-        plt_got_writer: &mut PltGotWriter<'_, '_>,
+        plt_got_writer: &mut PltGotWriter<'_>,
         relocation_writer: &mut DynamicRelocationWriter,
     ) -> Result {
         if layout
@@ -1977,9 +1965,13 @@ fn write_internal_symbols_plt_got_entries(
         if !layout.symbol_db.is_canonical(symbol_id) {
             continue;
         }
-        plt_got_writer
-            .process_symbol(symbol_id, relocation_writer)
-            .with_context(|| format!("Failed to process `{}`", layout.symbol_debug(symbol_id)))?;
+        if let Some(res) = layout.local_symbol_resolution(symbol_id) {
+            plt_got_writer
+                .process_resolution(res, relocation_writer)
+                .with_context(|| {
+                    format!("Failed to process `{}`", layout.symbol_debug(symbol_id))
+                })?;
+        }
     }
     Ok(())
 }
