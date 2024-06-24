@@ -2120,3 +2120,31 @@ fn write_layout_to(layout: &Layout, path: &Path) -> Result {
     layout.layout_data().write(&mut file)?;
     Ok(())
 }
+
+#[cfg(test)]
+pub(crate) fn verify_resolution_allocation(
+    output_sections: &OutputSections,
+    output_kind: OutputKind,
+    mem_sizes: OutputSectionPartMap<u64>,
+    resolution: &Resolution,
+) -> Result {
+    // Allocate however much space was requested.
+    let mut total_bytes_allocated = 0;
+    mem_sizes.output_order_map(output_sections, |_, alignment, &size| {
+        total_bytes_allocated = alignment.align_up(total_bytes_allocated) + size;
+    });
+    total_bytes_allocated = crate::alignment::USIZE.align_up(total_bytes_allocated);
+    let mut all_mem = vec![0_u64; total_bytes_allocated as usize / core::mem::size_of::<u64>()];
+    let mut all_mem: &mut [u8] = bytemuck::cast_slice_mut(all_mem.as_mut_slice());
+    let mut offset = 0;
+    let mut buffers = mem_sizes.output_order_map(output_sections, |_, alignment, &size| {
+        let aligned_offset = alignment.align_up(offset);
+        crate::slice::slice_take_prefix_mut(&mut all_mem, (aligned_offset - offset) as usize);
+        offset = aligned_offset + size;
+        crate::slice::slice_take_prefix_mut(&mut all_mem, size as usize)
+    });
+
+    let mut table_writer = TableWriter::new(output_kind, 0..100, &mut buffers);
+    table_writer.process_resolution(resolution)?;
+    table_writer.validate_empty(&mem_sizes)
+}

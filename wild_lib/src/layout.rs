@@ -401,24 +401,15 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
             }
             let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
 
-            if value_flags.contains(ValueFlag::IFunc) {
-                *resolution_flags |= ResolutionFlag::Got | ResolutionFlag::Plt;
-                common.mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
-            }
-            if resolution_flags.contains(ResolutionFlag::Plt) {
-                common.mem_sizes.plt += elf::PLT_ENTRY_SIZE;
-                *resolution_flags |= ResolutionFlag::Got;
-            }
-
             if value_flags.contains(ValueFlag::Dynamic) && !resolution_flags.is_empty() {
                 let name = symbol_db.symbol_name(symbol_id)?;
                 common.mem_sizes.dynstr += name.len() as u64 + 1;
                 common.mem_sizes.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;
             }
 
-            allocate_resolution(
+            allocate_symbol_resolution(
                 value_flags,
-                *resolution_flags,
+                resolution_flags,
                 &mut common.mem_sizes,
                 symbol_db.args.output_kind,
             );
@@ -455,6 +446,24 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result;
+}
+
+fn allocate_symbol_resolution(
+    value_flags: ValueFlags,
+    resolution_flags: &mut BitFlags<ResolutionFlag>,
+    mem_sizes: &mut OutputSectionPartMap<u64>,
+    output_kind: OutputKind,
+) {
+    if value_flags.contains(ValueFlag::IFunc) {
+        *resolution_flags |= ResolutionFlag::Got | ResolutionFlag::Plt;
+        mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
+    }
+    if resolution_flags.contains(ResolutionFlag::Plt) {
+        mem_sizes.plt += elf::PLT_ENTRY_SIZE;
+        *resolution_flags |= ResolutionFlag::Got;
+    }
+
+    allocate_resolution(value_flags, *resolution_flags, mem_sizes, output_kind);
 }
 
 fn allocate_resolution(
@@ -3594,4 +3603,112 @@ fn test_no_disallowed_overlaps() {
         last_mem = seg_layout.sizes.mem_offset + seg_layout.sizes.mem_size;
         last_file = seg_layout.sizes.file_offset + seg_layout.sizes.file_size;
     }
+}
+
+/// Verifies that the code that allocates space for resolutions is consistent with the code that
+/// writes those resolutions. e.g. we don't allocate too little or too much space.
+#[test]
+fn test_resolution_allocation_consistency() -> Result {
+    let value_flag_sets: &[ValueFlags] = &[
+        ValueFlag::Address.into(),
+        (ValueFlag::Address | ValueFlag::CanBypassGot).into(),
+        ValueFlag::Absolute.into(),
+        (ValueFlag::Absolute | ValueFlag::CanBypassGot).into(),
+        ValueFlag::IFunc.into(),
+        ValueFlag::Dynamic.into(),
+    ];
+    let resolution_flag_sets = &[
+        ResolutionFlag::Direct.into(),
+        ResolutionFlag::ExportDynamic.into(),
+        ResolutionFlag::Direct | ResolutionFlag::Got | ResolutionFlag::ExportDynamic,
+        ResolutionFlag::Got.into(),
+        ResolutionFlag::Got | ResolutionFlag::Plt,
+        ResolutionFlag::Tls.into(),
+        ResolutionFlag::Tls | ResolutionFlag::Got,
+        ResolutionFlag::Tls | ResolutionFlag::Got | ResolutionFlag::GotTlsModule,
+    ];
+    let output_kinds = &[
+        OutputKind::NonRelocatableStaticExecutable,
+        OutputKind::PositionIndependentStaticExecutable,
+        OutputKind::DynamicExecutable,
+        OutputKind::SharedObject,
+    ];
+    let output_sections = OutputSections::for_testing();
+    for &value_flags in value_flag_sets {
+        for &resolution_flags in resolution_flag_sets {
+            // Skip invalid combinations.
+            if resolution_flags.contains(ResolutionFlag::Tls)
+                && (value_flags.contains(ValueFlag::Absolute)
+                    || value_flags.contains(ValueFlag::IFunc))
+            {
+                continue;
+            }
+
+            // TODO: Make this combination work.
+            if value_flags.contains(ValueFlag::IFunc)
+                && resolution_flags.contains(ResolutionFlag::ExportDynamic)
+            {
+                continue;
+            }
+
+            for &output_kind in output_kinds {
+                // Skip invalid combinations.
+                if output_kind.is_static_executable()
+                    && (value_flags.contains(ValueFlag::Dynamic)
+                        || resolution_flags.contains(ResolutionFlag::ExportDynamic))
+                {
+                    continue;
+                }
+                if output_kind.is_executable()
+                    && value_flags.contains(ValueFlag::Address)
+                    && !value_flags.contains(ValueFlag::CanBypassGot)
+                {
+                    continue;
+                }
+
+                let mut mem_sizes = OutputSectionPartMap::with_size(output_sections.len());
+                let mut resolution_flags = resolution_flags;
+                allocate_symbol_resolution(
+                    value_flags,
+                    &mut resolution_flags,
+                    &mut mem_sizes,
+                    output_kind,
+                );
+
+                let mut emitter = GlobalAddressEmitter {
+                    next_got_address: 1,
+                    next_plt_address: 1,
+                    symbol_states: &[],
+                    plt_relocations: Default::default(),
+                    symbol_id_range: SymbolIdRange::input(SymbolId::from_usize(1), 0),
+                };
+                let has_dynamic_symbol = value_flags.contains(ValueFlag::Dynamic)
+                    || (resolution_flags.contains(ResolutionFlag::ExportDynamic)
+                        && !value_flags.contains(ValueFlag::CanBypassGot));
+                let dynamic_symbol_index = has_dynamic_symbol.then(|| NonZeroU32::new(1).unwrap());
+                let resolution = emitter.create_resolution(
+                    resolution_flags,
+                    0,
+                    dynamic_symbol_index,
+                    value_flags,
+                )?;
+
+                crate::elf_writer::verify_resolution_allocation(
+                    &output_sections,
+                    output_kind,
+                    mem_sizes,
+                    &resolution,
+                )
+                .with_context(|| {
+                    format!(
+                        "Failed. output_kind={output_kind:?}
+                         value_flags={value_flags} \
+                         resolution_flags={resolution_flags} \
+                         has_dynamic_symbol={has_dynamic_symbol:?}"
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
 }
