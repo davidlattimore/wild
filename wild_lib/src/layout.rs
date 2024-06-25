@@ -699,16 +699,14 @@ impl CommonLayoutState<'_> {
         strtab_offset_start
     }
 
-    fn create_global_address_emitter<'state>(
-        &'state self,
+    fn create_global_address_emitter(
+        &self,
         memory_offsets: &OutputSectionPartMap<u64>,
-        symbol_db: &'state SymbolDb,
     ) -> GlobalAddressEmitter {
         GlobalAddressEmitter {
             next_got_address: memory_offsets.got,
             next_plt_address: memory_offsets.plt,
             symbol_states: &self.symbol_states,
-            symbol_db,
             plt_relocations: Default::default(),
             symbol_id_range: self.symbol_id_range,
         }
@@ -1633,7 +1631,6 @@ impl<'data> FileLayoutState<'data> {
                 section_layouts,
                 addresses_out,
                 output_sections,
-                symbol_db,
             )?),
             Self::NotLoaded => FileLayout::NotLoaded,
         };
@@ -2177,7 +2174,7 @@ impl InternalSymbols {
         resolutions_out: &mut [Option<Resolution>],
     ) -> Result {
         // Define symbols that are optionally put at the start/end of some sections.
-        let mut emitter = common.create_global_address_emitter(memory_offsets, symbol_db);
+        let mut emitter = common.create_global_address_emitter(memory_offsets);
         for (local_index, def_info) in self.symbol_definitions.iter().enumerate() {
             let symbol_id = self.start_symbol_id.add_usize(local_index);
             if !symbol_db.is_canonical(symbol_id) {
@@ -2201,7 +2198,14 @@ impl InternalSymbols {
                     (sec.mem_offset + sec.mem_size, ValueFlag::Address.into())
                 }
             };
-            emitter.emit_resolution(symbol_id, raw_value, None, value_flags, resolutions_out)?;
+            emitter.emit_resolution(
+                symbol_id,
+                symbol_db,
+                raw_value,
+                None,
+                value_flags,
+                resolutions_out,
+            )?;
         }
         Ok(())
     }
@@ -2592,7 +2596,7 @@ impl<'data> ObjectLayoutState<'data> {
         let mut emitter = self
             .state
             .common
-            .create_global_address_emitter(memory_offsets, symbol_db);
+            .create_global_address_emitter(memory_offsets);
 
         let mut section_resolutions = Vec::with_capacity(sections.len());
         for slot in sections.iter_mut() {
@@ -2689,6 +2693,7 @@ impl<'data> ObjectLayoutState<'data> {
             }
             emitter.emit_resolution(
                 symbol_id,
+                symbol_db,
                 raw_value,
                 dynamic_symbol_index,
                 value_flags,
@@ -3006,7 +3011,6 @@ struct GlobalAddressEmitter<'state> {
     next_got_address: u64,
     next_plt_address: u64,
     symbol_states: &'state [BitFlags<ResolutionFlag>],
-    symbol_db: &'state SymbolDb<'state>,
     plt_relocations: Vec<IfuncRelocation>,
     symbol_id_range: SymbolIdRange,
 }
@@ -3015,6 +3019,7 @@ impl<'state> GlobalAddressEmitter<'state> {
     fn emit_resolution(
         &mut self,
         symbol_id: SymbolId,
+        symbol_db: &'state SymbolDb<'state>,
         raw_value: u64,
         dynamic_symbol_index: Option<NonZeroU32>,
         value_flags: ValueFlags,
@@ -3024,7 +3029,7 @@ impl<'state> GlobalAddressEmitter<'state> {
             symbol_id >= self.symbol_id_range.start()
                 && symbol_id.to_offset(self.symbol_id_range) < resolutions_out.len(),
             "Tried to emit resolution for {} which is outside {}..{}",
-            self.symbol_db.symbol_debug(symbol_id),
+            symbol_db.symbol_debug(symbol_id),
             self.symbol_id_range.start(),
             self.symbol_id_range
                 .start()
@@ -3304,16 +3309,13 @@ impl<'data> DynamicLayoutState<'data> {
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
         resolutions_out: &mut [Option<Resolution>],
         output_sections: &OutputSections,
-        symbol_db: &SymbolDb,
     ) -> Result<DynamicLayout<'data>> {
         let version_mapping = self.compute_version_mapping();
 
         let dynstr_start_offset =
             memory_offsets.dynstr - section_layouts.get(output_section_id::DYNSTR).mem_offset;
 
-        let mut emitter = self
-            .common
-            .create_global_address_emitter(memory_offsets, symbol_db);
+        let mut emitter = self.common.create_global_address_emitter(memory_offsets);
 
         let mut next_symbol_index = dynamic_symtab_index(memory_offsets, section_layouts)?;
 
