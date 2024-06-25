@@ -451,7 +451,10 @@ impl<'out> TableWriter<'out> {
             *got_entry = address.wrapping_sub(self.tls.end);
             return Ok(());
         }
-        if res.value_flags.contains(ValueFlag::Dynamic) {
+        if res.value_flags.contains(ValueFlag::Dynamic)
+            || (res.resolution_flags.contains(ResolutionFlag::ExportDynamic)
+                && !res.value_flags.contains(ValueFlag::CanBypassGot))
+        {
             self.write_dynamic_symbol_relocation(
                 got_address.get(),
                 0,
