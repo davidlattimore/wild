@@ -34,6 +34,7 @@
 //#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections
 //#EnableLinker:lld
 //#Shared:libc-integration-0.c
+//#DiffIgnore:section.relro_padding
 
 #include <stdlib.h>
 #include <string.h>

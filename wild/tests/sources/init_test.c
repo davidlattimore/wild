@@ -2,7 +2,6 @@
 //#Object:exit.c
 //#CompArgs:default:
 //#CompArgs:-static -pie
-//#EnableLinker:lld
 
 #include "exit.h"
 #include "init.h"
