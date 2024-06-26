@@ -477,9 +477,9 @@ trait SymbolLoader {
             {
                 continue;
             }
-            let name = object.symbol_name(symbol)?;
-            *value_kind |= self.value_flags_for_name(name);
-            let pending = PendingSymbol::new(symbol_id, name);
+            let name = SymbolName::prehashed(object.symbol_name(symbol)?);
+            *value_kind |= self.value_flags_for_name(&name);
+            let pending = PendingSymbol::from_prehashed(symbol_id, name);
             pending_symbols.push(pending);
         }
         Ok(SymbolLoadOutputs { pending_symbols })
@@ -490,7 +490,7 @@ trait SymbolLoader {
     /// Second phase of value flag computation. This is separate from `compute_value_flags` because
     /// it requires the symbol name, which is slightly expensive to get, so we'd rather not get it
     /// if we don't have to.
-    fn value_flags_for_name(&self, _name: &[u8]) -> ValueFlags {
+    fn value_flags_for_name(&self, _name: &PreHashed<SymbolName>) -> ValueFlags {
         Default::default()
     }
 
@@ -511,7 +511,7 @@ impl SymbolLoader for RegularObjectSymbolLoader<'_> {
         value_flags_from_elf_symbol(symbol, self.args)
     }
 
-    fn value_flags_for_name(&self, name: &[u8]) -> ValueFlags {
+    fn value_flags_for_name(&self, name: &PreHashed<SymbolName>) -> ValueFlags {
         if self.version_script.is_local(name) {
             ValueFlags::from(ValueFlag::DowngradeToLocal | ValueFlag::CanBypassGot)
         } else {
@@ -690,10 +690,14 @@ impl InternalSymDefInfo {
 
 impl<'data> PendingSymbol<'data> {
     fn new(symbol_id: SymbolId, name: &'data [u8]) -> PendingSymbol<'data> {
-        PendingSymbol {
-            symbol_id,
-            name: SymbolName::prehashed(name),
-        }
+        Self::from_prehashed(symbol_id, SymbolName::prehashed(name))
+    }
+
+    fn from_prehashed(
+        symbol_id: SymbolId,
+        name: PreHashed<SymbolName<'data>>,
+    ) -> PendingSymbol<'data> {
+        PendingSymbol { symbol_id, name }
     }
 }
 

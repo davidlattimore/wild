@@ -7,7 +7,10 @@ use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::error::Result;
+use crate::hash::PassThroughHasher;
+use crate::hash::PreHashed;
 use crate::input_data::VersionScriptData;
+use crate::symbol::SymbolName;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
@@ -50,7 +53,7 @@ struct Version<'data> {
 #[derive(Default)]
 struct MatchRules<'data> {
     matches_all: bool,
-    exact: HashSet<&'data [u8]>,
+    exact: HashSet<PreHashed<SymbolName<'data>>, PassThroughHasher>,
     prefixes: Vec<&'data [u8]>,
 }
 
@@ -60,15 +63,18 @@ impl<'data> MatchRules<'data> {
             SymbolMatcher::All => self.matches_all = true,
             SymbolMatcher::Prefix(prefix) => self.prefixes.push(prefix.as_bytes()),
             SymbolMatcher::Exact(exact) => {
-                self.exact.insert(exact.as_bytes());
+                self.exact.insert(SymbolName::prehashed(exact.as_bytes()));
             }
         }
     }
 
-    fn matches(&self, name: &[u8]) -> bool {
+    fn matches(&self, name: &PreHashed<SymbolName>) -> bool {
         self.matches_all
             || self.exact.contains(name)
-            || self.prefixes.iter().any(|prefix| name.starts_with(prefix))
+            || self
+                .prefixes
+                .iter()
+                .any(|prefix| name.bytes().starts_with(prefix))
     }
 }
 
@@ -92,7 +98,7 @@ impl<'data> VersionScript<'data> {
         })
     }
 
-    pub(crate) fn is_local(&self, name: &[u8]) -> bool {
+    pub(crate) fn is_local(&self, name: &PreHashed<SymbolName>) -> bool {
         self.version.as_ref().is_some_and(|ver| ver.is_local(name))
     }
 }
@@ -131,7 +137,7 @@ impl<'data> Version<'data> {
         bail!("Missing close '}}' in version script");
     }
 
-    fn is_local(&self, name: &[u8]) -> bool {
+    fn is_local(&self, name: &PreHashed<SymbolName>) -> bool {
         if self.globals.matches(name) {
             return false;
         }
@@ -375,7 +381,15 @@ mod tests {
         };
         let script = VersionScript::parse(&data).unwrap();
         let version = script.version.unwrap();
-        assert_eq!(version.globals.exact.iter().collect::<Vec<_>>(), &[b"foo"]);
+        assert_eq!(
+            version
+                .globals
+                .exact
+                .iter()
+                .map(|s| s.bytes())
+                .collect::<Vec<_>>(),
+            &[b"foo"]
+        );
         assert_eq!(
             version.globals.prefixes.iter().collect::<Vec<_>>(),
             &[b"bar"]
