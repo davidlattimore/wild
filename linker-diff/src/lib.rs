@@ -114,6 +114,7 @@ impl Config {
                 "section.debug*",
                 "section.stapsdt.base",
                 "section.note.*",
+                "section.hash",
                 // We set this to 8. GNU ld sometimes does too, but sometimes to 0.
                 "section.got.entsize",
                 "section.plt.got.entsize",

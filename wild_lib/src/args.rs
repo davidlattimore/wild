@@ -191,7 +191,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             dynamic_linker = None;
         } else if let Some(style) = arg.strip_prefix("--hash-style=") {
             hash_style = Some(HashStyle::Gnu);
-            if style != "gnu" {
+            // We don't technically support both hash styles, but if requested to do both, we just
+            // do GNU, which we do support.
+            if style != "gnu" && style != "both" {
                 bail!("Unsupported hash-style `{style}`");
             }
         } else if arg.starts_with("--build-id=") {
