@@ -837,7 +837,7 @@ impl<'data> AddressIndex<'data> {
         };
         let mut entry_length = section.elf_section_header().sh_entsize(LittleEndian) as usize;
         if entry_length == 0 {
-            entry_length = 0x10;
+            entry_length = detect_plt_entry_size(bytes);
         }
         if ![8, 0x10].contains(&entry_length) {
             bail!("{section_name} has unrecognised entry length {entry_length}");
@@ -1065,6 +1065,27 @@ impl<'data> AddressIndex<'data> {
                 _ => {}
             });
         Ok(())
+    }
+}
+
+/// Sometimes linkers don't set the entry size on PLT sections. In that case, we try to decode the
+/// first few entries assuming both size 8 and size 16, then return whichever size decodes the most
+/// successfully.
+fn detect_plt_entry_size(bytes: &[u8]) -> usize {
+    fn try_size(bytes: &[u8], entry_length: usize) -> usize {
+        bytes
+            .chunks(entry_length)
+            .take(10)
+            .filter_map(|chunk| PltEntry::decode(chunk, 0, 0))
+            .count()
+    }
+
+    let count_8 = try_size(bytes, 8);
+    let count_16 = try_size(bytes, 16);
+    if count_8 > count_16 {
+        8
+    } else {
+        16
     }
 }
 
