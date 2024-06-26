@@ -7,6 +7,7 @@ use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::error::Result;
+use crate::input_data::VersionScriptData;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
@@ -35,26 +36,27 @@ pub(crate) fn linker_script_to_inputs(
 
 /// A version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
 #[derive(Default)]
-pub(crate) struct VersionScript {
+pub(crate) struct VersionScript<'data> {
     // For now, we only support a single version.
-    version: Option<Version>,
+    version: Option<Version<'data>>,
 }
 
-pub(crate) struct Version {
-    globals: Vec<SymbolMatcher>,
-    locals: Vec<SymbolMatcher>,
+pub(crate) struct Version<'data> {
+    globals: Vec<SymbolMatcher<'data>>,
+    locals: Vec<SymbolMatcher<'data>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum SymbolMatcher {
+pub(crate) enum SymbolMatcher<'data> {
     All,
-    Prefix(String),
-    Exact(String),
+    Prefix(&'data str),
+    Exact(&'data str),
 }
 
-impl VersionScript {
-    pub(crate) fn parse(script: &str) -> Result<VersionScript> {
-        let mut tokens = Tokeniser::new(script);
+impl<'data> VersionScript<'data> {
+    #[tracing::instrument(skip_all, name = "Parse version script")]
+    pub(crate) fn parse(data: &'data VersionScriptData) -> Result<VersionScript<'data>> {
+        let mut tokens = Tokeniser::new(&data.raw);
         // For now, we only support anonymous versions - i.e. a single version that just says what
         // should be global and what should be local.
         tokens.expect("{")?;
@@ -74,8 +76,8 @@ enum VersionRuleSection {
     Local,
 }
 
-impl Version {
-    fn parse(tokens: &mut Tokeniser) -> Result<Version> {
+impl<'data> Version<'data> {
+    fn parse(tokens: &mut Tokeniser<'data>) -> Result<Version<'data>> {
         let mut version = Version {
             globals: Default::default(),
             locals: Default::default(),
@@ -118,8 +120,8 @@ impl Version {
     }
 }
 
-impl SymbolMatcher {
-    fn from_pattern(token: &str) -> Result<SymbolMatcher> {
+impl<'data> SymbolMatcher<'data> {
+    fn from_pattern(token: &'data str) -> Result<SymbolMatcher<'data>> {
         if token == "*" {
             return Ok(SymbolMatcher::All);
         }
@@ -127,12 +129,12 @@ impl SymbolMatcher {
             if prefix.contains('*') {
                 bail!("Unsupported symbol pattern '{token}'");
             }
-            return Ok(SymbolMatcher::Prefix(prefix.to_owned()));
+            return Ok(SymbolMatcher::Prefix(prefix));
         }
         if token.contains('*') {
             bail!("Unsupported symbol pattern '{token}'");
         }
-        Ok(SymbolMatcher::Exact(token.to_owned()))
+        Ok(SymbolMatcher::Exact(token))
     }
 
     fn matches(&self, name: &[u8]) -> bool {
@@ -357,14 +359,14 @@ mod tests {
 
     #[test]
     fn test_parse_version_script() {
-        let script = VersionScript::parse("{global:\n foo; bar*; local: *; }").unwrap();
+        let data = VersionScriptData {
+            raw: "{global:\n foo; bar*; local: *; }".into(),
+        };
+        let script = VersionScript::parse(&data).unwrap();
         let version = script.version.unwrap();
         assert_eq!(
             version.globals,
-            vec![
-                SymbolMatcher::Exact("foo".to_owned()),
-                SymbolMatcher::Prefix("bar".to_owned())
-            ]
+            vec![SymbolMatcher::Exact("foo"), SymbolMatcher::Prefix("bar")]
         );
         assert_eq!(version.locals, vec![SymbolMatcher::All]);
     }

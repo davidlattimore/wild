@@ -73,7 +73,8 @@ fn link(args: &Args) -> crate::error::Result {
     let input_data = input_data::InputData::from_args(args)?;
     let inputs = archive_splitter::split_archives(&input_data)?;
     let files = parsing::parse_input_files(&inputs, args)?;
-    let mut symbol_db = symbol_db::SymbolDb::build(&files, &input_data.version_script, args)?;
+    let mut symbol_db =
+        symbol_db::SymbolDb::build(&files, input_data.version_script_data.as_ref(), args)?;
     let (resolved_files, output_sections) =
         resolution::resolve_symbols_and_sections(&files, &mut symbol_db)?;
     let layout = layout::compute(&symbol_db, resolved_files, output_sections, &mut output)?;

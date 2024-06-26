@@ -7,7 +7,6 @@ use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::error::Result;
 use crate::file_kind::FileKind;
-use crate::linker_script::VersionScript;
 use anyhow::bail;
 use anyhow::Context;
 use memmap2::Mmap;
@@ -15,11 +14,15 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 
-pub struct InputData<'config> {
+pub(crate) struct InputData<'config> {
     pub config: &'config Args,
     pub filenames: HashSet<PathBuf>,
     pub(crate) files: Vec<InputFile>,
-    pub(crate) version_script: VersionScript,
+    pub(crate) version_script_data: Option<VersionScriptData>,
+}
+
+pub(crate) struct VersionScriptData {
+    pub(crate) raw: String,
 }
 
 /// Identifies an input file. IDs start from 0 which is reserved for our "internal" state file.
@@ -77,17 +80,16 @@ impl<'config> InputData<'config> {
                 bytes: None,
             },
         ];
-        let version_script = config
+        let version_script_data = config
             .version_script_path
             .as_ref()
             .map(|path| read_version_script(path))
-            .transpose()?
-            .unwrap_or_default();
+            .transpose()?;
         let mut input_data = Self {
             config,
             filenames: Default::default(),
             files,
-            version_script,
+            version_script_data,
         };
         for input in &config.inputs {
             input_data.register_input(input)?;
@@ -153,10 +155,10 @@ impl<'config> InputData<'config> {
     }
 }
 
-fn read_version_script(path: &Path) -> Result<VersionScript> {
-    let text = std::fs::read_to_string(path)
+fn read_version_script(path: &Path) -> Result<VersionScriptData> {
+    let data = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read version script `{}`", path.display()))?;
-    VersionScript::parse(&text)
+    Ok(VersionScriptData { raw: data })
 }
 
 impl Input {

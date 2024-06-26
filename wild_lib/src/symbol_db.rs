@@ -6,6 +6,7 @@ use crate::error::Result;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::input_data::FileId;
+use crate::input_data::VersionScriptData;
 use crate::linker_script::VersionScript;
 use crate::output_section_id::OutputSectionId;
 use crate::parsing::InputObject;
@@ -188,9 +189,14 @@ impl<'data> SymbolDb<'data> {
     #[tracing::instrument(skip_all, name = "Build symbol DB")]
     pub fn build(
         inputs: &'data [InputObject],
-        version_script: &VersionScript,
+        version_script_data: Option<&VersionScriptData>,
         args: &'data Args,
     ) -> Result<Self> {
+        let version_script = version_script_data
+            .map(VersionScript::parse)
+            .transpose()?
+            .unwrap_or_default();
+
         let num_symbols_per_file = inputs
             .iter()
             .map(|f| f.num_symbols())
@@ -212,7 +218,7 @@ impl<'data> SymbolDb<'data> {
 
         let symbol_per_file = read_symbols(
             inputs,
-            version_script,
+            &version_script,
             &mut per_file_resolutions,
             &mut per_file_kinds,
             args,
@@ -495,7 +501,7 @@ trait SymbolLoader {
 
 struct RegularObjectSymbolLoader<'a> {
     args: &'a Args,
-    version_script: &'a VersionScript,
+    version_script: &'a VersionScript<'a>,
 }
 
 struct DynamicObjectSymbolLoader;
