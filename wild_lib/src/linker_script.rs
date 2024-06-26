@@ -115,23 +115,44 @@ impl<'data> Version<'data> {
             locals: Default::default(),
         };
         let mut section = None;
-        while let Some(token) = tokens.next() {
-            match token {
-                "}" => return Ok(version),
-                "global:" => section = Some(VersionRuleSection::Global),
-                "local:" => section = Some(VersionRuleSection::Local),
-                pattern => {
-                    tokens.expect(";")?;
-                    match section {
-                        Some(VersionRuleSection::Global) => {
-                            version.globals.push(SymbolMatcher::from_pattern(pattern)?)
-                        }
-                        Some(VersionRuleSection::Local) => {
-                            version.locals.push(SymbolMatcher::from_pattern(pattern)?)
-                        }
-                        None => bail!("Expected global/local, found '{token}'"),
+        // We read line-by-line rather than token-by-token because it's much faster. This is
+        // important when for example rustc emits a version script that's more than 300k lines.
+        while let Some(line) = tokens.next_line() {
+            let mut line = line.trim();
+            if line.starts_with('}') {
+                return Ok(version);
+            }
+            // Note, we don't currently support comments that have content after them on the same
+            // line. Doing so would require us to search every line for embedded comments, which
+            // would hurt performance.
+            if line.ends_with("*/") {
+                if let Some(start_index) = line.find("/*") {
+                    line = line[..start_index].trim();
+                }
+            }
+
+            if line.starts_with("/*") {
+                while let Some(line) = tokens.next_line() {
+                    if line.ends_with("*/") {
+                        break;
                     }
                 }
+            } else if line == "global:" {
+                section = Some(VersionRuleSection::Global);
+            } else if line == "local:" {
+                section = Some(VersionRuleSection::Local);
+            } else if let Some(pattern) = line.strip_suffix(';') {
+                match section {
+                    Some(VersionRuleSection::Global) => {
+                        version.globals.push(SymbolMatcher::from_pattern(pattern)?)
+                    }
+                    Some(VersionRuleSection::Local) => {
+                        version.locals.push(SymbolMatcher::from_pattern(pattern)?)
+                    }
+                    None => bail!("Expected global/local, found `{line}`"),
+                }
+            } else if !line.is_empty() {
+                bail!("Unsupported version script line `{line}`");
             }
         }
         bail!("Missing close '}}' in version script");
@@ -180,17 +201,35 @@ impl<'a> Tokeniser<'a> {
             if self.text.is_empty() {
                 return None;
             }
-            let len = self
-                .text
-                .char_indices()
-                .find(|(_, ch)| " \n\t(){};".contains(*ch))
-                .map(|(offset, _)| offset)
-                .unwrap_or(self.text.len())
-                .max(1);
+            let bytes = self.text.as_bytes();
+            let mut len = 0;
+            for byte in bytes {
+                if b" \n\t(){};".contains(byte) {
+                    break;
+                }
+                len += 1;
+            }
+            if len == 0 {
+                len = 1;
+            }
             let token = &self.text[..len];
             self.text = &self.text[len..];
             return Some(token);
         }
+    }
+
+    fn next_line(&mut self) -> Option<&'a str> {
+        while let Some(rest) = self.text.strip_prefix('\n') {
+            self.text = rest;
+        }
+        if self.text.is_empty() {
+            return None;
+        }
+        let bytes = self.text.as_bytes();
+        let end_pos = memchr::memchr(b'\n', bytes).unwrap_or(bytes.len());
+        let (line, rest) = self.text.split_at(end_pos);
+        self.text = rest;
+        Some(line)
     }
 
     fn new(text: &'a str) -> Self {
@@ -377,7 +416,16 @@ mod tests {
     #[test]
     fn test_parse_version_script() {
         let data = VersionScriptData {
-            raw: "{global:\n foo; bar*; local: *; }".into(),
+            raw: r#"{global:
+                        /* Single-line comment */
+                        foo; /* Trailing comment */
+                        bar*;
+                    local:
+                        /* Multi-line
+                           comment */
+                        *;
+                    }"#
+            .into(),
         };
         let script = VersionScript::parse(&data).unwrap();
         let version = script.version.unwrap();
@@ -386,13 +434,18 @@ mod tests {
                 .globals
                 .exact
                 .iter()
-                .map(|s| s.bytes())
+                .map(|s| std::str::from_utf8(s.bytes()).unwrap())
                 .collect::<Vec<_>>(),
-            &[b"foo"]
+            &["foo"]
         );
         assert_eq!(
-            version.globals.prefixes.iter().collect::<Vec<_>>(),
-            &[b"bar"]
+            version
+                .globals
+                .prefixes
+                .iter()
+                .map(|s| std::str::from_utf8(s).unwrap())
+                .collect::<Vec<_>>(),
+            &["bar"]
         );
         assert!(version.locals.matches_all);
     }
