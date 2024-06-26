@@ -11,6 +11,7 @@ use crate::input_data::VersionScriptData;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
+use std::collections::HashSet;
 use std::path::Path;
 
 /// Parse the kind of linker script that's put in place of a shared object to specify that the
@@ -41,13 +42,38 @@ pub(crate) struct VersionScript<'data> {
     version: Option<Version<'data>>,
 }
 
-pub(crate) struct Version<'data> {
-    globals: Vec<SymbolMatcher<'data>>,
-    locals: Vec<SymbolMatcher<'data>>,
+struct Version<'data> {
+    globals: MatchRules<'data>,
+    locals: MatchRules<'data>,
+}
+
+#[derive(Default)]
+struct MatchRules<'data> {
+    matches_all: bool,
+    exact: HashSet<&'data [u8]>,
+    prefixes: Vec<&'data [u8]>,
+}
+
+impl<'data> MatchRules<'data> {
+    fn push(&mut self, pattern: SymbolMatcher<'data>) {
+        match pattern {
+            SymbolMatcher::All => self.matches_all = true,
+            SymbolMatcher::Prefix(prefix) => self.prefixes.push(prefix.as_bytes()),
+            SymbolMatcher::Exact(exact) => {
+                self.exact.insert(exact.as_bytes());
+            }
+        }
+    }
+
+    fn matches(&self, name: &[u8]) -> bool {
+        self.matches_all
+            || self.exact.contains(name)
+            || self.prefixes.iter().any(|prefix| name.starts_with(prefix))
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum SymbolMatcher<'data> {
+enum SymbolMatcher<'data> {
     All,
     Prefix(&'data str),
     Exact(&'data str),
@@ -106,17 +132,10 @@ impl<'data> Version<'data> {
     }
 
     fn is_local(&self, name: &[u8]) -> bool {
-        for matcher in &self.globals {
-            if matcher.matches(name) {
-                return false;
-            }
+        if self.globals.matches(name) {
+            return false;
         }
-        for matcher in &self.locals {
-            if matcher.matches(name) {
-                return true;
-            }
-        }
-        false
+        self.locals.matches(name)
     }
 }
 
@@ -135,14 +154,6 @@ impl<'data> SymbolMatcher<'data> {
             bail!("Unsupported symbol pattern '{token}'");
         }
         Ok(SymbolMatcher::Exact(token))
-    }
-
-    fn matches(&self, name: &[u8]) -> bool {
-        match self {
-            SymbolMatcher::All => true,
-            SymbolMatcher::Prefix(prefix) => name.starts_with(prefix.as_bytes()),
-            SymbolMatcher::Exact(exact) => name == exact.as_bytes(),
-        }
     }
 }
 
@@ -364,10 +375,11 @@ mod tests {
         };
         let script = VersionScript::parse(&data).unwrap();
         let version = script.version.unwrap();
+        assert_eq!(version.globals.exact.iter().collect::<Vec<_>>(), &[b"foo"]);
         assert_eq!(
-            version.globals,
-            vec![SymbolMatcher::Exact("foo"), SymbolMatcher::Prefix("bar")]
+            version.globals.prefixes.iter().collect::<Vec<_>>(),
+            &[b"bar"]
         );
-        assert_eq!(version.locals, vec![SymbolMatcher::All]);
+        assert!(version.locals.matches_all);
     }
 }
