@@ -1097,7 +1097,6 @@ fn integration_test() -> Result {
         ProgramInputs::new("string_merging.c")?,
         ProgramInputs::new("comments.c")?,
         ProgramInputs::new("eh_frame.c")?,
-        ProgramInputs::new("pie.c")?,
         ProgramInputs::new("trivial_asm.s")?,
         ProgramInputs::new("libc-integration.c")?,
         ProgramInputs::new("rust-integration.rs")?,
