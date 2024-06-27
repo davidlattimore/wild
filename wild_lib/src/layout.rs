@@ -2266,9 +2266,11 @@ impl<'data> EpilogueLayoutState<'data> {
                 // `symbol_base` is set later in `finalise_layout`.
                 symbol_base: 0,
             };
-            // Sort by bucket. Tie-break by name for determinism.
+            // Sort by bucket. Tie-break by name for determinism. We can use an unstable sort
+            // because name should be unique. We use a parallel sort because we're processing
+            // symbols from potentially many input objects, so there can be a lot.
             self.dynamic_symbol_definitions
-                .sort_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
+                .par_sort_unstable_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
             self.common.mem_sizes.dynstr += self
                 .dynamic_symbol_definitions
                 .iter()
