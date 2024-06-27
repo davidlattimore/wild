@@ -17,6 +17,7 @@ use iced_x86::Mnemonic;
 use iced_x86::OpKind;
 use iced_x86::Register;
 use object::read::elf::ElfSection64;
+use object::read::elf::FileHeader;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::Rela;
 use object::read::elf::SectionHeader;
@@ -499,6 +500,7 @@ enum AddressResolution<'data> {
     UnrecognisedPlt,
     IFuncWithUnknownResolver,
     AnonymousData,
+    TlsModuleBase,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -617,9 +619,6 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn add_resolution(&mut self, address: u64, new_resolution: AddressResolution<'data>) {
-        if address == 0 {
-            return;
-        }
         self.address_resolutions
             .entry(address)
             .or_default()
@@ -738,6 +737,7 @@ impl<'data> AddressIndex<'data> {
     fn index_symbols(&mut self, object: &ElfFile64<'data>) {
         let tls_segment_size = get_tls_segment_size(object);
         self.tls_segment_size = tls_segment_size;
+        let is_executable = object.elf_header().e_entry(LittleEndian) != 0;
         for symbol in object.symbols() {
             let name = symbol.name_bytes().unwrap_or_default();
             // GNU ld usually drops local symbols that start with .L. However occasionally it keeps
@@ -757,10 +757,12 @@ impl<'data> AddressIndex<'data> {
             let address = symbol.address();
             if symbol.kind() == SymbolKind::Tls {
                 self.tls_by_offset.insert(address, name);
-                // Index both by positive and negative offsets. Positive are used in .so files.
-                // Negative are used in executables.
-                self.add_resolution(address, new_resolution);
-                self.add_resolution(address.wrapping_sub(tls_segment_size), new_resolution);
+                // Positive offsets are used in .so files. Negative are used in executables.
+                if is_executable {
+                    self.add_resolution(address.wrapping_sub(tls_segment_size), new_resolution);
+                } else {
+                    self.add_resolution(address, new_resolution);
+                }
             } else {
                 self.add_resolution(address + self.load_offset, new_resolution);
                 self.name_to_address
@@ -807,16 +809,22 @@ impl<'data> AddressIndex<'data> {
                 // Since we have no symbol associated with the DTPMOD, we assume that there's no
                 // relocation for the offset, but instead an absolute TLS offset.
                 let tls_offset_address = address + 8;
-                let resolution = read_address(elf_file, self, tls_offset_address)
-                    .and_then(|tls_offset| self.tls_by_offset.get(&tls_offset))
-                    .map(|tls_name| {
+                if let Some(tls_offset) = read_address(elf_file, self, tls_offset_address) {
+                    if tls_offset == 0 {
+                        self.add_resolution(address, AddressResolution::TlsModuleBase);
+                    }
+                    let resolution = self.tls_by_offset.get(&tls_offset).map(|tls_name| {
                         AddressResolution::TlsIdentifier(SymbolName {
                             bytes: tls_name,
                             version: None,
                         })
-                    })
-                    .unwrap_or(AddressResolution::UndefinedTls);
-                self.add_resolution(address, resolution);
+                    });
+                    if let Some(resolution) = resolution {
+                        self.add_resolution(address, resolution);
+                    } else if tls_offset != 0 {
+                        self.add_resolution(address, AddressResolution::UndefinedTls);
+                    }
+                }
             }
         }
     }
@@ -1811,6 +1819,7 @@ impl Display for AddressResolution<'_> {
             AddressResolution::Null => write!(f, "NULL"),
             AddressResolution::UndefinedTls => write!(f, "UNDEFINED-TLS"),
             AddressResolution::UnknownTls => write!(f, "UNKNOWN-TLS"),
+            AddressResolution::TlsModuleBase => write!(f, "TLS-MOD-BASE"),
             AddressResolution::PltWithUnresolvedGot(address) => {
                 write!(f, "PLT-UNRESOLVED-GOT(0x{address:x})")
             }
