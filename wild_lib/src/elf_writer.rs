@@ -1423,25 +1423,20 @@ impl<'data> EpilogueLayout<'data> {
         if layout.args().needs_dynamic() {
             write_epilogue_dynamic_entries(buffers.dynamic, layout)?;
         }
+        write_gnu_hash_tables(self, &mut buffers)?;
         write_dynamic_symbol_definitions(self, &mut buffers, layout)?;
 
         Ok(())
     }
 }
 
-fn write_dynamic_symbol_definitions(
+fn write_gnu_hash_tables(
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
-    layout: &Layout,
 ) -> Result {
     let Some(gnu_hash_layout) = epilogue.gnu_hash_layout.as_ref() else {
         return Ok(());
     };
-    let mut dynamic_symbol_writer = SymbolTableWriter::new_dynamic(
-        epilogue.dynstr_offset_start,
-        buffers,
-        &layout.output_sections,
-    );
 
     let (header, rest) = object::from_bytes_mut::<GnuHashHeader>(buffers.gnu_hash)
         .map_err(|_| anyhow!("Insufficient .gnu.hash allocation"))?;
@@ -1495,7 +1490,21 @@ fn write_dynamic_symbol_definitions(
             *chain_out |= 1;
             start_of_chain = true;
         }
+    }
+    Ok(())
+}
 
+fn write_dynamic_symbol_definitions(
+    epilogue: &EpilogueLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    layout: &Layout,
+) -> Result {
+    let mut dynamic_symbol_writer = SymbolTableWriter::new_dynamic(
+        epilogue.dynstr_offset_start,
+        buffers,
+        &layout.output_sections,
+    );
+    for sym_def in &epilogue.dynamic_symbol_definitions {
         let file_id = layout.symbol_db.file_id_for_symbol(sym_def.symbol_id);
         let file_layout = &layout.file_layouts[file_id.as_usize()];
         let FileLayout::Object(object) = file_layout else {
