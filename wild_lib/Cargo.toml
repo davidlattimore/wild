@@ -31,6 +31,8 @@ tracing-subscriber = { version = "0.3.18", default-features = false, features = 
 ar = "0.9.0"
 
 [features]
+# Don't use multiple threads. This makes CPU profiles easier to read.
+single-threaded = []
 
 # Enable work-in-progress features
 wip = []

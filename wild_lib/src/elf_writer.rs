@@ -44,6 +44,7 @@ use crate::sharding::ShardKey;
 use crate::slice::slice_take_prefix_mut;
 use crate::slice::take_first_mut;
 use crate::symbol_db::SymbolDb;
+use crate::threading::prelude::*;
 use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -53,7 +54,6 @@ use object::from_bytes_mut;
 use object::read::elf::Rela;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
-use rayon::prelude::*;
 use std::fmt::Display;
 use std::ops::Range;
 use std::ops::Sub;
@@ -119,7 +119,7 @@ impl Output {
                     .take()
                     .expect("set_size must only be called once");
                 let path = self.path.clone();
-                rayon::spawn(move || {
+                crate::threading::spawn(move || {
                     let _ = sender.send(SizedOutput::new(path, size));
                 });
             }

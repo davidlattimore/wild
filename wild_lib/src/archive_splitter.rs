@@ -6,8 +6,7 @@ use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::InputData;
 use crate::input_data::InputRef;
-use rayon::iter::IntoParallelRefIterator;
-use rayon::iter::ParallelIterator;
+use crate::threading::prelude::*;
 use std::fmt::Display;
 
 pub(crate) struct InputBytes<'data> {

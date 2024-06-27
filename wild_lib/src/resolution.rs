@@ -130,7 +130,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
         symbol_db,
         outputs: &outputs,
     };
-    rayon::scope(|s| {
+    crate::threading::scope(|s| {
         for (obj, definitions) in objects {
             s.spawn(|s| {
                 let r = process_object(obj, *definitions, s, &resources);
@@ -442,7 +442,7 @@ impl<'data> Outputs<'data> {
 fn process_object<'scope, 'data: 'scope, 'definitions>(
     obj: &'data RegularInputObject<'data>,
     definitions_out: &mut [SymbolId],
-    s: &rayon::Scope<'scope>,
+    s: &crate::threading::Scope<'scope>,
     resources: &'scope ResolutionResources<'data, 'definitions, 'scope>,
 ) -> Result {
     let request_file_id = |file_id: FileId| {

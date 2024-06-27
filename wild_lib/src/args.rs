@@ -287,9 +287,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             });
         }
     }
-    let num_threads = num_threads.unwrap_or_else(|| {
-        std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap())
-    });
+    let num_threads = num_threads.unwrap_or_else(crate::threading::available_parallelism);
     let output_kind = output_kind.unwrap_or({
         if pie {
             OutputKind::PositionIndependentStaticExecutable
@@ -335,7 +333,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
 
 impl Args {
     pub(crate) fn setup_thread_pool(&self) -> Result {
-        rayon::ThreadPoolBuilder::new()
+        crate::threading::ThreadPoolBuilder::new()
             .num_threads(self.num_threads.get())
             .build_global()?;
         Ok(())

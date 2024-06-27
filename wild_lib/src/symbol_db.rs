@@ -17,13 +17,11 @@ use crate::resolution::ValueFlags;
 use crate::sharding::Shard;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
+use crate::threading::prelude::*;
 use ahash::AHashMap;
 use anyhow::Context;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
-use rayon::iter::IndexedParallelIterator as _;
-use rayon::iter::IntoParallelRefIterator;
-use rayon::prelude::ParallelIterator;
 use std::collections::hash_map;
 
 pub struct SymbolDb<'data> {
