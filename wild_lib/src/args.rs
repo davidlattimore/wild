@@ -151,6 +151,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut gc_stats_ignore = Vec::new();
     let mut verbose_gc_stats = false;
     let mut action = None;
+    let mut unrecognised = Vec::new();
     if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
         write_layout = true;
         write_trace = true;
@@ -284,7 +285,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             bail!("Sorry, help isn't implemented yet");
         } else if IGNORED_FLAGS.contains(&arg) {
         } else if arg.starts_with('-') {
-            bail!("Unrecognised argument `{arg}`");
+            unrecognised.push(format!("`{arg}`"));
         } else {
             save_dir.handle_file(arg)?;
             inputs.push(Input {
@@ -293,6 +294,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 modifiers: *modifier_stack.last().unwrap(),
             });
         }
+    }
+    if !unrecognised.is_empty() {
+        bail!("Unrecognised argument(s): {}", unrecognised.join(" "));
     }
     let num_threads = num_threads.unwrap_or_else(crate::threading::available_parallelism);
     let output_kind = output_kind.unwrap_or({
