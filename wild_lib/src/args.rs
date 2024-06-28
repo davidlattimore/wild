@@ -4,7 +4,6 @@
 
 use crate::error::Result;
 use crate::save_dir::SaveDir;
-use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context as _;
 use std::borrow::Cow;
@@ -313,7 +312,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     Ok(Action::Link(Args {
         lib_search_path,
         inputs,
-        output: output.ok_or_else(|| anyhow!("Missing required argument -o"))?,
+        output: output.unwrap_or_else(|| Arc::from(Path::new("a.out"))),
         dynamic_linker,
         output_kind,
         time_phases,
