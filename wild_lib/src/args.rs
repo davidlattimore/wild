@@ -116,6 +116,14 @@ const IGNORED_FLAGS: &[&str] = &[
     "-nostdlib",
     // TODO
     "--no-undefined-version",
+    "--export-dynamic",
+    "-export-dynamic",
+    "--fatal-warnings",
+    "--color-diagnostics",
+    "--undefined-version",
+    "--no-call-graph-profile-sort",
+    "--gdb-index",
+    "--disable-new-dtags",
 ];
 
 pub(crate) fn from_env() -> Result<Action> {
@@ -243,6 +251,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if let Some(script) = arg.strip_prefix("--version-script=") {
             save_dir.handle_file(script)?;
             version_script_path = Some(PathBuf::from(script));
+        } else if arg.starts_with("-rpath=") {
+            // TODO: Implement
         } else if arg == "--no-string-merge" {
             merge_strings = false;
         } else if arg == "-pie" {
