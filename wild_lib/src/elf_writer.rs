@@ -1516,7 +1516,7 @@ fn write_dynamic_symbol_definitions(
         };
         let sym_index = sym_def.symbol_id.to_input(object.symbol_id_range);
         let sym = object.object.symbol(sym_index)?;
-        let name = object.object.symbol_name(sym)?;
+        let name = sym_def.name;
         if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
             let SectionSlot::Loaded(section) = &object.sections[section_index.0] else {
                 bail!("Internal error: Defined symbols should always be for a loaded section");
