@@ -40,6 +40,7 @@ use std::fmt::Display;
 use std::ops::BitOrAssign;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use anyhow::bail;
 
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
 pub fn resolve_symbols_and_sections<'data>(
@@ -123,6 +124,9 @@ pub(crate) fn resolve_symbols_in_files<'data>(
             }),
         })
         .collect();
+    if num_objects == 0 {
+        bail!("Cannot link with 0 input files");
+    }
     let outputs = Outputs::new(num_objects);
     let resources = ResolutionResources {
         file_states,

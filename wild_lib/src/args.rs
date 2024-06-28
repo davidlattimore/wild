@@ -7,6 +7,7 @@ use crate::save_dir::SaveDir;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context as _;
+use std::borrow::Cow;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -162,7 +163,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut hash_style = None;
     // Skip program name
     input.next();
+    let mut arg_num = 0;
     while let Some(arg) = input.next() {
+        arg_num += 1;
         let arg = arg.as_ref();
         if let Some(rest) = arg.strip_prefix("-L") {
             if rest.is_empty() {
@@ -273,6 +276,11 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             // Using debug fuel with more than one thread would likely give non-deterministic
             // results.
             num_threads = Some(NonZeroUsize::new(1).unwrap());
+        } else if let Some(path) = arg.strip_prefix('@') {
+            if input.next().is_some() || arg_num > 1 {
+                bail!("Mixing of @{{filename}} and regular arguments isn't supported");
+            }
+            return parse_from_argument_file(Path::new(path));
         } else if arg == "--help" {
             bail!("Sorry, help isn't implemented yet");
         } else if IGNORED_FLAGS.contains(&arg) {
@@ -329,6 +337,12 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         gc_stats_ignore,
         verbose_gc_stats,
     }))
+}
+
+fn parse_from_argument_file(path: &Path) -> Result<Action> {
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read arguments from file `{}`", path.display()))?;
+    parse(arguments_from_string(&contents)?.into_iter())
 }
 
 impl Args {
@@ -438,6 +452,51 @@ impl OutputKind {
 
     pub(crate) fn is_relocatable(self) -> bool {
         self != OutputKind::NonRelocatableStaticExecutable
+    }
+}
+
+/// Parses arguments from a string, handling double quotes, escapes etc. All arguments must be
+/// surrounded by double quotes and separated by a single space.
+fn arguments_from_string(mut input: &str) -> Result<Vec<Cow<str>>> {
+    let mut out = Vec::new();
+    loop {
+        let mut char_indices = input.char_indices();
+        if let Some((_, char)) = char_indices.next() {
+            if char != '"' {
+                bail!("Expected '\"', found '{char}'");
+            }
+        } else {
+            return Ok(out);
+        }
+        let mut heap_arg: Option<String> = None;
+        loop {
+            let Some((index, char)) = char_indices.next() else {
+                bail!("Missing closing '\"'");
+            };
+            if char == '"' {
+                if let Some(arg) = heap_arg.take() {
+                    out.push(Cow::Owned(arg));
+                } else {
+                    out.push(Cow::Borrowed(&input[1..index]));
+                }
+                if let Some((space_index, char)) = char_indices.next() {
+                    if char != ' ' {
+                        bail!("Expected space, got '{char}'");
+                    }
+                    input = &input[space_index + 1..];
+                } else {
+                    input = &input[index + 1..];
+                }
+                break;
+            }
+            if char == '\\' {
+                let arg = heap_arg.get_or_insert_with(|| input[1..index].to_owned());
+                let (_, ch) = char_indices.next().context("Invalid escape")?;
+                arg.push(ch);
+            } else if let Some(heap_arg) = heap_arg.as_mut() {
+                heap_arg.push(char);
+            }
+        }
     }
 }
 
@@ -552,5 +611,24 @@ mod tests {
             InputSpec::File(f) => f.as_ref() == Path::new("/usr/bin/ld"),
             _ => false,
         }));
+    }
+
+    #[test]
+    fn test_arguments_from_string() {
+        use super::arguments_from_string;
+        use std::borrow::Cow;
+
+        assert!(arguments_from_string("").unwrap().is_empty());
+        assert_eq!(
+            arguments_from_string(r#""foo" "bar""#).unwrap().as_slice(),
+            &[Cow::Borrowed("foo"), Cow::Borrowed("bar")]
+        );
+
+        assert_eq!(
+            arguments_from_string(r#""foo\"" "\"b\"ar""#)
+                .unwrap()
+                .as_slice(),
+            &[Cow::Borrowed("foo\""), Cow::Borrowed("\"b\"ar")]
+        );
     }
 }
