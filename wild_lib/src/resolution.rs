@@ -29,6 +29,7 @@ use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use ahash::AHashMap;
+use anyhow::bail;
 use anyhow::Context;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
@@ -40,7 +41,6 @@ use std::fmt::Display;
 use std::ops::BitOrAssign;
 use std::ops::Deref;
 use std::ops::DerefMut;
-use anyhow::bail;
 
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
 pub fn resolve_symbols_and_sections<'data>(
