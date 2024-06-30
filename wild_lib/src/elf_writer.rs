@@ -856,8 +856,11 @@ impl<'data> ObjectLayout<'data> {
     ) -> Result {
         let mut symbol_writer =
             SymbolTableWriter::new(start_str_offset, &mut buffers, &self.mem_sizes, sections);
-        for ((sym_index, sym), sym_state) in
-            self.object.symbols.enumerate().zip(&self.symbol_states)
+        for ((sym_index, sym), sym_state) in self
+            .object
+            .symbols
+            .enumerate()
+            .zip(&layout.symbol_resolution_flags[self.symbol_id_range.as_usize()])
         {
             let symbol_id = self.symbol_id_range.input_to_id(sym_index);
             if let Some(info) = SymbolCopyInfo::new(
