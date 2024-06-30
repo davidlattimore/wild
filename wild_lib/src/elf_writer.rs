@@ -28,7 +28,7 @@ use crate::layout::InternalSymbols;
 use crate::layout::Layout;
 use crate::layout::ObjectLayout;
 use crate::layout::Resolution;
-use crate::layout::ResolutionFlag;
+use crate::layout::ResolutionFlags;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
 use crate::output_section_id;
@@ -39,7 +39,7 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::relaxation::Relaxation;
 use crate::relaxation::RelocationModifier;
 use crate::resolution::SectionSlot;
-use crate::resolution::ValueFlag;
+use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
 use crate::slice::slice_take_prefix_mut;
 use crate::slice::take_first_mut;
@@ -415,7 +415,10 @@ impl<'out> TableWriter<'out> {
             return Ok(());
         };
         let got_entry = self.take_next_got_entry()?;
-        if res.resolution_flags.contains(ResolutionFlag::GotTlsModule) {
+        if res
+            .resolution_flags
+            .contains(ResolutionFlags::GOT_TLS_MODULE)
+        {
             if self.output_kind.is_executable() {
                 *got_entry = elf::CURRENT_EXE_TLS_MOD;
             } else {
@@ -435,8 +438,8 @@ impl<'out> TableWriter<'out> {
             }
             return Ok(());
         }
-        if res.resolution_flags.contains(ResolutionFlag::Tls) {
-            if res.value_flags.contains(ValueFlag::Dynamic) {
+        if res.resolution_flags.contains(ResolutionFlags::TLS) {
+            if res.value_flags.contains(ValueFlags::DYNAMIC) {
                 return self.write_tpoff(got_address.get(), res.dynamic_symbol_index()?);
             }
             let address = res.raw_value;
@@ -451,20 +454,22 @@ impl<'out> TableWriter<'out> {
             *got_entry = address.wrapping_sub(self.tls.end);
             return Ok(());
         }
-        if res.value_flags.contains(ValueFlag::Dynamic)
-            || (res.resolution_flags.contains(ResolutionFlag::ExportDynamic)
-                && !res.value_flags.contains(ValueFlag::CanBypassGot))
+        if res.value_flags.contains(ValueFlags::DYNAMIC)
+            || (res
+                .resolution_flags
+                .contains(ResolutionFlags::EXPORT_DYNAMIC)
+                && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
         {
             self.write_dynamic_symbol_relocation(
                 got_address.get(),
                 0,
                 res.dynamic_symbol_index()?,
             )?;
-        } else if res.value_flags.contains(ValueFlag::IFunc) {
+        } else if res.value_flags.contains(ValueFlags::IFUNC) {
             // Nothing to do here
         } else {
             *got_entry = res.raw_value;
-            if res.value_flags.contains(ValueFlag::Address) && self.output_kind.is_relocatable() {
+            if res.value_flags.contains(ValueFlags::ADDRESS) && self.output_kind.is_relocatable() {
                 self.write_address_relocation(got_address.get(), res.raw_value as i64)?;
             }
         }
@@ -783,8 +788,8 @@ impl<'data> ObjectLayout<'data> {
                         layout.symbol_debug(symbol_id)
                     )
                 })?;
-                if res.value_flags.contains(ValueFlag::Dynamic)
-                    && res.resolution_flags.contains(ResolutionFlag::Got)
+                if res.value_flags.contains(ValueFlags::DYNAMIC)
+                    && res.resolution_flags.contains(ResolutionFlags::GOT)
                 {
                     let symbol = self
                         .object
@@ -833,7 +838,7 @@ impl<'data> ObjectLayout<'data> {
                     )
                 })?;
         }
-        if sec.resolution_kind.contains(ResolutionFlag::Got) {
+        if sec.resolution_kind.contains(ResolutionFlags::GOT) {
             let res = self.section_resolutions[sec.index.0]
                 .as_ref()
                 .ok_or_else(|| anyhow!("Section requires GOT, but hasn't been resolved"))?;
@@ -1265,7 +1270,7 @@ fn write_absolute_relocation(
     addend: u64,
 ) -> Result<u64> {
     if table_writer.output_kind.is_relocatable() && !resolution.is_absolute() {
-        if resolution.value_flags.contains(ValueFlag::Dynamic) {
+        if resolution.value_flags.contains(ValueFlags::DYNAMIC) {
             table_writer.write_dynamic_symbol_relocation(
                 place,
                 addend,
@@ -1351,8 +1356,8 @@ impl<'data> InternalLayout<'data> {
                     dynamic_symbol_index: None,
                     got_address: Some(got_address),
                     plt_address: None,
-                    resolution_flags: ResolutionFlag::Got.into(),
-                    value_flags: ValueFlag::Absolute.into(),
+                    resolution_flags: ResolutionFlags::GOT,
+                    value_flags: ValueFlags::ABSOLUTE,
                 })?;
             } else {
                 table_writer.take_next_got_entry()?;
@@ -1363,8 +1368,8 @@ impl<'data> InternalLayout<'data> {
                 dynamic_symbol_index: None,
                 got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
                 plt_address: None,
-                resolution_flags: ResolutionFlag::Got.into(),
-                value_flags: ValueFlag::Absolute.into(),
+                resolution_flags: ResolutionFlags::GOT,
+                value_flags: ValueFlags::ABSOLUTE,
             })?;
         }
 

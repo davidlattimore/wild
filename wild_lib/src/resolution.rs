@@ -31,16 +31,13 @@ use crate::symbol_db::SymbolIdRange;
 use ahash::AHashMap;
 use anyhow::bail;
 use anyhow::Context;
+use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use crossbeam_utils::atomic::AtomicCell;
-use enumflags2::BitFlags;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::fmt::Display;
-use std::ops::BitOrAssign;
-use std::ops::Deref;
-use std::ops::DerefMut;
 
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
 pub fn resolve_symbols_and_sections<'data>(
@@ -841,41 +838,35 @@ impl<'data> MergeStringsFileSection<'data> {
     }
 }
 
-#[enumflags2::bitflags]
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ValueFlag {
-    /// Something with an address. e.g. a regular symbol, a section etc.
-    Address,
+bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct ValueFlags: u8 {
+        /// Something with an address. e.g. a regular symbol, a section etc.
+        const ADDRESS = 1 << 0;
 
-    /// An absolute value that won't be change depending on load address. This could be a symbol
-    /// with an absolute value or an undefined symbol, which needs to always resolve to 0 regardless
-    /// of load address.
-    Absolute,
+        /// An absolute value that won't be change depending on load address. This could be a symbol
+        /// with an absolute value or an undefined symbol, which needs to always resolve to 0 regardless
+        /// of load address.
+        const ABSOLUTE = 1 << 1;
 
-    /// The value is from a shared (dynamic) object, so although it may have an address, it won't be
-    /// know until runtime.
-    Dynamic,
+        /// The value is from a shared (dynamic) object, so although it may have an address, it won't be
+        /// know until runtime.
+        const DYNAMIC = 1 << 2;
 
-    /// The value refers to an ifunc. The actual address won't be known until runtime.
-    IFunc,
+        /// The value refers to an ifunc. The actual address won't be known until runtime.
+        const IFUNC = 1 << 3;
 
-    /// Whether the GOT can be bypassed for this value. Always true for non-symbols. For symbols,
-    /// this indicates that the symbol cannot be interposed (overridden at runtime).
-    CanBypassGot,
+        /// Whether the GOT can be bypassed for this value. Always true for non-symbols. For symbols,
+        /// this indicates that the symbol cannot be interposed (overridden at runtime).
+        const CAN_BYPASS_GOT = 1 << 4;
 
-    /// We have a version script and the version script says that the symbol should be downgraded to
-    /// a local. It's still treated as a global for name lookup purposes, but after that, it becomes
-    /// local.
-    DowngradeToLocal,
+        /// We have a version script and the version script says that the symbol should be downgraded to
+        /// a local. It's still treated as a global for name lookup purposes, but after that, it becomes
+        /// local.
+        const DOWNGRADE_TO_LOCAL = 1 << 5;
+    }
 }
 
-/// This wrapper mostly exists so that we can provide a nice Display implementation, since the Debug
-/// implementation for BitFlags is a little too verbose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct ValueFlags {
-    bits: BitFlags<ValueFlag>,
-}
 impl ValueFlags {
     /// Returns self merged with `other` which should be the flags for the local (possibly
     /// non-canonical symbol definition). Sometimes an object will reference a symbol that it
@@ -883,56 +874,15 @@ impl ValueFlags {
     /// symbol gives the symbol default visibility. In this case, we want references in the object
     /// defining it as hidden to be allowed to bypass the GOT/PLT.
     pub(crate) fn merge(&mut self, other: ValueFlags) {
-        if other.contains(ValueFlag::CanBypassGot) {
-            self.bits |= ValueFlag::CanBypassGot;
+        if other.contains(ValueFlags::CAN_BYPASS_GOT) {
+            *self |= ValueFlags::CAN_BYPASS_GOT;
         }
-    }
-}
-
-impl Deref for ValueFlags {
-    type Target = BitFlags<ValueFlag>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.bits
-    }
-}
-
-impl DerefMut for ValueFlags {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.bits
-    }
-}
-
-impl From<ValueFlag> for ValueFlags {
-    fn from(value: ValueFlag) -> Self {
-        Self { bits: value.into() }
-    }
-}
-
-impl From<BitFlags<ValueFlag>> for ValueFlags {
-    fn from(bits: BitFlags<ValueFlag>) -> Self {
-        Self { bits }
-    }
-}
-
-impl BitOrAssign for ValueFlags {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.bits |= rhs.bits
     }
 }
 
 impl Display for ValueFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut first = true;
-        for bit in self.bits {
-            if first {
-                first = false;
-            } else {
-                write!(f, " | ")?;
-            }
-            write!(f, "{bit:?}")?;
-        }
-        Ok(())
+        bitflags::parser::to_writer(self, f)
     }
 }
 

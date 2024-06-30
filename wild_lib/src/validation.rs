@@ -2,8 +2,8 @@
 
 use crate::error::Result;
 use crate::layout::Layout;
-use crate::layout::ResolutionFlag;
-use crate::resolution::ValueFlag;
+use crate::layout::ResolutionFlags;
+use crate::resolution::ValueFlags;
 use anyhow::bail;
 use anyhow::Context;
 use object::read::elf::SectionHeader as _;
@@ -66,7 +66,7 @@ fn validate_resolution(
 ) -> Result {
     let res_kind = resolution.resolution_flags;
     let value_flags = resolution.value_flags;
-    if value_flags.contains(ValueFlag::IFunc) || res_kind.contains(ResolutionFlag::Tls) {
+    if value_flags.contains(ValueFlags::IFUNC) || res_kind.contains(ResolutionFlags::TLS) {
         return Ok(());
     };
     if let Some(got_address) = resolution.got_address {
@@ -75,8 +75,8 @@ fn validate_resolution(
         if end_offset > got_data.len() {
             bail!("GOT offset beyond end of GOT 0x{end_offset}");
         }
-        if resolution.value_flags.contains(ValueFlag::Dynamic)
-            || resolution.value_flags.contains(ValueFlag::IFunc)
+        if resolution.value_flags.contains(ValueFlags::DYNAMIC)
+            || resolution.value_flags.contains(ValueFlags::IFUNC)
         {
             return Ok(());
         }

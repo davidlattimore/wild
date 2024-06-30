@@ -4,7 +4,6 @@
 //! binary because dynamic relocations haven't yet been applied to the GOT yet.
 
 use crate::args::OutputKind;
-use crate::resolution::ValueFlag;
 use crate::resolution::ValueFlags;
 
 #[derive(Debug)]
@@ -59,8 +58,8 @@ impl Relaxation {
         value_flags: ValueFlags,
         output_kind: OutputKind,
     ) -> Option<(Self, u32)> {
-        let is_known_address = value_flags.contains(ValueFlag::Address);
-        let is_absolute = value_flags.contains(ValueFlag::Absolute);
+        let is_known_address = value_flags.contains(ValueFlags::ADDRESS);
+        let is_absolute = value_flags.contains(ValueFlags::ABSOLUTE);
         let non_relocatable = output_kind == OutputKind::NonRelocatableStaticExecutable;
         let is_absolute_address = is_known_address && non_relocatable;
         let can_be_pc_relative = is_known_address || (is_absolute && non_relocatable);
@@ -69,14 +68,14 @@ impl Relaxation {
         // say a PLT32 relocation, we don't want to relax it even if we're in a static executable.
         // Furthermore, if we encounter a relocation like PC32 to an ifunc, then we need to change
         // it so that it goes via the GOT. This is kind of the opposite of relaxation.
-        if value_flags.contains(ValueFlag::IFunc) {
+        if value_flags.contains(ValueFlags::IFUNC) {
             return match relocation_kind {
                 object::elf::R_X86_64_PC32 => Some((Relaxation::NoOp, object::elf::R_X86_64_PLT32)),
                 _ => None,
             };
         }
 
-        let can_bypass_got = value_flags.contains(ValueFlag::CanBypassGot);
+        let can_bypass_got = value_flags.contains(ValueFlags::CAN_BYPASS_GOT);
 
         let offset = offset_in_section as usize;
         // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
@@ -298,7 +297,7 @@ fn test_relaxation() {
             relocation_kind,
             bytes_in,
             offset,
-            ValueFlag::Address.into(),
+            ValueFlags::ADDRESS,
             OutputKind::PositionIndependentStaticExecutable,
         ) {
             r.apply(&mut out, &mut offset, &mut 0, &mut modifier);
@@ -312,7 +311,7 @@ fn test_relaxation() {
             relocation_kind,
             bytes_in,
             offset,
-            ValueFlag::Absolute.into(),
+            ValueFlags::ABSOLUTE,
             OutputKind::PositionIndependentStaticExecutable,
         ) {
             out.copy_from_slice(bytes_in);

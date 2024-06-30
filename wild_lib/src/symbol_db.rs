@@ -12,7 +12,6 @@ use crate::output_section_id::OutputSectionId;
 use crate::parsing::InputObject;
 use crate::parsing::InternalInputObject;
 use crate::parsing::InternalSymDefInfo;
-use crate::resolution::ValueFlag;
 use crate::resolution::ValueFlags;
 use crate::sharding::Shard;
 use crate::sharding::ShardKey;
@@ -201,7 +200,7 @@ impl<'data> SymbolDb<'data> {
             .collect::<Vec<usize>>();
         let num_symbols = num_symbols_per_file.iter().sum();
         let mut symbol_definitions: Vec<SymbolId> = vec![SymbolId::undefined(); num_symbols];
-        let mut symbol_value_kinds: Vec<ValueFlags> = vec![ValueFlag::Absolute.into(); num_symbols];
+        let mut symbol_value_kinds: Vec<ValueFlags> = vec![ValueFlags::ABSOLUTE; num_symbols];
         let mut per_file_resolutions =
             crate::sharding::split_to_shards(&mut symbol_definitions, &num_symbols_per_file);
         let mut per_file_kinds =
@@ -291,7 +290,7 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions.push(symbol_id);
         self.start_stop_symbol_names.push(*symbol_name);
         self.num_symbols_per_file[self.custom_sections_file_id.as_usize()] += 1;
-        self.symbol_value_kinds.push(ValueFlag::Address.into());
+        self.symbol_value_kinds.push(ValueFlags::ADDRESS);
         symbol_id
     }
 
@@ -428,22 +427,22 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFl
         // first place checked for a symbol by the dynamic loader.
         || (args.output_kind.is_executable() && !is_undefined);
     let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {
-        ValueFlag::Absolute.into()
+        ValueFlags::ABSOLUTE
     } else if sym.st_type() == object::elf::STT_GNU_IFUNC {
-        ValueFlag::IFunc.into()
+        ValueFlags::IFUNC
     } else if is_undefined {
         if can_bypass_got {
-            ValueFlag::Absolute.into()
+            ValueFlags::ABSOLUTE
         } else {
             // If we can't bypass the GOT, then an undefined symbol might be able to be defined at
             // runtime by a dynamic library that gets loaded.
-            ValueFlag::Dynamic.into()
+            ValueFlags::DYNAMIC
         }
     } else {
-        ValueFlag::Address.into()
+        ValueFlags::ADDRESS
     };
     if can_bypass_got {
-        flags |= ValueFlag::CanBypassGot.into();
+        flags |= ValueFlags::CAN_BYPASS_GOT;
     }
     flags
 }
@@ -489,7 +488,7 @@ trait SymbolLoader {
     /// it requires the symbol name, which is slightly expensive to get, so we'd rather not get it
     /// if we don't have to.
     fn value_flags_for_name(&self, _name: &PreHashed<SymbolName>) -> ValueFlags {
-        Default::default()
+        ValueFlags::empty()
     }
 
     fn is_hidden_version(&self, _symbol_index: usize, _object: &crate::elf::File) -> bool {
@@ -511,16 +510,16 @@ impl SymbolLoader for RegularObjectSymbolLoader<'_> {
 
     fn value_flags_for_name(&self, name: &PreHashed<SymbolName>) -> ValueFlags {
         if self.version_script.is_local(name) {
-            ValueFlags::from(ValueFlag::DowngradeToLocal | ValueFlag::CanBypassGot)
+            ValueFlags::DOWNGRADE_TO_LOCAL | ValueFlags::CAN_BYPASS_GOT
         } else {
-            Default::default()
+            ValueFlags::empty()
         }
     }
 }
 
 impl SymbolLoader for DynamicObjectSymbolLoader {
     fn compute_value_flags(&self, _symbol: &crate::elf::Symbol) -> ValueFlags {
-        ValueFlag::Dynamic.into()
+        ValueFlags::DYNAMIC
     }
 
     fn is_hidden_version(&self, symbol_index: usize, object: &crate::elf::File) -> bool {
@@ -650,19 +649,19 @@ impl InternalInputObject {
             *resolution = symbol_id;
             match definition {
                 InternalSymDefInfo::Undefined => {
-                    *value_flags = ValueFlag::Absolute.into();
+                    *value_flags = ValueFlags::ABSOLUTE;
                 }
                 InternalSymDefInfo::SectionStart(section_id) => {
                     let def = section_id.built_in_details();
                     let name = def.start_symbol_name.unwrap().as_bytes();
                     pending_symbols.push(PendingSymbol::new(symbol_id, name));
-                    *value_flags = ValueFlag::Address.into();
+                    *value_flags = ValueFlags::ADDRESS;
                 }
                 InternalSymDefInfo::SectionEnd(section_id) => {
                     let def = section_id.built_in_details();
                     let name = def.end_symbol_name.unwrap().as_bytes();
                     pending_symbols.push(PendingSymbol::new(symbol_id, name));
-                    *value_flags = ValueFlag::Address.into();
+                    *value_flags = ValueFlags::ADDRESS;
                 }
             }
         }
