@@ -2517,8 +2517,7 @@ impl<'data> ObjectLayoutState<'data> {
                 }
             }
             if let SectionSlot::Loaded(section) = &mut self.state.sections[section_id.0] {
-                section.resolution_kind =
-                    section.resolution_kind.max(section_request.resolution_kind);
+                section.resolution_kind |= section_request.resolution_kind;
             };
         }
         Ok(())
