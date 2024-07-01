@@ -22,28 +22,28 @@ use std::path::Path;
 pub(crate) fn parse_input_files<'data>(
     inputs: &'data [InputBytes],
     args: &'data Args,
-) -> Result<Vec<InputObject<'data>>> {
+) -> Result<Vec<ParsedInput<'data>>> {
     let mut objects = inputs
         .par_iter()
         .enumerate()
-        .map(|(index, f)| InputObject::new(f, FileId::from_usize(index)?, args))
-        .collect::<Result<Vec<InputObject>>>()?;
-    objects.push(InputObject::Epilogue(Epilogue {
+        .map(|(index, f)| ParsedInput::new(f, FileId::from_usize(index)?, args))
+        .collect::<Result<Vec<ParsedInput>>>()?;
+    objects.push(ParsedInput::Epilogue(Epilogue {
         file_id: FileId::from_usize(objects.len())?,
         start_symbol_id: SymbolId::undefined(),
     }));
     let mut next_symbol_id = SymbolId::undefined();
     for obj in &mut objects {
         match obj {
-            InputObject::Internal(_) => {
+            ParsedInput::Internal(_) => {
                 // No need to store the symbol ID, since internal always starts from the undefined
                 // symbol.
                 assert_eq!(next_symbol_id, SymbolId::undefined());
             }
-            InputObject::Object(o) => {
+            ParsedInput::Object(o) => {
                 o.symbol_id_range.set_start(next_symbol_id);
             }
-            InputObject::Epilogue(o) => {
+            ParsedInput::Epilogue(o) => {
                 o.start_symbol_id = next_symbol_id;
             }
         }
@@ -52,9 +52,9 @@ pub(crate) fn parse_input_files<'data>(
     Ok(objects)
 }
 
-pub(crate) enum InputObject<'data> {
+pub(crate) enum ParsedInput<'data> {
     Internal(InternalInputObject),
-    Object(RegularInputObject<'data>),
+    Object(ParsedInputObject<'data>),
     Epilogue(Epilogue),
 }
 
@@ -62,7 +62,7 @@ pub(crate) struct InternalInputObject {
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
 }
 
-pub(crate) struct RegularInputObject<'data> {
+pub(crate) struct ParsedInputObject<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) object: Box<File<'data>>,
     pub(crate) symbol_id_range: SymbolIdRange,
@@ -89,7 +89,7 @@ pub(crate) enum InternalSymDefInfo {
     SectionEnd(OutputSectionId),
 }
 
-impl<'data> RegularInputObject<'data> {
+impl<'data> ParsedInputObject<'data> {
     fn new(input: &'data InputBytes, file_id: FileId, is_dynamic: bool) -> Result<Self> {
         let object = Box::new(
             File::parse(input.data, is_dynamic)
@@ -135,23 +135,23 @@ impl<'data> RegularInputObject<'data> {
     }
 }
 
-impl<'data> InputObject<'data> {
+impl<'data> ParsedInput<'data> {
     fn new(input: &'data InputBytes, file_id: FileId, args: &'data Args) -> Result<Self> {
         Ok(match input.kind {
             FileKind::ElfObject | FileKind::Archive => {
-                Self::Object(RegularInputObject::new(input, file_id, false)?)
+                Self::Object(ParsedInputObject::new(input, file_id, false)?)
             }
             FileKind::Internal => Self::Internal(InternalInputObject::new(file_id, args)?),
-            FileKind::ElfDynamic => Self::Object(RegularInputObject::new(input, file_id, true)?),
+            FileKind::ElfDynamic => Self::Object(ParsedInputObject::new(input, file_id, true)?),
             FileKind::Text => unreachable!("Should have been handled earlier"),
         })
     }
 
     pub(crate) fn num_symbols(&self) -> usize {
         match self {
-            InputObject::Internal(o) => o.symbol_definitions.len(),
-            InputObject::Object(o) => o.symbol_id_range.len(),
-            InputObject::Epilogue(_) => {
+            ParsedInput::Internal(o) => o.symbol_definitions.len(),
+            ParsedInput::Object(o) => o.symbol_id_range.len(),
+            ParsedInput::Epilogue(_) => {
                 // Initially, we report 0 symbols because we don't know what symbols we'll define
                 // until after archives have been processed. We're the last input file, so we can
                 // allocate symbols at the end.
@@ -162,25 +162,25 @@ impl<'data> InputObject<'data> {
 
     pub(crate) fn filename(&self) -> &'data Path {
         match self {
-            InputObject::Object(s) => s.filename(),
-            InputObject::Internal(_) => Path::new("<<internal>>"),
-            InputObject::Epilogue(_) => Path::new("<<epilogue>>"),
+            ParsedInput::Object(s) => s.filename(),
+            ParsedInput::Internal(_) => Path::new("<<internal>>"),
+            ParsedInput::Epilogue(_) => Path::new("<<epilogue>>"),
         }
     }
 
     pub(crate) fn symbol_id_range(&self) -> SymbolIdRange {
         match self {
-            InputObject::Internal(o) => SymbolIdRange::internal(o.symbol_definitions.len()),
-            InputObject::Object(o) => o.symbol_id_range,
-            InputObject::Epilogue(o) => SymbolIdRange::epilogue(o.start_symbol_id, 0),
+            ParsedInput::Internal(o) => SymbolIdRange::internal(o.symbol_definitions.len()),
+            ParsedInput::Object(o) => o.symbol_id_range,
+            ParsedInput::Epilogue(o) => SymbolIdRange::epilogue(o.start_symbol_id, 0),
         }
     }
 
     pub(crate) fn is_regular_object(&self) -> bool {
         match self {
-            InputObject::Object(o) => !o.is_dynamic(),
-            InputObject::Internal(_) => false,
-            InputObject::Epilogue(_) => false,
+            ParsedInput::Object(o) => !o.is_dynamic(),
+            ParsedInput::Internal(_) => false,
+            ParsedInput::Epilogue(_) => false,
         }
     }
 }
@@ -231,18 +231,18 @@ impl InternalInputObject {
     }
 }
 
-impl<'data> std::fmt::Display for RegularInputObject<'data> {
+impl<'data> std::fmt::Display for ParsedInputObject<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
     }
 }
 
-impl<'data> std::fmt::Display for InputObject<'data> {
+impl<'data> std::fmt::Display for ParsedInput<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            InputObject::Internal(_) => std::fmt::Display::fmt("<internal>", f),
-            InputObject::Object(o) => std::fmt::Display::fmt(o, f),
-            InputObject::Epilogue(_) => std::fmt::Display::fmt("<custom-sections>", f),
+            ParsedInput::Internal(_) => std::fmt::Display::fmt("<internal>", f),
+            ParsedInput::Object(o) => std::fmt::Display::fmt(o, f),
+            ParsedInput::Epilogue(_) => std::fmt::Display::fmt("<custom-sections>", f),
         }
     }
 }

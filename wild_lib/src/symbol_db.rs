@@ -9,9 +9,9 @@ use crate::input_data::FileId;
 use crate::input_data::VersionScriptData;
 use crate::linker_script::VersionScript;
 use crate::output_section_id::OutputSectionId;
-use crate::parsing::InputObject;
 use crate::parsing::InternalInputObject;
 use crate::parsing::InternalSymDefInfo;
+use crate::parsing::ParsedInput;
 use crate::resolution::ValueFlags;
 use crate::sharding::Shard;
 use crate::sharding::ShardKey;
@@ -26,7 +26,7 @@ use std::collections::hash_map;
 pub struct SymbolDb<'data> {
     pub(crate) args: &'data Args,
 
-    pub(crate) inputs: &'data [InputObject<'data>],
+    pub(crate) inputs: &'data [ParsedInput<'data>],
 
     /// Mapping from global symbol names to a symbol ID with that name. If there are multiple
     /// globals with the same name, then this will point to the one we encountered first, which may
@@ -185,7 +185,7 @@ struct SymbolLoadOutputs<'data> {
 impl<'data> SymbolDb<'data> {
     #[tracing::instrument(skip_all, name = "Build symbol DB")]
     pub fn build(
-        inputs: &'data [InputObject],
+        inputs: &'data [ParsedInput],
         version_script_data: Option<&VersionScriptData>,
         args: &'data Args,
     ) -> Result<Self> {
@@ -223,7 +223,7 @@ impl<'data> SymbolDb<'data> {
         let custom_sections_file_id = FileId::from_usize(inputs.len() - 1)?;
         debug_assert!(matches!(
             inputs[custom_sections_file_id.as_usize()],
-            InputObject::Epilogue(..)
+            ParsedInput::Epilogue(..)
         ));
         let mut index = SymbolDb {
             args,
@@ -306,9 +306,9 @@ impl<'data> SymbolDb<'data> {
         let file_id = self.file_id_for_symbol(symbol_id);
         let input_object = &self.inputs[file_id.as_usize()];
         match input_object {
-            InputObject::Internal(o) => Ok(o.symbol_name(symbol_id)),
-            InputObject::Object(o) => o.symbol_name(symbol_id),
-            InputObject::Epilogue(o) => {
+            ParsedInput::Internal(o) => Ok(o.symbol_name(symbol_id)),
+            ParsedInput::Object(o) => o.symbol_name(symbol_id),
+            ParsedInput::Epilogue(o) => {
                 Ok(self.start_stop_symbol_names[symbol_id.offset_from(o.start_symbol_id)])
             }
         }
@@ -372,7 +372,7 @@ impl<'data> SymbolDb<'data> {
 
 #[tracing::instrument(skip_all, name = "Read symbols")]
 fn read_symbols<'data>(
-    readers: &[InputObject<'data>],
+    readers: &[ParsedInput<'data>],
     version_script: &VersionScript,
     per_file_resolutions: &mut [Shard<SymbolId, SymbolId>],
     per_file_value_kinds: &mut [Shard<SymbolId, ValueFlags>],
@@ -392,14 +392,14 @@ fn read_symbols<'data>(
 }
 
 fn load_symbols_from_file<'data>(
-    reader: &InputObject<'data>,
+    reader: &ParsedInput<'data>,
     version_script: &VersionScript,
     resolutions: &mut Shard<SymbolId, SymbolId>,
     value_kinds: &mut Shard<SymbolId, ValueFlags>,
     args: &Args,
 ) -> Result<SymbolLoadOutputs<'data>> {
     Ok(match reader {
-        InputObject::Object(s) => {
+        ParsedInput::Object(s) => {
             if s.is_dynamic() {
                 DynamicObjectSymbolLoader.load_symbols(&s.object, resolutions, value_kinds)?
             } else {
@@ -410,8 +410,8 @@ fn load_symbols_from_file<'data>(
                 .load_symbols(&s.object, resolutions, value_kinds)?
             }
         }
-        InputObject::Internal(s) => s.load_symbols(resolutions, value_kinds)?,
-        InputObject::Epilogue(_) => SymbolLoadOutputs {
+        ParsedInput::Internal(s) => s.load_symbols(resolutions, value_kinds)?,
+        ParsedInput::Epilogue(_) => SymbolLoadOutputs {
             // Custom section start/stop symbols are generated after archive handling.
             pending_symbols: vec![],
         },
@@ -552,8 +552,8 @@ impl<'db, 'data> std::fmt::Display for SymbolDebug<'db, 'data> {
         }
         if symbol_name.bytes().is_empty() {
             match file {
-                InputObject::Internal(_) => write!(f, "<unnamed internal symbol>")?,
-                InputObject::Object(o) => {
+                ParsedInput::Internal(_) => write!(f, "<unnamed internal symbol>")?,
+                ParsedInput::Object(o) => {
                     let symbol_index = symbol_id.to_input(file.symbol_id_range());
                     if let Some(section_name) = o
                         .object
@@ -569,7 +569,7 @@ impl<'db, 'data> std::fmt::Display for SymbolDebug<'db, 'data> {
                         write!(f, "<unnamed symbol>")?;
                     }
                 }
-                InputObject::Epilogue(_) => write!(f, "<unnamed custom-section symbol>")?,
+                ParsedInput::Epilogue(_) => write!(f, "<unnamed custom-section symbol>")?,
             }
         } else {
             write!(f, "symbol `{symbol_name}`")?;

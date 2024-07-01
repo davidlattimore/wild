@@ -19,10 +19,10 @@ use crate::output_section_id::SectionDetails;
 use crate::output_section_id::TemporaryOutputSectionId;
 use crate::output_section_id::UnloadedSection;
 use crate::output_section_map::OutputSectionMap;
-use crate::parsing::InputObject;
 use crate::parsing::InternalInputObject;
 use crate::parsing::InternalSymDefInfo;
-use crate::parsing::RegularInputObject;
+use crate::parsing::ParsedInput;
+use crate::parsing::ParsedInputObject;
 use crate::sharding::split_slice;
 use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolDb;
@@ -41,7 +41,7 @@ use std::fmt::Display;
 
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
 pub fn resolve_symbols_and_sections<'data>(
-    file_states: &'data [InputObject<'data>],
+    file_states: &'data [ParsedInput<'data>],
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result<(Vec<ResolvedFile<'data>>, OutputSections<'data>)> {
     let (mut resolved, undefined_symbols, internal) =
@@ -80,7 +80,7 @@ type DefinitionsCell<'definitions> = AtomicCell<Option<Box<&'definitions mut [Sy
 
 #[tracing::instrument(skip_all, name = "Resolve symbols")]
 pub(crate) fn resolve_symbols_in_files<'data>(
-    file_states: &'data [InputObject<'data>],
+    file_states: &'data [ParsedInput<'data>],
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result<(
     Vec<ResolvedFile<'data>>,
@@ -100,13 +100,13 @@ pub(crate) fn resolve_symbols_in_files<'data>(
     let mut resolved: Vec<ResolvedFile<'_>> = file_states
         .iter()
         .map(|file| match file {
-            InputObject::Internal(s) => {
+            ParsedInput::Internal(s) => {
                 // We don't yet have all the information we need to construct ResolvedInternal, so
                 // we stash away our input for now and let the caller construct it later.
                 internal = Some(s);
                 ResolvedFile::NotLoaded
             }
-            InputObject::Object(s) => {
+            ParsedInput::Object(s) => {
                 if !s.is_optional() {
                     let definitions = definitions_per_file[s.file_id.as_usize()].take().unwrap();
                     objects.push((s, definitions));
@@ -114,7 +114,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
                 num_objects += 1;
                 ResolvedFile::NotLoaded
             }
-            InputObject::Epilogue(s) => ResolvedFile::Epilogue(ResolvedEpilogue {
+            ParsedInput::Epilogue(s) => ResolvedFile::Epilogue(ResolvedEpilogue {
                 file_id: s.file_id,
                 start_symbol_id: s.start_symbol_id,
                 symbol_definitions: vec![],
@@ -156,7 +156,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
 }
 
 struct ResolutionResources<'data, 'definitions, 'outer_scope> {
-    file_states: &'data [InputObject<'data>],
+    file_states: &'data [ParsedInput<'data>],
     definitions_per_file: &'outer_scope Vec<DefinitionsCell<'definitions>>,
     symbol_db: &'outer_scope SymbolDb<'data>,
     outputs: &'outer_scope Outputs<'data>,
@@ -441,7 +441,7 @@ impl<'data> Outputs<'data> {
 }
 
 fn process_object<'scope, 'data: 'scope, 'definitions>(
-    obj: &'data RegularInputObject<'data>,
+    obj: &'data ParsedInputObject<'data>,
     definitions_out: &mut [SymbolId],
     s: &crate::threading::Scope<'scope>,
     resources: &'scope ResolutionResources<'data, 'definitions, 'scope>,
@@ -449,7 +449,7 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
     let request_file_id = |file_id: FileId| {
         if let Some(definitions) = resources.definitions_per_file[file_id.as_usize()].take() {
             s.spawn(move |s| {
-                if let InputObject::Object(obj) = &resources.file_states[file_id.as_usize()] {
+                if let ParsedInput::Object(obj) = &resources.file_states[file_id.as_usize()] {
                     let r = process_object(obj, *definitions, s, resources);
                     if let Err(error) = r {
                         let _ = resources.outputs.errors.push(error);
@@ -552,7 +552,7 @@ fn allocate_start_stop_symbol_id<'data>(
 
 impl<'data> ResolvedObject<'data> {
     fn new(
-        obj: &'data RegularInputObject<'data>,
+        obj: &'data ParsedInputObject<'data>,
         symbol_db: &SymbolDb<'data>,
         request_file_id: impl FnMut(FileId),
         definitions_out: &mut [SymbolId],
@@ -610,7 +610,7 @@ impl<'data> ResolvedObject<'data> {
 }
 
 fn resolve_sections<'data>(
-    obj: &RegularInputObject<'data>,
+    obj: &ParsedInputObject<'data>,
     custom_sections: &mut Vec<(object::SectionIndex, SectionDetails<'data>)>,
     args: &Args,
 ) -> Result<Vec<SectionSlot<'data>>> {
@@ -654,7 +654,7 @@ fn resolve_sections<'data>(
 }
 
 fn resolve_symbols<'data>(
-    obj: &RegularInputObject<'data>,
+    obj: &ParsedInputObject<'data>,
     symbol_db: &SymbolDb<'data>,
     mut request_file_id: impl FnMut(FileId),
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
@@ -695,7 +695,7 @@ fn resolve_symbols<'data>(
 }
 
 fn resolve_dynamic_symbols<'data>(
-    obj: &RegularInputObject<'data>,
+    obj: &ParsedInputObject<'data>,
     symbol_db: &SymbolDb<'data>,
     mut request_file_id: impl FnMut(FileId),
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
@@ -726,7 +726,7 @@ fn resolve_symbol<'data>(
     local_symbol: &crate::elf::SymtabEntry,
     definition_out: &mut SymbolId,
     symbol_db: &SymbolDb<'data>,
-    obj: &RegularInputObject<'data>,
+    obj: &ParsedInputObject<'data>,
     request_file_id: &mut impl FnMut(FileId),
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
 ) -> Result {

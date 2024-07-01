@@ -3502,8 +3502,8 @@ fn print_symbol_info(symbol_db: &SymbolDb, name: &str) {
         {
             let file_id = symbol_db.file_id_for_symbol(symbol_id);
             match &symbol_db.inputs[file_id.as_usize()] {
-                crate::parsing::InputObject::Internal(_) => println!("  <internal>"),
-                crate::parsing::InputObject::Object(o) => {
+                crate::parsing::ParsedInput::Internal(_) => println!("  <internal>"),
+                crate::parsing::ParsedInput::Object(o) => {
                     let local_index = symbol_id.to_input(o.symbol_id_range);
                     match o.object.symbol(local_index) {
                         Ok(sym) => {
@@ -3520,7 +3520,7 @@ fn print_symbol_info(symbol_db: &SymbolDb, name: &str) {
                         }
                     }
                 }
-                crate::parsing::InputObject::Epilogue(_) => println!("  <epilogue>"),
+                crate::parsing::ParsedInput::Epilogue(_) => println!("  <epilogue>"),
             }
         }
     }
