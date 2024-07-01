@@ -54,17 +54,3 @@ impl<T> OutputSectionMap<T> {
         }
     }
 }
-
-impl<T> OutputSectionMap<T>
-where
-    T: Copy,
-{
-    pub(crate) fn merge(&mut self, other: &Self, cb: impl Fn(T, T) -> T) {
-        self.values
-            .iter_mut()
-            .zip(other.values.iter())
-            .for_each(|(a, b)| {
-                *a = cb(*a, *b);
-            });
-    }
-}

@@ -81,7 +81,7 @@ pub fn compute<'data>(
         print_symbol_info(symbol_db, sym_info);
     }
     let symbol_resolution_flags = vec![AtomicResolutionFlags::empty(); symbol_db.num_symbols()];
-    let mut layout_states = find_required_sections(
+    let (mut layout_states, sections_with_content) = find_required_sections(
         file_states,
         symbol_db,
         &output_sections,
@@ -103,6 +103,7 @@ pub fn compute<'data>(
         &mut layout_states,
         &mut output_sections,
         &symbol_resolution_flags,
+        sections_with_content,
     );
     let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections);
     let section_layouts = layout_sections(&section_part_layouts);
@@ -631,12 +632,6 @@ struct CommonLayoutState<'data> {
     file_id: FileId,
     mem_sizes: OutputSectionPartMap<u64>,
 
-    /// Which sections have we loaded an input section into. This is not the same as checking
-    /// whether the mem sizes for that section are non-zero because we can load an input section
-    /// with size 0. If we do that, we still need to produce the output section so that we have
-    /// something to refer to in the symtab.
-    sections_with_content: OutputSectionMap<bool>,
-
     symbol_id_range: SymbolIdRange,
 
     /// Dynamic symbols that need to be defined. Because of the ordering requirements for symbol
@@ -655,7 +650,6 @@ impl CommonLayoutState<'_> {
         Self {
             file_id,
             mem_sizes: OutputSectionPartMap::with_size(output_sections.len()),
-            sections_with_content: OutputSectionMap::with_size(output_sections.len()),
             symbol_id_range,
             dynamic_symbol_definitions: Default::default(),
         }
@@ -897,6 +891,12 @@ struct GraphResources<'data, 'scope> {
     output_sections: &'scope OutputSections<'data>,
 
     symbol_resolution_flags: &'scope [AtomicResolutionFlags],
+
+    /// Which sections have we loaded an input section into. This is not the same as checking
+    /// whether the mem sizes for that section are non-zero because we can load an input section
+    /// with size 0. If we do that, we still need to produce the output section so that we have
+    /// something to refer to in the symtab.
+    sections_with_content: OutputSectionMap<AtomicBool>,
 }
 
 struct FinaliseLayoutResources<'scope, 'data> {
@@ -1191,17 +1191,13 @@ fn compute_total_section_part_sizes(
     layout_states: &mut [FileLayoutState],
     output_sections: &mut OutputSections,
     symbol_resolution_flags: &[ResolutionFlags],
+    sections_with_content: OutputSectionMap<bool>,
 ) -> OutputSectionPartMap<u64> {
     let mut total_sizes: OutputSectionPartMap<u64> =
         OutputSectionPartMap::with_size(output_sections.len());
-    let mut sections_with_content: OutputSectionMap<bool> =
-        OutputSectionMap::with_size(output_sections.len());
     for file_state in layout_states.iter() {
         if let Some(sizes) = file_state.mem_sizes() {
             total_sizes.merge(sizes);
-        }
-        if let Some(common) = file_state.common() {
-            sections_with_content.merge(&common.sections_with_content, |a, b| a | b);
         }
     }
     let FileLayoutState::Internal(internal_layout) =
@@ -1288,14 +1284,14 @@ fn find_required_sections<'data>(
     symbol_db: &SymbolDb<'data>,
     output_sections: &OutputSections<'data>,
     symbol_resolution_flags: &[AtomicResolutionFlags],
-) -> Result<Vec<FileLayoutState<'data>>> {
+) -> Result<(Vec<FileLayoutState<'data>>, OutputSectionMap<bool>)> {
     let num_workers = file_states.len();
     let (worker_slots, workers) = create_worker_slots(file_states, output_sections);
 
     let num_threads = symbol_db.args.num_threads.get();
 
     let idle_threads = (num_threads > 1).then(|| ArrayQueue::new(num_threads - 1));
-    let resources = &GraphResources {
+    let resources = GraphResources {
         symbol_db,
         worker_slots,
         errors: Mutex::new(Vec::new()),
@@ -1306,15 +1302,17 @@ fn find_required_sections<'data>(
         done: AtomicBool::new(false),
         output_sections,
         symbol_resolution_flags,
+        sections_with_content: OutputSectionMap::with_size(output_sections.len()),
     };
+    let resources_ref = &resources;
 
     workers
         .into_par_iter()
         .try_for_each(|mut worker| -> Result {
             worker
-                .activate(resources)
+                .activate(resources_ref)
                 .with_context(|| format!("Failed to activate {}", worker.state))?;
-            let _ = resources.waiting_workers.push(worker);
+            let _ = resources_ref.waiting_workers.push(worker);
             Ok(())
         })?;
 
@@ -1325,7 +1323,7 @@ fn find_required_sections<'data>(
                     let mut idle = false;
                     while !resources.done.load(atomic::Ordering::SeqCst) {
                         while let Some(worker) = resources.waiting_workers.pop() {
-                            worker.do_pending_work(resources);
+                            worker.do_pending_work(resources_ref);
                         }
                         if idle {
                             // Wait until there's more work to do or until we shut down.
@@ -1367,8 +1365,9 @@ fn find_required_sections<'data>(
     if let Some(error) = errors.pop() {
         return Err(error);
     }
-    let worker_slots = &resources.worker_slots;
-    unwrap_worker_states(worker_slots)
+    let worker_states = unwrap_worker_states(&resources.worker_slots)?;
+    let sections_with_content = resources.sections_with_content.into_map(|v| v.into_inner());
+    Ok((worker_states, sections_with_content))
 }
 
 fn create_worker_slots<'data>(
@@ -2466,7 +2465,10 @@ impl<'data> ObjectLayoutState<'data> {
                         .mem_sizes
                         .regular_mut(sec_id, section.alignment);
                     *allocation += section.capacity();
-                    *self.state.common.sections_with_content.get_mut(sec_id) = true;
+                    resources
+                        .sections_with_content
+                        .get(sec_id)
+                        .fetch_or(true, atomic::Ordering::Relaxed);
                     section.output_section_id = Some(sec_id);
                     if let Some(frame_data) = self.section_frame_data.get_mut(section_id.0) {
                         self.state.common.mem_sizes.eh_frame +=
