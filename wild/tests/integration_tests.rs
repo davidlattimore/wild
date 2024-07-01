@@ -23,6 +23,8 @@ use object::ObjectSymbol;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -81,8 +83,9 @@ impl Linker {
             so_path,
             &linker_args,
         );
-        if self.is_wild() || !is_newer(so_path, obj_path) {
+        if self.is_wild() || !is_newer(so_path, obj_path) || !command.can_skip {
             command.run()?;
+            write_cmd_file(so_path, &command.to_string())?;
         }
         Ok(LinkerInput::with_command(so_path.to_owned(), command))
     }
@@ -519,24 +522,17 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
         CompilerKind::C => ".o",
         CompilerKind::Rust => "",
     };
-    let output_path = build_dir()
-        .join(Path::new(&dep.filename).with_extension(format!("{}{suffix}", config.name)));
-    // Skip rebuilding if our output already exists and is newer than our source.
-    if is_newer(&output_path, &src_path) {
-        return Ok(output_path);
-    }
     let mut command = Command::new(compiler);
     match compiler_kind {
         CompilerKind::C => {
             if let Some(v) = config.variant_num {
                 command.arg(format!("-DVARIANT={v}"));
             }
-            command.arg("-c").arg("-o").arg(&output_path);
+            command.arg("-c");
         }
         CompilerKind::Rust => {
             let wild = wild_path().to_str().context("Need UTF-8 path")?.to_owned();
             command
-                .env("WILD_SAVE_DIR", &output_path)
                 .env("WILD_SAVE_SKIP_LINKING", "1")
                 .arg("+nightly")
                 .args(["-C", "linker=clang"])
@@ -548,11 +544,66 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
     }
     command.arg(&src_path);
     command.args(&config.compiler_args.args);
+
+    // Files that are shared between several tests end up being compiled with various different
+    // flags and the config name isn't sufficient to disambiguate them. So we hash the command then
+    // include the hash in the output filename.
+    let mut hasher = std::hash::DefaultHasher::new();
+    command_as_str(&command).hash(&mut hasher);
+    let command_hash = hasher.finish();
+
+    let output_path = build_dir().join(
+        Path::new(&dep.filename)
+            .with_extension(format!("{}-{command_hash:x}{suffix}", config.name)),
+    );
+    match compiler_kind {
+        CompilerKind::C => {
+            command.arg("-o").arg(&output_path);
+        }
+        CompilerKind::Rust => {
+            command.env("WILD_SAVE_DIR", &output_path);
+        }
+    }
+
+    if is_newer(&output_path, &src_path) {
+        return Ok(output_path);
+    }
     let status = command.status()?;
     if !status.success() {
         bail!("Compilation failed");
     }
+
     Ok(output_path)
+}
+
+fn write_cmd_file(output_path: &Path, command_str: &str) -> Result {
+    let path = cmd_path(output_path);
+    std::fs::write(&path, command_str)
+        .with_context(|| format!("Failed to write `{}`", path.display()))
+}
+
+fn command_as_str(command: &Command) -> String {
+    format!(
+        "{} {}",
+        command.get_program().to_string_lossy(),
+        command
+            .get_args()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
+}
+
+fn cmd_path(output_path: &Path) -> PathBuf {
+    let mut p = output_path.as_os_str().to_owned();
+    p.push(".cmd");
+    PathBuf::from(p)
+}
+
+/// Returns whether the command file for `output_path` exists and contains `command`.
+fn cmd_file_is_current(output_path: &Path, command: &str) -> bool {
+    std::fs::read_to_string(cmd_path(output_path))
+        .is_ok_and(|previous_command| previous_command == command)
 }
 
 fn src_path(filename: &str) -> PathBuf {
@@ -583,6 +634,7 @@ impl Linker {
         let mut command = LinkCommand::new(self, inputs, &output_path, &config.linker_args);
         if !command.can_skip {
             command.run()?;
+            write_cmd_file(&output_path, &command.to_string())?;
         }
         Ok(LinkOutput {
             binary: output_path,
@@ -614,13 +666,6 @@ impl LinkCommand {
         output_path: &Path,
         linker_args: &ArgumentSet,
     ) -> LinkCommand {
-        // We allow skipping linking if all the object files are the unchanged and are older than
-        // our output file, but not if we're linking with our linker, since we're always changing
-        // that.
-        let can_skip = !matches!(linker, Linker::Wild)
-            && inputs
-                .iter()
-                .all(|input| is_newer(output_path, &input.path));
         let mut command;
         let mut invocation_mode = LinkerInvocationMode::Direct;
         let mut opt_save_dir = None;
@@ -692,18 +737,30 @@ impl LinkCommand {
         command.env(wild_lib::args::VALIDATE_ENV, "1");
         command.env(wild_lib::args::WRITE_LAYOUT_ENV, "1");
         command.env(wild_lib::args::WRITE_TRACE_ENV, "1");
-        LinkCommand {
+
+        let mut link_command = LinkCommand {
             command,
             input_commands: inputs
                 .iter()
                 .filter_map(|input| input.command.as_ref().cloned())
                 .collect(),
             linker: linker.clone(),
-            can_skip,
+            can_skip: false,
             invocation_mode,
             opt_save_dir,
             output_path: output_path.to_owned(),
-        }
+        };
+        // We allow skipping linking if all the object files are the unchanged and are older than
+        // our output file, but not if we're linking with our linker, since we're always changing
+        // that. We also require that the command we're going to run hasn't changed.
+        let can_skip = !matches!(linker, Linker::Wild)
+            && inputs
+                .iter()
+                .all(|input| is_newer(output_path, &input.path))
+            && cmd_file_is_current(output_path, &link_command.to_string());
+        link_command.can_skip = can_skip;
+
+        link_command
     }
 
     fn run(&mut self) -> Result {
