@@ -126,15 +126,19 @@ pub fn compute<'data>(
         &mut symbol_resolutions.resolutions,
         &symbol_db.num_symbols_per_file,
     );
+
+    let resources = FinaliseLayoutResources {
+        symbol_db,
+        symbol_resolution_flags: &symbol_resolution_flags,
+        output_sections: &output_sections,
+        section_layouts: &section_layouts,
+        merged_string_start_addresses: &merged_string_start_addresses,
+    };
     let file_layouts = compute_symbols_and_layouts(
         layout_states,
         starting_mem_offsets_by_file,
-        &section_layouts,
-        symbol_db,
-        &merged_string_start_addresses,
-        &output_sections,
         &mut resolutions_by_file,
-        &symbol_resolution_flags,
+        &resources,
     )?;
     update_dynamic_symbol_resolutions(&file_layouts, &mut symbol_resolutions.resolutions);
     crate::gc_stats::maybe_write_gc_stats(&file_layouts, symbol_db.args)?;
@@ -910,6 +914,14 @@ struct GraphResources<'data, 'scope> {
     symbol_resolution_flags: &'scope [AtomicResolutionFlags],
 }
 
+struct FinaliseLayoutResources<'scope, 'data> {
+    symbol_db: &'scope SymbolDb<'data>,
+    symbol_resolution_flags: &'scope [ResolutionFlags],
+    output_sections: &'scope OutputSections<'data>,
+    section_layouts: &'scope OutputSectionMap<OutputRecordLayout>,
+    merged_string_start_addresses: &'scope MergedStringStartAddresses,
+}
+
 #[derive(Copy, Clone, Debug)]
 enum WorkItem {
     LoadGlobalSymbol(SymbolId),
@@ -1099,27 +1111,15 @@ fn compute_start_offsets_by_file(
 fn compute_symbols_and_layouts<'data>(
     layout_states: Vec<FileLayoutState<'data>>,
     starting_mem_offsets_by_file: Vec<Option<OutputSectionPartMap<u64>>>,
-    section_layouts: &OutputSectionMap<OutputRecordLayout>,
-    symbol_db: &SymbolDb<'data>,
-    merged_string_start_addresses: &MergedStringStartAddresses,
-    output_sections: &OutputSections,
     symbol_resolutions: &mut [&mut [Option<Resolution>]],
-    symbol_resolution_flags: &[ResolutionFlags],
+    resources: &FinaliseLayoutResources,
 ) -> Result<Vec<FileLayout<'data>>> {
     layout_states
         .into_par_iter()
         .zip(starting_mem_offsets_by_file)
         .zip(symbol_resolutions)
         .map(|((state, mut memory_offsets), symbols_out)| {
-            state.finalise_layout(
-                memory_offsets.as_mut(),
-                section_layouts,
-                symbol_db,
-                merged_string_start_addresses,
-                output_sections,
-                symbols_out,
-                symbol_resolution_flags,
-            )
+            state.finalise_layout(memory_offsets.as_mut(), symbols_out, resources)
         })
         .collect()
 }
@@ -1635,45 +1635,29 @@ impl<'data> FileLayoutState<'data> {
     fn finalise_layout(
         self,
         memory_offsets: Option<&mut OutputSectionPartMap<u64>>,
-        section_layouts: &OutputSectionMap<OutputRecordLayout>,
-        symbol_db: &SymbolDb,
-        merged_string_start_addresses: &MergedStringStartAddresses,
-        output_sections: &OutputSections,
         addresses_out: &mut [Option<Resolution>],
-        symbol_resolution_flags: &[ResolutionFlags],
+        resources: &FinaliseLayoutResources,
     ) -> Result<FileLayout<'data>> {
         let file_layout = match self {
             Self::Object(s) => FileLayout::Object(s.finalise_layout(
                 memory_offsets.unwrap(),
                 addresses_out,
-                section_layouts,
-                symbol_db,
-                output_sections,
-                merged_string_start_addresses,
-                symbol_resolution_flags,
+                resources,
             )?),
             Self::Internal(s) => FileLayout::Internal(s.finalise_layout(
                 memory_offsets.unwrap(),
-                section_layouts,
                 addresses_out,
-                output_sections,
-                symbol_db,
-                symbol_resolution_flags,
+                resources,
             )?),
             Self::Epilogue(s) => FileLayout::Epilogue(s.finalise_layout(
                 memory_offsets.unwrap(),
-                section_layouts,
                 addresses_out,
-                output_sections,
-                symbol_db,
-                symbol_resolution_flags,
+                resources,
             )?),
             Self::Dynamic(s) => FileLayout::Dynamic(s.finalise_layout(
                 memory_offsets.unwrap(),
-                section_layouts,
                 addresses_out,
-                output_sections,
-                symbol_resolution_flags,
+                resources,
             )?),
             Self::NotLoaded => FileLayout::NotLoaded,
         };
@@ -2145,13 +2129,12 @@ impl<'data> InternalLayoutState<'data> {
     fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        section_layouts: &OutputSectionMap<OutputRecordLayout>,
         resolutions_out: &mut [Option<Resolution>],
-        output_sections: &OutputSections,
-        symbol_db: &SymbolDb,
-        symbol_resolution_flags: &[ResolutionFlags],
+        resources: &FinaliseLayoutResources,
     ) -> Result<InternalLayout<'data>> {
-        let header_layout = section_layouts.built_in(output_section_id::FILE_HEADER);
+        let header_layout = resources
+            .section_layouts
+            .built_in(output_section_id::FILE_HEADER);
         assert_eq!(header_layout.file_offset, 0);
 
         let tlsld_got_entry = self.needs_tlsld_got_entry.then(|| {
@@ -2163,16 +2146,16 @@ impl<'data> InternalLayoutState<'data> {
 
         self.internal_symbols.finalise_layout(
             &self.common,
-            symbol_db,
             memory_offsets,
-            section_layouts,
             resolutions_out,
-            symbol_resolution_flags,
+            resources,
         )?;
 
-        let strings_offset_start = self.common.finalise_layout(memory_offsets, section_layouts);
+        let strings_offset_start = self
+            .common
+            .finalise_layout(memory_offsets, resources.section_layouts);
         Ok(InternalLayout {
-            file_sizes: compute_file_sizes(&self.common.mem_sizes, output_sections),
+            file_sizes: compute_file_sizes(&self.common.mem_sizes, resources.output_sections),
             mem_sizes: self.common.mem_sizes,
             internal_symbols: self.internal_symbols,
             strings_offset_start,
@@ -2219,39 +2202,37 @@ impl InternalSymbols {
     fn finalise_layout(
         &self,
         common: &CommonLayoutState,
-        symbol_db: &SymbolDb,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        section_layouts: &OutputSectionMap<OutputRecordLayout>,
         resolutions_out: &mut [Option<Resolution>],
-        symbol_resolution_flags: &[ResolutionFlags],
+        resources: &FinaliseLayoutResources,
     ) -> Result {
         // Define symbols that are optionally put at the start/end of some sections.
         let mut emitter =
-            common.create_global_address_emitter(memory_offsets, symbol_resolution_flags);
+            common.create_global_address_emitter(memory_offsets, resources.symbol_resolution_flags);
         for (local_index, def_info) in self.symbol_definitions.iter().enumerate() {
             let symbol_id = self.start_symbol_id.add_usize(local_index);
-            if !symbol_db.is_canonical(symbol_id) {
+            if !resources.symbol_db.is_canonical(symbol_id) {
                 continue;
             }
             // We don't put internal symbols in the symbol table if they aren't referenced.
-            if symbol_resolution_flags[symbol_id.as_usize()].is_empty() {
+            if resources.symbol_resolution_flags[symbol_id.as_usize()].is_empty() {
                 continue;
             }
 
             let (raw_value, value_flags) = match def_info {
                 InternalSymDefInfo::Undefined => (0, ValueFlags::ABSOLUTE),
                 InternalSymDefInfo::SectionStart(section_id) => (
-                    section_layouts.built_in(*section_id).mem_offset,
+                    resources.section_layouts.built_in(*section_id).mem_offset,
                     ValueFlags::ADDRESS,
                 ),
                 InternalSymDefInfo::SectionEnd(section_id) => {
-                    let sec = &section_layouts.built_in(*section_id);
+                    let sec = &resources.section_layouts.built_in(*section_id);
                     (sec.mem_offset + sec.mem_size, ValueFlags::ADDRESS)
                 }
             };
             emitter.emit_resolution(
                 symbol_id,
-                symbol_db,
+                resources.symbol_db,
                 raw_value,
                 None,
                 value_flags,
@@ -2345,32 +2326,31 @@ impl<'data> EpilogueLayoutState<'data> {
     fn finalise_layout(
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        section_layouts: &OutputSectionMap<OutputRecordLayout>,
         resolutions_out: &mut [Option<Resolution>],
-        output_sections: &OutputSections,
-        symbol_db: &SymbolDb,
-        symbol_resolution_flags: &[ResolutionFlags],
+        resources: &FinaliseLayoutResources,
     ) -> Result<EpilogueLayout<'data>> {
         self.internal_symbols.finalise_layout(
             &self.common,
-            symbol_db,
             memory_offsets,
-            section_layouts,
             resolutions_out,
-            symbol_resolution_flags,
+            resources,
         )?;
 
         let dynstr_offset_start = (memory_offsets.dynstr
-            - section_layouts
+            - resources
+                .section_layouts
                 .built_in(output_section_id::DYNSTR)
                 .mem_offset)
             .try_into()
             .context("Symbol string table overflowed 32 bits")?;
 
-        let strings_offset_start = self.common.finalise_layout(memory_offsets, section_layouts);
+        let strings_offset_start = self
+            .common
+            .finalise_layout(memory_offsets, resources.section_layouts);
         if let Some(gnu_hash_layout) = self.gnu_hash_layout.as_mut() {
             gnu_hash_layout.symbol_base = ((memory_offsets.dynsym
-                - section_layouts
+                - resources
+                    .section_layouts
                     .built_in(output_section_id::DYNSYM)
                     .mem_offset)
                 / elf::SYMTAB_ENTRY_SIZE)
@@ -2379,13 +2359,14 @@ impl<'data> EpilogueLayoutState<'data> {
         }
 
         let dynsym_start_index = ((memory_offsets.dynsym
-            - section_layouts
+            - resources
+                .section_layouts
                 .built_in(output_section_id::DYNSYM)
                 .mem_offset)
             / elf::SYMTAB_ENTRY_SIZE) as u32;
 
         Ok(EpilogueLayout {
-            file_sizes: compute_file_sizes(&self.common.mem_sizes, output_sections),
+            file_sizes: compute_file_sizes(&self.common.mem_sizes, resources.output_sections),
             mem_sizes: self.common.mem_sizes,
             internal_symbols: self.internal_symbols,
             strings_offset_start,
@@ -2653,21 +2634,20 @@ impl<'data> ObjectLayoutState<'data> {
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut [Option<Resolution>],
-        section_layouts: &OutputSectionMap<OutputRecordLayout>,
-        symbol_db: &SymbolDb,
-        output_sections: &OutputSections,
-        merged_string_start_addresses: &MergedStringStartAddresses,
-        symbol_resolution_flags: &[ResolutionFlags],
+        resources: &FinaliseLayoutResources,
     ) -> Result<ObjectLayout<'data>> {
-        let dynstr_start_offset =
-            memory_offsets.dynstr - section_layouts.get(output_section_id::DYNSTR).mem_offset;
+        let dynstr_start_offset = memory_offsets.dynstr
+            - resources
+                .section_layouts
+                .get(output_section_id::DYNSTR)
+                .mem_offset;
         let symbol_id_range = self.symbol_id_range();
         let mut sections = self.state.sections;
 
         let mut emitter = self
             .state
             .common
-            .create_global_address_emitter(memory_offsets, symbol_resolution_flags);
+            .create_global_address_emitter(memory_offsets, resources.symbol_resolution_flags);
 
         let mut section_resolutions = Vec::with_capacity(sections.len());
         for slot in sections.iter_mut() {
@@ -2707,22 +2687,22 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
 
-        let mut dyn_sym_index = dynamic_symtab_index(memory_offsets, section_layouts)?;
+        let mut dyn_sym_index = dynamic_symtab_index(memory_offsets, resources.section_layouts)?;
         let e = LittleEndian;
         for ((local_symbol_index, local_symbol), symbol_state) in self
             .object
             .symbols
             .enumerate()
-            .zip(&symbol_resolution_flags[symbol_id_range.as_usize()])
+            .zip(&resources.symbol_resolution_flags[symbol_id_range.as_usize()])
         {
             if symbol_state.is_empty() {
                 continue;
             }
             let symbol_id = symbol_id_range.input_to_id(local_symbol_index);
-            if !symbol_db.is_canonical(symbol_id) {
+            if !resources.symbol_db.is_canonical(symbol_id) {
                 continue;
             }
-            let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
+            let value_flags = resources.symbol_db.local_symbol_value_flags(symbol_id);
             let raw_value = if let Some(section_index) = self
                 .object
                 .symbol_section(local_symbol, local_symbol_index)?
@@ -2730,7 +2710,7 @@ impl<'data> ObjectLayoutState<'data> {
                 if let Some(section_resolution) = section_resolutions[section_index.0].as_ref() {
                     local_symbol.st_value(e) + section_resolution.address()?
                 } else {
-                    merged_string_start_addresses
+                    resources. merged_string_start_addresses
                         .try_resolve_local(
                             &self.state.merged_string_resolutions,
                             symbol_id_range.input_to_offset(local_symbol_index),
@@ -2738,7 +2718,7 @@ impl<'data> ObjectLayoutState<'data> {
                         .ok_or_else(|| {
                             anyhow!(
                                 "Symbol is in a section that we didn't load. Symbol: {} Section: {}",
-                                symbol_db.symbol_debug(symbol_id),
+                              resources.  symbol_db.symbol_debug(symbol_id),
                                 section_debug(self.object, section_index),
                             )
                         })?
@@ -2764,7 +2744,7 @@ impl<'data> ObjectLayoutState<'data> {
             }
             emitter.emit_resolution(
                 symbol_id,
-                symbol_db,
+                resources.symbol_db,
                 raw_value,
                 dynamic_symbol_index,
                 value_flags,
@@ -2776,13 +2756,13 @@ impl<'data> ObjectLayoutState<'data> {
         let strtab_offset_start = self
             .state
             .common
-            .finalise_layout(memory_offsets, section_layouts);
+            .finalise_layout(memory_offsets, resources.section_layouts);
 
         Ok(ObjectLayout {
             input: self.input,
             file_id: self.state.common.file_id,
             object: self.object,
-            file_sizes: compute_file_sizes(&self.state.common.mem_sizes, output_sections),
+            file_sizes: compute_file_sizes(&self.state.common.mem_sizes, resources.output_sections),
             mem_sizes: self.state.common.mem_sizes,
             sections,
             section_resolutions,
@@ -3384,27 +3364,29 @@ impl<'data> DynamicLayoutState<'data> {
     fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        section_layouts: &OutputSectionMap<OutputRecordLayout>,
         resolutions_out: &mut [Option<Resolution>],
-        output_sections: &OutputSections,
-        symbol_resolution_flags: &[ResolutionFlags],
+        resources: &FinaliseLayoutResources,
     ) -> Result<DynamicLayout<'data>> {
         let version_mapping = self.compute_version_mapping();
 
-        let dynstr_start_offset =
-            memory_offsets.dynstr - section_layouts.get(output_section_id::DYNSTR).mem_offset;
+        let dynstr_start_offset = memory_offsets.dynstr
+            - resources
+                .section_layouts
+                .get(output_section_id::DYNSTR)
+                .mem_offset;
 
         let mut emitter = self
             .common
-            .create_global_address_emitter(memory_offsets, symbol_resolution_flags);
+            .create_global_address_emitter(memory_offsets, resources.symbol_resolution_flags);
 
-        let mut next_symbol_index = dynamic_symtab_index(memory_offsets, section_layouts)?;
+        let mut next_symbol_index =
+            dynamic_symtab_index(memory_offsets, resources.section_layouts)?;
 
         for ((_local_symbol, symbol_state), resolution) in self
             .object
             .symbols
             .iter()
-            .zip(&symbol_resolution_flags[self.symbol_id_range().as_usize()])
+            .zip(&resources.symbol_resolution_flags[self.symbol_id_range().as_usize()])
             .zip(resolutions_out)
         {
             if symbol_state.is_empty() {
@@ -3425,7 +3407,9 @@ impl<'data> DynamicLayoutState<'data> {
             next_symbol_index += 1;
         }
 
-        let gnu_version_r_layout = section_layouts.get(output_section_id::GNU_VERSION_R);
+        let gnu_version_r_layout = resources
+            .section_layouts
+            .get(output_section_id::GNU_VERSION_R);
         let is_last_verneed = memory_offsets.gnu_version_r + self.common.mem_sizes.gnu_version_r
             == gnu_version_r_layout.mem_offset + gnu_version_r_layout.mem_size;
 
@@ -3435,7 +3419,9 @@ impl<'data> DynamicLayoutState<'data> {
             file_sizes: self
                 .common
                 .mem_sizes
-                .map(output_sections, |_section_id, mem_size| *mem_size as usize),
+                .map(resources.output_sections, |_section_id, mem_size| {
+                    *mem_size as usize
+                }),
             lib_name: self.lib_name,
             dynstr_start_offset,
             object: self.object,
