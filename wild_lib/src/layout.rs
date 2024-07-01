@@ -2238,9 +2238,13 @@ impl<'data> EpilogueLayoutState<'data> {
         }
 
         if symbol_db.args.needs_dynamic() {
-            self.common.mem_sizes.dynamic += (elf_writer::NUM_EPILOGUE_DYNAMIC_ENTRIES
-                * core::mem::size_of::<crate::elf::DynamicEntry>())
-                as u64;
+            let dynamic_entry_size = core::mem::size_of::<crate::elf::DynamicEntry>();
+            self.common.mem_sizes.dynamic +=
+                (elf_writer::NUM_EPILOGUE_DYNAMIC_ENTRIES * dynamic_entry_size) as u64;
+            for rpath in &symbol_db.args.rpaths {
+                self.common.mem_sizes.dynamic += dynamic_entry_size as u64;
+                self.common.mem_sizes.dynstr += rpath.len() as u64 + 1;
+            }
         }
 
         let num_defs = self.dynamic_symbol_definitions.len();

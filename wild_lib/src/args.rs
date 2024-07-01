@@ -36,6 +36,7 @@ pub(crate) struct Args {
     pub(crate) hash_style: Option<HashStyle>,
     pub(crate) should_write_eh_frame_hdr: bool,
     pub(crate) write_trace: bool,
+    pub(crate) rpaths: Vec<String>,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -160,6 +161,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut verbose_gc_stats = false;
     let mut action = None;
     let mut unrecognised = Vec::new();
+    let mut rpaths = Vec::new();
     if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
         write_layout = true;
         write_trace = true;
@@ -251,8 +253,16 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if let Some(script) = arg.strip_prefix("--version-script=") {
             save_dir.handle_file(script)?;
             version_script_path = Some(PathBuf::from(script));
-        } else if arg.starts_with("-rpath=") {
-            // TODO: Implement
+        } else if arg == "-rpath" {
+            rpaths.push(
+                input
+                    .next()
+                    .context("Missing argument to -rpath")?
+                    .as_ref()
+                    .to_owned(),
+            );
+        } else if let Some(rest) = arg.strip_prefix("-rpath=") {
+            rpaths.push(rest.to_owned());
         } else if arg == "--no-string-merge" {
             merge_strings = false;
         } else if arg == "-pie" {
@@ -349,6 +359,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         write_gc_stats,
         gc_stats_ignore,
         verbose_gc_stats,
+        rpaths,
     }))
 }
 

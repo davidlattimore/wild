@@ -31,7 +31,7 @@
 
 //#Config:clang-dynamic:default
 //#CompArgs:-g -fPIC
-//#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections
+//#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN
 //#EnableLinker:lld
 //#Shared:libc-integration-0.c
 //#DiffIgnore:section.relro_padding

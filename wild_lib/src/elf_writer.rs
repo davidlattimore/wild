@@ -1405,8 +1405,16 @@ impl<'data> InternalLayout<'data> {
     }
 }
 
-fn write_epilogue_dynamic_entries(out: &mut [u8], layout: &Layout) -> Result {
+fn write_epilogue_dynamic_entries(
+    out: &mut [u8],
+    layout: &Layout,
+    strings_out: &mut StrTabWriter,
+) -> Result {
     let mut out = DynamicEntriesWriter::new(out);
+    for rpath in &layout.args().rpaths {
+        let offset = strings_out.write_str(rpath.as_bytes());
+        out.write(object::elf::DT_RUNPATH, offset.into())?;
+    }
     for writer in EPILOGUE_DYNAMIC_ENTRY_WRITERS {
         writer.write(&mut out, layout)?;
     }
@@ -1429,11 +1437,22 @@ impl<'data> EpilogueLayout<'data> {
             );
             write_internal_symbols(&self.internal_symbols, layout, &mut symbol_writer)?;
         }
+        let mut dynamic_symbol_writer = SymbolTableWriter::new_dynamic(
+            self.dynstr_offset_start,
+            &mut buffers,
+            &layout.output_sections,
+        );
         if layout.args().needs_dynamic() {
-            write_epilogue_dynamic_entries(buffers.dynamic, layout)?;
+            write_epilogue_dynamic_entries(
+                buffers.dynamic,
+                layout,
+                &mut dynamic_symbol_writer.strtab_writer,
+            )?;
         }
         write_gnu_hash_tables(self, &mut buffers)?;
-        write_dynamic_symbol_definitions(self, &mut buffers, layout)?;
+        write_dynamic_symbol_definitions(self, &mut dynamic_symbol_writer, layout)?;
+
+        dynamic_symbol_writer.check_exhausted()?;
 
         Ok(())
     }
@@ -1505,14 +1524,9 @@ fn write_gnu_hash_tables(
 
 fn write_dynamic_symbol_definitions(
     epilogue: &EpilogueLayout,
-    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    dynamic_symbol_writer: &mut SymbolTableWriter,
     layout: &Layout,
 ) -> Result {
-    let mut dynamic_symbol_writer = SymbolTableWriter::new_dynamic(
-        epilogue.dynstr_offset_start,
-        buffers,
-        &layout.output_sections,
-    );
     for sym_def in &epilogue.dynamic_symbol_definitions {
         let file_id = layout.symbol_db.file_id_for_symbol(sym_def.symbol_id);
         let file_layout = &layout.file_layouts[file_id.as_usize()];

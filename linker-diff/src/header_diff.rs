@@ -421,7 +421,7 @@ fn read_dynamic_fields(obj: &Object) -> Result<FieldValues> {
             26 => (Cow::Borrowed("DT_FINI_ARRAY"), Converter::SectionAddress),
             27 => (Cow::Borrowed("DT_INIT_ARRAYSZ"), Converter::None),
             28 => (Cow::Borrowed("DT_FINI_ARRAYSZ"), Converter::None),
-            29 => (Cow::Borrowed("DT_RUNPATH"), Converter::None),
+            29 => (Cow::Borrowed("DT_RUNPATH"), Converter::DynSymOffset),
             30 => (Cow::Borrowed("DT_FLAGS"), Converter::None),
             32 => (Cow::Borrowed("DT_PREINIT_ARRAY"), Converter::None),
             33 => (Cow::Borrowed("DT_PREINIT_ARRAYSZ"), Converter::None),
