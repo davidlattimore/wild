@@ -115,7 +115,12 @@ impl SaveDir {
                 out.write_all(b"$D/")?;
                 out.write_all(copied.as_bytes())?;
             } else {
-                out.write_all(maybe_path.as_bytes())?;
+                for b in maybe_path.bytes() {
+                    if b" $\\".contains(&b) {
+                        out.write_all(b"\\")?;
+                    }
+                    out.write_all(&[b])?;
+                }
             }
         }
         if let Some(orig) = original_output_file {
