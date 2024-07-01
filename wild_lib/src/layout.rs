@@ -431,24 +431,24 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
 
     fn file_id(&self) -> FileId;
 
-    fn export_dynamic<'scope>(
-        &mut self,
-        symbol_id: SymbolId,
-        graph_resources: &GraphResources<'data, 'scope>,
-    ) -> Result {
-        let name = graph_resources.symbol_db.symbol_name(symbol_id)?;
-        self.common_mut()
-            .dynamic_symbol_definitions
-            .push(DynamicSymbolDefinition::new(symbol_id, name.bytes()));
-        Ok(())
-    }
-
     fn load_symbol<'scope>(
         &mut self,
         symbol_id: SymbolId,
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result;
+}
+
+fn export_dynamic<'data>(
+    common: &mut CommonLayoutState<'data>,
+    symbol_id: SymbolId,
+    graph_resources: &GraphResources<'data, '_>,
+) -> Result {
+    let name = graph_resources.symbol_db.symbol_name(symbol_id)?;
+    common
+        .dynamic_symbol_definitions
+        .push(DynamicSymbolDefinition::new(symbol_id, name.bytes()));
+    Ok(())
 }
 
 fn allocate_symbol_resolution(
@@ -579,15 +579,6 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         }
         Ok(())
     }
-
-    fn export_dynamic<'scope>(
-        &mut self,
-        _symbol_id: SymbolId,
-        _resources: &GraphResources<'data, 'scope>,
-    ) -> Result {
-        // Nothing to do. We're a dynamic object that presumably already exports this symbol.
-        Ok(())
-    }
 }
 
 impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
@@ -604,14 +595,6 @@ impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
         _symbol_id: SymbolId,
         _resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
-    ) -> Result {
-        Ok(())
-    }
-
-    fn export_dynamic<'scope>(
-        &mut self,
-        _symbol_id: SymbolId,
-        _graph_resources: &GraphResources<'data, 'scope>,
     ) -> Result {
         Ok(())
     }
@@ -656,8 +639,10 @@ struct CommonLayoutState<'data> {
 
     symbol_id_range: SymbolIdRange,
 
-    /// Dynamic symbols defined by this object. Because of the ordering requirements for symbol
-    /// hashes, these get defined by the epilogue.
+    /// Dynamic symbols that need to be defined. Because of the ordering requirements for symbol
+    /// hashes, these get defined by the epilogue. The object on which a particular dynamic symbol
+    /// is stored is non-deterministic and is whichever object first requested export of that
+    /// symbol. That's OK though because the epilogue will sort all dynamic symbols.
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
 }
 
@@ -925,7 +910,6 @@ struct FinaliseLayoutResources<'scope, 'data> {
 #[derive(Copy, Clone, Debug)]
 enum WorkItem {
     LoadGlobalSymbol(SymbolId),
-    ExportSymbol(SymbolId),
 }
 
 impl<'data> Layout<'data> {
@@ -1476,12 +1460,6 @@ impl LocalWorkQueue {
             WorkItem::LoadGlobalSymbol(symbol_id),
         );
     }
-
-    fn send_export_dynamic_request(&mut self, symbol_id: SymbolId, resources: &GraphResources) {
-        debug_assert!(resources.symbol_db.is_canonical(symbol_id));
-        let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
-        self.send_work(resources, symbol_file_id, WorkItem::ExportSymbol(symbol_id));
-    }
 }
 
 impl<'data, 'scope> GraphResources<'data, 'scope> {
@@ -1570,25 +1548,6 @@ impl<'data> FileLayoutState<'data> {
                         resources.symbol_db.symbol_debug(symbol_id),
                     )
                 }),
-            WorkItem::ExportSymbol(symbol_id) => {
-                self.handle_export_dynamic_request(symbol_id, resources)
-            }
-        }
-    }
-
-    fn handle_export_dynamic_request(
-        &mut self,
-        symbol_id: SymbolId,
-        resources: &GraphResources<'data, '_>,
-    ) -> std::result::Result<(), Error> {
-        match self {
-            FileLayoutState::Internal(s) => s.export_dynamic(symbol_id, resources),
-            FileLayoutState::Object(s) => s.export_dynamic(symbol_id, resources),
-            FileLayoutState::Dynamic(s) => s.export_dynamic(symbol_id, resources),
-            FileLayoutState::Epilogue(s) => s.export_dynamic(symbol_id, resources),
-            FileLayoutState::NotLoaded => {
-                panic!("Non-loaded file was asked to export a symbol")
-            }
         }
     }
 
@@ -2793,7 +2752,7 @@ impl<'data> ObjectLayoutState<'data> {
                     self.load_symbol(symbol_id, resources, queue)?;
                 }
                 if !old_flags.contains(ResolutionFlags::EXPORT_DYNAMIC) {
-                    self.export_dynamic(symbol_id, resources)?;
+                    export_dynamic(self.common_mut(), symbol_id, resources)?;
                 }
             }
         }
@@ -3260,7 +3219,11 @@ fn layout_section_parts(
 }
 
 impl<'data> DynamicLayoutState<'data> {
-    fn activate(&mut self, resources: &GraphResources, queue: &mut LocalWorkQueue) -> Result {
+    fn activate(
+        &mut self,
+        resources: &GraphResources<'data, '_>,
+        queue: &mut LocalWorkQueue,
+    ) -> Result {
         let dt_info = DynamicTagValues::read(self.object)?;
         self.symbol_versions_needed = vec![false; dt_info.verdefnum as usize];
         if let Some(soname) = dt_info.soname {
@@ -3272,8 +3235,8 @@ impl<'data> DynamicLayoutState<'data> {
     }
 
     fn request_all_undefined_symbols(
-        &self,
-        resources: &GraphResources,
+        &mut self,
+        resources: &GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
         for symbol_id in self.symbol_id_range() {
@@ -3281,13 +3244,19 @@ impl<'data> DynamicLayoutState<'data> {
                 continue;
             }
             let definition_symbol_id = resources.symbol_db.definition(symbol_id);
+            let file_id = resources.symbol_db.file_id_for_symbol(definition_symbol_id);
+            // If a shared object references a symbol from say another shared object, there's
+            // nothing we need to do.
+            if !resources.symbol_db.inputs[file_id.as_usize()].is_regular_object() {
+                continue;
+            }
             let old_flags = resources.symbol_resolution_flags[definition_symbol_id.as_usize()]
                 .fetch_or(ResolutionFlags::EXPORT_DYNAMIC);
             if old_flags.is_empty() {
                 queue.send_symbol_request(definition_symbol_id, resources);
             }
             if !old_flags.contains(ResolutionFlags::EXPORT_DYNAMIC) {
-                queue.send_export_dynamic_request(definition_symbol_id, resources);
+                export_dynamic(self.common_mut(), definition_symbol_id, resources)?;
             }
         }
         Ok(())

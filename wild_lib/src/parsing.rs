@@ -175,6 +175,14 @@ impl<'data> InputObject<'data> {
             InputObject::Epilogue(o) => SymbolIdRange::epilogue(o.start_symbol_id, 0),
         }
     }
+
+    pub(crate) fn is_regular_object(&self) -> bool {
+        match self {
+            InputObject::Object(o) => !o.is_dynamic(),
+            InputObject::Internal(_) => false,
+            InputObject::Epilogue(_) => false,
+        }
+    }
 }
 
 impl InternalInputObject {
