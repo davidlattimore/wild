@@ -373,10 +373,14 @@ fn read_dynamic_fields(obj: &Object) -> Result<FieldValues> {
     let e = LittleEndian;
 
     let entries: &[object::elf::Dyn64<LittleEndian>] = slice_from_all_bytes(dynamic.data()?);
+    let mut got_null = false;
     for entry in entries {
         let (tag_name, converter) = match entry.d_tag(e) {
             // Ignore DT_NULL. All linkers should emit at least one, but many emit more than one.
-            0 => continue,
+            0 => {
+                got_null = true;
+                continue;
+            }
             1 => (Cow::Borrowed("DT_NEEDED"), Converter::DynSymOffset),
             2 => {
                 // Ignore sizes for now.
@@ -468,10 +472,16 @@ fn read_dynamic_fields(obj: &Object) -> Result<FieldValues> {
                 Converter::None,
             ),
         };
+        if got_null {
+            bail!("Found {tag_name} after DT_NULL");
+        }
         values
             .entry(tag_name)
             .or_default()
             .push(converter.convert(entry.d_val(e), obj));
+    }
+    if !got_null {
+        bail!("Missing DT_NULL entry");
     }
 
     Ok(FieldValues { values })
