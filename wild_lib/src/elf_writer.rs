@@ -774,11 +774,11 @@ impl<'data> ObjectLayout<'data> {
         for rel in &self.plt_relocations {
             table_writer.write_ifunc_relocation(rel)?;
         }
-        let mut dyn_str_tab = StrTabWriter {
-            next_offset: self.dynstr_start_offset,
-            out: buffers.dynstr,
-        };
-        let mut dynsym: &mut [SymtabEntry] = slice_from_all_bytes_mut(buffers.dynsym);
+        let mut dynsym_writer = SymbolTableWriter::new_dynamic(
+            self.dynstr_start_offset,
+            &mut buffers,
+            &layout.output_sections,
+        );
         for (symbol_id, resolution) in layout.resolutions_in_range(self.symbol_id_range) {
             if let Some(res) = resolution {
                 table_writer.process_resolution(res).with_context(|| {
@@ -793,7 +793,8 @@ impl<'data> ObjectLayout<'data> {
                     let symbol = self
                         .object
                         .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
-                    write_dynamic_symtab_entry(self.object, symbol, &mut dynsym, &mut dyn_str_tab)?;
+                    let name = self.object.symbol_name(symbol)?;
+                    dynsym_writer.copy_symbol_shndx(symbol, name, 0, 0)?;
                 }
             }
         }
@@ -801,6 +802,7 @@ impl<'data> ObjectLayout<'data> {
             self.write_symbols(start_str_offset, buffers, &layout.output_sections, layout)?;
         }
         table_writer.validate_empty(&self.mem_sizes)?;
+        dynsym_writer.check_exhausted()?;
         Ok(())
     }
 
@@ -1939,21 +1941,22 @@ fn write_internal_symbols_plt_got_entries(
 impl<'data> DynamicLayout<'data> {
     fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
         let mut table_writer = TableWriter::from_layout(layout, &mut buffers);
-        let mut strings_out = StrTabWriter {
-            next_offset: self.dynstr_start_offset,
-            out: buffers.dynstr,
-        };
+        let mut dynsym_writer = SymbolTableWriter::new_dynamic(
+            self.dynstr_start_offset,
+            &mut buffers,
+            &layout.output_sections,
+        );
 
-        self.write_so_name(buffers.dynamic, &mut strings_out)?;
+        self.write_so_name(buffers.dynamic, &mut dynsym_writer.strtab_writer)?;
 
-        let mut dynsym: &mut [SymtabEntry] = slice_from_all_bytes_mut(buffers.dynsym);
         let mut versym: &mut [Versym] = slice_from_all_bytes_mut(buffers.gnu_version);
         for ((symbol_id, resolution), symbol) in layout
             .resolutions_in_range(self.symbol_id_range)
             .zip(self.object.symbols.iter())
         {
             if let Some(res) = resolution {
-                write_dynamic_symtab_entry(self.object, symbol, &mut dynsym, &mut strings_out)?;
+                let name = self.object.symbol_name(symbol)?;
+                dynsym_writer.copy_symbol_shndx(symbol, name, 0, 0)?;
 
                 write_symbol_version(
                     self.input_symbol_versions,
@@ -2005,7 +2008,7 @@ impl<'data> DynamicLayout<'data> {
                 if is_base {
                     let aux_in = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
                     let name = aux_in.name(e, strings)?;
-                    let name_offset = strings_out.write_str(name);
+                    let name_offset = dynsym_writer.strtab_writer.write_str(name);
                     ver_need.vn_file.set(e, name_offset);
                     continue;
                 }
@@ -2021,7 +2024,7 @@ impl<'data> DynamicLayout<'data> {
                     // Every VERDEF entry should have at least one AUX entry.
                     let aux_in = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
                     let name = aux_in.name(e, strings)?;
-                    let name_offset = strings_out.write_str(name);
+                    let name_offset = dynsym_writer.strtab_writer.write_str(name);
                     let sysv_name_hash = object::elf::hash(name);
                     let is_last_aux = aux_index + 1 == auxes.len();
                     let aux_out = auxes
@@ -2040,6 +2043,8 @@ impl<'data> DynamicLayout<'data> {
                 }
             }
         }
+
+        dynsym_writer.check_exhausted()?;
 
         Ok(())
     }
@@ -2071,34 +2076,6 @@ fn write_symbol_version(
     let version_out =
         crate::slice::take_first_mut(versym_out).context("Insufficient .gnu.version allocation")?;
     version_out.0.set(LittleEndian, output_version);
-    Ok(())
-}
-
-fn write_dynamic_symtab_entry(
-    object: &crate::elf::File<'_>,
-    symbol: &SymtabEntry,
-    dynsym: &mut &mut [SymtabEntry],
-    strtab: &mut StrTabWriter,
-) -> Result {
-    let sym_out =
-        crate::slice::take_first_mut(dynsym).context("Insufficient .dynsym allocation")?;
-    let e = LittleEndian;
-    sym_out
-        .st_name
-        .set(e, strtab.write_str(object.symbol_name(symbol)?));
-    // If the symbol is an ifunc, change it to a regular func. The symbol is undefined (all the
-    // symbols we write here are) and the distinction between a regular function and an ifunc only
-    // makes sense in the file that defines the symbol.
-    let mut st_info = symbol.st_info();
-    if st_info & elf::SYMBOL_TYPE_MASK == elf::SYMBOL_TYPE_IFUNC {
-        st_info = (st_info & elf::SYMBOL_VISIBILITY_MASK) | elf::SYMBOL_TYPE_FUNC;
-    }
-    // TODO: If this shared object weakly defines a symbol, but there are strong references to the
-    // symbol, then we should upgrade the symbol strength to global. Right now, we don't pass
-    // whether the symbol is weak or not when requesting symbols.
-    sym_out.st_info = st_info;
-    sym_out.st_other = symbol.st_other();
-    sym_out.st_size.set(e, 0);
     Ok(())
 }
 

@@ -367,12 +367,6 @@ pub(crate) const RELA_ENTRY_SIZE: u64 = 0x18;
 pub(crate) const SYMTAB_ENTRY_SIZE: u64 = core::mem::size_of::<SymtabEntry>() as u64;
 pub(crate) const GNU_VERSION_ENTRY_SIZE: u64 = core::mem::size_of::<Versym>() as u64;
 
-pub(crate) const SYMBOL_TYPE_MASK: u8 = 0xf;
-pub(crate) const SYMBOL_VISIBILITY_MASK: u8 = 0xf0;
-
-pub(crate) const SYMBOL_TYPE_IFUNC: u8 = 10;
-pub(crate) const SYMBOL_TYPE_FUNC: u8 = 2;
-
 pub(crate) const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0xf3, 0x0f, 0x1e, 0xfa, // endbr64
     0xf2, 0xff, 0x25, 0x0, 0x0, 0x0, 0x0, // bnd jmp *{relative GOT address}(%rip)
