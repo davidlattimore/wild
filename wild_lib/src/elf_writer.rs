@@ -439,7 +439,12 @@ impl<'out> TableWriter<'out> {
             return Ok(());
         }
         if res.resolution_flags.contains(ResolutionFlags::TLS) {
-            if res.value_flags.contains(ValueFlags::DYNAMIC) {
+            if res.value_flags.contains(ValueFlags::DYNAMIC)
+                || (res
+                    .resolution_flags
+                    .contains(ResolutionFlags::EXPORT_DYNAMIC)
+                    && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
+            {
                 return self.write_tpoff(got_address.get(), res.dynamic_symbol_index()?);
             }
             let address = res.raw_value;

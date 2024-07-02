@@ -3658,6 +3658,7 @@ fn test_resolution_allocation_consistency() -> Result {
         ResolutionFlags::DIRECT,
         ResolutionFlags::EXPORT_DYNAMIC,
         ResolutionFlags::DIRECT | ResolutionFlags::GOT | ResolutionFlags::EXPORT_DYNAMIC,
+        ResolutionFlags::GOT | ResolutionFlags::TLS | ResolutionFlags::EXPORT_DYNAMIC,
         ResolutionFlags::GOT,
         ResolutionFlags::GOT | ResolutionFlags::PLT,
         ResolutionFlags::TLS,
