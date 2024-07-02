@@ -62,7 +62,7 @@ impl Relaxation {
         let is_absolute = value_flags.contains(ValueFlags::ABSOLUTE);
         let non_relocatable = output_kind == OutputKind::NonRelocatableStaticExecutable;
         let is_absolute_address = is_known_address && non_relocatable;
-        let can_be_pc_relative = is_known_address || (is_absolute && non_relocatable);
+        let can_bypass_got = value_flags.contains(ValueFlags::CAN_BYPASS_GOT);
 
         // IFuncs cannot be referenced directly. The always need to go via the GOT. So if we've got
         // say a PLT32 relocation, we don't want to relax it even if we're in a static executable.
@@ -74,8 +74,6 @@ impl Relaxation {
                 _ => None,
             };
         }
-
-        let can_bypass_got = value_flags.contains(ValueFlags::CAN_BYPASS_GOT);
 
         let offset = offset_in_section as usize;
         // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
@@ -113,7 +111,7 @@ impl Relaxation {
                         }
                         _ => return None,
                     }
-                } else if can_be_pc_relative {
+                } else if can_bypass_got {
                     match b1 {
                         0x8b => {
                             return Some((
@@ -140,7 +138,7 @@ impl Relaxation {
                         _ => {}
                     }
                 }
-                if can_be_pc_relative {
+                if can_bypass_got {
                     match &section_bytes[offset - 2..offset] {
                         [0xff, 0x15] => {
                             return Some((
@@ -153,7 +151,7 @@ impl Relaxation {
                 }
                 return None;
             }
-            object::elf::R_X86_64_GOTPCREL if can_be_pc_relative && offset >= 2 => {
+            object::elf::R_X86_64_GOTPCREL if can_bypass_got && offset >= 2 => {
                 let b1 = section_bytes[offset - 2];
                 match b1 {
                     0x8b => {

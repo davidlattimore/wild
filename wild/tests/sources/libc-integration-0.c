@@ -1,5 +1,13 @@
 __thread int tvar3 = 80;
 
+// These get overridden in the main file.
+__attribute__ ((weak)) int weak_var = 20;
+__attribute__ ((weak)) __thread int weak_tvar = 21;
+
+// These don't get overridden.
+__attribute__ ((weak)) int weak_var2 = 80;
+__attribute__ ((weak)) __thread int weak_tvar2 = 81;
+
 extern __thread int tvar2;
 
 static __thread int tvar_local = 8;
@@ -18,4 +26,20 @@ void set_tvar_local(int v) {
 
 int get_tvar_local(void) {
     return tvar_local;
+}
+
+int get_weak_var(void) {
+    return weak_var;
+}
+
+int get_weak_tvar(void) {
+    return weak_tvar;
+}
+
+int get_weak_var2(void) {
+    return weak_var2;
+}
+
+int get_weak_tvar2(void) {
+    return weak_tvar2;
 }

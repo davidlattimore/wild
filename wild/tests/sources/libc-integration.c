@@ -44,6 +44,10 @@ __thread int tvar1 = 0;
 __thread int tvar2 = 70;
 extern __thread int tvar3;
 
+// These are defined both here and in the second file, but with different values.
+__attribute__ ((weak)) int weak_var = 30;
+__attribute__ ((weak)) __thread int weak_tvar = 31;
+
 void set_tvar2(int v);
 
 int __attribute__ ((weak)) weak_fn1(void);
@@ -51,6 +55,10 @@ int __attribute__ ((weak)) weak_fn2(void);
 
 void set_tvar_local(int v);
 int get_tvar_local(void);
+int get_weak_var(void);
+int get_weak_var2(void);
+int get_weak_tvar(void);
+int get_weak_tvar2(void);
 
 void *thread_function(void *data) {
     if (tvar1 != 0) {
@@ -114,6 +122,22 @@ int main() {
     set_tvar_local(99);
     if (get_tvar_local() != 99) {
         return 108;
+    }
+
+    if (get_weak_var() != 30) {
+        return 109;
+    }
+
+    if (get_weak_tvar() != 31) {
+        return 110;
+    }
+
+    if (get_weak_var2() != 80) {
+        return 111;
+    }
+
+    if (get_weak_tvar2() != 81) {
+        return 112;
     }
 
     return 42;
