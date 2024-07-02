@@ -603,11 +603,10 @@ impl<'out> TableWriter<'out> {
 }
 
 struct SymbolTableWriter<'data, 'out> {
-    string_offset: u32,
     local_entries: &'out mut [SymtabEntry],
     global_entries: &'out mut [SymtabEntry],
-    strings: &'out mut [u8],
     output_sections: &'data OutputSections<'data>,
+    strtab_writer: StrTabWriter<'out>,
 }
 
 impl<'data, 'out> SymbolTableWriter<'data, 'out> {
@@ -624,11 +623,13 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
             sizes.symtab_strings as usize,
         ));
         Self {
-            string_offset: start_string_offset,
             local_entries,
             global_entries,
-            strings,
             output_sections,
+            strtab_writer: StrTabWriter {
+                next_offset: start_string_offset,
+                out: strings,
+            },
         }
     }
 
@@ -640,11 +641,13 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         let global_entries = slice_from_all_bytes_mut(core::mem::take(&mut buffers.dynsym));
         let strings = slice_from_all_bytes_mut(core::mem::take(&mut buffers.dynstr));
         Self {
-            string_offset,
             local_entries: Default::default(),
             global_entries,
-            strings,
             output_sections,
+            strtab_writer: StrTabWriter {
+                next_offset: string_offset,
+                out: strings,
+            },
         }
     }
 
@@ -720,17 +723,13 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
             })?
         };
         let e = LittleEndian;
-        entry.st_name.set(e, self.string_offset);
+        let string_offset = self.strtab_writer.write_str(name);
+        entry.st_name.set(e, string_offset);
         entry.st_info = 0;
         entry.st_other = 0;
         entry.st_shndx.set(e, shndx);
         entry.st_value.set(e, value);
         entry.st_size.set(e, size);
-        let len = name.len();
-        let str_out = slice_take_prefix_mut(&mut self.strings, len + 1);
-        str_out[..len].copy_from_slice(name);
-        str_out[len] = 0;
-        self.string_offset += len as u32 + 1;
         Ok(entry)
     }
 
@@ -739,13 +738,13 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
     fn check_exhausted(&self) -> Result {
         if !self.local_entries.is_empty()
             || !self.global_entries.is_empty()
-            || !self.strings.is_empty()
+            || !self.strtab_writer.out.is_empty()
         {
             bail!(
                 "Didn't use up all allocated symtab/strtab space. local={} global={} strings={}",
                 self.local_entries.len(),
                 self.global_entries.len(),
-                self.strings.len()
+                self.strtab_writer.out.len()
             );
         }
         Ok(())
@@ -2007,7 +2006,7 @@ impl<'data> DynamicLayout<'data> {
                     let aux_in = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
                     let name = aux_in.name(e, strings)?;
                     let name_offset = strings_out.write_str(name);
-                    ver_need.vn_file.set(e, name_offset as u32);
+                    ver_need.vn_file.set(e, name_offset);
                     continue;
                 }
                 if input_version == 0 {
@@ -2035,7 +2034,7 @@ impl<'data> DynamicLayout<'data> {
                     };
                     aux_out.vna_next.set(e, vna_next);
                     aux_out.vna_other.set(e, output_version);
-                    aux_out.vna_name.set(e, name_offset as u32);
+                    aux_out.vna_name.set(e, name_offset);
                     aux_out.vna_hash.set(e, sysv_name_hash);
                     aux_index += 1;
                 }
@@ -2049,7 +2048,7 @@ impl<'data> DynamicLayout<'data> {
     fn write_so_name(&self, dynamic: &mut [u8], strtab: &mut StrTabWriter) -> Result {
         let mut dynamic_out = DynamicEntriesWriter::new(dynamic);
         let needed_offset = strtab.write_str(self.lib_name);
-        dynamic_out.write(object::elf::DT_NEEDED, needed_offset)?;
+        dynamic_out.write(object::elf::DT_NEEDED, needed_offset.into())?;
         Ok(())
     }
 }
@@ -2084,13 +2083,9 @@ fn write_dynamic_symtab_entry(
     let sym_out =
         crate::slice::take_first_mut(dynsym).context("Insufficient .dynsym allocation")?;
     let e = LittleEndian;
-    sym_out.st_name.set(
-        e,
-        strtab
-            .write_str(object.symbol_name(symbol)?)
-            .try_into()
-            .context(".dynstr is too big")?,
-    );
+    sym_out
+        .st_name
+        .set(e, strtab.write_str(object.symbol_name(symbol)?));
     // If the symbol is an ifunc, change it to a regular func. The symbol is undefined (all the
     // symbols we write here are) and the distinction between a regular function and an ifunc only
     // makes sense in the file that defines the symbol.
@@ -2108,20 +2103,20 @@ fn write_dynamic_symtab_entry(
 }
 
 struct StrTabWriter<'out> {
-    next_offset: u64,
+    next_offset: u32,
     out: &'out mut [u8],
 }
 
 impl<'out> StrTabWriter<'out> {
     /// Writes a string to the string table. Returns the offset within the string table at which the
     /// string was written.
-    fn write_str(&mut self, str: &[u8]) -> u64 {
+    fn write_str(&mut self, str: &[u8]) -> u32 {
         let len_with_terminator = str.len() + 1;
         let lib_name_out = slice_take_prefix_mut(&mut self.out, len_with_terminator);
         lib_name_out[..str.len()].copy_from_slice(str);
         lib_name_out[str.len()] = 0;
         let offset = self.next_offset;
-        self.next_offset += len_with_terminator as u64;
+        self.next_offset += len_with_terminator as u32;
         offset
     }
 }

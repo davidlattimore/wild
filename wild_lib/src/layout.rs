@@ -336,7 +336,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) eh_frame_start_address: u64,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) merged_string_resolutions: Vec<Option<MergedStringResolution>>,
-    pub(crate) dynstr_start_offset: u64,
+    pub(crate) dynstr_start_offset: u32,
 }
 
 pub(crate) struct InternalLayout<'data> {
@@ -366,7 +366,7 @@ pub(crate) struct DynamicLayout<'data> {
     pub(crate) lib_name: &'data [u8],
 
     /// The offset in .dynstr at which we'll start writing.
-    pub(crate) dynstr_start_offset: u64,
+    pub(crate) dynstr_start_offset: u32,
 
     pub(crate) symbol_id_range: SymbolIdRange,
 
@@ -2597,11 +2597,11 @@ impl<'data> ObjectLayoutState<'data> {
         resolutions_out: &mut [Option<Resolution>],
         resources: &FinaliseLayoutResources,
     ) -> Result<ObjectLayout<'data>> {
-        let dynstr_start_offset = memory_offsets.dynstr
+        let dynstr_start_offset = (memory_offsets.dynstr
             - resources
                 .section_layouts
                 .get(output_section_id::DYNSTR)
-                .mem_offset;
+                .mem_offset) as u32;
         let symbol_id_range = self.symbol_id_range();
         let mut sections = self.state.sections;
 
@@ -3340,11 +3340,11 @@ impl<'data> DynamicLayoutState<'data> {
     ) -> Result<DynamicLayout<'data>> {
         let version_mapping = self.compute_version_mapping();
 
-        let dynstr_start_offset = memory_offsets.dynstr
+        let dynstr_start_offset = (memory_offsets.dynstr
             - resources
                 .section_layouts
                 .get(output_section_id::DYNSTR)
-                .mem_offset;
+                .mem_offset) as u32;
 
         let mut emitter = self
             .common
