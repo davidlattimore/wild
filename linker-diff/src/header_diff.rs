@@ -290,7 +290,7 @@ pub(crate) fn diff_fields(
     let mut mismatches = Vec::new();
     for k in all_keys {
         let first = ok.first().and_then(|o| o.values.get(k));
-        if ok.iter().all(|o| o.values.get(k) != first) {
+        if ok.iter().skip(1).all(|o| o.values.get(k) != first) {
             let values = ok
                 .iter()
                 .map(|o| o.values.get(k).map(|v| v.join(",")).unwrap_or_default())

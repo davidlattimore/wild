@@ -1,5 +1,6 @@
 //#AbstractConfig:default
 //#DiffIgnore:asm.dummy
+//#DiffIgnore:section.tdata.alignment
 
 //#Config:llvm-static:default
 //#CompArgs:--target x86_64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2
