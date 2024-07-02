@@ -562,37 +562,42 @@ fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
     if paths.is_empty() {
         return Ok(vec![]);
     }
-    // This is not quite right, since we might split in the middle of a multibyte character.
-    // But this is a dev tool, so we'll punt on that for now.
-    let mut iterators = paths
-        .iter()
-        .map(|p| p.as_os_str().as_encoded_bytes().iter())
-        .collect::<Vec<_>>();
-    let mut n = 0;
-    while first_equals_any(iterators.iter_mut().map(|i| i.next())) {
-        n += 1;
-    }
     let mut names = paths
         .iter()
-        .map(|p| {
-            String::from_utf8_lossy(
-                &p.as_os_str()
-                    .as_encoded_bytes()
-                    .iter()
-                    .skip(n)
-                    .copied()
-                    .collect::<Vec<u8>>(),
-            )
-            .into_owned()
-        })
+        .map(|p| p.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    if names.iter().all(|n| n.ends_with(".so")) {
+    if names.iter().all(|name| name.ends_with(".so")) {
         names = names
             .into_iter()
             .map(|n| n.strip_suffix(".so").unwrap().to_owned())
             .collect();
     }
+    // This is not quite right, since we might split in the middle of a multibyte character.
+    // But this is a dev tool, so we'll punt on that for now.
+    let mut iterators = names.iter().map(|n| n.bytes()).collect::<Vec<_>>();
+    let mut n = 0;
+    while first_equals_all(iterators.iter_mut().map(|i| i.next())) {
+        n += 1;
+    }
+    names = names
+        .iter()
+        .map(|name| {
+            String::from_utf8_lossy(&name.bytes().skip(n).collect::<Vec<u8>>()).into_owned()
+        })
+        .collect::<Vec<_>>();
     Ok(names)
+}
+
+fn first_equals_all<T: PartialEq>(mut inputs: impl Iterator<Item = T>) -> bool {
+    let Some(first) = inputs.next() else {
+        return true;
+    };
+    for next in inputs {
+        if next != first {
+            return false;
+        }
+    }
+    true
 }
 
 /// Returns whether the first input is equal to at least one of the remaining values.
