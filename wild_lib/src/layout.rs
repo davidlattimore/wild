@@ -3276,6 +3276,7 @@ impl<'data> DynamicLayoutState<'data> {
             let defs = verdef_iterator.clone();
 
             let strings = self.object.sections.strings(e, self.object.data, link)?;
+            let mut base_size = 0;
             while let Some((verdef, mut aux_iterator)) = verdef_iterator.next()? {
                 let version_index = verdef.vd_ndx.get(e);
                 if version_index == 0 {
@@ -3290,19 +3291,24 @@ impl<'data> DynamicLayoutState<'data> {
                         .get(usize::from(version_index - 1))
                         .context("Invalid version index")?;
                 if needed {
-                    // The base version doesn't count as a version. We emit it as a Verneed, whereas
-                    // the actual versions are emitted as Vernaux.
-                    if !is_base {
-                        version_count += 1;
-                    }
                     // Every VERDEF entry should have at least one AUX entry.
                     let aux = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
                     let name = aux.name(e, strings)?;
-                    self.common.mem_sizes.dynstr += name.len() as u64 + 1;
+                    let name_size = name.len() as u64 + 1;
+                    if is_base {
+                        // The base version doesn't count as a version, so we don't increment
+                        // version_count here. We emit it as a Verneed, whereas the actual versions
+                        // are emitted as Vernaux.
+                        base_size = name_size;
+                    } else {
+                        self.common.mem_sizes.dynstr += name_size;
+                        version_count += 1;
+                    }
                 }
             }
 
             if version_count > 0 {
+                self.common.mem_sizes.dynstr += base_size;
                 self.common.mem_sizes.gnu_version_r += core::mem::size_of::<crate::elf::Verneed>()
                     as u64
                     + u64::from(version_count) * core::mem::size_of::<crate::elf::Vernaux>() as u64;
