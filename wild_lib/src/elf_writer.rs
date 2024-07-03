@@ -564,10 +564,11 @@ impl<'out> TableWriter<'out> {
         place: u64,
         addend: u64,
         symbol_index: u32,
-    ) -> Result<(), anyhow::Error> {
-        if !self.output_kind.is_relocatable() {
-            return Ok(());
-        }
+    ) -> Result {
+        debug_assert_bail!(
+            self.output_kind.is_relocatable(),
+            "Tried to write dynamic relocation with non-relocatable output"
+        );
         let e = LittleEndian;
         let rela = self.take_glob_dat()?;
         rela.r_offset.set(e, place);
