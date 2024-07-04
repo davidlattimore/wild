@@ -468,6 +468,7 @@ impl<'out> TableWriter<'out> {
                 .resolution_flags
                 .contains(ResolutionFlags::EXPORT_DYNAMIC)
                 && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
+                && !res.value_flags.contains(ValueFlags::IFUNC)
         {
             self.write_dynamic_symbol_relocation(
                 got_address.get(),

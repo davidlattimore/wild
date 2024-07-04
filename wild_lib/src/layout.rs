@@ -453,7 +453,6 @@ fn allocate_symbol_resolution(
 ) {
     if value_flags.contains(ValueFlags::IFUNC) {
         resolution_flags.fetch_or(ResolutionFlags::GOT | ResolutionFlags::PLT);
-        mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
     }
     let resolution_flags = resolution_flags.get();
     if resolution_flags.contains(ResolutionFlags::PLT) {
@@ -471,18 +470,19 @@ fn allocate_resolution(
 ) {
     if resolution_flags.contains(ResolutionFlags::GOT) {
         mem_sizes.got += elf::GOT_ENTRY_SIZE;
-        if output_kind.is_relocatable() && !value_flags.contains(ValueFlags::IFUNC) {
-            if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
-                && (value_flags.contains(ValueFlags::DYNAMIC)
-                    || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
-                    || resolution_flags.contains(ResolutionFlags::TLS))
-            {
-                mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
-            } else if value_flags.contains(ValueFlags::ADDRESS)
-                && !resolution_flags.contains(ResolutionFlags::TLS)
-            {
-                mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
-            }
+        if value_flags.contains(ValueFlags::IFUNC) {
+            mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
+        } else if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
+            && (value_flags.contains(ValueFlags::DYNAMIC)
+                || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
+                || resolution_flags.contains(ResolutionFlags::TLS))
+        {
+            mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
+        } else if value_flags.contains(ValueFlags::ADDRESS)
+            && !resolution_flags.contains(ResolutionFlags::TLS)
+            && output_kind.is_relocatable()
+        {
+            mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
         }
     }
     if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
@@ -3653,13 +3653,6 @@ fn test_resolution_allocation_consistency() -> Result {
             if resolution_flags.contains(ResolutionFlags::TLS)
                 && (value_flags.contains(ValueFlags::ABSOLUTE)
                     || value_flags.contains(ValueFlags::IFUNC))
-            {
-                continue;
-            }
-
-            // TODO: Make this combination work.
-            if value_flags.contains(ValueFlags::IFUNC)
-                && resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
             {
                 continue;
             }

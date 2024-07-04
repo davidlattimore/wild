@@ -61,6 +61,7 @@ int get_weak_var(void);
 int get_weak_var2(void);
 int get_weak_tvar(void);
 int get_weak_tvar2(void);
+int compute_value10(void);
 
 void *thread_function(void *data) {
     if (tvar1 != 0) {
@@ -148,6 +149,10 @@ int main() {
     set_tvar_local(25);
     if (get_tvar_local() != 25) {
         return 114;
+    }
+
+    if (compute_value10() != 10) {
+        return 115;
     }
 
     return 42;

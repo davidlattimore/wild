@@ -52,3 +52,13 @@ int get_weak_var2(void) {
 int get_weak_tvar2(void) {
     return weak_tvar2;
 }
+
+static int return10() {
+    return 10;
+}
+
+int compute_value10(void) __attribute__((ifunc ("resolve_compute_value10")));
+
+static void *resolve_compute_value10(void) {
+    return return10;
+}
