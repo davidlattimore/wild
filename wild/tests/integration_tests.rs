@@ -76,6 +76,9 @@ impl Linker {
 
     fn link_shared(&self, obj_path: &Path, so_path: &Path, config: &Config) -> Result<LinkerInput> {
         let mut linker_args = config.linker_args.clone();
+        linker_args
+            .args
+            .extend(config.linker_so_args.args.iter().cloned());
         linker_args.args.push("-shared".to_owned());
         let mut command = LinkCommand::new(
             self,
@@ -149,6 +152,7 @@ struct Config {
     variant_num: Option<u32>,
     assertions: Assertions,
     linker_args: ArgumentSet,
+    linker_so_args: ArgumentSet,
     compiler_args: ArgumentSet,
     diff_ignore: Vec<String>,
     skip_linkers: HashSet<String>,
@@ -241,6 +245,7 @@ impl Default for Config {
             variant_num: None,
             assertions: Default::default(),
             linker_args: ArgumentSet::default_for_linking(),
+            linker_so_args: ArgumentSet::default_for_linking(),
             compiler_args: ArgumentSet::default_for_compiling(),
             diff_ignore: Default::default(),
             skip_linkers: Default::default(),
@@ -307,6 +312,12 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                         bail!("LinkArgs is not used when building Rust code");
                     }
                     config.linker_args = ArgumentSet::parse(arg)?
+                }
+                "LinkSoArgs" => {
+                    if is_rust {
+                        bail!("LinkSoArgs is not used when building Rust code");
+                    }
+                    config.linker_so_args = ArgumentSet::parse(arg)?
                 }
                 "CompArgs" => config.compiler_args = ArgumentSet::parse(arg)?,
                 "ExpectSym" => config

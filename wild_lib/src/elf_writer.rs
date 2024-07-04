@@ -1465,6 +1465,10 @@ fn write_epilogue_dynamic_entries(
         let offset = strings_out.write_str(rpath.as_bytes());
         out.write(object::elf::DT_RUNPATH, offset.into())?;
     }
+    if let Some(soname) = layout.args().soname.as_ref() {
+        let offset = strings_out.write_str(soname.as_bytes());
+        out.write(object::elf::DT_SONAME, offset.into())?;
+    }
     for writer in EPILOGUE_DYNAMIC_ENTRY_WRITERS {
         writer.write(&mut out, layout)?;
     }

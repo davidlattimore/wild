@@ -23,7 +23,7 @@ use std::collections::HashSet;
 pub(crate) enum Converter {
     None,
     SectionAddress,
-    DynSymOffset,
+    DynStrOffset,
     SymAddress,
     SectionIndex,
     SectionFlags,
@@ -60,7 +60,7 @@ impl Converter {
                 }
                 bail!("No section at 0x{value:x}");
             }
-            Converter::DynSymOffset => {
+            Converter::DynStrOffset => {
                 let dynstr = obj
                     .elf_file
                     .section_by_name(".dynstr")
@@ -381,7 +381,7 @@ fn read_dynamic_fields(obj: &Object) -> Result<FieldValues> {
                 got_null = true;
                 continue;
             }
-            1 => (Cow::Borrowed("DT_NEEDED"), Converter::DynSymOffset),
+            1 => (Cow::Borrowed("DT_NEEDED"), Converter::DynStrOffset),
             2 => {
                 // Ignore sizes for now.
                 continue;
@@ -406,7 +406,7 @@ fn read_dynamic_fields(obj: &Object) -> Result<FieldValues> {
             11 => (Cow::Borrowed("DT_SYMENT"), Converter::None),
             12 => (Cow::Borrowed("DT_INIT"), Converter::SectionAddress),
             13 => (Cow::Borrowed("DT_FINI"), Converter::SectionAddress),
-            14 => (Cow::Borrowed("DT_SONAME"), Converter::None),
+            14 => (Cow::Borrowed("DT_SONAME"), Converter::DynStrOffset),
             15 => (Cow::Borrowed("DT_RPATH"), Converter::None),
             16 => (Cow::Borrowed("DT_SYMBOLIC"), Converter::None),
             17 => (Cow::Borrowed("DT_REL"), Converter::SectionAddress),
@@ -421,7 +421,7 @@ fn read_dynamic_fields(obj: &Object) -> Result<FieldValues> {
             26 => (Cow::Borrowed("DT_FINI_ARRAY"), Converter::SectionAddress),
             27 => (Cow::Borrowed("DT_INIT_ARRAYSZ"), Converter::None),
             28 => (Cow::Borrowed("DT_FINI_ARRAYSZ"), Converter::None),
-            29 => (Cow::Borrowed("DT_RUNPATH"), Converter::DynSymOffset),
+            29 => (Cow::Borrowed("DT_RUNPATH"), Converter::DynStrOffset),
             30 => (Cow::Borrowed("DT_FLAGS"), Converter::None),
             32 => (Cow::Borrowed("DT_PREINIT_ARRAY"), Converter::None),
             33 => (Cow::Borrowed("DT_PREINIT_ARRAYSZ"), Converter::None),

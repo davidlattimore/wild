@@ -37,6 +37,7 @@ pub(crate) struct Args {
     pub(crate) should_write_eh_frame_hdr: bool,
     pub(crate) write_trace: bool,
     pub(crate) rpaths: Vec<String>,
+    pub(crate) soname: Option<String>,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -162,6 +163,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut action = None;
     let mut unrecognised = Vec::new();
     let mut rpaths = Vec::new();
+    let mut soname = None;
     if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
         write_layout = true;
         write_trace = true;
@@ -271,6 +273,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             eh_frame_hdr = true;
         } else if arg == "-shared" {
             output_kind = Some(OutputKind::SharedObject);
+        } else if let Some(rest) = arg.strip_prefix("-soname=") {
+            soname = Some(rest.to_owned());
         } else if arg.starts_with("-plugin-opt=") {
             // TODO: Implement support for linker plugins.
         } else if arg == "-plugin" {
@@ -360,6 +364,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         gc_stats_ignore,
         verbose_gc_stats,
         rpaths,
+        soname,
     }))
 }
 

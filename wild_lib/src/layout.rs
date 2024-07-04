@@ -2255,6 +2255,10 @@ impl<'data> EpilogueLayoutState<'data> {
                 self.common.mem_sizes.dynamic += dynamic_entry_size as u64;
                 self.common.mem_sizes.dynstr += rpath.len() as u64 + 1;
             }
+            if let Some(soname) = symbol_db.args.soname.as_ref() {
+                self.common.mem_sizes.dynstr += soname.len() as u64 + 1;
+                self.common.mem_sizes.dynamic += dynamic_entry_size as u64;
+            }
         }
 
         let num_defs = self.dynamic_symbol_definitions.len();
