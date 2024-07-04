@@ -1,0 +1,12 @@
+[package]
+name = "bevy_dynamic"
+version = "0.1.0"
+edition = "2021"
+
+[profile.dev]
+# incremental = false
+
+[workspace]
+
+[dependencies]
+bevy = { version = "0.13.2", features = ["dynamic_linking"] }
