@@ -25,6 +25,7 @@ use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::UnloadedSection;
+use crate::output_section_id::NUM_GENERATED_SECTIONS;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
@@ -460,6 +461,22 @@ fn allocate_symbol_resolution(
     }
 
     allocate_resolution(value_flags, resolution_flags, mem_sizes, output_kind);
+}
+
+/// Computes how much to allocation for a particular resolution. This is intended for debug
+/// assertions when we're writing, to make sure that we would have allocated memory before we write.
+pub(crate) fn compute_allocations(
+    resolution: &Resolution,
+    output_kind: OutputKind,
+) -> OutputSectionPartMap<u64> {
+    let mut sizes = OutputSectionPartMap::with_size(NUM_GENERATED_SECTIONS);
+    allocate_resolution(
+        resolution.value_flags,
+        resolution.resolution_flags,
+        &mut sizes,
+        output_kind,
+    );
+    sizes
 }
 
 fn allocate_resolution(

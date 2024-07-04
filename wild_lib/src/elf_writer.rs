@@ -19,6 +19,7 @@ use crate::elf::Verneed;
 use crate::elf::Versym;
 use crate::elf::PLT_ENTRY_TEMPLATE;
 use crate::error::Result;
+use crate::layout::compute_allocations;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
@@ -423,6 +424,11 @@ impl<'out> TableWriter<'out> {
                 *got_entry = elf::CURRENT_EXE_TLS_MOD;
             } else {
                 let dynamic_symbol_index = res.dynamic_symbol_index.map(|i| i.get()).unwrap_or(0);
+                debug_assert_bail!(
+                    compute_allocations(res, self.output_kind).rela_dyn_general > 0,
+                    "Tried to write dtpmod with no allocation. {}",
+                    ResFlagsDisplay(res)
+                );
                 self.write_dtpmod(got_address.get(), dynamic_symbol_index)?;
             }
             let offset_entry = self.take_next_got_entry()?;
@@ -459,6 +465,11 @@ impl<'out> TableWriter<'out> {
                 // TLS segment.
                 *got_entry = address.wrapping_sub(self.tls.end);
             } else {
+                debug_assert_bail!(
+                    compute_allocations(res, self.output_kind).rela_dyn_general > 0,
+                    "Tried to write tpoff with no allocation. {}",
+                    ResFlagsDisplay(res)
+                );
                 self.write_tpoff(got_address.get(), 0, address.sub(self.tls.start) as i64)?;
             }
             return Ok(());
@@ -470,6 +481,11 @@ impl<'out> TableWriter<'out> {
                 && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
                 && !res.value_flags.contains(ValueFlags::IFUNC)
         {
+            debug_assert_bail!(
+                compute_allocations(res, self.output_kind).rela_dyn_general > 0,
+                "Tried to write glob-dat with no allocation. {}",
+                ResFlagsDisplay(res)
+            );
             self.write_dynamic_symbol_relocation(
                 got_address.get(),
                 0,
@@ -2156,6 +2172,18 @@ fn write_layout_to(layout: &Layout, path: &Path) -> Result {
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
     layout.layout_data().write(&mut file)?;
     Ok(())
+}
+
+struct ResFlagsDisplay<'a>(&'a Resolution);
+
+impl Display for ResFlagsDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "value_flags = {} resolution_flags = {}",
+            self.0.value_flags, self.0.resolution_flags
+        )
+    }
 }
 
 #[cfg(test)]
