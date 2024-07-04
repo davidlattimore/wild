@@ -484,7 +484,7 @@ fn allocate_resolution(
                     || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
                     || resolution_flags.contains(ResolutionFlags::TLS))
             {
-                mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
+                mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
             } else if value_flags.contains(ValueFlags::ADDRESS)
                 && !resolution_flags.contains(ResolutionFlags::TLS)
             {
@@ -497,7 +497,7 @@ fn allocate_resolution(
         // For executables, the TLS module ID is known at link time. For shared objects, we
         // need a runtime relocation to fill it in.
         if !output_kind.is_executable() {
-            mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
+            mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
         }
     }
 }
@@ -1830,7 +1830,7 @@ fn apply_relocation(
                 if symbol_value_flags.contains(ValueFlags::DYNAMIC)
                     || resolution_kind.contains(ResolutionFlags::EXPORT_DYNAMIC) =>
             {
-                state.common.mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
+                state.common.mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
             }
             _ => {}
         }
@@ -1919,7 +1919,7 @@ impl<'data> InternalLayoutState<'data> {
             // For shared objects, we'll need to use a DTPMOD relocation to fill in the TLS module
             // number.
             if !resources.symbol_db.args.output_kind.is_executable() {
-                self.common.mem_sizes.rela_dyn_glob_dat += crate::elf::RELA_ENTRY_SIZE;
+                self.common.mem_sizes.rela_dyn_general += crate::elf::RELA_ENTRY_SIZE;
             }
         }
 

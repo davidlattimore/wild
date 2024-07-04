@@ -31,7 +31,7 @@ pub(crate) struct OutputSectionPartMap<T> {
     pub(crate) dynsym: T,
     pub(crate) dynstr: T,
     pub(crate) rela_dyn_relative: T,
-    pub(crate) rela_dyn_glob_dat: T,
+    pub(crate) rela_dyn_general: T,
     pub(crate) interp: T,
     pub(crate) gnu_version: T,
     pub(crate) gnu_version_r: T,
@@ -62,7 +62,7 @@ impl<T: Default> OutputSectionPartMap<T> {
             gnu_version: Default::default(),
             gnu_version_r: Default::default(),
             rela_dyn_relative: Default::default(),
-            rela_dyn_glob_dat: Default::default(),
+            rela_dyn_general: Default::default(),
             interp: Default::default(),
         }
     }
@@ -147,10 +147,10 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             output_section_id::RELA_DYN.min_alignment(),
             &self.rela_dyn_relative,
         );
-        let rela_dyn_glob_dat = cb(
+        let rela_dyn_general = cb(
             output_section_id::RELA_DYN,
             output_section_id::RELA_DYN.min_alignment(),
-            &self.rela_dyn_glob_dat,
+            &self.rela_dyn_general,
         );
         self.map_regular(output_section_id::RODATA, &mut cb, &mut regular);
         let eh_frame_hdr = cb(
@@ -249,7 +249,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             gnu_version,
             gnu_version_r,
             rela_dyn_relative,
-            rela_dyn_glob_dat,
+            rela_dyn_general,
             interp,
         }
     }
@@ -323,7 +323,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
             gnu_version: cb(&mut self.gnu_version, &other.gnu_version),
             gnu_version_r: cb(&mut self.gnu_version_r, &other.gnu_version_r),
             rela_dyn_relative: cb(&mut self.rela_dyn_relative, &other.rela_dyn_relative),
-            rela_dyn_glob_dat: cb(&mut self.rela_dyn_glob_dat, &other.rela_dyn_glob_dat),
+            rela_dyn_general: cb(&mut self.rela_dyn_general, &other.rela_dyn_general),
             interp: cb(&mut self.interp, &other.interp),
         }
     }
@@ -399,7 +399,7 @@ impl<T: Copy> OutputSectionPartMap<T> {
         update(output_section_id::DYNSTR, &[self.dynstr]);
         update(
             output_section_id::RELA_DYN,
-            &[self.rela_dyn_relative, self.rela_dyn_glob_dat],
+            &[self.rela_dyn_relative, self.rela_dyn_general],
         );
         update(output_section_id::INTERP, &[self.interp]);
         update(output_section_id::GNU_VERSION, &[self.gnu_version]);
@@ -441,7 +441,7 @@ impl<T: AddAssign + Copy + Default> OutputSectionPartMap<T> {
         self.gnu_version += rhs.gnu_version;
         self.gnu_version_r += rhs.gnu_version_r;
         self.rela_dyn_relative += rhs.rela_dyn_relative;
-        self.rela_dyn_glob_dat += rhs.rela_dyn_glob_dat;
+        self.rela_dyn_general += rhs.rela_dyn_general;
         self.interp += rhs.interp;
     }
 }

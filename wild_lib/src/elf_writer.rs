@@ -375,7 +375,7 @@ struct TableWriter<'out> {
     rela_plt: &'out mut [elf::Rela],
     tls: Range<u64>,
     rela_dyn_relative: &'out mut [crate::elf::Rela],
-    rela_dyn_glob_dat: &'out mut [crate::elf::Rela],
+    rela_dyn_general: &'out mut [crate::elf::Rela],
 }
 
 impl<'out> TableWriter<'out> {
@@ -404,8 +404,8 @@ impl<'out> TableWriter<'out> {
             rela_dyn_relative: slice_from_all_bytes_mut(core::mem::take(
                 &mut buffers.rela_dyn_relative,
             )),
-            rela_dyn_glob_dat: slice_from_all_bytes_mut(core::mem::take(
-                &mut buffers.rela_dyn_glob_dat,
+            rela_dyn_general: slice_from_all_bytes_mut(core::mem::take(
+                &mut buffers.rela_dyn_general,
             )),
         }
     }
@@ -521,11 +521,11 @@ impl<'out> TableWriter<'out> {
                 mem_sizes.rela_dyn_relative / elf::RELA_ENTRY_SIZE,
             );
         }
-        if !self.rela_dyn_glob_dat.is_empty() {
+        if !self.rela_dyn_general.is_empty() {
             bail!(
-                "Allocated too much glob-dat space in .rela.dyn. {} of {} entries remain unused.",
-                self.rela_dyn_glob_dat.len(),
-                mem_sizes.rela_dyn_glob_dat / elf::RELA_ENTRY_SIZE,
+                "Allocated too much general space in .rela.dyn. {} of {} entries remain unused.",
+                self.rela_dyn_general.len(),
+                mem_sizes.rela_dyn_general / elf::RELA_ENTRY_SIZE,
             );
         }
         Ok(())
@@ -543,7 +543,7 @@ impl<'out> TableWriter<'out> {
     }
 
     fn write_dtpmod(&mut self, place: u64, dynamic_symbol_index: u32) -> Result {
-        self.write_glob_dat(
+        self.write_rela_dyn_general(
             place,
             dynamic_symbol_index,
             object::elf::R_X86_64_DTPMOD64,
@@ -552,7 +552,7 @@ impl<'out> TableWriter<'out> {
     }
 
     fn write_dtpoff(&mut self, place: u64, dynamic_symbol_index: u32) -> Result {
-        self.write_glob_dat(
+        self.write_rela_dyn_general(
             place,
             dynamic_symbol_index,
             object::elf::R_X86_64_DTPOFF64,
@@ -561,7 +561,7 @@ impl<'out> TableWriter<'out> {
     }
 
     fn write_tpoff(&mut self, place: u64, dynamic_symbol_index: u32, addend: i64) -> Result {
-        self.write_glob_dat(
+        self.write_rela_dyn_general(
             place,
             dynamic_symbol_index,
             object::elf::R_X86_64_TPOFF64,
@@ -594,7 +594,7 @@ impl<'out> TableWriter<'out> {
             "Tried to write dynamic relocation with non-relocatable output"
         );
         let e = LittleEndian;
-        let rela = self.take_glob_dat()?;
+        let rela = self.take_rela_dyn()?;
         rela.r_offset.set(e, place);
         rela.r_addend.set(e, addend as i64);
         // We could plausibly use R_X86_64_JUMP_SLOT here in cases where we have only PLT
@@ -610,7 +610,7 @@ impl<'out> TableWriter<'out> {
         Ok(())
     }
 
-    fn write_glob_dat(
+    fn write_rela_dyn_general(
         &mut self,
         place: u64,
         dynamic_symbol_index: u32,
@@ -621,16 +621,16 @@ impl<'out> TableWriter<'out> {
             self.output_kind.is_relocatable(),
             "write_glob_dat called when output is not relocatable"
         );
-        let rela = self.take_glob_dat()?;
+        let rela = self.take_rela_dyn()?;
         rela.r_offset.set(LittleEndian, place);
         rela.r_addend.set(LittleEndian, addend);
         rela.set_r_info(LittleEndian, false, dynamic_symbol_index, r_type);
         Ok(())
     }
 
-    fn take_glob_dat(&mut self) -> Result<&mut object::elf::Rela64<LittleEndian>> {
-        crate::slice::take_first_mut(&mut self.rela_dyn_glob_dat)
-            .context("insufficient allocation to .rela.dyn (glob-dat)")
+    fn take_rela_dyn(&mut self) -> Result<&mut object::elf::Rela64<LittleEndian>> {
+        crate::slice::take_first_mut(&mut self.rela_dyn_general)
+            .context("insufficient allocation to .rela.dyn (non-relative)")
     }
 }
 
