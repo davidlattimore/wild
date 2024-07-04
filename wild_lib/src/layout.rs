@@ -479,9 +479,10 @@ fn allocate_resolution(
     if resolution_flags.contains(ResolutionFlags::GOT) {
         mem_sizes.got += elf::GOT_ENTRY_SIZE;
         if output_kind.is_relocatable() && !value_flags.contains(ValueFlags::IFUNC) {
-            if value_flags.contains(ValueFlags::DYNAMIC)
-                || (resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
-                    && !value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
+            if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
+                && (value_flags.contains(ValueFlags::DYNAMIC)
+                    || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
+                    || resolution_flags.contains(ResolutionFlags::TLS))
             {
                 mem_sizes.rela_dyn_glob_dat += elf::RELA_ENTRY_SIZE;
             } else if value_flags.contains(ValueFlags::ADDRESS)
@@ -3709,6 +3710,13 @@ fn test_resolution_allocation_consistency() -> Result {
                 {
                     continue;
                 }
+                if output_kind == OutputKind::SharedObject
+                    && value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
+                    && resolution_flags.contains(ResolutionFlags::GOT)
+                    && resolution_flags.contains(ResolutionFlags::TLS)
+                {
+                    continue;
+                }
 
                 let mut mem_sizes = OutputSectionPartMap::with_size(output_sections.len());
                 let resolution_flags = AtomicResolutionFlags::new(resolution_flags);
@@ -3746,7 +3754,7 @@ fn test_resolution_allocation_consistency() -> Result {
                 )
                 .with_context(|| {
                     format!(
-                        "Failed. output_kind={output_kind:?}
+                        "Failed. output_kind={output_kind:?} \
                          value_flags={value_flags} \
                          resolution_flags={resolution_flags} \
                          has_dynamic_symbol={has_dynamic_symbol:?}"

@@ -11,6 +11,7 @@ __attribute__ ((weak)) __thread int weak_tvar2 = 81;
 extern __thread int tvar2;
 
 static __thread int tvar_local = 8;
+static __thread int tvar_local2 = 70;
 
 void set_tvar2(int v) {
     tvar2 = v;
@@ -26,6 +27,14 @@ void set_tvar_local(int v) {
 
 int get_tvar_local(void) {
     return tvar_local;
+}
+
+void set_tvar_local2(int v) {
+    tvar_local2 = v;
+}
+
+int get_tvar_local2(void) {
+    return tvar_local2;
 }
 
 int get_weak_var(void) {

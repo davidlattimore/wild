@@ -426,15 +426,15 @@ impl<'out> TableWriter<'out> {
                 self.write_dtpmod(got_address.get(), dynamic_symbol_index)?;
             }
             let offset_entry = self.take_next_got_entry()?;
-            if let Some(sym_index) = res.dynamic_symbol_index {
-                self.write_dtpoff(
-                    got_address.get() + crate::elf::TLS_OFFSET_OFFSET,
-                    sym_index.get(),
-                )?;
-            } else {
+            if self.output_kind.is_executable() && res.value_flags.contains(ValueFlags::ADDRESS) {
                 // Convert the address to an offset within the TLS segment
                 let address = res.address()?;
                 *offset_entry = address - self.tls.start;
+            } else {
+                self.write_dtpoff(
+                    got_address.get() + crate::elf::TLS_OFFSET_OFFSET,
+                    res.dynamic_symbol_index.map(|s| s.get()).unwrap_or(0),
+                )?;
             }
             return Ok(());
         }
@@ -445,7 +445,7 @@ impl<'out> TableWriter<'out> {
                     .contains(ResolutionFlags::EXPORT_DYNAMIC)
                     && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
             {
-                return self.write_tpoff(got_address.get(), res.dynamic_symbol_index()?);
+                return self.write_tpoff(got_address.get(), res.dynamic_symbol_index()?, 0);
             }
             let address = res.raw_value;
             if !self.tls.contains(&address) {
@@ -454,9 +454,13 @@ impl<'out> TableWriter<'out> {
                     address
                 );
             }
-            // Convert the address to an offset relative to the TCB which is the end of the
-            // TLS segment.
-            *got_entry = address.wrapping_sub(self.tls.end);
+            if self.output_kind.is_executable() {
+                // Convert the address to an offset relative to the TCB which is the end of the
+                // TLS segment.
+                *got_entry = address.wrapping_sub(self.tls.end);
+            } else {
+                self.write_tpoff(got_address.get(), 0, address.sub(self.tls.start) as i64)?;
+            }
             return Ok(());
         }
         if res.value_flags.contains(ValueFlags::DYNAMIC)
@@ -539,15 +543,30 @@ impl<'out> TableWriter<'out> {
     }
 
     fn write_dtpmod(&mut self, place: u64, dynamic_symbol_index: u32) -> Result {
-        self.write_glob_dat(place, dynamic_symbol_index, object::elf::R_X86_64_DTPMOD64)
+        self.write_glob_dat(
+            place,
+            dynamic_symbol_index,
+            object::elf::R_X86_64_DTPMOD64,
+            0,
+        )
     }
 
     fn write_dtpoff(&mut self, place: u64, dynamic_symbol_index: u32) -> Result {
-        self.write_glob_dat(place, dynamic_symbol_index, object::elf::R_X86_64_DTPOFF64)
+        self.write_glob_dat(
+            place,
+            dynamic_symbol_index,
+            object::elf::R_X86_64_DTPOFF64,
+            0,
+        )
     }
 
-    fn write_tpoff(&mut self, place: u64, dynamic_symbol_index: u32) -> Result {
-        self.write_glob_dat(place, dynamic_symbol_index, object::elf::R_X86_64_TPOFF64)
+    fn write_tpoff(&mut self, place: u64, dynamic_symbol_index: u32, addend: i64) -> Result {
+        self.write_glob_dat(
+            place,
+            dynamic_symbol_index,
+            object::elf::R_X86_64_TPOFF64,
+            addend,
+        )
     }
 
     fn write_address_relocation(&mut self, place: u64, relative_address: i64) -> Result {
@@ -591,13 +610,20 @@ impl<'out> TableWriter<'out> {
         Ok(())
     }
 
-    fn write_glob_dat(&mut self, place: u64, dynamic_symbol_index: u32, r_type: u32) -> Result {
+    fn write_glob_dat(
+        &mut self,
+        place: u64,
+        dynamic_symbol_index: u32,
+        r_type: u32,
+        addend: i64,
+    ) -> Result {
         debug_assert_bail!(
             self.output_kind.is_relocatable(),
             "write_glob_dat called when output is not relocatable"
         );
         let rela = self.take_glob_dat()?;
         rela.r_offset.set(LittleEndian, place);
+        rela.r_addend.set(LittleEndian, addend);
         rela.set_r_info(LittleEndian, false, dynamic_symbol_index, r_type);
         Ok(())
     }
