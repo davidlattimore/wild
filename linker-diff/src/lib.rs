@@ -118,6 +118,8 @@ impl Config {
                 // We set this to 8. GNU ld sometimes does too, but sometimes to 0.
                 "section.got.entsize",
                 "section.plt.got.entsize",
+                // GNU ld sometimes sets this differently that we do.
+                "section.plt.alignment",
                 // We currently output version info when linking against the interpreter
                 // (ld-linux-x86-64.so.2). GNU ld doesn't.
                 ".dynamic.DT_VERNEEDNUM",
@@ -125,6 +127,8 @@ impl Config {
                 ".dynamic.DT_JMPREL",
                 ".dynamic.DT_PLTGOT",
                 ".dynamic.DT_PLTREL",
+                // We don't yet write this.
+                ".dynamic.DT_HASH",
                 // We do support this. TODO: Should definitely look into why we're seeing this missing
                 // in our output.
                 "section.rela.plt",
