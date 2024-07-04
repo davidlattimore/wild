@@ -475,7 +475,7 @@ impl<'out> TableWriter<'out> {
                 res.dynamic_symbol_index()?,
             )?;
         } else if res.value_flags.contains(ValueFlags::IFUNC) {
-            // Nothing to do here
+            self.write_ifunc_relocation(res)?;
         } else {
             *got_entry = res.raw_value;
             if res.value_flags.contains(ValueFlags::ADDRESS) && self.output_kind.is_relocatable() {
@@ -531,12 +531,16 @@ impl<'out> TableWriter<'out> {
         Ok(())
     }
 
-    fn write_ifunc_relocation(&mut self, rel: &crate::layout::IfuncRelocation) -> Result {
+    fn write_ifunc_relocation(&mut self, res: &Resolution) -> Result {
         let out = slice_take_prefix_mut(&mut self.rela_plt, 1);
         let out = &mut out[0];
         let e = LittleEndian;
-        out.r_addend.set(e, rel.resolver as i64);
-        out.r_offset.set(e, rel.got_address);
+        out.r_addend.set(e, res.raw_value as i64);
+        let got_address = res
+            .got_address
+            .context("Missing GOT entry for ifunc")?
+            .get();
+        out.r_offset.set(e, got_address);
         out.r_info
             .set(e, elf::RelocationType::IRelative as u32 as u64);
         Ok(())
@@ -802,9 +806,6 @@ impl<'data> ObjectLayout<'data> {
                 }
                 _ => (),
             }
-        }
-        for rel in &self.plt_relocations {
-            table_writer.write_ifunc_relocation(rel)?;
         }
         let mut dynsym_writer = SymbolTableWriter::new_dynamic(
             self.dynstr_start_offset,

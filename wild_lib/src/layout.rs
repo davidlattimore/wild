@@ -331,7 +331,6 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) sections: Vec<SectionSlot<'data>>,
     pub(crate) section_resolutions: Vec<Option<Resolution>>,
     pub(crate) strtab_offset_start: u32,
-    pub(crate) plt_relocations: Vec<IfuncRelocation>,
     /// The memory address of the start of this object's allocation within .eh_frame.
     pub(crate) eh_frame_start_address: u64,
     pub(crate) symbol_id_range: SymbolIdRange,
@@ -380,12 +379,6 @@ pub(crate) struct DynamicLayout<'data> {
 
     /// Whether this is the last DynamicLayout that puts content into .gnu.version_r.
     pub(crate) is_last_verneed: bool,
-}
-
-#[derive(Debug)]
-pub(crate) struct IfuncRelocation {
-    pub(crate) resolver: u64,
-    pub(crate) got_address: u64,
 }
 
 trait SymbolRequestHandler<'data>: std::fmt::Display {
@@ -687,7 +680,6 @@ impl CommonLayoutState<'_> {
             next_got_address: memory_offsets.got,
             next_plt_address: memory_offsets.plt,
             symbol_resolution_flags,
-            plt_relocations: Default::default(),
             symbol_id_range: self.symbol_id_range,
         }
     }
@@ -2718,7 +2710,6 @@ impl<'data> ObjectLayoutState<'data> {
             )?;
         }
 
-        let plt_relocations = emitter.plt_relocations;
         let strtab_offset_start = self
             .state
             .common
@@ -2733,7 +2724,6 @@ impl<'data> ObjectLayoutState<'data> {
             sections,
             section_resolutions,
             strtab_offset_start,
-            plt_relocations,
             eh_frame_start_address: memory_offsets.eh_frame,
             symbol_id_range,
             merged_string_resolutions: self.state.merged_string_resolutions,
@@ -3027,7 +3017,6 @@ struct GlobalAddressEmitter<'state> {
     next_got_address: u64,
     next_plt_address: u64,
     symbol_resolution_flags: &'state [ResolutionFlags],
-    plt_relocations: Vec<IfuncRelocation>,
     symbol_id_range: SymbolIdRange,
 }
 
@@ -3077,27 +3066,6 @@ impl<'state> GlobalAddressEmitter<'state> {
             resolution_flags: res_kind,
             value_flags,
         };
-        if value_flags.contains(ValueFlags::IFUNC) {
-            debug_assert_bail!(
-                res_kind.contains(ResolutionFlags::GOT),
-                "Missing GOT for ifunc {res_kind:?} -- {value_flags}"
-            );
-            debug_assert_bail!(
-                res_kind.contains(ResolutionFlags::PLT),
-                "Missing PLT for ifunc"
-            );
-            // IFuncs need to always have GOT. Currently we also always create a PLT entry.
-            let got_address = self.allocate_got();
-            let plt_address = self.allocate_plt();
-            // An ifunc is always resolved at runtime, so we need a relocation for it.
-            self.plt_relocations.push(IfuncRelocation {
-                resolver: raw_value,
-                got_address: got_address.get(),
-            });
-            resolution.got_address = Some(got_address);
-            resolution.plt_address = Some(plt_address);
-            return Ok(resolution);
-        }
         if res_kind.contains(ResolutionFlags::PLT) {
             resolution.plt_address = Some(self.allocate_plt());
         }
@@ -3732,7 +3700,6 @@ fn test_resolution_allocation_consistency() -> Result {
                     next_got_address: 1,
                     next_plt_address: 1,
                     symbol_resolution_flags: &[],
-                    plt_relocations: Default::default(),
                     symbol_id_range: SymbolIdRange::input(SymbolId::from_usize(1), 0),
                 };
                 let has_dynamic_symbol = value_flags.contains(ValueFlags::DYNAMIC)
