@@ -30,7 +30,7 @@
 //#Object:libc-integration-0.c
 
 //#Config:clang-dynamic:default
-//#CompArgs:-g -fPIC
+//#CompArgs:-g -fPIC -ftls-model=initial-exec
 //#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN
 //#EnableLinker:lld
 //#Shared:libc-integration-0.c
@@ -55,10 +55,13 @@ int __attribute__ ((weak)) weak_fn2(void);
 
 void set_tvar_local(int v);
 int get_tvar_local(void);
+void set_tvar_local2(int v);
+int get_tvar_local2(void);
 int get_weak_var(void);
 int get_weak_var2(void);
 int get_weak_tvar(void);
 int get_weak_tvar2(void);
+int compute_value10(void);
 
 void *thread_function(void *data) {
     if (tvar1 != 0) {
@@ -138,6 +141,18 @@ int main() {
 
     if (get_weak_tvar2() != 81) {
         return 112;
+    }
+
+    if (get_tvar_local2() != 70) {
+        return 113;
+    }
+    set_tvar_local(25);
+    if (get_tvar_local() != 25) {
+        return 114;
+    }
+
+    if (compute_value10() != 10) {
+        return 115;
     }
 
     return 42;

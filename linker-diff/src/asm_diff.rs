@@ -798,33 +798,52 @@ impl<'data> AddressIndex<'data> {
         let e = LittleEndian;
         let rela_dyn: &[object::elf::Rela64<LittleEndian>] = slice_from_all_bytes(rela_dyn_bytes);
         for rel in rela_dyn {
-            if rel.r_type(e, false) == object::elf::R_X86_64_DTPMOD64 {
-                let address = self.load_offset + rel.r_offset(e);
-                let symbol_index = rel.r_sym(e, false);
-                if symbol_index != 0 {
-                    // We already handled relocations that referred to symbols above, so no need to
-                    // do it again here.
-                    continue;
-                }
-                // Since we have no symbol associated with the DTPMOD, we assume that there's no
-                // relocation for the offset, but instead an absolute TLS offset.
-                let tls_offset_address = address + 8;
-                if let Some(tls_offset) = read_address(elf_file, self, tls_offset_address) {
-                    if tls_offset == 0 {
-                        self.add_resolution(address, AddressResolution::TlsModuleBase);
+            let r_type = rel.r_type(e, false);
+            let address = self.load_offset + rel.r_offset(e);
+            match r_type {
+                object::elf::R_X86_64_DTPMOD64 => {
+                    let symbol_index = rel.r_sym(e, false);
+                    if symbol_index != 0 {
+                        // We already handled relocations that referred to symbols above, so no need to
+                        // do it again here.
+                        continue;
                     }
-                    let resolution = self.tls_by_offset.get(&tls_offset).map(|tls_name| {
-                        AddressResolution::TlsIdentifier(SymbolName {
-                            bytes: tls_name,
-                            version: None,
-                        })
-                    });
-                    if let Some(resolution) = resolution {
-                        self.add_resolution(address, resolution);
-                    } else if tls_offset != 0 {
-                        self.add_resolution(address, AddressResolution::UndefinedTls);
+                    // Since we have no symbol associated with the DTPMOD, we assume that there's no
+                    // relocation for the offset, but instead an absolute TLS offset.
+                    let tls_offset_address = address + 8;
+                    if let Some(tls_offset) = read_address(elf_file, self, tls_offset_address) {
+                        if tls_offset == 0 {
+                            self.add_resolution(address, AddressResolution::TlsModuleBase);
+                        }
+                        let resolution = self.tls_by_offset.get(&tls_offset).map(|tls_name| {
+                            AddressResolution::TlsIdentifier(SymbolName {
+                                bytes: tls_name,
+                                version: None,
+                            })
+                        });
+                        if let Some(resolution) = resolution {
+                            self.add_resolution(address, resolution);
+                        } else if tls_offset != 0 {
+                            self.add_resolution(address, AddressResolution::UndefinedTls);
+                        }
                     }
                 }
+                object::elf::R_X86_64_TPOFF64 => {
+                    let sym_index = rel.r_sym(e, false);
+                    if sym_index == 0 {
+                        let addend = rel.r_addend(e) as u64;
+                        if let Some(var_name) = self.tls_by_offset.get(&addend) {
+                            self.add_resolution(
+                                address,
+                                AddressResolution::TlsIdentifier(SymbolName {
+                                    bytes: var_name,
+                                    version: None,
+                                }),
+                            );
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }

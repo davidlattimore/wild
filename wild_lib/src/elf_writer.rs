@@ -19,6 +19,7 @@ use crate::elf::Verneed;
 use crate::elf::Versym;
 use crate::elf::PLT_ENTRY_TEMPLATE;
 use crate::error::Result;
+use crate::layout::compute_allocations;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
@@ -375,7 +376,7 @@ struct TableWriter<'out> {
     rela_plt: &'out mut [elf::Rela],
     tls: Range<u64>,
     rela_dyn_relative: &'out mut [crate::elf::Rela],
-    rela_dyn_glob_dat: &'out mut [crate::elf::Rela],
+    rela_dyn_general: &'out mut [crate::elf::Rela],
 }
 
 impl<'out> TableWriter<'out> {
@@ -404,8 +405,8 @@ impl<'out> TableWriter<'out> {
             rela_dyn_relative: slice_from_all_bytes_mut(core::mem::take(
                 &mut buffers.rela_dyn_relative,
             )),
-            rela_dyn_glob_dat: slice_from_all_bytes_mut(core::mem::take(
-                &mut buffers.rela_dyn_glob_dat,
+            rela_dyn_general: slice_from_all_bytes_mut(core::mem::take(
+                &mut buffers.rela_dyn_general,
             )),
         }
     }
@@ -423,18 +424,23 @@ impl<'out> TableWriter<'out> {
                 *got_entry = elf::CURRENT_EXE_TLS_MOD;
             } else {
                 let dynamic_symbol_index = res.dynamic_symbol_index.map(|i| i.get()).unwrap_or(0);
+                debug_assert_bail!(
+                    compute_allocations(res, self.output_kind).rela_dyn_general > 0,
+                    "Tried to write dtpmod with no allocation. {}",
+                    ResFlagsDisplay(res)
+                );
                 self.write_dtpmod(got_address.get(), dynamic_symbol_index)?;
             }
             let offset_entry = self.take_next_got_entry()?;
-            if let Some(sym_index) = res.dynamic_symbol_index {
-                self.write_dtpoff(
-                    got_address.get() + crate::elf::TLS_OFFSET_OFFSET,
-                    sym_index.get(),
-                )?;
-            } else {
+            if self.output_kind.is_executable() && res.value_flags.contains(ValueFlags::ADDRESS) {
                 // Convert the address to an offset within the TLS segment
                 let address = res.address()?;
                 *offset_entry = address - self.tls.start;
+            } else {
+                self.write_dtpoff(
+                    got_address.get() + crate::elf::TLS_OFFSET_OFFSET,
+                    res.dynamic_symbol_index.map(|s| s.get()).unwrap_or(0),
+                )?;
             }
             return Ok(());
         }
@@ -445,7 +451,7 @@ impl<'out> TableWriter<'out> {
                     .contains(ResolutionFlags::EXPORT_DYNAMIC)
                     && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
             {
-                return self.write_tpoff(got_address.get(), res.dynamic_symbol_index()?);
+                return self.write_tpoff(got_address.get(), res.dynamic_symbol_index()?, 0);
             }
             let address = res.raw_value;
             if !self.tls.contains(&address) {
@@ -454,9 +460,18 @@ impl<'out> TableWriter<'out> {
                     address
                 );
             }
-            // Convert the address to an offset relative to the TCB which is the end of the
-            // TLS segment.
-            *got_entry = address.wrapping_sub(self.tls.end);
+            if self.output_kind.is_executable() {
+                // Convert the address to an offset relative to the TCB which is the end of the
+                // TLS segment.
+                *got_entry = address.wrapping_sub(self.tls.end);
+            } else {
+                debug_assert_bail!(
+                    compute_allocations(res, self.output_kind).rela_dyn_general > 0,
+                    "Tried to write tpoff with no allocation. {}",
+                    ResFlagsDisplay(res)
+                );
+                self.write_tpoff(got_address.get(), 0, address.sub(self.tls.start) as i64)?;
+            }
             return Ok(());
         }
         if res.value_flags.contains(ValueFlags::DYNAMIC)
@@ -464,14 +479,20 @@ impl<'out> TableWriter<'out> {
                 .resolution_flags
                 .contains(ResolutionFlags::EXPORT_DYNAMIC)
                 && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
+                && !res.value_flags.contains(ValueFlags::IFUNC)
         {
+            debug_assert_bail!(
+                compute_allocations(res, self.output_kind).rela_dyn_general > 0,
+                "Tried to write glob-dat with no allocation. {}",
+                ResFlagsDisplay(res)
+            );
             self.write_dynamic_symbol_relocation(
                 got_address.get(),
                 0,
                 res.dynamic_symbol_index()?,
             )?;
         } else if res.value_flags.contains(ValueFlags::IFUNC) {
-            // Nothing to do here
+            self.write_ifunc_relocation(res)?;
         } else {
             *got_entry = res.raw_value;
             if res.value_flags.contains(ValueFlags::ADDRESS) && self.output_kind.is_relocatable() {
@@ -517,37 +538,56 @@ impl<'out> TableWriter<'out> {
                 mem_sizes.rela_dyn_relative / elf::RELA_ENTRY_SIZE,
             );
         }
-        if !self.rela_dyn_glob_dat.is_empty() {
+        if !self.rela_dyn_general.is_empty() {
             bail!(
-                "Allocated too much glob-dat space in .rela.dyn. {} of {} entries remain unused.",
-                self.rela_dyn_glob_dat.len(),
-                mem_sizes.rela_dyn_glob_dat / elf::RELA_ENTRY_SIZE,
+                "Allocated too much general space in .rela.dyn. {} of {} entries remain unused.",
+                self.rela_dyn_general.len(),
+                mem_sizes.rela_dyn_general / elf::RELA_ENTRY_SIZE,
             );
         }
         Ok(())
     }
 
-    fn write_ifunc_relocation(&mut self, rel: &crate::layout::IfuncRelocation) -> Result {
+    fn write_ifunc_relocation(&mut self, res: &Resolution) -> Result {
         let out = slice_take_prefix_mut(&mut self.rela_plt, 1);
         let out = &mut out[0];
         let e = LittleEndian;
-        out.r_addend.set(e, rel.resolver as i64);
-        out.r_offset.set(e, rel.got_address);
+        out.r_addend.set(e, res.raw_value as i64);
+        let got_address = res
+            .got_address
+            .context("Missing GOT entry for ifunc")?
+            .get();
+        out.r_offset.set(e, got_address);
         out.r_info
             .set(e, elf::RelocationType::IRelative as u32 as u64);
         Ok(())
     }
 
     fn write_dtpmod(&mut self, place: u64, dynamic_symbol_index: u32) -> Result {
-        self.write_glob_dat(place, dynamic_symbol_index, object::elf::R_X86_64_DTPMOD64)
+        self.write_rela_dyn_general(
+            place,
+            dynamic_symbol_index,
+            object::elf::R_X86_64_DTPMOD64,
+            0,
+        )
     }
 
     fn write_dtpoff(&mut self, place: u64, dynamic_symbol_index: u32) -> Result {
-        self.write_glob_dat(place, dynamic_symbol_index, object::elf::R_X86_64_DTPOFF64)
+        self.write_rela_dyn_general(
+            place,
+            dynamic_symbol_index,
+            object::elf::R_X86_64_DTPOFF64,
+            0,
+        )
     }
 
-    fn write_tpoff(&mut self, place: u64, dynamic_symbol_index: u32) -> Result {
-        self.write_glob_dat(place, dynamic_symbol_index, object::elf::R_X86_64_TPOFF64)
+    fn write_tpoff(&mut self, place: u64, dynamic_symbol_index: u32, addend: i64) -> Result {
+        self.write_rela_dyn_general(
+            place,
+            dynamic_symbol_index,
+            object::elf::R_X86_64_TPOFF64,
+            addend,
+        )
     }
 
     fn write_address_relocation(&mut self, place: u64, relative_address: i64) -> Result {
@@ -575,7 +615,7 @@ impl<'out> TableWriter<'out> {
             "Tried to write dynamic relocation with non-relocatable output"
         );
         let e = LittleEndian;
-        let rela = self.take_glob_dat()?;
+        let rela = self.take_rela_dyn()?;
         rela.r_offset.set(e, place);
         rela.r_addend.set(e, addend as i64);
         // We could plausibly use R_X86_64_JUMP_SLOT here in cases where we have only PLT
@@ -591,20 +631,27 @@ impl<'out> TableWriter<'out> {
         Ok(())
     }
 
-    fn write_glob_dat(&mut self, place: u64, dynamic_symbol_index: u32, r_type: u32) -> Result {
+    fn write_rela_dyn_general(
+        &mut self,
+        place: u64,
+        dynamic_symbol_index: u32,
+        r_type: u32,
+        addend: i64,
+    ) -> Result {
         debug_assert_bail!(
             self.output_kind.is_relocatable(),
             "write_glob_dat called when output is not relocatable"
         );
-        let rela = self.take_glob_dat()?;
+        let rela = self.take_rela_dyn()?;
         rela.r_offset.set(LittleEndian, place);
+        rela.r_addend.set(LittleEndian, addend);
         rela.set_r_info(LittleEndian, false, dynamic_symbol_index, r_type);
         Ok(())
     }
 
-    fn take_glob_dat(&mut self) -> Result<&mut object::elf::Rela64<LittleEndian>> {
-        crate::slice::take_first_mut(&mut self.rela_dyn_glob_dat)
-            .context("insufficient allocation to .rela.dyn (glob-dat)")
+    fn take_rela_dyn(&mut self) -> Result<&mut object::elf::Rela64<LittleEndian>> {
+        crate::slice::take_first_mut(&mut self.rela_dyn_general)
+            .context("insufficient allocation to .rela.dyn (non-relative)")
     }
 }
 
@@ -776,9 +823,6 @@ impl<'data> ObjectLayout<'data> {
                 }
                 _ => (),
             }
-        }
-        for rel in &self.plt_relocations {
-            table_writer.write_ifunc_relocation(rel)?;
         }
         let mut dynsym_writer = SymbolTableWriter::new_dynamic(
             self.dynstr_start_offset,
@@ -2128,6 +2172,18 @@ fn write_layout_to(layout: &Layout, path: &Path) -> Result {
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
     layout.layout_data().write(&mut file)?;
     Ok(())
+}
+
+struct ResFlagsDisplay<'a>(&'a Resolution);
+
+impl Display for ResFlagsDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "value_flags = {} resolution_flags = {}",
+            self.0.value_flags, self.0.resolution_flags
+        )
+    }
 }
 
 #[cfg(test)]

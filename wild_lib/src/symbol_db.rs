@@ -2,6 +2,7 @@
 //! information about where each symbol can be obtained.
 
 use crate::args::Args;
+use crate::args::OutputKind;
 use crate::error::Result;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
@@ -420,12 +421,17 @@ fn load_symbols_from_file<'data>(
 
 fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFlags {
     let is_undefined = sym.is_undefined(LittleEndian);
-    let can_bypass_got = sym.st_visibility() != object::elf::STV_DEFAULT
+    let mut can_bypass_got = sym.st_visibility() != object::elf::STV_DEFAULT
         || sym.is_local()
         || args.output_kind.is_static_executable()
         // Symbols defined in an executable cannot be interposed since the executable is always the
         // first place checked for a symbol by the dynamic loader.
         || (args.output_kind.is_executable() && !is_undefined);
+    // When writing a shared object, TLS variables should never bypass the GOT, even if they're
+    // local variables.
+    if args.output_kind == OutputKind::SharedObject && sym.st_type() == object::elf::STT_TLS {
+        can_bypass_got = false;
+    }
     let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {
         ValueFlags::ABSOLUTE
     } else if sym.st_type() == object::elf::STT_GNU_IFUNC {
@@ -475,7 +481,14 @@ trait SymbolLoader {
                 continue;
             }
             let name = SymbolName::prehashed(object.symbol_name(symbol)?);
-            *value_kind |= self.value_flags_for_name(&name);
+            if self.should_downgrade_to_local(&name) {
+                *value_kind |= ValueFlags::DOWNGRADE_TO_LOCAL;
+                // If we're downgrading to a local, then we're writing a shared object. Shared
+                // objects should never bypass the GOT for TLS variables.
+                if symbol.st_type() != object::elf::STT_TLS {
+                    *value_kind |= ValueFlags::CAN_BYPASS_GOT
+                }
+            }
             let pending = PendingSymbol::from_prehashed(symbol_id, name);
             pending_symbols.push(pending);
         }
@@ -484,11 +497,9 @@ trait SymbolLoader {
 
     fn compute_value_flags(&self, symbol: &crate::elf::Symbol) -> ValueFlags;
 
-    /// Second phase of value flag computation. This is separate from `compute_value_flags` because
-    /// it requires the symbol name, which is slightly expensive to get, so we'd rather not get it
-    /// if we don't have to.
-    fn value_flags_for_name(&self, _name: &PreHashed<SymbolName>) -> ValueFlags {
-        ValueFlags::empty()
+    /// Returns whether we should downgrade a symbol with the specified name to be a local.
+    fn should_downgrade_to_local(&self, _name: &PreHashed<SymbolName>) -> bool {
+        false
     }
 
     fn is_hidden_version(&self, _symbol_index: usize, _object: &crate::elf::File) -> bool {
@@ -508,12 +519,8 @@ impl SymbolLoader for RegularObjectSymbolLoader<'_> {
         value_flags_from_elf_symbol(symbol, self.args)
     }
 
-    fn value_flags_for_name(&self, name: &PreHashed<SymbolName>) -> ValueFlags {
-        if self.version_script.is_local(name) {
-            ValueFlags::DOWNGRADE_TO_LOCAL | ValueFlags::CAN_BYPASS_GOT
-        } else {
-            ValueFlags::empty()
-        }
+    fn should_downgrade_to_local(&self, name: &PreHashed<SymbolName>) -> bool {
+        self.version_script.is_local(name)
     }
 }
 
