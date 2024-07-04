@@ -14,6 +14,21 @@ Mold is already very fast, however it doesn't do incremental linking and the aut
 they don't intend to. Wild doesn't do incremental linking yet, but that is the end-goal. By writing
 Wild in Rust, it's hoped that the complexity of incremental linking will be achievable.
 
+### What's working?
+
+The following platforms / architectures are currently supported:
+
+* x86-64 on Linux
+
+The following is working with the caveat that there may be bugs:
+
+* Output to statically linked, non-relocatable binaries
+* Output to statically linked, position-independent binaries (static-PIE)
+* Output to dynamically linked binaries
+* Output to shared objects (.so files)
+* Rust proc-macros, when linked with Wild work
+* Most of the top downloaded crates on crates.io have been tested with Wild and pass their tests
+
 ### What isn't yet supported?
 
 Lots of stuff. Here are some of the larger things that aren't yet done, roughly sorted by current
@@ -112,11 +127,17 @@ RUSTFLAGS="-Clinker=clang -Clink-args=--ld-path=wild" cargo test
 
 ### Contributing
 
-If you'd like to work on something specific, please reach out either by filing an issue or via email
-so that we can avoid any wasted work. I like talking to people about Rust by video chat. If you'd
-like to discuss Wild, Rust compile times etc, you can book a slot in my
-[calendar](https://calendar.app.google/MBYQeATMNBvuK8AZ6). If you can't find anything at a time that
-suits, email me and I'll see if we can find a time that works.
+If you'd like to help out, I'd love to hear from you. It's a good idea to reach out first to avoid
+duplication of effort. Also, it'll make it possible for me to provide hints that might make what
+you're trying to do easier. Options for communicating:
+
+* I like, where possible, to talk to people video video chat. You can book a time in my
+  [calendar](https://calendar.app.google/MBYQeATMNBvuK8AZ6). If time zones make this hard, let me
+  know via some other means and I'll see if we can find a time that works (I'm in Sydney,
+  Australia).
+* Open an issue or a discussion here on github.
+* Message me on the [rust-lang Zulip](https://rust-lang.zulipchat.com/)
+* Email me at dvdlttmr@gmail.com
 
 ### Sponsorship
 
