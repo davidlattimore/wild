@@ -65,6 +65,7 @@ fn run_diff(paths: &BinPaths) -> Result {
         .arg("--wild-defaults")
         .arg("--display-names")
         .arg("ref,wild")
+        .arg("--ref")
         .arg(&paths.reference_output)
         .arg(&paths.our_output)
         .status()?;
