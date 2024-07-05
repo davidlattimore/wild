@@ -580,11 +580,39 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
         return Ok(output_path);
     }
     let status = command.status()?;
+    if output_path.is_dir() {
+        post_process_run_script(&output_path)?;
+    }
     if !status.success() {
         bail!("Compilation failed");
     }
 
     Ok(output_path)
+}
+
+/// Newer versions of rustc pass -soname=... to the linker when writing shared objects. This sets
+/// DT_SONAME. If DT_SONAME is set, then binaries that are linked against those shared objects will
+/// use the value from DT_SONAME to populate DT_NEEDED entries in the executable. If the filename of
+/// the .so file doesn't match the DT_SONAME and thus doesn't match the DT_NEEDED in the executable,
+/// then the dynamic linker will fail to find the .so file at runtime. None of this is a problem if
+/// the DT_SONAME matches the filename. However we put stuff like the name of the linker used into
+/// the output filename. So it doesn't really work for us to make them match. Instead, we remove the
+/// -soname flag from the run-with script. Without the DT_SONAME, the linker will fall back to using
+/// the actual name of the .so file, which is what we want.
+fn post_process_run_script(output_path: &Path) -> Result {
+    let run_with_filename = output_path.join("run-with");
+    if let Ok(contents) = std::fs::read_to_string(&run_with_filename) {
+        let mut out = String::new();
+        for line in contents.lines() {
+            if !line.contains("-soname") {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        std::fs::write(&run_with_filename, out)
+            .with_context(|| format!("Failed to write `{}`", run_with_filename.display()))?;
+    }
+    Ok(())
 }
 
 fn write_cmd_file(output_path: &Path, command_str: &str) -> Result {
