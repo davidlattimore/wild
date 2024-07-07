@@ -415,69 +415,24 @@ impl<'out> TableWriter<'out> {
         let Some(got_address) = res.got_address else {
             return Ok(());
         };
+        let mut got_address = got_address.get();
+        let resolution_flags = res.resolution_flags;
+
+        // For TLS variables, we'll generally only have one of these, but we might have both.
+        if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+            self.process_got_tls_offset(res, got_address)?;
+            got_address += crate::elf::GOT_ENTRY_SIZE;
+        }
+        if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
+            return self.process_got_tls_mod(res, got_address);
+        }
+        if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+            return Ok(());
+        }
+
         let got_entry = self.take_next_got_entry()?;
-        if res
-            .resolution_flags
-            .contains(ResolutionFlags::GOT_TLS_MODULE)
-        {
-            if self.output_kind.is_executable() {
-                *got_entry = elf::CURRENT_EXE_TLS_MOD;
-            } else {
-                let dynamic_symbol_index = res.dynamic_symbol_index.map(|i| i.get()).unwrap_or(0);
-                debug_assert_bail!(
-                    compute_allocations(res, self.output_kind).rela_dyn_general > 0,
-                    "Tried to write dtpmod with no allocation. {}",
-                    ResFlagsDisplay(res)
-                );
-                self.write_dtpmod(got_address.get(), dynamic_symbol_index)?;
-            }
-            let offset_entry = self.take_next_got_entry()?;
-            if self.output_kind.is_executable() && res.value_flags.contains(ValueFlags::ADDRESS) {
-                // Convert the address to an offset within the TLS segment
-                let address = res.address()?;
-                *offset_entry = address - self.tls.start;
-            } else {
-                self.write_dtpoff(
-                    got_address.get() + crate::elf::TLS_OFFSET_OFFSET,
-                    res.dynamic_symbol_index.map(|s| s.get()).unwrap_or(0),
-                )?;
-            }
-            return Ok(());
-        }
-        if res.resolution_flags.contains(ResolutionFlags::TLS) {
-            if res.value_flags.contains(ValueFlags::DYNAMIC)
-                || (res
-                    .resolution_flags
-                    .contains(ResolutionFlags::EXPORT_DYNAMIC)
-                    && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
-            {
-                return self.write_tpoff(got_address.get(), res.dynamic_symbol_index()?, 0);
-            }
-            let address = res.raw_value;
-            if !self.tls.contains(&address) {
-                bail!(
-                    "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
-                    address
-                );
-            }
-            if self.output_kind.is_executable() {
-                // Convert the address to an offset relative to the TCB which is the end of the
-                // TLS segment.
-                *got_entry = address.wrapping_sub(self.tls.end);
-            } else {
-                debug_assert_bail!(
-                    compute_allocations(res, self.output_kind).rela_dyn_general > 0,
-                    "Tried to write tpoff with no allocation. {}",
-                    ResFlagsDisplay(res)
-                );
-                self.write_tpoff(got_address.get(), 0, address.sub(self.tls.start) as i64)?;
-            }
-            return Ok(());
-        }
         if res.value_flags.contains(ValueFlags::DYNAMIC)
-            || (res
-                .resolution_flags
-                .contains(ResolutionFlags::EXPORT_DYNAMIC)
+            || (resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
                 && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
                 && !res.value_flags.contains(ValueFlags::IFUNC)
         {
@@ -486,22 +441,79 @@ impl<'out> TableWriter<'out> {
                 "Tried to write glob-dat with no allocation. {}",
                 ResFlagsDisplay(res)
             );
-            self.write_dynamic_symbol_relocation(
-                got_address.get(),
-                0,
-                res.dynamic_symbol_index()?,
-            )?;
+            self.write_dynamic_symbol_relocation(got_address, 0, res.dynamic_symbol_index()?)?;
         } else if res.value_flags.contains(ValueFlags::IFUNC) {
             self.write_ifunc_relocation(res)?;
         } else {
             *got_entry = res.raw_value;
             if res.value_flags.contains(ValueFlags::ADDRESS) && self.output_kind.is_relocatable() {
-                self.write_address_relocation(got_address.get(), res.raw_value as i64)?;
+                self.write_address_relocation(got_address, res.raw_value as i64)?;
             }
         }
         if let Some(plt_address) = res.plt_address {
-            self.write_plt_entry(got_address.get(), plt_address.get())?;
+            self.write_plt_entry(got_address, plt_address.get())?;
         }
+        Ok(())
+    }
+
+    fn process_got_tls_offset(&mut self, res: &Resolution, got_address: u64) -> Result {
+        let got_entry = self.take_next_got_entry()?;
+        if res.value_flags.contains(ValueFlags::DYNAMIC)
+            || (res
+                .resolution_flags
+                .contains(ResolutionFlags::EXPORT_DYNAMIC)
+                && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
+        {
+            return self.write_tpoff_relocation(got_address, res.dynamic_symbol_index()?, 0);
+        }
+        let address = res.raw_value;
+        if !self.tls.contains(&address) {
+            bail!(
+                "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
+                address
+            );
+        }
+        if self.output_kind.is_executable() {
+            // Convert the address to an offset relative to the TCB which is the end of the
+            // TLS segment.
+            *got_entry = address.wrapping_sub(self.tls.end);
+        } else {
+            debug_assert_bail!(
+                compute_allocations(res, self.output_kind).rela_dyn_general > 0,
+                "Tried to write tpoff with no allocation. {}",
+                ResFlagsDisplay(res)
+            );
+            self.write_tpoff_relocation(got_address, 0, address.sub(self.tls.start) as i64)?;
+        }
+        Ok(())
+    }
+
+    fn process_got_tls_mod(&mut self, res: &Resolution, got_address: u64) -> Result {
+        let got_entry = self.take_next_got_entry()?;
+        if self.output_kind.is_executable() {
+            *got_entry = elf::CURRENT_EXE_TLS_MOD;
+        } else {
+            let dynamic_symbol_index = res.dynamic_symbol_index.map(|i| i.get()).unwrap_or(0);
+            debug_assert_bail!(
+                compute_allocations(res, self.output_kind).rela_dyn_general > 0,
+                "Tried to write dtpmod with no allocation. {}",
+                ResFlagsDisplay(res)
+            );
+            self.write_dtpmod_relocation(got_address, dynamic_symbol_index)?;
+        }
+        let offset_entry = self.take_next_got_entry()?;
+        if let Some(dynamic_symbol_index) = res.dynamic_symbol_index {
+            if !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT) {
+                self.write_dtpoff_relocation(
+                    got_address + crate::elf::TLS_OFFSET_OFFSET,
+                    dynamic_symbol_index.get(),
+                )?;
+            }
+            return Ok(());
+        }
+        // Convert the address to an offset within the TLS segment
+        let address = res.address()?;
+        *offset_entry = address - self.tls.start;
         Ok(())
     }
 
@@ -563,7 +575,7 @@ impl<'out> TableWriter<'out> {
         Ok(())
     }
 
-    fn write_dtpmod(&mut self, place: u64, dynamic_symbol_index: u32) -> Result {
+    fn write_dtpmod_relocation(&mut self, place: u64, dynamic_symbol_index: u32) -> Result {
         self.write_rela_dyn_general(
             place,
             dynamic_symbol_index,
@@ -572,7 +584,7 @@ impl<'out> TableWriter<'out> {
         )
     }
 
-    fn write_dtpoff(&mut self, place: u64, dynamic_symbol_index: u32) -> Result {
+    fn write_dtpoff_relocation(&mut self, place: u64, dynamic_symbol_index: u32) -> Result {
         self.write_rela_dyn_general(
             place,
             dynamic_symbol_index,
@@ -581,7 +593,12 @@ impl<'out> TableWriter<'out> {
         )
     }
 
-    fn write_tpoff(&mut self, place: u64, dynamic_symbol_index: u32, addend: i64) -> Result {
+    fn write_tpoff_relocation(
+        &mut self,
+        place: u64,
+        dynamic_symbol_index: u32,
+        addend: i64,
+    ) -> Result {
         self.write_rela_dyn_general(
             place,
             dynamic_symbol_index,
@@ -845,8 +862,11 @@ impl<'data> ObjectLayout<'data> {
                         layout.symbol_debug(symbol_id)
                     )
                 })?;
+                let resolution_flags = &res.resolution_flags;
                 if res.value_flags.contains(ValueFlags::DYNAMIC)
-                    && res.resolution_flags.contains(ResolutionFlags::GOT)
+                    && (resolution_flags.contains(ResolutionFlags::GOT)
+                        || resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
+                        || resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET))
                 {
                     let symbol = self
                         .object
@@ -1288,7 +1308,7 @@ fn apply_relocation(
             .wrapping_add(addend)
             .wrapping_sub(place),
         RelocationKind::TlsGd => resolution
-            .got_address()?
+            .tlsgd_got_address()?
             .wrapping_add(addend)
             .wrapping_sub(place),
         RelocationKind::TlsLd => layout
@@ -1424,7 +1444,7 @@ impl<'data> InternalLayout<'data> {
                 })?;
             } else {
                 table_writer.take_next_got_entry()?;
-                table_writer.write_dtpmod(got_address.get(), 0)?;
+                table_writer.write_dtpmod_relocation(got_address.get(), 0)?;
             }
             table_writer.process_resolution(&Resolution {
                 raw_value: 0,

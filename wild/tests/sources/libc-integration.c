@@ -29,8 +29,15 @@
 //#LinkArgs:--cc=gcc -static-pie -Wl,--strip-debug -Wl,--gc-sections
 //#Object:libc-integration-0.c
 
-//#Config:clang-dynamic:default
+//#Config:clang-initial-exec:default
 //#CompArgs:-g -fPIC -ftls-model=initial-exec
+//#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN
+//#EnableLinker:lld
+//#Shared:libc-integration-0.c
+//#DiffIgnore:section.relro_padding
+
+//#Config:clang-global-dynamic:default
+//#CompArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN
 //#EnableLinker:lld
 //#Shared:libc-integration-0.c

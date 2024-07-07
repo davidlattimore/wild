@@ -64,9 +64,12 @@ fn validate_resolution(
     got: &crate::elf::SectionHeader,
     got_data: &[u8],
 ) -> Result {
-    let res_kind = resolution.resolution_flags;
+    let res_flags = resolution.resolution_flags;
     let value_flags = resolution.value_flags;
-    if value_flags.contains(ValueFlags::IFUNC) || res_kind.contains(ResolutionFlags::TLS) {
+    if value_flags.contains(ValueFlags::IFUNC)
+        || res_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
+        || res_flags.contains(ResolutionFlags::GOT_TLS_OFFSET)
+    {
         return Ok(());
     };
     if let Some(got_address) = resolution.got_address {
@@ -85,7 +88,7 @@ fn validate_resolution(
         if expected != address {
             let name = String::from_utf8_lossy(name);
             bail!(
-                "res={res_kind:?} `{name}` has address 0x{expected:x}, but GOT \
+                "res={res_flags:?} `{name}` has address 0x{expected:x}, but GOT \
                  (at 0x{got_address:x}) points to 0x{address:x}"
             );
         }

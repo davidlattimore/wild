@@ -261,6 +261,11 @@ pub(crate) struct Resolution {
 
     pub(crate) dynamic_symbol_index: Option<NonZeroU32>,
 
+    /// The base GOT address for this resolution. For pointers to symbols the GOT entry will contain
+    /// a single pointer. For TLS variables there can be up to 3 pointers. If
+    /// ResolutionFlags::GOT_TLS_OFFSET is set, then that will be the first value. If
+    /// ResolutionFlags::GOT_TLS_MODULE is set, then there will be a pair of values (module and
+    /// offset within module).
     pub(crate) got_address: Option<NonZeroU64>,
     pub(crate) plt_address: Option<NonZeroU64>,
     pub(crate) resolution_flags: ResolutionFlags,
@@ -485,28 +490,32 @@ fn allocate_resolution(
     mem_sizes: &mut OutputSectionPartMap<u64>,
     output_kind: OutputKind,
 ) {
+    let has_dynamic_symbol = value_flags.contains(ValueFlags::DYNAMIC)
+        || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC);
     if resolution_flags.contains(ResolutionFlags::GOT) {
         mem_sizes.got += elf::GOT_ENTRY_SIZE;
         if value_flags.contains(ValueFlags::IFUNC) {
             mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
-        } else if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
-            && (value_flags.contains(ValueFlags::DYNAMIC)
-                || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
-                || resolution_flags.contains(ResolutionFlags::TLS))
-        {
+        } else if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
             mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
-        } else if value_flags.contains(ValueFlags::ADDRESS)
-            && !resolution_flags.contains(ResolutionFlags::TLS)
-            && output_kind.is_relocatable()
-        {
+        } else if value_flags.contains(ValueFlags::ADDRESS) && output_kind.is_relocatable() {
             mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
         }
     }
     if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
-        mem_sizes.got += elf::GOT_ENTRY_SIZE;
+        mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
         // For executables, the TLS module ID is known at link time. For shared objects, we
         // need a runtime relocation to fill it in.
         if !output_kind.is_executable() {
+            mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
+        }
+        if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
+            mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
+        }
+    }
+    if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+        mem_sizes.got += elf::GOT_ENTRY_SIZE;
+        if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) {
             mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
         }
     }
@@ -766,11 +775,13 @@ bitflags! {
         /// A PLT entry is needed.
         const PLT = 1 << 2;
 
-        /// A second GOT entry is needed in order to store the module number. Only set for TLS
-        /// variables.
+        /// A double GOT entry is needed in order to store the module number and offset within the
+        /// module. Only set for TLS variables.
         const GOT_TLS_MODULE = 1 << 3;
 
-        const TLS = 1 << 4;
+        /// A single GOT entry is needed to store the offset of the TLS variable within the initial
+        /// TLS block.
+        const GOT_TLS_OFFSET = 1 << 4;
 
         /// The request originated from a dynamic object, so the symbol should be put into the dynamic
         /// symbol table.
@@ -1856,10 +1867,8 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
     match rel_kind {
         RelocationKind::PltRelative => ResolutionFlags::PLT | ResolutionFlags::GOT,
         RelocationKind::Got | RelocationKind::GotRelative => ResolutionFlags::GOT,
-        RelocationKind::GotTpOff => ResolutionFlags::GOT | ResolutionFlags::TLS,
-        RelocationKind::TlsGd => {
-            ResolutionFlags::GOT | ResolutionFlags::TLS | ResolutionFlags::GOT_TLS_MODULE
-        }
+        RelocationKind::GotTpOff => ResolutionFlags::GOT_TLS_OFFSET,
+        RelocationKind::TlsGd => ResolutionFlags::GOT_TLS_MODULE,
         RelocationKind::TlsLd => ResolutionFlags::empty(),
         RelocationKind::Absolute => ResolutionFlags::DIRECT,
         RelocationKind::Relative => ResolutionFlags::DIRECT,
@@ -3091,18 +3100,22 @@ impl<'state> GlobalAddressEmitter<'state> {
             resolution.plt_address = Some(self.allocate_plt());
         }
         if res_kind.contains(ResolutionFlags::GOT) {
-            resolution.got_address = Some(self.allocate_got());
-        }
-        if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
-            debug_assert!(res_kind.contains(ResolutionFlags::GOT));
-            self.allocate_got();
+            resolution.got_address = Some(self.allocate_got(1));
+        } else if res_kind.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+            if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
+                resolution.got_address = Some(self.allocate_got(3));
+            } else {
+                resolution.got_address = Some(self.allocate_got(1));
+            }
+        } else if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
+            resolution.got_address = Some(self.allocate_got(2));
         }
         Ok(resolution)
     }
 
-    fn allocate_got(&mut self) -> NonZeroU64 {
+    fn allocate_got(&mut self, num_entries: u64) -> NonZeroU64 {
         let got_address = NonZeroU64::new(self.next_got_address).unwrap();
-        self.next_got_address += elf::GOT_ENTRY_SIZE;
+        self.next_got_address += elf::GOT_ENTRY_SIZE * num_entries;
         got_address
     }
 
@@ -3131,6 +3144,23 @@ impl<'data> resolution::ResolvedFile<'data> {
 impl Resolution {
     pub(crate) fn got_address(&self) -> Result<u64> {
         Ok(self.got_address.context("Missing GOT address")?.get())
+    }
+
+    pub(crate) fn tlsgd_got_address(&self) -> Result<u64> {
+        debug_assert_bail!(
+            self.resolution_flags
+                .contains(ResolutionFlags::GOT_TLS_MODULE),
+            "Called tlsgd_got_address without GOT_TLS_MODULE being set"
+        );
+        let got_address = self.got_address()?;
+        // If we've got both a GOT_TLS_OFFSET and a GOT_TLS_MODULE, then the latter comes second.
+        if self
+            .resolution_flags
+            .contains(ResolutionFlags::GOT_TLS_OFFSET)
+        {
+            return Ok(got_address + crate::elf::GOT_ENTRY_SIZE);
+        }
+        Ok(got_address)
     }
 
     pub(crate) fn plt_address(&self) -> Result<u64> {
@@ -3654,12 +3684,16 @@ fn test_resolution_allocation_consistency() -> Result {
         ResolutionFlags::DIRECT,
         ResolutionFlags::EXPORT_DYNAMIC,
         ResolutionFlags::DIRECT | ResolutionFlags::GOT | ResolutionFlags::EXPORT_DYNAMIC,
-        ResolutionFlags::GOT | ResolutionFlags::TLS | ResolutionFlags::EXPORT_DYNAMIC,
+        ResolutionFlags::GOT_TLS_OFFSET | ResolutionFlags::EXPORT_DYNAMIC,
         ResolutionFlags::GOT,
         ResolutionFlags::GOT | ResolutionFlags::PLT,
-        ResolutionFlags::TLS,
-        ResolutionFlags::TLS | ResolutionFlags::GOT,
-        ResolutionFlags::TLS | ResolutionFlags::GOT | ResolutionFlags::GOT_TLS_MODULE,
+        ResolutionFlags::DIRECT
+            | ResolutionFlags::GOT
+            | ResolutionFlags::PLT
+            | ResolutionFlags::EXPORT_DYNAMIC,
+        ResolutionFlags::GOT_TLS_OFFSET,
+        ResolutionFlags::GOT_TLS_MODULE,
+        ResolutionFlags::GOT_TLS_OFFSET | ResolutionFlags::GOT_TLS_MODULE,
     ];
     let output_kinds = &[
         OutputKind::NonRelocatableStaticExecutable,
@@ -3671,7 +3705,8 @@ fn test_resolution_allocation_consistency() -> Result {
     for &value_flags in value_flag_sets {
         for &resolution_flags in resolution_flag_sets {
             // Skip invalid combinations.
-            if resolution_flags.contains(ResolutionFlags::TLS)
+            if (resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
+                || resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET))
                 && (value_flags.contains(ValueFlags::ABSOLUTE)
                     || value_flags.contains(ValueFlags::IFUNC))
             {
@@ -3694,8 +3729,8 @@ fn test_resolution_allocation_consistency() -> Result {
                 }
                 if output_kind == OutputKind::SharedObject
                     && value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
-                    && resolution_flags.contains(ResolutionFlags::GOT)
-                    && resolution_flags.contains(ResolutionFlags::TLS)
+                    && (resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
+                        || resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET))
                 {
                     continue;
                 }
