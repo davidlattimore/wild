@@ -660,6 +660,7 @@ struct SymbolTableWriter<'data, 'out> {
     global_entries: &'out mut [SymtabEntry],
     output_sections: &'data OutputSections<'data>,
     strtab_writer: StrTabWriter<'out>,
+    is_dynamic: bool,
 }
 
 impl<'data, 'out> SymbolTableWriter<'data, 'out> {
@@ -683,6 +684,7 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
                 next_offset: start_string_offset,
                 out: strings,
             },
+            is_dynamic: false,
         }
     }
 
@@ -701,6 +703,7 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
                 next_offset: string_offset,
                 out: strings,
             },
+            is_dynamic: true,
         }
     }
 
@@ -793,8 +796,13 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
             || !self.global_entries.is_empty()
             || !self.strtab_writer.out.is_empty()
         {
+            let table_names = if self.is_dynamic {
+                "dynsym/dynstr"
+            } else {
+                "symtab/strtab"
+            };
             bail!(
-                "Didn't use up all allocated symtab/strtab space. local={} global={} strings={}",
+                "Didn't use up all allocated {table_names} space. local={} global={} strings={}",
                 self.local_entries.len(),
                 self.global_entries.len(),
                 self.strtab_writer.out.len()
@@ -1240,7 +1248,8 @@ fn apply_relocation(
     let Some(resolution) = object_layout.get_resolution(rel, layout)? else {
         return Ok(RelocationModifier::Normal);
     };
-    let value_flags = resolution.value_flags();
+    let value_flags = resolution.value_flags;
+    let resolution_flags = resolution.resolution_flags;
     let e = LittleEndian;
     let mut addend = rel.r_addend.get(e) as u64;
     let mut next_modifier = RelocationModifier::Normal;
@@ -1250,7 +1259,7 @@ fn apply_relocation(
     if let Some((relaxation, r_type)) =
         Relaxation::new(r_type, out, offset_in_section, value_flags, output_kind)
     {
-        tracing::trace!(?relaxation, %value_flags);
+        tracing::trace!(?relaxation, %value_flags, %resolution_flags);
         rel_info = RelocationKindInfo::from_raw(r_type)?;
         relaxation.apply(out, &mut offset_in_section, &mut addend, &mut next_modifier);
         let new_address = section_address + offset_in_section;
@@ -1259,10 +1268,10 @@ fn apply_relocation(
             // otherwise we often miss that information when processing TLSGD relocations.
             let _span = tracing::span!(tracing::Level::TRACE, "relocation", address = new_address)
                 .entered();
-            tracing::trace!(?relaxation, %value_flags);
+            tracing::trace!(?relaxation, %value_flags, %resolution_flags);
         }
     } else {
-        tracing::trace!(%value_flags);
+        tracing::trace!(%value_flags, %resolution_flags);
         rel_info = RelocationKindInfo::from_raw(r_type)?;
     }
     let value = match rel_info.kind {
