@@ -309,7 +309,7 @@ pub(crate) struct EpilogueLayoutState<'data> {
     gnu_hash_layout: Option<GnuHashLayout>,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct GnuHashLayout {
     pub(crate) bucket_count: u32,
     pub(crate) bloom_shift: u32,
@@ -3577,7 +3577,7 @@ impl Display for SectionDebug {
 
 impl GnuHashLayout {
     pub(crate) fn bucket_for_hash(&self, hash: u32) -> u32 {
-        (hash & ((1 << self.bloom_shift) - 1)) % self.bucket_count
+        hash % self.bucket_count
     }
 }
 
