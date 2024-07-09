@@ -84,11 +84,12 @@ fn link(args: &Args) -> crate::error::Result {
     let (resolved_files, output_sections) =
         resolution::resolve_symbols_and_sections(&files, &mut symbol_db)?;
     let layout = layout::compute(&symbol_db, resolved_files, output_sections, &mut output)?;
-    output.write(&layout)?;
+    let output_file = output.write(&layout)?;
     diff::maybe_diff()?;
 
     let scope = tracing::span!(tracing::Level::INFO, "Shutdown");
     let _scope = scope.enter();
+    shutdown::free_output(output_file);
     shutdown::free_layout(layout);
     shutdown::free_symbol_db(symbol_db);
     shutdown::free_input_data(input_data);

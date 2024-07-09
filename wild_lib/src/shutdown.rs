@@ -8,16 +8,21 @@
 //! can then exit while the forked process cleans up.
 
 #[tracing::instrument(skip_all, name = "Drop layout")]
-pub fn free_layout(d: crate::layout::Layout) {
+pub(crate) fn free_layout(d: crate::layout::Layout) {
     drop(d);
 }
 
 #[tracing::instrument(skip_all, name = "Drop symbol DB")]
-pub fn free_symbol_db(d: crate::symbol_db::SymbolDb) {
+pub(crate) fn free_symbol_db(d: crate::symbol_db::SymbolDb) {
     drop(d);
 }
 
 #[tracing::instrument(skip_all, name = "Drop input data")]
-pub fn free_input_data(d: crate::input_data::InputData) {
+pub(crate) fn free_input_data(d: crate::input_data::InputData) {
+    drop(d);
+}
+
+#[tracing::instrument(skip_all, name = "Unmap output file")]
+pub(crate) fn free_output(d: crate::elf_writer::SizedOutput) {
     drop(d);
 }

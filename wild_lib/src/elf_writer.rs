@@ -78,7 +78,7 @@ enum FileCreator {
     },
 }
 
-struct SizedOutput {
+pub(crate) struct SizedOutput {
     file: std::fs::File,
     mmap: memmap2::MmapMut,
     path: Arc<Path>,
@@ -92,7 +92,7 @@ struct SectionAllocation {
 }
 
 impl Output {
-    pub fn new(args: &Args) -> Output {
+    pub(crate) fn new(args: &Args) -> Output {
         if args.num_threads.get() > 1 {
             let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
             Output {
@@ -129,7 +129,7 @@ impl Output {
     }
 
     #[tracing::instrument(skip_all, name = "Write output file")]
-    pub fn write(&mut self, layout: &Layout) -> Result {
+    pub fn write(&mut self, layout: &Layout) -> Result<SizedOutput> {
         if layout.args().write_layout {
             write_layout(layout)?;
         }
@@ -149,7 +149,7 @@ impl Output {
         sized_output.write(layout)?;
         // This triggers writing our .trace file if any. See output_trace module.
         tracing::event!(tracing::Level::TRACE, output_write_complete = true);
-        Ok(())
+        Ok(sized_output)
     }
 
     #[tracing::instrument(skip_all, name = "Create output file")]
