@@ -1762,15 +1762,11 @@ impl<'data> std::fmt::Display for ObjectLayout<'data> {
 
 struct SectionRequest {
     id: object::SectionIndex,
-    resolution_kind: ResolutionFlags,
 }
 
 impl SectionRequest {
     fn new(id: object::SectionIndex) -> Self {
-        Self {
-            id,
-            resolution_kind: ResolutionFlags::empty(),
-        }
+        Self { id }
     }
 }
 
@@ -2539,9 +2535,6 @@ impl<'data> ObjectLayoutState<'data> {
                     // GC unreferenced data. So there's nothing to do here.
                 }
             }
-            if let SectionSlot::Loaded(section) = &mut self.state.sections[section_id.0] {
-                section.resolution_kind |= section_request.resolution_kind;
-            };
         }
         Ok(())
     }
