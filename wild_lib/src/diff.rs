@@ -64,7 +64,7 @@ fn run_diff(paths: &BinPaths) -> Result {
     let status = Command::new(linker_diff_path)
         .arg("--wild-defaults")
         .arg("--display-names")
-        .arg("ref,wild")
+        .arg("wild,ref")
         .arg("--ref")
         .arg(&paths.reference_output)
         .arg(&paths.our_output)
