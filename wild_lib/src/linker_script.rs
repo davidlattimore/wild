@@ -278,7 +278,7 @@ fn parse_commands_up_to<'a>(
 
 fn parse_command<'a>(tokens: &mut Tokeniser<'a>, token: &str) -> Result<Command<'a>> {
     match token {
-        "GROUP" => {
+        "GROUP" | "INPUT" => {
             tokens.expect("(")?;
             Ok(Command::Group(parse_commands_up_to(tokens, Some(")"))?))
         }
@@ -389,7 +389,13 @@ mod tests {
                 InputSpec::File(Box::from(Path::new("libgcc_s.so.1"))),
                 InputSpec::Lib(Box::from("gcc"))
             ]
-        )
+        );
+
+        let inputs = inputs_from_script("INPUT(libfoo.so)", Modifiers::default()).unwrap();
+        assert_eq!(
+            inputs.into_iter().map(|i| i.spec).collect::<Vec<_>>(),
+            vec![InputSpec::File(Box::from(Path::new("libfoo.so"))),]
+        );
     }
 
     #[test]
