@@ -3,10 +3,14 @@ use crate::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
+use object::elf::FileHeader64;
+use object::read::elf::ElfSymbolTable;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
+use object::ObjectSymbolTable;
+use object::SymbolIndex;
 
 type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
 
@@ -60,6 +64,11 @@ pub(crate) fn check_object(obj: &Object) -> Result {
         )
     })?;
 
+    let dynsym = obj
+        .elf_file
+        .dynamic_symbol_table()
+        .context("Missing dynamic symbol table")?;
+
     for sym in obj.elf_file.dynamic_symbols() {
         if !sym.is_definition() {
             // It's somewhat tempting to verify that the symbol index is >= symbol_base. However
@@ -70,17 +79,18 @@ pub(crate) fn check_object(obj: &Object) -> Result {
         }
         let name = sym.name()?;
         let name_bytes = sym.name_bytes()?;
-        let symbol_index = lookup_symbol(name_bytes, header, bloom_values, buckets, chains)
-            .with_context(|| {
-                let hash = object::elf::gnu_hash(name_bytes);
-                format!(
-                    "Hash lookup of symbol `{name}` failed. \
+        let symbol_index =
+            lookup_symbol(name_bytes, header, bloom_values, buckets, chains, &dynsym)
+                .with_context(|| {
+                    let hash = object::elf::gnu_hash(name_bytes);
+                    format!(
+                        "Hash lookup of symbol `{name}` failed. \
                         hash=0x{hash:x} \
                         buckets={buckets:?} \
                         symbol_base={symbol_base} \
                         chains={chains:x?}"
-                )
-            })?;
+                    )
+                })?;
         if symbol_index != sym.index().0 {
             bail!(
                 "Dynamic symbol `{}` hash lookup found {symbol_index}, expected {}",
@@ -99,6 +109,7 @@ fn lookup_symbol(
     bloom_values: &[u64],
     buckets: &[u32],
     chains: &[u32],
+    dynsym: &ElfSymbolTable<FileHeader64<LittleEndian>>,
 ) -> Result<usize> {
     let e = LittleEndian;
     let symbol_base = header.symbol_base.get(e) as usize;
@@ -120,7 +131,12 @@ fn lookup_symbol(
     }
     loop {
         let chain_value = chains[symbol_index - symbol_base];
-        if chain_value & !1 == hash & !1 {
+        if chain_value & !1 == hash & !1
+            && dynsym
+                .symbol_by_index(SymbolIndex(symbol_index))
+                .and_then(|sym| sym.name_bytes())
+                .is_ok_and(|n| n == sym_name)
+        {
             return Ok(symbol_index);
         }
         if chain_value & 1 == 1 {
