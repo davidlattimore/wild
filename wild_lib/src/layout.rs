@@ -809,6 +809,13 @@ impl AtomicResolutionFlags {
     }
 
     fn fetch_or(&self, flags: ResolutionFlags) -> ResolutionFlags {
+        // Calling fetch_or on our atomic requires that we gain exclusive access to the cache line
+        // containing the atomic. If all the bits are already set, then that's wasteful, so we first
+        // check if the bits are set and if they are, we skip the fetch_or call.
+        let current_bits = self.value.load(atomic::Ordering::Relaxed);
+        if current_bits & flags.bits() == flags.bits() {
+            return ResolutionFlags::from_bits_retain(current_bits);
+        }
         let previous_bits = self.value.fetch_or(flags.bits(), atomic::Ordering::Relaxed);
         ResolutionFlags::from_bits_retain(previous_bits)
     }
