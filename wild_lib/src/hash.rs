@@ -38,10 +38,16 @@ pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
     hasher.finish()
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Eq, Clone, Copy)]
 pub(crate) struct PreHashed<T> {
     value: T,
     hash: u64,
+}
+
+impl<T: PartialEq> PartialEq for PreHashed<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
 }
 
 impl<T> PreHashed<T> {
