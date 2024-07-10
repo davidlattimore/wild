@@ -1791,7 +1791,7 @@ impl<'data> Section<'data> {
         let size = object_section.sh_size(e);
         let section_data = worker.object.section_data(object_section)?;
         for rel in worker.object.relocations(section_id)? {
-            apply_relocation(worker, rel, object_section, resources, queue)?;
+            process_relocation(worker, rel, object_section, resources, queue)?;
         }
         let section = Section {
             index: section_id,
@@ -1816,7 +1816,7 @@ impl<'data> Section<'data> {
     }
 }
 
-fn apply_relocation(
+fn process_relocation(
     object: &mut ObjectLayoutState,
     rel: &Rela64<LittleEndian>,
     section: &object::elf::SectionHeader64<LittleEndian>,
@@ -2517,7 +2517,7 @@ impl<'data> ObjectLayoutState<'data> {
                         if let Some(eh_frame_section) = self.eh_frame_section {
                             for relocations in &frame_data_relocations {
                                 for rel in *relocations {
-                                    apply_relocation(
+                                    process_relocation(
                                         self,
                                         rel,
                                         eh_frame_section,
@@ -2911,7 +2911,7 @@ fn process_eh_frame_data(
                 }
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                apply_relocation(object, rel, eh_frame_section, resources, queue)?;
+                process_relocation(object, rel, eh_frame_section, resources, queue)?;
                 if let Some(local_sym_index) = rel.symbol(e, false) {
                     let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);
                     let definition = resources.symbol_db.definition(local_symbol_id);
