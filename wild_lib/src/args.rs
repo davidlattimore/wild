@@ -33,7 +33,6 @@ pub(crate) struct Args {
     pub(crate) debug_address: Option<u64>,
     pub(crate) bind_now: bool,
     pub(crate) write_layout: bool,
-    pub(crate) hash_style: Option<HashStyle>,
     pub(crate) should_write_eh_frame_hdr: bool,
     pub(crate) write_trace: bool,
     pub(crate) rpaths: Vec<String>,
@@ -88,11 +87,6 @@ pub(crate) struct Input {
 pub(crate) enum InputSpec {
     File(Box<Path>),
     Lib(Box<str>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HashStyle {
-    Gnu,
 }
 
 pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
@@ -172,7 +166,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     // quite a bit of complexity and we don't properly support it. We may eventually drop
     // support completely.
     let mut bind_now = true;
-    let mut hash_style = None;
     // Skip program name
     input.next();
     let mut arg_num = 0;
@@ -205,12 +198,12 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if arg == "--no-dynamic-linker" {
             dynamic_linker = None;
         } else if let Some(style) = arg.strip_prefix("--hash-style=") {
-            hash_style = Some(HashStyle::Gnu);
             // We don't technically support both hash styles, but if requested to do both, we just
             // do GNU, which we do support.
             if style != "gnu" && style != "both" {
                 bail!("Unsupported hash-style `{style}`");
             }
+            // Since we currently only support GNU hash, there's no state to update.
         } else if arg.starts_with("--build-id=") {
         } else if arg == "--time" {
             time_phases = true;
@@ -330,9 +323,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             OutputKind::NonRelocatableStaticExecutable
         }
     });
-    if output_kind == OutputKind::NonRelocatableStaticExecutable {
-        hash_style = None;
-    }
     save_dir.finish()?;
     if let Some(a) = action {
         return Ok(a);
@@ -358,7 +348,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         bind_now,
         write_layout,
         write_trace,
-        hash_style,
         should_write_eh_frame_hdr: eh_frame_hdr,
         write_gc_stats,
         gc_stats_ignore,

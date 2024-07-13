@@ -5,7 +5,6 @@
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::args::Args;
-use crate::args::HashStyle;
 use crate::args::OutputKind;
 use crate::debug_assert_bail;
 use crate::elf;
@@ -2271,24 +2270,9 @@ impl<'data> EpilogueLayoutState<'data> {
                 self.common.mem_sizes.dynstr += soname.len() as u64 + 1;
                 self.common.mem_sizes.dynamic += dynamic_entry_size as u64;
             }
-        }
 
-        let num_defs = self.dynamic_symbol_definitions.len();
-        // Our number of buckets is computed somewhat arbitrarily so that we have on average 2
-        // symbols per bucket, but then we round up to a power of two.
-        if symbol_db.args.hash_style == Some(HashStyle::Gnu) {
-            let gnu_hash_layout = GnuHashLayout {
-                bucket_count: (num_defs / 2).next_power_of_two() as u32,
-                bloom_shift: 6,
-                bloom_count: 1,
-                // `symbol_base` is set later in `finalise_layout`.
-                symbol_base: 0,
-            };
-            // Sort by bucket. Tie-break by name for determinism. We can use an unstable sort
-            // because name should be unique. We use a parallel sort because we're processing
-            // symbols from potentially many input objects, so there can be a lot.
-            self.dynamic_symbol_definitions
-                .par_sort_unstable_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
+            self.allocate_gnu_hash();
+
             self.common.mem_sizes.dynstr += self
                 .dynamic_symbol_definitions
                 .iter()
@@ -2296,19 +2280,36 @@ impl<'data> EpilogueLayoutState<'data> {
                 .sum::<usize>() as u64;
             self.common.mem_sizes.dynsym +=
                 (self.dynamic_symbol_definitions.len() * size_of::<elf::SymtabEntry>()) as u64;
-            // .gnu.hash
-            let num_blume = 1;
-            self.common.mem_sizes.gnu_hash += (core::mem::size_of::<elf::GnuHashHeader>()
-                + core::mem::size_of::<u64>() * num_blume
-                + core::mem::size_of::<u32>() * gnu_hash_layout.bucket_count as usize
-                + core::mem::size_of::<u32>() * num_defs)
-                as u64;
-            self.gnu_hash_layout = Some(gnu_hash_layout);
-        } else if !self.dynamic_symbol_definitions.is_empty() {
-            bail!("Dynamic linking requires that --hash-style is specified");
         }
 
         Ok(())
+    }
+
+    /// Allocates space required for .gnu.hash. Also sorts dynamic symbol definitions by their hash
+    /// bucket as required by .gnu.hash.
+    fn allocate_gnu_hash(&mut self) {
+        // Our number of buckets is computed somewhat arbitrarily so that we have on average 2
+        // symbols per bucket, but then we round up to a power of two.
+        let num_defs = self.dynamic_symbol_definitions.len();
+        let gnu_hash_layout = GnuHashLayout {
+            bucket_count: (num_defs / 2).next_power_of_two() as u32,
+            bloom_shift: 6,
+            bloom_count: 1,
+            // `symbol_base` is set later in `finalise_layout`.
+            symbol_base: 0,
+        };
+        // Sort by bucket. Tie-break by name for determinism. We can use an unstable sort
+        // because name should be unique. We use a parallel sort because we're processing
+        // symbols from potentially many input objects, so there can be a lot.
+        self.dynamic_symbol_definitions
+            .par_sort_unstable_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
+        let num_blume = 1;
+        self.common.mem_sizes.gnu_hash += (core::mem::size_of::<elf::GnuHashHeader>()
+            + core::mem::size_of::<u64>() * num_blume
+            + core::mem::size_of::<u32>() * gnu_hash_layout.bucket_count as usize
+            + core::mem::size_of::<u32>() * num_defs)
+            as u64;
+        self.gnu_hash_layout = Some(gnu_hash_layout);
     }
 
     fn finalise_layout(
