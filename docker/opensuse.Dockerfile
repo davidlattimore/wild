@@ -1,11 +1,12 @@
-# Provides a somewhat reproducible environment for running tests in.
-# docker build -t wild-dev .
-# docker run -it wild-dev
+# Runs on openSUSE
+#
+# docker build -t wild-dev-opensuse . -f docker/opensuse.Dockerfile
+# docker run -it wild-dev-opensuse
 
-FROM rust:1.79 AS chef
-RUN apt-get update && \
-    apt-get install -y clang lld-16 less && \
-    rm -rf /var/lib/apt/lists/*
+FROM opensuse/leap:latest AS chef
+RUN curl https://sh.rustup.rs -sSf | bash -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN zypper install -y -t pattern devel_C_C++ && zypper install -y lld17 vim less
 RUN cargo install --locked cargo-chef
 RUN rustup toolchain install nightly && \
     rustup target add x86_64-unknown-linux-musl && \
