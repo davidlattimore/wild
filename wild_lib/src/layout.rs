@@ -392,6 +392,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         symbol_db: &SymbolDb,
         symbol_resolution_flags: &[AtomicResolutionFlags],
     ) -> Result {
+        let should_print_allocations = symbol_db.args.print_allocations == Some(self.file_id());
         let symbol_id_range = self.symbol_id_range();
         let common = self.common_mut();
         for (local_index, resolution_flags) in symbol_resolution_flags[symbol_id_range.as_usize()]
@@ -408,6 +409,18 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 let name = symbol_db.symbol_name(symbol_id)?;
                 common.mem_sizes.dynstr += name.len() as u64 + 1;
                 common.mem_sizes.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;
+            }
+
+            // This is enabled by setting WILD_PRINT_ALLOCATIONS=some-file-id. Once we're relatively
+            // confident that we're no longer seeing cases where we allocate too much space, we can
+            // probably remove this.
+            if should_print_allocations {
+                println!(
+                    "value_flags={value_flags}, resolution_flags={}, \
+                     output_kind={:?}",
+                    resolution_flags.get(),
+                    symbol_db.args.output_kind
+                );
             }
 
             allocate_symbol_resolution(

@@ -3,6 +3,7 @@
 //! correct with something like clap.
 
 use crate::error::Result;
+use crate::input_data::FileId;
 use crate::save_dir::SaveDir;
 use anyhow::bail;
 use anyhow::Context as _;
@@ -46,6 +47,8 @@ pub(crate) struct Args {
     pub(crate) gc_stats_ignore: Vec<String>,
 
     pub(crate) verbose_gc_stats: bool,
+
+    pub(crate) print_allocations: Option<FileId>,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -354,6 +357,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         verbose_gc_stats,
         rpaths,
         soname,
+        print_allocations: std::env::var("WILD_PRINT_ALLOCATIONS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .map(FileId::new),
     }))
 }
 
