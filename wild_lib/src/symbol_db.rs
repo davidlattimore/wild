@@ -291,7 +291,8 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions.push(symbol_id);
         self.start_stop_symbol_names.push(*symbol_name);
         self.num_symbols_per_file[self.custom_sections_file_id.as_usize()] += 1;
-        self.symbol_value_kinds.push(ValueFlags::ADDRESS);
+        self.symbol_value_kinds
+            .push(ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT);
         symbol_id
     }
 
@@ -662,13 +663,13 @@ impl InternalInputObject {
                     let def = section_id.built_in_details();
                     let name = def.start_symbol_name.unwrap().as_bytes();
                     pending_symbols.push(PendingSymbol::new(symbol_id, name));
-                    *value_flags = ValueFlags::ADDRESS;
+                    *value_flags = ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT;
                 }
                 InternalSymDefInfo::SectionEnd(section_id) => {
                     let def = section_id.built_in_details();
                     let name = def.end_symbol_name.unwrap().as_bytes();
                     pending_symbols.push(PendingSymbol::new(symbol_id, name));
-                    *value_flags = ValueFlags::ADDRESS;
+                    *value_flags = ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT;
                 }
             }
         }
