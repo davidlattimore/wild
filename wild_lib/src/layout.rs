@@ -428,7 +428,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 symbol_db.args.output_kind,
             ) {
                 bail!(
-                    "Unexpected flag combination for symbol `{}`: \
+                    "{self}: Unexpected flag combination for symbol `{}`: \
                      value_flags={value_flags}, \
                      resolution_flags={}, \
                      output_kind={:?}",
