@@ -2844,7 +2844,10 @@ impl<'data> SymbolCopyInfo<'data> {
 
 /// Returns whether the supplied symbol can be exported when we're outputting a shared object.
 pub(crate) fn can_export_symbol(sym: &crate::elf::SymtabEntry) -> bool {
-    !sym.is_undefined(LittleEndian) && !sym.is_local() && sym.st_visibility() == 0
+    let visibility = sym.st_visibility();
+    !sym.is_undefined(LittleEndian)
+        && !sym.is_local()
+        && (visibility == object::elf::STV_DEFAULT || visibility == object::elf::STV_PROTECTED)
 }
 
 impl MergedStringStartAddresses {
