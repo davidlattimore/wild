@@ -62,3 +62,7 @@ int compute_value10(void) __attribute__((ifunc ("resolve_compute_value10")));
 static void *resolve_compute_value10(void) {
     return return10;
 }
+
+int sometimes_weak_fn(void) {
+    return 42;
+}

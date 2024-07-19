@@ -30,14 +30,14 @@
 //#Object:libc-integration-0.c
 
 //#Config:clang-initial-exec:default
-//#CompArgs:-g -fPIC -ftls-model=initial-exec
+//#CompArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP
 //#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN
 //#EnableLinker:lld
 //#Shared:libc-integration-0.c
 //#DiffIgnore:section.relro_padding
 
 //#Config:clang-global-dynamic:default
-//#CompArgs:-g -fPIC -ftls-model=global-dynamic
+//#CompArgs:-g -fPIC -ftls-model=global-dynamic -DDYNAMIC_DEP
 //#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN
 //#EnableLinker:lld
 //#Shared:libc-integration-0.c
@@ -59,6 +59,10 @@ void set_tvar2(int v);
 
 int __attribute__ ((weak)) weak_fn1(void);
 int __attribute__ ((weak)) weak_fn2(void);
+
+int __attribute__ ((weak)) sometimes_weak_fn(void) {
+    return 7;
+}
 
 void set_tvar_local(int v);
 int get_tvar_local(void);
@@ -161,6 +165,18 @@ int main() {
     if (compute_value10() != 10) {
         return 115;
     }
+
+    // If our dependency is a shared object, then its strong definition won't override ours. However
+    // if we're statically linking our dependency then its strong definition will override ours.
+#ifdef DYNAMIC_DEP
+    int expected = 7;
+#else
+    int expected = 42;
+#endif
+    if (sometimes_weak_fn() != expected) {
+        return 116;
+    }
+
 
     return 42;
 }
