@@ -422,6 +422,21 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                     symbol_db.args.output_kind
                 );
             }
+            if !are_flags_valid(
+                value_flags,
+                resolution_flags.get(),
+                symbol_db.args.output_kind,
+            ) {
+                bail!(
+                    "Unexpected flag combination for symbol `{}`: \
+                     value_flags={value_flags}, \
+                     resolution_flags={}, \
+                     output_kind={:?}",
+                    symbol_db.symbol_name(symbol_id)?,
+                    resolution_flags.get(),
+                    symbol_db.args.output_kind
+                );
+            }
 
             allocate_symbol_resolution(
                 value_flags,
@@ -775,7 +790,7 @@ struct LocalWorkQueue {
 
 bitflags! {
     /// What kind of resolution we want for a symbol or section.
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
     pub(crate) struct ResolutionFlags: u8 {
         /// The direct value is needed. e.g. via a relative or absolute relocation that doesn't use the
         /// PLT or GOT.
@@ -3689,29 +3704,14 @@ impl Display for ResolutionFlags {
 /// writes those resolutions. e.g. we don't allocate too little or too much space.
 #[test]
 fn test_resolution_allocation_consistency() -> Result {
-    let value_flag_sets: &[ValueFlags] = &[
-        ValueFlags::ADDRESS,
-        ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT,
-        ValueFlags::ABSOLUTE,
-        ValueFlags::ABSOLUTE | ValueFlags::CAN_BYPASS_GOT,
-        ValueFlags::IFUNC,
-        ValueFlags::DYNAMIC,
-    ];
-    let resolution_flag_sets = &[
-        ResolutionFlags::DIRECT,
-        ResolutionFlags::EXPORT_DYNAMIC,
-        ResolutionFlags::DIRECT | ResolutionFlags::GOT | ResolutionFlags::EXPORT_DYNAMIC,
-        ResolutionFlags::GOT_TLS_OFFSET | ResolutionFlags::EXPORT_DYNAMIC,
-        ResolutionFlags::GOT,
-        ResolutionFlags::GOT | ResolutionFlags::PLT,
-        ResolutionFlags::DIRECT
-            | ResolutionFlags::GOT
-            | ResolutionFlags::PLT
-            | ResolutionFlags::EXPORT_DYNAMIC,
-        ResolutionFlags::GOT_TLS_OFFSET,
-        ResolutionFlags::GOT_TLS_MODULE,
-        ResolutionFlags::GOT_TLS_OFFSET | ResolutionFlags::GOT_TLS_MODULE,
-    ];
+    use std::collections::HashSet;
+
+    let value_flag_sets = (0..=255)
+        .map(ValueFlags::from_bits_truncate)
+        .collect::<HashSet<_>>();
+    let resolution_flag_sets = (0..=255)
+        .map(ResolutionFlags::from_bits_truncate)
+        .collect::<HashSet<_>>();
     let output_kinds = &[
         OutputKind::NonRelocatableStaticExecutable,
         OutputKind::PositionIndependentStaticExecutable,
@@ -3719,36 +3719,11 @@ fn test_resolution_allocation_consistency() -> Result {
         OutputKind::SharedObject,
     ];
     let output_sections = OutputSections::for_testing();
-    for &value_flags in value_flag_sets {
-        for &resolution_flags in resolution_flag_sets {
-            // Skip invalid combinations.
-            if (resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
-                || resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET))
-                && (value_flags.contains(ValueFlags::ABSOLUTE)
-                    || value_flags.contains(ValueFlags::IFUNC))
-            {
-                continue;
-            }
-
+    for &value_flags in &value_flag_sets {
+        for &resolution_flags in &resolution_flag_sets {
             for &output_kind in output_kinds {
                 // Skip invalid combinations.
-                if output_kind.is_static_executable()
-                    && (value_flags.contains(ValueFlags::DYNAMIC)
-                        || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC))
-                {
-                    continue;
-                }
-                if output_kind.is_executable()
-                    && value_flags.contains(ValueFlags::ADDRESS)
-                    && !value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
-                {
-                    continue;
-                }
-                if output_kind == OutputKind::SharedObject
-                    && value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
-                    && (resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
-                        || resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET))
-                {
+                if !are_flags_valid(value_flags, resolution_flags, output_kind) {
                     continue;
                 }
 
@@ -3797,4 +3772,64 @@ fn test_resolution_allocation_consistency() -> Result {
         }
     }
     Ok(())
+}
+
+fn are_flags_valid(
+    value_flags: ValueFlags,
+    resolution_flags: ResolutionFlags,
+    output_kind: OutputKind,
+) -> bool {
+    // This could just be one expression, but it'd make it harder to see what each invalid
+    // combination represented.
+    if !value_flags.contains(ValueFlags::ADDRESS)
+        && !value_flags.contains(ValueFlags::ABSOLUTE)
+        && !value_flags.contains(ValueFlags::DYNAMIC)
+        && !value_flags.contains(ValueFlags::IFUNC)
+    {
+        return false;
+    }
+    if value_flags.contains(ValueFlags::DYNAMIC) && value_flags.contains(ValueFlags::IFUNC) {
+        return false;
+    }
+    if value_flags.contains(ValueFlags::DYNAMIC) && value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
+    {
+        return false;
+    }
+    if (resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
+        || resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET))
+        && (value_flags.contains(ValueFlags::ABSOLUTE) || value_flags.contains(ValueFlags::IFUNC))
+    {
+        return false;
+    }
+    if resolution_flags.contains(ResolutionFlags::PLT)
+        && !resolution_flags.contains(ResolutionFlags::GOT)
+    {
+        return false;
+    }
+    if resolution_flags.contains(ResolutionFlags::GOT)
+        && (resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
+            || resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET))
+    {
+        return false;
+    }
+    if output_kind.is_static_executable()
+        && (value_flags.contains(ValueFlags::DYNAMIC)
+            || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC))
+    {
+        return false;
+    }
+    if output_kind.is_executable()
+        && value_flags.contains(ValueFlags::ADDRESS)
+        && !value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
+    {
+        return false;
+    }
+    if output_kind == OutputKind::SharedObject
+        && value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
+        && (resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
+            || resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET))
+    {
+        return false;
+    }
+    true
 }

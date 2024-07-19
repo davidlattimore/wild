@@ -839,7 +839,7 @@ impl<'data> MergeStringsFileSection<'data> {
 }
 
 bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub(crate) struct ValueFlags: u8 {
         /// Something with an address. e.g. a regular symbol, a section etc.
         const ADDRESS = 1 << 0;
