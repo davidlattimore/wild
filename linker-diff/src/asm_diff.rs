@@ -672,9 +672,16 @@ impl<'data> AddressIndex<'data> {
         for sym in object.dynamic_symbols() {
             let sym_index = sym.index().0;
             max_index = max_index.max(sym_index);
-            let version = symbol_version_indexes
+            let version_index = symbol_version_indexes
                 .and_then(|indexes| indexes.get(sym_index))
-                .and_then(|&ver_index| self.verneed.get(ver_index as usize).copied().flatten());
+                .copied();
+            let version = version_index
+                .and_then(|ver_index| self.verneed.get(ver_index as usize).copied().flatten())
+                .or(match version_index {
+                    Some(object::elf::VER_NDX_LOCAL) => Some(b"*local*"),
+                    Some(object::elf::VER_NDX_GLOBAL) => Some(b"*global*"),
+                    _ => None,
+                });
             while dynamic_symbol_names.len() < sym_index {
                 dynamic_symbol_names.push(SymbolName {
                     bytes: &[],
