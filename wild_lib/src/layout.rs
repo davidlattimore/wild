@@ -1728,7 +1728,7 @@ impl<'data> std::fmt::Display for InternalLayoutState<'data> {
 
 impl<'data> std::fmt::Display for EpilogueLayoutState<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt("<custom sections>", f)
+        std::fmt::Display::fmt("<epilogue>", f)
     }
 }
 
@@ -1739,7 +1739,7 @@ impl<'data> std::fmt::Display for FileLayoutState<'data> {
             FileLayoutState::Dynamic(s) => std::fmt::Display::fmt(s, f),
             FileLayoutState::Internal(_) => std::fmt::Display::fmt("<internal>", f),
             FileLayoutState::NotLoaded => std::fmt::Display::fmt("<not-loaded>", f),
-            FileLayoutState::Epilogue(_) => std::fmt::Display::fmt("<custom sections>", f),
+            FileLayoutState::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
         }
     }
 }
@@ -1750,7 +1750,7 @@ impl<'data> std::fmt::Display for FileLayout<'data> {
             Self::Object(s) => std::fmt::Display::fmt(s, f),
             Self::Dynamic(s) => std::fmt::Display::fmt(s, f),
             Self::Internal(_) => std::fmt::Display::fmt("<internal>", f),
-            Self::Epilogue(_) => std::fmt::Display::fmt("<custom sections>", f),
+            Self::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
             Self::NotLoaded => std::fmt::Display::fmt("<not loaded>", f),
         }
     }

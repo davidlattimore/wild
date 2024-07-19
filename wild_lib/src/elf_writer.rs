@@ -377,6 +377,7 @@ struct TableWriter<'out> {
     tls: Range<u64>,
     rela_dyn_relative: &'out mut [crate::elf::Rela],
     rela_dyn_general: &'out mut [crate::elf::Rela],
+    versym: &'out mut [Versym],
 }
 
 impl<'out> TableWriter<'out> {
@@ -408,6 +409,7 @@ impl<'out> TableWriter<'out> {
             rela_dyn_general: slice_from_all_bytes_mut(core::mem::take(
                 &mut buffers.rela_dyn_general,
             )),
+            versym: slice_from_all_bytes_mut(core::mem::take(&mut buffers.gnu_version)),
         }
     }
 
@@ -557,6 +559,13 @@ impl<'out> TableWriter<'out> {
                 mem_sizes.rela_dyn_general / elf::RELA_ENTRY_SIZE,
             );
         }
+        if !self.versym.is_empty() {
+            bail!(
+                "Allocated too much space in .gnu.version. {} of {} entries remain",
+                self.versym.len(),
+                mem_sizes.gnu_version / elf::GNU_VERSION_ENTRY_SIZE
+            );
+        }
         Ok(())
     }
 
@@ -669,6 +678,13 @@ impl<'out> TableWriter<'out> {
     fn take_rela_dyn(&mut self) -> Result<&mut object::elf::Rela64<LittleEndian>> {
         crate::slice::take_first_mut(&mut self.rela_dyn_general)
             .context("insufficient allocation to .rela.dyn (non-relative)")
+    }
+
+    fn set_all_symbol_versions(&mut self, index: u16) {
+        self.versym
+            .iter_mut()
+            .for_each(|v| v.0.set(LittleEndian, index));
+        self.versym = Default::default();
     }
 }
 
@@ -879,10 +895,7 @@ impl<'data> ObjectLayout<'data> {
 
         // If we're writing a shared object, we may have undefined symbols. Set them to use the
         // global version.
-        let versym: &mut [Versym] = slice_from_all_bytes_mut(buffers.gnu_version);
-        versym
-            .iter_mut()
-            .for_each(|v| v.0.set(LittleEndian, object::elf::VER_NDX_GLOBAL));
+        table_writer.set_all_symbol_versions(object::elf::VER_NDX_GLOBAL);
 
         if !layout.args().strip_all {
             self.write_symbols(start_str_offset, buffers, &layout.output_sections, layout)?;
@@ -1408,6 +1421,11 @@ impl<'data> InternalLayout<'data> {
 
         self.write_interp(&mut buffers);
 
+        // If we're emitting symbol versions, we should have only one - symbol 0 - the undefined
+        // symbol. It needs to be set as local.
+        assert!(table_writer.versym.len() <= 1);
+        table_writer.set_all_symbol_versions(object::elf::VER_NDX_LOCAL);
+
         table_writer.validate_empty(&self.mem_sizes)?;
 
         Ok(())
@@ -1465,7 +1483,6 @@ impl<'data> InternalLayout<'data> {
         }
 
         write_internal_symbols_plt_got_entries(&self.internal_symbols, table_writer, layout)?;
-        table_writer.validate_empty(&self.mem_sizes)?;
         Ok(())
     }
 
@@ -1517,7 +1534,6 @@ impl<'data> EpilogueLayout<'data> {
     fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
         let mut table_writer = TableWriter::from_layout(layout, &mut buffers);
         write_internal_symbols_plt_got_entries(&self.internal_symbols, &mut table_writer, layout)?;
-        table_writer.validate_empty(&self.mem_sizes)?;
 
         if !layout.args().strip_all {
             let mut symbol_writer = SymbolTableWriter::new(
@@ -1545,11 +1561,9 @@ impl<'data> EpilogueLayout<'data> {
 
         // We don't yet support setting symbol versions for symbols that we export, so right now we
         // just set them all to the global version.
-        let versym: &mut [Versym] = slice_from_all_bytes_mut(buffers.gnu_version);
-        versym
-            .iter_mut()
-            .for_each(|v| v.0.set(LittleEndian, object::elf::VER_NDX_GLOBAL));
+        table_writer.set_all_symbol_versions(object::elf::VER_NDX_GLOBAL);
 
+        table_writer.validate_empty(&self.mem_sizes)?;
         dynamic_symbol_writer.check_exhausted()?;
 
         Ok(())
@@ -2061,7 +2075,6 @@ impl<'data> DynamicLayout<'data> {
 
         self.write_so_name(buffers.dynamic, &mut dynsym_writer.strtab_writer)?;
 
-        let mut versym: &mut [Versym] = slice_from_all_bytes_mut(buffers.gnu_version);
         for ((symbol_id, resolution), symbol) in layout
             .resolutions_in_range(self.symbol_id_range)
             .zip(self.object.symbols.iter())
@@ -2074,7 +2087,7 @@ impl<'data> DynamicLayout<'data> {
                     self.input_symbol_versions,
                     self.symbol_id_range.id_to_offset(symbol_id),
                     &self.version_mapping,
-                    &mut versym,
+                    &mut table_writer.versym,
                 )?;
 
                 table_writer.process_resolution(res).with_context(|| {
