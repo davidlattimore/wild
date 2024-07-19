@@ -3468,7 +3468,7 @@ impl<'data> DynamicLayoutState<'data> {
 
     /// Computes a mapping from input versions to output versions.
     fn compute_version_mapping(&self) -> Vec<u16> {
-        let mut out = vec![0; self.symbol_versions_needed.len()];
+        let mut out = vec![object::elf::VER_NDX_GLOBAL; self.symbol_versions_needed.len()];
         let mut next_output_version = self.non_addressable_indexes.gnu_version_r_index;
         for (input_version, needed) in self.symbol_versions_needed.iter().enumerate() {
             if *needed {

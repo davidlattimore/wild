@@ -876,6 +876,14 @@ impl<'data> ObjectLayout<'data> {
                 }
             }
         }
+
+        // If we're writing a shared object, we may have undefined symbols. Set them to use the
+        // global version.
+        let versym: &mut [Versym] = slice_from_all_bytes_mut(buffers.gnu_version);
+        versym
+            .iter_mut()
+            .for_each(|v| v.0.set(LittleEndian, object::elf::VER_NDX_GLOBAL));
+
         if !layout.args().strip_all {
             self.write_symbols(start_str_offset, buffers, &layout.output_sections, layout)?;
         }
@@ -1535,6 +1543,13 @@ impl<'data> EpilogueLayout<'data> {
         write_gnu_hash_tables(self, &mut buffers)?;
         write_dynamic_symbol_definitions(self, &mut dynamic_symbol_writer, layout)?;
 
+        // We don't yet support setting symbol versions for symbols that we export, so right now we
+        // just set them all to the global version.
+        let versym: &mut [Versym] = slice_from_all_bytes_mut(buffers.gnu_version);
+        versym
+            .iter_mut()
+            .for_each(|v| v.0.set(LittleEndian, object::elf::VER_NDX_GLOBAL));
+
         dynamic_symbol_writer.check_exhausted()?;
 
         Ok(())
@@ -2117,7 +2132,7 @@ impl<'data> DynamicLayout<'data> {
                     .get(usize::from(input_version - 1))
                     .copied()
                     .unwrap_or_default();
-                if output_version != 0 {
+                if output_version != object::elf::VER_NDX_GLOBAL {
                     // Every VERDEF entry should have at least one AUX entry.
                     let aux_in = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
                     let name = aux_in.name(e, strings)?;
