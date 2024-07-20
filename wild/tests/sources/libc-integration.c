@@ -43,6 +43,12 @@
 //#Shared:libc-integration-0.c
 //#DiffIgnore:section.relro_padding
 
+//#Config:gcc-dynamic-pie:default
+//#CompArgs:-g -fpie -DDYNAMIC_DEP
+//#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
+//#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections
+//#Shared:libc-integration-0.c
+
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
@@ -64,6 +70,8 @@ int __attribute__ ((weak)) sometimes_weak_fn(void) {
     return 7;
 }
 
+extern int value42;
+
 void set_tvar_local(int v);
 int get_tvar_local(void);
 void set_tvar_local2(int v);
@@ -73,6 +81,15 @@ int get_weak_var2(void);
 int get_weak_tvar(void);
 int get_weak_tvar2(void);
 int compute_value10(void);
+
+typedef int(*get_int_fn_t)(void);
+
+get_int_fn_t fn_pointers[] = {
+    get_tvar_local,
+    get_tvar_local2,
+    get_weak_var,
+    get_weak_var2
+};
 
 void *thread_function(void *data) {
     if (tvar1 != 0) {
@@ -177,6 +194,13 @@ int main() {
         return 116;
     }
 
+    if (fn_pointers[2]() != 30) {
+        return 118;
+    }
+
+    if (value42 != 42) {
+        return 117;
+    }
 
     return 42;
 }

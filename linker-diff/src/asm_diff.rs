@@ -520,6 +520,7 @@ struct SegmentDetails {
 enum BasicResolution<'data> {
     Symbol(SymbolName<'data>),
     Dynamic(SymbolName<'data>),
+    Copy(SymbolName<'data>),
     IFunc(SymbolName<'data>),
 }
 
@@ -779,79 +780,75 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn index_dynamic_relocations(&mut self, elf_file: &ElfFile64<'data>) {
-        let Some(relocations) = elf_file.dynamic_relocations() else {
+        let Some(dynsym_index) = elf_file.section_by_name(".dynsym").map(|sec| sec.index()) else {
             return;
         };
-        for (address, rel) in relocations {
-            if let RelocationTarget::Symbol(symbol_index) = rel.target() {
-                let Some(symbol_name) = self.dynamic_symbol_names.get(symbol_index.0) else {
-                    continue;
-                };
-                self.add_resolution(
-                    address + self.load_offset,
-                    AddressResolution::Basic(BasicResolution::Dynamic(*symbol_name)),
-                );
+
+        for section in elf_file.sections() {
+            let elf_section_header = &section.elf_section_header();
+            if elf_section_header.link(LittleEndian) == dynsym_index {
+                if let Ok(Some((relocations, _))) =
+                    elf_section_header.rela(LittleEndian, elf_file.data())
+                {
+                    for rel in relocations {
+                        self.index_dynamic_relocation(rel, elf_file);
+                    }
+                }
             }
         }
+    }
 
-        // The relocations above don't give us enough access to identify some of the relocation
-        // types that we need, so go through the relocations again using a lower level API.
-        let Some(rela_dyn_bytes) = elf_file
-            .section_by_name(".rela.dyn")
-            .and_then(|s| s.data().ok())
-        else {
-            return;
-        };
+    fn index_dynamic_relocation(&mut self, rel: &Rela64, elf_file: &ElfFile64) {
         let e = LittleEndian;
-        let rela_dyn: &[object::elf::Rela64<LittleEndian>] = slice_from_all_bytes(rela_dyn_bytes);
-        for rel in rela_dyn {
-            let r_type = rel.r_type(e, false);
-            let address = self.load_offset + rel.r_offset(e);
-            match r_type {
-                object::elf::R_X86_64_DTPMOD64 => {
-                    let symbol_index = rel.r_sym(e, false);
-                    if symbol_index != 0 {
-                        // We already handled relocations that referred to symbols above, so no need to
-                        // do it again here.
-                        continue;
+        let r_type = rel.r_type(e, false);
+        let address = self.load_offset + rel.r_offset(e);
+        let symbol_index = rel.r_sym(e, false);
+        if symbol_index != 0 {
+            let Some(symbol_name) = self.dynamic_symbol_names.get(symbol_index as usize) else {
+                return;
+            };
+            let basic = match r_type {
+                object::elf::R_X86_64_COPY => BasicResolution::Copy(*symbol_name),
+                _ => BasicResolution::Dynamic(*symbol_name),
+            };
+            self.add_resolution(address, AddressResolution::Basic(basic));
+            return;
+        }
+        match r_type {
+            object::elf::R_X86_64_DTPMOD64 => {
+                // Since we have no symbol associated with the DTPMOD, we assume that there's no
+                // relocation for the offset, but instead an absolute TLS offset.
+                let tls_offset_address = address + 8;
+                if let Some(tls_offset) = read_address(elf_file, self, tls_offset_address) {
+                    if tls_offset == 0 {
+                        self.add_resolution(address, AddressResolution::TlsModuleBase);
                     }
-                    // Since we have no symbol associated with the DTPMOD, we assume that there's no
-                    // relocation for the offset, but instead an absolute TLS offset.
-                    let tls_offset_address = address + 8;
-                    if let Some(tls_offset) = read_address(elf_file, self, tls_offset_address) {
-                        if tls_offset == 0 {
-                            self.add_resolution(address, AddressResolution::TlsModuleBase);
-                        }
-                        let resolution = self.tls_by_offset.get(&tls_offset).map(|tls_name| {
-                            AddressResolution::TlsIdentifier(SymbolName {
-                                bytes: tls_name,
-                                version: None,
-                            })
-                        });
-                        if let Some(resolution) = resolution {
-                            self.add_resolution(address, resolution);
-                        } else if tls_offset != 0 {
-                            self.add_resolution(address, AddressResolution::UndefinedTls);
-                        }
-                    }
-                }
-                object::elf::R_X86_64_TPOFF64 => {
-                    let sym_index = rel.r_sym(e, false);
-                    if sym_index == 0 {
-                        let addend = rel.r_addend(e) as u64;
-                        if let Some(var_name) = self.tls_by_offset.get(&addend) {
-                            self.add_resolution(
-                                address,
-                                AddressResolution::TlsIdentifier(SymbolName {
-                                    bytes: var_name,
-                                    version: None,
-                                }),
-                            );
-                        }
+                    let resolution = self.tls_by_offset.get(&tls_offset).map(|tls_name| {
+                        AddressResolution::TlsIdentifier(SymbolName {
+                            bytes: tls_name,
+                            version: None,
+                        })
+                    });
+                    if let Some(resolution) = resolution {
+                        self.add_resolution(address, resolution);
+                    } else if tls_offset != 0 {
+                        self.add_resolution(address, AddressResolution::UndefinedTls);
                     }
                 }
-                _ => {}
             }
+            object::elf::R_X86_64_TPOFF64 => {
+                let addend = rel.r_addend(e) as u64;
+                if let Some(var_name) = self.tls_by_offset.get(&addend) {
+                    self.add_resolution(
+                        address,
+                        AddressResolution::TlsIdentifier(SymbolName {
+                            bytes: var_name,
+                            version: None,
+                        }),
+                    );
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1816,6 +1813,7 @@ impl<'data> BasicResolution<'data> {
         match self {
             BasicResolution::Symbol(s) => *s,
             BasicResolution::Dynamic(s) => *s,
+            BasicResolution::Copy(s) => *s,
             BasicResolution::IFunc(s) => *s,
         }
     }
@@ -1865,6 +1863,7 @@ impl Display for BasicResolution<'_> {
         match self {
             BasicResolution::Symbol(name) => write!(f, "{name}"),
             BasicResolution::Dynamic(name) => write!(f, "DYNAMIC({name})"),
+            BasicResolution::Copy(name) => write!(f, "COPY({name})"),
             BasicResolution::IFunc(res) => write!(f, "IFUNC({res})"),
         }
     }

@@ -379,7 +379,7 @@ const _ASSERTS: () = {
     assert!(SECTION_HEADER_SIZE as usize == std::mem::size_of::<SectionHeader>());
 };
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RelocationKind {
     Absolute,
     Relative,

@@ -414,6 +414,17 @@ impl<'out> TableWriter<'out> {
     }
 
     fn process_resolution(&mut self, res: &Resolution) -> Result {
+        let is_copy_relocation = res
+            .resolution_flags
+            .contains(ResolutionFlags::COPY_RELOCATION);
+        if is_copy_relocation {
+            self.write_rela_dyn_general(
+                res.raw_value,
+                res.dynamic_symbol_index()?,
+                object::elf::R_X86_64_COPY,
+                0,
+            )?;
+        }
         let Some(got_address) = res.got_address else {
             return Ok(());
         };
@@ -433,7 +444,7 @@ impl<'out> TableWriter<'out> {
         }
 
         let got_entry = self.take_next_got_entry()?;
-        if res.value_flags.contains(ValueFlags::DYNAMIC)
+        if (res.value_flags.contains(ValueFlags::DYNAMIC) && !is_copy_relocation)
             || (resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
                 && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
                 && !res.value_flags.contains(ValueFlags::IFUNC)
@@ -448,7 +459,9 @@ impl<'out> TableWriter<'out> {
             self.write_ifunc_relocation(res)?;
         } else {
             *got_entry = res.raw_value;
-            if res.value_flags.contains(ValueFlags::ADDRESS) && self.output_kind.is_relocatable() {
+            if (res.value_flags.contains(ValueFlags::ADDRESS) || is_copy_relocation)
+                && self.output_kind.is_relocatable()
+            {
                 self.write_address_relocation(got_address, res.raw_value as i64)?;
             }
         }
@@ -1642,53 +1655,111 @@ fn write_dynamic_symbol_definitions(
     for sym_def in &epilogue.dynamic_symbol_definitions {
         let file_id = layout.symbol_db.file_id_for_symbol(sym_def.symbol_id);
         let file_layout = &layout.file_layouts[file_id.as_usize()];
-        let FileLayout::Object(object) = file_layout else {
-            bail!(
-                "Internal error: only objects should define dynamic symbols, got {:?}. {}",
+        match file_layout {
+            FileLayout::Object(object) => {
+                write_regular_object_dynamic_symbol_definition(
+                    sym_def,
+                    object,
+                    layout,
+                    dynamic_symbol_writer,
+                )?;
+            }
+            FileLayout::Dynamic(object) => {
+                write_copy_relocation_dynamic_symbol_definition(
+                    sym_def,
+                    object,
+                    layout,
+                    dynamic_symbol_writer,
+                )?;
+            }
+            _ => bail!(
+                "Internal error: Unexpected dynamic symbol definition from {:?}. {}",
                 file_layout,
                 layout.symbol_debug(sym_def.symbol_id)
-            );
-        };
-        let sym_index = sym_def.symbol_id.to_input(object.symbol_id_range);
-        let sym = object.object.symbol(sym_index)?;
-        let name = sym_def.name;
-        if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
-            let SectionSlot::Loaded(section) = &object.sections[section_index.0] else {
-                bail!("Internal error: Defined symbols should always be for a loaded section");
-            };
-            let output_section_id = section.output_section_id.unwrap();
-            let symbol_id = sym_def.symbol_id;
-            let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
-                format!(
-                    "Tried to write dynamic symbol definition without a resolution: {}",
-                    layout.symbol_debug(symbol_id)
-                )
-            })?;
-            let mut symbol_value = resolution.raw_value;
-            if sym.st_type() == object::elf::STT_TLS {
-                let tls_start_address = layout
-                    .segment_layouts
-                    .tls_start_address
-                    .context("Writing TLS variable to symtab, but we don't have a TLS segment")?;
-                symbol_value -= tls_start_address;
-            }
-            dynamic_symbol_writer
-                .copy_symbol(sym, name, output_section_id, symbol_value)
-                .with_context(|| {
-                    format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
-                })?;
-        } else {
-            dynamic_symbol_writer
-                .copy_symbol_shndx(sym, name, 0, 0)
-                .with_context(|| {
-                    format!(
-                        "Failed to copy dynamic {}",
-                        layout.symbol_debug(sym_def.symbol_id)
-                    )
-                })?;
+            ),
         }
     }
 
+    Ok(())
+}
+
+fn write_copy_relocation_dynamic_symbol_definition(
+    sym_def: &crate::layout::DynamicSymbolDefinition,
+    object: &DynamicLayout,
+    layout: &Layout,
+    dynamic_symbol_writer: &mut SymbolTableWriter,
+) -> Result {
+    debug_assert_bail!(
+        layout
+            .resolution_flags_for_symbol(sym_def.symbol_id)
+            .contains(ResolutionFlags::COPY_RELOCATION),
+        "Tried to write copy relocation for symbol without COPY_RELOCATION flag"
+    );
+    let sym_index = sym_def.symbol_id.to_input(object.symbol_id_range);
+    let sym = object.object.symbol(sym_index)?;
+    let name = sym_def.name;
+    let shndx = layout
+        .output_sections
+        .output_index_of_section(output_section_id::BSS)
+        .context("Copy relocation with no BSS section")?;
+    let res = layout
+        .local_symbol_resolution(sym_def.symbol_id)
+        .context("Copy relocation for unresolved symbol")?;
+    dynamic_symbol_writer
+        .copy_symbol_shndx(sym, name, shndx, res.raw_value)
+        .with_context(|| {
+            format!(
+                "Failed to copy dynamic {}",
+                layout.symbol_debug(sym_def.symbol_id)
+            )
+        })?;
+    Ok(())
+}
+
+fn write_regular_object_dynamic_symbol_definition(
+    sym_def: &crate::layout::DynamicSymbolDefinition,
+    object: &ObjectLayout,
+    layout: &Layout,
+    dynamic_symbol_writer: &mut SymbolTableWriter,
+) -> Result {
+    let sym_index = sym_def.symbol_id.to_input(object.symbol_id_range);
+    let sym = object.object.symbol(sym_index)?;
+    let name = sym_def.name;
+    if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
+        let SectionSlot::Loaded(section) = &object.sections[section_index.0] else {
+            bail!("Internal error: Defined symbols should always be for a loaded section");
+        };
+        let output_section_id = section.output_section_id.unwrap();
+        let symbol_id = sym_def.symbol_id;
+        let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
+            format!(
+                "Tried to write dynamic symbol definition without a resolution: {}",
+                layout.symbol_debug(symbol_id)
+            )
+        })?;
+        let mut symbol_value = resolution.raw_value;
+        if sym.st_type() == object::elf::STT_TLS {
+            let tls_start_address = layout
+                .segment_layouts
+                .tls_start_address
+                .context("Writing TLS variable to symtab, but we don't have a TLS segment")?;
+            symbol_value -= tls_start_address;
+        }
+        dynamic_symbol_writer
+            .copy_symbol(sym, name, output_section_id, symbol_value)
+            .with_context(|| {
+                format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
+            })?;
+    } else {
+        dynamic_symbol_writer
+            .copy_symbol_shndx(sym, name, 0, 0)
+            .with_context(|| {
+                format!(
+                    "Failed to copy dynamic {}",
+                    layout.symbol_debug(sym_def.symbol_id)
+                )
+            })?;
+    };
     Ok(())
 }
 
@@ -2080,15 +2151,20 @@ impl<'data> DynamicLayout<'data> {
             .zip(self.object.symbols.iter())
         {
             if let Some(res) = resolution {
-                let name = self.object.symbol_name(symbol)?;
-                dynsym_writer.copy_symbol_shndx(symbol, name, 0, 0)?;
+                if res.resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
+                    // Symbol needs a copy relocation, which means that the symbol will be written
+                    // by the epilogue not by us.
+                } else {
+                    let name = self.object.symbol_name(symbol)?;
+                    dynsym_writer.copy_symbol_shndx(symbol, name, 0, 0)?;
 
-                write_symbol_version(
-                    self.input_symbol_versions,
-                    self.symbol_id_range.id_to_offset(symbol_id),
-                    &self.version_mapping,
-                    &mut table_writer.versym,
-                )?;
+                    write_symbol_version(
+                        self.input_symbol_versions,
+                        self.symbol_id_range.id_to_offset(symbol_id),
+                        &self.version_mapping,
+                        &mut table_writer.versym,
+                    )?;
+                }
 
                 table_writer.process_resolution(res).with_context(|| {
                     format!(

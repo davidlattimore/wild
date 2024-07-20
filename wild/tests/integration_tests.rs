@@ -154,6 +154,7 @@ struct Config {
     linker_args: ArgumentSet,
     linker_so_args: ArgumentSet,
     compiler_args: ArgumentSet,
+    compiler_so_args: ArgumentSet,
     diff_ignore: Vec<String>,
     skip_linkers: HashSet<String>,
     enabled_linkers: HashSet<String>,
@@ -247,6 +248,7 @@ impl Default for Config {
             linker_args: ArgumentSet::default_for_linking(),
             linker_so_args: ArgumentSet::default_for_linking(),
             compiler_args: ArgumentSet::default_for_compiling(),
+            compiler_so_args: ArgumentSet::default_for_compiling(),
             diff_ignore: Default::default(),
             skip_linkers: Default::default(),
             enabled_linkers: Default::default(),
@@ -320,6 +322,7 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                     config.linker_so_args = ArgumentSet::parse(arg)?
                 }
                 "CompArgs" => config.compiler_args = ArgumentSet::parse(arg)?,
+                "CompSoArgs" => config.compiler_so_args = ArgumentSet::parse(arg)?,
                 "ExpectSym" => config
                     .assertions
                     .expected_symtab_entries
@@ -554,7 +557,11 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
         }
     }
     command.arg(&src_path);
-    command.args(&config.compiler_args.args);
+    if input_type == InputType::SharedObject && !config.compiler_so_args.args.is_empty() {
+        command.args(&config.compiler_so_args.args);
+    } else {
+        command.args(&config.compiler_args.args);
+    }
 
     // Files that are shared between several tests end up being compiled with various different
     // flags and the config name isn't sufficient to disambiguate them. So we hash the command then

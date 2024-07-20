@@ -59,6 +59,7 @@ use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym as _;
 use object::read::elf::VerdefIterator;
 use object::LittleEndian;
+use object::SectionIndex;
 use smallvec::SmallVec;
 use std::ffi::CString;
 use std::fmt::Display;
@@ -394,7 +395,6 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
     ) -> Result {
         let should_print_allocations = symbol_db.args.print_allocations == Some(self.file_id());
         let symbol_id_range = self.symbol_id_range();
-        let common = self.common_mut();
         for (local_index, resolution_flags) in symbol_resolution_flags[symbol_id_range.as_usize()]
             .iter()
             .enumerate()
@@ -404,11 +404,26 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 continue;
             }
             let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
+            let current_res_flags = resolution_flags.get();
 
-            if value_flags.contains(ValueFlags::DYNAMIC) && !resolution_flags.get().is_empty() {
-                let name = symbol_db.symbol_name(symbol_id)?;
-                common.mem_sizes.dynstr += name.len() as u64 + 1;
-                common.mem_sizes.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;
+            // It might be tempting to think that this code should only be run for dynamic objects,
+            // however regular objects can own dynamic symbols too if the symbol is an undefined
+            // weak symbol.
+            if value_flags.contains(ValueFlags::DYNAMIC) && !current_res_flags.is_empty() {
+                if current_res_flags.contains(ResolutionFlags::COPY_RELOCATION) {
+                    self.allocate_copy_relocation(symbol_db, symbol_id)
+                        .with_context(|| {
+                            format!(
+                                "Failed to apply copy relocation for symbol `{}`",
+                                symbol_db.symbol_name_for_display(symbol_id)
+                            )
+                        })?;
+                } else {
+                    let name = symbol_db.symbol_name(symbol_id)?;
+                    let common = self.common_mut();
+                    common.mem_sizes.dynstr += name.len() as u64 + 1;
+                    common.mem_sizes.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;
+                }
             }
 
             // This is enabled by setting WILD_PRINT_ALLOCATIONS=some-file-id. Once we're relatively
@@ -418,22 +433,17 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 println!(
                     "value_flags={value_flags}, resolution_flags={}, \
                      output_kind={:?}",
-                    resolution_flags.get(),
-                    symbol_db.args.output_kind
+                    current_res_flags, symbol_db.args.output_kind
                 );
             }
-            if !are_flags_valid(
-                value_flags,
-                resolution_flags.get(),
-                symbol_db.args.output_kind,
-            ) {
+            if !are_flags_valid(value_flags, current_res_flags, symbol_db.args.output_kind) {
                 bail!(
                     "{self}: Unexpected flag combination for symbol `{}`: \
                      value_flags={value_flags}, \
                      resolution_flags={}, \
                      output_kind={:?}",
                     symbol_db.symbol_name(symbol_id)?,
-                    resolution_flags.get(),
+                    current_res_flags,
                     symbol_db.args.output_kind
                 );
             }
@@ -441,11 +451,12 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
             allocate_symbol_resolution(
                 value_flags,
                 resolution_flags,
-                &mut common.mem_sizes,
+                &mut self.common_mut().mem_sizes,
                 symbol_db.args.output_kind,
             );
         }
         if symbol_db.args.should_output_symbol_versions() {
+            let common = self.common_mut();
             let num_dynamic_symbols = common.mem_sizes.dynsym / crate::elf::SYMTAB_ENTRY_SIZE;
             common.mem_sizes.gnu_version = num_dynamic_symbols * crate::elf::GNU_VERSION_ENTRY_SIZE;
         }
@@ -464,6 +475,13 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result;
+
+    fn allocate_copy_relocation(&mut self, symbol_db: &SymbolDb, symbol_id: SymbolId) -> Result {
+        bail!(
+            "Cannot perform copy relocation for undefined symbol `{}`",
+            symbol_db.symbol_name(symbol_id)?
+        );
+    }
 }
 
 fn export_dynamic<'data>(
@@ -519,10 +537,17 @@ fn allocate_resolution(
 ) {
     let has_dynamic_symbol = value_flags.contains(ValueFlags::DYNAMIC)
         || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC);
+    if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
+        // Allocate space required for a copy relocation.
+        mem_sizes.rela_dyn_general += crate::elf::RELA_ENTRY_SIZE;
+    }
     if resolution_flags.contains(ResolutionFlags::GOT) {
         mem_sizes.got += elf::GOT_ENTRY_SIZE;
         if value_flags.contains(ValueFlags::IFUNC) {
             mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
+        } else if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
+            // Copy relocation means that we know the relative address.
+            mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
         } else if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
             mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
         } else if value_flags.contains(ValueFlags::ADDRESS) && output_kind.is_relocatable() {
@@ -625,6 +650,32 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
                     true;
             }
         }
+        Ok(())
+    }
+
+    /// Allocate the space required to perform a copy relocation for `symbol_id`. Copy relocations
+    /// are used when a direct reference is made to a symbol that is defined by a dynamic object.
+    fn allocate_copy_relocation(&mut self, symbol_db: &SymbolDb, symbol_id: SymbolId) -> Result {
+        if symbol_db.args.output_kind == OutputKind::SharedObject {
+            bail!("Cannot directly access dynamic symbol when building a shared object",);
+        }
+        let symbol = self
+            .object
+            .symbol(self.symbol_id_range().id_to_input(symbol_id))?;
+        let section_index = symbol.st_shndx(LittleEndian);
+        if section_index == 0 {
+            bail!("Cannot apply copy relocation for symbol");
+        }
+        let section = self
+            .object
+            .section(SectionIndex(usize::from(section_index)))?;
+        let alignment = Alignment::new(section.sh_addralign(LittleEndian))?;
+        let mem_sizes = &mut self.common_mut().mem_sizes;
+
+        // Allocate space in BSS for the copy of the symbol.
+        let st_size = symbol.st_size(LittleEndian);
+        *mem_sizes.regular_mut(output_section_id::BSS, alignment) += st_size;
+
         Ok(())
     }
 }
@@ -813,6 +864,10 @@ bitflags! {
         /// The request originated from a dynamic object, so the symbol should be put into the dynamic
         /// symbol table.
         const EXPORT_DYNAMIC = 1 << 5;
+
+        /// We encountered a direct reference to a symbol from a non-writable section and so we're
+        /// going to need to do a copy relocation.
+        const COPY_RELOCATION = 1 << 6;
     }
 }
 
@@ -964,7 +1019,14 @@ struct FinaliseLayoutResources<'scope, 'data> {
 
 #[derive(Copy, Clone, Debug)]
 enum WorkItem {
+    /// The symbol's resolution flags have been made non-empty. The object that owns the symbol
+    /// should perform any additional actions required, e.g. load the section that contains the
+    /// symbol and process any relocations for that section.
     LoadGlobalSymbol(SymbolId),
+
+    /// A direct reference to a dynamic symbol has been encountered. The symbol should be defined in
+    /// BSS with a copy relocation.
+    ExportCopyRelocation(SymbolId),
 }
 
 impl<'data> Layout<'data> {
@@ -1096,6 +1158,10 @@ impl<'data> Layout<'data> {
             })
             .collect();
         linker_layout::Layout { files }
+    }
+
+    pub(crate) fn resolution_flags_for_symbol(&self, symbol_id: SymbolId) -> ResolutionFlags {
+        self.symbol_resolution_flags[symbol_id.as_usize()]
     }
 }
 
@@ -1514,6 +1580,16 @@ impl LocalWorkQueue {
             WorkItem::LoadGlobalSymbol(symbol_id),
         );
     }
+
+    fn send_copy_relocation_request(&mut self, symbol_id: SymbolId, resources: &GraphResources) {
+        debug_assert!(resources.symbol_db.is_canonical(symbol_id));
+        let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
+        self.send_work(
+            resources,
+            symbol_file_id,
+            WorkItem::ExportCopyRelocation(symbol_id),
+        );
+    }
 }
 
 impl<'data, 'scope> GraphResources<'data, 'scope> {
@@ -1602,6 +1678,12 @@ impl<'data> FileLayoutState<'data> {
                         resources.symbol_db.symbol_debug(symbol_id),
                     )
                 }),
+            WorkItem::ExportCopyRelocation(symbol_id) => match self {
+                FileLayoutState::Dynamic(state) => {
+                    state.export_copy_relocation(symbol_id, resources)
+                }
+                _ => bail!("Internal error: ExportCopyRelocation sent to non-dynamic object"),
+            },
         }
     }
 
@@ -1859,6 +1941,7 @@ fn process_relocation(
         let symbol_value_flags = symbol_db.local_symbol_value_flags(symbol_id);
         let rel_offset = rel.r_offset.get(LittleEndian);
         let mut r_type = rel.r_type(LittleEndian, false);
+
         if let Some((_relaxation, new_r_type)) = Relaxation::new(
             r_type,
             object.object.section_data(section)?,
@@ -1868,26 +1951,39 @@ fn process_relocation(
         ) {
             r_type = new_r_type;
         }
+
+        let section_is_writable =
+            section.sh_flags(LittleEndian) & object::elf::SHF_WRITE as u64 != 0;
         let rel_info = RelocationKindInfo::from_raw(r_type)?;
-        let resolution_kind = resolution_flags(rel_info.kind);
-        match (args.is_relocatable(), rel_info.kind) {
-            (true, RelocationKind::Absolute)
-                if symbol_value_flags.contains(ValueFlags::ADDRESS) =>
-            {
-                state.common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
-            }
-            (_, RelocationKind::Absolute | RelocationKind::Relative)
-                if symbol_value_flags.contains(ValueFlags::DYNAMIC)
-                    || resolution_kind.contains(ResolutionFlags::EXPORT_DYNAMIC) =>
-            {
+        let mut resolution_kind = resolution_flags(rel_info.kind);
+        if resolution_kind.contains(ResolutionFlags::DIRECT)
+            && symbol_value_flags.contains(ValueFlags::DYNAMIC)
+        {
+            if section_is_writable {
                 state.common.mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
+            } else {
+                resolution_kind |= ResolutionFlags::COPY_RELOCATION;
             }
-            _ => {}
         }
+
         let previous_flags =
             resources.symbol_resolution_flags[symbol_id.as_usize()].fetch_or(resolution_kind);
+
+        if args.is_relocatable()
+            && rel_info.kind == RelocationKind::Absolute
+            && symbol_value_flags.contains(ValueFlags::ADDRESS)
+        {
+            state.common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
+        }
+
         if previous_flags.is_empty() {
             queue.send_symbol_request(symbol_id, resources);
+        }
+
+        if resolution_kind.contains(ResolutionFlags::COPY_RELOCATION)
+            && !previous_flags.contains(ResolutionFlags::COPY_RELOCATION)
+        {
+            queue.send_copy_relocation_request(symbol_id, resources);
         }
     }
     Ok(())
@@ -3204,11 +3300,7 @@ impl Resolution {
     }
 
     pub(crate) fn value(self) -> u64 {
-        if self.value_flags.contains(ValueFlags::DYNAMIC) {
-            0
-        } else {
-            self.raw_value
-        }
+        self.raw_value
     }
 
     pub(crate) fn address(&self) -> Result<u64> {
@@ -3290,6 +3382,14 @@ impl<'data> DynamicLayoutState<'data> {
         self.common.mem_sizes.dynamic += core::mem::size_of::<crate::elf::DynamicEntry>() as u64;
         self.common.mem_sizes.dynstr += self.lib_name.len() as u64 + 1;
         self.request_all_undefined_symbols(resources, queue)
+    }
+
+    fn export_copy_relocation(
+        &mut self,
+        symbol_id: SymbolId,
+        graph_resources: &GraphResources<'data, '_>,
+    ) -> Result {
+        export_dynamic(&mut self.common, symbol_id, graph_resources)
     }
 
     fn request_all_undefined_symbols(
@@ -3415,29 +3515,41 @@ impl<'data> DynamicLayoutState<'data> {
         let mut next_symbol_index =
             dynamic_symtab_index(memory_offsets, resources.section_layouts)?;
 
-        for ((_local_symbol, symbol_state), resolution) in self
+        for ((local_symbol, &resolution_flags), resolution) in self
             .object
             .symbols
             .iter()
             .zip(&resources.symbol_resolution_flags[self.symbol_id_range().as_usize()])
             .zip(resolutions_out)
         {
-            if symbol_state.is_empty() {
+            if resolution_flags.is_empty() {
                 continue;
             }
-            *resolution = Some(
-                emitter.create_resolution(
-                    *symbol_state,
-                    0,
-                    Some(
-                        NonZeroU32::new(next_symbol_index)
-                            .context("Tried to create dynamic symbol index 0")?,
-                    ),
-                    ValueFlags::DYNAMIC,
-                )?,
-            );
 
-            next_symbol_index += 1;
+            let needs_copy_relocation = resolution_flags.contains(ResolutionFlags::COPY_RELOCATION);
+            let address;
+            let dynamic_symbol_index;
+            if needs_copy_relocation {
+                address =
+                    assign_copy_relocation_address(self.object, local_symbol, memory_offsets)?;
+                // Since this is a definition, the dynamic symbol index will be determined by the
+                // epilogue and set by `update_dynamic_symbol_resolutions`.
+                dynamic_symbol_index = None;
+            } else {
+                address = 0;
+                dynamic_symbol_index = Some(
+                    NonZeroU32::new(next_symbol_index)
+                        .context("Tried to create dynamic symbol index 0")?,
+                );
+                next_symbol_index += 1;
+            }
+
+            *resolution = Some(emitter.create_resolution(
+                resolution_flags,
+                address,
+                dynamic_symbol_index,
+                ValueFlags::DYNAMIC,
+            )?);
         }
 
         let gnu_version_r_layout = resources
@@ -3449,12 +3561,7 @@ impl<'data> DynamicLayoutState<'data> {
         Ok(DynamicLayout {
             file_id: self.file_id(),
             input: self.input,
-            file_sizes: self
-                .common
-                .mem_sizes
-                .map(resources.output_sections, |_section_id, mem_size| {
-                    *mem_size as usize
-                }),
+            file_sizes: compute_file_sizes(&self.common.mem_sizes, resources.output_sections),
             lib_name: self.lib_name,
             dynstr_start_offset,
             object: self.object,
@@ -3478,6 +3585,21 @@ impl<'data> DynamicLayoutState<'data> {
         }
         out
     }
+}
+
+/// Assigns the address in BSS for the copy relocation of a symbol.
+fn assign_copy_relocation_address(
+    file: &File,
+    local_symbol: &object::elf::Sym64<LittleEndian>,
+    memory_offsets: &mut OutputSectionPartMap<u64>,
+) -> Result<u64, Error> {
+    let section_index = local_symbol.st_shndx(LittleEndian);
+    let section = file.section(SectionIndex(usize::from(section_index)))?;
+    let alignment = Alignment::new(section.sh_addralign(LittleEndian))?;
+    let bss = memory_offsets.regular_mut(output_section_id::BSS, alignment);
+    let a = *bss;
+    *bss += local_symbol.st_size(LittleEndian);
+    Ok(a)
 }
 
 #[derive(Default)]
@@ -3774,6 +3896,11 @@ fn test_resolution_allocation_consistency() -> Result {
     Ok(())
 }
 
+/// Returns whether a particular combination of flags is one that we consider valid and supported.
+/// Certain combinations don't make sense and this function should return false for those
+/// combinations. This lets us test that our allocation and writing are consistent for all supported
+/// combinations without getting test failures for unsupported combinations. It also lets us report
+/// unsupported combinations at runtime.
 fn are_flags_valid(
     value_flags: ValueFlags,
     resolution_flags: ResolutionFlags,
@@ -3828,6 +3955,32 @@ fn are_flags_valid(
         && value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
         && (resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
             || resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET))
+    {
+        return false;
+    }
+    if (value_flags.contains(ValueFlags::ADDRESS) || value_flags.contains(ValueFlags::ABSOLUTE))
+        && value_flags.contains(ValueFlags::DYNAMIC)
+    {
+        return false;
+    }
+    if value_flags.contains(ValueFlags::DYNAMIC)
+        && value_flags.contains(ValueFlags::DOWNGRADE_TO_LOCAL)
+    {
+        return false;
+    }
+    if value_flags.contains(ValueFlags::DYNAMIC)
+        && resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
+        && resolution_flags.contains(ResolutionFlags::DIRECT)
+    {
+        return false;
+    }
+    if !value_flags.contains(ValueFlags::DYNAMIC)
+        && resolution_flags.contains(ResolutionFlags::COPY_RELOCATION)
+    {
+        return false;
+    }
+    if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION)
+        && !resolution_flags.contains(ResolutionFlags::DIRECT)
     {
         return false;
     }

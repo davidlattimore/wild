@@ -304,6 +304,11 @@ impl<'data> SymbolDb<'data> {
         }
     }
 
+    pub(crate) fn symbol_name_for_display(&self, symbol_id: SymbolId) -> SymbolName<'data> {
+        self.symbol_name(symbol_id)
+            .unwrap_or_else(|_| SymbolName::new(b"??"))
+    }
+
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> Result<SymbolName<'data>> {
         let file_id = self.file_id_for_symbol(symbol_id);
         let input_object = &self.inputs[file_id.as_usize()];

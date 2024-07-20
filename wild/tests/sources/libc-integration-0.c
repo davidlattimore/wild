@@ -13,6 +13,8 @@ extern __thread int tvar2;
 static __thread int tvar_local = 8;
 static __thread int tvar_local2 = 70;
 
+int value42 = 42;
+
 void set_tvar2(int v) {
     tvar2 = v;
 }
