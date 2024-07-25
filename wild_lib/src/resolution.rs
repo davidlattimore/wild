@@ -204,7 +204,10 @@ fn select_symbol(
     let mut max_common = None;
     for &alt in alternatives {
         // Dynamic symbols, even strong ones, don't override non-dynamic weak symbols.
-        if symbol_db.symbol_value_flags(alt).contains(ValueFlags::DYNAMIC) {
+        if symbol_db
+            .symbol_value_flags(alt)
+            .contains(ValueFlags::DYNAMIC)
+        {
             continue;
         }
         let strength = symbol_db.symbol_strength(alt, resolved);

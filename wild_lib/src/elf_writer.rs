@@ -2151,7 +2151,10 @@ impl<'data> DynamicLayout<'data> {
             .zip(self.object.symbols.iter())
         {
             if let Some(res) = resolution {
-                if res.resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
+                if res
+                    .resolution_flags
+                    .contains(ResolutionFlags::COPY_RELOCATION)
+                {
                     // Symbol needs a copy relocation, which means that the symbol will be written
                     // by the epilogue not by us.
                 } else {
