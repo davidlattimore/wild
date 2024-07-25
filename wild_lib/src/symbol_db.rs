@@ -18,7 +18,6 @@ use crate::sharding::Shard;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
 use crate::threading::prelude::*;
-use ahash::AHashMap;
 use anyhow::Context;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
@@ -46,9 +45,18 @@ pub struct SymbolDb<'data> {
 
     symbol_value_kinds: Vec<ValueFlags>,
 
-    /// Global symbols that have multiple definitions. Keyed by the canonical symbol ID with that
-    /// name.
-    pub(crate) alternate_definitions: AHashMap<SymbolId, Vec<SymbolId>>,
+    /// Global symbols that have multiple definitions. Indexed by symbol ID. It'd be nice if we
+    /// didn't need to store this and could just determine the canonical definition as we add
+    /// symbols. Unfortunately archive semantics make that impossible because we don't yet know
+    /// which archive entries will and won't be loaded. For the first symbol with a name, this
+    /// points to the last symbol with that name. That in turn then points to each previous
+    /// alternate definition with that name until the undefined symbol is reached.
+    pub(crate) alternative_definitions: Vec<SymbolId>,
+
+    /// The symbol IDs of the first symbol with each name for which there are alternative
+    /// definitions. This can be used to find the head of a linked list in
+    /// `alternative_definitions`.
+    pub(crate) symbols_with_alternatives: Vec<SymbolId>,
 
     pub(crate) num_symbols_per_file: Vec<usize>,
 
@@ -229,7 +237,8 @@ impl<'data> SymbolDb<'data> {
         let mut index = SymbolDb {
             args,
             global_names: Default::default(),
-            alternate_definitions: AHashMap::new(),
+            alternative_definitions: vec![SymbolId::undefined(); num_symbols],
+            symbols_with_alternatives: Vec::new(),
             custom_sections_file_id,
             symbol_files,
             symbol_definitions,
@@ -267,11 +276,21 @@ impl<'data> SymbolDb<'data> {
     fn add_symbol(&mut self, pending: PendingSymbol<'data>) {
         match self.global_names.entry(pending.name) {
             hash_map::Entry::Occupied(entry) => {
-                let symbol_id = *entry.get();
-                self.alternate_definitions
-                    .entry(symbol_id)
-                    .or_default()
-                    .push(pending.symbol_id);
+                let first_symbol_id = *entry.get();
+                // Update the entry at `first_symbol_id` to point to the new last symbol (the
+                // pending symbol).
+                let previous_last = core::mem::replace(
+                    &mut self.alternative_definitions[first_symbol_id.as_usize()],
+                    pending.symbol_id,
+                );
+                // Our pending symbol is now last. Update its entry to point to the previous last
+                // symbol.
+                self.alternative_definitions[pending.symbol_id.as_usize()] = previous_last;
+                if previous_last.is_undefined() {
+                    // This is the first alternative definition for this name, note the first symbol
+                    // ID for later when we resolve alternatives.
+                    self.symbols_with_alternatives.push(first_symbol_id);
+                }
             }
             hash_map::Entry::Vacant(entry) => {
                 entry.insert(pending.symbol_id);

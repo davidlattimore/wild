@@ -24,11 +24,11 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ParsedInput;
 use crate::parsing::ParsedInputObject;
 use crate::sharding::split_slice;
+use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
-use ahash::AHashMap;
 use anyhow::bail;
 use anyhow::Context;
 use bitflags::bitflags;
@@ -175,15 +175,22 @@ fn resolve_alternative_symbol_definitions<'data>(
     // For now, we do this from a single thread since we don't expect a lot of symbols will have
     // multiple definitions. If it turns out that there are cases where it's actually taking
     // significant time, then we could parallelise this without too much work.
-    let alternate_definitions =
-        core::mem::replace(&mut symbol_db.alternate_definitions, AHashMap::new());
-    for (symbol_id, alternatives) in alternate_definitions {
-        if alternatives.is_empty() {
-            continue;
+    let previous_definitions = core::mem::take(&mut symbol_db.alternative_definitions);
+    let symbols_with_alternatives = core::mem::take(&mut symbol_db.symbols_with_alternatives);
+    let mut alternatives = Vec::new();
+    for first in symbols_with_alternatives {
+        alternatives.clear();
+        let mut symbol_id = first;
+        loop {
+            symbol_id = previous_definitions[symbol_id.as_usize()];
+            if symbol_id.is_undefined() {
+                break;
+            }
+            alternatives.push(symbol_id);
         }
-        let selected = select_symbol(symbol_db, symbol_id, &alternatives, resolved);
-        symbol_db.replace_definition(symbol_id, selected);
-        for alt in alternatives {
+        let selected = select_symbol(symbol_db, first, &alternatives, resolved);
+        symbol_db.replace_definition(first, selected);
+        for &alt in &alternatives {
             symbol_db.replace_definition(alt, selected);
         }
     }
@@ -202,7 +209,7 @@ fn select_symbol(
         return symbol_id;
     }
     let mut max_common = None;
-    for &alt in alternatives {
+    for &alt in alternatives.iter().rev() {
         // Dynamic symbols, even strong ones, don't override non-dynamic weak symbols.
         if symbol_db
             .symbol_value_flags(alt)
@@ -230,7 +237,7 @@ fn select_symbol(
     if first_strength != SymbolStrength::Undefined {
         return symbol_id;
     }
-    for &alt in alternatives {
+    for &alt in alternatives.iter().rev() {
         let strength = symbol_db.symbol_strength(alt, resolved);
         if strength != SymbolStrength::Undefined {
             return alt;
