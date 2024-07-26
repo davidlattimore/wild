@@ -29,7 +29,6 @@ pub(crate) struct Args {
     pub(crate) debug_fuel: Option<AtomicI64>,
     pub(crate) time_phases: bool,
     pub(crate) validate_output: bool,
-    pub(crate) pie: bool,
     pub(crate) version_script_path: Option<PathBuf>,
     pub(crate) debug_address: Option<u64>,
     pub(crate) bind_now: bool,
@@ -62,10 +61,15 @@ pub(crate) enum Action {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutputKind {
-    NonRelocatableStaticExecutable,
-    PositionIndependentStaticExecutable,
-    DynamicExecutable,
+    StaticExecutable(RelocationModel),
+    DynamicExecutable(RelocationModel),
     SharedObject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RelocationModel {
+    NonRelocatable,
+    Relocatable,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -135,6 +139,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut lib_search_path = Vec::new();
     let mut inputs = Vec::new();
     let mut output = None;
+    let mut is_dynamic_executable = false;
     let mut dynamic_linker = None;
     let mut output_kind = None;
     let mut time_phases = false;
@@ -149,7 +154,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut validate_output = std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1");
     let mut write_layout = std::env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1");
     let mut write_trace = std::env::var(WRITE_TRACE_ENV).is_ok_and(|v| v == "1");
-    let mut pie = false;
+    let mut relocation_model = RelocationModel::NonRelocatable;
     let mut modifier_stack = vec![Modifiers::default()];
     let mut version_script_path = None;
     let mut debug_address = None;
@@ -196,7 +201,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if arg == "-o" {
             output = input.next().map(|a| Arc::from(Path::new(a.as_ref())));
         } else if arg == "--dynamic-linker" || arg == "-dynamic-linker" {
-            output_kind = Some(OutputKind::DynamicExecutable);
+            is_dynamic_executable = true;
             dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
         } else if arg == "--no-dynamic-linker" {
             dynamic_linker = None;
@@ -264,7 +269,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if arg == "--no-string-merge" {
             merge_strings = false;
         } else if arg == "-pie" {
-            pie = true;
+            relocation_model = RelocationModel::Relocatable;
         } else if arg == "--eh-frame-hdr" {
             eh_frame_hdr = true;
         } else if arg == "-shared" {
@@ -320,10 +325,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     }
     let num_threads = num_threads.unwrap_or_else(crate::threading::available_parallelism);
     let output_kind = output_kind.unwrap_or({
-        if pie {
-            OutputKind::PositionIndependentStaticExecutable
+        if is_dynamic_executable {
+            OutputKind::DynamicExecutable(relocation_model)
         } else {
-            OutputKind::NonRelocatableStaticExecutable
+            OutputKind::StaticExecutable(relocation_model)
         }
     });
     save_dir.finish()?;
@@ -344,7 +349,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         sym_info,
         merge_strings,
         debug_fuel,
-        pie,
         validate_output,
         version_script_path,
         debug_address,
@@ -379,7 +383,7 @@ impl Args {
     }
 
     pub(crate) fn base_address(&self) -> u64 {
-        if self.pie {
+        if self.is_relocatable() {
             0
         } else {
             crate::elf::NON_PIE_START_MEM_ADDRESS
@@ -414,12 +418,15 @@ impl Args {
     /// Returns how we should handle TLS relocations like TLSLD and TLSGD.
     pub(crate) fn tls_mode(&self) -> crate::layout::TlsMode {
         match self.output_kind {
-            OutputKind::NonRelocatableStaticExecutable
-            | OutputKind::PositionIndependentStaticExecutable => crate::layout::TlsMode::LocalExec,
-            OutputKind::DynamicExecutable | OutputKind::SharedObject => {
+            OutputKind::StaticExecutable(_) => crate::layout::TlsMode::LocalExec,
+            OutputKind::DynamicExecutable(_) | OutputKind::SharedObject => {
                 crate::layout::TlsMode::Preserve
             }
         }
+    }
+
+    pub(crate) fn needs_dynsym(&self) -> bool {
+        self.output_kind.needs_dynsym()
     }
 
     pub(crate) fn is_relocatable(&self) -> bool {
@@ -428,7 +435,7 @@ impl Args {
 
     /// Returns whether we need a dynamic section.
     pub(crate) fn needs_dynamic(&self) -> bool {
-        self.is_relocatable()
+        self.output_kind.needs_dynamic()
     }
 
     #[allow(dead_code)]
@@ -440,7 +447,7 @@ impl Args {
     pub(crate) fn should_output_symbol_versions(&self) -> bool {
         matches!(
             self.output_kind,
-            OutputKind::DynamicExecutable | OutputKind::SharedObject
+            OutputKind::DynamicExecutable(_) | OutputKind::SharedObject
         )
     }
 
@@ -476,15 +483,31 @@ impl OutputKind {
     }
 
     pub(crate) fn is_static_executable(&self) -> bool {
-        matches!(
-            self,
-            OutputKind::NonRelocatableStaticExecutable
-                | OutputKind::PositionIndependentStaticExecutable
-        )
+        matches!(self, OutputKind::StaticExecutable(_))
     }
 
     pub(crate) fn is_relocatable(self) -> bool {
-        self != OutputKind::NonRelocatableStaticExecutable
+        matches!(
+            self,
+            OutputKind::StaticExecutable(RelocationModel::Relocatable)
+                | OutputKind::DynamicExecutable(RelocationModel::Relocatable)
+                | OutputKind::SharedObject
+        )
+    }
+
+    pub(crate) fn needs_dynsym(&self) -> bool {
+        matches!(
+            self,
+            OutputKind::DynamicExecutable(_)
+                | OutputKind::SharedObject
+                // It seems a bit weird to have dynsym in a static-PIE binary, but that's what GNU
+                // ld does. It just doesn't have any symbols besides the undefined symbol.
+                | OutputKind::StaticExecutable(RelocationModel::Relocatable)
+        )
+    }
+
+    fn needs_dynamic(&self) -> bool {
+        *self != OutputKind::StaticExecutable(RelocationModel::NonRelocatable)
     }
 }
 

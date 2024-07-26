@@ -59,8 +59,9 @@ impl Relaxation {
         output_kind: OutputKind,
     ) -> Option<(Self, u32)> {
         let is_known_address = value_flags.contains(ValueFlags::ADDRESS);
-        let is_absolute = value_flags.contains(ValueFlags::ABSOLUTE);
-        let non_relocatable = output_kind == OutputKind::NonRelocatableStaticExecutable;
+        let is_absolute = value_flags.contains(ValueFlags::ABSOLUTE)
+            && !value_flags.contains(ValueFlags::DYNAMIC);
+        let non_relocatable = !output_kind.is_relocatable();
         let is_absolute_address = is_known_address && non_relocatable;
         let can_bypass_got = value_flags.contains(ValueFlags::CAN_BYPASS_GOT);
 
@@ -286,6 +287,8 @@ impl Relaxation {
 
 #[test]
 fn test_relaxation() {
+    use crate::args::RelocationModel;
+
     #[track_caller]
     fn check(relocation_kind: u32, bytes_in: &[u8], address: &[u8], absolute: &[u8]) {
         let mut out = bytes_in.to_owned();
@@ -296,7 +299,7 @@ fn test_relaxation() {
             bytes_in,
             offset,
             ValueFlags::ADDRESS,
-            OutputKind::PositionIndependentStaticExecutable,
+            OutputKind::StaticExecutable(RelocationModel::Relocatable),
         ) {
             r.apply(&mut out, &mut offset, &mut 0, &mut modifier);
 
@@ -310,7 +313,7 @@ fn test_relaxation() {
             bytes_in,
             offset,
             ValueFlags::ABSOLUTE,
-            OutputKind::PositionIndependentStaticExecutable,
+            OutputKind::StaticExecutable(RelocationModel::Relocatable),
         ) {
             out.copy_from_slice(bytes_in);
             r.apply(&mut out, &mut offset, &mut 0, &mut modifier);

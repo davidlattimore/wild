@@ -315,9 +315,10 @@ fn populate_file_header(
     header: &mut FileHeader,
 ) -> Result {
     let args = layout.args();
-    let ty = match args.output_kind {
-        OutputKind::NonRelocatableStaticExecutable => elf::FileType::Executable,
-        _ => elf::FileType::SharedObject,
+    let ty = if args.output_kind.is_relocatable() {
+        elf::FileType::SharedObject
+    } else {
+        elf::FileType::Executable
     };
     let e = LittleEndian;
     header.e_ident.magic = object::elf::ELFMAG;
@@ -651,7 +652,7 @@ impl<'out> TableWriter<'out> {
     ) -> Result {
         let _span = tracing::trace_span!("write_dynamic_symbol_relocation").entered();
         debug_assert_bail!(
-            self.output_kind.is_relocatable(),
+            self.output_kind.needs_dynsym(),
             "Tried to write dynamic relocation with non-relocatable output"
         );
         let e = LittleEndian;
@@ -679,8 +680,8 @@ impl<'out> TableWriter<'out> {
         addend: i64,
     ) -> Result {
         debug_assert_bail!(
-            self.output_kind.is_relocatable(),
-            "write_glob_dat called when output is not relocatable"
+            self.output_kind.needs_dynsym(),
+            "write_glob_dat called when output is not dynamic"
         );
         let rela = self.take_rela_dyn()?;
         rela.r_offset.set(LittleEndian, place);
@@ -814,14 +815,22 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         let entry = if is_local {
             take_first_mut(&mut self.local_entries).with_context(|| {
                 format!(
-                    "Insufficient local symbol entries allocated for symbol `{}`",
+                    "Insufficient .symtab local entries allocated for symbol `{}`",
                     String::from_utf8_lossy(name),
                 )
             })?
         } else {
+            if self.is_dynamic {
+                tracing::trace!("Write .dynsym {}", String::from_utf8_lossy(name));
+            }
             take_first_mut(&mut self.global_entries).with_context(|| {
                 format!(
-                    "Insufficient global symbol entries allocated for symbol `{}`",
+                    "Insufficient {} entries allocated for symbol `{}`",
+                    if self.is_dynamic {
+                        ".dynsym"
+                    } else {
+                        ".symtab global"
+                    },
                     String::from_utf8_lossy(name),
                 )
             })?
@@ -895,12 +904,11 @@ impl<'data> ObjectLayout<'data> {
                         layout.symbol_debug(symbol_id)
                     )
                 })?;
-                let resolution_flags = &res.resolution_flags;
-                if res.value_flags.contains(ValueFlags::DYNAMIC)
-                    && (resolution_flags.contains(ResolutionFlags::GOT)
-                        || resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
-                        || resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET))
-                {
+
+                // Dynamic symbols that we define are handled by the epilogue so that they can be
+                // written in the correct order. Here, we only need to handle weak symbols that we
+                // reference that aren't defined by any shared objects we're linking against.
+                if res.value_flags.contains(ValueFlags::DYNAMIC) {
                     let symbol = self
                         .object
                         .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
@@ -1063,7 +1071,10 @@ impl<'data> ObjectLayout<'data> {
                 self,
                 offset_in_section,
                 rel,
-                section_address,
+                SectionInfo {
+                    section_address,
+                    is_writable: section.is_writable,
+                },
                 layout,
                 out,
                 table_writer,
@@ -1199,7 +1210,10 @@ impl<'data> ObjectLayout<'data> {
                         self,
                         rel_offset - input_pos as u64,
                         rel,
-                        output_pos as u64 + self.eh_frame_start_address,
+                        SectionInfo {
+                            section_address: output_pos as u64 + self.eh_frame_start_address,
+                            is_writable: false,
+                        },
                         layout,
                         entry_out,
                         table_writer,
@@ -1289,6 +1303,11 @@ impl<'a> Display for DisplayRelocation<'a> {
     }
 }
 
+struct SectionInfo {
+    section_address: u64,
+    is_writable: bool,
+}
+
 /// Applies the relocation `rel` at `offset_in_section`, where the section bytes are `out`. See "ELF
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
@@ -1296,11 +1315,12 @@ fn apply_relocation(
     object_layout: &ObjectLayout,
     mut offset_in_section: u64,
     rel: &elf::Rela,
-    section_address: u64,
+    section_info: SectionInfo,
     layout: &Layout,
     out: &mut [u8],
     table_writer: &mut TableWriter,
 ) -> Result<RelocationModifier> {
+    let section_address = section_info.section_address;
     let place = section_address + offset_in_section;
     let _span = tracing::span!(tracing::Level::TRACE, "relocation", address = place).entered();
     let Some(resolution) = object_layout.get_resolution(rel, layout)? else {
@@ -1334,7 +1354,7 @@ fn apply_relocation(
     }
     let value = match rel_info.kind {
         RelocationKind::Absolute => {
-            write_absolute_relocation(table_writer, resolution, place, addend)?
+            write_absolute_relocation(table_writer, resolution, place, addend, section_info)?
         }
         RelocationKind::Relative => resolution.value().wrapping_add(addend).wrapping_sub(place),
         RelocationKind::GotRelative => resolution
@@ -1389,23 +1409,25 @@ fn write_absolute_relocation(
     resolution: Resolution,
     place: u64,
     addend: u64,
+    section_info: SectionInfo,
 ) -> Result<u64> {
-    if table_writer.output_kind.is_relocatable() && !resolution.is_absolute() {
-        if resolution.value_flags.contains(ValueFlags::DYNAMIC) {
-            table_writer.write_dynamic_symbol_relocation(
-                place,
-                addend,
-                resolution.dynamic_symbol_index()?,
-            )?;
-        } else {
-            table_writer.write_address_relocation(
-                place,
-                resolution.raw_value.wrapping_add(addend) as i64,
-            )?;
-        }
-        return Ok(0);
+    if resolution.value_flags.contains(ValueFlags::DYNAMIC)
+        && !resolution.value_flags.contains(ValueFlags::ABSOLUTE)
+        && section_info.is_writable
+    {
+        table_writer.write_dynamic_symbol_relocation(
+            place,
+            addend,
+            resolution.dynamic_symbol_index()?,
+        )?;
+        Ok(0)
+    } else if table_writer.output_kind.is_relocatable() && !resolution.is_absolute() {
+        table_writer
+            .write_address_relocation(place, resolution.raw_value.wrapping_add(addend) as i64)?;
+        Ok(0)
+    } else {
+        Ok(resolution.value().wrapping_add(addend))
     }
-    Ok(resolution.value().wrapping_add(addend))
 }
 
 impl<'data> InternalLayout<'data> {
@@ -1974,7 +1996,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         if layout.args().bind_now {
             flags |= elf::flags_1::NOW;
         }
-        if layout.args().output_kind.is_executable() && layout.args().pie {
+        if layout.args().output_kind.is_executable() && layout.args().is_relocatable() {
             flags |= elf::flags_1::PIE;
         }
         flags

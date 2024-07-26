@@ -434,11 +434,12 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
             // too much or too little space, we can probably remove this.
             if !are_flags_valid(value_flags, current_res_flags, symbol_db.args.output_kind) {
                 bail!(
-                    "{self}: Unexpected flag combination for symbol `{}`: \
+                    "{self}: Unexpected flag combination for symbol `{}` ({}): \
                      value_flags={value_flags}, \
                      resolution_flags={}, \
                      output_kind={:?}",
                     symbol_db.symbol_name(symbol_id)?,
+                    symbol_id,
                     current_res_flags,
                     symbol_db.args.output_kind
                 );
@@ -544,7 +545,9 @@ fn allocate_resolution(
             mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
         } else if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
             // Copy relocation means that we know the relative address.
-            mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
+            if output_kind.is_relocatable() {
+                mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
+            }
         } else if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
             tracing::trace!("Allocate .rela.dyn general for GOT");
             mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
@@ -961,6 +964,7 @@ pub(crate) struct Section<'data> {
     pub(crate) alignment: Alignment,
     pub(crate) resolution_kind: ResolutionFlags,
     packed: bool,
+    pub(crate) is_writable: bool,
 }
 
 struct FileWorker<'data> {
@@ -1683,7 +1687,12 @@ impl<'data> FileLayoutState<'data> {
                 FileLayoutState::Dynamic(state) => {
                     state.export_copy_relocation(symbol_id, resources)
                 }
-                _ => bail!("Internal error: ExportCopyRelocation sent to non-dynamic object"),
+                _ => {
+                    bail!(
+                        "Internal error: ExportCopyRelocation sent to non-dynamic object for: {}",
+                        resources.symbol_db.symbol_debug(symbol_id)
+                    )
+                }
             },
         }
     }
@@ -1911,6 +1920,7 @@ impl<'data> Section<'data> {
             data: section_data,
             resolution_kind: ResolutionFlags::empty(),
             packed: unloaded.details.packed,
+            is_writable: (object_section.sh_flags(e) & object::elf::SHF_WRITE as u64) != 0,
         };
         Ok(section)
     }
@@ -1961,9 +1971,12 @@ fn process_relocation(
             && symbol_value_flags.contains(ValueFlags::DYNAMIC)
         {
             if section_is_writable {
-                tracing::trace!("Allocate .rela.dyn general for direct reference");
+                tracing::trace!(
+                    "Allocate .rela.dyn general for direct reference in section {}",
+                    String::from_utf8_lossy(object.object.section_name(section).unwrap())
+                );
                 state.common.mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
-            } else {
+            } else if !symbol_value_flags.contains(ValueFlags::ABSOLUTE) {
                 resolution_kind |= ResolutionFlags::COPY_RELOCATION;
             }
         }
@@ -2070,7 +2083,7 @@ impl<'data> InternalLayoutState<'data> {
             }
         }
 
-        if resources.symbol_db.args.is_relocatable() {
+        if resources.symbol_db.args.needs_dynsym() {
             // Allocate space for the null symbol.
             self.common.mem_sizes.dynstr += 1;
             self.common.mem_sizes.dynsym += size_of::<elf::SymtabEntry>() as u64;
@@ -3833,6 +3846,7 @@ impl Display for ResolutionFlags {
 /// writes those resolutions. e.g. we don't allocate too little or too much space.
 #[test]
 fn test_resolution_allocation_consistency() -> Result {
+    use crate::args::RelocationModel;
     use std::collections::HashSet;
 
     let value_flag_sets = (0..=255)
@@ -3842,9 +3856,10 @@ fn test_resolution_allocation_consistency() -> Result {
         .map(ResolutionFlags::from_bits_truncate)
         .collect::<HashSet<_>>();
     let output_kinds = &[
-        OutputKind::NonRelocatableStaticExecutable,
-        OutputKind::PositionIndependentStaticExecutable,
-        OutputKind::DynamicExecutable,
+        OutputKind::StaticExecutable(RelocationModel::NonRelocatable),
+        OutputKind::StaticExecutable(RelocationModel::Relocatable),
+        OutputKind::DynamicExecutable(RelocationModel::NonRelocatable),
+        OutputKind::DynamicExecutable(RelocationModel::Relocatable),
         OutputKind::SharedObject,
     ];
     let output_sections = OutputSections::for_testing();
@@ -3931,7 +3946,9 @@ fn are_flags_valid(
     }
     if (resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
         || resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET))
-        && (value_flags.contains(ValueFlags::ABSOLUTE) || value_flags.contains(ValueFlags::IFUNC))
+        && ((value_flags.contains(ValueFlags::ABSOLUTE)
+            && !value_flags.contains(ValueFlags::DYNAMIC))
+            || value_flags.contains(ValueFlags::IFUNC))
     {
         return false;
     }
@@ -3965,9 +3982,7 @@ fn are_flags_valid(
     {
         return false;
     }
-    if (value_flags.contains(ValueFlags::ADDRESS) || value_flags.contains(ValueFlags::ABSOLUTE))
-        && value_flags.contains(ValueFlags::DYNAMIC)
-    {
+    if value_flags.contains(ValueFlags::ADDRESS) && value_flags.contains(ValueFlags::DYNAMIC) {
         return false;
     }
     if value_flags.contains(ValueFlags::DYNAMIC)
@@ -3977,7 +3992,7 @@ fn are_flags_valid(
     }
     if value_flags.contains(ValueFlags::DYNAMIC)
         && resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
-        && resolution_flags.contains(ResolutionFlags::DIRECT)
+        && !value_flags.contains(ValueFlags::ABSOLUTE)
     {
         return false;
     }
@@ -3988,6 +4003,12 @@ fn are_flags_valid(
     }
     if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION)
         && !resolution_flags.contains(ResolutionFlags::DIRECT)
+    {
+        return false;
+    }
+    if value_flags.contains(ValueFlags::ABSOLUTE)
+        && value_flags.contains(ValueFlags::DYNAMIC)
+        && resolution_flags.contains(ResolutionFlags::COPY_RELOCATION)
     {
         return false;
     }

@@ -591,7 +591,7 @@ impl<'data> AddressIndex<'data> {
             dynamic_segment_address: None,
             tls_segment_size: 0,
             verneed: Default::default(),
-            load_offset: DEFAULT_LOAD_OFFSET,
+            load_offset: decide_load_offset(object),
             dynamic_symbol_names: Default::default(),
         };
 
@@ -1096,6 +1096,17 @@ impl<'data> AddressIndex<'data> {
                 _ => {}
             });
         Ok(())
+    }
+}
+
+/// Decide what offset to apply to addresses in the file that we're loading. For non-relocatable
+/// executables, we apply no offset. For relocatable executables and shared objects, we apply a
+/// fixed offset.
+fn decide_load_offset(object: &ElfFile64) -> u64 {
+    match object.elf_header().e_type(LittleEndian) {
+        object::elf::ET_EXEC => 0,
+        object::elf::ET_DYN => DEFAULT_LOAD_OFFSET,
+        _ => DEFAULT_LOAD_OFFSET,
     }
 }
 

@@ -467,7 +467,7 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFl
         } else {
             // If we can't bypass the GOT, then an undefined symbol might be able to be defined at
             // runtime by a dynamic library that gets loaded.
-            ValueFlags::DYNAMIC
+            ValueFlags::DYNAMIC | ValueFlags::ABSOLUTE
         }
     } else {
         ValueFlags::ADDRESS

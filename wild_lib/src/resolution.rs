@@ -863,8 +863,11 @@ bitflags! {
         /// of load address.
         const ABSOLUTE = 1 << 1;
 
-        /// The value is from a shared (dynamic) object, so although it may have an address, it won't be
-        /// know until runtime.
+        /// The value is from a shared (dynamic) object, so although it may have an address, it
+        /// won't be know until runtime. If combined with `ABSOLUTE`, then the symbol isn't actually
+        /// defined by any shared object. We'll emit a dynamic relocation for it on a best-effort
+        /// basis only. e.g. if there are direct references to it from a read-only section we'll
+        /// fill them in as zero.
         const DYNAMIC = 1 << 2;
 
         /// The value refers to an ifunc. The actual address won't be known until runtime.
