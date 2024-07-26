@@ -393,7 +393,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         symbol_db: &SymbolDb,
         symbol_resolution_flags: &[AtomicResolutionFlags],
     ) -> Result {
-        let should_print_allocations = symbol_db.args.print_allocations == Some(self.file_id());
+        let _file_span = symbol_db.args.trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
         for (local_index, resolution_flags) in symbol_resolution_flags[symbol_id_range.as_usize()]
             .iter()
@@ -423,19 +423,15 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                     let common = self.common_mut();
                     common.mem_sizes.dynstr += name.len() as u64 + 1;
                     common.mem_sizes.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;
+                    tracing::trace!(
+                        "Allocate dynsym for {symbol_id} ({})",
+                        symbol_db.symbol_name_for_display(symbol_id)
+                    );
                 }
             }
 
-            // This is enabled by setting WILD_PRINT_ALLOCATIONS=some-file-id. Once we're relatively
-            // confident that we're no longer seeing cases where we allocate too much space, we can
-            // probably remove this.
-            if should_print_allocations {
-                println!(
-                    "value_flags={value_flags}, resolution_flags={}, \
-                     output_kind={:?}",
-                    current_res_flags, symbol_db.args.output_kind
-                );
-            }
+            // Once we're relatively confident that we're no longer seeing cases where we allocate
+            // too much or too little space, we can probably remove this.
             if !are_flags_valid(value_flags, current_res_flags, symbol_db.args.output_kind) {
                 bail!(
                     "{self}: Unexpected flag combination for symbol `{}`: \
@@ -539,6 +535,7 @@ fn allocate_resolution(
         || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC);
     if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
         // Allocate space required for a copy relocation.
+        tracing::trace!("Allocate .rela.dyn general for copy relocation");
         mem_sizes.rela_dyn_general += crate::elf::RELA_ENTRY_SIZE;
     }
     if resolution_flags.contains(ResolutionFlags::GOT) {
@@ -549,6 +546,7 @@ fn allocate_resolution(
             // Copy relocation means that we know the relative address.
             mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
         } else if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
+            tracing::trace!("Allocate .rela.dyn general for GOT");
             mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
         } else if value_flags.contains(ValueFlags::ADDRESS) && output_kind.is_relocatable() {
             mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
@@ -559,15 +557,18 @@ fn allocate_resolution(
         // For executables, the TLS module ID is known at link time. For shared objects, we
         // need a runtime relocation to fill it in.
         if !output_kind.is_executable() {
+            tracing::trace!("Allocate .rela.dyn general for GOT_TLS_MODULE");
             mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
         }
         if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
+            tracing::trace!("Allocate .rela.dyn general for GOT_TLS_MODULE");
             mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
         }
     }
     if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
         mem_sizes.got += elf::GOT_ENTRY_SIZE;
         if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) {
+            tracing::trace!("Allocate .rela.dyn general for GOT_TLS_OFFSET");
             mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
         }
     }
@@ -1960,6 +1961,7 @@ fn process_relocation(
             && symbol_value_flags.contains(ValueFlags::DYNAMIC)
         {
             if section_is_writable {
+                tracing::trace!("Allocate .rela.dyn general for direct reference");
                 state.common.mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
             } else {
                 resolution_kind |= ResolutionFlags::COPY_RELOCATION;
@@ -1983,6 +1985,7 @@ fn process_relocation(
         if resolution_kind.contains(ResolutionFlags::COPY_RELOCATION)
             && !previous_flags.contains(ResolutionFlags::COPY_RELOCATION)
         {
+            tracing::trace!("Request copy relocation. symbol_id={symbol_id}");
             queue.send_copy_relocation_request(symbol_id, resources);
         }
     }
@@ -2599,6 +2602,7 @@ impl<'data> ObjectLayoutState<'data> {
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
+        let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
         while let Some(section_request) = self.state.sections_required.pop() {
             let section_id = section_request.id;
             match &self.state.sections[section_id.0] {
@@ -2706,6 +2710,8 @@ impl<'data> ObjectLayoutState<'data> {
         symbol_db: &SymbolDb<'_>,
         symbol_resolution_flags: &[AtomicResolutionFlags],
     ) -> Result {
+        let _file_span = symbol_db.args.trace_span_for_file(self.file_id());
+
         let mut num_locals = 0;
         let mut num_globals = 0;
         let mut strings_size = 0;
@@ -2749,6 +2755,7 @@ impl<'data> ObjectLayoutState<'data> {
         resolutions_out: &mut [Option<Resolution>],
         resources: &FinaliseLayoutResources,
     ) -> Result<ObjectLayout<'data>> {
+        let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
         let dynstr_start_offset = (memory_offsets.dynstr
             - resources
                 .section_layouts

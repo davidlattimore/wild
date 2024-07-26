@@ -443,6 +443,14 @@ impl Args {
             OutputKind::DynamicExecutable | OutputKind::SharedObject
         )
     }
+
+    pub(crate) fn trace_span_for_file(
+        &self,
+        file_id: FileId,
+    ) -> Option<tracing::span::EnteredSpan> {
+        let should_trace = self.print_allocations == Some(file_id);
+        should_trace.then(|| tracing::trace_span!(crate::debug_trace::TRACE_SPAN_NAME).entered())
+    }
 }
 
 fn parse_number(s: &str) -> Result<u64> {

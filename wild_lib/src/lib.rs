@@ -8,6 +8,7 @@ pub(crate) mod alignment;
 pub(crate) mod archive;
 pub(crate) mod archive_splitter;
 pub mod args;
+pub(crate) mod debug_trace;
 pub(crate) mod diff;
 pub(crate) mod elf;
 pub(crate) mod elf_writer;
@@ -61,6 +62,8 @@ impl Linker {
                     timing::init_tracing();
                 } else if args.write_trace {
                     output_trace::init(args);
+                } else if args.print_allocations.is_some() {
+                    debug_trace::init();
                 }
                 link(args)
             }

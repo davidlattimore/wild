@@ -649,6 +649,7 @@ impl<'out> TableWriter<'out> {
         addend: u64,
         symbol_index: u32,
     ) -> Result {
+        let _span = tracing::trace_span!("write_dynamic_symbol_relocation").entered();
         debug_assert_bail!(
             self.output_kind.is_relocatable(),
             "Tried to write dynamic relocation with non-relocatable output"
@@ -689,6 +690,7 @@ impl<'out> TableWriter<'out> {
     }
 
     fn take_rela_dyn(&mut self) -> Result<&mut object::elf::Rela64<LittleEndian>> {
+        tracing::trace!("Consume .rela.dyn general");
         crate::slice::take_first_mut(&mut self.rela_dyn_general)
             .context("insufficient allocation to .rela.dyn (non-relative)")
     }
@@ -860,6 +862,7 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
 
 impl<'data> ObjectLayout<'data> {
     fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
+        let _file_span = layout.args().trace_span_for_file(self.file_id);
         let start_str_offset = self.strtab_offset_start;
         let mut table_writer = TableWriter::from_layout(layout, &mut buffers);
         for sec in &self.sections {
@@ -884,6 +887,7 @@ impl<'data> ObjectLayout<'data> {
             &layout.output_sections,
         );
         for (symbol_id, resolution) in layout.resolutions_in_range(self.symbol_id_range) {
+            let _span = tracing::trace_span!("Symbol", %symbol_id).entered();
             if let Some(res) = resolution {
                 table_writer.process_resolution(res).with_context(|| {
                     format!(
