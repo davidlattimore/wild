@@ -1,7 +1,14 @@
+//#AbstractConfig:default
 //#DiffIgnore:section.plt.entsize
 //#Object:ifunc1.c
 //#Object:ifunc_init.c
 //#Object:exit.c
+
+//#Config:pie:default
+//#CompArgs:-fpie
+
+//#Config:no-pie:default
+//#CompArgs:-fno-pie
 
 #include "exit.h"
 #include "init.h"

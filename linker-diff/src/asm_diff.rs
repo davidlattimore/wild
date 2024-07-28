@@ -302,9 +302,8 @@ impl Display for FunctionVersions<'_> {
                 write!(f, " {value}")?;
                 if let Line::Instruction(instruction) = value {
                     write!(f, "  // {:?}", instruction.raw_instruction.code())?;
-                    if let Some((_, value)) = split_value(obj, instruction) {
-                        write!(f, "(0x{value:x})")?;
-                    } else {
+                    let split = split_value(obj, instruction);
+                    if split.is_empty() {
                         write!(
                             f,
                             "({})",
@@ -312,6 +311,16 @@ impl Display for FunctionVersions<'_> {
                                 .map(|o| format!("{:?}", instruction.raw_instruction.op_kind(o)))
                                 .collect::<Vec<_>>()
                                 .join(",")
+                        )?;
+                    } else {
+                        write!(
+                            f,
+                            "({})",
+                            split
+                                .into_iter()
+                                .map(|(_, value)| format!("0x{value:x}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         )?;
                     }
                     for unified in UnifiedInstruction::all_resolved(instruction, obj) {
@@ -1556,11 +1565,12 @@ impl<'data> UnifiedInstruction<'data> {
     }
 
     fn all_resolved(instruction: &Instruction, object: &'data Object<'data>) -> Vec<Self> {
-        if let Some((updated_instruction, value)) = split_value(object, instruction) {
-            Self::resolve_address(updated_instruction, value, object)
-        } else {
-            vec![]
-        }
+        split_value(object, instruction)
+            .into_iter()
+            .flat_map(|(updated_instruction, value)| {
+                Self::resolve_address(updated_instruction, value, object)
+            })
+            .collect()
     }
 
     fn resolve_address(
@@ -1708,7 +1718,7 @@ fn section_name_for_address<'data>(
 /// Returns the input instruction split into an instruction and a value. Will return none if the
 /// instruction doesn't contain an address/value. The returned instruction will have had the
 /// address/value replaced with the placeholder.
-fn split_value(object: &Object, instruction: &Instruction) -> Option<(iced_x86::Instruction, u64)> {
+fn split_value(object: &Object, instruction: &Instruction) -> Vec<(iced_x86::Instruction, u64)> {
     fn clear_immediate(mut instruction: iced_x86::Instruction) -> iced_x86::Instruction {
         instruction.set_immediate64(0);
         instruction
@@ -1719,30 +1729,26 @@ fn split_value(object: &Object, instruction: &Instruction) -> Option<(iced_x86::
         instruction
     }
 
+    let mut out = Vec::new();
+
     for op_num in 0..instruction.raw_instruction.op_count() {
         match instruction.raw_instruction.op_kind(op_num) {
-            OpKind::Immediate32to64 => {
-                return Some((
-                    clear_immediate(instruction.raw_instruction),
-                    instruction.raw_instruction.immediate32to64() as u64,
-                ))
-            }
-            OpKind::Immediate64 => {
-                return Some((
-                    clear_immediate(instruction.raw_instruction),
-                    instruction.raw_instruction.immediate64(),
-                ))
-            }
-            OpKind::Immediate32 => {
-                return Some((
-                    clear_immediate(instruction.raw_instruction),
-                    instruction.raw_instruction.immediate32() as u64,
-                ))
-            }
+            OpKind::Immediate32to64 => out.push((
+                clear_immediate(instruction.raw_instruction),
+                instruction.raw_instruction.immediate32to64() as u64,
+            )),
+            OpKind::Immediate64 => out.push((
+                clear_immediate(instruction.raw_instruction),
+                instruction.raw_instruction.immediate64(),
+            )),
+            OpKind::Immediate32 => out.push((
+                clear_immediate(instruction.raw_instruction),
+                instruction.raw_instruction.immediate32() as u64,
+            )),
             OpKind::Memory | OpKind::NearBranch64 => {
                 let displacement = sign_extended_memory_displacement(&instruction.raw_instruction);
                 if instruction.raw_instruction.has_segment_prefix() {
-                    return Some((
+                    out.push((
                         clear_displacement(instruction.raw_instruction),
                         displacement,
                     ));
@@ -1757,12 +1763,12 @@ fn split_value(object: &Object, instruction: &Instruction) -> Option<(iced_x86::
                 if instruction.raw_instruction.memory_base() == Register::RSP {
                     continue;
                 }
-                return Some((clear_displacement(instruction.raw_instruction), value));
+                out.push((clear_displacement(instruction.raw_instruction), value));
             }
             _ => {}
         }
     }
-    None
+    out
 }
 
 fn is_ip_relative(instruction: &iced_x86::Instruction) -> bool {

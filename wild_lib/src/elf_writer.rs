@@ -1425,6 +1425,8 @@ fn write_absolute_relocation(
         table_writer
             .write_address_relocation(place, resolution.raw_value.wrapping_add(addend) as i64)?;
         Ok(0)
+    } else if resolution.value_flags.contains(ValueFlags::IFUNC) {
+        Ok(resolution.plt_address()?.wrapping_add(addend))
     } else {
         Ok(resolution.value().wrapping_add(addend))
     }
