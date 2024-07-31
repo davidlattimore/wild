@@ -542,6 +542,10 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
             if let Some(v) = config.variant_num {
                 command.arg(format!("-DVARIANT={v}"));
             }
+            // If we're trying to run the tests with an old version of gcc, and it doesn't support
+            // an attribute that we're using like `retain`, it's better to fail right then rather
+            // than trying to continue and getting a harder-to-diagnose failure.
+            command.arg("-Werror=attributes");
             command.arg("-c");
         }
         CompilerKind::Rust => {
