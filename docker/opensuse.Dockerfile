@@ -3,13 +3,11 @@
 # docker build -t wild-dev-opensuse . -f docker/opensuse.Dockerfile
 # docker run -it wild-dev-opensuse
 
-FROM opensuse/leap:latest AS chef
-RUN curl https://sh.rustup.rs -sSf | bash -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
-RUN zypper install -y -t pattern devel_C_C++ && zypper install -y lld17 vim less
+FROM opensuse/tumbleweed AS chef
+RUN zypper install -y -t pattern devel_C_C++ && zypper install -y lld vim less rustup
+RUN rustup toolchain install nightly
 RUN cargo install --locked cargo-chef
-RUN rustup toolchain install nightly && \
-    rustup target add x86_64-unknown-linux-musl && \
+RUN rustup target add x86_64-unknown-linux-musl && \
     rustup target add x86_64-unknown-linux-musl --toolchain nightly && \
     rustup component add rustc-codegen-cranelift-preview --toolchain nightly
 WORKDIR /wild
