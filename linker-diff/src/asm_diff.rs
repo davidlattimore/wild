@@ -407,6 +407,8 @@ impl Display for RelocationDisplay<'_, '_> {
             RelocationTarget::Symbol(symbol_index) => {
                 if let Err(error) = self.write_symbol_or_section_name(f, symbol_index) {
                     write!(f, "<{error}>")?
+                } else {
+                    write!(f, "+0x{:x}", self.rel.addend())?
                 }
             }
             RelocationTarget::Absolute => write!(f, "0x{:x}", self.rel.addend())?,
