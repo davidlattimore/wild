@@ -28,6 +28,7 @@ use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::Instant;
 use wait_timeout::ChildExt;
 
@@ -514,6 +515,21 @@ enum CompilerKind {
     Rust,
 }
 
+struct ToolPaths {
+    gcc: &'static str,
+    gpp: &'static str,
+}
+
+impl ToolPaths {
+    fn get() -> &'static ToolPaths {
+        static INSTANCE: OnceLock<ToolPaths> = OnceLock::new();
+        INSTANCE.get_or_init(|| ToolPaths {
+            gcc: select_bin(&["gcc-13", "gcc"]),
+            gpp: select_bin(&["g++-13", "g++"]),
+        })
+    }
+}
+
 /// Builds some C source and returns the path to the object file.
 fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBuf> {
     let src_path = src_path(&dep.filename);
@@ -522,10 +538,11 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
         .context("Missing extension")?
         .to_str()
         .context("Extension isn't valid UTF-8")?;
+    let tool_paths = ToolPaths::get();
     let (compiler, compiler_kind) = match extension {
-        "cpp" => ("g++", CompilerKind::C),
-        "c" => ("gcc", CompilerKind::C),
-        "s" => ("gcc", CompilerKind::C),
+        "cpp" => (tool_paths.gpp, CompilerKind::C),
+        "c" => (tool_paths.gcc, CompilerKind::C),
+        "s" => (tool_paths.gcc, CompilerKind::C),
         "rs" => ("rustc", CompilerKind::Rust),
         _ => bail!("Don't know how to compile {extension} files"),
     };
@@ -1174,6 +1191,13 @@ fn find_bin(names: &[&str]) -> Result<PathBuf> {
         })
 }
 
+fn select_bin<'a>(names: &[&'a str]) -> &'a str {
+    names
+        .iter()
+        .find(|n| which::which(n).is_ok())
+        .unwrap_or_else(|| names.last().unwrap())
+}
+
 #[test]
 fn integration_test() -> Result {
     // We could potentially just discover the source files, but having a hand-written ordering is
@@ -1263,7 +1287,7 @@ fn integration_test() -> Result {
                     let result = program_inputs.build(linker, &config).with_context(|| {
                         format!(
                             "Failed to build program `{program_inputs}` \
-                                    with linker `{linker}` config {}",
+                                    with linker `{linker}` config `{}`",
                             config.name
                         )
                     });
