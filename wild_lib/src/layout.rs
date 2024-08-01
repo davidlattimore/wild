@@ -1950,6 +1950,7 @@ fn process_relocation(
         let symbol_id =
             symbol_db.definition(state.common.symbol_id_range.input_to_id(local_sym_index));
         let symbol_value_flags = symbol_db.local_symbol_value_flags(symbol_id);
+        let canonical_symbol_value_flags = symbol_db.symbol_value_flags(symbol_id);
         let rel_offset = rel.r_offset.get(LittleEndian);
         let mut r_type = rel.r_type(LittleEndian, false);
 
@@ -1976,6 +1977,9 @@ fn process_relocation(
                     String::from_utf8_lossy(object.object.section_name(section).unwrap())
                 );
                 state.common.mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
+            } else if canonical_symbol_value_flags.contains(ValueFlags::FUNCTION) {
+                resolution_kind.remove(ResolutionFlags::DIRECT);
+                resolution_kind |= ResolutionFlags::PLT | ResolutionFlags::GOT;
             } else if !symbol_value_flags.contains(ValueFlags::ABSOLUTE) {
                 resolution_kind |= ResolutionFlags::COPY_RELOCATION;
             }
@@ -3245,7 +3249,11 @@ impl<'state> GlobalAddressEmitter<'state> {
             value_flags,
         };
         if res_kind.contains(ResolutionFlags::PLT) {
-            resolution.plt_address = Some(self.allocate_plt());
+            let plt_address = self.allocate_plt();
+            resolution.plt_address = Some(plt_address);
+            if value_flags.contains(ValueFlags::DYNAMIC) {
+                resolution.raw_value = plt_address.get();
+            }
         }
         if res_kind.contains(ResolutionFlags::GOT) {
             resolution.got_address = Some(self.allocate_got(1));

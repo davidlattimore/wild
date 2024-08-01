@@ -550,8 +550,12 @@ impl SymbolLoader for RegularObjectSymbolLoader<'_> {
 }
 
 impl SymbolLoader for DynamicObjectSymbolLoader {
-    fn compute_value_flags(&self, _symbol: &crate::elf::Symbol) -> ValueFlags {
-        ValueFlags::DYNAMIC
+    fn compute_value_flags(&self, symbol: &crate::elf::Symbol) -> ValueFlags {
+        let mut flags = ValueFlags::DYNAMIC;
+        if symbol.st_type() == object::elf::STT_FUNC {
+            flags |= ValueFlags::FUNCTION;
+        }
+        flags
     }
 
     fn is_hidden_version(&self, symbol_index: usize, object: &crate::elf::File) -> bool {

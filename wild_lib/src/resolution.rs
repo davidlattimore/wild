@@ -881,6 +881,10 @@ bitflags! {
         /// a local. It's still treated as a global for name lookup purposes, but after that, it becomes
         /// local.
         const DOWNGRADE_TO_LOCAL = 1 << 5;
+
+        /// Set when the value is function. Currently only set for dynamic symbols, since that's all
+        /// we need it for.
+        const FUNCTION = 1 << 6;
     }
 }
 
