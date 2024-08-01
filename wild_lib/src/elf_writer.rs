@@ -1598,11 +1598,13 @@ impl<'data> EpilogueLayout<'data> {
             )?;
         }
         write_gnu_hash_tables(self, &mut buffers)?;
-        write_dynamic_symbol_definitions(self, &mut dynamic_symbol_writer, layout)?;
 
-        // We don't yet support setting symbol versions for symbols that we export, so right now we
-        // just set them all to the global version.
-        table_writer.set_all_symbol_versions(object::elf::VER_NDX_GLOBAL);
+        write_dynamic_symbol_definitions(
+            self,
+            &mut dynamic_symbol_writer,
+            &mut table_writer,
+            layout,
+        )?;
 
         table_writer.validate_empty(&self.mem_sizes)?;
         dynamic_symbol_writer.check_exhausted()?;
@@ -1678,6 +1680,7 @@ fn write_gnu_hash_tables(
 fn write_dynamic_symbol_definitions(
     epilogue: &EpilogueLayout,
     dynamic_symbol_writer: &mut SymbolTableWriter,
+    table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
     for sym_def in &epilogue.dynamic_symbol_definitions {
@@ -1691,6 +1694,12 @@ fn write_dynamic_symbol_definitions(
                     layout,
                     dynamic_symbol_writer,
                 )?;
+
+                // We don't yet support setting symbol versions for symbols that we export, so right
+                // now we just set them all to the global version.
+                if let Some(version_out) = crate::slice::take_first_mut(&mut table_writer.versym) {
+                    version_out.0.set(LittleEndian, object::elf::VER_NDX_GLOBAL);
+                }
             }
             FileLayout::Dynamic(object) => {
                 write_copy_relocation_dynamic_symbol_definition(
@@ -1698,6 +1707,13 @@ fn write_dynamic_symbol_definitions(
                     object,
                     layout,
                     dynamic_symbol_writer,
+                )?;
+
+                write_symbol_version(
+                    object.input_symbol_versions,
+                    object.symbol_id_range.id_to_offset(sym_def.symbol_id),
+                    &object.version_mapping,
+                    &mut table_writer.versym,
                 )?;
             }
             _ => bail!(
