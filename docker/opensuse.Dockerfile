@@ -4,7 +4,14 @@
 # docker run -it wild-dev-opensuse
 
 FROM opensuse/tumbleweed AS chef
-RUN zypper install -y -t pattern devel_C_C++ && zypper install -y lld vim less rustup
+RUN zypper install -y -t pattern devel_C_C++ && \
+    zypper install -y \
+        rustup \
+        clang \
+        glibc-devel-static \
+        lld \
+        vim \
+        less
 RUN rustup toolchain install nightly
 RUN cargo install --locked cargo-chef
 RUN rustup target add x86_64-unknown-linux-musl && \
