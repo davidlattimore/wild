@@ -540,7 +540,7 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
         .context("Extension isn't valid UTF-8")?;
     let tool_paths = ToolPaths::get();
     let (compiler, compiler_kind) = match extension {
-        "cpp" => (tool_paths.gpp, CompilerKind::C),
+        "cc" => (tool_paths.gpp, CompilerKind::C),
         "c" => (tool_paths.gcc, CompilerKind::C),
         "s" => (tool_paths.gcc, CompilerKind::C),
         "rs" => ("rustc", CompilerKind::Rust),
@@ -769,7 +769,7 @@ impl LinkCommand {
                                 .expect("Linker path must be valid UTF-8")
                         ));
                     }
-                    "gcc" => {
+                    "gcc" | "g++" => {
                         match linker {
                             Linker::Wild => {
                                 // GCC unfortunately doesn't provide any way to use a custom linker.
@@ -1232,6 +1232,7 @@ fn integration_test() -> Result {
         ProgramInputs::new("libc-integration.c")?,
         ProgramInputs::new("rust-integration.rs")?,
         ProgramInputs::new("rust-integration-dynamic.rs")?,
+        ProgramInputs::new("cpp-integration.cc")?,
     ];
 
     let mut linkers = vec![
