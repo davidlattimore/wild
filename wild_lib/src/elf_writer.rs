@@ -1263,23 +1263,6 @@ impl<'data> ObjectLayout<'data> {
             object: self,
         }
     }
-
-    fn get_resolution<'a>(
-        &'a self,
-        rel: &elf::Rela,
-        layout: &'a Layout,
-    ) -> Result<Option<Resolution>> {
-        let mut new_resolution = None;
-        let e = LittleEndian;
-        let Some(symbol_index) = rel.symbol(e, false) else {
-            bail!("Unsupported absolute relocation");
-        };
-        let local_symbol_id = self.symbol_id_range.input_to_id(symbol_index);
-        if let Some(res) = layout.merged_symbol_resolution(local_symbol_id) {
-            new_resolution = Some(res);
-        }
-        Ok(new_resolution)
-    }
 }
 
 struct DisplayRelocation<'a> {
@@ -1323,12 +1306,18 @@ fn apply_relocation(
     let section_address = section_info.section_address;
     let place = section_address + offset_in_section;
     let _span = tracing::span!(tracing::Level::TRACE, "relocation", address = place).entered();
-    let Some(resolution) = object_layout.get_resolution(rel, layout)? else {
+
+    let e = LittleEndian;
+    let symbol_index = rel
+        .symbol(e, false)
+        .context("Unsupported absolute relocation")?;
+    let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
+    let Some(resolution) = layout.merged_symbol_resolution(local_symbol_id) else {
         return Ok(RelocationModifier::Normal);
     };
+
     let value_flags = resolution.value_flags;
     let resolution_flags = resolution.resolution_flags;
-    let e = LittleEndian;
     let mut addend = rel.r_addend.get(e) as u64;
     let mut next_modifier = RelocationModifier::Normal;
     let r_type = rel.r_type(e, false);
