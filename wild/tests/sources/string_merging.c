@@ -2,6 +2,7 @@
 // to the same memory.
 
 //#DiffIgnore:section.custom1.entsize
+//#LinkArgs:-z noexecstack
 //#Object:string_merging1.s
 //#Object:string_merging2.s
 //#Object:exit.c

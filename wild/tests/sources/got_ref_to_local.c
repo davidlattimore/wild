@@ -2,6 +2,7 @@
 // you'd have a GOT reference to a local, but it is something I've observed.
 
 //#Object:got_ref_to_local-1.s
+//#LinkArgs:-z noexecstack
 //#Object:exit.c
 
 #include "exit.h"

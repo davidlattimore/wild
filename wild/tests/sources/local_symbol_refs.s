@@ -5,6 +5,7 @@
 //#DiffIgnore:section.rodata.flags
 //#DiffIgnore:section.rodata.entsize
 //#Object:exit.c
+//#LinkArgs:-z noexecstack
 //#EnableLinker:lld
 
 .section        .rodata.x,"aM",@progbits,16

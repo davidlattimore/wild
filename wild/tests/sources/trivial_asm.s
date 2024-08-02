@@ -1,3 +1,4 @@
+//#LinkArgs:-z noexecstack
 //#Object:exit.c
 
 .section        .data.foo

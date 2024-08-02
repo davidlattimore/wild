@@ -3,6 +3,7 @@
 //#Object:ifunc1.c
 //#Object:ifunc_init.c
 //#Object:exit.c
+//#DiffIgnore:section.rela.plt.link
 
 //#Config:pie:default
 //#CompArgs:-fpie

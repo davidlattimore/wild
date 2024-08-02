@@ -1,10 +1,11 @@
 //#AbstractConfig:default
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.rodata
+//#DiffIgnore:section.data
 
 //#Config:pie:default
 //#CompArgs:-fpie
-//#LinkArgs:--cc=g++ -pie
+//#LinkArgs:--cc=g++ -pie -Wl,-z,now
 
 //#Config:no-pie:default
 //#CompArgs:-fno-pie

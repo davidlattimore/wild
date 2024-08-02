@@ -2,6 +2,7 @@
 // on a stack frame. This will segfault if the stack isn't correctly aligned to 16 bytes.
 
 //#Object:exit.c
+//#LinkArgs:-z noexecstack
 //#EnableLinker:lld
 
 .globl _start
