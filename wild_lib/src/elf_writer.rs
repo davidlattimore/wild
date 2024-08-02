@@ -1400,10 +1400,7 @@ fn write_absolute_relocation(
     addend: u64,
     section_info: SectionInfo,
 ) -> Result<u64> {
-    if resolution.value_flags.contains(ValueFlags::DYNAMIC)
-        && !resolution.value_flags.contains(ValueFlags::ABSOLUTE)
-        && section_info.is_writable
-    {
+    if resolution.value_flags.contains(ValueFlags::DYNAMIC) && section_info.is_writable {
         table_writer.write_dynamic_symbol_relocation(
             place,
             addend,

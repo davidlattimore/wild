@@ -68,3 +68,7 @@ static void *resolve_compute_value10(void) {
 int sometimes_weak_fn(void) {
     return 42;
 }
+
+int black_box(int v) {
+    return v;
+}

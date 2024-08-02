@@ -87,6 +87,7 @@ int get_weak_var2(void);
 int get_weak_tvar(void);
 int get_weak_tvar2(void);
 int compute_value10(void);
+int black_box(int v);
 
 typedef int(*get_int_fn_t)(void);
 
@@ -94,7 +95,8 @@ get_int_fn_t fn_pointers[] = {
     get_tvar_local,
     get_tvar_local2,
     get_weak_var,
-    get_weak_var2
+    get_weak_var2,
+    weak_fn1,
 };
 
 void *thread_function(void *data) {
@@ -144,13 +146,6 @@ int main() {
     set_tvar2(77);
     if (tvar2 != 77) {
         return 106;
-    }
-
-    if (weak_fn1) {
-        return weak_fn1();
-    }
-    if (weak_fn2) {
-        return weak_fn2();
     }
 
     if (get_tvar_local() != 8) {
@@ -206,6 +201,16 @@ int main() {
 
     if (value42 != 42) {
         return 117;
+    }
+
+    if (weak_fn1) {
+        return 118;
+    }
+    if (weak_fn2) {
+        return 119;
+    }
+    if (fn_pointers[black_box(4)]) {
+        return 120;
     }
 
     return 42;
