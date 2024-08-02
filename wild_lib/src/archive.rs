@@ -239,49 +239,48 @@ mod tests {
                 }
             } else if path.extension().is_some_and(|ext| ext == "a") {
                 *limit -= 1;
-                if let Ok(ar_summary) = ar_read_entries(path) {
-                    let data = std::fs::read(path)?;
-                    let mut our_entries = Vec::new();
-                    let mut filenames = None;
-                    for entry in ArchiveIterator::from_archive_bytes(&data)? {
-                        let entry = entry?;
-                        match entry {
-                            ArchiveEntry::Regular(content) => {
-                                our_entries.push(content);
-                            }
-                            ArchiveEntry::Symbols(_symbol_table) => {}
-                            ArchiveEntry::Filenames(table) => filenames = Some(table),
+                let ar_summary = ar_read_entries(path)?;
+                let data = std::fs::read(path)?;
+                let mut our_entries = Vec::new();
+                let mut filenames = None;
+                for entry in ArchiveIterator::from_archive_bytes(&data)? {
+                    let entry = entry?;
+                    match entry {
+                        ArchiveEntry::Regular(content) => {
+                            our_entries.push(content);
                         }
+                        ArchiveEntry::Symbols(_symbol_table) => {}
+                        ArchiveEntry::Filenames(table) => filenames = Some(table),
                     }
-                    if ar_summary.entries.len() != our_entries.len() {
-                        for x in &our_entries {
-                            println!("{}", x.ident);
-                        }
+                }
+                if ar_summary.entries.len() != our_entries.len() {
+                    for x in &our_entries {
+                        println!("{}", x.ident);
+                    }
+                    bail!(
+                        "ar read {} entries, but we read {}",
+                        ar_summary.entries.len(),
+                        our_entries.len()
+                    );
+                }
+                for (a, b) in ar_summary.entries.iter().zip(our_entries.iter()) {
+                    if a.len() != b.entry_data.len() {
                         bail!(
-                            "ar read {} entries, but we read {}",
-                            ar_summary.entries.len(),
-                            our_entries.len()
+                            "Different data lengths {} vs {}",
+                            a.len(),
+                            b.entry_data.len()
                         );
                     }
-                    for (a, b) in ar_summary.entries.iter().zip(our_entries.iter()) {
-                        if a.len() != b.entry_data.len() {
-                            bail!(
-                                "Different data lengths {} vs {}",
-                                a.len(),
-                                b.entry_data.len()
-                            );
-                        }
-                        if a != b.entry_data {
-                            bail!("Different data");
-                        }
+                    if a != b.entry_data {
+                        bail!("Different data");
                     }
-                    for (a, b) in ar_summary.identifiers.iter().zip(our_entries.iter()) {
-                        let b = b.identifier(filenames).as_slice();
-                        if a != b {
-                            let a = String::from_utf8_lossy(a);
-                            let b = String::from_utf8_lossy(b);
-                            bail!("Entry filenames differ '{a}' vs '{b}'");
-                        }
+                }
+                for (a, b) in ar_summary.identifiers.iter().zip(our_entries.iter()) {
+                    let b = b.identifier(filenames).as_slice();
+                    if a != b {
+                        let a = String::from_utf8_lossy(a);
+                        let b = String::from_utf8_lossy(b);
+                        bail!("Entry filenames differ '{a}' vs '{b}'");
                     }
                 }
             }
@@ -293,10 +292,9 @@ mod tests {
 
     #[test]
     fn test_ar_consistency() {
-        // Check the first few archives that we find in /usr/lib for consistency with the ar crate.
-        let mut limit = 10;
-        check_consistency(Path::new("/usr/lib"), &mut limit).unwrap();
-        // Make sure we actually found that many.
+        let mut limit = 1;
+        check_consistency(Path::new("src/test_data/a.a"), &mut limit).unwrap();
+        // Make sure that we found the file
         assert_eq!(limit, 0);
     }
 
