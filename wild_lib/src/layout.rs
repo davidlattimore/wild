@@ -1222,7 +1222,7 @@ fn compute_symbols_and_layouts<'data>(
     layout_states: Vec<FileLayoutState<'data>>,
     starting_mem_offsets_by_file: Vec<Option<OutputSectionPartMap<u64>>>,
     symbol_resolutions: &mut [&mut [Option<Resolution>]],
-    resources: &FinaliseLayoutResources,
+    resources: &FinaliseLayoutResources<'_, 'data>,
 ) -> Result<Vec<FileLayout<'data>>> {
     layout_states
         .into_par_iter()
@@ -1741,7 +1741,7 @@ impl<'data> FileLayoutState<'data> {
         self,
         memory_offsets: Option<&mut OutputSectionPartMap<u64>>,
         addresses_out: &mut [Option<Resolution>],
-        resources: &FinaliseLayoutResources,
+        resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<FileLayout<'data>> {
         let file_layout = match self {
             Self::Object(s) => FileLayout::Object(s.finalise_layout(
@@ -2624,57 +2624,7 @@ impl<'data> ObjectLayoutState<'data> {
             let section_id = section_request.id;
             match &self.state.sections[section_id.0] {
                 SectionSlot::Unloaded(unloaded) => {
-                    let unloaded = *unloaded;
-                    if unloaded.is_string_merge {
-                        // We currently always load all string-merge data regardless of whether it's
-                        // referenced.
-                        continue;
-                    }
-                    let mut section =
-                        Section::create(self, queue, &unloaded, section_id, resources)?;
-                    let sec_id = resources
-                        .output_sections
-                        .output_section_id(unloaded.output_section_id)?;
-                    let allocation = self
-                        .state
-                        .common
-                        .mem_sizes
-                        .regular_mut(sec_id, section.alignment);
-                    *allocation += section.capacity();
-                    resources
-                        .sections_with_content
-                        .get(sec_id)
-                        .fetch_or(true, atomic::Ordering::Relaxed);
-                    section.output_section_id = Some(sec_id);
-                    if let Some(frame_data) = self.section_frame_data.get_mut(section_id.0) {
-                        self.state.common.mem_sizes.eh_frame +=
-                            u64::from(frame_data.total_fde_size);
-                        if resources.symbol_db.args.should_write_eh_frame_hdr {
-                            self.state.common.mem_sizes.eh_frame_hdr +=
-                                core::mem::size_of::<EhFrameHdrEntry>() as u64
-                                    * u64::from(frame_data.num_fdes);
-                        }
-                        // Take ownership of the section's frame data relocations. We only apply
-                        // these once when the section is loaded, so after this we won't need them
-                        // any more. By taking ownership, we drop our borrow of self.
-                        let frame_data_relocations = core::mem::take(&mut frame_data.relocations);
-                        // Request loading of any sections/symbols referenced by the FDEs for our
-                        // section.
-                        if let Some(eh_frame_section) = self.eh_frame_section {
-                            for relocations in &frame_data_relocations {
-                                for rel in *relocations {
-                                    process_relocation(
-                                        self,
-                                        rel,
-                                        eh_frame_section,
-                                        resources,
-                                        queue,
-                                    )?;
-                                }
-                            }
-                        }
-                    }
-                    self.state.sections[section_id.0] = SectionSlot::Loaded(section);
+                    self.load_section(queue, *unloaded, section_id, resources)?;
                 }
                 SectionSlot::Discard => {
                     bail!(
@@ -2689,6 +2639,57 @@ impl<'data> ObjectLayoutState<'data> {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn load_section<'scope>(
+        &mut self,
+        queue: &mut LocalWorkQueue,
+        unloaded: UnloadedSection<'data>,
+        section_id: SectionIndex,
+        resources: &GraphResources<'data, 'scope>,
+    ) -> Result {
+        if unloaded.is_string_merge {
+            // We currently always load all string-merge data regardless of whether it's
+            // referenced.
+            return Ok(());
+        }
+        let mut section = Section::create(self, queue, &unloaded, section_id, resources)?;
+        let sec_id = resources
+            .output_sections
+            .output_section_id(unloaded.output_section_id)?;
+        let allocation = self
+            .state
+            .common
+            .mem_sizes
+            .regular_mut(sec_id, section.alignment);
+        *allocation += section.capacity();
+        resources
+            .sections_with_content
+            .get(sec_id)
+            .fetch_or(true, atomic::Ordering::Relaxed);
+        section.output_section_id = Some(sec_id);
+        if let Some(frame_data) = self.section_frame_data.get_mut(section_id.0) {
+            self.state.common.mem_sizes.eh_frame += u64::from(frame_data.total_fde_size);
+            if resources.symbol_db.args.should_write_eh_frame_hdr {
+                self.state.common.mem_sizes.eh_frame_hdr +=
+                    core::mem::size_of::<EhFrameHdrEntry>() as u64 * u64::from(frame_data.num_fdes);
+            }
+            // Take ownership of the section's frame data relocations. We only apply
+            // these once when the section is loaded, so after this we won't need them
+            // any more. By taking ownership, we drop our borrow of self.
+            let frame_data_relocations = core::mem::take(&mut frame_data.relocations);
+            // Request loading of any sections/symbols referenced by the FDEs for our
+            // section.
+            if let Some(eh_frame_section) = self.eh_frame_section {
+                for relocations in &frame_data_relocations {
+                    for rel in *relocations {
+                        process_relocation(self, rel, eh_frame_section, resources, queue)?;
+                    }
+                }
+            }
+        }
+        self.state.sections[section_id.0] = SectionSlot::Loaded(section);
         Ok(())
     }
 
@@ -2767,10 +2768,10 @@ impl<'data> ObjectLayoutState<'data> {
     }
 
     fn finalise_layout(
-        self,
+        mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut [Option<Resolution>],
-        resources: &FinaliseLayoutResources,
+        resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<ObjectLayout<'data>> {
         let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
         let dynstr_start_offset = (memory_offsets.dynstr
@@ -2779,7 +2780,7 @@ impl<'data> ObjectLayoutState<'data> {
                 .get(output_section_id::DYNSTR)
                 .mem_offset) as u32;
         let symbol_id_range = self.symbol_id_range();
-        let mut sections = self.state.sections;
+        let mut sections = core::mem::take(&mut self.state.sections);
 
         let mut emitter = self
             .state
@@ -2825,66 +2826,21 @@ impl<'data> ObjectLayoutState<'data> {
         }
 
         let mut dyn_sym_index = dynamic_symtab_index(memory_offsets, resources.section_layouts)?;
-        let e = LittleEndian;
-        for ((local_symbol_index, local_symbol), symbol_state) in self
+        for ((local_symbol_index, local_symbol), &resolution_flags) in self
             .object
             .symbols
             .enumerate()
             .zip(&resources.symbol_resolution_flags[symbol_id_range.as_usize()])
         {
-            if symbol_state.is_empty() {
-                continue;
-            }
-            let symbol_id = symbol_id_range.input_to_id(local_symbol_index);
-            if !resources.symbol_db.is_canonical(symbol_id) {
-                continue;
-            }
-            let value_flags = resources.symbol_db.local_symbol_value_flags(symbol_id);
-            let raw_value = if let Some(section_index) = self
-                .object
-                .symbol_section(local_symbol, local_symbol_index)?
-            {
-                if let Some(section_resolution) = section_resolutions[section_index.0].as_ref() {
-                    local_symbol.st_value(e) + section_resolution.address()?
-                } else {
-                    resources. merged_string_start_addresses
-                        .try_resolve_local(
-                            &self.state.merged_string_resolutions,
-                            symbol_id_range.input_to_offset(local_symbol_index),
-                        )
-                        .ok_or_else(|| {
-                            anyhow!(
-                                "Symbol is in a section that we didn't load. Symbol: {} Section: {}",
-                              resources.  symbol_db.symbol_debug(symbol_id),
-                                section_debug(self.object, section_index),
-                            )
-                        })?
-                }
-            } else if local_symbol.is_common(e) {
-                let common = CommonSymbol::new(local_symbol)?;
-                let offset = memory_offsets.regular_mut(output_section_id::BSS, common.alignment);
-                let address = *offset;
-                *offset += common.size;
-                address
-            } else {
-                local_symbol.st_value(e)
-            };
-            let mut dynamic_symbol_index = None;
-            if value_flags.contains(ValueFlags::DYNAMIC) {
-                // This is an undefined weak symbol. Emit it as a dynamic symbol so that it can be
-                // overridden at runtime.
-                dynamic_symbol_index = Some(
-                    NonZeroU32::new(dyn_sym_index)
-                        .context("Attempted to create dynamic symbol index 0")?,
-                );
-                dyn_sym_index += 1;
-            }
-            emitter.emit_resolution(
-                symbol_id,
-                resources.symbol_db,
-                raw_value,
-                dynamic_symbol_index,
-                value_flags,
+            self.finalise_symbol(
+                resources,
+                resolution_flags,
+                local_symbol,
+                local_symbol_index,
+                &section_resolutions,
+                memory_offsets,
+                &mut dyn_sym_index,
+                &mut emitter,
                 resolutions_out,
             )?;
         }
@@ -2908,6 +2864,79 @@ impl<'data> ObjectLayoutState<'data> {
             merged_string_resolutions: self.state.merged_string_resolutions,
             dynstr_start_offset,
         })
+    }
+
+    fn finalise_symbol<'scope>(
+        &self,
+        resources: &FinaliseLayoutResources<'scope, 'data>,
+        resolution_flags: ResolutionFlags,
+        local_symbol: &object::elf::Sym64<LittleEndian>,
+        local_symbol_index: object::SymbolIndex,
+        section_resolutions: &[Option<Resolution>],
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        dyn_sym_index: &mut u32,
+        emitter: &mut GlobalAddressEmitter<'scope>,
+        resolutions_out: &mut [Option<Resolution>],
+    ) -> Result {
+        let symbol_id_range = self.symbol_id_range();
+        if resolution_flags.is_empty() {
+            return Ok(());
+        }
+        let symbol_id = symbol_id_range.input_to_id(local_symbol_index);
+        if !resources.symbol_db.is_canonical(symbol_id) {
+            return Ok(());
+        }
+        let e = LittleEndian;
+        let value_flags = resources.symbol_db.local_symbol_value_flags(symbol_id);
+        let raw_value = if let Some(section_index) = self
+            .object
+            .symbol_section(local_symbol, local_symbol_index)?
+        {
+            if let Some(section_resolution) = section_resolutions[section_index.0].as_ref() {
+                local_symbol.st_value(e) + section_resolution.address()?
+            } else {
+                resources
+                    .merged_string_start_addresses
+                    .try_resolve_local(
+                        &self.state.merged_string_resolutions,
+                        symbol_id_range.input_to_offset(local_symbol_index),
+                    )
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "Symbol is in a section that we didn't load. Symbol: {} Section: {}",
+                            resources.symbol_db.symbol_debug(symbol_id),
+                            section_debug(self.object, section_index),
+                        )
+                    })?
+            }
+        } else if local_symbol.is_common(e) {
+            let common = CommonSymbol::new(local_symbol)?;
+            let offset = memory_offsets.regular_mut(output_section_id::BSS, common.alignment);
+            let address = *offset;
+            *offset += common.size;
+            address
+        } else {
+            local_symbol.st_value(e)
+        };
+        let mut dynamic_symbol_index = None;
+        if value_flags.contains(ValueFlags::DYNAMIC) {
+            // This is an undefined weak symbol. Emit it as a dynamic symbol so that it can be
+            // overridden at runtime.
+            dynamic_symbol_index = Some(
+                NonZeroU32::new(*dyn_sym_index)
+                    .context("Attempted to create dynamic symbol index 0")?,
+            );
+            *dyn_sym_index += 1;
+        }
+        emitter.emit_resolution(
+            symbol_id,
+            resources.symbol_db,
+            raw_value,
+            dynamic_symbol_index,
+            value_flags,
+            resolutions_out,
+        )?;
+        Ok(())
     }
 
     fn load_non_hidden_symbols<'scope>(

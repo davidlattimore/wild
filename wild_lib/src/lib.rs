@@ -1,6 +1,7 @@
 #![allow(clippy::needless_update)]
 #![allow(clippy::match_like_matches_macro)]
 #![allow(clippy::single_match)]
+#![allow(clippy::too_many_arguments)]
 
 use args::Args;
 
