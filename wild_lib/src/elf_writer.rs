@@ -23,6 +23,7 @@ use crate::layout::compute_allocations;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
+use crate::layout::GroupLayout;
 use crate::layout::HeaderInfo;
 use crate::layout::InternalLayout;
 use crate::layout::InternalSymbols;
@@ -199,31 +200,36 @@ impl SizedOutput {
         let mut section_buffers = split_output_into_sections(layout, &mut self.mmap);
 
         let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
-        let files_and_buffers = split_output_by_file(layout, &mut writable_buckets);
-        files_and_buffers
+        let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
+        groups_and_buffers
             .into_par_iter()
-            .try_for_each(|(file, buffer)| {
-                file.write(buffer, layout)
-                    .with_context(|| format!("Failed copying from {file} to output file"))
+            .try_for_each(|(group, mut buffers)| -> Result {
+                for file in &group.files {
+                    file.write(&mut buffers, layout)
+                        .with_context(|| format!("Failed copying from {file} to output file"))?
+                }
+                Ok(())
             })?;
         Ok(())
     }
 }
 
-#[tracing::instrument(skip_all, name = "Split output buffers by file")]
-fn split_output_by_file<'data, 'out>(
+#[tracing::instrument(skip_all, name = "Split output buffers by group")]
+fn split_output_by_group<'data, 'out>(
     layout: &'data Layout<'data>,
     writable_buckets: &'out mut OutputSectionPartMap<&mut [u8]>,
 ) -> Vec<(
-    &'data FileLayout<'data>,
+    &'data GroupLayout<'data>,
     OutputSectionPartMap<&'out mut [u8]>,
 )> {
     layout
-        .file_layouts
+        .group_layouts
         .iter()
-        .filter_map(|file| {
+        .filter_map(|group| {
+            assert_eq!(group.files.len(), 1);
+            let file = &group.files[0];
             file.file_sizes()
-                .map(|file_sizes| (file, writable_buckets.take_mut(file_sizes)))
+                .map(|file_sizes| (group, writable_buckets.take_mut(file_sizes)))
         })
         .collect()
 }
@@ -358,7 +364,7 @@ fn populate_file_header(
 }
 
 impl<'data> FileLayout<'data> {
-    fn write(&self, buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
+    fn write(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
         match self {
             FileLayout::Object(s) => s.write(buffers, layout)?,
             FileLayout::Internal(s) => s.write(buffers, layout)?,
@@ -870,29 +876,24 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
 }
 
 impl<'data> ObjectLayout<'data> {
-    fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
+    fn write(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
         let _file_span = layout.args().trace_span_for_file(self.file_id);
         let start_str_offset = self.strtab_offset_start;
-        let mut table_writer = TableWriter::from_layout(layout, &mut buffers);
+        let mut table_writer = TableWriter::from_layout(layout, buffers);
         for sec in &self.sections {
             match sec {
                 SectionSlot::Loaded(sec) => {
-                    self.write_section(layout, sec, &mut buffers, &mut table_writer)?
+                    self.write_section(layout, sec, buffers, &mut table_writer)?
                 }
                 SectionSlot::EhFrameData(section_index) => {
-                    self.write_eh_frame_data(
-                        *section_index,
-                        &mut buffers,
-                        layout,
-                        &mut table_writer,
-                    )?;
+                    self.write_eh_frame_data(*section_index, buffers, layout, &mut table_writer)?;
                 }
                 _ => (),
             }
         }
         let mut dynsym_writer = SymbolTableWriter::new_dynamic(
             self.dynstr_start_offset,
-            &mut buffers,
+            buffers,
             &layout.output_sections,
         );
         for (symbol_id, resolution) in layout.resolutions_in_range(self.symbol_id_range) {
@@ -975,12 +976,12 @@ impl<'data> ObjectLayout<'data> {
     fn write_symbols(
         &self,
         start_str_offset: u32,
-        mut buffers: OutputSectionPartMap<&mut [u8]>,
+        buffers: &mut OutputSectionPartMap<&mut [u8]>,
         sections: &OutputSections,
         layout: &Layout,
     ) -> Result {
         let mut symbol_writer =
-            SymbolTableWriter::new(start_str_offset, &mut buffers, &self.mem_sizes, sections);
+            SymbolTableWriter::new(start_str_offset, buffers, &self.mem_sizes, sections);
         for ((sym_index, sym), sym_state) in self
             .object
             .symbols
@@ -1419,7 +1420,7 @@ fn write_absolute_relocation(
 }
 
 impl<'data> InternalLayout<'data> {
-    fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
+    fn write(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
         let header: &mut FileHeader = from_bytes_mut(buffers.file_header)
             .map_err(|_| anyhow!("Invalid file header allocation"))?
             .0;
@@ -1432,21 +1433,21 @@ impl<'data> InternalLayout<'data> {
 
         write_section_header_strings(buffers.shstrtab, &layout.output_sections);
 
-        let mut table_writer = TableWriter::from_layout(layout, &mut buffers);
+        let mut table_writer = TableWriter::from_layout(layout, buffers);
 
         self.write_plt_got_entries(layout, &mut table_writer)?;
 
         if !layout.args().strip_all {
-            self.write_symbol_table_entries(&mut buffers, layout)?;
+            self.write_symbol_table_entries(buffers, layout)?;
         }
 
         if layout.args().should_write_eh_frame_hdr {
-            write_eh_frame_hdr(&mut buffers, layout)?;
+            write_eh_frame_hdr(buffers, layout)?;
         }
 
-        self.write_merged_strings(&mut buffers);
+        self.write_merged_strings(buffers);
 
-        self.write_interp(&mut buffers);
+        self.write_interp(buffers);
 
         // If we're emitting symbol versions, we should have only one - symbol 0 - the undefined
         // symbol. It needs to be set as local.
@@ -1558,14 +1559,14 @@ fn write_epilogue_dynamic_entries(
 }
 
 impl<'data> EpilogueLayout<'data> {
-    fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
-        let mut table_writer = TableWriter::from_layout(layout, &mut buffers);
+    fn write(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
+        let mut table_writer = TableWriter::from_layout(layout, buffers);
         write_internal_symbols_plt_got_entries(&self.internal_symbols, &mut table_writer, layout)?;
 
         if !layout.args().strip_all {
             let mut symbol_writer = SymbolTableWriter::new(
                 self.strings_offset_start,
-                &mut buffers,
+                buffers,
                 &self.mem_sizes,
                 &layout.output_sections,
             );
@@ -1573,7 +1574,7 @@ impl<'data> EpilogueLayout<'data> {
         }
         let mut dynamic_symbol_writer = SymbolTableWriter::new_dynamic(
             self.dynstr_offset_start,
-            &mut buffers,
+            buffers,
             &layout.output_sections,
         );
         if layout.args().needs_dynamic() {
@@ -1583,7 +1584,7 @@ impl<'data> EpilogueLayout<'data> {
                 &mut dynamic_symbol_writer.strtab_writer,
             )?;
         }
-        write_gnu_hash_tables(self, &mut buffers)?;
+        write_gnu_hash_tables(self, buffers)?;
 
         write_dynamic_symbol_definitions(
             self,
@@ -1671,7 +1672,7 @@ fn write_dynamic_symbol_definitions(
 ) -> Result {
     for sym_def in &epilogue.dynamic_symbol_definitions {
         let file_id = layout.symbol_db.file_id_for_symbol(sym_def.symbol_id);
-        let file_layout = &layout.file_layouts[file_id.as_usize()];
+        let file_layout = &layout.file_layout(file_id);
         match file_layout {
             FileLayout::Object(object) => {
                 write_regular_object_dynamic_symbol_definition(
@@ -2166,11 +2167,11 @@ fn write_internal_symbols_plt_got_entries(
 }
 
 impl<'data> DynamicLayout<'data> {
-    fn write(&self, mut buffers: OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
-        let mut table_writer = TableWriter::from_layout(layout, &mut buffers);
+    fn write(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
+        let mut table_writer = TableWriter::from_layout(layout, buffers);
         let mut dynsym_writer = SymbolTableWriter::new_dynamic(
             self.dynstr_start_offset,
-            &mut buffers,
+            buffers,
             &layout.output_sections,
         );
 

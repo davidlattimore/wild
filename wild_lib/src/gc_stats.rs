@@ -22,6 +22,7 @@
 use crate::args::Args;
 use crate::error::Result;
 use crate::layout::FileLayout;
+use crate::layout::GroupLayout;
 use crate::output_section_id;
 use crate::output_section_id::TemporaryOutputSectionId;
 use crate::resolution::SectionSlot;
@@ -30,11 +31,11 @@ use object::LittleEndian;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-pub(crate) fn maybe_write_gc_stats(file_layouts: &[FileLayout], args: &Args) -> Result {
+pub(crate) fn maybe_write_gc_stats(group_layouts: &[GroupLayout], args: &Args) -> Result {
     let Some(stats_file) = args.write_gc_stats.as_ref() else {
         return Ok(());
     };
-    write_gc_stats(file_layouts, stats_file, args)
+    write_gc_stats(group_layouts, stats_file, args)
         .with_context(|| format!("Failed to write GC stats to `{}`", stats_file.display()))
 }
 
@@ -46,7 +47,7 @@ struct InputFile<'data> {
 }
 
 fn write_gc_stats(
-    file_layouts: &[FileLayout],
+    group_layouts: &[GroupLayout],
     stats_file: &std::path::Path,
     args: &Args,
 ) -> Result {
@@ -56,68 +57,70 @@ fn write_gc_stats(
     let mut discarded = 0;
     let current_dir = std::fs::canonicalize(std::env::current_dir()?)?;
     let mut files = HashMap::new();
-    for file in file_layouts {
-        let FileLayout::Object(obj) = file else {
-            continue;
-        };
-        // Ignore files outside of our current working directory. Our use-case for GC stats is to
-        // see how much code we compiled, but then discarded at link time. Code outside of our
-        // current directory is code that we didn't just compile.
-        let filename = std::fs::canonicalize(&obj.input.file.filename)?;
-        if !filename.starts_with(&current_dir) {
-            continue;
-        }
-        let file_display_name = obj.input.file.filename.to_string_lossy();
-        if args
-            .gc_stats_ignore
-            .iter()
-            .any(|ignore| file_display_name.contains(ignore))
-        {
-            continue;
-        }
+    for group in group_layouts {
+        for file in &group.files {
+            let FileLayout::Object(obj) = file else {
+                continue;
+            };
+            // Ignore files outside of our current working directory. Our use-case for GC stats is to
+            // see how much code we compiled, but then discarded at link time. Code outside of our
+            // current directory is code that we didn't just compile.
+            let filename = std::fs::canonicalize(&obj.input.file.filename)?;
+            if !filename.starts_with(&current_dir) {
+                continue;
+            }
+            let file_display_name = obj.input.file.filename.to_string_lossy();
+            if args
+                .gc_stats_ignore
+                .iter()
+                .any(|ignore| file_display_name.contains(ignore))
+            {
+                continue;
+            }
 
-        // Group by input filename. If the file is an archive (e.g. an rlib), then there can be
-        // multiple objects within it.
-        let file_record = files
-            .entry(&obj.input.file.filename)
-            .or_insert_with(|| InputFile {
-                path: obj.input.file.filename.clone(),
-                kept: 0,
-                discarded: 0,
-                discarded_names: Default::default(),
-            });
+            // Group by input filename. If the file is an archive (e.g. an rlib), then there can be
+            // multiple objects within it.
+            let file_record = files
+                .entry(&obj.input.file.filename)
+                .or_insert_with(|| InputFile {
+                    path: obj.input.file.filename.clone(),
+                    kept: 0,
+                    discarded: 0,
+                    discarded_names: Default::default(),
+                });
 
-        let mut file_kept = 0;
-        let mut file_discarded = 0;
-        for (slot, section) in obj.sections.iter().zip(obj.object.sections.iter()) {
-            match slot {
-                SectionSlot::Unloaded(s) => match s.output_section_id {
-                    TemporaryOutputSectionId::BuiltIn(id) => {
-                        if id == output_section_id::TEXT {
-                            file_discarded += section.sh_size.get(LittleEndian);
-                            if args.verbose_gc_stats {
-                                file_record
-                                    .discarded_names
-                                    .push(obj.object.section_name(section)?);
+            let mut file_kept = 0;
+            let mut file_discarded = 0;
+            for (slot, section) in obj.sections.iter().zip(obj.object.sections.iter()) {
+                match slot {
+                    SectionSlot::Unloaded(s) => match s.output_section_id {
+                        TemporaryOutputSectionId::BuiltIn(id) => {
+                            if id == output_section_id::TEXT {
+                                file_discarded += section.sh_size.get(LittleEndian);
+                                if args.verbose_gc_stats {
+                                    file_record
+                                        .discarded_names
+                                        .push(obj.object.section_name(section)?);
+                                }
                             }
+                        }
+                        _ => {}
+                    },
+                    SectionSlot::Loaded(s) => {
+                        if s.output_section_id == Some(output_section_id::TEXT) {
+                            file_kept += section.sh_size.get(LittleEndian);
                         }
                     }
                     _ => {}
-                },
-                SectionSlot::Loaded(s) => {
-                    if s.output_section_id == Some(output_section_id::TEXT) {
-                        file_kept += section.sh_size.get(LittleEndian);
-                    }
                 }
-                _ => {}
             }
+
+            file_record.kept += file_kept;
+            file_record.discarded += file_discarded;
+
+            kept += file_kept;
+            discarded += file_discarded;
         }
-
-        file_record.kept += file_kept;
-        file_record.discarded += file_discarded;
-
-        kept += file_kept;
-        discarded += file_discarded;
     }
 
     let mut files = files.values().collect::<Vec<_>>();

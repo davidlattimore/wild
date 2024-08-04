@@ -71,6 +71,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU8;
 use std::sync::Mutex;
 
+const FILES_PER_GROUP: usize = 1;
+
 #[tracing::instrument(skip_all, name = "Layout")]
 pub fn compute<'data>(
     symbol_db: &'data SymbolDb<'data>,
@@ -82,26 +84,26 @@ pub fn compute<'data>(
         print_symbol_info(symbol_db, sym_info);
     }
     let symbol_resolution_flags = vec![AtomicResolutionFlags::empty(); symbol_db.num_symbols()];
-    let (mut layout_states, sections_with_content) = find_required_sections(
+    let (mut group_states, sections_with_content) = find_required_sections(
         file_states,
         symbol_db,
         &output_sections,
         &symbol_resolution_flags,
     )?;
-    merge_dynamic_symbol_definitions(&mut layout_states)?;
+    merge_dynamic_symbol_definitions(&mut group_states)?;
     finalise_all_sizes(
         symbol_db,
         &output_sections,
-        &mut layout_states,
+        &mut group_states,
         &symbol_resolution_flags,
     )?;
     let symbol_resolution_flags: Vec<ResolutionFlags> = symbol_resolution_flags
         .into_iter()
         .map(|f| f.into_non_atomic())
         .collect();
-    let non_addressable_counts = apply_non_addressable_indexes(&mut layout_states, symbol_db.args)?;
+    let non_addressable_counts = apply_non_addressable_indexes(&mut group_states, symbol_db.args)?;
     let section_part_sizes = compute_total_section_part_sizes(
-        &mut layout_states,
+        &mut group_states,
         &mut output_sections,
         &symbol_resolution_flags,
         sections_with_content,
@@ -110,7 +112,9 @@ pub fn compute<'data>(
     let section_layouts = layout_sections(&section_part_layouts);
     output.set_size(compute_total_file_size(&section_layouts));
 
-    let FileLayoutState::Internal(internal) = &layout_states[INTERNAL_FILE_ID.as_usize()] else {
+    let Some(FileLayoutState::Internal(internal)) =
+        &group_states.first().and_then(|g| g.files.first())
+    else {
         unreachable!();
     };
     let header_info = internal.header_info.as_ref().unwrap();
@@ -118,9 +122,9 @@ pub fn compute<'data>(
 
     let mem_offsets: OutputSectionPartMap<u64> =
         starting_memory_offsets(&section_part_layouts, &output_sections);
-    let starting_mem_offsets_by_file = compute_start_offsets_by_file(&layout_states, mem_offsets);
+    let starting_mem_offsets_by_group = compute_start_offsets_by_group(&group_states, mem_offsets);
     let merged_string_start_addresses =
-        MergedStringStartAddresses::compute(&output_sections, &starting_mem_offsets_by_file);
+        MergedStringStartAddresses::compute(&output_sections, &starting_mem_offsets_by_group);
     let mut symbol_resolutions = SymbolResolutions {
         resolutions: vec![None; symbol_db.num_symbols()],
     };
@@ -136,14 +140,14 @@ pub fn compute<'data>(
         section_layouts: &section_layouts,
         merged_string_start_addresses: &merged_string_start_addresses,
     };
-    let file_layouts = compute_symbols_and_layouts(
-        layout_states,
-        starting_mem_offsets_by_file,
+    let group_layouts = compute_symbols_and_layouts(
+        group_states,
+        starting_mem_offsets_by_group,
         &mut resolutions_by_file,
         &resources,
     )?;
-    update_dynamic_symbol_resolutions(&file_layouts, &mut symbol_resolutions.resolutions);
-    crate::gc_stats::maybe_write_gc_stats(&file_layouts, symbol_db.args)?;
+    update_dynamic_symbol_resolutions(&group_layouts, &mut symbol_resolutions.resolutions);
+    crate::gc_stats::maybe_write_gc_stats(&group_layouts, symbol_db.args)?;
 
     Ok(Layout {
         symbol_db,
@@ -151,7 +155,7 @@ pub fn compute<'data>(
         segment_layouts,
         section_part_layouts,
         section_layouts,
-        file_layouts,
+        group_layouts,
         output_sections,
         non_addressable_counts,
         symbol_resolution_flags,
@@ -161,10 +165,10 @@ pub fn compute<'data>(
 /// Update resolutions for all dynamic symbols that our output file defines.
 #[tracing::instrument(skip_all, name = "Update dynamic symbol resolutions")]
 fn update_dynamic_symbol_resolutions(
-    layouts: &[FileLayout],
+    layouts: &[GroupLayout],
     resolutions: &mut [Option<Resolution>],
 ) {
-    let Some(FileLayout::Epilogue(epilogue)) = layouts.last() else {
+    let Some(FileLayout::Epilogue(epilogue)) = layouts.last().and_then(|g| g.files.last()) else {
         panic!("Epilogue should be the last file");
     };
     for (index, sym) in epilogue.dynamic_symbol_definitions.iter().enumerate() {
@@ -180,23 +184,28 @@ fn update_dynamic_symbol_resolutions(
 fn finalise_all_sizes(
     symbol_db: &SymbolDb,
     output_sections: &OutputSections,
-    layout_states: &mut [FileLayoutState],
+    group_states: &mut [GroupState],
     symbol_resolution_flags: &[AtomicResolutionFlags],
 ) -> Result {
-    layout_states.par_iter_mut().try_for_each(|state| {
+    group_states.par_iter_mut().try_for_each(|state| {
         state.finalise_sizes(symbol_db, output_sections, symbol_resolution_flags)
     })
 }
 
 #[tracing::instrument(skip_all, name = "Merge dynamic symbol definitions")]
-fn merge_dynamic_symbol_definitions(layout_states: &mut [FileLayoutState]) -> Result {
+fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) -> Result {
     let mut dynamic_symbol_definitions = Vec::new();
-    for state in layout_states.iter() {
-        if let Some(common) = state.common() {
-            dynamic_symbol_definitions.extend(common.dynamic_symbol_definitions.iter().copied());
+    for group in group_states.iter() {
+        for file_state in &group.files {
+            if let Some(common) = file_state.common() {
+                dynamic_symbol_definitions
+                    .extend(common.dynamic_symbol_definitions.iter().copied());
+            }
         }
     }
-    let Some(FileLayoutState::Epilogue(epilogue)) = layout_states.last_mut() else {
+    let Some(FileLayoutState::Epilogue(epilogue)) =
+        group_states.last_mut().and_then(|g| g.files.last_mut())
+    else {
         panic!("Internal error, epilogue must be last");
     };
     epilogue.dynamic_symbol_definitions = dynamic_symbol_definitions;
@@ -216,7 +225,7 @@ pub struct Layout<'data> {
     pub(crate) symbol_resolutions: SymbolResolutions,
     pub(crate) section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
     pub(crate) section_layouts: OutputSectionMap<OutputRecordLayout>,
-    pub(crate) file_layouts: Vec<FileLayout<'data>>,
+    pub(crate) group_layouts: Vec<GroupLayout<'data>>,
     pub(crate) segment_layouts: SegmentLayouts,
     pub(crate) output_sections: OutputSections<'data>,
     pub(crate) non_addressable_counts: NonAddressableCounts,
@@ -967,9 +976,17 @@ pub(crate) struct Section<'data> {
     pub(crate) is_writable: bool,
 }
 
-struct FileWorker<'data> {
+pub(crate) struct GroupLayout<'data> {
+    // TODO: If we're going to have a fixed number of files per group, should we ditch the
+    // base_file_id and just use modulo?
+    pub(crate) base_file_id: FileId,
+    pub(crate) files: Vec<FileLayout<'data>>,
+}
+
+struct GroupState<'data> {
     queue: LocalWorkQueue,
-    state: FileLayoutState<'data>,
+    base_file_id: FileId,
+    files: Vec<FileLayoutState<'data>>,
 }
 
 /// The sizes and positions of either a segment or an output section. Note, we use usize for file
@@ -993,7 +1010,7 @@ struct GraphResources<'data, 'scope> {
 
     errors: Mutex<Vec<Error>>,
 
-    waiting_workers: ArrayQueue<FileWorker<'data>>,
+    waiting_workers: ArrayQueue<GroupState<'data>>,
 
     /// A queue in which we store threads when they're idle so that other threads can wake them up
     /// when more work comes in. We always have one less slot in this array than the number of
@@ -1034,9 +1051,24 @@ enum WorkItem {
     ExportCopyRelocation(SymbolId),
 }
 
+impl WorkItem {
+    fn file_id(&self, symbol_db: &SymbolDb) -> FileId {
+        symbol_db.file_id_for_symbol(self.symbol_id())
+    }
+
+    fn symbol_id(&self) -> SymbolId {
+        match self {
+            WorkItem::LoadGlobalSymbol(s) => *s,
+            WorkItem::ExportCopyRelocation(s) => *s,
+        }
+    }
+}
+
 impl<'data> Layout<'data> {
     pub(crate) fn internal(&self) -> &InternalLayout {
-        let Some(FileLayout::Internal(i)) = self.file_layouts.first() else {
+        let Some(FileLayout::Internal(i)) =
+            self.group_layouts.first().and_then(|g| g.files.first())
+        else {
             panic!("Internal layout not found at expected offset");
         };
         i
@@ -1129,37 +1161,40 @@ impl<'data> Layout<'data> {
     pub(crate) fn layout_data(&self) -> linker_layout::Layout {
         let e = object::LittleEndian;
         let files = self
-            .file_layouts
+            .group_layouts
             .iter()
-            .filter_map(|file| match file {
-                FileLayout::Object(obj) => Some(linker_layout::InputFile {
-                    path: obj.input.file.filename.clone(),
-                    archive_entry: obj.input.entry.as_ref().map(|e| {
-                        linker_layout::ArchiveEntryInfo {
-                            range: e.from.clone(),
-                            identifier: e.identifier.as_slice().to_owned(),
-                        }
-                    }),
-                    sections: obj
-                        .section_resolutions
-                        .iter()
-                        .zip(obj.object.sections.iter())
-                        .zip(&obj.sections)
-                        .map(|((maybe_res, section), section_slot)| {
-                            maybe_res.and_then(|res| {
-                                (matches!(section_slot, SectionSlot::Loaded(..))
-                                    && section.sh_size.get(e) > 0)
-                                    .then(|| {
-                                        let address = res.address().unwrap();
-                                        linker_layout::Section {
-                                            mem_range: address..(address + section.sh_size.get(e)),
-                                        }
-                                    })
+            .flat_map(|group| {
+                group.files.iter().filter_map(|file| match file {
+                    FileLayout::Object(obj) => Some(linker_layout::InputFile {
+                        path: obj.input.file.filename.clone(),
+                        archive_entry: obj.input.entry.as_ref().map(|e| {
+                            linker_layout::ArchiveEntryInfo {
+                                range: e.from.clone(),
+                                identifier: e.identifier.as_slice().to_owned(),
+                            }
+                        }),
+                        sections: obj
+                            .section_resolutions
+                            .iter()
+                            .zip(obj.object.sections.iter())
+                            .zip(&obj.sections)
+                            .map(|((maybe_res, section), section_slot)| {
+                                maybe_res.and_then(|res| {
+                                    (matches!(section_slot, SectionSlot::Loaded(..))
+                                        && section.sh_size.get(e) > 0)
+                                        .then(|| {
+                                            let address = res.address().unwrap();
+                                            linker_layout::Section {
+                                                mem_range: address
+                                                    ..(address + section.sh_size.get(e)),
+                                            }
+                                        })
+                                })
                             })
-                        })
-                        .collect(),
-                }),
-                _ => None,
+                            .collect(),
+                    }),
+                    _ => None,
+                })
             })
             .collect();
         linker_layout::Layout { files }
@@ -1167,6 +1202,12 @@ impl<'data> Layout<'data> {
 
     pub(crate) fn resolution_flags_for_symbol(&self, symbol_id: SymbolId) -> ResolutionFlags {
         self.symbol_resolution_flags[symbol_id.as_usize()]
+    }
+
+    pub(crate) fn file_layout(&self, file_id: FileId) -> &FileLayout {
+        let group_id = file_id.as_usize() / FILES_PER_GROUP;
+        let group_layout = &self.group_layouts[group_id];
+        &group_layout.files[file_id.as_usize() - group_layout.base_file_id.as_usize()]
     }
 }
 
@@ -1198,14 +1239,16 @@ fn layout_sections(
     })
 }
 
-#[tracing::instrument(skip_all, name = "Compute per-file start offsets")]
-fn compute_start_offsets_by_file(
-    layout_states: &[FileLayoutState<'_>],
+#[tracing::instrument(skip_all, name = "Compute per-group start offsets")]
+fn compute_start_offsets_by_group(
+    group_states: &[GroupState<'_>],
     mut mem_offsets: OutputSectionPartMap<u64>,
 ) -> Vec<Option<OutputSectionPartMap<u64>>> {
-    layout_states
+    group_states
         .iter()
-        .map(|file| {
+        .map(|group| {
+            assert_eq!(group.files.len(), 1);
+            let file = &group.files[0];
             if let Some(sizes) = file.mem_sizes() {
                 let file_mem_starts = mem_offsets.clone();
                 mem_offsets.merge(sizes);
@@ -1219,17 +1262,17 @@ fn compute_start_offsets_by_file(
 
 #[tracing::instrument(skip_all, name = "Assign symbol addresses")]
 fn compute_symbols_and_layouts<'data>(
-    layout_states: Vec<FileLayoutState<'data>>,
-    starting_mem_offsets_by_file: Vec<Option<OutputSectionPartMap<u64>>>,
+    group_states: Vec<GroupState<'data>>,
+    starting_mem_offsets_by_group: Vec<Option<OutputSectionPartMap<u64>>>,
     symbol_resolutions: &mut [&mut [Option<Resolution>]],
     resources: &FinaliseLayoutResources<'_, 'data>,
-) -> Result<Vec<FileLayout<'data>>> {
-    layout_states
+) -> Result<Vec<GroupLayout<'data>>> {
+    group_states
         .into_par_iter()
-        .zip(starting_mem_offsets_by_file)
+        .zip(starting_mem_offsets_by_group)
         .zip(symbol_resolutions)
         .map(|((state, mut memory_offsets), symbols_out)| {
-            state.finalise_layout(memory_offsets.as_mut(), symbols_out, resources)
+            state.finalise_layout(&mut memory_offsets, symbols_out, resources)
         })
         .collect()
 }
@@ -1314,20 +1357,22 @@ fn compute_segment_layout(
 
 #[tracing::instrument(skip_all, name = "Compute total section sizes")]
 fn compute_total_section_part_sizes(
-    layout_states: &mut [FileLayoutState],
+    group_states: &mut [GroupState],
     output_sections: &mut OutputSections,
     symbol_resolution_flags: &[ResolutionFlags],
     sections_with_content: OutputSectionMap<bool>,
 ) -> OutputSectionPartMap<u64> {
     let mut total_sizes: OutputSectionPartMap<u64> =
         OutputSectionPartMap::with_size(output_sections.len());
-    for file_state in layout_states.iter() {
-        if let Some(sizes) = file_state.mem_sizes() {
-            total_sizes.merge(sizes);
+    for group_state in group_states.iter() {
+        for file_state in &group_state.files {
+            if let Some(sizes) = file_state.mem_sizes() {
+                total_sizes.merge(sizes);
+            }
         }
     }
-    let FileLayoutState::Internal(internal_layout) =
-        &mut layout_states[INTERNAL_FILE_ID.as_usize()]
+    let Some(FileLayoutState::Internal(internal_layout)) =
+        group_states.first_mut().and_then(|g| g.files.first_mut())
     else {
         unreachable!();
     };
@@ -1345,7 +1390,7 @@ fn compute_total_section_part_sizes(
 /// some of the stages that run after it, that don't need access to the file states.
 #[tracing::instrument(skip_all, name = "Apply non-addressable indexes")]
 fn apply_non_addressable_indexes(
-    layout_states: &mut [FileLayoutState],
+    group_states: &mut [GroupState],
     args: &Args,
 ) -> Result<NonAddressableCounts> {
     let mut indexes = NonAddressableIndexes {
@@ -1353,12 +1398,14 @@ fn apply_non_addressable_indexes(
         gnu_version_r_index: object::elf::VER_NDX_GLOBAL + 1,
     };
     let mut counts = NonAddressableCounts { verneed_count: 0 };
-    for s in layout_states.iter_mut() {
-        match s {
-            FileLayoutState::Dynamic(s) => {
-                s.apply_non_addressable_indexes(&mut indexes, &mut counts)?
+    for g in group_states.iter_mut() {
+        for s in g.files.iter_mut() {
+            match s {
+                FileLayoutState::Dynamic(s) => {
+                    s.apply_non_addressable_indexes(&mut indexes, &mut counts)?
+                }
+                _ => {}
             }
-            _ => {}
         }
     }
 
@@ -1366,13 +1413,15 @@ fn apply_non_addressable_indexes(
     // versym allocations. This is partly to avoid wasting unnecessary space in the output file, but
     // mostly in order match what GNU ld does.
     if counts.verneed_count == 0 && args.should_output_symbol_versions() {
-        for s in layout_states {
-            match s {
-                FileLayoutState::Internal(s) => s.common.mem_sizes.gnu_version = 0,
-                FileLayoutState::Object(s) => s.state.common.mem_sizes.gnu_version = 0,
-                FileLayoutState::Dynamic(s) => s.common.mem_sizes.gnu_version = 0,
-                FileLayoutState::Epilogue(s) => s.common.mem_sizes.gnu_version = 0,
-                _ => {}
+        for g in group_states {
+            for s in &mut g.files {
+                match s {
+                    FileLayoutState::Internal(s) => s.common.mem_sizes.gnu_version = 0,
+                    FileLayoutState::Object(s) => s.state.common.mem_sizes.gnu_version = 0,
+                    FileLayoutState::Dynamic(s) => s.common.mem_sizes.gnu_version = 0,
+                    FileLayoutState::Epilogue(s) => s.common.mem_sizes.gnu_version = 0,
+                    _ => {}
+                }
             }
         }
     }
@@ -1401,7 +1450,7 @@ fn starting_memory_offsets(
 #[derive(Default)]
 struct WorkerSlot<'data> {
     work: Vec<WorkItem>,
-    worker: Option<FileWorker<'data>>,
+    worker: Option<GroupState<'data>>,
 }
 
 #[tracing::instrument(skip_all, name = "Find required sections")]
@@ -1410,7 +1459,7 @@ fn find_required_sections<'data>(
     symbol_db: &SymbolDb<'data>,
     output_sections: &OutputSections<'data>,
     symbol_resolution_flags: &[AtomicResolutionFlags],
-) -> Result<(Vec<FileLayoutState<'data>>, OutputSectionMap<bool>)> {
+) -> Result<(Vec<GroupState<'data>>, OutputSectionMap<bool>)> {
     let num_workers = file_states.len();
     let (worker_slots, workers) = create_worker_slots(file_states, output_sections);
 
@@ -1435,9 +1484,10 @@ fn find_required_sections<'data>(
     workers
         .into_par_iter()
         .try_for_each(|mut worker| -> Result {
-            worker
-                .activate(resources_ref)
-                .with_context(|| format!("Failed to activate {}", worker.state))?;
+            for file in &mut worker.files {
+                activate(file, &mut worker.queue, resources_ref)
+                    .with_context(|| format!("Failed to activate {file}"))?;
+            }
             let _ = resources_ref.waiting_workers.push(worker);
             Ok(())
         })?;
@@ -1491,22 +1541,23 @@ fn find_required_sections<'data>(
     if let Some(error) = errors.pop() {
         return Err(error);
     }
-    let worker_states = unwrap_worker_states(&resources.worker_slots)?;
+    let group_states = unwrap_worker_states(&resources.worker_slots)?;
     let sections_with_content = resources.sections_with_content.into_map(|v| v.into_inner());
-    Ok((worker_states, sections_with_content))
+    Ok((group_states, sections_with_content))
 }
 
 fn create_worker_slots<'data>(
     file_states: Vec<resolution::ResolvedFile<'data>>,
     output_sections: &OutputSections<'data>,
-) -> (Vec<Mutex<WorkerSlot<'data>>>, Vec<FileWorker<'data>>) {
+) -> (Vec<Mutex<WorkerSlot<'data>>>, Vec<GroupState<'data>>) {
     file_states
         .into_iter()
         .enumerate()
         .map(|(index, f)| {
-            let worker = FileWorker {
+            let worker = GroupState {
                 queue: LocalWorkQueue::new(index),
-                state: f.create_layout_state(output_sections),
+                base_file_id: FileId::from_usize(index).unwrap(),
+                files: vec![f.create_layout_state(output_sections)],
             };
             let slot = WorkerSlot {
                 work: Default::default(),
@@ -1519,21 +1570,22 @@ fn create_worker_slots<'data>(
 
 fn unwrap_worker_states<'data>(
     worker_slots: &[Mutex<WorkerSlot<'data>>],
-) -> Result<Vec<FileLayoutState<'data>>> {
+) -> Result<Vec<GroupState<'data>>> {
     Ok(worker_slots
         .iter()
         .filter_map(|w| w.lock().unwrap().worker.take())
-        .map(|w| w.state)
         .collect())
 }
 
-impl<'data> FileWorker<'data> {
+impl<'data> GroupState<'data> {
     /// Does work until there's nothing left in the queue, then returns our worker to its slot and
     /// shuts down.
     fn do_pending_work<'scope>(mut self, resources: &GraphResources<'data, 'scope>) {
         loop {
             while let Some(work_item) = self.queue.local_work.pop() {
-                if let Err(error) = self.state.do_work(work_item, resources, &mut self.queue) {
+                let file_id = work_item.file_id(resources.symbol_db);
+                let file = &mut self.files[file_id.as_usize() - self.base_file_id.as_usize()];
+                if let Err(error) = file.do_work(work_item, resources, &mut self.queue) {
                     resources.report_error(error);
                     return;
                 }
@@ -1549,14 +1601,47 @@ impl<'data> FileWorker<'data> {
         }
     }
 
-    fn activate(&mut self, resources: &GraphResources<'data, '_>) -> Result {
-        match &mut self.state {
-            FileLayoutState::Object(s) => s.activate(resources, &mut self.queue),
-            FileLayoutState::Internal(s) => s.activate(resources),
-            FileLayoutState::Dynamic(s) => s.activate(resources, &mut self.queue),
-            FileLayoutState::NotLoaded => Ok(()),
-            FileLayoutState::Epilogue(_) => Ok(()),
+    fn finalise_sizes(
+        &mut self,
+        symbol_db: &SymbolDb,
+        output_sections: &OutputSections,
+        symbol_resolution_flags: &[AtomicResolutionFlags],
+    ) -> Result {
+        for file_state in &mut self.files {
+            file_state.finalise_sizes(symbol_db, output_sections, symbol_resolution_flags)?
         }
+        Ok(())
+    }
+
+    fn finalise_layout(
+        self,
+        memory_offsets: &mut Option<OutputSectionPartMap<u64>>,
+        addresses_out: &mut [Option<Resolution>],
+        resources: &FinaliseLayoutResources<'_, 'data>,
+    ) -> Result<GroupLayout<'data>> {
+        let files = self
+            .files
+            .into_iter()
+            .map(|file| file.finalise_layout(memory_offsets, addresses_out, resources))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(GroupLayout {
+            base_file_id: self.base_file_id,
+            files,
+        })
+    }
+}
+
+fn activate<'data>(
+    file: &mut FileLayoutState<'data>,
+    queue: &mut LocalWorkQueue,
+    resources: &GraphResources<'data, '_>,
+) -> Result {
+    match file {
+        FileLayoutState::Object(s) => s.activate(resources, queue),
+        FileLayoutState::Internal(s) => s.activate(resources),
+        FileLayoutState::Dynamic(s) => s.activate(resources, queue),
+        FileLayoutState::NotLoaded => Ok(()),
+        FileLayoutState::Epilogue(_) => Ok(()),
     }
 }
 
@@ -1739,28 +1824,28 @@ impl<'data> FileLayoutState<'data> {
 
     fn finalise_layout(
         self,
-        memory_offsets: Option<&mut OutputSectionPartMap<u64>>,
+        memory_offsets: &mut Option<OutputSectionPartMap<u64>>,
         addresses_out: &mut [Option<Resolution>],
         resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<FileLayout<'data>> {
         let file_layout = match self {
             Self::Object(s) => FileLayout::Object(s.finalise_layout(
-                memory_offsets.unwrap(),
+                memory_offsets.as_mut().unwrap(),
                 addresses_out,
                 resources,
             )?),
             Self::Internal(s) => FileLayout::Internal(s.finalise_layout(
-                memory_offsets.unwrap(),
+                memory_offsets.as_mut().unwrap(),
                 addresses_out,
                 resources,
             )?),
             Self::Epilogue(s) => FileLayout::Epilogue(s.finalise_layout(
-                memory_offsets.unwrap(),
+                memory_offsets.as_mut().unwrap(),
                 addresses_out,
                 resources,
             )?),
             Self::Dynamic(s) => FileLayout::Dynamic(s.finalise_layout(
-                memory_offsets.unwrap(),
+                memory_offsets.as_mut().unwrap(),
                 addresses_out,
                 resources,
             )?),

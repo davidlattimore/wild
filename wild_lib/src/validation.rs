@@ -35,24 +35,26 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
             }
         }
     }
-    for file in &layout.file_layouts {
-        match file {
-            crate::layout::FileLayout::Internal(_) => {}
-            crate::layout::FileLayout::Object(obj) => {
-                for (sec_index, sec) in obj.object.sections.enumerate() {
-                    if let Some(resolution) = obj.section_resolutions[sec_index.0] {
-                        validate_resolution(
-                            obj.object.section_name(sec)?,
-                            &resolution,
-                            got,
-                            got_data,
-                        )?;
+    for group in &layout.group_layouts {
+        for file in &group.files {
+            match file {
+                crate::layout::FileLayout::Internal(_) => {}
+                crate::layout::FileLayout::Object(obj) => {
+                    for (sec_index, sec) in obj.object.sections.enumerate() {
+                        if let Some(resolution) = obj.section_resolutions[sec_index.0] {
+                            validate_resolution(
+                                obj.object.section_name(sec)?,
+                                &resolution,
+                                got,
+                                got_data,
+                            )?;
+                        }
                     }
                 }
+                crate::layout::FileLayout::Dynamic(_) => {}
+                crate::layout::FileLayout::Epilogue(_) => {}
+                crate::layout::FileLayout::NotLoaded => {}
             }
-            crate::layout::FileLayout::Dynamic(_) => {}
-            crate::layout::FileLayout::Epilogue(_) => {}
-            crate::layout::FileLayout::NotLoaded => {}
         }
     }
     Ok(())
