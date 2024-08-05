@@ -709,11 +709,11 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             .context("insufficient allocation to .rela.dyn (non-relative)")
     }
 
-    fn set_all_symbol_versions(&mut self, index: u16) {
-        self.versym
-            .iter_mut()
-            .for_each(|v| v.0.set(LittleEndian, index));
-        self.versym = Default::default();
+    fn set_next_symbol_version(&mut self, index: u16) -> Result {
+        let versym = crate::slice::take_first_mut(&mut self.versym)
+            .context("Insufficient .gnu.version allocation")?;
+        versym.0.set(LittleEndian, index);
+        Ok(())
     }
 }
 
@@ -919,13 +919,12 @@ impl<'data> ObjectLayout<'data> {
                     table_writer
                         .dynsym_writer
                         .copy_symbol_shndx(symbol, name, 0, 0)?;
+                    if layout.args().should_output_symbol_versions() {
+                        table_writer.set_next_symbol_version(object::elf::VER_NDX_GLOBAL)?;
+                    }
                 }
             }
         }
-
-        // If we're writing a shared object, we may have undefined symbols. Set them to use the
-        // global version.
-        table_writer.set_all_symbol_versions(object::elf::VER_NDX_GLOBAL);
 
         if !layout.args().strip_all {
             self.write_symbols(start_str_offset, buffers, &layout.output_sections, layout)?;
@@ -976,6 +975,7 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
+    /// Writes debug symbols.
     fn write_symbols(
         &self,
         start_str_offset: u32,
@@ -1454,8 +1454,9 @@ impl<'data> InternalLayout<'data> {
 
         // If we're emitting symbol versions, we should have only one - symbol 0 - the undefined
         // symbol. It needs to be set as local.
-        assert!(table_writer.versym.len() <= 1);
-        table_writer.set_all_symbol_versions(object::elf::VER_NDX_LOCAL);
+        if layout.args().should_output_symbol_versions() {
+            table_writer.set_next_symbol_version(object::elf::VER_NDX_GLOBAL)?;
+        }
 
         // Define the null dynamic symbol.
         if layout.args().needs_dynsym() {
