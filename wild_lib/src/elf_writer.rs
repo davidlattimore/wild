@@ -729,15 +729,11 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
     fn new(
         start_string_offset: u32,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
-        sizes: &OutputSectionPartMap<u64>,
         output_sections: &'data OutputSections<'data>,
     ) -> Self {
         let local_entries = slice_from_all_bytes_mut(core::mem::take(&mut buffers.symtab_locals));
         let global_entries = slice_from_all_bytes_mut(core::mem::take(&mut buffers.symtab_globals));
-        let strings = bytemuck::cast_slice_mut(slice_take_prefix_mut(
-            &mut buffers.symtab_strings,
-            sizes.symtab_strings as usize,
-        ));
+        let strings = core::mem::take(&mut buffers.symtab_strings);
         Self {
             local_entries,
             global_entries,
@@ -983,8 +979,7 @@ impl<'data> ObjectLayout<'data> {
         sections: &OutputSections,
         layout: &Layout,
     ) -> Result {
-        let mut symbol_writer =
-            SymbolTableWriter::new(start_str_offset, buffers, &self.mem_sizes, sections);
+        let mut symbol_writer = SymbolTableWriter::new(start_str_offset, buffers, sections);
         for ((sym_index, sym), sym_state) in self
             .object
             .symbols
@@ -1530,12 +1525,8 @@ impl<'data> InternalLayout<'data> {
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         layout: &Layout,
     ) -> Result {
-        let mut symbol_writer = SymbolTableWriter::new(
-            self.strings_offset_start,
-            buffers,
-            &self.mem_sizes,
-            &layout.output_sections,
-        );
+        let mut symbol_writer =
+            SymbolTableWriter::new(self.strings_offset_start, buffers, &layout.output_sections);
 
         // Define symbol 0. This needs to be a null placeholder.
         symbol_writer.define_symbol(true, 0, 0, 0, &[])?;
@@ -1575,12 +1566,8 @@ impl<'data> EpilogueLayout<'data> {
         write_internal_symbols_plt_got_entries(&self.internal_symbols, &mut table_writer, layout)?;
 
         if !layout.args().strip_all {
-            let mut symbol_writer = SymbolTableWriter::new(
-                self.strings_offset_start,
-                buffers,
-                &self.mem_sizes,
-                &layout.output_sections,
-            );
+            let mut symbol_writer =
+                SymbolTableWriter::new(self.strings_offset_start, buffers, &layout.output_sections);
             write_internal_symbols(&self.internal_symbols, layout, &mut symbol_writer)?;
         }
         if layout.args().needs_dynamic() {
