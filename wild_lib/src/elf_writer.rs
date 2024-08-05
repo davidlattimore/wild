@@ -376,7 +376,7 @@ impl<'data> FileLayout<'data> {
     }
 }
 
-struct TableWriter<'out> {
+struct TableWriter<'data, 'out> {
     output_kind: OutputKind,
     got: &'out mut [u64],
     plt: &'out mut [u8],
@@ -385,17 +385,22 @@ struct TableWriter<'out> {
     rela_dyn_relative: &'out mut [crate::elf::Rela],
     rela_dyn_general: &'out mut [crate::elf::Rela],
     versym: &'out mut [Versym],
+    dynsym_writer: SymbolTableWriter<'data, 'out>,
 }
 
-impl<'out> TableWriter<'out> {
+impl<'data, 'out> TableWriter<'data, 'out> {
     fn from_layout(
-        layout: &Layout,
+        layout: &'data Layout<'data>,
+        dynstr_start_offset: u32,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
-    ) -> TableWriter<'out> {
+    ) -> TableWriter<'data, 'out> {
+        let dynsym_writer =
+            SymbolTableWriter::new_dynamic(dynstr_start_offset, buffers, &layout.output_sections);
         Self::new(
             layout.args().output_kind,
             layout.tls_start_address()..layout.tls_end_address(),
             buffers,
+            dynsym_writer,
         )
     }
 
@@ -403,7 +408,8 @@ impl<'out> TableWriter<'out> {
         output_kind: OutputKind,
         tls: Range<u64>,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
-    ) -> TableWriter<'out> {
+        dynsym_writer: SymbolTableWriter<'data, 'out>,
+    ) -> TableWriter<'data, 'out> {
         TableWriter {
             output_kind,
             got: bytemuck::cast_slice_mut(core::mem::take(&mut buffers.got)),
@@ -417,6 +423,7 @@ impl<'out> TableWriter<'out> {
                 &mut buffers.rela_dyn_general,
             )),
             versym: slice_from_all_bytes_mut(core::mem::take(&mut buffers.gnu_version)),
+            dynsym_writer,
         }
     }
 
@@ -586,7 +593,7 @@ impl<'out> TableWriter<'out> {
                 mem_sizes.gnu_version / elf::GNU_VERSION_ENTRY_SIZE
             );
         }
-        Ok(())
+        self.dynsym_writer.check_exhausted()
     }
 
     fn write_ifunc_relocation(&mut self, res: &Resolution) -> Result {
@@ -879,7 +886,7 @@ impl<'data> ObjectLayout<'data> {
     fn write(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
         let _file_span = layout.args().trace_span_for_file(self.file_id);
         let start_str_offset = self.strtab_offset_start;
-        let mut table_writer = TableWriter::from_layout(layout, buffers);
+        let mut table_writer = TableWriter::from_layout(layout, self.dynstr_start_offset, buffers);
         for sec in &self.sections {
             match sec {
                 SectionSlot::Loaded(sec) => {
@@ -891,11 +898,6 @@ impl<'data> ObjectLayout<'data> {
                 _ => (),
             }
         }
-        let mut dynsym_writer = SymbolTableWriter::new_dynamic(
-            self.dynstr_start_offset,
-            buffers,
-            &layout.output_sections,
-        );
         for (symbol_id, resolution) in layout.resolutions_in_range(self.symbol_id_range) {
             let _span = tracing::trace_span!("Symbol", %symbol_id).entered();
             if let Some(res) = resolution {
@@ -914,7 +916,9 @@ impl<'data> ObjectLayout<'data> {
                         .object
                         .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
                     let name = self.object.symbol_name(symbol)?;
-                    dynsym_writer.copy_symbol_shndx(symbol, name, 0, 0)?;
+                    table_writer
+                        .dynsym_writer
+                        .copy_symbol_shndx(symbol, name, 0, 0)?;
                 }
             }
         }
@@ -927,16 +931,15 @@ impl<'data> ObjectLayout<'data> {
             self.write_symbols(start_str_offset, buffers, &layout.output_sections, layout)?;
         }
         table_writer.validate_empty(&self.mem_sizes)?;
-        dynsym_writer.check_exhausted()?;
         Ok(())
     }
 
     fn write_section(
         &self,
-        layout: &Layout<'_>,
-        sec: &Section<'_>,
+        layout: &Layout,
+        sec: &Section,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
-        table_writer: &mut TableWriter<'_>,
+        table_writer: &mut TableWriter,
     ) -> Result {
         if layout
             .output_sections
@@ -1433,7 +1436,7 @@ impl<'data> InternalLayout<'data> {
 
         write_section_header_strings(buffers.shstrtab, &layout.output_sections);
 
-        let mut table_writer = TableWriter::from_layout(layout, buffers);
+        let mut table_writer = TableWriter::from_layout(layout, 0, buffers);
 
         self.write_plt_got_entries(layout, &mut table_writer)?;
 
@@ -1453,6 +1456,13 @@ impl<'data> InternalLayout<'data> {
         // symbol. It needs to be set as local.
         assert!(table_writer.versym.len() <= 1);
         table_writer.set_all_symbol_versions(object::elf::VER_NDX_LOCAL);
+
+        // Define the null dynamic symbol.
+        if layout.args().needs_dynsym() {
+            table_writer
+                .dynsym_writer
+                .define_symbol(false, 0, 0, 0, &[])?;
+        }
 
         table_writer.validate_empty(&self.mem_sizes)?;
 
@@ -1560,7 +1570,7 @@ fn write_epilogue_dynamic_entries(
 
 impl<'data> EpilogueLayout<'data> {
     fn write(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
-        let mut table_writer = TableWriter::from_layout(layout, buffers);
+        let mut table_writer = TableWriter::from_layout(layout, self.dynstr_offset_start, buffers);
         write_internal_symbols_plt_got_entries(&self.internal_symbols, &mut table_writer, layout)?;
 
         if !layout.args().strip_all {
@@ -1572,29 +1582,18 @@ impl<'data> EpilogueLayout<'data> {
             );
             write_internal_symbols(&self.internal_symbols, layout, &mut symbol_writer)?;
         }
-        let mut dynamic_symbol_writer = SymbolTableWriter::new_dynamic(
-            self.dynstr_offset_start,
-            buffers,
-            &layout.output_sections,
-        );
         if layout.args().needs_dynamic() {
             write_epilogue_dynamic_entries(
                 buffers.dynamic,
                 layout,
-                &mut dynamic_symbol_writer.strtab_writer,
+                &mut table_writer.dynsym_writer.strtab_writer,
             )?;
         }
         write_gnu_hash_tables(self, buffers)?;
 
-        write_dynamic_symbol_definitions(
-            self,
-            &mut dynamic_symbol_writer,
-            &mut table_writer,
-            layout,
-        )?;
+        write_dynamic_symbol_definitions(self, &mut table_writer, layout)?;
 
         table_writer.validate_empty(&self.mem_sizes)?;
-        dynamic_symbol_writer.check_exhausted()?;
 
         Ok(())
     }
@@ -1666,7 +1665,6 @@ fn write_gnu_hash_tables(
 
 fn write_dynamic_symbol_definitions(
     epilogue: &EpilogueLayout,
-    dynamic_symbol_writer: &mut SymbolTableWriter,
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
@@ -1679,7 +1677,7 @@ fn write_dynamic_symbol_definitions(
                     sym_def,
                     object,
                     layout,
-                    dynamic_symbol_writer,
+                    &mut table_writer.dynsym_writer,
                 )?;
 
                 // We don't yet support setting symbol versions for symbols that we export, so right
@@ -1693,7 +1691,7 @@ fn write_dynamic_symbol_definitions(
                     sym_def,
                     object,
                     layout,
-                    dynamic_symbol_writer,
+                    &mut table_writer.dynsym_writer,
                 )?;
 
                 write_symbol_version(
@@ -2168,14 +2166,12 @@ fn write_internal_symbols_plt_got_entries(
 
 impl<'data> DynamicLayout<'data> {
     fn write(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>, layout: &Layout) -> Result {
-        let mut table_writer = TableWriter::from_layout(layout, buffers);
-        let mut dynsym_writer = SymbolTableWriter::new_dynamic(
-            self.dynstr_start_offset,
-            buffers,
-            &layout.output_sections,
-        );
+        let mut table_writer = TableWriter::from_layout(layout, self.dynstr_start_offset, buffers);
 
-        self.write_so_name(buffers.dynamic, &mut dynsym_writer.strtab_writer)?;
+        self.write_so_name(
+            buffers.dynamic,
+            &mut table_writer.dynsym_writer.strtab_writer,
+        )?;
 
         for ((symbol_id, resolution), symbol) in layout
             .resolutions_in_range(self.symbol_id_range)
@@ -2190,7 +2186,9 @@ impl<'data> DynamicLayout<'data> {
                     // by the epilogue not by us.
                 } else {
                     let name = self.object.symbol_name(symbol)?;
-                    dynsym_writer.copy_symbol_shndx(symbol, name, 0, 0)?;
+                    table_writer
+                        .dynsym_writer
+                        .copy_symbol_shndx(symbol, name, 0, 0)?;
 
                     write_symbol_version(
                         self.input_symbol_versions,
@@ -2243,7 +2241,7 @@ impl<'data> DynamicLayout<'data> {
                 if is_base {
                     let aux_in = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
                     let name = aux_in.name(e, strings)?;
-                    let name_offset = dynsym_writer.strtab_writer.write_str(name);
+                    let name_offset = table_writer.dynsym_writer.strtab_writer.write_str(name);
                     ver_need.vn_file.set(e, name_offset);
                     continue;
                 }
@@ -2259,7 +2257,7 @@ impl<'data> DynamicLayout<'data> {
                     // Every VERDEF entry should have at least one AUX entry.
                     let aux_in = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
                     let name = aux_in.name(e, strings)?;
-                    let name_offset = dynsym_writer.strtab_writer.write_str(name);
+                    let name_offset = table_writer.dynsym_writer.strtab_writer.write_str(name);
                     let sysv_name_hash = object::elf::hash(name);
                     let is_last_aux = aux_index + 1 == auxes.len();
                     let aux_out = auxes
@@ -2278,8 +2276,6 @@ impl<'data> DynamicLayout<'data> {
                 }
             }
         }
-
-        dynsym_writer.check_exhausted()?;
 
         Ok(())
     }
@@ -2380,7 +2376,8 @@ pub(crate) fn verify_resolution_allocation(
         crate::slice::slice_take_prefix_mut(&mut all_mem, size as usize)
     });
 
-    let mut table_writer = TableWriter::new(output_kind, 0..100, &mut buffers);
+    let dynsym_writer = SymbolTableWriter::new_dynamic(0, &mut buffers, output_sections);
+    let mut table_writer = TableWriter::new(output_kind, 0..100, &mut buffers, dynsym_writer);
     table_writer.process_resolution(resolution)?;
     table_writer.validate_empty(&mem_sizes)
 }
