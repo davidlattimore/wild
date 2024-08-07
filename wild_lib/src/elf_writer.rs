@@ -397,6 +397,11 @@ struct TableWriter<'data, 'out> {
     dynsym_writer: SymbolTableWriter<'data, 'out>,
     debug_symbol_writer: SymbolTableWriter<'data, 'out>,
     eh_frame_start_address: u64,
+    eh_frame: &'out mut [u8],
+
+    /// Note, this is stored as raw bytes because it starts with an EhFrameHdr, but is then followed
+    /// by multiple EhFrameHdrEntry.
+    eh_frame_hdr: &'out mut [u8],
 }
 
 impl<'data, 'out> TableWriter<'data, 'out> {
@@ -412,6 +417,9 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         let debug_symbol_writer =
             SymbolTableWriter::new(strtab_start_offset, buffers, &layout.output_sections);
 
+        let eh_frame = core::mem::take(&mut buffers.eh_frame);
+        let eh_frame_hdr = core::mem::take(&mut buffers.eh_frame_hdr);
+
         Self::new(
             layout.args().output_kind,
             layout.tls_start_address()..layout.tls_end_address(),
@@ -419,6 +427,8 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
+            eh_frame,
+            eh_frame_hdr,
         )
     }
 
@@ -429,6 +439,8 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         dynsym_writer: SymbolTableWriter<'data, 'out>,
         debug_symbol_writer: SymbolTableWriter<'data, 'out>,
         eh_frame_start_address: u64,
+        eh_frame: &'out mut [u8],
+        eh_frame_hdr: &'out mut [u8],
     ) -> TableWriter<'data, 'out> {
         TableWriter {
             output_kind,
@@ -446,6 +458,8 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
+            eh_frame,
+            eh_frame_hdr,
         }
     }
 
@@ -617,6 +631,20 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         }
         self.dynsym_writer.check_exhausted()?;
         self.debug_symbol_writer.check_exhausted()?;
+        if !self.eh_frame.is_empty() {
+            bail!(
+                "Allocated too much space in .eh_frame. {} of {} bytes remain",
+                self.eh_frame.len(),
+                mem_sizes.eh_frame
+            );
+        }
+        if !self.eh_frame_hdr.is_empty() {
+            bail!(
+                "Allocated too much space in .eh_frame_hdr. {} of {} bytes remain",
+                self.eh_frame_hdr.len(),
+                mem_sizes.eh_frame_hdr
+            );
+        }
         Ok(())
     }
 
@@ -738,6 +766,35 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             .context("Insufficient .gnu.version allocation")?;
         versym.0.set(LittleEndian, index);
         Ok(())
+    }
+
+    fn take_eh_frame_hdr(&mut self) -> &'out mut EhFrameHdr {
+        let entry_bytes = crate::slice::slice_take_prefix_mut(
+            &mut self.eh_frame_hdr,
+            core::mem::size_of::<EhFrameHdr>(),
+        );
+        bytemuck::from_bytes_mut(entry_bytes)
+    }
+
+    fn take_eh_frame_hdr_entry(&mut self) -> Option<&mut EhFrameHdrEntry> {
+        if self.eh_frame_hdr.is_empty() {
+            return None;
+        }
+        let entry_bytes = crate::slice::slice_take_prefix_mut(
+            &mut self.eh_frame_hdr,
+            core::mem::size_of::<EhFrameHdrEntry>(),
+        );
+        Some(bytemuck::from_bytes_mut(entry_bytes))
+    }
+
+    fn take_eh_frame_data(&mut self, size: usize) -> Result<&'out mut [u8]> {
+        if size > self.eh_frame.len() {
+            bail!("Insufficient allocation to .eh_frame section");
+        }
+        Ok(crate::slice::slice_take_prefix_mut(
+            &mut self.eh_frame,
+            size,
+        ))
     }
 }
 
@@ -916,7 +973,7 @@ impl<'data> ObjectLayout<'data> {
                     self.write_section(layout, sec, buffers, table_writer)?
                 }
                 SectionSlot::EhFrameData(section_index) => {
-                    self.write_eh_frame_data(*section_index, buffers, layout, table_writer)?;
+                    self.write_eh_frame_data(*section_index, layout, table_writer)?;
                 }
                 _ => (),
             }
@@ -1104,14 +1161,9 @@ impl<'data> ObjectLayout<'data> {
     fn write_eh_frame_data(
         &self,
         eh_frame_section_index: object::SectionIndex,
-        buffers: &mut OutputSectionPartMap<&mut [u8]>,
         layout: &Layout,
         table_writer: &mut TableWriter,
     ) -> Result {
-        let output_data = &mut buffers.eh_frame[..];
-        let headers_out: &mut [EhFrameHdrEntry] =
-            bytemuck::cast_slice_mut(&mut buffers.eh_frame_hdr[..]);
-        let mut header_offset = 0;
         let eh_frame_section = self.object.section(eh_frame_section_index)?;
         let data = self.object.section_data(eh_frame_section)?;
         const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
@@ -1177,21 +1229,20 @@ impl<'data> ObjectLayout<'data> {
                                             prefix.cie_id, cie_pointer_pos
                                         )
                                     })?;
-                                if !headers_out.is_empty() {
+                                if let Some(hdr_out) = table_writer.take_eh_frame_hdr_entry() {
                                     let frame_ptr =
                                         (section_resolution.address()? + offset_in_section) as i64
                                             - eh_frame_hdr_address as i64;
                                     let frame_info_ptr = (frame_info_ptr_base + output_pos as u64)
                                         as i64
                                         - eh_frame_hdr_address as i64;
-                                    headers_out[header_offset] = EhFrameHdrEntry {
+                                    *hdr_out = EhFrameHdrEntry {
                                         frame_ptr: i32::try_from(frame_ptr)
                                             .context("32 bit overflow in frame_ptr")?,
                                         frame_info_ptr: i32::try_from(frame_info_ptr).context(
                                             "32 bit overflow when computing frame_info_ptr",
                                         )?,
                                     };
-                                    header_offset += 1;
                                 }
                                 // TODO: Experiment with skipping this lookup if the `input_cie_pos`
                                 // is the same as the previous entry.
@@ -1203,10 +1254,7 @@ impl<'data> ObjectLayout<'data> {
                 }
             }
             if should_keep {
-                if next_output_pos > output_data.len() {
-                    bail!("Insufficient allocation to .eh_frame section");
-                }
-                let entry_out = &mut output_data[output_pos..next_output_pos];
+                let entry_out = table_writer.take_eh_frame_data(next_output_pos - output_pos)?;
                 entry_out.copy_from_slice(&data[input_pos..next_input_pos]);
                 if let Some(output_cie_offset) = output_cie_offset {
                     entry_out[4..8].copy_from_slice(&output_cie_offset.to_le_bytes());
@@ -1253,15 +1301,17 @@ impl<'data> ObjectLayout<'data> {
             input_pos = next_input_pos;
         }
 
-        table_writer.eh_frame_start_address += output_pos as u64;
-
         // Copy any remaining bytes in .eh_frame that aren't large enough to constitute an actual
         // entry. crtend.o has a single u32 equal to 0 as an end marker.
         let remaining = data.len() - input_pos;
         if remaining > 0 {
-            output_data[output_pos..output_pos + remaining]
+            table_writer
+                .take_eh_frame_data(remaining)?
                 .copy_from_slice(&data[input_pos..input_pos + remaining]);
+            output_pos += remaining;
         }
+
+        table_writer.eh_frame_start_address += output_pos as u64;
 
         Ok(())
     }
@@ -1483,7 +1533,7 @@ impl InternalLayout {
         }
 
         if layout.args().should_write_eh_frame_hdr {
-            write_eh_frame_hdr(buffers, layout)?;
+            write_eh_frame_hdr(table_writer, layout)?;
         }
 
         self.write_merged_strings(buffers, layout);
@@ -1867,11 +1917,8 @@ fn write_internal_symbols(
     Ok(())
 }
 
-fn write_eh_frame_hdr(
-    buffers: &mut OutputSectionPartMap<&mut [u8]>,
-    layout: &Layout<'_>,
-) -> Result {
-    let header: &mut EhFrameHdr = bytemuck::from_bytes_mut(buffers.eh_frame_hdr);
+fn write_eh_frame_hdr(table_writer: &mut TableWriter, layout: &Layout<'_>) -> Result {
+    let header = table_writer.take_eh_frame_hdr();
     header.version = 1;
 
     header.table_encoding = elf::ExceptionHeaderFormat::I32 as u8
@@ -2417,6 +2464,8 @@ pub(crate) fn verify_resolution_allocation(
         dynsym_writer,
         debug_symbol_writer,
         0,
+        Default::default(),
+        Default::default(),
     );
     table_writer.process_resolution(resolution)?;
     table_writer.validate_empty(&mem_sizes)
