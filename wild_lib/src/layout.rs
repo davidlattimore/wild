@@ -33,9 +33,11 @@ use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::MAX_SEGMENTS;
 use crate::relaxation::Relaxation;
 use crate::resolution;
-use crate::resolution::MergedStringResolution;
+use crate::resolution::MergeStringsSection;
+use crate::resolution::ResolutionOutputs;
 use crate::resolution::ResolvedEpilogue;
 use crate::resolution::SectionSlot;
+use crate::resolution::StringToMerge;
 use crate::resolution::ValueFlags;
 use crate::sharding::split_slice;
 use crate::sharding::ShardKey;
@@ -76,10 +78,14 @@ const FILES_PER_GROUP: usize = 1;
 #[tracing::instrument(skip_all, name = "Layout")]
 pub fn compute<'data>(
     symbol_db: &'data SymbolDb<'data>,
-    file_states: Vec<resolution::ResolvedFile<'data>>,
-    mut output_sections: OutputSections<'data>,
+    resolved: ResolutionOutputs<'data>,
     output: &mut elf_writer::Output,
 ) -> Result<Layout<'data>> {
+    let ResolutionOutputs {
+        files: file_states,
+        mut output_sections,
+        merged_strings,
+    } = resolved;
     if let Some(sym_info) = symbol_db.args.sym_info.as_deref() {
         print_symbol_info(symbol_db, sym_info);
     }
@@ -89,6 +95,7 @@ pub fn compute<'data>(
         symbol_db,
         &output_sections,
         &symbol_resolution_flags,
+        &merged_strings,
     )?;
     merge_dynamic_symbol_definitions(&mut group_states)?;
     finalise_all_sizes(
@@ -139,6 +146,7 @@ pub fn compute<'data>(
         output_sections: &output_sections,
         section_layouts: &section_layouts,
         merged_string_start_addresses: &merged_string_start_addresses,
+        merged_strings: &merged_strings,
     };
     let group_layouts = compute_symbols_and_layouts(
         group_states,
@@ -159,6 +167,8 @@ pub fn compute<'data>(
         output_sections,
         non_addressable_counts,
         symbol_resolution_flags,
+        merged_strings,
+        merged_string_start_addresses,
     })
 }
 
@@ -225,6 +235,8 @@ pub struct Layout<'data> {
     pub(crate) output_sections: OutputSections<'data>,
     pub(crate) non_addressable_counts: NonAddressableCounts,
     pub(crate) symbol_resolution_flags: Vec<ResolutionFlags>,
+    pub(crate) merged_strings: OutputSectionMap<MergeStringsSection<'data>>,
+    pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
 }
 
 pub(crate) struct SegmentLayouts {
@@ -245,7 +257,7 @@ pub(crate) struct SymbolResolutions {
 }
 
 pub(crate) enum FileLayout<'data> {
-    Internal(InternalLayout<'data>),
+    Internal(InternalLayout),
     Object(ObjectLayout<'data>),
     Dynamic(DynamicLayout<'data>),
     Epilogue(EpilogueLayout<'data>),
@@ -286,7 +298,7 @@ pub(crate) enum TlsMode {
 }
 
 enum FileLayoutState<'data> {
-    Internal(InternalLayoutState<'data>),
+    Internal(InternalLayoutState),
     Object(ObjectLayoutState<'data>),
     Dynamic(DynamicLayoutState<'data>),
     NotLoaded,
@@ -294,13 +306,12 @@ enum FileLayoutState<'data> {
 }
 
 /// Data that doesn't come from any input files, but needs to be written by the linker.
-struct InternalLayoutState<'data> {
+struct InternalLayoutState {
     file_id: FileId,
     symbol_id_range: SymbolIdRange,
     internal_symbols: InternalSymbols,
     entry_symbol_id: Option<SymbolId>,
     needs_tlsld_got_entry: bool,
-    merged_strings: OutputSectionMap<resolution::MergedStringsSection<'data>>,
     identity: String,
     header_info: Option<HeaderInfo>,
     dynamic_linker: Option<CString>,
@@ -337,13 +348,11 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) sections: Vec<SectionSlot<'data>>,
     pub(crate) section_resolutions: Vec<Option<Resolution>>,
     pub(crate) symbol_id_range: SymbolIdRange,
-    pub(crate) merged_string_resolutions: Vec<Option<MergedStringResolution>>,
 }
 
-pub(crate) struct InternalLayout<'data> {
+pub(crate) struct InternalLayout {
     pub(crate) entry_symbol_id: Option<SymbolId>,
     pub(crate) tlsld_got_entry: Option<NonZeroU64>,
-    pub(crate) merged_strings: OutputSectionMap<resolution::MergedStringsSection<'data>>,
     pub(crate) identity: String,
     pub(crate) header_info: HeaderInfo,
     pub(crate) internal_symbols: InternalSymbols,
@@ -674,7 +683,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
     }
 }
 
-impl<'data> SymbolRequestHandler<'data> for InternalLayoutState<'data> {
+impl<'data> SymbolRequestHandler<'data> for InternalLayoutState {
     fn file_id(&self) -> FileId {
         self.file_id
     }
@@ -802,8 +811,6 @@ struct ObjectLayoutMutableState<'data> {
 
     /// A queue of sections that we need to load.
     sections_required: Vec<SectionRequest>,
-
-    merged_string_resolutions: Vec<Option<MergedStringResolution>>,
 
     cies: SmallVec<[CieAtOffset<'data>; 2]>,
 }
@@ -1022,6 +1029,8 @@ struct GraphResources<'data, 'scope> {
     /// with size 0. If we do that, we still need to produce the output section so that we have
     /// something to refer to in the symtab.
     sections_with_content: OutputSectionMap<AtomicBool>,
+
+    merged_strings: &'scope OutputSectionMap<MergeStringsSection<'data>>,
 }
 
 struct FinaliseLayoutResources<'scope, 'data> {
@@ -1030,6 +1039,7 @@ struct FinaliseLayoutResources<'scope, 'data> {
     output_sections: &'scope OutputSections<'data>,
     section_layouts: &'scope OutputSectionMap<OutputRecordLayout>,
     merged_string_start_addresses: &'scope MergedStringStartAddresses,
+    merged_strings: &'scope OutputSectionMap<MergeStringsSection<'data>>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1437,6 +1447,7 @@ fn find_required_sections<'data>(
     symbol_db: &SymbolDb<'data>,
     output_sections: &OutputSections<'data>,
     symbol_resolution_flags: &[AtomicResolutionFlags],
+    merged_strings: &OutputSectionMap<MergeStringsSection<'data>>,
 ) -> Result<(Vec<GroupState<'data>>, OutputSectionMap<bool>)> {
     let num_workers = file_states.len();
     let (worker_slots, groups) = create_worker_slots(file_states, output_sections);
@@ -1456,6 +1467,7 @@ fn find_required_sections<'data>(
         output_sections,
         symbol_resolution_flags,
         sections_with_content: OutputSectionMap::with_size(output_sections.len()),
+        merged_strings,
     };
     let resources_ref = &resources;
 
@@ -1898,7 +1910,7 @@ fn compute_file_sizes(
     })
 }
 
-impl<'data> std::fmt::Display for InternalLayoutState<'data> {
+impl std::fmt::Display for InternalLayoutState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt("<internal>", f)
     }
@@ -2109,7 +2121,7 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
     }
 }
 
-impl<'data> InternalLayoutState<'data> {
+impl<'data> InternalLayoutState {
     fn new(input_state: resolution::ResolvedInternal<'data>) -> Self {
         Self {
             file_id: INTERNAL_FILE_ID,
@@ -2120,7 +2132,6 @@ impl<'data> InternalLayoutState<'data> {
             },
             entry_symbol_id: None,
             needs_tlsld_got_entry: false,
-            merged_strings: input_state.merged_strings,
             identity: crate::identity::linker_identity(),
             header_info: None,
             dynamic_linker: None,
@@ -2133,9 +2144,9 @@ impl<'data> InternalLayoutState<'data> {
         resources: &GraphResources,
         queue: &mut LocalWorkQueue,
     ) -> Result {
-        self.merged_strings.for_each(|section_id, merged| {
-            if merged.len > 0 {
-                *common.mem_sizes.regular_mut(section_id, alignment::MIN) += merged.len;
+        resources.merged_strings.for_each(|section_id, merged| {
+            if merged.len() > 0 {
+                *common.mem_sizes.regular_mut(section_id, alignment::MIN) += merged.len();
             }
         });
 
@@ -2338,7 +2349,7 @@ impl<'data> InternalLayoutState<'data> {
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut [Option<Resolution>],
         resources: &FinaliseLayoutResources,
-    ) -> Result<InternalLayout<'data>> {
+    ) -> Result<InternalLayout> {
         let header_layout = resources
             .section_layouts
             .built_in(output_section_id::FILE_HEADER);
@@ -2362,7 +2373,6 @@ impl<'data> InternalLayoutState<'data> {
             internal_symbols: self.internal_symbols,
             entry_symbol_id: self.entry_symbol_id,
             tlsld_got_entry,
-            merged_strings: self.merged_strings,
             identity: self.identity,
             dynamic_linker: self.dynamic_linker,
             header_info: self
@@ -2604,7 +2614,6 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             state: ObjectLayoutMutableState {
                 sections: non_dynamic.sections,
                 sections_required: Default::default(),
-                merged_string_resolutions: non_dynamic.merged_string_resolutions,
                 cies: Default::default(),
             },
         })
@@ -2830,7 +2839,6 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result<ObjectLayout<'data>> {
         let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
-        let mut sections = core::mem::take(&mut self.state.sections);
 
         let mut emitter = create_global_address_emitter(
             self.symbol_id_range,
@@ -2838,8 +2846,8 @@ impl<'data> ObjectLayoutState<'data> {
             resources.symbol_resolution_flags,
         );
 
-        let mut section_resolutions = Vec::with_capacity(sections.len());
-        for slot in sections.iter_mut() {
+        let mut section_resolutions = Vec::with_capacity(self.state.sections.len());
+        for slot in self.state.sections.iter_mut() {
             match slot {
                 SectionSlot::Loaded(sec) => {
                     let output_section_id = sec.output_section_id.with_context(|| {
@@ -2900,10 +2908,9 @@ impl<'data> ObjectLayoutState<'data> {
             input: self.input,
             file_id: self.file_id,
             object: self.object,
-            sections,
+            sections: self.state.sections,
             section_resolutions,
             symbol_id_range,
-            merged_string_resolutions: self.state.merged_string_resolutions,
         })
     }
 
@@ -2936,19 +2943,21 @@ impl<'data> ObjectLayoutState<'data> {
             if let Some(section_resolution) = section_resolutions[section_index.0].as_ref() {
                 local_symbol.st_value(e) + section_resolution.address()?
             } else {
-                resources
-                    .merged_string_start_addresses
-                    .try_resolve_local(
-                        &self.state.merged_string_resolutions,
-                        symbol_id_range.input_to_offset(local_symbol_index),
+                get_merged_string_output_address(
+                    local_symbol_index,
+                    0,
+                    self.object,
+                    &self.state.sections,
+                    resources.merged_strings,
+                    resources.merged_string_start_addresses,
+                )?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Symbol is in a section that we didn't load. Symbol: {} Section: {}",
+                        resources.symbol_db.symbol_debug(symbol_id),
+                        section_debug(self.object, section_index),
                     )
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "Symbol is in a section that we didn't load. Symbol: {} Section: {}",
-                            resources.symbol_db.symbol_debug(symbol_id),
-                            section_debug(self.object, section_index),
-                        )
-                    })?
+                })?
             }
         } else if local_symbol.is_common(e) {
             let common = CommonSymbol::new(local_symbol)?;
@@ -3070,19 +3079,6 @@ impl MergedStringStartAddresses {
                 *internal_start_offsets.regular(section_id, alignment::MIN);
         }
         Self { addresses }
-    }
-
-    /// Returns the address of `local_symbol_index` if it points to a merged string, or None if not.
-    fn try_resolve_local(
-        &self,
-        merged_string_resolutions: &[Option<MergedStringResolution>],
-        local_symbol_index: usize,
-    ) -> Option<u64> {
-        merged_string_resolutions[local_symbol_index].map(|res| self.resolve(res))
-    }
-
-    pub(crate) fn resolve(&self, res: resolution::MergedStringResolution) -> u64 {
-        self.addresses.get(res.output_section_id) + res.offset
     }
 }
 
@@ -3421,6 +3417,76 @@ impl Resolution {
             .context("Missing dynamic_symbol_index")?
             .get())
     }
+
+    pub(crate) fn value_with_addend(
+        &self,
+        addend: u64,
+        symbol_index: object::SymbolIndex,
+        object_layout: &ObjectLayout,
+        merged_strings: &OutputSectionMap<resolution::MergeStringsSection>,
+        merged_string_start_addresses: &MergedStringStartAddresses,
+    ) -> Result<u64> {
+        //if self.raw_value == 0 {
+        if let Some(r) = get_merged_string_output_address(
+            symbol_index,
+            addend,
+            object_layout.object,
+            &object_layout.sections,
+            merged_strings,
+            merged_string_start_addresses,
+        )? {
+            return Ok(r);
+        }
+        //}
+        Ok(self.raw_value.wrapping_add(addend))
+    }
+}
+
+/// Looks for a merged string at `symbol_index` + `addend` in the input and if found, returns its
+/// address in the output.
+fn get_merged_string_output_address(
+    symbol_index: object::SymbolIndex,
+    addend: u64,
+    object: &crate::elf::File,
+    sections: &[SectionSlot],
+    merged_strings: &OutputSectionMap<resolution::MergeStringsSection>,
+    merged_string_start_addresses: &MergedStringStartAddresses,
+) -> Result<Option<u64>> {
+    let symbol = object.symbol(symbol_index)?;
+    let Some(section_index) = object.symbol_section(symbol, symbol_index)? else {
+        return Ok(None);
+    };
+    let SectionSlot::MergeStrings(merge_slot) = &sections[section_index.0] else {
+        return Ok(None);
+    };
+    let section = object.section(section_index)?;
+    let data = object.section_data(section)?;
+    let mut input_offset = symbol.st_value(LittleEndian).wrapping_add(addend);
+    if input_offset > data.len() as u64 {
+        bail!(
+            "Invalid merge-string offset {input_offset} in section of length {}",
+            data.len()
+        );
+    }
+
+    // The offset might point part way through a string. Look backward to find the start of the
+    // string so that we look up the whole string. We then reverse that offset in our final position
+    // computation.
+    let mut offset_into_string = 0;
+    while input_offset > 0 && data[input_offset as usize - 1] != 0 {
+        input_offset -= 1;
+        offset_into_string += 1;
+    }
+    let string = StringToMerge::take_hashed(&mut &data[input_offset as usize..])?;
+    let output_section_id = merge_slot.precomputed_output_section_id();
+    let strings_section = merged_strings.get(output_section_id);
+    let output_offset = strings_section
+        .get(&string)
+        .with_context(|| format!("Failed to find merge-string `{}`", *string))?;
+    let section_base = merged_string_start_addresses
+        .addresses
+        .get(output_section_id);
+    Ok(Some(section_base + output_offset + offset_into_string))
 }
 
 fn layout_section_parts(

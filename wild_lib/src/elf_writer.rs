@@ -1020,13 +1020,8 @@ impl<'data> ObjectLayout<'data> {
                     if let Some(section_index) = self.object.symbol_section(sym, sym_index)? {
                         match &self.sections[section_index.0] {
                             SectionSlot::Loaded(section) => section.output_section_id.unwrap(),
-                            SectionSlot::MergeStrings(_) => {
-                                let local_index = self.symbol_id_range.input_to_offset(sym_index);
-                                let merged_string_res = &self.merged_string_resolutions[local_index]
-                                .context(
-                                    "Tried to write symbol for merged string without a resolution",
-                                )?;
-                                merged_string_res.output_section_id
+                            SectionSlot::MergeStrings(section) => {
+                                section.precomputed_output_section_id()
                             }
                             SectionSlot::EhFrameData(..) => output_section_id::EH_FRAME,
                             _ => bail!("Tried to copy a symbol in a section we didn't load"),
@@ -1361,10 +1356,26 @@ fn apply_relocation(
         rel_info = RelocationKindInfo::from_raw(r_type)?;
     }
     let value = match rel_info.kind {
-        RelocationKind::Absolute => {
-            write_absolute_relocation(table_writer, resolution, place, addend, section_info)?
-        }
-        RelocationKind::Relative => resolution.value().wrapping_add(addend).wrapping_sub(place),
+        RelocationKind::Absolute => write_absolute_relocation(
+            table_writer,
+            resolution,
+            place,
+            addend,
+            section_info,
+            symbol_index,
+            object_layout,
+            layout,
+        )?,
+        RelocationKind::Relative => resolution
+            .value_with_addend(
+                addend.wrapping_add(rel_info.byte_size as u64),
+                symbol_index,
+                object_layout,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+            )?
+            .wrapping_sub(place)
+            .wrapping_sub(rel_info.byte_size as u64),
         RelocationKind::GotRelative => resolution
             .got_address()?
             .wrapping_add(addend)
@@ -1418,6 +1429,9 @@ fn write_absolute_relocation(
     place: u64,
     addend: u64,
     section_info: SectionInfo,
+    symbol_index: object::SymbolIndex,
+    object_layout: &ObjectLayout,
+    layout: &Layout,
 ) -> Result<u64> {
     if resolution.value_flags.contains(ValueFlags::DYNAMIC) && section_info.is_writable {
         table_writer.write_dynamic_symbol_relocation(
@@ -1433,11 +1447,17 @@ fn write_absolute_relocation(
     } else if resolution.value_flags.contains(ValueFlags::IFUNC) {
         Ok(resolution.plt_address()?.wrapping_add(addend))
     } else {
-        Ok(resolution.value().wrapping_add(addend))
+        resolution.value_with_addend(
+            addend,
+            symbol_index,
+            object_layout,
+            &layout.merged_strings,
+            &layout.merged_string_start_addresses,
+        )
     }
 }
 
-impl<'data> InternalLayout<'data> {
+impl InternalLayout {
     fn write_file(
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
@@ -1466,7 +1486,7 @@ impl<'data> InternalLayout<'data> {
             write_eh_frame_hdr(buffers, layout)?;
         }
 
-        self.write_merged_strings(buffers);
+        self.write_merged_strings(buffers, layout);
 
         self.write_interp(buffers);
 
@@ -1494,9 +1514,9 @@ impl<'data> InternalLayout<'data> {
         }
     }
 
-    fn write_merged_strings(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>) {
-        self.merged_strings.for_each(|section_id, merged| {
-            if merged.len > 0 {
+    fn write_merged_strings(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>, layout: &Layout) {
+        layout.merged_strings.for_each(|section_id, merged| {
+            if merged.len() > 0 {
                 let buffer = buffers.regular_mut(section_id, crate::alignment::MIN);
                 for string in &merged.strings {
                     let dest = crate::slice::slice_take_prefix_mut(buffer, string.len());

@@ -39,11 +39,17 @@ use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::fmt::Display;
 
+pub(crate) struct ResolutionOutputs<'data> {
+    pub(crate) files: Vec<ResolvedFile<'data>>,
+    pub(crate) output_sections: OutputSections<'data>,
+    pub(crate) merged_strings: OutputSectionMap<MergeStringsSection<'data>>,
+}
+
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
 pub fn resolve_symbols_and_sections<'data>(
     file_states: &'data [ParsedInput<'data>],
     symbol_db: &mut SymbolDb<'data>,
-) -> Result<(Vec<ResolvedFile<'data>>, OutputSections<'data>)> {
+) -> Result<ResolutionOutputs<'data>> {
     let (mut resolved, undefined_symbols, internal) =
         resolve_symbols_in_files(file_states, symbol_db)?;
 
@@ -69,9 +75,12 @@ pub fn resolve_symbols_and_sections<'data>(
 
     resolved[INTERNAL_FILE_ID.as_usize()] = ResolvedFile::Internal(ResolvedInternal {
         symbol_definitions: &internal.symbol_definitions,
-        merged_strings,
     });
-    Ok((resolved, output_sections))
+    Ok(ResolutionOutputs {
+        files: resolved,
+        output_sections,
+        merged_strings,
+    })
 }
 
 /// A cell that holds mutable reference to the symbol definitions for one of our input objects. We
@@ -278,15 +287,8 @@ pub(crate) enum SectionSlot<'data> {
     MergeStrings(MergeStringsFileSection<'data>),
 }
 
-#[derive(Copy, Clone, Debug)]
-pub(crate) struct MergedStringResolution {
-    pub(crate) output_section_id: OutputSectionId,
-    pub(crate) offset: u64,
-}
-
 pub(crate) struct ResolvedInternal<'data> {
     pub(crate) symbol_definitions: &'data [InternalSymDefInfo],
-    pub(crate) merged_strings: OutputSectionMap<MergedStringsSection<'data>>,
 }
 
 pub(crate) struct ResolvedObject<'data> {
@@ -300,9 +302,8 @@ pub(crate) struct ResolvedObject<'data> {
 
 /// Parts of a resolved object that are only applicable to non-dynamic objects.
 pub(crate) struct NonDynamicResolved<'data> {
-    pub(crate) merged_string_resolutions: Vec<Option<MergedStringResolution>>,
     pub(crate) sections: Vec<SectionSlot<'data>>,
-    merge_strings_sections: Vec<MergeStringsFileSection<'data>>,
+    merge_strings_sections: Vec<object::SectionIndex>,
 
     /// Details about each custom section that is defined in this object. The index is an index into
     /// self.sections.
@@ -320,35 +321,24 @@ pub(crate) struct MergeStringsFileSection<'data> {
 
     /// The strings from this section. Only present temporarily during resolution.
     strings: Vec<PreHashed<StringToMerge<'data>>>,
-
-    /// References into this section. Only present temporarily during resolution.
-    references: Vec<RefToMergeString>,
-}
-
-/// A reference to a section that is enabled for string-merging.
-#[derive(Debug)]
-struct RefToMergeString {
-    /// The offset within the input section of the symbol.
-    offset: u64,
-
-    symbol_index: object::SymbolIndex,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
-struct StringToMerge<'data> {
+pub(crate) struct StringToMerge<'data> {
     bytes: &'data [u8],
 }
 
 #[derive(Default)]
-struct MergeStringsSection<'data> {
-    strings: Vec<&'data [u8]>,
-    next_offset: u64,
-    string_offsets: PassThroughHashMap<StringToMerge<'data>, u64>,
-}
-
-pub(crate) struct MergedStringsSection<'data> {
-    pub(crate) len: u64,
+pub(crate) struct MergeStringsSection<'data> {
+    /// The strings in this section in order. Includes null terminators.
     pub(crate) strings: Vec<&'data [u8]>,
+
+    /// The offset within the section of the next string to be added, or if we're done adding
+    /// things, then this is the size of the output section.
+    pub(crate) next_offset: u64,
+
+    /// The offsets of each string in the output section keyed by the string contents.
+    pub(crate) string_offsets: PassThroughHashMap<StringToMerge<'data>, u64>,
 }
 
 impl<'data> MergeStringsSection<'data> {
@@ -362,6 +352,14 @@ impl<'data> MergeStringsSection<'data> {
             offset
         })
     }
+
+    pub(crate) fn get(&self, string: &PreHashed<StringToMerge<'data>>) -> Option<u64> {
+        self.string_offsets.get(string).copied()
+    }
+
+    pub(crate) fn len(&self) -> u64 {
+        self.next_offset
+    }
 }
 
 /// Merges identical strings from all loaded objects where those strings are from input sections
@@ -370,7 +368,7 @@ impl<'data> MergeStringsSection<'data> {
 fn merge_strings<'data>(
     resolved: &mut [ResolvedFile<'data>],
     output_sections: &OutputSections,
-) -> Result<OutputSectionMap<MergedStringsSection<'data>>> {
+) -> Result<OutputSectionMap<MergeStringsSection<'data>>> {
     let mut strings_by_section: OutputSectionMap<MergeStringsSection> =
         OutputSectionMap::with_size(output_sections.len());
     for file in resolved {
@@ -380,40 +378,19 @@ fn merge_strings<'data>(
         let Some(non_dynamic) = obj.non_dynamic.as_mut() else {
             continue;
         };
-        for sec in &mut non_dynamic.merge_strings_sections {
+        for &section_index in &non_dynamic.merge_strings_sections {
+            let SectionSlot::MergeStrings(sec) = &mut non_dynamic.sections[section_index.0] else {
+                unreachable!();
+            };
             let output_section_id = output_sections.output_section_id(sec.temporary_section_id)?;
+            sec.set_precomputed_output_section_id(output_section_id);
             let string_to_offset = strings_by_section.get_mut(output_section_id);
-            let mut symbols = sec.references.iter().peekable();
-            // The offset within the input section of the current string.
-            let mut input_offset = 0;
             for string in &sec.strings {
-                let output_offset = string_to_offset.add_string(*string);
-                while let Some(merge_ref) = symbols.peek() {
-                    debug_assert!(
-                        merge_ref.offset >= input_offset,
-                        "String-merge symbol offsets went backwards"
-                    );
-                    let offset_into_string = merge_ref.offset - input_offset;
-                    if offset_into_string >= string.bytes.len() as u64 {
-                        // This reference belongs to a subsequent string.
-                        break;
-                    }
-                    let local_index = obj.symbol_id_range.input_to_offset(merge_ref.symbol_index);
-                    non_dynamic.merged_string_resolutions[local_index] =
-                        Some(MergedStringResolution {
-                            output_section_id,
-                            offset: output_offset + offset_into_string,
-                        });
-                    symbols.next();
-                }
-                input_offset += string.bytes.len() as u64;
+                string_to_offset.add_string(*string);
             }
         }
     }
-    Ok(strings_by_section.into_map(|s| MergedStringsSection {
-        len: s.next_offset,
-        strings: s.strings,
-    }))
+    Ok(strings_by_section)
 }
 
 #[tracing::instrument(skip_all, name = "Assign section IDs")]
@@ -585,28 +562,22 @@ impl<'data> ResolvedObject<'data> {
             .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
         } else {
             let mut custom_sections = Vec::new();
-            let mut sections = resolve_sections(obj, &mut custom_sections, symbol_db.args)?;
+            let sections = resolve_sections(obj, &mut custom_sections, symbol_db.args)?;
             resolve_symbols(
                 obj,
                 symbol_db,
                 request_file_id,
                 undefined_symbols_out,
                 definitions_out,
-                &mut sections,
             )
             .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
             let mut merge_strings_sections = Vec::new();
-            for slot in &mut sections {
-                if let SectionSlot::MergeStrings(merge) = slot {
-                    let mut owned_merge = merge.take();
-                    // We need references sorted by offset so that we can find which references belong
-                    // to which strings as we iterate through them when doing the merge.
-                    owned_merge.references.sort_by_key(|r| r.offset);
-                    merge_strings_sections.push(owned_merge);
+            for (i, slot) in sections.iter().enumerate() {
+                if matches!(slot, SectionSlot::MergeStrings(_)) {
+                    merge_strings_sections.push(object::SectionIndex(i));
                 }
             }
             non_dynamic = Some(NonDynamicResolved {
-                merged_string_resolutions: vec![None; obj.symbol_id_range.len()],
                 sections,
                 merge_strings_sections,
                 custom_sections,
@@ -644,7 +615,6 @@ fn resolve_sections<'data>(
                     Ok(SectionSlot::MergeStrings(MergeStringsFileSection::new(
                         &obj.object,
                         input_section,
-                        input_section_index,
                         unloaded.output_section_id,
                     )?))
                 } else {
@@ -673,7 +643,6 @@ fn resolve_symbols<'data>(
     mut request_file_id: impl FnMut(FileId),
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     definitions_out: &mut [SymbolId],
-    sections: &mut [SectionSlot<'data>],
 ) -> Result {
     obj.object
         .symbols
@@ -689,20 +658,7 @@ fn resolve_symbols<'data>(
                     obj,
                     &mut request_file_id,
                     undefined_symbols_out,
-                )?;
-
-                if let Some(local_section_index) = obj
-                    .object
-                    .symbol_section(local_symbol, local_symbol_index)?
-                {
-                    if let SectionSlot::MergeStrings(merge) = &mut sections[local_section_index.0] {
-                        merge.references.push(RefToMergeString {
-                            offset: local_symbol.st_value(LittleEndian),
-                            symbol_index: local_symbol_index,
-                        });
-                    }
-                }
-                Ok(())
+                )
             },
         )?;
     Ok(())
@@ -815,40 +771,50 @@ impl<'data> MergeStringsFileSection<'data> {
     fn new(
         object: &crate::elf::File<'data>,
         input_section: &crate::elf::SectionHeader,
-        input_section_index: object::SectionIndex,
         section_id: TemporaryOutputSectionId<'data>,
     ) -> Result<MergeStringsFileSection<'data>> {
         let mut remaining = object.section_data(input_section)?;
         let mut strings = Vec::new();
         while !remaining.is_empty() {
-            let len = memchr::memchr(0, remaining)
-                .map(|i| i + 1)
-                .with_context(|| {
-                    format!(
-                        "String in section `{}` is not null-terminated",
-                        object.section_display_name(input_section_index)
-                    )
-                })?;
-            let (bytes, rest) = remaining.split_at(len);
-            let hash = crate::hash::hash_bytes(bytes);
-            strings.push(PreHashed::new(StringToMerge { bytes }, hash));
-            remaining = rest;
+            strings.push(StringToMerge::take_hashed(&mut remaining)?);
         }
         Ok(MergeStringsFileSection {
             temporary_section_id: section_id,
             strings,
-            // This will get filled in when we read the symbol table.
-            references: Default::default(),
         })
     }
 
-    /// Returns an owned version of `self` with the heap-allocated parts of `self` cleared.
-    fn take(&mut self) -> MergeStringsFileSection<'data> {
-        MergeStringsFileSection {
-            temporary_section_id: self.temporary_section_id,
-            strings: core::mem::take(&mut self.strings),
-            references: core::mem::take(&mut self.references),
+    /// Store the output section ID, so that we don't have to recompute it again later.
+    fn set_precomputed_output_section_id(&mut self, section_id: OutputSectionId) {
+        // Built-in isn't quite accurate, but it serves out purpose.
+        self.temporary_section_id = TemporaryOutputSectionId::BuiltIn(section_id);
+    }
+
+    pub(crate) fn precomputed_output_section_id(&self) -> OutputSectionId {
+        match self.temporary_section_id {
+            TemporaryOutputSectionId::BuiltIn(id) => id,
+            _ => panic!("Call to `precomputed_output_section_id` when we haven't stored the ID"),
         }
+    }
+}
+
+impl<'data> StringToMerge<'data> {
+    /// Takes from `source` up to the next null terminator. Returns a prehashed reference to what
+    /// was taken.
+    pub(crate) fn take_hashed(source: &mut &'data [u8]) -> Result<PreHashed<StringToMerge<'data>>> {
+        let len = memchr::memchr(0, source)
+            .map(|i| i + 1)
+            .context("String in merge-string section is not null-terminated")?;
+        let (bytes, rest) = source.split_at(len);
+        let hash = crate::hash::hash_bytes(bytes);
+        *source = rest;
+        Ok(PreHashed::new(StringToMerge { bytes }, hash))
+    }
+}
+
+impl Display for StringToMerge<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", String::from_utf8_lossy(self.bytes))
     }
 }
 
