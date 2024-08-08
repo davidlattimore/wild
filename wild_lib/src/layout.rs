@@ -2950,6 +2950,7 @@ impl<'data> ObjectLayoutState<'data> {
                     &self.state.sections,
                     resources.merged_strings,
                     resources.merged_string_start_addresses,
+                    true,
                 )?
                 .ok_or_else(|| {
                     anyhow!(
@@ -3426,18 +3427,25 @@ impl Resolution {
         merged_strings: &OutputSectionMap<resolution::MergeStringsSection>,
         merged_string_start_addresses: &MergedStringStartAddresses,
     ) -> Result<u64> {
-        //if self.raw_value == 0 {
-        if let Some(r) = get_merged_string_output_address(
-            symbol_index,
-            addend,
-            object_layout.object,
-            &object_layout.sections,
-            merged_strings,
-            merged_string_start_addresses,
-        )? {
-            return Ok(r);
+        // For most symbols, `raw_value` won't be zero, so we can save ourselves from looking up the
+        // section to see if it's a string-merge section. For string-merge symbols with names,
+        // `raw_value` will have already been computed, so we can avoid computing it again.
+        if self.raw_value == 0 {
+            if let Some(r) = get_merged_string_output_address(
+                symbol_index,
+                addend,
+                object_layout.object,
+                &object_layout.sections,
+                merged_strings,
+                merged_string_start_addresses,
+                false,
+            )? {
+                if self.raw_value != 0 {
+                    bail!("Merged string resolution has value 0x{}", self.raw_value);
+                }
+                return Ok(r);
+            }
         }
-        //}
         Ok(self.raw_value.wrapping_add(addend))
     }
 }
@@ -3451,6 +3459,7 @@ fn get_merged_string_output_address(
     sections: &[SectionSlot],
     merged_strings: &OutputSectionMap<resolution::MergeStringsSection>,
     merged_string_start_addresses: &MergedStringStartAddresses,
+    zero_unnamed: bool,
 ) -> Result<Option<u64>> {
     let symbol = object.symbol(symbol_index)?;
     let Some(section_index) = object.symbol_section(symbol, symbol_index)? else {
@@ -3470,6 +3479,12 @@ fn get_merged_string_output_address(
     // bit weird, but seems to match what other linkers do.
     let symbol_has_name = symbol.st_name(LittleEndian) != 0;
     if !symbol_has_name {
+        // We're computing a resolution for an unnamed symbol, just use the value of 0 for now.
+        // We'll compute the address later when we're processing relocations that reference the
+        // section.
+        if zero_unnamed {
+            return Ok(Some(0));
+        }
         input_offset = input_offset.wrapping_add(addend);
     }
 
