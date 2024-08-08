@@ -134,12 +134,12 @@ impl SaveDir {
         let Some(dir) = self.dir.as_ref() else {
             return Ok(());
         };
-        let source_path = Path::new(arg);
-        if let Some(dest_path) = unique_dest_path(dir, source_path) {
+        let source_path = std::fs::canonicalize(Path::new(arg))?;
+        if let Some(dest_path) = unique_dest_path(dir, &source_path) {
             // To save disk space, we first attempt to hard link the file. If that fails, then just
             // copy it.
-            if std::fs::hard_link(source_path, &dest_path).is_err() {
-                std::fs::copy(source_path, &dest_path).with_context(|| {
+            if std::fs::hard_link(&source_path, &dest_path).is_err() {
+                std::fs::copy(&source_path, &dest_path).with_context(|| {
                     format!(
                         "Failed to copy `{}` to `{}`",
                         source_path.display(),
