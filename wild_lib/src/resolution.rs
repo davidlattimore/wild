@@ -43,6 +43,7 @@ pub(crate) struct ResolutionOutputs<'data> {
     pub(crate) files: Vec<ResolvedFile<'data>>,
     pub(crate) output_sections: OutputSections<'data>,
     pub(crate) merged_strings: OutputSectionMap<MergeStringsSection<'data>>,
+    pub(crate) custom_start_stop_defs: Vec<InternalSymDefInfo>,
 }
 
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
@@ -57,19 +58,8 @@ pub fn resolve_symbols_and_sections<'data>(
 
     let merged_strings = merge_strings(&mut resolved, &output_sections)?;
 
-    let Some(ResolvedFile::Epilogue(mut custom)) = resolved.pop() else {
-        panic!("Epilogue must be the last input");
-    };
-
-    canonicalise_undefined_symbols(
-        undefined_symbols,
-        &mut custom,
-        &output_sections,
-        &resolved,
-        symbol_db,
-    )?;
-
-    resolved.push(ResolvedFile::Epilogue(custom));
+    let custom_start_stop_defs =
+        canonicalise_undefined_symbols(undefined_symbols, &output_sections, &resolved, symbol_db)?;
 
     resolve_alternative_symbol_definitions(symbol_db, &resolved)?;
 
@@ -80,6 +70,7 @@ pub fn resolve_symbols_and_sections<'data>(
         files: resolved,
         output_sections,
         merged_strings,
+        custom_start_stop_defs,
     })
 }
 
@@ -126,7 +117,6 @@ pub(crate) fn resolve_symbols_in_files<'data>(
             ParsedInput::Epilogue(s) => ResolvedFile::Epilogue(ResolvedEpilogue {
                 file_id: s.file_id,
                 start_symbol_id: s.start_symbol_id,
-                symbol_definitions: vec![],
             }),
         })
         .collect();
@@ -313,7 +303,6 @@ pub(crate) struct NonDynamicResolved<'data> {
 pub struct ResolvedEpilogue {
     pub(crate) file_id: FileId,
     pub(crate) start_symbol_id: SymbolId,
-    pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
 }
 
 pub(crate) struct MergeStringsFileSection<'data> {
@@ -473,11 +462,11 @@ struct UndefinedSymbol<'data> {
 #[tracing::instrument(skip_all, name = "Canonicalise undefined symbols")]
 fn canonicalise_undefined_symbols<'data>(
     undefined_symbols: SegQueue<UndefinedSymbol<'data>>,
-    epilogue: &mut ResolvedEpilogue,
     output_sections: &OutputSections,
     files: &[ResolvedFile],
     symbol_db: &mut SymbolDb<'data>,
-) -> Result {
+) -> Result<Vec<InternalSymDefInfo>> {
+    let mut custom_start_stop_defs = Vec::new();
     let mut name_to_id: PassThroughHashMap<SymbolName<'data>, SymbolId> = Default::default();
     let mut undefined_symbols = Vec::from_iter(undefined_symbols);
     // Sort by symbol ID to ensure deterministic behaviour. This means that the canonical symbol ID
@@ -497,7 +486,7 @@ fn canonicalise_undefined_symbols<'data>(
                 let symbol_id = allocate_start_stop_symbol_id(
                     undefined.name,
                     symbol_db,
-                    epilogue,
+                    &mut custom_start_stop_defs,
                     output_sections,
                 );
                 // If the symbol isn't a start/stop symbol, then assign responsibility for the
@@ -512,13 +501,13 @@ fn canonicalise_undefined_symbols<'data>(
             }
         }
     }
-    Ok(())
+    Ok(custom_start_stop_defs)
 }
 
 fn allocate_start_stop_symbol_id<'data>(
     name: PreHashed<SymbolName<'data>>,
     symbol_db: &mut SymbolDb<'data>,
-    epilogue: &mut ResolvedEpilogue,
+    custom_start_stop_defs: &mut Vec<InternalSymDefInfo>,
     output_sections: &OutputSections,
 ) -> Option<SymbolId> {
     let symbol_name_bytes = name.bytes();
@@ -537,7 +526,7 @@ fn allocate_start_stop_symbol_id<'data>(
     } else {
         InternalSymDefInfo::SectionEnd(section_id)
     };
-    epilogue.symbol_definitions.push(def_info);
+    custom_start_stop_defs.push(def_info);
     Some(symbol_id)
 }
 

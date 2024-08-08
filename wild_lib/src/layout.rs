@@ -85,6 +85,7 @@ pub fn compute<'data>(
         files: file_states,
         mut output_sections,
         merged_strings,
+        custom_start_stop_defs,
     } = resolved;
     if let Some(sym_info) = symbol_db.args.sym_info.as_deref() {
         print_symbol_info(symbol_db, sym_info);
@@ -96,6 +97,7 @@ pub fn compute<'data>(
         &output_sections,
         &symbol_resolution_flags,
         &merged_strings,
+        custom_start_stop_defs,
     )?;
     merge_dynamic_symbol_definitions(&mut group_states)?;
     finalise_all_sizes(
@@ -1467,9 +1469,11 @@ fn find_required_sections<'data>(
     output_sections: &OutputSections<'data>,
     symbol_resolution_flags: &[AtomicResolutionFlags],
     merged_strings: &OutputSectionMap<MergeStringsSection<'data>>,
+    custom_start_stop_defs: Vec<InternalSymDefInfo>,
 ) -> Result<(Vec<GroupState<'data>>, OutputSectionMap<bool>)> {
     let num_workers = file_states.len();
-    let (worker_slots, groups) = create_worker_slots(file_states, output_sections);
+    let (worker_slots, groups) =
+        create_worker_slots(file_states, output_sections, custom_start_stop_defs);
 
     let num_threads = symbol_db.args.num_threads.get();
 
@@ -1556,6 +1560,7 @@ fn find_required_sections<'data>(
 fn create_worker_slots<'data>(
     file_states: Vec<resolution::ResolvedFile<'data>>,
     output_sections: &OutputSections<'data>,
+    mut custom_start_stop_defs: Vec<InternalSymDefInfo>,
 ) -> (Vec<Mutex<WorkerSlot<'data>>>, Vec<GroupState<'data>>) {
     let mut worker_slots = Vec::new();
     let mut group_states = Vec::new();
@@ -1565,7 +1570,7 @@ fn create_worker_slots<'data>(
         let mut group_files = Vec::with_capacity(FILES_PER_GROUP);
         for _ in 0..FILES_PER_GROUP {
             if let Some(f) = file_states.next() {
-                group_files.push(f.create_layout_state());
+                group_files.push(f.create_layout_state(&mut custom_start_stop_defs));
             } else {
                 break;
             }
@@ -2492,15 +2497,18 @@ impl InternalSymbols {
 }
 
 impl<'data> EpilogueLayoutState<'data> {
-    fn new(input_state: ResolvedEpilogue) -> EpilogueLayoutState<'data> {
+    fn new(
+        input_state: ResolvedEpilogue,
+        custom_start_stop_defs: Vec<InternalSymDefInfo>,
+    ) -> EpilogueLayoutState<'data> {
         EpilogueLayoutState {
             file_id: input_state.file_id,
             symbol_id_range: SymbolIdRange::epilogue(
                 input_state.start_symbol_id,
-                input_state.symbol_definitions.len(),
+                custom_start_stop_defs.len(),
             ),
             internal_symbols: InternalSymbols {
-                symbol_definitions: input_state.symbol_definitions,
+                symbol_definitions: custom_start_stop_defs,
                 start_symbol_id: input_state.start_symbol_id,
             },
             dynamic_symbol_definitions: Default::default(),
@@ -3382,16 +3390,19 @@ fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
 }
 
 impl<'data> resolution::ResolvedFile<'data> {
-    fn create_layout_state(self) -> FileLayoutState<'data> {
+    fn create_layout_state(
+        self,
+        custom_start_stop_defs: &mut Vec<InternalSymDefInfo>,
+    ) -> FileLayoutState<'data> {
         match self {
             resolution::ResolvedFile::Object(s) => new_object_layout_state(s),
             resolution::ResolvedFile::Internal(s) => {
                 FileLayoutState::Internal(InternalLayoutState::new(s))
             }
             resolution::ResolvedFile::NotLoaded => FileLayoutState::NotLoaded,
-            resolution::ResolvedFile::Epilogue(s) => {
-                FileLayoutState::Epilogue(EpilogueLayoutState::new(s))
-            }
+            resolution::ResolvedFile::Epilogue(s) => FileLayoutState::Epilogue(
+                EpilogueLayoutState::new(s, core::mem::take(custom_start_stop_defs)),
+            ),
         }
     }
 }
