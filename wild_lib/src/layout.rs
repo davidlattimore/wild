@@ -778,14 +778,11 @@ impl CommonGroupState<'_> {
     }
 }
 
-fn create_global_address_emitter<'state>(
+fn create_global_address_emitter(
     symbol_id_range: SymbolIdRange,
-    memory_offsets: &OutputSectionPartMap<u64>,
-    symbol_resolution_flags: &'state [ResolutionFlags],
-) -> GlobalAddressEmitter<'state> {
+    symbol_resolution_flags: &[ResolutionFlags],
+) -> GlobalAddressEmitter {
     GlobalAddressEmitter {
-        next_got_address: memory_offsets.got,
-        next_plt_address: memory_offsets.plt,
         symbol_resolution_flags,
         symbol_id_range,
     }
@@ -2418,11 +2415,8 @@ impl InternalSymbols {
         resources: &FinaliseLayoutResources,
     ) -> Result {
         // Define symbols that are optionally put at the start/end of some sections.
-        let mut emitter = create_global_address_emitter(
-            symbol_id_range,
-            memory_offsets,
-            resources.symbol_resolution_flags,
-        );
+        let mut emitter =
+            create_global_address_emitter(symbol_id_range, resources.symbol_resolution_flags);
         for (local_index, def_info) in self.symbol_definitions.iter().enumerate() {
             let symbol_id = self.start_symbol_id.add_usize(local_index);
             if !resources.symbol_db.is_canonical(symbol_id) {
@@ -2451,6 +2445,7 @@ impl InternalSymbols {
                 None,
                 value_flags,
                 resolutions_out,
+                memory_offsets,
             )?;
         }
         Ok(())
@@ -2840,11 +2835,8 @@ impl<'data> ObjectLayoutState<'data> {
         let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
 
-        let mut emitter = create_global_address_emitter(
-            self.symbol_id_range,
-            memory_offsets,
-            resources.symbol_resolution_flags,
-        );
+        let mut emitter =
+            create_global_address_emitter(self.symbol_id_range, resources.symbol_resolution_flags);
 
         let mut section_resolutions = Vec::with_capacity(self.state.sections.len());
         for slot in self.state.sections.iter_mut() {
@@ -2856,26 +2848,28 @@ impl<'data> ObjectLayoutState<'data> {
                             self.object.section_display_name(sec.index)
                         )
                     })?;
-                    let address = memory_offsets.regular_mut(output_section_id, sec.alignment);
+                    let address = *memory_offsets.regular(output_section_id, sec.alignment);
                     // TODO: We probably need to be able to handle sections that are ifuncs and sections
                     // that need a TLS GOT struct.
-                    section_resolutions.push(Some(emitter.create_resolution(
+                    section_resolutions.push(Some(create_resolution(
                         sec.resolution_kind,
-                        *address,
+                        address,
                         None,
                         ValueFlags::ADDRESS,
+                        memory_offsets,
                     )?));
-                    *address += sec.capacity();
+                    *memory_offsets.regular_mut(output_section_id, sec.alignment) += sec.capacity();
                 }
                 SectionSlot::EhFrameData(..) => {
                     // References to symbols defined in .eh_frame are a bit weird, since it's a
                     // section where we're GCing stuff, but crtbegin.o and crtend.o use them in
                     // order to find the start and end of the whole .eh_frame section.
-                    section_resolutions.push(Some(emitter.create_resolution(
+                    section_resolutions.push(Some(create_resolution(
                         ResolutionFlags::DIRECT,
                         memory_offsets.eh_frame,
                         None,
                         ValueFlags::ADDRESS,
+                        memory_offsets,
                     )?));
                 }
                 _ => {
@@ -2986,6 +2980,7 @@ impl<'data> ObjectLayoutState<'data> {
             dynamic_symbol_index,
             value_flags,
             resolutions_out,
+            memory_offsets,
         )?;
         Ok(())
     }
@@ -3262,8 +3257,6 @@ impl CommonSymbol {
 }
 
 struct GlobalAddressEmitter<'state> {
-    next_got_address: u64,
-    next_plt_address: u64,
     symbol_resolution_flags: &'state [ResolutionFlags],
     symbol_id_range: SymbolIdRange,
 }
@@ -3277,6 +3270,7 @@ impl<'state> GlobalAddressEmitter<'state> {
         dynamic_symbol_index: Option<NonZeroU32>,
         value_flags: ValueFlags,
         resolutions_out: &mut [Option<Resolution>],
+        memory_offsets: &mut OutputSectionPartMap<u64>,
     ) -> Result {
         debug_assert_bail!(
             symbol_id >= self.symbol_id_range.start()
@@ -3288,64 +3282,65 @@ impl<'state> GlobalAddressEmitter<'state> {
                 .start()
                 .add_usize(resolutions_out.len())
         );
-        let resolution = self.create_resolution(
+        let resolution = create_resolution(
             self.symbol_resolution_flags[symbol_id.as_usize()],
             raw_value,
             dynamic_symbol_index,
             value_flags,
+            memory_offsets,
         )?;
         let local_symbol_index = symbol_id.to_offset(self.symbol_id_range);
         resolutions_out[local_symbol_index] = Some(resolution);
         Ok(())
     }
+}
 
-    fn create_resolution(
-        &mut self,
-        res_kind: ResolutionFlags,
-        raw_value: u64,
-        dynamic_symbol_index: Option<NonZeroU32>,
-        value_flags: ValueFlags,
-    ) -> Result<Resolution> {
-        let mut resolution = Resolution {
-            raw_value,
-            dynamic_symbol_index,
-            got_address: None,
-            plt_address: None,
-            resolution_flags: res_kind,
-            value_flags,
-        };
-        if res_kind.contains(ResolutionFlags::PLT) {
-            let plt_address = self.allocate_plt();
-            resolution.plt_address = Some(plt_address);
-            if value_flags.contains(ValueFlags::DYNAMIC) {
-                resolution.raw_value = plt_address.get();
-            }
+fn create_resolution(
+    res_kind: ResolutionFlags,
+    raw_value: u64,
+    dynamic_symbol_index: Option<NonZeroU32>,
+    value_flags: ValueFlags,
+    memory_offsets: &mut OutputSectionPartMap<u64>,
+) -> Result<Resolution> {
+    let mut resolution = Resolution {
+        raw_value,
+        dynamic_symbol_index,
+        got_address: None,
+        plt_address: None,
+        resolution_flags: res_kind,
+        value_flags,
+    };
+    if res_kind.contains(ResolutionFlags::PLT) {
+        let plt_address = allocate_plt(memory_offsets);
+        resolution.plt_address = Some(plt_address);
+        if value_flags.contains(ValueFlags::DYNAMIC) {
+            resolution.raw_value = plt_address.get();
         }
-        if res_kind.contains(ResolutionFlags::GOT) {
-            resolution.got_address = Some(self.allocate_got(1));
-        } else if res_kind.contains(ResolutionFlags::GOT_TLS_OFFSET) {
-            if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
-                resolution.got_address = Some(self.allocate_got(3));
-            } else {
-                resolution.got_address = Some(self.allocate_got(1));
-            }
-        } else if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
-            resolution.got_address = Some(self.allocate_got(2));
+    }
+    if res_kind.contains(ResolutionFlags::GOT) {
+        resolution.got_address = Some(allocate_got(1, memory_offsets));
+    } else if res_kind.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+        if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
+            resolution.got_address = Some(allocate_got(3, memory_offsets));
+        } else {
+            resolution.got_address = Some(allocate_got(1, memory_offsets));
         }
-        Ok(resolution)
+    } else if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
+        resolution.got_address = Some(allocate_got(2, memory_offsets));
     }
+    Ok(resolution)
+}
 
-    fn allocate_got(&mut self, num_entries: u64) -> NonZeroU64 {
-        let got_address = NonZeroU64::new(self.next_got_address).unwrap();
-        self.next_got_address += elf::GOT_ENTRY_SIZE * num_entries;
-        got_address
-    }
+fn allocate_got(num_entries: u64, memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
+    let got_address = NonZeroU64::new(memory_offsets.got).unwrap();
+    memory_offsets.got += elf::GOT_ENTRY_SIZE * num_entries;
+    got_address
+}
 
-    fn allocate_plt(&mut self) -> NonZeroU64 {
-        let plt_address = NonZeroU64::new(self.next_plt_address).unwrap();
-        self.next_plt_address += elf::PLT_ENTRY_SIZE;
-        plt_address
-    }
+fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
+    let plt_address = NonZeroU64::new(memory_offsets.plt).unwrap();
+    memory_offsets.plt += elf::PLT_ENTRY_SIZE;
+    plt_address
 }
 
 impl<'data> resolution::ResolvedFile<'data> {
@@ -3698,12 +3693,6 @@ impl<'data> DynamicLayoutState<'data> {
     ) -> Result<DynamicLayout<'data>> {
         let version_mapping = self.compute_version_mapping();
 
-        let mut emitter = create_global_address_emitter(
-            self.symbol_id_range,
-            memory_offsets,
-            resources.symbol_resolution_flags,
-        );
-
         let mut next_symbol_index =
             dynamic_symtab_index(memory_offsets, resources.section_layouts)?;
 
@@ -3736,11 +3725,12 @@ impl<'data> DynamicLayoutState<'data> {
                 next_symbol_index += 1;
             }
 
-            *resolution = Some(emitter.create_resolution(
+            *resolution = Some(create_resolution(
                 resolution_flags,
                 address,
                 dynamic_symbol_index,
                 ValueFlags::DYNAMIC,
+                memory_offsets,
             )?);
         }
 
@@ -4046,21 +4036,21 @@ fn test_resolution_allocation_consistency() -> Result {
                 );
                 let resolution_flags = resolution_flags.get();
 
-                let mut emitter = GlobalAddressEmitter {
-                    next_got_address: 1,
-                    next_plt_address: 1,
-                    symbol_resolution_flags: &[],
-                    symbol_id_range: SymbolIdRange::input(SymbolId::from_usize(1), 0),
-                };
+                let mut memory_offsets =
+                    OutputSectionPartMap::with_size(output_section_id::NUM_BUILT_IN_SECTIONS);
+                memory_offsets.got = 1;
+                memory_offsets.plt = 1;
+
                 let has_dynamic_symbol = value_flags.contains(ValueFlags::DYNAMIC)
                     || (resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
                         && !value_flags.contains(ValueFlags::CAN_BYPASS_GOT));
                 let dynamic_symbol_index = has_dynamic_symbol.then(|| NonZeroU32::new(1).unwrap());
-                let resolution = emitter.create_resolution(
+                let resolution = create_resolution(
                     resolution_flags,
                     0,
                     dynamic_symbol_index,
                     value_flags,
+                    &mut memory_offsets,
                 )?;
 
                 crate::elf_writer::verify_resolution_allocation(
