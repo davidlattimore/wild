@@ -51,6 +51,7 @@ pub(crate) mod threading;
 pub(crate) mod threading;
 pub(crate) mod timing;
 pub(crate) mod validation;
+pub(crate) mod verification;
 
 pub struct Linker {
     action: crate::args::Action,

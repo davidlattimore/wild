@@ -1271,7 +1271,27 @@ fn compute_symbols_and_layouts<'data>(
         .zip(starting_mem_offsets_by_group)
         .zip(symbol_resolutions_by_group)
         .map(|((state, mut memory_offsets), symbols_out)| {
-            state.finalise_layout(&mut memory_offsets, symbols_out, resources)
+            if cfg!(debug_assertions) {
+                let offset_verifier = crate::verification::OffsetVerifier::new(
+                    &memory_offsets,
+                    &state.common.mem_sizes,
+                );
+
+                // Make sure that ignored offsets really aren't used by `finalise_layout` by setting
+                // them to an arbitrary value. If they are used, we'll quickly notice.
+                crate::verification::clear_ignored(&mut memory_offsets);
+
+                let layout = state.finalise_layout(&mut memory_offsets, symbols_out, resources)?;
+
+                offset_verifier.verify(
+                    &memory_offsets,
+                    resources.output_sections,
+                    &layout.files,
+                )?;
+                Ok(layout)
+            } else {
+                state.finalise_layout(&mut memory_offsets, symbols_out, resources)
+            }
         })
         .collect()
 }
