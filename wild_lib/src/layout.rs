@@ -2361,6 +2361,9 @@ impl<'data> InternalLayoutState {
             address
         });
 
+        // Take the null symbol's index.
+        take_dynsym_index(memory_offsets, resources.section_layouts)?;
+
         self.internal_symbols.finalise_layout(
             self.symbol_id_range,
             memory_offsets,
@@ -2882,7 +2885,6 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
 
-        let mut dyn_sym_index = dynamic_symtab_index(memory_offsets, resources.section_layouts)?;
         for ((local_symbol_index, local_symbol), &resolution_flags) in self
             .object
             .symbols
@@ -2896,7 +2898,6 @@ impl<'data> ObjectLayoutState<'data> {
                 local_symbol_index,
                 &section_resolutions,
                 memory_offsets,
-                &mut dyn_sym_index,
                 &mut emitter,
                 resolutions_out,
             )?;
@@ -2922,7 +2923,6 @@ impl<'data> ObjectLayoutState<'data> {
         local_symbol_index: object::SymbolIndex,
         section_resolutions: &[Option<Resolution>],
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        dyn_sym_index: &mut u32,
         emitter: &mut GlobalAddressEmitter<'scope>,
         resolutions_out: &mut [Option<Resolution>],
     ) -> Result {
@@ -2973,11 +2973,11 @@ impl<'data> ObjectLayoutState<'data> {
         if value_flags.contains(ValueFlags::DYNAMIC) {
             // This is an undefined weak symbol. Emit it as a dynamic symbol so that it can be
             // overridden at runtime.
+            let dyn_sym_index = take_dynsym_index(memory_offsets, resources.section_layouts)?;
             dynamic_symbol_index = Some(
-                NonZeroU32::new(*dyn_sym_index)
+                NonZeroU32::new(dyn_sym_index)
                     .context("Attempted to create dynamic symbol index 0")?,
             );
-            *dyn_sym_index += 1;
         }
         emitter.emit_resolution(
             symbol_id,
@@ -3699,9 +3699,6 @@ impl<'data> DynamicLayoutState<'data> {
     ) -> Result<DynamicLayout<'data>> {
         let version_mapping = self.compute_version_mapping();
 
-        let mut next_symbol_index =
-            dynamic_symtab_index(memory_offsets, resources.section_layouts)?;
-
         for ((local_symbol, &resolution_flags), resolution) in self
             .object
             .symbols
@@ -3724,11 +3721,11 @@ impl<'data> DynamicLayoutState<'data> {
                 dynamic_symbol_index = None;
             } else {
                 address = 0;
+                let symbol_index = take_dynsym_index(memory_offsets, resources.section_layouts)?;
                 dynamic_symbol_index = Some(
-                    NonZeroU32::new(next_symbol_index)
+                    NonZeroU32::new(symbol_index)
                         .context("Tried to create dynamic symbol index 0")?,
                 );
-                next_symbol_index += 1;
             }
 
             *resolution = Some(create_resolution(
@@ -3817,15 +3814,17 @@ impl<'data> DynamicTagValues<'data> {
     }
 }
 
-fn dynamic_symtab_index(
+fn take_dynsym_index(
     memory_offsets: &mut OutputSectionPartMap<u64>,
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
 ) -> Result<u32> {
-    u32::try_from(
+    let index = u32::try_from(
         (memory_offsets.dynsym - section_layouts.get(output_section_id::DYNSYM).mem_offset)
             / crate::elf::SYMTAB_ENTRY_SIZE,
     )
-    .context("Too many dynamic symbols")
+    .context("Too many dynamic symbols")?;
+    memory_offsets.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;
+    Ok(index)
 }
 
 impl<'data> Layout<'data> {
