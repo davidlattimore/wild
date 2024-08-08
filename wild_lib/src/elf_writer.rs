@@ -379,7 +379,63 @@ impl<'data> FileLayout<'data> {
             FileLayout::Internal(s) => s.write_file(buffers, table_writer, layout)?,
             FileLayout::Epilogue(s) => s.write_file(buffers, table_writer, layout)?,
             FileLayout::NotLoaded => {}
-            FileLayout::Dynamic(s) => s.write_file(buffers, table_writer, layout)?,
+            FileLayout::Dynamic(s) => s.write_file(table_writer, layout)?,
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct VersionWriter<'out> {
+    version_r: &'out mut [u8],
+    versym: &'out mut [Versym],
+}
+
+impl<'out> VersionWriter<'out> {
+    fn new(version_r: &'out mut [u8], versym: &'out mut [Versym]) -> Self {
+        Self { version_r, versym }
+    }
+
+    fn set_next_symbol_version(&mut self, index: u16) -> Result {
+        let versym = crate::slice::take_first_mut(&mut self.versym)
+            .context("Insufficient .gnu.version allocation")?;
+        versym.0.set(LittleEndian, index);
+        Ok(())
+    }
+
+    fn take_bytes(&mut self, size: usize) -> Result<&'out mut [u8]> {
+        crate::slice::try_slice_take_prefix_mut(&mut self.version_r, size)
+            .context("Insufficient .gnu.version_r allocation")
+    }
+
+    fn take_verneed(&mut self) -> Result<&'out mut Verneed> {
+        let bytes = self.take_bytes(core::mem::size_of::<Verneed>())?;
+        Ok(object::from_bytes_mut(bytes)
+            .map_err(|_| anyhow!("Incorrect .gnu.version_r alignment"))?
+            .0)
+    }
+
+    fn take_auxes(&mut self, version_count: u16) -> Result<&'out mut [Vernaux]> {
+        let bytes =
+            self.take_bytes(core::mem::size_of::<Vernaux>() * usize::from(version_count))?;
+        object::slice_from_all_bytes_mut::<Vernaux>(bytes)
+            .map_err(|_| anyhow!("Invalid .gnu.version_r allocation"))
+    }
+
+    fn check_exhausted(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
+        if !self.versym.is_empty() {
+            bail!(
+                "Allocated too much space in .gnu.version. {} of {} entries remain",
+                self.versym.len(),
+                mem_sizes.gnu_version / elf::GNU_VERSION_ENTRY_SIZE
+            );
+        }
+        if !self.version_r.is_empty() {
+            bail!(
+                "Allocated too much space in .gnu.version_r. {} of {} bytes remain",
+                self.version_r.len(),
+                mem_sizes.gnu_version_r
+            );
         }
         Ok(())
     }
@@ -393,7 +449,6 @@ struct TableWriter<'data, 'out> {
     tls: Range<u64>,
     rela_dyn_relative: &'out mut [crate::elf::Rela],
     rela_dyn_general: &'out mut [crate::elf::Rela],
-    versym: &'out mut [Versym],
     dynsym_writer: SymbolTableWriter<'data, 'out>,
     debug_symbol_writer: SymbolTableWriter<'data, 'out>,
     eh_frame_start_address: u64,
@@ -404,6 +459,7 @@ struct TableWriter<'data, 'out> {
     eh_frame_hdr: &'out mut [u8],
 
     dynamic: DynamicEntriesWriter<'out>,
+    version_writer: VersionWriter<'out>,
 }
 
 impl<'data, 'out> TableWriter<'data, 'out> {
@@ -419,10 +475,6 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         let debug_symbol_writer =
             SymbolTableWriter::new(strtab_start_offset, buffers, &layout.output_sections);
 
-        let eh_frame = core::mem::take(&mut buffers.eh_frame);
-        let eh_frame_hdr = core::mem::take(&mut buffers.eh_frame_hdr);
-        let dynamic = DynamicEntriesWriter::new(core::mem::take(&mut buffers.dynamic));
-
         Self::new(
             layout.args().output_kind,
             layout.tls_start_address()..layout.tls_end_address(),
@@ -430,9 +482,6 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
-            eh_frame,
-            eh_frame_hdr,
-            dynamic,
         )
     }
 
@@ -443,10 +492,15 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         dynsym_writer: SymbolTableWriter<'data, 'out>,
         debug_symbol_writer: SymbolTableWriter<'data, 'out>,
         eh_frame_start_address: u64,
-        eh_frame: &'out mut [u8],
-        eh_frame_hdr: &'out mut [u8],
-        dynamic: DynamicEntriesWriter<'out>,
     ) -> TableWriter<'data, 'out> {
+        let eh_frame = core::mem::take(&mut buffers.eh_frame);
+        let eh_frame_hdr = core::mem::take(&mut buffers.eh_frame_hdr);
+        let dynamic = DynamicEntriesWriter::new(core::mem::take(&mut buffers.dynamic));
+        let version_writer = VersionWriter::new(
+            core::mem::take(&mut buffers.gnu_version_r),
+            slice_from_all_bytes_mut(core::mem::take(&mut buffers.gnu_version)),
+        );
+
         TableWriter {
             output_kind,
             got: bytemuck::cast_slice_mut(core::mem::take(&mut buffers.got)),
@@ -459,13 +513,13 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             rela_dyn_general: slice_from_all_bytes_mut(core::mem::take(
                 &mut buffers.rela_dyn_general,
             )),
-            versym: slice_from_all_bytes_mut(core::mem::take(&mut buffers.gnu_version)),
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
             eh_frame,
             eh_frame_hdr,
             dynamic,
+            version_writer,
         }
     }
 
@@ -628,15 +682,9 @@ impl<'data, 'out> TableWriter<'data, 'out> {
                 mem_sizes.rela_dyn_general / elf::RELA_ENTRY_SIZE,
             );
         }
-        if !self.versym.is_empty() {
-            bail!(
-                "Allocated too much space in .gnu.version. {} of {} entries remain",
-                self.versym.len(),
-                mem_sizes.gnu_version / elf::GNU_VERSION_ENTRY_SIZE
-            );
-        }
         self.dynsym_writer.check_exhausted()?;
         self.debug_symbol_writer.check_exhausted()?;
+        self.version_writer.check_exhausted(mem_sizes)?;
         if !self.eh_frame.is_empty() {
             bail!(
                 "Allocated too much space in .eh_frame. {} of {} bytes remain",
@@ -765,13 +813,6 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         tracing::trace!("Consume .rela.dyn general");
         crate::slice::take_first_mut(&mut self.rela_dyn_general)
             .context("insufficient allocation to .rela.dyn (non-relative)")
-    }
-
-    fn set_next_symbol_version(&mut self, index: u16) -> Result {
-        let versym = crate::slice::take_first_mut(&mut self.versym)
-            .context("Insufficient .gnu.version allocation")?;
-        versym.0.set(LittleEndian, index);
-        Ok(())
     }
 
     fn take_eh_frame_hdr(&mut self) -> &'out mut EhFrameHdr {
@@ -1006,7 +1047,9 @@ impl<'data> ObjectLayout<'data> {
                         .dynsym_writer
                         .copy_symbol_shndx(symbol, name, 0, 0)?;
                     if layout.args().should_output_symbol_versions() {
-                        table_writer.set_next_symbol_version(object::elf::VER_NDX_GLOBAL)?;
+                        table_writer
+                            .version_writer
+                            .set_next_symbol_version(object::elf::VER_NDX_GLOBAL)?;
                     }
                 }
             }
@@ -1549,7 +1592,9 @@ impl InternalLayout {
         // If we're emitting symbol versions, we should have only one - symbol 0 - the undefined
         // symbol. It needs to be set as local.
         if layout.args().should_output_symbol_versions() {
-            table_writer.set_next_symbol_version(object::elf::VER_NDX_GLOBAL)?;
+            table_writer
+                .version_writer
+                .set_next_symbol_version(object::elf::VER_NDX_GLOBAL)?;
         }
 
         // Define the null dynamic symbol.
@@ -1768,7 +1813,9 @@ fn write_dynamic_symbol_definitions(
 
                 // We don't yet support setting symbol versions for symbols that we export, so right
                 // now we just set them all to the global version.
-                if let Some(version_out) = crate::slice::take_first_mut(&mut table_writer.versym) {
+                if let Some(version_out) =
+                    crate::slice::take_first_mut(&mut table_writer.version_writer.versym)
+                {
                     version_out.0.set(LittleEndian, object::elf::VER_NDX_GLOBAL);
                 }
             }
@@ -1784,7 +1831,7 @@ fn write_dynamic_symbol_definitions(
                     object.input_symbol_versions,
                     object.symbol_id_range.id_to_offset(sym_def.symbol_id),
                     &object.version_mapping,
-                    &mut table_writer.versym,
+                    &mut table_writer.version_writer.versym,
                 )?;
             }
             _ => bail!(
@@ -2248,12 +2295,7 @@ fn write_internal_symbols_plt_got_entries(
 }
 
 impl<'data> DynamicLayout<'data> {
-    fn write_file(
-        &self,
-        buffers: &mut OutputSectionPartMap<&mut [u8]>,
-        table_writer: &mut TableWriter,
-        layout: &Layout,
-    ) -> Result {
+    fn write_file(&self, table_writer: &mut TableWriter, layout: &Layout) -> Result {
         self.write_so_name(table_writer)?;
 
         for ((symbol_id, resolution), symbol) in layout
@@ -2277,7 +2319,7 @@ impl<'data> DynamicLayout<'data> {
                         self.input_symbol_versions,
                         self.symbol_id_range.id_to_offset(symbol_id),
                         &self.version_mapping,
-                        &mut table_writer.versym,
+                        &mut table_writer.version_writer.versym,
                     )?;
                 }
 
@@ -2298,8 +2340,7 @@ impl<'data> DynamicLayout<'data> {
                 self.object.data,
                 verdef_info.string_table_index,
             )?;
-            let (ver_need, aux_bytes) = object::from_bytes_mut::<Verneed>(buffers.gnu_version_r)
-                .map_err(|_| anyhow!("Insufficient .gnu.version_r allocation"))?;
+            let ver_need = table_writer.version_writer.take_verneed()?;
             let next_verneed_offset = if self.is_last_verneed {
                 0
             } else {
@@ -2314,8 +2355,9 @@ impl<'data> DynamicLayout<'data> {
                 .set(e, core::mem::size_of::<Verneed>() as u32);
             ver_need.vn_next.set(e, next_verneed_offset);
 
-            let auxes = object::slice_from_all_bytes_mut::<Vernaux>(aux_bytes)
-                .map_err(|_| anyhow!("Invalid .gnu.version_r allocation"))?;
+            let auxes = table_writer
+                .version_writer
+                .take_auxes(verdef_info.version_count)?;
             let mut aux_index = 0;
             while let Some((verdef, mut aux_iterator)) = verdefs.next()? {
                 let input_version = verdef.vd_ndx.get(e);
@@ -2472,9 +2514,6 @@ pub(crate) fn verify_resolution_allocation(
         dynsym_writer,
         debug_symbol_writer,
         0,
-        Default::default(),
-        Default::default(),
-        DynamicEntriesWriter::new(&mut []),
     );
     table_writer.process_resolution(resolution)?;
     table_writer.validate_empty(&mem_sizes)
