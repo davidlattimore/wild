@@ -315,6 +315,7 @@ struct InternalLayoutState {
     identity: String,
     header_info: Option<HeaderInfo>,
     dynamic_linker: Option<CString>,
+    shstrtab_size: u64,
 }
 
 pub(crate) struct EpilogueLayoutState<'data> {
@@ -1645,6 +1646,7 @@ impl<'data> GroupState<'data> {
                 .section_layouts
                 .get(output_section_id::DYNSTR)
                 .mem_offset) as u32;
+        memory_offsets.dynstr += self.common.mem_sizes.dynstr;
 
         set_last_verneed(&self.common, resources, memory_offsets, &mut files);
 
@@ -1674,7 +1676,7 @@ fn set_last_verneed(
         .section_layouts
         .get(output_section_id::GNU_VERSION_R);
     let is_last_verneed = common.mem_sizes.gnu_version_r > 0
-        && (memory_offsets.gnu_version_r + common.mem_sizes.gnu_version_r
+        && (memory_offsets.gnu_version_r
             == gnu_version_r_layout.mem_offset + gnu_version_r_layout.mem_size);
     if is_last_verneed {
         for file in files.iter_mut().rev() {
@@ -2134,6 +2136,7 @@ impl<'data> InternalLayoutState {
             identity: crate::identity::linker_identity(),
             header_info: None,
             dynamic_linker: None,
+            shstrtab_size: 0,
         }
     }
 
@@ -2334,6 +2337,7 @@ impl<'data> InternalLayoutState {
             .filter(|(id, _info)| output_sections.output_index_of_section(*id).is_some())
             .map(|(_id, info)| info.details.name.len() as u64 + 1)
             .sum::<u64>();
+        self.shstrtab_size = extra_sizes.shstrtab;
 
         // We need to allocate both our own size record and the file totals, since they've already
         // been computed.
@@ -2362,7 +2366,9 @@ impl<'data> InternalLayoutState {
         });
 
         // Take the null symbol's index.
-        take_dynsym_index(memory_offsets, resources.section_layouts)?;
+        if resources.symbol_db.args.needs_dynsym() {
+            take_dynsym_index(memory_offsets, resources.section_layouts)?;
+        }
 
         self.internal_symbols.finalise_layout(
             self.symbol_id_range,
@@ -2370,6 +2376,14 @@ impl<'data> InternalLayoutState {
             resolutions_out,
             resources,
         )?;
+
+        *memory_offsets.regular_mut(output_section_id::COMMENT, alignment::MIN) +=
+            self.identity.len() as u64;
+        resources.merged_strings.for_each(|section_id, merged| {
+            if merged.len() > 0 {
+                *memory_offsets.regular_mut(section_id, alignment::MIN) += merged.len();
+            }
+        });
 
         Ok(InternalLayout {
             internal_symbols: self.internal_symbols,
@@ -2554,23 +2568,21 @@ impl<'data> EpilogueLayoutState<'data> {
             resources,
         )?;
 
-        if let Some(gnu_hash_layout) = self.gnu_hash_layout.as_mut() {
-            gnu_hash_layout.symbol_base = ((memory_offsets.dynsym
-                - resources
-                    .section_layouts
-                    .built_in(output_section_id::DYNSYM)
-                    .mem_offset)
-                / elf::SYMTAB_ENTRY_SIZE)
-                .try_into()
-                .context("Too many dynamic symbols")?;
-        }
-
         let dynsym_start_index = ((memory_offsets.dynsym
             - resources
                 .section_layouts
                 .built_in(output_section_id::DYNSYM)
                 .mem_offset)
-            / elf::SYMTAB_ENTRY_SIZE) as u32;
+            / elf::SYMTAB_ENTRY_SIZE)
+            .try_into()
+            .context("Too many dynamic symbols")?;
+
+        if let Some(gnu_hash_layout) = self.gnu_hash_layout.as_mut() {
+            gnu_hash_layout.symbol_base = dynsym_start_index;
+        }
+
+        memory_offsets.dynsym +=
+            self.dynamic_symbol_definitions.len() as u64 * elf::SYMTAB_ENTRY_SIZE;
 
         Ok(EpilogueLayout {
             internal_symbols: self.internal_symbols,
@@ -3735,6 +3747,11 @@ impl<'data> DynamicLayoutState<'data> {
                 ValueFlags::DYNAMIC,
                 memory_offsets,
             )?);
+        }
+
+        if let Some(v) = self.verdef_info.as_ref() {
+            memory_offsets.gnu_version_r += core::mem::size_of::<crate::elf::Verneed>() as u64
+                + u64::from(v.version_count) * core::mem::size_of::<crate::elf::Vernaux>() as u64;
         }
 
         Ok(DynamicLayout {
