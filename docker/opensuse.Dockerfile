@@ -1,6 +1,6 @@
 # Runs on openSUSE
 #
-# docker build -t wild-dev-opensuse . -f docker/opensuse.Dockerfile
+# docker build --progress=plain -t wild-dev-opensuse . -f docker/opensuse.Dockerfile
 # docker run -it wild-dev-opensuse
 
 FROM opensuse/tumbleweed@sha256:01b3ff6b39bf9112c7e8e0fccdd130f2b557149b9c3cd806d60a24716acc377d AS chef

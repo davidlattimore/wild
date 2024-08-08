@@ -1,6 +1,6 @@
 # Run on a recent version of Ubuntu
 #
-# docker build -t wild-dev-ubuntu . -f docker/ubuntu.Dockerfile
+# docker build --progress=plain -t wild-dev-ubuntu . -f docker/ubuntu.Dockerfile
 # docker run -it wild-dev-ubuntu
 
 FROM rust:1.79 AS chef
