@@ -402,6 +402,8 @@ struct TableWriter<'data, 'out> {
     /// Note, this is stored as raw bytes because it starts with an EhFrameHdr, but is then followed
     /// by multiple EhFrameHdrEntry.
     eh_frame_hdr: &'out mut [u8],
+
+    dynamic: DynamicEntriesWriter<'out>,
 }
 
 impl<'data, 'out> TableWriter<'data, 'out> {
@@ -419,6 +421,7 @@ impl<'data, 'out> TableWriter<'data, 'out> {
 
         let eh_frame = core::mem::take(&mut buffers.eh_frame);
         let eh_frame_hdr = core::mem::take(&mut buffers.eh_frame_hdr);
+        let dynamic = DynamicEntriesWriter::new(core::mem::take(&mut buffers.dynamic));
 
         Self::new(
             layout.args().output_kind,
@@ -429,6 +432,7 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             eh_frame_start_address,
             eh_frame,
             eh_frame_hdr,
+            dynamic,
         )
     }
 
@@ -441,6 +445,7 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         eh_frame_start_address: u64,
         eh_frame: &'out mut [u8],
         eh_frame_hdr: &'out mut [u8],
+        dynamic: DynamicEntriesWriter<'out>,
     ) -> TableWriter<'data, 'out> {
         TableWriter {
             output_kind,
@@ -460,6 +465,7 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             eh_frame_start_address,
             eh_frame,
             eh_frame_hdr,
+            dynamic,
         }
     }
 
@@ -1626,22 +1632,27 @@ impl InternalLayout {
     }
 }
 
-fn write_epilogue_dynamic_entries(
-    out: &mut [u8],
-    layout: &Layout,
-    strings_out: &mut StrTabWriter,
-) -> Result {
-    let mut out = DynamicEntriesWriter::new(out);
+fn write_epilogue_dynamic_entries(layout: &Layout, table_writer: &mut TableWriter) -> Result {
     for rpath in &layout.args().rpaths {
-        let offset = strings_out.write_str(rpath.as_bytes());
-        out.write(object::elf::DT_RUNPATH, offset.into())?;
+        let offset = table_writer
+            .dynsym_writer
+            .strtab_writer
+            .write_str(rpath.as_bytes());
+        table_writer
+            .dynamic
+            .write(object::elf::DT_RUNPATH, offset.into())?;
     }
     if let Some(soname) = layout.args().soname.as_ref() {
-        let offset = strings_out.write_str(soname.as_bytes());
-        out.write(object::elf::DT_SONAME, offset.into())?;
+        let offset = table_writer
+            .dynsym_writer
+            .strtab_writer
+            .write_str(soname.as_bytes());
+        table_writer
+            .dynamic
+            .write(object::elf::DT_SONAME, offset.into())?;
     }
     for writer in EPILOGUE_DYNAMIC_ENTRY_WRITERS {
-        writer.write(&mut out, layout)?;
+        writer.write(&mut table_writer.dynamic, layout)?;
     }
 
     Ok(())
@@ -1664,11 +1675,7 @@ impl<'data> EpilogueLayout<'data> {
             )?;
         }
         if layout.args().needs_dynamic() {
-            write_epilogue_dynamic_entries(
-                buffers.dynamic,
-                layout,
-                &mut table_writer.dynsym_writer.strtab_writer,
-            )?;
+            write_epilogue_dynamic_entries(layout, table_writer)?;
         }
         write_gnu_hash_tables(self, buffers)?;
 
@@ -2247,10 +2254,7 @@ impl<'data> DynamicLayout<'data> {
         table_writer: &mut TableWriter,
         layout: &Layout,
     ) -> Result {
-        self.write_so_name(
-            buffers.dynamic,
-            &mut table_writer.dynsym_writer.strtab_writer,
-        )?;
+        self.write_so_name(table_writer)?;
 
         for ((symbol_id, resolution), symbol) in layout
             .resolutions_in_range(self.symbol_id_range)
@@ -2360,10 +2364,14 @@ impl<'data> DynamicLayout<'data> {
     }
 
     /// Write dynamic entry to indicate name of shared object to load.
-    fn write_so_name(&self, dynamic: &mut [u8], strtab: &mut StrTabWriter) -> Result {
-        let mut dynamic_out = DynamicEntriesWriter::new(dynamic);
-        let needed_offset = strtab.write_str(self.lib_name);
-        dynamic_out.write(object::elf::DT_NEEDED, needed_offset.into())?;
+    fn write_so_name(&self, table_writer: &mut TableWriter) -> Result {
+        let needed_offset = table_writer
+            .dynsym_writer
+            .strtab_writer
+            .write_str(self.lib_name);
+        table_writer
+            .dynamic
+            .write(object::elf::DT_NEEDED, needed_offset.into())?;
         Ok(())
     }
 }
@@ -2466,6 +2474,7 @@ pub(crate) fn verify_resolution_allocation(
         0,
         Default::default(),
         Default::default(),
+        DynamicEntriesWriter::new(&mut []),
     );
     table_writer.process_resolution(resolution)?;
     table_writer.validate_empty(&mem_sizes)
