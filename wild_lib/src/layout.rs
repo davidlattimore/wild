@@ -796,6 +796,7 @@ struct ObjectLayoutState<'data> {
     state: ObjectLayoutMutableState<'data>,
     section_frame_data: Vec<SectionFrameData<'data>>,
     eh_frame_section: Option<&'data object::elf::SectionHeader64<LittleEndian>>,
+    eh_frame_size: u64,
 }
 
 /// The parts of `ObjectLayoutState` that we mutate during layout. Separate so that we can pass
@@ -1627,6 +1628,7 @@ impl<'data> GroupState<'data> {
         group_addresses_out: &mut [&mut [Option<Resolution>]],
         resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<GroupLayout<'data>> {
+        let eh_frame_start_address = memory_offsets.eh_frame;
         let mut files = self
             .files
             .into_iter()
@@ -1653,7 +1655,7 @@ impl<'data> GroupState<'data> {
             dynstr_start_offset,
             file_sizes: compute_file_sizes(&self.common.mem_sizes, resources.output_sections),
             mem_sizes: self.common.mem_sizes,
-            eh_frame_start_address: memory_offsets.eh_frame,
+            eh_frame_start_address,
         })
     }
 }
@@ -2606,6 +2608,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             object: input_state.object,
             section_frame_data: Default::default(),
             eh_frame_section: None,
+            eh_frame_size: 0,
             state: ObjectLayoutMutableState {
                 sections: non_dynamic.sections,
                 sections_required: Default::default(),
@@ -2728,7 +2731,7 @@ impl<'data> ObjectLayoutState<'data> {
             .fetch_or(true, atomic::Ordering::Relaxed);
         section.output_section_id = Some(sec_id);
         if let Some(frame_data) = self.section_frame_data.get_mut(section_id.0) {
-            common.mem_sizes.eh_frame += u64::from(frame_data.total_fde_size);
+            self.eh_frame_size += u64::from(frame_data.total_fde_size);
             if resources.symbol_db.args.should_write_eh_frame_hdr {
                 common.mem_sizes.eh_frame_hdr +=
                     core::mem::size_of::<EhFrameHdrEntry>() as u64 * u64::from(frame_data.num_fdes);
@@ -2776,8 +2779,9 @@ impl<'data> ObjectLayoutState<'data> {
         // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
         // that we "won".
         for cie in &self.state.cies {
-            common.mem_sizes.eh_frame += cie.cie.bytes.len() as u64;
+            self.eh_frame_size += cie.cie.bytes.len() as u64;
         }
+        common.mem_sizes.eh_frame += self.eh_frame_size;
         Ok(())
     }
 
@@ -2897,6 +2901,8 @@ impl<'data> ObjectLayoutState<'data> {
                 resolutions_out,
             )?;
         }
+
+        memory_offsets.eh_frame += self.eh_frame_size;
 
         Ok(ObjectLayout {
             input: self.input,
@@ -3191,7 +3197,7 @@ fn process_eh_frame_data(
     }
     // Allocate space for any remaining bytes in .eh_frame that aren't large enough to constitute an
     // actual entry. crtend.o has a single u32 equal to 0 as an end marker.
-    common.mem_sizes.eh_frame += (data.len() - offset) as u64;
+    object.eh_frame_size += (data.len() - offset) as u64;
     Ok(())
 }
 
