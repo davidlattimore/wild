@@ -53,6 +53,9 @@ pub(crate) fn parse_input_files<'data>(
     Ok(objects)
 }
 
+// Object is much larger than the other two, but there's many objects and only ever one of each of
+// the two smaller variants, so it doesn't matter.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ParsedInput<'data> {
     Internal(InternalInputObject),
     Object(ParsedInputObject<'data>),
@@ -65,7 +68,7 @@ pub(crate) struct InternalInputObject {
 
 pub(crate) struct ParsedInputObject<'data> {
     pub(crate) input: InputRef<'data>,
-    pub(crate) object: Box<File<'data>>,
+    pub(crate) object: File<'data>,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) file_id: FileId,
     pub(crate) is_dynamic: bool,
@@ -92,10 +95,8 @@ pub(crate) enum InternalSymDefInfo {
 
 impl<'data> ParsedInputObject<'data> {
     fn new(input: &'data InputBytes, file_id: FileId, is_dynamic: bool) -> Result<Self> {
-        let object = Box::new(
-            File::parse(input.data, is_dynamic)
-                .with_context(|| format!("Failed to parse object file `{input}`"))?,
-        );
+        let object = File::parse(input.data, is_dynamic)
+            .with_context(|| format!("Failed to parse object file `{input}`"))?;
         let num_symbols = object.symbols.len();
         Ok(Self {
             input: input.input.clone(),
