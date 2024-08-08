@@ -44,3 +44,18 @@ get_s2w:
 
 .globl s4h
 s4h: .ascii "Hello\0"
+
+.section .text, "ax", @progbits
+.align 8
+
+// Returns a pointer to s2w, but does so using a relocation that has an addend that would put us
+// outside of s2w. Relocations that reference named symbols in string-merge sections shouldn't take
+// the addend into account when determining which string we're referencing.
+.globl get_s2w_via_offset
+.type get_s2w_via_offset, @function
+get_s2w_via_offset:
+    endbr64
+    lea s1w-100(%rip), %rax
+    add $100, %rax
+    ret
+.size get_s2w_via_offset, .-get_s2w_via_offset

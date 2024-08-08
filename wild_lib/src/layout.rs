@@ -3461,7 +3461,18 @@ fn get_merged_string_output_address(
     };
     let section = object.section(section_index)?;
     let data = object.section_data(section)?;
-    let mut input_offset = symbol.st_value(LittleEndian).wrapping_add(addend);
+    let mut input_offset = symbol.st_value(LittleEndian);
+
+    // When we reference data in a string-merge section via a named symbol, we determine which
+    // string we're referencing without taking the addend into account, then apply the addend
+    // afterward. However when the reference is to a section (a symbol without a name), we take the
+    // addend into account up-front before we determine which string we're pointing at. This is a
+    // bit weird, but seems to match what other linkers do.
+    let symbol_has_name = symbol.st_name(LittleEndian) != 0;
+    if !symbol_has_name {
+        input_offset = input_offset.wrapping_add(addend);
+    }
+
     if input_offset > data.len() as u64 {
         bail!(
             "Invalid merge-string offset {input_offset} in section of length {}",
@@ -3486,7 +3497,11 @@ fn get_merged_string_output_address(
     let section_base = merged_string_start_addresses
         .addresses
         .get(output_section_id);
-    Ok(Some(section_base + output_offset + offset_into_string))
+    let mut address = section_base + output_offset + offset_into_string;
+    if symbol_has_name {
+        address = address.wrapping_add(addend);
+    }
+    Ok(Some(address))
 }
 
 fn layout_section_parts(

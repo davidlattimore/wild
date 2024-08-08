@@ -20,6 +20,7 @@ extern const char a1[];
 const char* get_loc1(void);
 const char* get_s1w(void);
 const char* get_s2w(void);
+const char* get_s2w_via_offset(void);
 
 void _start(void) {
     if (s1h != s2h) {
@@ -56,6 +57,9 @@ void _start(void) {
     }
     if (s3h[0] != 'H') {
         exit_syscall(110);
+    }
+    if (get_s2w_via_offset() != get_s2w()) {
+        exit_syscall(111);
     }
     exit_syscall(42);
 }
