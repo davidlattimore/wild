@@ -137,9 +137,7 @@ pub fn compute<'data>(
     let starting_mem_offsets_by_group = compute_start_offsets_by_group(&group_states, mem_offsets);
     let merged_string_start_addresses =
         MergedStringStartAddresses::compute(&output_sections, &starting_mem_offsets_by_group);
-    let mut symbol_resolutions = SymbolResolutions {
-        resolutions: vec![None; symbol_db.num_symbols()],
-    };
+    let mut symbol_resolutions = SymbolResolutions::new(symbol_db.num_symbols());
     let mut resolutions_by_file = split_slice(
         &mut symbol_resolutions.resolutions,
         &symbol_db.num_symbols_per_file,
@@ -262,6 +260,19 @@ pub(crate) struct SegmentLayout {
 
 pub(crate) struct SymbolResolutions {
     resolutions: Vec<Option<Resolution>>,
+}
+
+impl SymbolResolutions {
+    // TODO: This should be able to be optimised. What we need is a way to create an uninitialised
+    // block of memory, split it into multiple shards that each thread can write to as the
+    // resolutions are created, then at the end have some safe way to check that all memory has been
+    // initialised.
+    #[tracing::instrument(skip_all, name = "Create empty symbol resolution vec")]
+    fn new(num_symbols: usize) -> Self {
+        Self {
+            resolutions: vec![None; num_symbols],
+        }
+    }
 }
 
 pub(crate) enum FileLayout<'data> {
