@@ -35,12 +35,12 @@ use crate::program_segments::MAX_SEGMENTS;
 use crate::relaxation::Relaxation;
 use crate::resolution;
 use crate::resolution::MergeStringsSection;
+use crate::resolution::NotLoaded;
 use crate::resolution::ResolutionOutputs;
 use crate::resolution::ResolvedEpilogue;
 use crate::resolution::SectionSlot;
 use crate::resolution::StringToMerge;
 use crate::resolution::ValueFlags;
-use crate::sharding::split_slice;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolDb;
@@ -137,11 +137,16 @@ pub fn compute<'data>(
     let starting_mem_offsets_by_group = compute_start_offsets_by_group(&group_states, mem_offsets);
     let merged_string_start_addresses =
         MergedStringStartAddresses::compute(&output_sections, &starting_mem_offsets_by_group);
-    let mut symbol_resolutions = SymbolResolutions::new(symbol_db.num_symbols());
-    let mut resolutions_by_file = split_slice(
-        &mut symbol_resolutions.resolutions,
-        &symbol_db.num_symbols_per_file,
-    );
+    let mut symbol_resolutions = SymbolResolutions {
+        resolutions: Vec::with_capacity(symbol_db.num_symbols()),
+    };
+
+    let mut res_writer = sharded_vec_writer::VecWriter::new(&mut symbol_resolutions.resolutions);
+
+    let mut per_group_res_writers = group_states
+        .iter()
+        .map(|group| res_writer.take_shard(group.num_symbols))
+        .collect::<Vec<_>>();
 
     let resources = FinaliseLayoutResources {
         symbol_db,
@@ -150,14 +155,16 @@ pub fn compute<'data>(
         section_layouts: &section_layouts,
         merged_string_start_addresses: &merged_string_start_addresses,
         merged_strings: &merged_strings,
-        grouping,
     };
     let group_layouts = compute_symbols_and_layouts(
         group_states,
         starting_mem_offsets_by_group,
-        &mut resolutions_by_file,
+        &mut per_group_res_writers,
         &resources,
     )?;
+    for shard in per_group_res_writers {
+        res_writer.try_return_shard(shard)?;
+    }
     update_dynamic_symbol_resolutions(&group_layouts, &mut symbol_resolutions.resolutions);
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, symbol_db.args)?;
 
@@ -262,19 +269,6 @@ pub(crate) struct SymbolResolutions {
     resolutions: Vec<Option<Resolution>>,
 }
 
-impl SymbolResolutions {
-    // TODO: This should be able to be optimised. What we need is a way to create an uninitialised
-    // block of memory, split it into multiple shards that each thread can write to as the
-    // resolutions are created, then at the end have some safe way to check that all memory has been
-    // initialised.
-    #[tracing::instrument(skip_all, name = "Create empty symbol resolution vec")]
-    fn new(num_symbols: usize) -> Self {
-        Self {
-            resolutions: vec![None; num_symbols],
-        }
-    }
-}
-
 pub(crate) enum FileLayout<'data> {
     Internal(InternalLayout),
     Object(ObjectLayout<'data>),
@@ -320,7 +314,7 @@ enum FileLayoutState<'data> {
     Internal(InternalLayoutState),
     Object(ObjectLayoutState<'data>),
     Dynamic(DynamicLayoutState<'data>),
-    NotLoaded,
+    NotLoaded(NotLoaded),
     Epilogue(EpilogueLayoutState<'data>),
 }
 
@@ -799,12 +793,10 @@ impl CommonGroupState<'_> {
 }
 
 fn create_global_address_emitter(
-    symbol_id_range: SymbolIdRange,
     symbol_resolution_flags: &[ResolutionFlags],
 ) -> GlobalAddressEmitter {
     GlobalAddressEmitter {
         symbol_resolution_flags,
-        symbol_id_range,
     }
 }
 
@@ -1005,6 +997,7 @@ struct GroupState<'data> {
     base_file_id: FileId,
     files: Vec<FileLayoutState<'data>>,
     common: CommonGroupState<'data>,
+    num_symbols: usize,
 }
 
 /// The sizes and positions of either a segment or an output section. Note, we use usize for file
@@ -1060,7 +1053,6 @@ struct FinaliseLayoutResources<'scope, 'data> {
     section_layouts: &'scope OutputSectionMap<OutputRecordLayout>,
     merged_string_start_addresses: &'scope MergedStringStartAddresses,
     merged_strings: &'scope OutputSectionMap<MergeStringsSection<'data>>,
-    grouping: Grouping,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1282,16 +1274,13 @@ fn compute_start_offsets_by_group(
 fn compute_symbols_and_layouts<'data>(
     group_states: Vec<GroupState<'data>>,
     starting_mem_offsets_by_group: Vec<OutputSectionPartMap<u64>>,
-    symbol_resolutions: &mut [&mut [Option<Resolution>]],
+    per_group_res_writers: &mut [sharded_vec_writer::Shard<Option<Resolution>>],
     resources: &FinaliseLayoutResources<'_, 'data>,
 ) -> Result<Vec<GroupLayout<'data>>> {
-    let symbol_resolutions_by_group = symbol_resolutions
-        .chunks_mut(resources.grouping.files_per_group)
-        .collect::<Vec<_>>();
     group_states
         .into_par_iter()
         .zip(starting_mem_offsets_by_group)
-        .zip(symbol_resolutions_by_group)
+        .zip(per_group_res_writers)
         .map(|((state, mut memory_offsets), symbols_out)| {
             if cfg!(debug_assertions) {
                 let offset_verifier = crate::verification::OffsetVerifier::new(
@@ -1595,9 +1584,12 @@ fn create_worker_slots<'data>(
     let mut file_index = 0;
     loop {
         let mut group_files = Vec::with_capacity(grouping.files_per_group);
+        let mut num_symbols = 0;
         for _ in 0..grouping.files_per_group {
             if let Some(f) = file_states.next() {
-                group_files.push(f.create_layout_state(&mut custom_start_stop_defs));
+                let layout_state = f.create_layout_state(&mut custom_start_stop_defs);
+                num_symbols += layout_state.symbol_id_range().len();
+                group_files.push(layout_state);
             } else {
                 break;
             }
@@ -1610,6 +1602,7 @@ fn create_worker_slots<'data>(
         let group = GroupState {
             queue: LocalWorkQueue::new(group_states.len()),
             base_file_id,
+            num_symbols,
             files: group_files,
             common: CommonGroupState::new(output_sections),
         };
@@ -1678,17 +1671,14 @@ impl<'data> GroupState<'data> {
     fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        group_addresses_out: &mut [&mut [Option<Resolution>]],
+        resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution>>,
         resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<GroupLayout<'data>> {
         let eh_frame_start_address = memory_offsets.eh_frame;
         let mut files = self
             .files
             .into_iter()
-            .zip(group_addresses_out)
-            .map(|(file, file_addresses_out)| {
-                file.finalise_layout(memory_offsets, file_addresses_out, resources)
-            })
+            .map(|file| file.finalise_layout(memory_offsets, resolutions_out, resources))
             .collect::<Result<Vec<_>>>()?;
         let strtab_start_offset = self
             .common
@@ -1752,7 +1742,7 @@ fn activate<'data>(
         FileLayoutState::Object(s) => s.activate(common, resources, queue),
         FileLayoutState::Internal(s) => s.activate(common, resources, queue),
         FileLayoutState::Dynamic(s) => s.activate(common, resources, queue),
-        FileLayoutState::NotLoaded => Ok(()),
+        FileLayoutState::NotLoaded(_) => Ok(()),
         FileLayoutState::Epilogue(_) => Ok(()),
     }
 }
@@ -1861,7 +1851,7 @@ impl<'data> FileLayoutState<'data> {
                 s.finalise_sizes(common, symbol_db, symbol_resolution_flags)?;
                 s.finalise_symbol_sizes(common, symbol_db, symbol_resolution_flags)?;
             }
-            FileLayoutState::NotLoaded => {}
+            FileLayoutState::NotLoaded(_) => {}
         }
         Ok(())
     }
@@ -1913,7 +1903,7 @@ impl<'data> FileLayoutState<'data> {
             FileLayoutState::Dynamic(state) => {
                 state.load_symbol(common, symbol_id, resources, queue)?
             }
-            FileLayoutState::NotLoaded => {}
+            FileLayoutState::NotLoaded(_) => {}
             FileLayoutState::Epilogue(state) => {
                 state.load_symbol(common, symbol_id, resources, queue)?
             }
@@ -1924,25 +1914,47 @@ impl<'data> FileLayoutState<'data> {
     fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        addresses_out: &mut [Option<Resolution>],
+        resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution>>,
         resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<FileLayout<'data>> {
+        let resolutions_out = &mut ResolutionWriter { resolutions_out };
         let file_layout = match self {
             Self::Object(s) => {
-                FileLayout::Object(s.finalise_layout(memory_offsets, addresses_out, resources)?)
+                FileLayout::Object(s.finalise_layout(memory_offsets, resolutions_out, resources)?)
             }
-            Self::Internal(s) => {
-                FileLayout::Internal(s.finalise_layout(memory_offsets, addresses_out, resources)?)
+            Self::Internal(s) => FileLayout::Internal(s.finalise_layout(
+                memory_offsets,
+                resolutions_out,
+                resources,
+            )?),
+            Self::Epilogue(s) => FileLayout::Epilogue(s.finalise_layout(
+                memory_offsets,
+                resolutions_out,
+                resources,
+            )?),
+            Self::Dynamic(s) => FileLayout::Dynamic(s.finalise_layout(
+                memory_offsets,
+                resolutions_out,
+                resources,
+            )?),
+            Self::NotLoaded(s) => {
+                for _ in 0..s.symbol_id_range.len() {
+                    resolutions_out.write(None)?;
+                }
+                FileLayout::NotLoaded
             }
-            Self::Epilogue(s) => {
-                FileLayout::Epilogue(s.finalise_layout(memory_offsets, addresses_out, resources)?)
-            }
-            Self::Dynamic(s) => {
-                FileLayout::Dynamic(s.finalise_layout(memory_offsets, addresses_out, resources)?)
-            }
-            Self::NotLoaded => FileLayout::NotLoaded,
         };
         Ok(file_layout)
+    }
+
+    fn symbol_id_range(&self) -> SymbolIdRange {
+        match self {
+            FileLayoutState::Internal(s) => s.symbol_id_range(),
+            FileLayoutState::Object(s) => s.symbol_id_range(),
+            FileLayoutState::Dynamic(s) => s.symbol_id_range(),
+            FileLayoutState::NotLoaded(s) => s.symbol_id_range,
+            FileLayoutState::Epilogue(s) => s.symbol_id_range(),
+        }
     }
 }
 
@@ -1977,7 +1989,7 @@ impl<'data> std::fmt::Display for FileLayoutState<'data> {
             FileLayoutState::Object(s) => std::fmt::Display::fmt(s, f),
             FileLayoutState::Dynamic(s) => std::fmt::Display::fmt(s, f),
             FileLayoutState::Internal(_) => std::fmt::Display::fmt("<internal>", f),
-            FileLayoutState::NotLoaded => std::fmt::Display::fmt("<not-loaded>", f),
+            FileLayoutState::NotLoaded(_) => std::fmt::Display::fmt("<not-loaded>", f),
             FileLayoutState::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
         }
     }
@@ -1991,6 +2003,36 @@ impl<'data> std::fmt::Display for FileLayout<'data> {
             Self::Internal(_) => std::fmt::Display::fmt("<internal>", f),
             Self::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
             Self::NotLoaded => std::fmt::Display::fmt("<not loaded>", f),
+        }
+    }
+}
+
+impl std::fmt::Display for GroupLayout<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.files.len() == 1 {
+            self.files[0].fmt(f)
+        } else {
+            write!(
+                f,
+                "Group with {} files. Rerun with {}=1",
+                self.files.len(),
+                crate::args::FILES_PER_GROUP_ENV
+            )
+        }
+    }
+}
+
+impl std::fmt::Display for GroupState<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.files.len() == 1 {
+            self.files[0].fmt(f)
+        } else {
+            write!(
+                f,
+                "Group with {} files. Rerun with {}=1",
+                self.files.len(),
+                crate::args::FILES_PER_GROUP_ENV
+            )
         }
     }
 }
@@ -2398,7 +2440,7 @@ impl<'data> InternalLayoutState {
     fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut [Option<Resolution>],
+        resolutions_out: &mut ResolutionWriter,
         resources: &FinaliseLayoutResources,
     ) -> Result<InternalLayout> {
         let header_layout = resources
@@ -2418,12 +2460,8 @@ impl<'data> InternalLayoutState {
             take_dynsym_index(memory_offsets, resources.section_layouts)?;
         }
 
-        self.internal_symbols.finalise_layout(
-            self.symbol_id_range,
-            memory_offsets,
-            resolutions_out,
-            resources,
-        )?;
+        self.internal_symbols
+            .finalise_layout(memory_offsets, resolutions_out, resources)?;
 
         *memory_offsets.regular_mut(output_section_id::COMMENT, alignment::MIN) +=
             self.identity.len() as u64;
@@ -2476,21 +2514,21 @@ impl InternalSymbols {
 
     fn finalise_layout(
         &self,
-        symbol_id_range: SymbolIdRange,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut [Option<Resolution>],
+        resolutions_out: &mut ResolutionWriter,
         resources: &FinaliseLayoutResources,
     ) -> Result {
         // Define symbols that are optionally put at the start/end of some sections.
-        let mut emitter =
-            create_global_address_emitter(symbol_id_range, resources.symbol_resolution_flags);
+        let mut emitter = create_global_address_emitter(resources.symbol_resolution_flags);
         for (local_index, def_info) in self.symbol_definitions.iter().enumerate() {
             let symbol_id = self.start_symbol_id.add_usize(local_index);
             if !resources.symbol_db.is_canonical(symbol_id) {
+                resolutions_out.write(None)?;
                 continue;
             }
             // We don't put internal symbols in the symbol table if they aren't referenced.
             if resources.symbol_resolution_flags[symbol_id.as_usize()].is_empty() {
+                resolutions_out.write(None)?;
                 continue;
             }
 
@@ -2507,7 +2545,6 @@ impl InternalSymbols {
             };
             emitter.emit_resolution(
                 symbol_id,
-                resources.symbol_db,
                 raw_value,
                 None,
                 value_flags,
@@ -2609,15 +2646,11 @@ impl<'data> EpilogueLayoutState<'data> {
     fn finalise_layout(
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut [Option<Resolution>],
+        resolutions_out: &mut ResolutionWriter,
         resources: &FinaliseLayoutResources,
     ) -> Result<EpilogueLayout<'data>> {
-        self.internal_symbols.finalise_layout(
-            self.symbol_id_range,
-            memory_offsets,
-            resolutions_out,
-            resources,
-        )?;
+        self.internal_symbols
+            .finalise_layout(memory_offsets, resolutions_out, resources)?;
 
         let dynsym_start_index = ((memory_offsets.dynsym
             - resources
@@ -2899,14 +2932,13 @@ impl<'data> ObjectLayoutState<'data> {
     fn finalise_layout(
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut [Option<Resolution>],
+        resolutions_out: &mut ResolutionWriter,
         resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<ObjectLayout<'data>> {
         let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
 
-        let mut emitter =
-            create_global_address_emitter(self.symbol_id_range, resources.symbol_resolution_flags);
+        let mut emitter = create_global_address_emitter(resources.symbol_resolution_flags);
 
         let mut section_resolutions = Vec::with_capacity(self.state.sections.len());
         for slot in self.state.sections.iter_mut() {
@@ -2987,14 +3019,16 @@ impl<'data> ObjectLayoutState<'data> {
         section_resolutions: &[Option<Resolution>],
         memory_offsets: &mut OutputSectionPartMap<u64>,
         emitter: &mut GlobalAddressEmitter<'scope>,
-        resolutions_out: &mut [Option<Resolution>],
+        resolutions_out: &mut ResolutionWriter,
     ) -> Result {
         let symbol_id_range = self.symbol_id_range();
+        let symbol_id = symbol_id_range.input_to_id(local_symbol_index);
         if resolution_flags.is_empty() {
+            resolutions_out.write(None)?;
             return Ok(());
         }
-        let symbol_id = symbol_id_range.input_to_id(local_symbol_index);
         if !resources.symbol_db.is_canonical(symbol_id) {
+            resolutions_out.write(None)?;
             return Ok(());
         }
         let e = LittleEndian;
@@ -3044,7 +3078,6 @@ impl<'data> ObjectLayoutState<'data> {
         }
         emitter.emit_resolution(
             symbol_id,
-            resources.symbol_db,
             raw_value,
             dynamic_symbol_index,
             value_flags,
@@ -3327,30 +3360,29 @@ impl CommonSymbol {
 
 struct GlobalAddressEmitter<'state> {
     symbol_resolution_flags: &'state [ResolutionFlags],
-    symbol_id_range: SymbolIdRange,
+}
+
+struct ResolutionWriter<'writer, 'out> {
+    resolutions_out: &'writer mut sharded_vec_writer::Shard<'out, Option<Resolution>>,
+}
+
+impl<'writer, 'out> ResolutionWriter<'writer, 'out> {
+    fn write(&mut self, res: Option<Resolution>) -> Result {
+        self.resolutions_out.try_push(res)?;
+        Ok(())
+    }
 }
 
 impl<'state> GlobalAddressEmitter<'state> {
     fn emit_resolution(
         &mut self,
         symbol_id: SymbolId,
-        symbol_db: &'state SymbolDb<'state>,
         raw_value: u64,
         dynamic_symbol_index: Option<NonZeroU32>,
         value_flags: ValueFlags,
-        resolutions_out: &mut [Option<Resolution>],
+        resolutions_out: &mut ResolutionWriter,
         memory_offsets: &mut OutputSectionPartMap<u64>,
     ) -> Result {
-        debug_assert_bail!(
-            symbol_id >= self.symbol_id_range.start()
-                && symbol_id.to_offset(self.symbol_id_range) < resolutions_out.len(),
-            "Tried to emit resolution for {} which is outside {}..{}",
-            symbol_db.symbol_debug(symbol_id),
-            self.symbol_id_range.start(),
-            self.symbol_id_range
-                .start()
-                .add_usize(resolutions_out.len())
-        );
         let resolution = create_resolution(
             self.symbol_resolution_flags[symbol_id.as_usize()],
             raw_value,
@@ -3358,8 +3390,7 @@ impl<'state> GlobalAddressEmitter<'state> {
             value_flags,
             memory_offsets,
         )?;
-        let local_symbol_index = symbol_id.to_offset(self.symbol_id_range);
-        resolutions_out[local_symbol_index] = Some(resolution);
+        resolutions_out.write(Some(resolution))?;
         Ok(())
     }
 }
@@ -3422,7 +3453,7 @@ impl<'data> resolution::ResolvedFile<'data> {
             resolution::ResolvedFile::Internal(s) => {
                 FileLayoutState::Internal(InternalLayoutState::new(s))
             }
-            resolution::ResolvedFile::NotLoaded => FileLayoutState::NotLoaded,
+            resolution::ResolvedFile::NotLoaded(s) => FileLayoutState::NotLoaded(s),
             resolution::ResolvedFile::Epilogue(s) => FileLayoutState::Epilogue(
                 EpilogueLayoutState::new(s, core::mem::take(custom_start_stop_defs)),
             ),
@@ -3760,19 +3791,19 @@ impl<'data> DynamicLayoutState<'data> {
     fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        resolutions_out: &mut [Option<Resolution>],
+        resolutions_out: &mut ResolutionWriter,
         resources: &FinaliseLayoutResources,
     ) -> Result<DynamicLayout<'data>> {
         let version_mapping = self.compute_version_mapping();
 
-        for ((local_symbol, &resolution_flags), resolution) in self
+        for (local_symbol, &resolution_flags) in self
             .object
             .symbols
             .iter()
             .zip(&resources.symbol_resolution_flags[self.symbol_id_range().as_usize()])
-            .zip(resolutions_out)
         {
             if resolution_flags.is_empty() {
+                resolutions_out.write(None)?;
                 continue;
             }
 
@@ -3794,13 +3825,14 @@ impl<'data> DynamicLayoutState<'data> {
                 );
             }
 
-            *resolution = Some(create_resolution(
+            let resolution = create_resolution(
                 resolution_flags,
                 address,
                 dynamic_symbol_index,
                 ValueFlags::DYNAMIC,
                 memory_offsets,
-            )?);
+            )?;
+            resolutions_out.write(Some(resolution))?;
         }
 
         if let Some(v) = self.verdef_info.as_ref() {
@@ -3910,7 +3942,7 @@ impl<'data> std::fmt::Debug for FileLayoutState<'data> {
             FileLayoutState::Object(s) => f.debug_tuple("Object").field(&s.input).finish(),
             FileLayoutState::Internal(_) => f.debug_tuple("Internal").finish(),
             FileLayoutState::Dynamic(_) => f.debug_tuple("Dynamic").finish(),
-            FileLayoutState::NotLoaded => Display::fmt(&"<not loaded>", f),
+            FileLayoutState::NotLoaded(_) => Display::fmt(&"<not loaded>", f),
             FileLayoutState::Epilogue(_) => Display::fmt(&"<custom sections>", f),
         }
     }

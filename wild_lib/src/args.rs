@@ -101,6 +101,7 @@ pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
 pub const WRITE_LAYOUT_ENV: &str = "WILD_WRITE_LAYOUT";
 pub const WRITE_TRACE_ENV: &str = "WILD_WRITE_TRACE";
 pub const REFERENCE_LINKER_ENV: &str = "WILD_REFERENCE_LINKER";
+pub(crate) const FILES_PER_GROUP_ENV: &str = "WILD_FILES_PER_GROUP";
 
 // These flags don't currently affect our behaviour. TODO: Assess whether we should error or warn if
 // these are given. This is tricky though. On the one hand we want to be a drop-in replacement for
@@ -167,7 +168,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut unrecognised = Vec::new();
     let mut rpaths = Vec::new();
     let mut soname = None;
-    let max_files_per_group = std::env::var("WILD_FILES_PER_GROUP")
+    let max_files_per_group = std::env::var(FILES_PER_GROUP_ENV)
         .ok()
         .map(|s| s.parse())
         .transpose()?;

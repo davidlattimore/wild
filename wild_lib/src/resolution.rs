@@ -104,7 +104,9 @@ pub(crate) fn resolve_symbols_in_files<'data>(
                 // We don't yet have all the information we need to construct ResolvedInternal, so
                 // we stash away our input for now and let the caller construct it later.
                 internal = Some(s);
-                ResolvedFile::NotLoaded
+                ResolvedFile::NotLoaded(NotLoaded {
+                    symbol_id_range: SymbolIdRange::internal(0),
+                })
             }
             ParsedInput::Object(s) => {
                 if !s.is_optional() {
@@ -112,7 +114,9 @@ pub(crate) fn resolve_symbols_in_files<'data>(
                     objects.push((s, definitions));
                 }
                 num_objects += 1;
-                ResolvedFile::NotLoaded
+                ResolvedFile::NotLoaded(NotLoaded {
+                    symbol_id_range: s.symbol_id_range,
+                })
             }
             ParsedInput::Epilogue(s) => ResolvedFile::Epilogue(ResolvedEpilogue {
                 file_id: s.file_id,
@@ -262,10 +266,14 @@ enum SymbolStrength {
 }
 
 pub enum ResolvedFile<'data> {
-    NotLoaded,
+    NotLoaded(NotLoaded),
     Internal(ResolvedInternal<'data>),
     Object(ResolvedObject<'data>),
     Epilogue(ResolvedEpilogue),
+}
+
+pub(crate) struct NotLoaded {
+    pub(crate) symbol_id_range: SymbolIdRange,
 }
 
 /// A section, but where we may or may not yet have decided to load it.
@@ -475,7 +483,7 @@ fn canonicalise_undefined_symbols<'data>(
     for undefined in undefined_symbols {
         if undefined
             .ignore_if_loaded
-            .is_some_and(|file_id| !matches!(files[file_id.as_usize()], ResolvedFile::NotLoaded))
+            .is_some_and(|file_id| !matches!(files[file_id.as_usize()], ResolvedFile::NotLoaded(_)))
         {
             // The archive entry that defined the symbol in question ended up being loaded, so the
             // weak symbol is defined after all.
@@ -742,7 +750,7 @@ impl<'data> std::fmt::Display for ResolvedObject<'data> {
 impl<'data> std::fmt::Display for ResolvedFile<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ResolvedFile::NotLoaded => std::fmt::Display::fmt("<not loaded>", f),
+            ResolvedFile::NotLoaded(_) => std::fmt::Display::fmt("<not loaded>", f),
             ResolvedFile::Internal(_) => std::fmt::Display::fmt("<internal>", f),
             ResolvedFile::Object(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::Epilogue(_) => std::fmt::Display::fmt("<custom sections>", f),

@@ -544,6 +544,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sharded-vec-writer"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cd18dbaa674afcbf5c11de60d6d36f54ca0cad92d8d161164859d49f29ceeaf"
+
+[[package]]
 name = "smallvec"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -733,6 +739,7 @@ dependencies = [
  "memmap2",
  "object",
  "rayon",
+ "sharded-vec-writer",
  "smallvec",
  "tracing",
  "tracing-subscriber",

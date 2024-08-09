@@ -115,6 +115,7 @@ impl SymbolIdRange {
         self.num_symbols
     }
 
+    #[allow(dead_code)]
     pub(crate) fn start(&self) -> SymbolId {
         self.start_symbol_id
     }
