@@ -24,6 +24,7 @@ pub mod error;
 pub(crate) mod file_kind;
 pub(crate) mod fs;
 pub(crate) mod gc_stats;
+pub(crate) mod grouping;
 pub(crate) mod hash;
 pub(crate) mod identity;
 pub(crate) mod input_data;

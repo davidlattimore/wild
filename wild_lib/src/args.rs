@@ -37,6 +37,7 @@ pub(crate) struct Args {
     pub(crate) write_trace: bool,
     pub(crate) rpaths: Vec<String>,
     pub(crate) soname: Option<String>,
+    pub(crate) files_per_group: Option<u32>,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -166,6 +167,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut unrecognised = Vec::new();
     let mut rpaths = Vec::new();
     let mut soname = None;
+    let max_files_per_group = std::env::var("WILD_FILES_PER_GROUP")
+        .ok()
+        .map(|s| s.parse())
+        .transpose()?;
     if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
         write_layout = true;
         write_trace = true;
@@ -365,6 +370,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             .ok()
             .and_then(|s| s.parse().ok())
             .map(FileId::new),
+        files_per_group: max_files_per_group,
     }))
 }
 

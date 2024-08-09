@@ -17,6 +17,7 @@ use crate::elf::Versym;
 use crate::elf_writer;
 use crate::error::Error;
 use crate::error::Result;
+use crate::grouping::Grouping;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::INTERNAL_FILE_ID;
@@ -73,8 +74,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU8;
 use std::sync::Mutex;
 
-const FILES_PER_GROUP: usize = 1;
-
 #[tracing::instrument(skip_all, name = "Layout")]
 pub fn compute<'data>(
     symbol_db: &'data SymbolDb<'data>,
@@ -87,6 +86,9 @@ pub fn compute<'data>(
         merged_strings,
         custom_start_stop_defs,
     } = resolved;
+
+    let grouping = Grouping::new(file_states.len(), symbol_db.args);
+
     if let Some(sym_info) = symbol_db.args.sym_info.as_deref() {
         print_symbol_info(symbol_db, sym_info);
     }
@@ -98,6 +100,7 @@ pub fn compute<'data>(
         &symbol_resolution_flags,
         &merged_strings,
         custom_start_stop_defs,
+        grouping,
     )?;
     merge_dynamic_symbol_definitions(&mut group_states)?;
     finalise_all_sizes(
@@ -149,6 +152,7 @@ pub fn compute<'data>(
         section_layouts: &section_layouts,
         merged_string_start_addresses: &merged_string_start_addresses,
         merged_strings: &merged_strings,
+        grouping,
     };
     let group_layouts = compute_symbols_and_layouts(
         group_states,
@@ -171,6 +175,7 @@ pub fn compute<'data>(
         symbol_resolution_flags,
         merged_strings,
         merged_string_start_addresses,
+        grouping,
     })
 }
 
@@ -239,6 +244,7 @@ pub struct Layout<'data> {
     pub(crate) symbol_resolution_flags: Vec<ResolutionFlags>,
     pub(crate) merged_strings: OutputSectionMap<MergeStringsSection<'data>>,
     pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
+    pub(crate) grouping: Grouping,
 }
 
 pub(crate) struct SegmentLayouts {
@@ -1032,6 +1038,8 @@ struct GraphResources<'data, 'scope> {
     sections_with_content: OutputSectionMap<AtomicBool>,
 
     merged_strings: &'scope OutputSectionMap<MergeStringsSection<'data>>,
+
+    grouping: Grouping,
 }
 
 struct FinaliseLayoutResources<'scope, 'data> {
@@ -1041,6 +1049,7 @@ struct FinaliseLayoutResources<'scope, 'data> {
     section_layouts: &'scope OutputSectionMap<OutputRecordLayout>,
     merged_string_start_addresses: &'scope MergedStringStartAddresses,
     merged_strings: &'scope OutputSectionMap<MergeStringsSection<'data>>,
+    grouping: Grouping,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1209,7 +1218,7 @@ impl<'data> Layout<'data> {
     }
 
     pub(crate) fn file_layout(&self, file_id: FileId) -> &FileLayout {
-        let group_id = group_index_for_file(file_id);
+        let group_id = self.grouping.group_index_for_file(file_id);
         let group_layout = &self.group_layouts[group_id];
         &group_layout.files[file_id.as_usize() - group_layout.base_file_id.as_usize()]
     }
@@ -1266,7 +1275,7 @@ fn compute_symbols_and_layouts<'data>(
     resources: &FinaliseLayoutResources<'_, 'data>,
 ) -> Result<Vec<GroupLayout<'data>>> {
     let symbol_resolutions_by_group = symbol_resolutions
-        .chunks_mut(FILES_PER_GROUP)
+        .chunks_mut(resources.grouping.files_per_group)
         .collect::<Vec<_>>();
     group_states
         .into_par_iter()
@@ -1470,10 +1479,15 @@ fn find_required_sections<'data>(
     symbol_resolution_flags: &[AtomicResolutionFlags],
     merged_strings: &OutputSectionMap<MergeStringsSection<'data>>,
     custom_start_stop_defs: Vec<InternalSymDefInfo>,
+    grouping: Grouping,
 ) -> Result<(Vec<GroupState<'data>>, OutputSectionMap<bool>)> {
     let num_workers = file_states.len();
-    let (worker_slots, groups) =
-        create_worker_slots(file_states, output_sections, custom_start_stop_defs);
+    let (worker_slots, groups) = create_worker_slots(
+        file_states,
+        output_sections,
+        custom_start_stop_defs,
+        grouping,
+    );
 
     let num_threads = symbol_db.args.num_threads.get();
 
@@ -1491,6 +1505,7 @@ fn find_required_sections<'data>(
         symbol_resolution_flags,
         sections_with_content: OutputSectionMap::with_size(output_sections.len()),
         merged_strings,
+        grouping,
     };
     let resources_ref = &resources;
 
@@ -1561,14 +1576,15 @@ fn create_worker_slots<'data>(
     file_states: Vec<resolution::ResolvedFile<'data>>,
     output_sections: &OutputSections<'data>,
     mut custom_start_stop_defs: Vec<InternalSymDefInfo>,
+    grouping: Grouping,
 ) -> (Vec<Mutex<WorkerSlot<'data>>>, Vec<GroupState<'data>>) {
     let mut worker_slots = Vec::new();
     let mut group_states = Vec::new();
     let mut file_states = file_states.into_iter();
     let mut file_index = 0;
     loop {
-        let mut group_files = Vec::with_capacity(FILES_PER_GROUP);
-        for _ in 0..FILES_PER_GROUP {
+        let mut group_files = Vec::with_capacity(grouping.files_per_group);
+        for _ in 0..grouping.files_per_group {
             if let Some(f) = file_states.next() {
                 group_files.push(f.create_layout_state(&mut custom_start_stop_defs));
             } else {
@@ -1732,7 +1748,7 @@ fn activate<'data>(
 
 impl LocalWorkQueue {
     fn send_work(&mut self, resources: &GraphResources, file_id: FileId, work: WorkItem) {
-        if group_index_for_file(file_id) == self.index {
+        if resources.grouping.group_index_for_file(file_id) == self.index {
             self.local_work.push(work);
         } else {
             resources.send_work(file_id, work);
@@ -1777,7 +1793,7 @@ impl<'data, 'scope> GraphResources<'data, 'scope> {
     fn send_work(&self, file_id: FileId, work: WorkItem) {
         let worker;
         {
-            let group_index = group_index_for_file(file_id);
+            let group_index = self.grouping.group_index_for_file(file_id);
             let mut slot = self.worker_slots[group_index].lock().unwrap();
             worker = slot.worker.take();
             slot.work.push(work);
@@ -1806,10 +1822,6 @@ impl<'data, 'scope> GraphResources<'data, 'scope> {
             }
         }
     }
-}
-
-fn group_index_for_file(file_id: FileId) -> usize {
-    file_id.as_usize() / FILES_PER_GROUP
 }
 
 impl<'data> FileLayoutState<'data> {
