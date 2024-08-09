@@ -285,6 +285,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             // TODO: Implement support for linker plugins.
         } else if arg == "-plugin" {
             input.next();
+        } else if arg == "-rpath-link" {
+            // TODO
+            input.next();
         } else if arg == "--validate-output" {
             validate_output = true;
         } else if arg == "--write-layout" {
