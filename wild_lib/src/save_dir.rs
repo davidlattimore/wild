@@ -135,6 +135,9 @@ impl SaveDir {
             return Ok(());
         };
         let source_path = std::fs::canonicalize(Path::new(arg))?;
+        if source_path.is_dir() {
+            return Ok(());
+        }
         if let Some(dest_path) = unique_dest_path(dir, &source_path) {
             // To save disk space, we first attempt to hard link the file. If that fails, then just
             // copy it.
