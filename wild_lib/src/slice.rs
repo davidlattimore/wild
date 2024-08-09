@@ -12,7 +12,10 @@ pub(crate) fn slice_take_prefix_mut<'t, T>(data: &mut &'t mut [T], prefix: usize
     prefix
 }
 
-pub(crate) fn try_slice_take_prefix_mut<'t, T>(data: &mut &'t mut [T], prefix: usize) -> Option<&'t mut [T]> {
+pub(crate) fn try_slice_take_prefix_mut<'t, T>(
+    data: &mut &'t mut [T],
+    prefix: usize,
+) -> Option<&'t mut [T]> {
     let len = data.len();
     if prefix > len {
         return None;
