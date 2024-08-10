@@ -73,6 +73,7 @@ enum FileCreator {
     Background {
         sized_output_sender: Option<Sender<Result<SizedOutput>>>,
         sized_output_recv: Receiver<Result<SizedOutput>>,
+        deletion_complete_recv: Receiver<()>,
     },
     Regular {
         file_size: Option<u64>,
@@ -95,15 +96,27 @@ struct SectionAllocation {
 impl Output {
     pub(crate) fn new(args: &Args) -> Output {
         if args.num_threads.get() > 1 {
+            // Deletion of the old output file can take a while, so we start that in the background.
+            // When we get to the stage where we're going to create the new output file, we'll wait
+            // for deletion to complete if it hasn't already.
+            let (deletion_complete_sender, deletion_complete_recv) = std::sync::mpsc::channel();
+            let path = args.output.clone();
+            crate::threading::spawn(move || {
+                let _ = std::fs::remove_file(&path);
+                let _ = deletion_complete_sender.send(());
+            });
+
             let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
             Output {
                 path: args.output.clone(),
                 creator: FileCreator::Background {
+                    deletion_complete_recv,
                     sized_output_sender: Some(sized_output_sender),
                     sized_output_recv,
                 },
             }
         } else {
+            delete_old_output(args);
             Output {
                 path: args.output.clone(),
                 creator: FileCreator::Regular { file_size: None },
@@ -116,7 +129,11 @@ impl Output {
             FileCreator::Background {
                 sized_output_sender,
                 sized_output_recv: _,
+                deletion_complete_recv,
             } => {
+                // Wait for deletion of any existing output file to complete.
+                let _ = deletion_complete_recv.recv();
+
                 let sender = sized_output_sender
                     .take()
                     .expect("set_size must only be called once");
@@ -138,6 +155,7 @@ impl Output {
             FileCreator::Background {
                 sized_output_sender,
                 sized_output_recv,
+                deletion_complete_recv: _,
             } => {
                 assert!(sized_output_sender.is_none(), "set_size was never called");
                 wait_for_sized_output(sized_output_recv)?
@@ -159,6 +177,12 @@ impl Output {
     }
 }
 
+/// Delete the old output file. Note, this is only used when running from a single thread.
+#[tracing::instrument(skip_all, name = "Delete old output")]
+fn delete_old_output(args: &Args) {
+    let _ = std::fs::remove_file(&args.output);
+}
+
 #[tracing::instrument(skip_all, name = "Wait for output file creation")]
 fn wait_for_sized_output(sized_output_recv: &Receiver<Result<SizedOutput>>) -> Result<SizedOutput> {
     sized_output_recv.recv()?
@@ -166,7 +190,6 @@ fn wait_for_sized_output(sized_output_recv: &Receiver<Result<SizedOutput>>) -> R
 
 impl SizedOutput {
     fn new(path: Arc<Path>, file_size: u64) -> Result<SizedOutput> {
-        let _ = std::fs::remove_file(&path);
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
