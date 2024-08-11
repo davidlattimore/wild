@@ -1518,9 +1518,9 @@ fn find_required_sections<'data>(
         Ok(())
     })?;
 
-    std::thread::scope(|scope| {
+    crate::threading::scope(|scope| {
         for _ in 0..num_threads {
-            scope.spawn(|| {
+            scope.spawn(|_| {
                 let panic_result = std::panic::catch_unwind(|| {
                     let mut idle = false;
                     while !resources.done.load(atomic::Ordering::SeqCst) {
