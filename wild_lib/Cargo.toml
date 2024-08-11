@@ -22,7 +22,11 @@ object = { version = "0.36.0", default-features = false, features = [
 ] }
 rayon = "1.8.0"
 smallvec = "1.13.1"
-tracing = "0.1.40"
+# For now, we disable anything below info-level when running in release mode. If we don't do this,
+# then running with `--time` runs about 50% slower than without due to trace-level stuff. It may be
+# possible to fix this some other way in future. e.g. perhaps there's a runtime level that we're
+# failing to set, or we could stop using tracing for collecting timing information.
+tracing = { version = "0.1.40", features = ["release_max_level_info"]}
 tracing-subscriber = { version = "0.3.18", default-features = false, features = [
     "fmt",
     "registry",
