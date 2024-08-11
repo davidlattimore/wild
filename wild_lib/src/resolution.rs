@@ -277,6 +277,7 @@ pub(crate) struct NotLoaded {
 }
 
 /// A section, but where we may or may not yet have decided to load it.
+#[derive(Clone, Copy)]
 pub(crate) enum SectionSlot<'data> {
     Discard,
     Unloaded(UnloadedSection<'data>),
@@ -301,7 +302,7 @@ pub(crate) struct ResolvedObject<'data> {
 /// Parts of a resolved object that are only applicable to non-dynamic objects.
 pub(crate) struct NonDynamicResolved<'data> {
     pub(crate) sections: Vec<SectionSlot<'data>>,
-    merge_strings_sections: Vec<object::SectionIndex>,
+    merge_strings_sections: Vec<UnresolvedMergeStringsFileSection<'data>>,
 
     /// Details about each custom section that is defined in this object.
     custom_sections: Vec<SectionDetails<'data>>,
@@ -312,10 +313,13 @@ pub struct ResolvedEpilogue {
     pub(crate) start_symbol_id: SymbolId,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct MergeStringsFileSection<'data> {
     temporary_section_id: TemporaryOutputSectionId<'data>,
+}
 
-    /// The strings from this section. Only present temporarily during resolution.
+pub(crate) struct UnresolvedMergeStringsFileSection<'data> {
+    section_index: object::SectionIndex,
     strings: Vec<PreHashed<StringToMerge<'data>>>,
 }
 
@@ -374,14 +378,17 @@ fn merge_strings<'data>(
         let Some(non_dynamic) = obj.non_dynamic.as_mut() else {
             continue;
         };
-        for &section_index in &non_dynamic.merge_strings_sections {
-            let SectionSlot::MergeStrings(sec) = &mut non_dynamic.sections[section_index.0] else {
+        for merge_info in &non_dynamic.merge_strings_sections {
+            let SectionSlot::MergeStrings(sec) =
+                &mut non_dynamic.sections[merge_info.section_index.0]
+            else {
                 unreachable!();
             };
             let output_section_id = output_sections.output_section_id(sec.temporary_section_id)?;
             sec.set_precomputed_output_section_id(output_section_id);
+
             let string_to_offset = strings_by_section.get_mut(output_section_id);
-            for string in &sec.strings {
+            for string in &merge_info.strings {
                 string_to_offset.add_string(*string);
             }
         }
@@ -558,7 +565,15 @@ impl<'data> ResolvedObject<'data> {
             .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
         } else {
             let mut custom_sections = Vec::new();
-            let sections = resolve_sections(obj, &mut custom_sections, symbol_db.args)?;
+            let mut merge_strings_sections = Vec::new();
+
+            let sections = resolve_sections(
+                obj,
+                &mut custom_sections,
+                &mut merge_strings_sections,
+                symbol_db.args,
+            )?;
+
             resolve_symbols(
                 obj,
                 symbol_db,
@@ -567,12 +582,7 @@ impl<'data> ResolvedObject<'data> {
                 definitions_out,
             )
             .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
-            let mut merge_strings_sections = Vec::new();
-            for (i, slot) in sections.iter().enumerate() {
-                if matches!(slot, SectionSlot::MergeStrings(_)) {
-                    merge_strings_sections.push(object::SectionIndex(i));
-                }
-            }
+
             non_dynamic = Some(NonDynamicResolved {
                 sections,
                 merge_strings_sections,
@@ -593,6 +603,7 @@ impl<'data> ResolvedObject<'data> {
 fn resolve_sections<'data>(
     obj: &ParsedInputObject<'data>,
     custom_sections: &mut Vec<SectionDetails<'data>>,
+    merge_strings_out: &mut Vec<UnresolvedMergeStringsFileSection<'data>>,
     args: &Args,
 ) -> Result<Vec<SectionSlot<'data>>> {
     let sections = obj
@@ -611,7 +622,9 @@ fn resolve_sections<'data>(
                     Ok(SectionSlot::MergeStrings(MergeStringsFileSection::new(
                         &obj.object,
                         input_section,
+                        input_section_index,
                         unloaded.output_section_id,
+                        merge_strings_out,
                     )?))
                 } else {
                     match unloaded.output_section_id {
@@ -767,16 +780,21 @@ impl<'data> MergeStringsFileSection<'data> {
     fn new(
         object: &crate::elf::File<'data>,
         input_section: &crate::elf::SectionHeader,
+        input_section_index: object::SectionIndex,
         section_id: TemporaryOutputSectionId<'data>,
+        merge_strings_out: &mut Vec<UnresolvedMergeStringsFileSection<'data>>,
     ) -> Result<MergeStringsFileSection<'data>> {
         let mut remaining = object.section_data(input_section)?;
         let mut strings = Vec::new();
         while !remaining.is_empty() {
             strings.push(StringToMerge::take_hashed(&mut remaining)?);
         }
+        merge_strings_out.push(UnresolvedMergeStringsFileSection {
+            section_index: input_section_index,
+            strings,
+        });
         Ok(MergeStringsFileSection {
             temporary_section_id: section_id,
-            strings,
         })
     }
 
@@ -890,4 +908,14 @@ impl<'data> SymbolDb<'data> {
             SymbolStrength::Undefined
         }
     }
+}
+
+// We create quite a lot of `SectionSlot`s. We don't generally copy them, however we do need to
+// eventually drop the Vecs that contain them. Dropping those Vecs is a lot cheaper if the slots
+// don't need to have run Drop. We check for this, by making sure the type implements `Copy`
+#[test]
+fn section_slot_is_copy() {
+    fn assert_copy<T: Copy>(_v: T) {}
+
+    assert_copy(SectionSlot::Discard);
 }

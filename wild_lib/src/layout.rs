@@ -960,7 +960,7 @@ pub(crate) struct DynamicSymbolDefinition<'data> {
     pub(crate) hash: u32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct Section<'data> {
     pub(crate) index: object::SectionIndex,
     pub(crate) output_section_id: Option<OutputSectionId>,
