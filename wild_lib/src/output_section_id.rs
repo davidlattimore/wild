@@ -815,11 +815,8 @@ impl<'data> OutputSectionsBuilder<'data> {
         Ok(output_sections)
     }
 
-    pub(crate) fn add_sections(
-        &mut self,
-        custom_sections: &[(object::SectionIndex, SectionDetails<'data>)],
-    ) -> Result {
-        for (_, details) in custom_sections {
+    pub(crate) fn add_sections(&mut self, custom_sections: &[SectionDetails<'data>]) -> Result {
+        for details in custom_sections {
             let id = self.custom_by_name.entry(details.name).or_insert_with(|| {
                 let id = OutputSectionId::from_usize(self.section_infos.len());
                 self.section_infos.push(SectionOutputInfo {
@@ -998,31 +995,22 @@ impl<'data> OutputSections<'data> {
         };
         builder
             .add_sections(&[
-                (object::SectionIndex(0), section_details),
-                (
-                    object::SectionIndex(0),
-                    SectionDetails {
-                        name: b"exec",
-                        section_flags: crate::elf::shf::EXECINSTR,
-                        ..section_details
-                    },
-                ),
-                (
-                    object::SectionIndex(0),
-                    SectionDetails {
-                        name: b"data",
-                        section_flags: crate::elf::shf::WRITE,
-                        ..section_details
-                    },
-                ),
-                (
-                    object::SectionIndex(0),
-                    SectionDetails {
-                        name: b"bss",
-                        ty: crate::elf::Sht::Nobits,
-                        ..section_details
-                    },
-                ),
+                section_details,
+                SectionDetails {
+                    name: b"exec",
+                    section_flags: crate::elf::shf::EXECINSTR,
+                    ..section_details
+                },
+                SectionDetails {
+                    name: b"data",
+                    section_flags: crate::elf::shf::WRITE,
+                    ..section_details
+                },
+                SectionDetails {
+                    name: b"bss",
+                    ty: crate::elf::Sht::Nobits,
+                    ..section_details
+                },
             ])
             .unwrap();
         builder.build().unwrap()

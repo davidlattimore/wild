@@ -303,9 +303,8 @@ pub(crate) struct NonDynamicResolved<'data> {
     pub(crate) sections: Vec<SectionSlot<'data>>,
     merge_strings_sections: Vec<object::SectionIndex>,
 
-    /// Details about each custom section that is defined in this object. The index is an index into
-    /// self.sections.
-    custom_sections: Vec<(object::SectionIndex, SectionDetails<'data>)>,
+    /// Details about each custom section that is defined in this object.
+    custom_sections: Vec<SectionDetails<'data>>,
 }
 
 pub struct ResolvedEpilogue {
@@ -593,7 +592,7 @@ impl<'data> ResolvedObject<'data> {
 
 fn resolve_sections<'data>(
     obj: &ParsedInputObject<'data>,
-    custom_sections: &mut Vec<(object::SectionIndex, SectionDetails<'data>)>,
+    custom_sections: &mut Vec<SectionDetails<'data>>,
     args: &Args,
 ) -> Result<Vec<SectionSlot<'data>>> {
     let sections = obj
@@ -607,7 +606,7 @@ fn resolve_sections<'data>(
                     if let TemporaryOutputSectionId::Custom(_custom_section_id) =
                         unloaded.output_section_id
                     {
-                        custom_sections.push((input_section_index, unloaded.details));
+                        custom_sections.push(unloaded.details);
                     }
                     Ok(SectionSlot::MergeStrings(MergeStringsFileSection::new(
                         &obj.object,
@@ -618,7 +617,7 @@ fn resolve_sections<'data>(
                     match unloaded.output_section_id {
                         TemporaryOutputSectionId::BuiltIn(_) => Ok(SectionSlot::Unloaded(unloaded)),
                         TemporaryOutputSectionId::Custom(_custom_section_id) => {
-                            custom_sections.push((input_section_index, unloaded.details));
+                            custom_sections.push(unloaded.details);
                             Ok(SectionSlot::Unloaded(unloaded))
                         }
                         TemporaryOutputSectionId::EhFrameData => {
