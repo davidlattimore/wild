@@ -12,7 +12,6 @@ use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::Context as _;
 use core::mem::size_of;
-use std::collections::BTreeMap;
 use std::fmt::Debug;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +143,44 @@ impl<'data> OutputSections<'data> {
                 })?,
             TemporaryOutputSectionId::EhFrameData => EH_FRAME,
         })
+    }
+
+    /// Determine which loadable segment, if any, each output section is contained within and update
+    /// the section info accordingly.
+    fn determine_loadable_segment_ids(&mut self) -> Result {
+        let mut load_seg_by_section_id = vec![None; self.section_infos.len()];
+        let mut current_load_seg = None;
+
+        self.sections_and_segments_do(|event| match event {
+            OrderEvent::SegmentStart(seg_id) => {
+                if seg_id.segment_type() == crate::elf::SegmentType::Load {
+                    current_load_seg = Some(seg_id);
+                }
+            }
+            OrderEvent::SegmentEnd(seg_id) => {
+                if current_load_seg == Some(seg_id) {
+                    current_load_seg = None;
+                }
+            }
+            OrderEvent::Section(section_id, _section_details) => {
+                load_seg_by_section_id[section_id.as_usize()] = Some(current_load_seg);
+            }
+        });
+
+        load_seg_by_section_id
+            .iter()
+            .zip(self.section_infos.iter_mut())
+            .try_for_each(|(load_seg, info)| -> Result {
+                let load_seg_id = load_seg.ok_or_else(|| {
+                    anyhow!(
+                        "Section `{}` is missing from output order (update sections_and_segments_do)",
+                        String::from_utf8_lossy(info.details.name),
+                    )
+                })?;
+                info.loadable_segment_id = load_seg_id;
+                Ok(())
+            })?;
+        Ok(())
     }
 }
 
@@ -735,86 +772,46 @@ pub(crate) enum OrderEvent<'data> {
 
 pub(crate) struct OutputSectionsBuilder<'data> {
     base_address: u64,
-    custom: BTreeMap<&'data [u8], SectionDetails<'data>>,
+    custom_by_name: AHashMap<&'data [u8], OutputSectionId>,
+    section_infos: Vec<SectionOutputInfo<'data>>,
 }
 
 impl<'data> OutputSectionsBuilder<'data> {
     pub(crate) fn build(self) -> Result<OutputSections<'data>> {
-        let mut section_infos: Vec<_> = SECTION_DEFINITIONS
-            .iter()
-            .map(|d| SectionOutputInfo {
-                details: d.details,
-                loadable_segment_id: Some(crate::program_segments::LOAD_RO),
-            })
-            .collect();
         let mut ro_custom = Vec::new();
         let mut exec_custom = Vec::new();
         let mut data_custom = Vec::new();
         let mut bss_custom = Vec::new();
-        let custom_by_name = self
-            .custom
+
+        for (offset, info) in self.section_infos[NUM_BUILT_IN_SECTIONS..]
             .iter()
             .enumerate()
-            .map(|(offset, (name, details))| {
-                section_infos.push(SectionOutputInfo {
-                    details: *details,
-                    // We'll fill this in properly below.
-                    loadable_segment_id: None,
-                });
-                let id = OutputSectionId::from_usize(offset + NUM_BUILT_IN_SECTIONS);
-                if (details.section_flags & crate::elf::shf::EXECINSTR) != 0 {
-                    exec_custom.push(id);
-                } else if (details.section_flags & crate::elf::shf::WRITE) == 0 {
-                    ro_custom.push(id)
-                } else if details.ty == crate::elf::Sht::Nobits {
-                    bss_custom.push(id);
-                } else {
-                    data_custom.push(id);
-                }
-                (*name, id)
-            })
-            .collect();
+        {
+            let id = OutputSectionId::from_usize(NUM_BUILT_IN_SECTIONS + offset);
+            if (info.details.section_flags & crate::elf::shf::EXECINSTR) != 0 {
+                exec_custom.push(id);
+            } else if (info.details.section_flags & crate::elf::shf::WRITE) == 0 {
+                ro_custom.push(id)
+            } else if info.details.ty == crate::elf::Sht::Nobits {
+                bss_custom.push(id);
+            } else {
+                data_custom.push(id);
+            }
+        }
 
         let mut output_sections = OutputSections {
             base_address: self.base_address,
-            section_infos,
-            custom_by_name,
+            section_infos: self.section_infos,
+            custom_by_name: self.custom_by_name,
             ro_custom,
             exec_custom,
             data_custom,
             bss_custom,
             output_section_indexes: Default::default(),
         };
-        let mut extra = vec![None; output_sections.section_infos.len()];
-        let mut load_seg_id = None;
-        output_sections.sections_and_segments_do(|event| match event {
-            OrderEvent::SegmentStart(seg_id) => {
-                if seg_id.segment_type() == crate::elf::SegmentType::Load {
-                    load_seg_id = Some(seg_id);
-                }
-            }
-            OrderEvent::SegmentEnd(seg_id) => {
-                if load_seg_id == Some(seg_id) {
-                    load_seg_id = None;
-                }
-            }
-            OrderEvent::Section(section_id, _section_details) => {
-                extra[section_id.as_usize()] = Some(load_seg_id);
-            }
-        });
-        extra
-            .iter()
-            .zip(output_sections.section_infos.iter_mut())
-            .try_for_each(|(ext, info)| -> Result {
-                let load_seg_id = ext.ok_or_else(|| {
-                    anyhow!(
-                        "Section `{}` is missing from output order (update sections_and_segments_do)",
-                        String::from_utf8_lossy(info.details.name),
-                    )
-                })?;
-                info.loadable_segment_id = load_seg_id;
-                Ok(())
-            })?;
+
+        output_sections.determine_loadable_segment_ids()?;
+
         Ok(output_sections)
     }
 
@@ -822,27 +819,35 @@ impl<'data> OutputSectionsBuilder<'data> {
         &mut self,
         custom_sections: &[(object::SectionIndex, SectionDetails<'data>)],
     ) -> Result {
-        use std::collections::btree_map::Entry;
-
         for (_, details) in custom_sections {
-            match self.custom.entry(details.name) {
-                Entry::Occupied(mut e) => {
-                    // Section flags are sometimes different, take the union of everything we're
-                    // given.
-                    e.get_mut().section_flags |= details.section_flags;
-                }
-                Entry::Vacant(e) => {
-                    e.insert(*details);
-                }
-            }
+            let id = self.custom_by_name.entry(details.name).or_insert_with(|| {
+                let id = OutputSectionId::from_usize(self.section_infos.len());
+                self.section_infos.push(SectionOutputInfo {
+                    details: *details,
+                    // We'll fill this in properly in `determine_loadable_segment_ids`.
+                    loadable_segment_id: None,
+                });
+                id
+            });
+            // Section flags are sometimes different, take the union of everything we're
+            // given.
+            self.section_infos[id.as_usize()].details.section_flags |= details.section_flags;
         }
         Ok(())
     }
 
     pub(crate) fn with_base_address(base_address: u64) -> Self {
+        let section_infos: Vec<_> = SECTION_DEFINITIONS
+            .iter()
+            .map(|d| SectionOutputInfo {
+                details: d.details,
+                loadable_segment_id: Some(crate::program_segments::LOAD_RO),
+            })
+            .collect();
         Self {
+            section_infos,
             base_address,
-            custom: Default::default(),
+            custom_by_name: AHashMap::new(),
         }
     }
 }
