@@ -8,13 +8,13 @@ use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::input_data::FileId;
 use crate::input_data::VersionScriptData;
+use crate::input_data::INTERNAL_FILE_ID;
 use crate::linker_script::VersionScript;
 use crate::output_section_id::OutputSectionId;
 use crate::parsing::InternalInputObject;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ParsedInput;
 use crate::resolution::ValueFlags;
-use crate::sharding::Shard;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
 use crate::threading::prelude::*;
@@ -36,14 +36,14 @@ pub struct SymbolDb<'data> {
 
     /// Which file each symbol ID belongs to. Indexes past the end are assumed to be for custom
     /// section start/stop symbols.
-    symbol_files: Vec<FileId>,
+    symbol_file_ids: Vec<FileId>,
 
     /// Mapping from symbol IDs to the canonical definition of that symbol. For global symbols that
     /// were selected as the definition and for all locals, this will point to itself. e.g. the
     /// value at index 5 will be the symbol ID 5.
     symbol_definitions: Vec<SymbolId>,
 
-    symbol_value_kinds: Vec<ValueFlags>,
+    symbol_value_flags: Vec<ValueFlags>,
 
     /// Global symbols that have multiple definitions. Indexed by symbol ID. It'd be nice if we
     /// didn't need to store this and could just determine the canonical definition as we add
@@ -208,28 +208,39 @@ impl<'data> SymbolDb<'data> {
             .iter()
             .map(|f| f.num_symbols())
             .collect::<Vec<usize>>();
-        let num_symbols = num_symbols_per_file.iter().sum();
-        let mut symbol_definitions: Vec<SymbolId> = vec![SymbolId::undefined(); num_symbols];
-        let mut symbol_value_kinds: Vec<ValueFlags> = vec![ValueFlags::ABSOLUTE; num_symbols];
-        let mut per_file_resolutions =
-            crate::sharding::split_to_shards(&mut symbol_definitions, &num_symbols_per_file);
-        let mut per_file_kinds =
-            crate::sharding::split_to_shards(&mut symbol_value_kinds, &num_symbols_per_file);
-        let symbol_files = num_symbols_per_file
-            .iter()
-            .enumerate()
-            .flat_map(|(file_id, num_symbols)| {
-                std::iter::repeat(FileId::new(file_id as u32)).take(*num_symbols)
-            })
-            .collect();
 
-        let symbol_per_file = read_symbols(
-            inputs,
-            &version_script,
-            &mut per_file_resolutions,
-            &mut per_file_kinds,
-            args,
-        )?;
+        let num_symbols = num_symbols_per_file.iter().sum();
+
+        let mut symbol_definitions: Vec<SymbolId> = Vec::with_capacity(num_symbols);
+        let mut symbol_value_flags: Vec<ValueFlags> = Vec::with_capacity(num_symbols);
+        let mut symbol_file_ids: Vec<FileId> = Vec::with_capacity(num_symbols);
+
+        let mut symbol_definitions_writer =
+            sharded_vec_writer::VecWriter::new(&mut symbol_definitions);
+        let mut symbol_value_flags_writer =
+            sharded_vec_writer::VecWriter::new(&mut symbol_value_flags);
+        let mut symbol_file_ids_writer = sharded_vec_writer::VecWriter::new(&mut symbol_file_ids);
+
+        let mut per_file_writers = inputs
+            .iter()
+            .map(|f| {
+                SymbolInfoWriter::new(
+                    f.symbol_id_range().start(),
+                    symbol_definitions_writer.take_shard(f.num_symbols()),
+                    symbol_value_flags_writer.take_shard(f.num_symbols()),
+                    symbol_file_ids_writer.take_shard(f.num_symbols()),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let symbol_per_file = read_symbols(inputs, &version_script, &mut per_file_writers, args)?;
+
+        for writer in per_file_writers {
+            symbol_definitions_writer.return_shard(writer.resolutions);
+            symbol_value_flags_writer.return_shard(writer.value_kinds);
+            symbol_file_ids_writer.return_shard(writer.file_ids);
+        }
+
         let custom_sections_file_id = FileId::from_usize(inputs.len() - 1)?;
         debug_assert!(matches!(
             inputs[custom_sections_file_id.as_usize()],
@@ -241,12 +252,12 @@ impl<'data> SymbolDb<'data> {
             alternative_definitions: vec![SymbolId::undefined(); num_symbols],
             symbols_with_alternatives: Vec::new(),
             custom_sections_file_id,
-            symbol_files,
+            symbol_file_ids,
             symbol_definitions,
             inputs,
             num_symbols_per_file,
             start_stop_symbol_names: Default::default(),
-            symbol_value_kinds,
+            symbol_value_flags,
         };
         index.populate_symbol_db(symbol_per_file)?;
         Ok(index)
@@ -311,7 +322,7 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions.push(symbol_id);
         self.start_stop_symbol_names.push(*symbol_name);
         self.num_symbols_per_file[self.custom_sections_file_id.as_usize()] += 1;
-        self.symbol_value_kinds
+        self.symbol_value_flags
             .push(ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT);
         symbol_id
     }
@@ -344,7 +355,7 @@ impl<'data> SymbolDb<'data> {
     /// Returns the value flags for the specified symbol without taking into consideration what
     /// symbol is the definition.
     pub(crate) fn local_symbol_value_flags(&self, symbol_id: SymbolId) -> ValueFlags {
-        self.symbol_value_kinds[symbol_id.as_usize()]
+        self.symbol_value_flags[symbol_id.as_usize()]
     }
 
     pub(crate) fn symbol_value_flags(&self, symbol_id: SymbolId) -> ValueFlags {
@@ -369,7 +380,7 @@ impl<'data> SymbolDb<'data> {
     }
 
     pub(crate) fn file_id_for_symbol(&self, symbol_id: SymbolId) -> FileId {
-        self.symbol_files
+        self.symbol_file_ids
             .get(symbol_id.as_usize())
             .copied()
             .unwrap_or(self.custom_sections_file_id)
@@ -397,21 +408,30 @@ impl<'data> SymbolDb<'data> {
     }
 }
 
+#[tracing::instrument(skip_all, name = "Init symbol to file ID vec")]
+fn xx(num_symbols_per_file: &[usize]) -> Vec<FileId> {
+    num_symbols_per_file
+        .iter()
+        .enumerate()
+        .flat_map(|(file_id, num_symbols)| {
+            std::iter::repeat(FileId::new(file_id as u32)).take(*num_symbols)
+        })
+        .collect()
+}
+
 #[tracing::instrument(skip_all, name = "Read symbols")]
-fn read_symbols<'data>(
+fn read_symbols<'data, 'out>(
     readers: &[ParsedInput<'data>],
     version_script: &VersionScript,
-    per_file_resolutions: &mut [Shard<SymbolId, SymbolId>],
-    per_file_value_kinds: &mut [Shard<SymbolId, ValueFlags>],
+    symbols_out_by_file: &mut [SymbolInfoWriter],
     args: &Args,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
     let symbol_per_file = readers
         .par_iter()
-        .zip(per_file_resolutions)
-        .zip(per_file_value_kinds)
-        .map(|((reader, resolutions), value_kinds)| {
+        .zip(symbols_out_by_file)
+        .map(|(reader, symbols_out)| {
             let filename = reader.filename();
-            load_symbols_from_file(reader, version_script, resolutions, value_kinds, args)
+            load_symbols_from_file(reader, version_script, symbols_out, args)
                 .with_context(|| format!("Failed to load symbols from `{}`", filename.display()))
         })
         .collect::<Result<Vec<SymbolLoadOutputs>>>()?;
@@ -421,23 +441,22 @@ fn read_symbols<'data>(
 fn load_symbols_from_file<'data>(
     reader: &ParsedInput<'data>,
     version_script: &VersionScript,
-    resolutions: &mut Shard<SymbolId, SymbolId>,
-    value_kinds: &mut Shard<SymbolId, ValueFlags>,
+    symbols_out: &mut SymbolInfoWriter,
     args: &Args,
 ) -> Result<SymbolLoadOutputs<'data>> {
     Ok(match reader {
         ParsedInput::Object(s) => {
             if s.is_dynamic() {
-                DynamicObjectSymbolLoader.load_symbols(&s.object, resolutions, value_kinds)?
+                DynamicObjectSymbolLoader.load_symbols(s.file_id, &s.object, symbols_out)?
             } else {
                 RegularObjectSymbolLoader {
                     args,
                     version_script,
                 }
-                .load_symbols(&s.object, resolutions, value_kinds)?
+                .load_symbols(s.file_id, &s.object, symbols_out)?
             }
         }
-        ParsedInput::Internal(s) => s.load_symbols(resolutions, value_kinds)?,
+        ParsedInput::Internal(s) => s.load_symbols(symbols_out)?,
         ParsedInput::Epilogue(_) => SymbolLoadOutputs {
             // Custom section start/stop symbols are generated after archive handling.
             pending_symbols: vec![],
@@ -479,44 +498,73 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFl
     flags
 }
 
+struct SymbolInfoWriter<'out> {
+    resolutions: sharded_vec_writer::Shard<'out, SymbolId>,
+    value_kinds: sharded_vec_writer::Shard<'out, ValueFlags>,
+    file_ids: sharded_vec_writer::Shard<'out, FileId>,
+    next: SymbolId,
+}
+
+impl<'out> SymbolInfoWriter<'out> {
+    fn new(
+        base: SymbolId,
+        resolutions: sharded_vec_writer::Shard<'out, SymbolId>,
+        value_kinds: sharded_vec_writer::Shard<'out, ValueFlags>,
+        file_ids: sharded_vec_writer::Shard<'out, FileId>,
+    ) -> Self {
+        Self {
+            resolutions,
+            value_kinds,
+            file_ids,
+            next: base,
+        }
+    }
+
+    fn set_next(&mut self, value_flags: ValueFlags, resolution: SymbolId, file_id: FileId) {
+        self.value_kinds.push(value_flags);
+        self.resolutions.push(resolution);
+        self.file_ids.push(file_id);
+        self.next = SymbolId::from_usize(self.next.as_usize() + 1);
+    }
+}
+
 trait SymbolLoader {
     fn load_symbols<'data>(
         &self,
+        file_id: FileId,
         object: &crate::elf::File<'data>,
-        resolutions: &mut Shard<'_, SymbolId, SymbolId>,
-        value_kinds: &mut Shard<'_, SymbolId, ValueFlags>,
+        symbols_out: &mut SymbolInfoWriter,
     ) -> Result<SymbolLoadOutputs<'data>> {
         let e = LittleEndian;
         let mut pending_symbols = Vec::new();
-        let base_symbol_id = resolutions.start_key;
-        for ((symbol, (symbol_id, resolution)), value_kind) in object
-            .symbols
-            .iter()
-            .zip(resolutions.iter_mut())
-            .zip(value_kinds.values_mut())
-        {
-            *value_kind = self.compute_value_flags(symbol);
+        let base_symbol_id = symbols_out.next;
+        for symbol in object.symbols.iter() {
+            let symbol_id = symbols_out.next;
+            let mut value_flags = self.compute_value_flags(symbol);
             if symbol.is_undefined(e) {
+                symbols_out.set_next(value_flags, SymbolId::undefined(), file_id);
                 continue;
             }
-            *resolution = symbol_id;
+            let resolution = symbol_id;
 
             if symbol.is_local()
                 || self.is_hidden_version(symbol_id.offset_from(base_symbol_id), object)
             {
+                symbols_out.set_next(value_flags, resolution, file_id);
                 continue;
             }
             let name = SymbolName::prehashed(object.symbol_name(symbol)?);
             if self.should_downgrade_to_local(&name) {
-                *value_kind |= ValueFlags::DOWNGRADE_TO_LOCAL;
+                value_flags |= ValueFlags::DOWNGRADE_TO_LOCAL;
                 // If we're downgrading to a local, then we're writing a shared object. Shared
                 // objects should never bypass the GOT for TLS variables.
                 if symbol.st_type() != object::elf::STT_TLS {
-                    *value_kind |= ValueFlags::CAN_BYPASS_GOT
+                    value_flags |= ValueFlags::CAN_BYPASS_GOT
                 }
             }
             let pending = PendingSymbol::from_prehashed(symbol_id, name);
             pending_symbols.push(pending);
+            symbols_out.set_next(value_flags, resolution, file_id);
         }
         Ok(SymbolLoadOutputs { pending_symbols })
     }
@@ -673,34 +721,27 @@ impl TryFrom<usize> for SymbolId {
 impl InternalInputObject {
     fn load_symbols(
         &self,
-        resolutions: &mut Shard<SymbolId, SymbolId>,
-        value_kinds: &mut Shard<SymbolId, ValueFlags>,
+        symbols_out: &mut SymbolInfoWriter,
     ) -> Result<SymbolLoadOutputs<'static>> {
         let mut pending_symbols = Vec::with_capacity(self.symbol_definitions.len());
-        for ((definition, (symbol_id, resolution)), value_flags) in self
-            .symbol_definitions
-            .iter()
-            .zip(resolutions.iter_mut())
-            .zip(value_kinds.values_mut())
-        {
-            *resolution = symbol_id;
-            match definition {
-                InternalSymDefInfo::Undefined => {
-                    *value_flags = ValueFlags::ABSOLUTE;
-                }
+        for definition in &self.symbol_definitions {
+            let symbol_id = symbols_out.next;
+            let value_flags = match definition {
+                InternalSymDefInfo::Undefined => ValueFlags::ABSOLUTE,
                 InternalSymDefInfo::SectionStart(section_id) => {
                     let def = section_id.built_in_details();
                     let name = def.start_symbol_name.unwrap().as_bytes();
                     pending_symbols.push(PendingSymbol::new(symbol_id, name));
-                    *value_flags = ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT;
+                    ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT
                 }
                 InternalSymDefInfo::SectionEnd(section_id) => {
                     let def = section_id.built_in_details();
                     let name = def.end_symbol_name.unwrap().as_bytes();
                     pending_symbols.push(PendingSymbol::new(symbol_id, name));
-                    *value_flags = ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT;
+                    ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT
                 }
-            }
+            };
+            symbols_out.set_next(value_flags, symbol_id, INTERNAL_FILE_ID);
         }
         Ok(SymbolLoadOutputs { pending_symbols })
     }
