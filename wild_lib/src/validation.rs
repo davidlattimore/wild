@@ -38,7 +38,7 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
     for group in &layout.group_layouts {
         for file in &group.files {
             match file {
-                crate::layout::FileLayout::Internal(_) => {}
+                crate::layout::FileLayout::Prelude(_) => {}
                 crate::layout::FileLayout::Object(obj) => {
                     for (sec_index, sec) in obj.object.sections.enumerate() {
                         if let Some(resolution) = obj.section_resolutions[sec_index.0] {

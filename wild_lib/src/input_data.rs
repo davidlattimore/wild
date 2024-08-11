@@ -25,11 +25,11 @@ pub(crate) struct VersionScriptData {
     pub(crate) raw: String,
 }
 
-/// Identifies an input file. IDs start from 0 which is reserved for our "internal" state file.
+/// Identifies an input file. IDs start from 0 which is reserved for our prelude file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct FileId(u32);
 
-pub(crate) const INTERNAL_FILE_ID: FileId = FileId::new(0);
+pub(crate) const PRELUDE_FILE_ID: FileId = FileId::new(0);
 
 pub(crate) struct InputFile {
     pub(crate) filename: PathBuf,
@@ -75,7 +75,7 @@ impl<'config> InputData<'config> {
             InputFile {
                 filename: PathBuf::new(),
                 original_filename: PathBuf::new(),
-                kind: FileKind::Internal,
+                kind: FileKind::Prelude,
                 modifiers: Default::default(),
                 bytes: None,
             },

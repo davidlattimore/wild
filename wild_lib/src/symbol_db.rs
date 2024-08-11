@@ -8,12 +8,12 @@ use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::input_data::FileId;
 use crate::input_data::VersionScriptData;
-use crate::input_data::INTERNAL_FILE_ID;
+use crate::input_data::PRELUDE_FILE_ID;
 use crate::linker_script::VersionScript;
 use crate::output_section_id::OutputSectionId;
-use crate::parsing::InternalInputObject;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ParsedInput;
+use crate::parsing::Prelude;
 use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
@@ -90,7 +90,7 @@ pub(crate) struct SymbolIdRange {
 }
 
 impl SymbolIdRange {
-    pub(crate) fn internal(num_symbols: usize) -> SymbolIdRange {
+    pub(crate) fn prelude(num_symbols: usize) -> SymbolIdRange {
         SymbolIdRange {
             start_symbol_id: SymbolId::undefined(),
             num_symbols,
@@ -344,7 +344,7 @@ impl<'data> SymbolDb<'data> {
         let file_id = self.file_id_for_symbol(symbol_id);
         let input_object = &self.inputs[file_id.as_usize()];
         match input_object {
-            ParsedInput::Internal(o) => Ok(o.symbol_name(symbol_id)),
+            ParsedInput::Prelude(o) => Ok(o.symbol_name(symbol_id)),
             ParsedInput::Object(o) => o.symbol_name(symbol_id),
             ParsedInput::Epilogue(o) => {
                 Ok(self.start_stop_symbol_names[symbol_id.offset_from(o.start_symbol_id)])
@@ -456,7 +456,7 @@ fn load_symbols_from_file<'data>(
                 .load_symbols(s.file_id, &s.object, symbols_out)?
             }
         }
-        ParsedInput::Internal(s) => s.load_symbols(symbols_out)?,
+        ParsedInput::Prelude(s) => s.load_symbols(symbols_out)?,
         ParsedInput::Epilogue(_) => SymbolLoadOutputs {
             // Custom section start/stop symbols are generated after archive handling.
             pending_symbols: vec![],
@@ -637,7 +637,7 @@ impl<'db, 'data> std::fmt::Display for SymbolDebug<'db, 'data> {
         }
         if symbol_name.bytes().is_empty() {
             match file {
-                ParsedInput::Internal(_) => write!(f, "<unnamed internal symbol>")?,
+                ParsedInput::Prelude(_) => write!(f, "<unnamed internal symbol>")?,
                 ParsedInput::Object(o) => {
                     let symbol_index = symbol_id.to_input(file.symbol_id_range());
                     if let Some(section_name) = o
@@ -718,7 +718,7 @@ impl TryFrom<usize> for SymbolId {
     }
 }
 
-impl InternalInputObject {
+impl Prelude {
     fn load_symbols(
         &self,
         symbols_out: &mut SymbolInfoWriter,
@@ -741,7 +741,7 @@ impl InternalInputObject {
                     ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT
                 }
             };
-            symbols_out.set_next(value_flags, symbol_id, INTERNAL_FILE_ID);
+            symbols_out.set_next(value_flags, symbol_id, PRELUDE_FILE_ID);
         }
         Ok(SymbolLoadOutputs { pending_symbols })
     }

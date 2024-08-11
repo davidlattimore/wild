@@ -8,7 +8,7 @@ use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
-use crate::input_data::INTERNAL_FILE_ID;
+use crate::input_data::PRELUDE_FILE_ID;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::sharding::ShardKey;
@@ -36,7 +36,7 @@ pub(crate) fn parse_input_files<'data>(
     let mut next_symbol_id = SymbolId::undefined();
     for obj in &mut objects {
         match obj {
-            ParsedInput::Internal(_) => {
+            ParsedInput::Prelude(_) => {
                 // No need to store the symbol ID, since internal always starts from the undefined
                 // symbol.
                 assert_eq!(next_symbol_id, SymbolId::undefined());
@@ -57,12 +57,12 @@ pub(crate) fn parse_input_files<'data>(
 // the two smaller variants, so it doesn't matter.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum ParsedInput<'data> {
-    Internal(InternalInputObject),
+    Prelude(Prelude),
     Object(ParsedInputObject<'data>),
     Epilogue(Epilogue),
 }
 
-pub(crate) struct InternalInputObject {
+pub(crate) struct Prelude {
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
 }
 
@@ -143,7 +143,7 @@ impl<'data> ParsedInput<'data> {
             FileKind::ElfObject | FileKind::Archive => {
                 Self::Object(ParsedInputObject::new(input, file_id, false)?)
             }
-            FileKind::Internal => Self::Internal(InternalInputObject::new(file_id, args)?),
+            FileKind::Prelude => Self::Prelude(Prelude::new(file_id, args)?),
             FileKind::ElfDynamic => Self::Object(ParsedInputObject::new(input, file_id, true)?),
             FileKind::Text => unreachable!("Should have been handled earlier"),
         })
@@ -151,7 +151,7 @@ impl<'data> ParsedInput<'data> {
 
     pub(crate) fn num_symbols(&self) -> usize {
         match self {
-            ParsedInput::Internal(o) => o.symbol_definitions.len(),
+            ParsedInput::Prelude(o) => o.symbol_definitions.len(),
             ParsedInput::Object(o) => o.symbol_id_range.len(),
             ParsedInput::Epilogue(_) => {
                 // Initially, we report 0 symbols because we don't know what symbols we'll define
@@ -165,14 +165,14 @@ impl<'data> ParsedInput<'data> {
     pub(crate) fn filename(&self) -> &'data Path {
         match self {
             ParsedInput::Object(s) => s.filename(),
-            ParsedInput::Internal(_) => Path::new("<<internal>>"),
+            ParsedInput::Prelude(_) => Path::new("<<prelude>>"),
             ParsedInput::Epilogue(_) => Path::new("<<epilogue>>"),
         }
     }
 
     pub(crate) fn symbol_id_range(&self) -> SymbolIdRange {
         match self {
-            ParsedInput::Internal(o) => SymbolIdRange::internal(o.symbol_definitions.len()),
+            ParsedInput::Prelude(o) => SymbolIdRange::prelude(o.symbol_definitions.len()),
             ParsedInput::Object(o) => o.symbol_id_range,
             ParsedInput::Epilogue(o) => SymbolIdRange::epilogue(o.start_symbol_id, 0),
         }
@@ -181,15 +181,15 @@ impl<'data> ParsedInput<'data> {
     pub(crate) fn is_regular_object(&self) -> bool {
         match self {
             ParsedInput::Object(o) => !o.is_dynamic(),
-            ParsedInput::Internal(_) => false,
+            ParsedInput::Prelude(_) => false,
             ParsedInput::Epilogue(_) => false,
         }
     }
 }
 
-impl InternalInputObject {
+impl Prelude {
     fn new(file_id: FileId, args: &Args) -> Result<Self> {
-        assert_eq!(file_id, INTERNAL_FILE_ID);
+        assert_eq!(file_id, PRELUDE_FILE_ID);
         // The undefined symbol must always be symbol 0.
         let mut symbol_definitions = vec![InternalSymDefInfo::Undefined];
         for section_id in output_section_id::built_in_section_ids() {
@@ -242,9 +242,9 @@ impl<'data> std::fmt::Display for ParsedInputObject<'data> {
 impl<'data> std::fmt::Display for ParsedInput<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ParsedInput::Internal(_) => std::fmt::Display::fmt("<internal>", f),
+            ParsedInput::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             ParsedInput::Object(o) => std::fmt::Display::fmt(o, f),
-            ParsedInput::Epilogue(_) => std::fmt::Display::fmt("<custom-sections>", f),
+            ParsedInput::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
         }
     }
 }

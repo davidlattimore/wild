@@ -7,7 +7,7 @@ use object::LittleEndian;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum FileKind {
-    Internal,
+    Prelude,
     ElfObject,
     ElfDynamic,
     Archive,

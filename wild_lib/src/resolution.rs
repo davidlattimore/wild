@@ -11,7 +11,7 @@ use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
-use crate::input_data::INTERNAL_FILE_ID;
+use crate::input_data::PRELUDE_FILE_ID;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::OutputSectionsBuilder;
@@ -19,10 +19,10 @@ use crate::output_section_id::SectionDetails;
 use crate::output_section_id::TemporaryOutputSectionId;
 use crate::output_section_id::UnloadedSection;
 use crate::output_section_map::OutputSectionMap;
-use crate::parsing::InternalInputObject;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ParsedInput;
 use crate::parsing::ParsedInputObject;
+use crate::parsing::Prelude;
 use crate::sharding::split_slice;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
@@ -63,7 +63,7 @@ pub fn resolve_symbols_and_sections<'data>(
 
     resolve_alternative_symbol_definitions(symbol_db, &resolved)?;
 
-    resolved[INTERNAL_FILE_ID.as_usize()] = ResolvedFile::Internal(ResolvedInternal {
+    resolved[PRELUDE_FILE_ID.as_usize()] = ResolvedFile::Prelude(ResolvedPrelude {
         symbol_definitions: &internal.symbol_definitions,
     });
     Ok(ResolutionOutputs {
@@ -85,7 +85,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
 ) -> Result<(
     Vec<ResolvedFile<'data>>,
     SegQueue<UndefinedSymbol<'data>>,
-    &'data InternalInputObject,
+    &'data Prelude,
 )> {
     let mut num_objects = 0;
     let mut objects = Vec::new();
@@ -100,12 +100,12 @@ pub(crate) fn resolve_symbols_in_files<'data>(
     let mut resolved: Vec<ResolvedFile<'_>> = file_states
         .iter()
         .map(|file| match file {
-            ParsedInput::Internal(s) => {
+            ParsedInput::Prelude(s) => {
                 // We don't yet have all the information we need to construct ResolvedInternal, so
                 // we stash away our input for now and let the caller construct it later.
                 internal = Some(s);
                 ResolvedFile::NotLoaded(NotLoaded {
-                    symbol_id_range: SymbolIdRange::internal(0),
+                    symbol_id_range: SymbolIdRange::prelude(0),
                 })
             }
             ParsedInput::Object(s) => {
@@ -267,7 +267,7 @@ enum SymbolStrength {
 
 pub enum ResolvedFile<'data> {
     NotLoaded(NotLoaded),
-    Internal(ResolvedInternal<'data>),
+    Prelude(ResolvedPrelude<'data>),
     Object(ResolvedObject<'data>),
     Epilogue(ResolvedEpilogue),
 }
@@ -286,7 +286,7 @@ pub(crate) enum SectionSlot<'data> {
     MergeStrings(MergeStringsFileSection<'data>),
 }
 
-pub(crate) struct ResolvedInternal<'data> {
+pub(crate) struct ResolvedPrelude<'data> {
     pub(crate) symbol_definitions: &'data [InternalSymDefInfo],
 }
 
@@ -728,7 +728,7 @@ fn resolve_symbol<'data>(
             let symbol_file_id = symbol_db.file_id_for_symbol(symbol_id);
             if symbol_file_id != obj.file_id && !local_symbol.is_weak() {
                 request_file_id(symbol_file_id);
-            } else if symbol_file_id != INTERNAL_FILE_ID {
+            } else if symbol_file_id != PRELUDE_FILE_ID {
                 // The symbol is weak and we can't be sure that the file that defined it will end up
                 // being loaded, so the symbol might actually be undefined. Register it as an
                 // undefined symbol then later when we handle undefined symbols, we'll check if the
@@ -763,9 +763,9 @@ impl<'data> std::fmt::Display for ResolvedFile<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ResolvedFile::NotLoaded(_) => std::fmt::Display::fmt("<not loaded>", f),
-            ResolvedFile::Internal(_) => std::fmt::Display::fmt("<internal>", f),
+            ResolvedFile::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             ResolvedFile::Object(o) => std::fmt::Display::fmt(o, f),
-            ResolvedFile::Epilogue(_) => std::fmt::Display::fmt("<custom sections>", f),
+            ResolvedFile::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
         }
     }
 }

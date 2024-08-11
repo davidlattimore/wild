@@ -25,10 +25,10 @@ use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
 use crate::layout::GroupLayout;
 use crate::layout::HeaderInfo;
-use crate::layout::InternalLayout;
 use crate::layout::InternalSymbols;
 use crate::layout::Layout;
 use crate::layout::ObjectLayout;
+use crate::layout::PreludeLayout;
 use crate::layout::Resolution;
 use crate::layout::ResolutionFlags;
 use crate::layout::Section;
@@ -399,7 +399,7 @@ impl<'data> FileLayout<'data> {
     ) -> Result {
         match self {
             FileLayout::Object(s) => s.write_file(buffers, table_writer, layout)?,
-            FileLayout::Internal(s) => s.write_file(buffers, table_writer, layout)?,
+            FileLayout::Prelude(s) => s.write_file(buffers, table_writer, layout)?,
             FileLayout::Epilogue(s) => s.write_file(buffers, table_writer, layout)?,
             FileLayout::NotLoaded => {}
             FileLayout::Dynamic(s) => s.write_file(table_writer, layout)?,
@@ -1511,7 +1511,7 @@ fn apply_relocation(
             .wrapping_add(addend)
             .wrapping_sub(place),
         RelocationKind::TlsLd => layout
-            .internal()
+            .prelude()
             .tlsld_got_entry
             .unwrap()
             .get()
@@ -1579,7 +1579,7 @@ fn write_absolute_relocation(
     }
 }
 
-impl InternalLayout {
+impl PreludeLayout {
     fn write_file(
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,

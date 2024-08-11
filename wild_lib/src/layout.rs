@@ -20,7 +20,7 @@ use crate::error::Result;
 use crate::grouping::Grouping;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
-use crate::input_data::INTERNAL_FILE_ID;
+use crate::input_data::PRELUDE_FILE_ID;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
@@ -124,7 +124,7 @@ pub fn compute<'data>(
     let section_layouts = layout_sections(&section_part_layouts);
     output.set_size(compute_total_file_size(&section_layouts));
 
-    let Some(FileLayoutState::Internal(internal)) =
+    let Some(FileLayoutState::Prelude(internal)) =
         &group_states.first().and_then(|g| g.files.first())
     else {
         unreachable!();
@@ -270,7 +270,7 @@ pub(crate) struct SymbolResolutions {
 }
 
 pub(crate) enum FileLayout<'data> {
-    Internal(InternalLayout),
+    Prelude(PreludeLayout),
     Object(ObjectLayout<'data>),
     Dynamic(DynamicLayout<'data>),
     Epilogue(EpilogueLayout<'data>),
@@ -311,7 +311,7 @@ pub(crate) enum TlsMode {
 }
 
 enum FileLayoutState<'data> {
-    Internal(InternalLayoutState),
+    Prelude(PreludeLayoutState),
     Object(ObjectLayoutState<'data>),
     Dynamic(DynamicLayoutState<'data>),
     NotLoaded(NotLoaded),
@@ -319,7 +319,7 @@ enum FileLayoutState<'data> {
 }
 
 /// Data that doesn't come from any input files, but needs to be written by the linker.
-struct InternalLayoutState {
+struct PreludeLayoutState {
     file_id: FileId,
     symbol_id_range: SymbolIdRange,
     internal_symbols: InternalSymbols,
@@ -364,7 +364,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) symbol_id_range: SymbolIdRange,
 }
 
-pub(crate) struct InternalLayout {
+pub(crate) struct PreludeLayout {
     pub(crate) entry_symbol_id: Option<SymbolId>,
     pub(crate) tlsld_got_entry: Option<NonZeroU64>,
     pub(crate) identity: String,
@@ -697,7 +697,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
     }
 }
 
-impl<'data> SymbolRequestHandler<'data> for InternalLayoutState {
+impl<'data> SymbolRequestHandler<'data> for PreludeLayoutState {
     fn file_id(&self) -> FileId {
         self.file_id
     }
@@ -1081,11 +1081,10 @@ impl WorkItem {
 }
 
 impl<'data> Layout<'data> {
-    pub(crate) fn internal(&self) -> &InternalLayout {
-        let Some(FileLayout::Internal(i)) =
-            self.group_layouts.first().and_then(|g| g.files.first())
+    pub(crate) fn prelude(&self) -> &PreludeLayout {
+        let Some(FileLayout::Prelude(i)) = self.group_layouts.first().and_then(|g| g.files.first())
         else {
-            panic!("Internal layout not found at expected offset");
+            panic!("Prelude layout not found at expected offset");
         };
         i
     }
@@ -1128,7 +1127,7 @@ impl<'data> Layout<'data> {
             return Ok(0);
         }
         let symbol_id = self
-            .internal()
+            .prelude()
             .entry_symbol_id
             .context("Entry point is undefined")?;
         let resolution = self.local_symbol_resolution(symbol_id).with_context(|| {
@@ -1398,7 +1397,7 @@ fn compute_total_section_part_sizes(
         total_sizes.merge(&group_state.common.mem_sizes);
     }
     let first_group = group_states.first_mut().unwrap();
-    let Some(FileLayoutState::Internal(internal_layout)) = first_group.files.first_mut() else {
+    let Some(FileLayoutState::Prelude(internal_layout)) = first_group.files.first_mut() else {
         unreachable!();
     };
     internal_layout.determine_header_sizes(
@@ -1740,7 +1739,7 @@ fn activate<'data>(
 ) -> Result {
     match file {
         FileLayoutState::Object(s) => s.activate(common, resources, queue),
-        FileLayoutState::Internal(s) => s.activate(common, resources, queue),
+        FileLayoutState::Prelude(s) => s.activate(common, resources, queue),
         FileLayoutState::Dynamic(s) => s.activate(common, resources, queue),
         FileLayoutState::NotLoaded(_) => Ok(()),
         FileLayoutState::Epilogue(_) => Ok(()),
@@ -1843,7 +1842,7 @@ impl<'data> FileLayoutState<'data> {
                 s.finalise_sizes(common)?;
                 s.finalise_symbol_sizes(common, symbol_db, symbol_resolution_flags)?;
             }
-            FileLayoutState::Internal(s) => {
+            FileLayoutState::Prelude(s) => {
                 s.finalise_sizes(common, symbol_db, symbol_resolution_flags)?;
                 s.finalise_symbol_sizes(common, symbol_db, symbol_resolution_flags)?;
             }
@@ -1897,7 +1896,7 @@ impl<'data> FileLayoutState<'data> {
             FileLayoutState::Object(state) => {
                 state.load_symbol(common, symbol_id, resources, queue)?;
             }
-            FileLayoutState::Internal(state) => {
+            FileLayoutState::Prelude(state) => {
                 state.load_symbol(common, symbol_id, resources, queue)?;
             }
             FileLayoutState::Dynamic(state) => {
@@ -1922,7 +1921,7 @@ impl<'data> FileLayoutState<'data> {
             Self::Object(s) => {
                 FileLayout::Object(s.finalise_layout(memory_offsets, resolutions_out, resources)?)
             }
-            Self::Internal(s) => FileLayout::Internal(s.finalise_layout(
+            Self::Prelude(s) => FileLayout::Prelude(s.finalise_layout(
                 memory_offsets,
                 resolutions_out,
                 resources,
@@ -1949,7 +1948,7 @@ impl<'data> FileLayoutState<'data> {
 
     fn symbol_id_range(&self) -> SymbolIdRange {
         match self {
-            FileLayoutState::Internal(s) => s.symbol_id_range(),
+            FileLayoutState::Prelude(s) => s.symbol_id_range(),
             FileLayoutState::Object(s) => s.symbol_id_range(),
             FileLayoutState::Dynamic(s) => s.symbol_id_range(),
             FileLayoutState::NotLoaded(s) => s.symbol_id_range,
@@ -1971,9 +1970,9 @@ fn compute_file_sizes(
     })
 }
 
-impl std::fmt::Display for InternalLayoutState {
+impl std::fmt::Display for PreludeLayoutState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt("<internal>", f)
+        std::fmt::Display::fmt("<prelude>", f)
     }
 }
 
@@ -1988,7 +1987,7 @@ impl<'data> std::fmt::Display for FileLayoutState<'data> {
         match self {
             FileLayoutState::Object(s) => std::fmt::Display::fmt(s, f),
             FileLayoutState::Dynamic(s) => std::fmt::Display::fmt(s, f),
-            FileLayoutState::Internal(_) => std::fmt::Display::fmt("<internal>", f),
+            FileLayoutState::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             FileLayoutState::NotLoaded(_) => std::fmt::Display::fmt("<not-loaded>", f),
             FileLayoutState::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
         }
@@ -2000,7 +1999,7 @@ impl<'data> std::fmt::Display for FileLayout<'data> {
         match self {
             Self::Object(s) => std::fmt::Display::fmt(s, f),
             Self::Dynamic(s) => std::fmt::Display::fmt(s, f),
-            Self::Internal(_) => std::fmt::Display::fmt("<internal>", f),
+            Self::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             Self::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
             Self::NotLoaded => std::fmt::Display::fmt("<not loaded>", f),
         }
@@ -2212,11 +2211,11 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
     }
 }
 
-impl<'data> InternalLayoutState {
-    fn new(input_state: resolution::ResolvedInternal<'data>) -> Self {
+impl<'data> PreludeLayoutState {
+    fn new(input_state: resolution::ResolvedPrelude<'data>) -> Self {
         Self {
-            file_id: INTERNAL_FILE_ID,
-            symbol_id_range: SymbolIdRange::internal(input_state.symbol_definitions.len()),
+            file_id: PRELUDE_FILE_ID,
+            symbol_id_range: SymbolIdRange::prelude(input_state.symbol_definitions.len()),
             internal_symbols: InternalSymbols {
                 symbol_definitions: input_state.symbol_definitions.to_owned(),
                 start_symbol_id: SymbolId::zero(),
@@ -2442,7 +2441,7 @@ impl<'data> InternalLayoutState {
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
         resources: &FinaliseLayoutResources,
-    ) -> Result<InternalLayout> {
+    ) -> Result<PreludeLayout> {
         let header_layout = resources
             .section_layouts
             .built_in(output_section_id::FILE_HEADER);
@@ -2471,7 +2470,7 @@ impl<'data> InternalLayoutState {
             }
         });
 
-        Ok(InternalLayout {
+        Ok(PreludeLayout {
             internal_symbols: self.internal_symbols,
             entry_symbol_id: self.entry_symbol_id,
             tlsld_got_entry,
@@ -3450,8 +3449,8 @@ impl<'data> resolution::ResolvedFile<'data> {
     ) -> FileLayoutState<'data> {
         match self {
             resolution::ResolvedFile::Object(s) => new_object_layout_state(s),
-            resolution::ResolvedFile::Internal(s) => {
-                FileLayoutState::Internal(InternalLayoutState::new(s))
+            resolution::ResolvedFile::Prelude(s) => {
+                FileLayoutState::Prelude(PreludeLayoutState::new(s))
             }
             resolution::ResolvedFile::NotLoaded(s) => FileLayoutState::NotLoaded(s),
             resolution::ResolvedFile::Epilogue(s) => FileLayoutState::Epilogue(
@@ -3940,7 +3939,7 @@ impl<'data> std::fmt::Debug for FileLayoutState<'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FileLayoutState::Object(s) => f.debug_tuple("Object").field(&s.input).finish(),
-            FileLayoutState::Internal(_) => f.debug_tuple("Internal").finish(),
+            FileLayoutState::Prelude(_) => f.debug_tuple("Internal").finish(),
             FileLayoutState::Dynamic(_) => f.debug_tuple("Dynamic").finish(),
             FileLayoutState::NotLoaded(_) => Display::fmt(&"<not loaded>", f),
             FileLayoutState::Epilogue(_) => Display::fmt(&"<custom sections>", f),
@@ -3969,7 +3968,7 @@ fn print_symbol_info(symbol_db: &SymbolDb, name: &str) {
         {
             let file_id = symbol_db.file_id_for_symbol(symbol_id);
             match &symbol_db.inputs[file_id.as_usize()] {
-                crate::parsing::ParsedInput::Internal(_) => println!("  <internal>"),
+                crate::parsing::ParsedInput::Prelude(_) => println!("  <prelude>"),
                 crate::parsing::ParsedInput::Object(o) => {
                     let local_index = symbol_id.to_input(o.symbol_id_range);
                     match o.object.symbol(local_index) {
