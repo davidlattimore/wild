@@ -9,6 +9,7 @@ use crate::file_kind::FileKind;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
+use crate::input_data::UNINITIALISED_FILE_ID;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::sharding::ShardKey;
@@ -26,8 +27,7 @@ pub(crate) fn parse_input_files<'data>(
 ) -> Result<Vec<ParsedInput<'data>>> {
     let mut objects = inputs
         .par_iter()
-        .enumerate()
-        .map(|(index, f)| ParsedInput::new(f, FileId::from_usize(index)?, args))
+        .map(|f| ParsedInput::new(f, args))
         .collect::<Result<Vec<ParsedInput>>>()?;
 
     set_start_symbol_ids(&mut objects);
@@ -83,9 +83,9 @@ pub(crate) struct Epilogue {
 }
 
 impl Epilogue {
-    fn new(file_id: FileId) -> Self {
+    fn new() -> Self {
         Self {
-            file_id,
+            file_id: UNINITIALISED_FILE_ID,
             // Filled in later in `set_start_symbol_ids`.
             start_symbol_id: SymbolId::undefined(),
         }
@@ -106,7 +106,7 @@ pub(crate) enum InternalSymDefInfo {
 }
 
 impl<'data> ParsedInputObject<'data> {
-    fn new(input: &'data InputBytes, file_id: FileId, is_dynamic: bool) -> Result<Self> {
+    fn new(input: &'data InputBytes, is_dynamic: bool) -> Result<Self> {
         let object = File::parse(input.data, is_dynamic)
             .with_context(|| format!("Failed to parse object file `{input}`"))?;
         let num_symbols = object.symbols.len();
@@ -118,7 +118,7 @@ impl<'data> ParsedInputObject<'data> {
                 SymbolId::undefined(),
                 num_symbols,
             ),
-            file_id,
+            file_id: UNINITIALISED_FILE_ID,
             is_dynamic,
             modifiers: input.modifiers,
         })
@@ -150,15 +150,15 @@ impl<'data> ParsedInputObject<'data> {
 }
 
 impl<'data> ParsedInput<'data> {
-    fn new(input: &'data InputBytes, file_id: FileId, args: &'data Args) -> Result<Self> {
+    fn new(input: &'data InputBytes, args: &'data Args) -> Result<Self> {
         Ok(match input.kind {
             FileKind::ElfObject | FileKind::Archive => {
-                Self::Object(ParsedInputObject::new(input, file_id, false)?)
+                Self::Object(ParsedInputObject::new(input, false)?)
             }
-            FileKind::Prelude => Self::Prelude(Prelude::new(file_id, args)?),
-            FileKind::ElfDynamic => Self::Object(ParsedInputObject::new(input, file_id, true)?),
+            FileKind::Prelude => Self::Prelude(Prelude::new(args)?),
+            FileKind::ElfDynamic => Self::Object(ParsedInputObject::new(input, true)?),
             FileKind::Text => unreachable!("Should have been handled earlier"),
-            FileKind::Epilogue => Self::Epilogue(Epilogue::new(file_id)),
+            FileKind::Epilogue => Self::Epilogue(Epilogue::new()),
         })
     }
 
@@ -200,17 +200,31 @@ impl<'data> ParsedInput<'data> {
     }
 
     pub(crate) fn file_id(&self) -> FileId {
-        match self {
+        let file_id = match self {
             ParsedInput::Prelude(_) => PRELUDE_FILE_ID,
             ParsedInput::Object(s) => s.file_id,
             ParsedInput::Epilogue(s) => s.file_id,
+        };
+        debug_assert_ne!(
+            file_id, UNINITIALISED_FILE_ID,
+            "Called ParsedInput::file_id before set_file_id was called"
+        );
+        file_id
+    }
+
+    pub(crate) fn set_file_id(&mut self, file_id: FileId) {
+        match self {
+            ParsedInput::Prelude(_) => {
+                assert_eq!(file_id, PRELUDE_FILE_ID)
+            }
+            ParsedInput::Object(s) => s.file_id = file_id,
+            ParsedInput::Epilogue(s) => s.file_id = file_id,
         }
     }
 }
 
 impl Prelude {
-    fn new(file_id: FileId, args: &Args) -> Result<Self> {
-        assert_eq!(file_id, PRELUDE_FILE_ID);
+    fn new(args: &Args) -> Result<Self> {
         // The undefined symbol must always be symbol 0.
         let mut symbol_definitions = vec![InternalSymDefInfo::Undefined];
         for section_id in output_section_id::built_in_section_ids() {

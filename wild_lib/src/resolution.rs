@@ -13,6 +13,7 @@ use crate::hash::PreHashed;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
+use crate::input_data::UNINITIALISED_FILE_ID;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::OutputSectionsBuilder;
@@ -62,10 +63,10 @@ pub fn resolve_symbols_and_sections<'data>(
 
     resolve_alternative_symbol_definitions(symbol_db, &groups)?;
 
-    let (g, f) = symbol_db.grouping.parts(PRELUDE_FILE_ID);
-    groups[g].files[f] = ResolvedFile::Prelude(ResolvedPrelude {
-        symbol_definitions: &internal.symbol_definitions,
-    });
+    groups[PRELUDE_FILE_ID.group()].files[PRELUDE_FILE_ID.file()] =
+        ResolvedFile::Prelude(ResolvedPrelude {
+            symbol_definitions: &internal.symbol_definitions,
+        });
     Ok(ResolutionOutputs {
         groups,
         output_sections,
@@ -93,7 +94,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
 
     let mut symbol_definitions = symbol_db.take_definitions();
     let mut symbol_definitions_slice = symbol_definitions.as_mut();
-    let definitions_per_file: Vec<Vec<DefinitionsCell>> = groups
+    let mut definitions_per_group_and_file: Vec<Vec<DefinitionsCell>> = groups
         .iter()
         .map(|group| {
             group
@@ -112,11 +113,13 @@ pub(crate) fn resolve_symbols_in_files<'data>(
     let mut prelude = None;
     let mut resolved: Vec<ResolvedGroup<'_>> = groups
         .iter()
-        .map(|group| {
+        .zip(&mut definitions_per_group_and_file)
+        .map(|(group, definitions_per_file)| {
             let files = group
                 .files
                 .iter()
-                .map(|file| match file {
+                .zip(definitions_per_file)
+                .map(|(file, definitions)| match file {
                     ParsedInput::Prelude(s) => {
                         // We don't yet have all the information we need to construct
                         // ResolvedPrelude, so we stash away our input for now and let the caller
@@ -128,9 +131,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
                     }
                     ParsedInput::Object(s) => {
                         if !s.is_optional() {
-                            let (g, f) = symbol_db.grouping.parts(s.file_id);
-                            let definitions = definitions_per_file[g][f].take().unwrap();
-                            objects.push((s, definitions));
+                            objects.push((s, definitions.take().unwrap()));
                         }
                         num_objects += 1;
                         ResolvedFile::NotLoaded(NotLoaded {
@@ -138,17 +139,13 @@ pub(crate) fn resolve_symbols_in_files<'data>(
                         })
                     }
                     ParsedInput::Epilogue(s) => ResolvedFile::Epilogue(ResolvedEpilogue {
-                        file_id: s.file_id,
+                        file_id: UNINITIALISED_FILE_ID,
                         start_symbol_id: s.start_symbol_id,
                     }),
                 })
                 .collect();
 
-            let base_file_id = group.base_file_id();
-            ResolvedGroup {
-                files,
-                base_file_id,
-            }
+            ResolvedGroup { files }
         })
         .collect();
     if num_objects == 0 {
@@ -157,7 +154,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
     let outputs = Outputs::new(num_objects);
     let resources = ResolutionResources {
         groups,
-        definitions_per_file: &definitions_per_file,
+        definitions_per_file: &definitions_per_group_and_file,
         symbol_db,
         outputs: &outputs,
     };
@@ -174,7 +171,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
         }
     });
 
-    drop(definitions_per_file);
+    drop(definitions_per_group_and_file);
     symbol_db.restore_definitions(symbol_definitions);
     if let Some(e) = outputs.errors.pop() {
         return Err(e);
@@ -182,8 +179,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
 
     for obj in outputs.loaded {
         let file_id = obj.file_id;
-        let (g, f) = symbol_db.grouping.parts(file_id);
-        resolved[g].files[f] = ResolvedFile::Object(obj);
+        resolved[file_id.group()].files[file_id.file()] = ResolvedFile::Object(obj);
     }
 
     Ok((resolved, outputs.undefined_symbols, prelude.unwrap()))
@@ -298,7 +294,6 @@ enum SymbolStrength {
 
 pub(crate) struct ResolvedGroup<'data> {
     pub(crate) files: Vec<ResolvedFile<'data>>,
-    pub(crate) base_file_id: FileId,
 }
 
 pub(crate) enum ResolvedFile<'data> {
@@ -482,11 +477,13 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
     resources: &'scope ResolutionResources<'data, 'definitions, 'scope>,
 ) -> Result {
     let request_file_id = |file_id: FileId| {
-        let (g, f) = resources.symbol_db.grouping.parts(file_id);
-        if let Some(definitions) = resources.definitions_per_file[g][f].take() {
+        if let Some(definitions) =
+            resources.definitions_per_file[file_id.group()][file_id.file()].take()
+        {
             s.spawn(move |s| {
-                let (g, f) = resources.symbol_db.grouping.parts(file_id);
-                if let ParsedInput::Object(obj) = &resources.groups[g].files[f] {
+                if let ParsedInput::Object(obj) =
+                    &resources.groups[file_id.group()].files[file_id.file()]
+                {
                     let r = process_object(obj, *definitions, s, resources);
                     if let Err(error) = r {
                         let _ = resources.outputs.errors.push(error);
@@ -531,8 +528,10 @@ fn canonicalise_undefined_symbols<'data>(
     undefined_symbols.sort_by_key(|u| u.symbol_id);
     for undefined in undefined_symbols {
         let is_defined = undefined.ignore_if_loaded.is_some_and(|file_id| {
-            let (g, f) = symbol_db.grouping.parts(file_id);
-            !matches!(groups[g].files[f], ResolvedFile::NotLoaded(_))
+            !matches!(
+                groups[file_id.group()].files[file_id.file()],
+                ResolvedFile::NotLoaded(_)
+            )
         });
         if is_defined {
             // The archive entry that defined the symbol in question ended up being loaded, so the
@@ -934,8 +933,7 @@ impl Display for ValueFlags {
 impl<'data> SymbolDb<'data> {
     fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
-        let (g, f) = self.grouping.parts(file_id);
-        if let ResolvedFile::Object(obj) = &resolved[g].files[f] {
+        if let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] {
             let local_index = symbol_id.to_input(obj.symbol_id_range);
             let Ok(obj_symbol) = obj.object.symbol(local_index) else {
                 // Errors from this function should have been reported elsewhere.

@@ -969,9 +969,6 @@ pub(crate) struct Section<'data> {
 }
 
 pub(crate) struct GroupLayout<'data> {
-    // TODO: If we're going to have a fixed number of files per group, should we ditch the
-    // base_file_id and just use modulo?
-    pub(crate) base_file_id: FileId,
     pub(crate) files: Vec<FileLayout<'data>>,
 
     /// The offset in .dynstr at which we'll start writing.
@@ -988,7 +985,6 @@ pub(crate) struct GroupLayout<'data> {
 
 struct GroupState<'data> {
     queue: LocalWorkQueue,
-    base_file_id: FileId,
     files: Vec<FileLayoutState<'data>>,
     common: CommonGroupState<'data>,
     num_symbols: usize,
@@ -1212,9 +1208,8 @@ impl<'data> Layout<'data> {
     }
 
     pub(crate) fn file_layout(&self, file_id: FileId) -> &FileLayout {
-        let group_id = self.symbol_db.grouping.group_index_for_file(file_id);
-        let group_layout = &self.group_layouts[group_id];
-        &group_layout.files[file_id.as_usize() - group_layout.base_file_id.as_usize()]
+        let group_layout = &self.group_layouts[file_id.group()];
+        &group_layout.files[file_id.file()]
     }
 }
 
@@ -1584,7 +1579,6 @@ fn create_worker_slots<'data>(
             }));
             GroupState {
                 queue: LocalWorkQueue::new(group_index),
-                base_file_id: group.base_file_id,
                 num_symbols,
                 files,
                 common: CommonGroupState::new(output_sections),
@@ -1610,7 +1604,7 @@ impl<'data> GroupState<'data> {
         loop {
             while let Some(work_item) = self.queue.local_work.pop() {
                 let file_id = work_item.file_id(resources.symbol_db);
-                let file = &mut self.files[file_id.as_usize() - self.base_file_id.as_usize()];
+                let file = &mut self.files[file_id.file()];
                 if let Err(error) =
                     file.do_work(&mut self.common, work_item, resources, &mut self.queue)
                 {
@@ -1672,7 +1666,6 @@ impl<'data> GroupState<'data> {
         set_last_verneed(&self.common, resources, memory_offsets, &mut files);
 
         Ok(GroupLayout {
-            base_file_id: self.base_file_id,
             files,
             strtab_start_offset,
             dynstr_start_offset,
@@ -1728,7 +1721,7 @@ fn activate<'data>(
 
 impl LocalWorkQueue {
     fn send_work(&mut self, resources: &GraphResources, file_id: FileId, work: WorkItem) {
-        if resources.symbol_db.grouping.group_index_for_file(file_id) == self.index {
+        if file_id.group() == self.index {
             self.local_work.push(work);
         } else {
             resources.send_work(file_id, work);
@@ -1773,8 +1766,7 @@ impl<'data, 'scope> GraphResources<'data, 'scope> {
     fn send_work(&self, file_id: FileId, work: WorkItem) {
         let worker;
         {
-            let group_index = self.symbol_db.grouping.group_index_for_file(file_id);
-            let mut slot = self.worker_slots[group_index].lock().unwrap();
+            let mut slot = self.worker_slots[file_id.group()].lock().unwrap();
             worker = slot.worker.take();
             slot.work.push(work);
         };

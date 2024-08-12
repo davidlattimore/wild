@@ -373,7 +373,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         print_allocations: std::env::var("WILD_PRINT_ALLOCATIONS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .map(FileId::new),
+            .map(FileId::from_encoded),
         files_per_group: max_files_per_group,
     }))
 }

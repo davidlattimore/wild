@@ -5,12 +5,12 @@ use crate::args::Args;
 use crate::args::OutputKind;
 use crate::error::Result;
 use crate::grouping::Group;
-use crate::grouping::Grouping;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::input_data::FileId;
 use crate::input_data::VersionScriptData;
 use crate::input_data::PRELUDE_FILE_ID;
+use crate::input_data::UNINITIALISED_FILE_ID;
 use crate::linker_script::VersionScript;
 use crate::output_section_id::OutputSectionId;
 use crate::parsing::InternalSymDefInfo;
@@ -28,7 +28,6 @@ use std::collections::hash_map;
 pub struct SymbolDb<'data> {
     pub(crate) args: &'data Args,
 
-    pub(crate) grouping: Grouping,
     pub(crate) groups: &'data [Group<'data>],
 
     /// Mapping from global symbol names to a symbol ID with that name. If there are multiple
@@ -118,7 +117,6 @@ impl SymbolIdRange {
         self.num_symbols
     }
 
-    #[allow(dead_code)]
     pub(crate) fn start(&self) -> SymbolId {
         self.start_symbol_id
     }
@@ -206,7 +204,6 @@ impl<'data> SymbolDb<'data> {
         groups: &'data [Group],
         version_script_data: Option<&VersionScriptData>,
         args: &'data Args,
-        grouping: Grouping,
     ) -> Result<Self> {
         let version_script = version_script_data
             .map(VersionScript::parse)
@@ -264,7 +261,6 @@ impl<'data> SymbolDb<'data> {
             num_symbols_per_group,
             start_stop_symbol_names: Default::default(),
             symbol_value_flags,
-            grouping,
         };
         index.populate_symbol_db(symbol_per_file)?;
         Ok(index)
@@ -328,8 +324,7 @@ impl<'data> SymbolDb<'data> {
         });
         self.symbol_definitions.push(symbol_id);
         self.start_stop_symbol_names.push(*symbol_name);
-        let (g, _) = self.grouping.parts(self.epilogue_file_id);
-        self.num_symbols_per_group[g] += 1;
+        self.num_symbols_per_group[self.epilogue_file_id.group()] += 1;
         self.symbol_value_flags
             .push(ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT);
         symbol_id
@@ -416,20 +411,8 @@ impl<'data> SymbolDb<'data> {
     }
 
     pub(crate) fn file(&self, file_id: FileId) -> &ParsedInput<'data> {
-        let (g, f) = self.grouping.parts(file_id);
-        &self.groups[g].files[f]
+        &self.groups[file_id.group()].files[file_id.file()]
     }
-}
-
-#[tracing::instrument(skip_all, name = "Init symbol to file ID vec")]
-fn xx(num_symbols_per_file: &[usize]) -> Vec<FileId> {
-    num_symbols_per_file
-        .iter()
-        .enumerate()
-        .flat_map(|(file_id, num_symbols)| {
-            std::iter::repeat(FileId::new(file_id as u32)).take(*num_symbols)
-        })
-        .collect()
 }
 
 #[tracing::instrument(skip_all, name = "Read symbols")]
@@ -547,6 +530,7 @@ impl<'out> SymbolInfoWriter<'out> {
     }
 
     fn set_next(&mut self, value_flags: ValueFlags, resolution: SymbolId, file_id: FileId) {
+        debug_assert!(file_id != UNINITIALISED_FILE_ID);
         self.value_kinds.push(value_flags);
         self.resolutions.push(resolution);
         self.file_ids.push(file_id);

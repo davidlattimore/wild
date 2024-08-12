@@ -29,7 +29,11 @@ pub(crate) struct VersionScriptData {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct FileId(u32);
 
-pub(crate) const PRELUDE_FILE_ID: FileId = FileId::new(0);
+pub(crate) const PRELUDE_FILE_ID: FileId = FileId::new(0, 0);
+
+/// It's convenient for parsed files to know their FileId, however we don't decide their file IDs
+/// until we create the groups, which happens after parsing. So we need a placeholder.
+pub(crate) const UNINITIALISED_FILE_ID: FileId = FileId::from_encoded(0xffff_ffff);
 
 pub(crate) struct InputFile {
     pub(crate) filename: PathBuf,
@@ -245,19 +249,24 @@ fn search_for_file(
     None
 }
 
-impl FileId {
-    pub(crate) const fn new(value: u32) -> Self {
-        Self(value)
-    }
-
-    pub(crate) fn from_usize(value: usize) -> Result<Self> {
-        Ok(Self::new(value.try_into().context("Too many input files")?))
-    }
-}
+const FILE_INDEX_BITS: u32 = 8;
+pub(crate) const MAX_FILES_PER_GROUP: u32 = 1 << FILE_INDEX_BITS;
 
 impl FileId {
-    pub(crate) fn as_usize(self) -> usize {
-        self.0 as usize
+    pub(crate) const fn new(group: u32, file: u32) -> Self {
+        Self((group << FILE_INDEX_BITS) | file)
+    }
+
+    pub(crate) const fn from_encoded(v: u32) -> Self {
+        Self(v)
+    }
+
+    pub(crate) fn group(self) -> usize {
+        self.0 as usize >> FILE_INDEX_BITS
+    }
+
+    pub(crate) fn file(self) -> usize {
+        self.0 as usize & ((1 << FILE_INDEX_BITS) - 1)
     }
 }
 
@@ -280,7 +289,7 @@ impl<'data> std::fmt::Debug for InputRef<'data> {
 
 impl std::fmt::Display for FileId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0, f)
+        write!(f, "{} ({}/{})", self.0, self.group(), self.file())
     }
 }
 
