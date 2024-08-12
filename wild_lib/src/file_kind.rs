@@ -12,6 +12,7 @@ pub(crate) enum FileKind {
     ElfDynamic,
     Archive,
     Text,
+    Epilogue,
 }
 
 impl FileKind {

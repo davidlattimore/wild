@@ -29,12 +29,15 @@ pub(crate) fn parse_input_files<'data>(
         .enumerate()
         .map(|(index, f)| ParsedInput::new(f, FileId::from_usize(index)?, args))
         .collect::<Result<Vec<ParsedInput>>>()?;
-    objects.push(ParsedInput::Epilogue(Epilogue {
-        file_id: FileId::from_usize(objects.len())?,
-        start_symbol_id: SymbolId::undefined(),
-    }));
+
+    set_start_symbol_ids(&mut objects);
+
+    Ok(objects)
+}
+
+fn set_start_symbol_ids(objects: &mut [ParsedInput]) {
     let mut next_symbol_id = SymbolId::undefined();
-    for obj in &mut objects {
+    for obj in objects {
         match obj {
             ParsedInput::Prelude(_) => {
                 // No need to store the symbol ID, since internal always starts from the undefined
@@ -50,7 +53,6 @@ pub(crate) fn parse_input_files<'data>(
         }
         next_symbol_id = next_symbol_id.add_usize(obj.num_symbols());
     }
-    Ok(objects)
 }
 
 // Object is much larger than the other two, but there's many objects and only ever one of each of
@@ -80,6 +82,16 @@ pub(crate) struct Epilogue {
     pub(crate) start_symbol_id: SymbolId,
 }
 
+impl Epilogue {
+    fn new(file_id: FileId) -> Self {
+        Self {
+            file_id,
+            // Filled in later in `set_start_symbol_ids`.
+            start_symbol_id: SymbolId::undefined(),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum InternalSymDefInfo {
     /// Symbol 0 - the undefined symbol.
@@ -102,7 +114,7 @@ impl<'data> ParsedInputObject<'data> {
             input: input.input.clone(),
             object,
             symbol_id_range: SymbolIdRange::input(
-                // Filled in once we've parsed all objects.
+                // Filled in later in `set_start_symbol_ids`.
                 SymbolId::undefined(),
                 num_symbols,
             ),
@@ -146,6 +158,7 @@ impl<'data> ParsedInput<'data> {
             FileKind::Prelude => Self::Prelude(Prelude::new(file_id, args)?),
             FileKind::ElfDynamic => Self::Object(ParsedInputObject::new(input, file_id, true)?),
             FileKind::Text => unreachable!("Should have been handled earlier"),
+            FileKind::Epilogue => Self::Epilogue(Epilogue::new(file_id)),
         })
     }
 

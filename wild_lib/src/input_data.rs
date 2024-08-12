@@ -80,20 +80,33 @@ impl<'config> InputData<'config> {
                 bytes: None,
             },
         ];
+
         let version_script_data = config
             .version_script_path
             .as_ref()
             .map(|path| read_version_script(path))
             .transpose()?;
+
         let mut input_data = Self {
             config,
             filenames: Default::default(),
             files,
             version_script_data,
         };
+
         for input in &config.inputs {
             input_data.register_input(input)?;
         }
+
+        // Our last "file", similar to the prelude is responsible for internal stuff, but this time
+        // at the end.
+        input_data.files.push(InputFile {
+            filename: PathBuf::new(),
+            original_filename: PathBuf::new(),
+            kind: FileKind::Epilogue,
+            modifiers: Default::default(),
+            bytes: None,
+        });
         Ok(input_data)
     }
 
