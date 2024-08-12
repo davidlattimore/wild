@@ -7,6 +7,7 @@ use crate::debug_assert_bail;
 use crate::elf::File;
 use crate::error::Error;
 use crate::error::Result;
+use crate::grouping::Group;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::input_data::FileId;
@@ -23,7 +24,6 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ParsedInput;
 use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
-use crate::sharding::split_slice;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolDb;
@@ -40,7 +40,7 @@ use object::LittleEndian;
 use std::fmt::Display;
 
 pub(crate) struct ResolutionOutputs<'data> {
-    pub(crate) files: Vec<ResolvedFile<'data>>,
+    pub(crate) groups: Vec<ResolvedGroup<'data>>,
     pub(crate) output_sections: OutputSections<'data>,
     pub(crate) merged_strings: OutputSectionMap<MergeStringsSection<'data>>,
     pub(crate) custom_start_stop_defs: Vec<InternalSymDefInfo>,
@@ -48,26 +48,26 @@ pub(crate) struct ResolutionOutputs<'data> {
 
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
 pub fn resolve_symbols_and_sections<'data>(
-    file_states: &'data [ParsedInput<'data>],
+    groups: &'data [Group<'data>],
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result<ResolutionOutputs<'data>> {
-    let (mut resolved, undefined_symbols, internal) =
-        resolve_symbols_in_files(file_states, symbol_db)?;
+    let (mut groups, undefined_symbols, internal) = resolve_symbols_in_files(groups, symbol_db)?;
 
-    let output_sections = assign_section_ids(&resolved, symbol_db.args)?;
+    let output_sections = assign_section_ids(&groups, symbol_db.args)?;
 
-    let merged_strings = merge_strings(&mut resolved, &output_sections)?;
+    let merged_strings = merge_strings(&mut groups, &output_sections)?;
 
     let custom_start_stop_defs =
-        canonicalise_undefined_symbols(undefined_symbols, &output_sections, &resolved, symbol_db)?;
+        canonicalise_undefined_symbols(undefined_symbols, &output_sections, &groups, symbol_db)?;
 
-    resolve_alternative_symbol_definitions(symbol_db, &resolved)?;
+    resolve_alternative_symbol_definitions(symbol_db, &groups)?;
 
-    resolved[PRELUDE_FILE_ID.as_usize()] = ResolvedFile::Prelude(ResolvedPrelude {
+    let (g, f) = symbol_db.grouping.parts(PRELUDE_FILE_ID);
+    groups[g].files[f] = ResolvedFile::Prelude(ResolvedPrelude {
         symbol_definitions: &internal.symbol_definitions,
     });
     Ok(ResolutionOutputs {
-        files: resolved,
+        groups,
         output_sections,
         merged_strings,
         custom_start_stop_defs,
@@ -80,48 +80,75 @@ type DefinitionsCell<'definitions> = AtomicCell<Option<Box<&'definitions mut [Sy
 
 #[tracing::instrument(skip_all, name = "Resolve symbols")]
 pub(crate) fn resolve_symbols_in_files<'data>(
-    file_states: &'data [ParsedInput<'data>],
+    groups: &'data [Group<'data>],
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result<(
-    Vec<ResolvedFile<'data>>,
+    Vec<ResolvedGroup<'data>>,
     SegQueue<UndefinedSymbol<'data>>,
     &'data Prelude,
 )> {
     let mut num_objects = 0;
     let mut objects = Vec::new();
     assert!(DefinitionsCell::is_lock_free());
+
     let mut symbol_definitions = symbol_db.take_definitions();
-    let definitions_per_file: Vec<DefinitionsCell> =
-        split_slice(&mut symbol_definitions, &symbol_db.num_symbols_per_file)
-            .into_iter()
-            .map(|defs| DefinitionsCell::new(Some(Box::new(defs))))
-            .collect();
-    let mut internal = None;
-    let mut resolved: Vec<ResolvedFile<'_>> = file_states
+    let mut symbol_definitions_slice = symbol_definitions.as_mut();
+    let definitions_per_file: Vec<Vec<DefinitionsCell>> = groups
         .iter()
-        .map(|file| match file {
-            ParsedInput::Prelude(s) => {
-                // We don't yet have all the information we need to construct ResolvedInternal, so
-                // we stash away our input for now and let the caller construct it later.
-                internal = Some(s);
-                ResolvedFile::NotLoaded(NotLoaded {
-                    symbol_id_range: SymbolIdRange::prelude(0),
+        .map(|group| {
+            group
+                .files
+                .iter()
+                .map(|file| {
+                    DefinitionsCell::new(Some(Box::new(crate::slice::slice_take_prefix_mut(
+                        &mut symbol_definitions_slice,
+                        file.num_symbols(),
+                    ))))
                 })
-            }
-            ParsedInput::Object(s) => {
-                if !s.is_optional() {
-                    let definitions = definitions_per_file[s.file_id.as_usize()].take().unwrap();
-                    objects.push((s, definitions));
-                }
-                num_objects += 1;
-                ResolvedFile::NotLoaded(NotLoaded {
-                    symbol_id_range: s.symbol_id_range,
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+
+    let mut prelude = None;
+    let mut resolved: Vec<ResolvedGroup<'_>> = groups
+        .iter()
+        .map(|group| {
+            let files = group
+                .files
+                .iter()
+                .map(|file| match file {
+                    ParsedInput::Prelude(s) => {
+                        // We don't yet have all the information we need to construct
+                        // ResolvedPrelude, so we stash away our input for now and let the caller
+                        // construct it later.
+                        prelude = Some(s);
+                        ResolvedFile::NotLoaded(NotLoaded {
+                            symbol_id_range: SymbolIdRange::prelude(0),
+                        })
+                    }
+                    ParsedInput::Object(s) => {
+                        if !s.is_optional() {
+                            let (g, f) = symbol_db.grouping.parts(s.file_id);
+                            let definitions = definitions_per_file[g][f].take().unwrap();
+                            objects.push((s, definitions));
+                        }
+                        num_objects += 1;
+                        ResolvedFile::NotLoaded(NotLoaded {
+                            symbol_id_range: s.symbol_id_range,
+                        })
+                    }
+                    ParsedInput::Epilogue(s) => ResolvedFile::Epilogue(ResolvedEpilogue {
+                        file_id: s.file_id,
+                        start_symbol_id: s.start_symbol_id,
+                    }),
                 })
+                .collect();
+
+            let base_file_id = group.base_file_id();
+            ResolvedGroup {
+                files,
+                base_file_id,
             }
-            ParsedInput::Epilogue(s) => ResolvedFile::Epilogue(ResolvedEpilogue {
-                file_id: s.file_id,
-                start_symbol_id: s.start_symbol_id,
-            }),
         })
         .collect();
     if num_objects == 0 {
@@ -129,11 +156,12 @@ pub(crate) fn resolve_symbols_in_files<'data>(
     }
     let outputs = Outputs::new(num_objects);
     let resources = ResolutionResources {
-        file_states,
+        groups,
         definitions_per_file: &definitions_per_file,
         symbol_db,
         outputs: &outputs,
     };
+
     crate::threading::scope(|s| {
         for (obj, definitions) in objects {
             s.spawn(|s| {
@@ -145,22 +173,25 @@ pub(crate) fn resolve_symbols_in_files<'data>(
             })
         }
     });
+
     drop(definitions_per_file);
     symbol_db.restore_definitions(symbol_definitions);
     if let Some(e) = outputs.errors.pop() {
         return Err(e);
     }
+
     for obj in outputs.loaded {
         let file_id = obj.file_id;
-        resolved[file_id.as_usize()] = ResolvedFile::Object(obj);
+        let (g, f) = symbol_db.grouping.parts(file_id);
+        resolved[g].files[f] = ResolvedFile::Object(obj);
     }
-    let internal = internal.unwrap();
-    Ok((resolved, outputs.undefined_symbols, internal))
+
+    Ok((resolved, outputs.undefined_symbols, prelude.unwrap()))
 }
 
 struct ResolutionResources<'data, 'definitions, 'outer_scope> {
-    file_states: &'data [ParsedInput<'data>],
-    definitions_per_file: &'outer_scope Vec<DefinitionsCell<'definitions>>,
+    groups: &'data [Group<'data>],
+    definitions_per_file: &'outer_scope Vec<Vec<DefinitionsCell<'definitions>>>,
     symbol_db: &'outer_scope SymbolDb<'data>,
     outputs: &'outer_scope Outputs<'data>,
 }
@@ -173,7 +204,7 @@ struct ResolutionResources<'data, 'definitions, 'outer_scope> {
 #[tracing::instrument(skip_all, name = "Resolve alternative symbol definitions")]
 fn resolve_alternative_symbol_definitions<'data>(
     symbol_db: &mut SymbolDb<'data>,
-    resolved: &[ResolvedFile],
+    resolved: &[ResolvedGroup],
 ) -> Result {
     // For now, we do this from a single thread since we don't expect a lot of symbols will have
     // multiple definitions. If it turns out that there are cases where it's actually taking
@@ -205,7 +236,7 @@ fn select_symbol(
     symbol_db: &SymbolDb,
     symbol_id: SymbolId,
     alternatives: &[SymbolId],
-    resolved: &[ResolvedFile],
+    resolved: &[ResolvedGroup],
 ) -> SymbolId {
     let first_strength = symbol_db.symbol_strength(symbol_id, resolved);
     if first_strength == SymbolStrength::Strong {
@@ -265,7 +296,12 @@ enum SymbolStrength {
     Common(u64),
 }
 
-pub enum ResolvedFile<'data> {
+pub(crate) struct ResolvedGroup<'data> {
+    pub(crate) files: Vec<ResolvedFile<'data>>,
+    pub(crate) base_file_id: FileId,
+}
+
+pub(crate) enum ResolvedFile<'data> {
     NotLoaded(NotLoaded),
     Prelude(ResolvedPrelude<'data>),
     Object(ResolvedObject<'data>),
@@ -308,7 +344,7 @@ pub(crate) struct NonDynamicResolved<'data> {
     custom_sections: Vec<SectionDetails<'data>>,
 }
 
-pub struct ResolvedEpilogue {
+pub(crate) struct ResolvedEpilogue {
     pub(crate) file_id: FileId,
     pub(crate) start_symbol_id: SymbolId,
 }
@@ -366,30 +402,33 @@ impl<'data> MergeStringsSection<'data> {
 /// that are marked with both the SHF_MERGE and SHF_STRINGS flags.
 #[tracing::instrument(skip_all, name = "Merge strings")]
 fn merge_strings<'data>(
-    resolved: &mut [ResolvedFile<'data>],
+    resolved: &mut [ResolvedGroup<'data>],
     output_sections: &OutputSections,
 ) -> Result<OutputSectionMap<MergeStringsSection<'data>>> {
     let mut strings_by_section: OutputSectionMap<MergeStringsSection> =
         OutputSectionMap::with_size(output_sections.len());
-    for file in resolved {
-        let ResolvedFile::Object(obj) = file else {
-            continue;
-        };
-        let Some(non_dynamic) = obj.non_dynamic.as_mut() else {
-            continue;
-        };
-        for merge_info in &non_dynamic.merge_strings_sections {
-            let SectionSlot::MergeStrings(sec) =
-                &mut non_dynamic.sections[merge_info.section_index.0]
-            else {
-                unreachable!();
+    for group in resolved {
+        for file in &mut group.files {
+            let ResolvedFile::Object(obj) = file else {
+                continue;
             };
-            let output_section_id = output_sections.output_section_id(sec.temporary_section_id)?;
-            sec.set_precomputed_output_section_id(output_section_id);
+            let Some(non_dynamic) = obj.non_dynamic.as_mut() else {
+                continue;
+            };
+            for merge_info in &non_dynamic.merge_strings_sections {
+                let SectionSlot::MergeStrings(sec) =
+                    &mut non_dynamic.sections[merge_info.section_index.0]
+                else {
+                    unreachable!();
+                };
+                let output_section_id =
+                    output_sections.output_section_id(sec.temporary_section_id)?;
+                sec.set_precomputed_output_section_id(output_section_id);
 
-            let string_to_offset = strings_by_section.get_mut(output_section_id);
-            for string in &merge_info.strings {
-                string_to_offset.add_string(*string);
+                let string_to_offset = strings_by_section.get_mut(output_section_id);
+                for string in &merge_info.strings {
+                    string_to_offset.add_string(*string);
+                }
             }
         }
     }
@@ -398,16 +437,18 @@ fn merge_strings<'data>(
 
 #[tracing::instrument(skip_all, name = "Assign section IDs")]
 fn assign_section_ids<'data>(
-    resolved: &[ResolvedFile<'data>],
+    resolved: &[ResolvedGroup<'data>],
     args: &Args,
 ) -> Result<OutputSections<'data>> {
     let mut output_sections_builder = OutputSectionsBuilder::with_base_address(args.base_address());
-    for s in resolved {
-        if let ResolvedFile::Object(s) = s {
-            if let Some(non_dynamic) = s.non_dynamic.as_ref() {
-                output_sections_builder
-                    .add_sections(&non_dynamic.custom_sections)
-                    .with_context(|| format!("Failed to process custom sections for {s}"))?;
+    for group in resolved {
+        for file in &group.files {
+            if let ResolvedFile::Object(s) = file {
+                if let Some(non_dynamic) = s.non_dynamic.as_ref() {
+                    output_sections_builder
+                        .add_sections(&non_dynamic.custom_sections)
+                        .with_context(|| format!("Failed to process custom sections for {s}"))?;
+                }
             }
         }
     }
@@ -441,9 +482,11 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
     resources: &'scope ResolutionResources<'data, 'definitions, 'scope>,
 ) -> Result {
     let request_file_id = |file_id: FileId| {
-        if let Some(definitions) = resources.definitions_per_file[file_id.as_usize()].take() {
+        let (g, f) = resources.symbol_db.grouping.parts(file_id);
+        if let Some(definitions) = resources.definitions_per_file[g][f].take() {
             s.spawn(move |s| {
-                if let ParsedInput::Object(obj) = &resources.file_states[file_id.as_usize()] {
+                let (g, f) = resources.symbol_db.grouping.parts(file_id);
+                if let ParsedInput::Object(obj) = &resources.groups[g].files[f] {
                     let r = process_object(obj, *definitions, s, resources);
                     if let Err(error) = r {
                         let _ = resources.outputs.errors.push(error);
@@ -477,7 +520,7 @@ struct UndefinedSymbol<'data> {
 fn canonicalise_undefined_symbols<'data>(
     undefined_symbols: SegQueue<UndefinedSymbol<'data>>,
     output_sections: &OutputSections,
-    files: &[ResolvedFile],
+    groups: &[ResolvedGroup],
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result<Vec<InternalSymDefInfo>> {
     let mut custom_start_stop_defs = Vec::new();
@@ -487,10 +530,11 @@ fn canonicalise_undefined_symbols<'data>(
     // for any given name will be the one for the earliest file that refers to that symbol.
     undefined_symbols.sort_by_key(|u| u.symbol_id);
     for undefined in undefined_symbols {
-        if undefined
-            .ignore_if_loaded
-            .is_some_and(|file_id| !matches!(files[file_id.as_usize()], ResolvedFile::NotLoaded(_)))
-        {
+        let is_defined = undefined.ignore_if_loaded.is_some_and(|file_id| {
+            let (g, f) = symbol_db.grouping.parts(file_id);
+            !matches!(groups[g].files[f], ResolvedFile::NotLoaded(_))
+        });
+        if is_defined {
             // The archive entry that defined the symbol in question ended up being loaded, so the
             // weak symbol is defined after all.
             continue;
@@ -888,9 +932,10 @@ impl Display for ValueFlags {
 }
 
 impl<'data> SymbolDb<'data> {
-    fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedFile]) -> SymbolStrength {
+    fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
-        if let ResolvedFile::Object(obj) = &resolved[file_id.as_usize()] {
+        let (g, f) = self.grouping.parts(file_id);
+        if let ResolvedFile::Object(obj) = &resolved[g].files[f] {
             let local_index = symbol_id.to_input(obj.symbol_id_range);
             let Ok(obj_symbol) = obj.object.symbol(local_index) else {
                 // Errors from this function should have been reported elsewhere.

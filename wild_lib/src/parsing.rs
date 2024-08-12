@@ -198,6 +198,14 @@ impl<'data> ParsedInput<'data> {
             ParsedInput::Epilogue(_) => false,
         }
     }
+
+    pub(crate) fn file_id(&self) -> FileId {
+        match self {
+            ParsedInput::Prelude(_) => PRELUDE_FILE_ID,
+            ParsedInput::Object(s) => s.file_id,
+            ParsedInput::Epilogue(s) => s.file_id,
+        }
+    }
 }
 
 impl Prelude {

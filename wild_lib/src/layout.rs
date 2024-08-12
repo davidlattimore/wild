@@ -17,7 +17,6 @@ use crate::elf::Versym;
 use crate::elf_writer;
 use crate::error::Error;
 use crate::error::Result;
-use crate::grouping::Grouping;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
@@ -81,26 +80,23 @@ pub fn compute<'data>(
     output: &mut elf_writer::Output,
 ) -> Result<Layout<'data>> {
     let ResolutionOutputs {
-        files: file_states,
+        groups,
         mut output_sections,
         merged_strings,
         custom_start_stop_defs,
     } = resolved;
-
-    let grouping = Grouping::new(file_states.len(), symbol_db.args);
 
     if let Some(sym_info) = symbol_db.args.sym_info.as_deref() {
         print_symbol_info(symbol_db, sym_info);
     }
     let symbol_resolution_flags = vec![AtomicResolutionFlags::empty(); symbol_db.num_symbols()];
     let (mut group_states, sections_with_content) = find_required_sections(
-        file_states,
+        groups,
         symbol_db,
         &output_sections,
         &symbol_resolution_flags,
         &merged_strings,
         custom_start_stop_defs,
-        grouping,
     )?;
     merge_dynamic_symbol_definitions(&mut group_states)?;
     finalise_all_sizes(
@@ -180,7 +176,6 @@ pub fn compute<'data>(
         symbol_resolution_flags,
         merged_strings,
         merged_string_start_addresses,
-        grouping,
     })
 }
 
@@ -249,7 +244,6 @@ pub struct Layout<'data> {
     pub(crate) symbol_resolution_flags: Vec<ResolutionFlags>,
     pub(crate) merged_strings: OutputSectionMap<MergeStringsSection<'data>>,
     pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
-    pub(crate) grouping: Grouping,
 }
 
 pub(crate) struct SegmentLayouts {
@@ -1042,8 +1036,6 @@ struct GraphResources<'data, 'scope> {
     sections_with_content: OutputSectionMap<AtomicBool>,
 
     merged_strings: &'scope OutputSectionMap<MergeStringsSection<'data>>,
-
-    grouping: Grouping,
 }
 
 struct FinaliseLayoutResources<'scope, 'data> {
@@ -1220,7 +1212,7 @@ impl<'data> Layout<'data> {
     }
 
     pub(crate) fn file_layout(&self, file_id: FileId) -> &FileLayout {
-        let group_id = self.grouping.group_index_for_file(file_id);
+        let group_id = self.symbol_db.grouping.group_index_for_file(file_id);
         let group_layout = &self.group_layouts[group_id];
         &group_layout.files[file_id.as_usize() - group_layout.base_file_id.as_usize()]
     }
@@ -1472,20 +1464,19 @@ struct WorkerSlot<'data> {
 
 #[tracing::instrument(skip_all, name = "Find required sections")]
 fn find_required_sections<'data>(
-    file_states: Vec<resolution::ResolvedFile<'data>>,
+    groups_in: Vec<resolution::ResolvedGroup<'data>>,
     symbol_db: &SymbolDb<'data>,
     output_sections: &OutputSections<'data>,
     symbol_resolution_flags: &[AtomicResolutionFlags],
     merged_strings: &OutputSectionMap<MergeStringsSection<'data>>,
     custom_start_stop_defs: Vec<InternalSymDefInfo>,
-    grouping: Grouping,
 ) -> Result<(Vec<GroupState<'data>>, OutputSectionMap<bool>)> {
-    let num_workers = file_states.len();
+    let num_workers = groups_in.len();
     let (worker_slots, groups) = create_worker_slots(
-        file_states,
+        groups_in,
         output_sections,
+        symbol_db,
         custom_start_stop_defs,
-        grouping,
     );
 
     let num_threads = symbol_db.args.num_threads.get();
@@ -1504,7 +1495,6 @@ fn find_required_sections<'data>(
         symbol_resolution_flags,
         sections_with_content: OutputSectionMap::with_size(output_sections.len()),
         merged_strings,
-        grouping,
     };
     let resources_ref = &resources;
 
@@ -1572,45 +1562,35 @@ fn find_required_sections<'data>(
 }
 
 fn create_worker_slots<'data>(
-    file_states: Vec<resolution::ResolvedFile<'data>>,
+    groups_in: Vec<resolution::ResolvedGroup<'data>>,
     output_sections: &OutputSections<'data>,
+    symbol_db: &SymbolDb,
     mut custom_start_stop_defs: Vec<InternalSymDefInfo>,
-    grouping: Grouping,
 ) -> (Vec<Mutex<WorkerSlot<'data>>>, Vec<GroupState<'data>>) {
-    let mut worker_slots = Vec::new();
-    let mut group_states = Vec::new();
-    let mut file_states = file_states.into_iter();
-    let mut file_index = 0;
-    loop {
-        let mut group_files = Vec::with_capacity(grouping.files_per_group);
-        let mut num_symbols = 0;
-        for _ in 0..grouping.files_per_group {
-            if let Some(f) = file_states.next() {
-                let layout_state = f.create_layout_state(&mut custom_start_stop_defs);
-                num_symbols += layout_state.symbol_id_range().len();
-                group_files.push(layout_state);
-            } else {
-                break;
+    let mut worker_slots = Vec::with_capacity(groups_in.len());
+    let group_states = groups_in
+        .into_iter()
+        .enumerate()
+        .zip(&symbol_db.num_symbols_per_group)
+        .map(|((group_index, group), &num_symbols)| {
+            let files = group
+                .files
+                .into_iter()
+                .map(|file| file.create_layout_state(&mut custom_start_stop_defs))
+                .collect();
+            worker_slots.push(Mutex::new(WorkerSlot {
+                work: Default::default(),
+                worker: None,
+            }));
+            GroupState {
+                queue: LocalWorkQueue::new(group_index),
+                base_file_id: group.base_file_id,
+                num_symbols,
+                files,
+                common: CommonGroupState::new(output_sections),
             }
-        }
-        if group_files.is_empty() {
-            break;
-        }
-        let base_file_id = FileId::from_usize(file_index).unwrap();
-        file_index += group_files.len();
-        let group = GroupState {
-            queue: LocalWorkQueue::new(group_states.len()),
-            base_file_id,
-            num_symbols,
-            files: group_files,
-            common: CommonGroupState::new(output_sections),
-        };
-        group_states.push(group);
-        worker_slots.push(Mutex::new(WorkerSlot {
-            work: Default::default(),
-            worker: None,
-        }));
-    }
+        })
+        .collect();
     (worker_slots, group_states)
 }
 
@@ -1748,7 +1728,7 @@ fn activate<'data>(
 
 impl LocalWorkQueue {
     fn send_work(&mut self, resources: &GraphResources, file_id: FileId, work: WorkItem) {
-        if resources.grouping.group_index_for_file(file_id) == self.index {
+        if resources.symbol_db.grouping.group_index_for_file(file_id) == self.index {
             self.local_work.push(work);
         } else {
             resources.send_work(file_id, work);
@@ -1793,7 +1773,7 @@ impl<'data, 'scope> GraphResources<'data, 'scope> {
     fn send_work(&self, file_id: FileId, work: WorkItem) {
         let worker;
         {
-            let group_index = self.grouping.group_index_for_file(file_id);
+            let group_index = self.symbol_db.grouping.group_index_for_file(file_id);
             let mut slot = self.worker_slots[group_index].lock().unwrap();
             worker = slot.worker.take();
             slot.work.push(work);
@@ -1944,16 +1924,6 @@ impl<'data> FileLayoutState<'data> {
             }
         };
         Ok(file_layout)
-    }
-
-    fn symbol_id_range(&self) -> SymbolIdRange {
-        match self {
-            FileLayoutState::Prelude(s) => s.symbol_id_range(),
-            FileLayoutState::Object(s) => s.symbol_id_range(),
-            FileLayoutState::Dynamic(s) => s.symbol_id_range(),
-            FileLayoutState::NotLoaded(s) => s.symbol_id_range,
-            FileLayoutState::Epilogue(s) => s.symbol_id_range(),
-        }
     }
 }
 
@@ -3698,7 +3668,7 @@ impl<'data> DynamicLayoutState<'data> {
             let file_id = resources.symbol_db.file_id_for_symbol(definition_symbol_id);
             // If a shared object references a symbol from say another shared object, there's
             // nothing we need to do.
-            if !resources.symbol_db.inputs[file_id.as_usize()].is_regular_object() {
+            if !resources.symbol_db.file(file_id).is_regular_object() {
                 continue;
             }
             let old_flags = resources.symbol_resolution_flags[definition_symbol_id.as_usize()]
@@ -3967,7 +3937,7 @@ fn print_symbol_info(symbol_db: &SymbolDb, name: &str) {
             .is_ok_and(|sym_name| sym_name.bytes() == name.as_bytes())
         {
             let file_id = symbol_db.file_id_for_symbol(symbol_id);
-            match &symbol_db.inputs[file_id.as_usize()] {
+            match symbol_db.file(file_id) {
                 crate::parsing::ParsedInput::Prelude(_) => println!("  <prelude>"),
                 crate::parsing::ParsedInput::Object(o) => {
                     let local_index = symbol_id.to_input(o.symbol_id_range);
