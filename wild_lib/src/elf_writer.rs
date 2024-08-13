@@ -1502,6 +1502,12 @@ fn apply_relocation(
             .got_address()?
             .wrapping_add(addend)
             .wrapping_sub(place),
+        RelocationKind::GotRelGotBase => resolution
+            .got_address()?
+            .sub(layout.got_base())
+            .wrapping_add(addend),
+        RelocationKind::SymRelGotBase => resolution.value().wrapping_sub(layout.got_base()),
+        RelocationKind::PltRelGotBase => resolution.plt_address()?.wrapping_sub(layout.got_base()),
         RelocationKind::PltRelative => resolution
             .plt_address()?
             .wrapping_add(addend)
@@ -1534,7 +1540,6 @@ fn apply_relocation(
             .wrapping_sub(layout.tls_end_address())
             .wrapping_add(addend),
         RelocationKind::None => 0,
-        other => bail!("Unsupported relocation kind {other:?}"),
     };
     let value_bytes = value.to_le_bytes();
     let end = offset_in_section as usize + rel_info.byte_size;

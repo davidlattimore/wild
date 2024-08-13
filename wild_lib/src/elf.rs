@@ -382,10 +382,25 @@ const _ASSERTS: () = {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RelocationKind {
     Absolute,
+
+    /// The address of the symbol, relative to the place of the relocation.
     Relative,
-    Got,
+
+    /// The address of the symbol, relative to the base address of the GOT.
+    SymRelGotBase,
+
+    /// The offset of the symbol's GOT entry, relative to the start of the GOT.
+    GotRelGotBase,
+
+    /// The address of the symbol's PLT entry, relative to the base address of the GOT.
+    PltRelGotBase,
+
+    /// The address of the symbol's PLT entry, relative to the place of relocation.
     PltRelative,
+
+    /// The address of the symbol's GOT entry, relative to the place of the relocation.
     GotRelative,
+
     TlsGd,
     TlsLd,
     DtpOff,
@@ -408,9 +423,20 @@ impl RelocationKindInfo {
         let (kind, size) = match r_type {
             object::elf::R_X86_64_64 => (RelocationKind::Absolute, 8),
             object::elf::R_X86_64_PC32 => (RelocationKind::Relative, 4),
-            object::elf::R_X86_64_GOT32 => (RelocationKind::Got, 4),
+            object::elf::R_X86_64_PC64 => (RelocationKind::Relative, 8),
+            object::elf::R_X86_64_GOT32 => (RelocationKind::GotRelGotBase, 4),
+            object::elf::R_X86_64_GOT64 => (RelocationKind::GotRelGotBase, 8),
+            object::elf::R_X86_64_GOTOFF64 => (RelocationKind::SymRelGotBase, 8),
             object::elf::R_X86_64_PLT32 => (RelocationKind::PltRelative, 4),
+            object::elf::R_X86_64_PLTOFF64 => (RelocationKind::PltRelGotBase, 8),
             object::elf::R_X86_64_GOTPCREL => (RelocationKind::GotRelative, 4),
+
+            // For now, we rely on GOTPC64 and GOTPC32 always referencing the symbol
+            // _GLOBAL_OFFSET_TABLE_, which means that we can just treat these a normal relative
+            // relocations and avoid any special processing when writing.
+            object::elf::R_X86_64_GOTPC64 => (RelocationKind::Relative, 8),
+            object::elf::R_X86_64_GOTPC32 => (RelocationKind::Relative, 4),
+
             object::elf::R_X86_64_32 | object::elf::R_X86_64_32S => (RelocationKind::Absolute, 4),
             object::elf::R_X86_64_16 => (RelocationKind::Absolute, 2),
             object::elf::R_X86_64_PC16 => (RelocationKind::Relative, 2),

@@ -1211,6 +1211,11 @@ impl<'data> Layout<'data> {
         let group_layout = &self.group_layouts[file_id.group()];
         &group_layout.files[file_id.file()]
     }
+
+    /// Returns the base address of the global offset table.
+    pub(crate) fn got_base(&self) -> u64 {
+        self.section_layouts.get(output_section_id::GOT).mem_offset
+    }
 }
 
 fn layout_sections(
@@ -2161,15 +2166,19 @@ fn process_relocation(
 
 fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
     match rel_kind {
-        RelocationKind::PltRelative => ResolutionFlags::PLT | ResolutionFlags::GOT,
-        RelocationKind::Got | RelocationKind::GotRelative => ResolutionFlags::GOT,
+        RelocationKind::PltRelative | RelocationKind::PltRelGotBase => {
+            ResolutionFlags::PLT | ResolutionFlags::GOT
+        }
+        RelocationKind::GotRelGotBase | RelocationKind::GotRelative => ResolutionFlags::GOT,
         RelocationKind::GotTpOff => ResolutionFlags::GOT_TLS_OFFSET,
         RelocationKind::TlsGd => ResolutionFlags::GOT_TLS_MODULE,
         RelocationKind::TlsLd => ResolutionFlags::empty(),
-        RelocationKind::Absolute => ResolutionFlags::DIRECT,
-        RelocationKind::Relative => ResolutionFlags::DIRECT,
-        RelocationKind::DtpOff | RelocationKind::TpOff => ResolutionFlags::DIRECT,
-        RelocationKind::None => ResolutionFlags::DIRECT,
+        RelocationKind::Absolute
+        | RelocationKind::Relative
+        | RelocationKind::DtpOff
+        | RelocationKind::TpOff
+        | RelocationKind::SymRelGotBase
+        | RelocationKind::None => ResolutionFlags::DIRECT,
     }
 }
 

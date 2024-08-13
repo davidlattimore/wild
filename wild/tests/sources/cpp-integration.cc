@@ -13,6 +13,10 @@
 //#CompArgs:-fno-pie -fmerge-constants
 //#LinkArgs:--cc=g++ -no-pie -Wl,-z,now
 
+//#Config:model-large:default
+//#CompArgs:-mcmodel=large
+//#LinkArgs:--cc=g++ -Wl,-z,now
+
 #include <iostream>
 #include <string>
 
