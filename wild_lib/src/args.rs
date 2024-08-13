@@ -109,26 +109,25 @@ pub(crate) const FILES_PER_GROUP_ENV: &str = "WILD_FILES_PER_GROUP";
 // feature.
 const IGNORED_FLAGS: &[&str] = &[
     // TODO: Support build-ids
-    "--build-id",
+    "build-id",
     // TODO: We currently always GC sections. Support _not_ GCing them.
-    "--gc-sections",
+    "gc-sections",
     // TODO: Think about if anything is needed here. We don't need groups in order resolve cycles,
     // so perhaps ignoring these is the right thing to do.
-    "--start-group",
-    "--end-group",
+    "start-group",
+    "end-group",
     // TODO: This is supposed to suppress built-in search paths, but I don't think we have any
     // built-in search paths. Perhaps we should?
-    "-nostdlib",
+    "nostdlib",
     // TODO
-    "--no-undefined-version",
-    "--export-dynamic",
-    "-export-dynamic",
-    "--fatal-warnings",
-    "--color-diagnostics",
-    "--undefined-version",
-    "--no-call-graph-profile-sort",
-    "--gdb-index",
-    "--disable-new-dtags",
+    "no-undefined-version",
+    "export-dynamic",
+    "fatal-warnings",
+    "color-diagnostics",
+    "undefined-version",
+    "no-call-graph-profile-sort",
+    "gdb-index",
+    "disable-new-dtags",
 ];
 
 pub(crate) fn from_env() -> Result<Action> {
@@ -186,6 +185,22 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     while let Some(arg) = input.next() {
         arg_num += 1;
         let arg = arg.as_ref();
+
+        fn strip_option(arg: &str) -> Option<&str> {
+            arg.strip_prefix("--").or(arg.strip_prefix('-'))
+        }
+        let long_arg_eq = |option: &str| {
+            assert!(
+                !option.starts_with('-'),
+                "option cannot start with a dash: `{option}`"
+            );
+            strip_option(arg) == Some(option)
+        };
+        let long_arg_split_prefix = |option: &str| -> Option<&str> {
+            assert!(!option.starts_with('-'));
+            strip_option(arg).and_then(|stripped_arg| stripped_arg.strip_prefix(option))
+        };
+
         if let Some(rest) = arg.strip_prefix("-L") {
             if rest.is_empty() {
                 if let Some(next) = input.next() {
@@ -200,33 +215,33 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 search_first: None,
                 modifiers: *modifier_stack.last().unwrap(),
             });
-        } else if arg == "-static" || arg == "-Bstatic" {
+        } else if long_arg_eq("static") || long_arg_eq("Bstatic") {
             modifier_stack.last_mut().unwrap().allow_shared = false;
-        } else if arg == "-Bdynamic" {
+        } else if long_arg_eq("Bdynamic") {
             modifier_stack.last_mut().unwrap().allow_shared = true;
         } else if arg == "-o" {
             output = input.next().map(|a| Arc::from(Path::new(a.as_ref())));
-        } else if arg == "--dynamic-linker" || arg == "-dynamic-linker" {
+        } else if long_arg_eq("dynamic-linker") {
             is_dynamic_executable = true;
             dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
-        } else if arg == "--no-dynamic-linker" {
+        } else if long_arg_eq("no-dynamic-linker") {
             dynamic_linker = None;
-        } else if let Some(style) = arg.strip_prefix("--hash-style=") {
+        } else if let Some(style) = long_arg_split_prefix("hash-style=") {
             // We don't technically support both hash styles, but if requested to do both, we just
             // do GNU, which we do support.
             if style != "gnu" && style != "both" {
                 bail!("Unsupported hash-style `{style}`");
             }
             // Since we currently only support GNU hash, there's no state to update.
-        } else if arg.starts_with("--build-id=") {
-        } else if arg == "--time" {
+        } else if long_arg_split_prefix("build-id=").is_some() {
+        } else if long_arg_eq("time") {
             time_phases = true;
-        } else if let Some(rest) = arg.strip_prefix("--threads=") {
+        } else if let Some(rest) = long_arg_split_prefix("threads=") {
             num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
-        } else if arg == "--strip-all" {
+        } else if long_arg_eq("strip-all") {
             strip_all = true;
             strip_debug = true;
-        } else if arg == "--strip-debug" {
+        } else if long_arg_eq("strip-debug") {
             strip_debug = true;
         } else if arg == "-m" {
             // TODO: Handle these flags
@@ -242,27 +257,27 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             }
         } else if let Some(_rest) = arg.strip_prefix("-O") {
             // We don't use opt-level for now.
-        } else if arg == "--prepopulate-maps" {
+        } else if long_arg_eq("prepopulate-maps") {
             prepopulate_maps = true;
-        } else if arg == "--sym-info" {
+        } else if long_arg_eq("sym-info") {
             sym_info = input.next().map(|a| a.as_ref().to_owned());
-        } else if arg == "--as-needed" {
+        } else if long_arg_eq("as-needed") {
             modifier_stack.last_mut().unwrap().as_needed = true;
-        } else if arg == "--no-as-needed" {
+        } else if long_arg_eq("no-as-needed") {
             modifier_stack.last_mut().unwrap().as_needed = false;
-        } else if arg == "--push-state" {
+        } else if long_arg_eq("push-state") {
             modifier_stack.push(*modifier_stack.last().unwrap());
-        } else if arg == "--pop-state" {
+        } else if long_arg_eq("pop-state") {
             modifier_stack.pop();
             // We put the initial value on the stack, so if it's ever empty, then the arguments
             // are invalid.
             if modifier_stack.is_empty() {
                 bail!("Mismatched --pop-state");
             }
-        } else if let Some(script) = arg.strip_prefix("--version-script=") {
+        } else if let Some(script) = long_arg_split_prefix("version-script=") {
             save_dir.handle_file(script)?;
             version_script_path = Some(PathBuf::from(script));
-        } else if arg == "-rpath" {
+        } else if long_arg_eq("rpath") {
             rpaths.push(
                 input
                     .next()
@@ -270,42 +285,42 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                     .as_ref()
                     .to_owned(),
             );
-        } else if let Some(rest) = arg.strip_prefix("-rpath=") {
+        } else if let Some(rest) = long_arg_split_prefix("rpath=") {
             rpaths.push(rest.to_owned());
-        } else if arg == "--no-string-merge" {
+        } else if long_arg_eq("no-string-merge") {
             merge_strings = false;
-        } else if arg == "-pie" {
+        } else if long_arg_eq("pie") {
             relocation_model = RelocationModel::Relocatable;
-        } else if arg == "--eh-frame-hdr" {
+        } else if long_arg_eq("eh-frame-hdr") {
             eh_frame_hdr = true;
-        } else if arg == "-shared" {
+        } else if long_arg_eq("shared") {
             output_kind = Some(OutputKind::SharedObject);
-        } else if let Some(rest) = arg.strip_prefix("-soname=") {
+        } else if let Some(rest) = long_arg_split_prefix("soname") {
             soname = Some(rest.to_owned());
-        } else if arg.starts_with("-plugin-opt=") {
+        } else if long_arg_split_prefix("plugin-opt=").is_some() {
             // TODO: Implement support for linker plugins.
-        } else if arg == "-plugin" {
+        } else if long_arg_eq("plugin") {
             input.next();
-        } else if arg == "-rpath-link" {
+        } else if long_arg_eq("rpath-link") {
             // TODO
             input.next();
-        } else if arg == "--validate-output" {
+        } else if long_arg_eq("validate-output") {
             validate_output = true;
-        } else if arg == "--write-layout" {
+        } else if long_arg_eq("write-layout") {
             write_layout = true;
-        } else if arg == "--write-trace" {
+        } else if long_arg_eq("write-trace") {
             write_trace = true;
-        } else if let Some(rest) = arg.strip_prefix("--write-gc-stats=") {
+        } else if let Some(rest) = long_arg_split_prefix("write-gc-stats=") {
             write_gc_stats = Some(PathBuf::from(rest));
-        } else if let Some(rest) = arg.strip_prefix("--gc-stats-ignore=") {
+        } else if let Some(rest) = long_arg_split_prefix("gc-stats-ignore=") {
             gc_stats_ignore.push(rest.to_owned());
-        } else if arg == "--version" {
+        } else if long_arg_eq("version") {
             action = Some(Action::Version);
-        } else if arg == "--verbose-gc-stats" {
+        } else if long_arg_eq("verbose-gc-stats") {
             verbose_gc_stats = true;
-        } else if let Some(rest) = arg.strip_prefix("--debug-address=") {
+        } else if let Some(rest) = long_arg_split_prefix("debug-address=") {
             debug_address = Some(parse_number(rest).context("Invalid --debug-address")?);
-        } else if let Some(rest) = arg.strip_prefix("--debug-fuel=") {
+        } else if let Some(rest) = long_arg_split_prefix("debug-fuel=") {
             debug_fuel = Some(AtomicI64::new(rest.parse()?));
             // Using debug fuel with more than one thread would likely give non-deterministic
             // results.
@@ -315,9 +330,11 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 bail!("Mixing of @{{filename}} and regular arguments isn't supported");
             }
             return parse_from_argument_file(Path::new(path));
-        } else if arg == "--help" {
+        } else if long_arg_eq("help") {
             bail!("Sorry, help isn't implemented yet");
-        } else if IGNORED_FLAGS.contains(&arg) {
+        } else if strip_option(arg)
+            .is_some_and(|stripped_arg| IGNORED_FLAGS.contains(&stripped_arg))
+        {
         } else if arg.starts_with('-') {
             unrecognised.push(format!("`{arg}`"));
         } else {
@@ -568,6 +585,7 @@ fn arguments_from_string(mut input: &str) -> Result<Vec<Cow<str>>> {
 
 #[cfg(test)]
 mod tests {
+    use super::IGNORED_FLAGS;
     use crate::args::Action;
     use crate::args::InputSpec;
     use std::path::Path;
@@ -577,7 +595,9 @@ mod tests {
         "-pie",
         "-z",
         "relro",
+        "-hash-style=gnu",
         "--hash-style=gnu",
+        "-build-id",
         "--build-id",
         "--eh-frame-hdr",
         "-m",
@@ -610,6 +630,7 @@ mod tests {
         "/build/target/debug/deps/c1-a212b73b12b6d123.6.rcgu.o",
         "/build/target/debug/deps/c1-a212b73b12b6d123.7.rcgu.o",
         "--as-needed",
+        "-as-needed",
         "-Bstatic",
         "/tool/lib/rustlib/x86_64/lib/libstd-6498d8891e016dca.rlib",
         "/tool/lib/rustlib/x86_64/lib/libpanic_unwind-3debdee1a9058d84.rlib",
@@ -696,5 +717,12 @@ mod tests {
                 .as_slice(),
             &[Cow::Borrowed("foo\""), Cow::Borrowed("\"b\"ar")]
         );
+    }
+
+    #[test]
+    fn test_ignored_flags() {
+        for flag in IGNORED_FLAGS {
+            assert!(!flag.starts_with('-'));
+        }
     }
 }
