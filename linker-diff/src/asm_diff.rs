@@ -16,7 +16,6 @@ use iced_x86::Formatter as _;
 use iced_x86::Mnemonic;
 use iced_x86::OpKind;
 use iced_x86::Register;
-use object::read::elf::ElfSection64;
 use object::read::elf::FileHeader;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::Rela;
@@ -33,6 +32,7 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::iter::Peekable;
 use std::ops::Range;
 
 const BIT_CLASS: u32 = 64;
@@ -139,6 +139,7 @@ fn should_force_show_fn(symbol_name: &[u8]) -> bool {
 struct FunctionVersions<'data> {
     objects: &'data [Object<'data>],
     resolutions: Vec<SymbolResolution<'data>>,
+    original: Option<InputResolution<'data>>,
 }
 
 impl<'data> FunctionVersions<'data> {
@@ -174,6 +175,7 @@ impl<'data> FunctionVersions<'data> {
         if disassemblers.len() != self.resolutions.len() {
             return false;
         }
+        let mut original_decoder = self.original.as_ref().and_then(OriginalDecoder::new);
         loop {
             let instructions = disassemblers
                 .iter_mut()
@@ -182,11 +184,12 @@ impl<'data> FunctionVersions<'data> {
             if instructions.iter().all(|i| i.is_none()) {
                 return true;
             }
+            let original = original_decoder.as_mut().and_then(|o| o.next());
             let instructions = instructions.into_iter().flatten().collect::<Vec<_>>();
             if instructions.len() != self.resolutions.len() {
                 return false;
             }
-            if UnifiedInstruction::new(&instructions, self.objects).is_none() {
+            if UnifiedInstruction::new(&instructions, self.objects, original.as_ref()).is_none() {
                 return false;
             }
         }
@@ -197,9 +200,19 @@ impl<'data> FunctionVersions<'data> {
             .iter()
             .map(|obj| SymbolResolution::new(obj, symbol_name))
             .collect::<Vec<_>>();
+
+        let original = resolutions.iter().zip(objects).find_map(|(res, object)| {
+            if let SymbolResolution::Function(function) = res {
+                object.resolve_input(function.address)
+            } else {
+                None
+            }
+        });
+
         Self {
             objects,
             resolutions,
+            original,
         }
     }
 
@@ -227,6 +240,64 @@ impl<'data> FunctionVersions<'data> {
     }
 }
 
+/// Provides instructions and relocations from the original file for a particular function.
+struct OriginalDecoder<'data, 'file> {
+    decoder: AsmDecoder<'data>,
+    relocations: Peekable<
+        object::read::elf::ElfSectionRelocationIterator<
+            'data,
+            'file,
+            object::elf::FileHeader64<LittleEndian>,
+        >,
+    >,
+    elf_file: &'file ElfFile64<'data>,
+}
+
+impl<'data, 'file> OriginalDecoder<'data, 'file> {
+    fn new(res: &InputResolution<'data>) -> Option<Self> {
+        let elf_file = &res.file.elf_file;
+        let section = elf_file.section_by_index(res.section_index()).ok()?;
+        let section_data = section.data().ok()?;
+        let decoder = AsmDecoder::new(
+            res.offset_in_section,
+            &section_data[res.offset_in_section as usize..],
+        );
+        let relocations = section.relocations().peekable();
+        Some(Self {
+            elf_file,
+            decoder,
+            relocations,
+        })
+    }
+
+    fn next(&mut self) -> Option<OriginalInstructionAndRelocations> {
+        let instruction = self.decoder.next()?;
+        let instruct_start = instruction.base_address + instruction.offset;
+        let instruction_range = instruct_start..instruct_start + instruction.bytes.len() as u64;
+        let mut relocations = Vec::new();
+        while let Some((offset, _)) = self.relocations.peek() {
+            if *offset < instruct_start {
+                self.relocations.next();
+            } else if instruction_range.contains(offset) {
+                relocations.push(self.relocations.next().unwrap());
+            } else {
+                break;
+            }
+        }
+        Some(OriginalInstructionAndRelocations {
+            instruction,
+            relocations,
+            elf_file: self.elf_file,
+        })
+    }
+}
+
+struct OriginalInstructionAndRelocations<'data, 'file> {
+    instruction: Instruction<'data>,
+    relocations: Vec<(u64, object::Relocation)>,
+    elf_file: &'file ElfFile64<'data>,
+}
+
 const ORIG: &str = "ORIG";
 
 impl Display for FunctionVersions<'_> {
@@ -251,6 +322,7 @@ impl Display for FunctionVersions<'_> {
             .iter()
             .map(|r| r.iter())
             .collect::<Vec<_>>();
+        let mut original_decoder = self.original.as_ref().and_then(OriginalDecoder::new);
         loop {
             let values = iterators.iter_mut().map(|i| i.next()).collect::<Vec<_>>();
             if values.iter().all(|v| v.is_none()) {
@@ -264,6 +336,7 @@ impl Display for FunctionVersions<'_> {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
+            let original = original_decoder.as_mut().and_then(|o| o.next());
             if instructions.len() != self.objects.len() {
                 for (value, obj) in values.iter().zip(self.objects) {
                     let display_name = &obj.name;
@@ -278,11 +351,12 @@ impl Display for FunctionVersions<'_> {
                 }
                 return Ok(());
             }
-            if let Some(unified) = UnifiedInstruction::new(&instructions, self.objects) {
+            if let Some(unified) =
+                UnifiedInstruction::new(&instructions, self.objects, original.as_ref())
+            {
                 writeln!(f, "{:gutter_width$}            {unified}", "")?;
                 continue;
             }
-            let mut input_resolution = None;
             let mut trace_messages = Vec::new();
             writeln!(f)?;
             for (value, obj) in values.iter().zip(self.objects) {
@@ -292,9 +366,6 @@ impl Display for FunctionVersions<'_> {
                 let display_name = &obj.name;
                 write!(f, "{display_name:gutter_width$}")?;
                 if let Some(instruction_address) = value.instruction_address() {
-                    if let Some(res) = obj.resolve_input(instruction_address) {
-                        input_resolution = Some(res);
-                    }
                     write!(f, " 0x{instruction_address:08x}")?;
                 } else {
                     write!(f, "           ")?;
@@ -335,8 +406,8 @@ impl Display for FunctionVersions<'_> {
                 }
                 writeln!(f)?;
             }
-            if let Some(res) = input_resolution {
-                if let Err(error) = display_input_resolution(res, f, gutter_width) {
+            if let Some(orig) = original.as_ref() {
+                if let Err(error) = display_input_resolution(orig, f, gutter_width) {
                     write!(f, "           {error}")?;
                 }
             } else {
@@ -351,37 +422,26 @@ impl Display for FunctionVersions<'_> {
 }
 
 fn display_input_resolution(
-    res: InputResolution,
+    orig: &OriginalInstructionAndRelocations,
     f: &mut std::fmt::Formatter,
     gutter_width: usize,
 ) -> Result {
-    let elf_file = &res.file.elf_file;
-    let section = elf_file.section_by_index(res.section_index())?;
-    let section_data = section.data()?;
-    let mut decoder = AsmDecoder::new(0, &section_data[res.offset_in_section as usize..]);
-    if let Some(instruction) = decoder.next() {
-        write!(f, "{ORIG:gutter_width$}")?;
-        write!(f, "            {instruction}")?;
-        write!(f, "  //")?;
-        if let Some(rel) = find_relocation(
-            &section,
-            res.offset_in_section..res.offset_in_section + instruction.raw_instruction.len() as u64,
-        ) {
-            write!(f, " {}", RelocationDisplay { rel, elf_file })?;
-        }
-        writeln!(f)?;
+    let instruction = &orig.instruction;
+    write!(f, "{ORIG:gutter_width$}")?;
+    write!(f, "            {instruction}")?;
+    write!(f, "  //")?;
+    if let Some((_offset, rel)) = orig.relocations.first() {
+        write!(
+            f,
+            " {}",
+            RelocationDisplay {
+                rel,
+                elf_file: orig.elf_file
+            }
+        )?;
     }
+    writeln!(f)?;
     Ok(())
-}
-
-fn find_relocation(
-    section: &ElfSection64<LittleEndian>,
-    range: Range<u64>,
-) -> Option<object::Relocation> {
-    section
-        .relocations()
-        .find(|(offset, _rel)| range.contains(offset))
-        .map(|(_offset, rel)| rel)
 }
 
 enum SymbolResolution<'data> {
@@ -392,7 +452,7 @@ enum SymbolResolution<'data> {
 }
 
 struct RelocationDisplay<'elf, 'data> {
-    rel: object::Relocation,
+    rel: &'elf object::Relocation,
     elf_file: &'elf ElfFile64<'data>,
 }
 
@@ -1535,7 +1595,11 @@ struct UnifiedInstruction<'data> {
 }
 
 impl<'data> UnifiedInstruction<'data> {
-    fn new(instructions: &[Instruction], objects: &'data [Object<'data>]) -> Option<Self> {
+    fn new(
+        instructions: &[Instruction],
+        objects: &'data [Object<'data>],
+        original: Option<&OriginalInstructionAndRelocations>,
+    ) -> Option<Self> {
         let first = instructions.first()?;
         let first_object = objects.first()?;
         if first_equals_any(instructions.iter().map(|i| i.raw_instruction)) {
@@ -1563,7 +1627,7 @@ impl<'data> UnifiedInstruction<'data> {
             return Some(selected);
         }
 
-        Self::try_resolve_anon(instructions, objects)
+        Self::try_resolve_anon(original)
     }
 
     fn all_resolved(instruction: &Instruction, object: &'data Object<'data>) -> Vec<Self> {
@@ -1657,38 +1721,20 @@ impl<'data> UnifiedInstruction<'data> {
     /// ".L", then that would have been discarded by the linkers, so we then use that as the
     /// resolution.
     fn try_resolve_anon(
-        instructions: &[Instruction],
-        objects: &[Object<'data>],
+        original: Option<&OriginalInstructionAndRelocations>,
     ) -> Option<UnifiedInstruction<'data>> {
-        let res = instructions
-            .iter()
-            .zip(objects)
-            .find_map(|(instruction, object)| {
-                object.resolve_input(instruction.base_address + instruction.offset)
-            })?;
+        let original = original?;
 
-        let elf_file = &res.file.elf_file;
-        let section = elf_file.section_by_index(res.section_index()).ok()?;
-        let section_data = section.data().ok()?;
-        let mut decoder = AsmDecoder::new(0, &section_data[res.offset_in_section as usize..]);
-        if let Some(orig_instruction) = decoder.next() {
-            if let Some(rel) = find_relocation(
-                &section,
-                res.offset_in_section
-                    ..res.offset_in_section + orig_instruction.raw_instruction.len() as u64,
-            ) {
-                if let RelocationTarget::Symbol(symbol_index) = rel.target() {
-                    let symbol = elf_file.symbol_by_index(symbol_index).ok()?;
-                    let symbol_name = symbol.name_bytes().ok()?;
-                    if symbol.is_local()
-                        && (symbol_name.is_empty() || symbol_name.starts_with(b".L"))
-                    {
-                        return Some(UnifiedInstruction {
-                            instruction: orig_instruction.raw_instruction,
-                            resolution: Some(AddressResolution::AnonymousData),
-                        });
-                    }
-                }
+        let (_rel_offset, rel) = original.relocations.first()?;
+
+        if let RelocationTarget::Symbol(symbol_index) = rel.target() {
+            let symbol = original.elf_file.symbol_by_index(symbol_index).ok()?;
+            let symbol_name = symbol.name_bytes().ok()?;
+            if symbol.is_local() && (symbol_name.is_empty() || symbol_name.starts_with(b".L")) {
+                return Some(UnifiedInstruction {
+                    instruction: original.instruction.raw_instruction,
+                    resolution: Some(AddressResolution::AnonymousData),
+                });
             }
         }
         None
