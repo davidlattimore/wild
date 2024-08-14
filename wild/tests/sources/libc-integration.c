@@ -60,6 +60,12 @@
 //#LinkArgs:--cc=gcc -dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections
 //#Shared:libc-integration-0.c
 
+//#Config:gcc-dynamic-pie-large:default
+//#CompArgs:-g -fpie -DDYNAMIC_DEP -mcmodel=large
+//#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
+//#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections
+//#Shared:libc-integration-0.c
+
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
