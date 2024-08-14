@@ -298,6 +298,152 @@ struct OriginalInstructionAndRelocations<'data, 'file> {
     elf_file: &'file ElfFile64<'data>,
 }
 
+/// Attempts to produce the same instruction bytes as `instruction` by applying the relocation
+/// specified in `original`. If successful, then the resulting relocation is returned.
+fn try_resolve_with_original<'data>(
+    original: &OriginalInstructionAndRelocations<'data, '_>,
+    instruction: &Instruction,
+    object: &Object<'data>,
+) -> Option<UnifiedInstruction<'data>> {
+    let (offset, rel) = original.relocations.first()?;
+    if instruction.raw_instruction.code() != original.instruction.raw_instruction.code() {
+        return None;
+    }
+    let RelocationTarget::Symbol(orig_symbol_index) = rel.target() else {
+        return None;
+    };
+    let original_symbol = original.elf_file.symbol_by_index(orig_symbol_index).ok()?;
+    if !original_symbol.is_global() {
+        return None;
+    }
+    let symbol_name = original_symbol.name_bytes().ok()?;
+
+    let object::RelocationFlags::Elf { mut r_type } = rel.flags() else {
+        return None;
+    };
+
+    let offset_in_instruction =
+        *offset - original.instruction.base_address - original.instruction.offset;
+
+    let relocation_address = object.address_index.load_offset
+        + instruction.base_address
+        + instruction.offset
+        + offset_in_instruction;
+
+    let addend = rel.addend();
+
+    try_resolve_relocation(
+        r_type,
+        object,
+        addend,
+        relocation_address,
+        symbol_name,
+        original,
+        offset_in_instruction,
+        instruction,
+    )
+    .or_else(|| {
+        // Try with relaxations.
+        match r_type {
+            object::elf::R_X86_64_PLT32 => {
+                r_type = object::elf::R_X86_64_PC32;
+            }
+            _ => return None,
+        }
+        try_resolve_relocation(
+            r_type,
+            object,
+            addend,
+            relocation_address,
+            symbol_name,
+            original,
+            offset_in_instruction,
+            instruction,
+        )
+    })
+}
+
+fn try_resolve_relocation<'data>(
+    r_type: u32,
+    object: &Object<'data>,
+    addend: i64,
+    relocation_address: u64,
+    symbol_name: &'data [u8],
+    original: &OriginalInstructionAndRelocations<'data, '_>,
+    offset_in_instruction: u64,
+    instruction: &Instruction,
+) -> Option<UnifiedInstruction<'data>> {
+    let value;
+    let size;
+    match r_type {
+        object::elf::R_X86_64_GOTPC64 => {
+            // Offset of the GOT base relative to the relocation.
+            value = object
+                .address_index
+                .got_base_address?
+                .wrapping_add(addend as u64)
+                .wrapping_sub(relocation_address);
+            size = 8;
+        }
+        object::elf::R_X86_64_GOTPC32 => {
+            // Offset of the symbol's GOT entry relative to the relocation.
+            value = object
+                .address_index
+                .name_to_address
+                .get(symbol_name)?
+                .wrapping_add(addend as u64)
+                .wrapping_sub(relocation_address);
+            size = 8;
+        }
+        object::elf::R_X86_64_GOTOFF64 => {
+            // Offset of the symbol relative to the GOT base (note, no GOT entry is involved).
+            value = object
+                .address_index
+                .name_to_address
+                .get(symbol_name)?
+                .wrapping_sub(object.address_index.got_base_address?);
+            size = 8;
+        }
+        object::elf::R_X86_64_GOT64 => {
+            // Offset of the symbol's GOT entry relative to the GOT base.
+            value = object
+                .address_index
+                .name_to_got_address
+                .get(symbol_name)?
+                .wrapping_sub(object.address_index.got_base_address?);
+            size = 8;
+        }
+        object::elf::R_X86_64_PLTOFF64 => {
+            // Offset of the symbol's PLT entry relative to the GOT base.
+            value = object
+                .address_index
+                .name_to_plt_address
+                .get(symbol_name)?
+                .wrapping_sub(object.address_index.got_base_address?);
+            size = 8;
+        }
+        _ => {
+            return None;
+        }
+    };
+
+    let mut bytes = original.instruction.bytes.to_owned();
+    let start = offset_in_instruction as usize;
+    bytes[start..start + size].copy_from_slice(&value.to_le_bytes()[..size]);
+    if bytes != instruction.bytes {
+        return None;
+    }
+    Some(UnifiedInstruction {
+        instruction: original.instruction.raw_instruction,
+        relocation: UnifiedRelocation::Relocation(Relocation {
+            symbol_name,
+            r_type,
+            offset_in_instruction: offset_in_instruction as u32,
+            addend,
+        }),
+    })
+}
+
 const ORIG: &str = "ORIG";
 
 impl Display for FunctionVersions<'_> {
@@ -394,9 +540,17 @@ impl Display for FunctionVersions<'_> {
                                 .join(", ")
                         )?;
                     }
-                    for unified in UnifiedInstruction::all_resolved(instruction, obj) {
-                        if let Some(resolution) = unified.resolution {
-                            write!(f, " {resolution}")?;
+                    for unified in
+                        UnifiedInstruction::all_resolved(instruction, obj, original.as_ref())
+                    {
+                        match unified.relocation {
+                            UnifiedRelocation::NoRelocation => {}
+                            UnifiedRelocation::Legacy(resolution) => {
+                                write!(f, " {resolution}")?;
+                            }
+                            UnifiedRelocation::Relocation(rel) => {
+                                write!(f, " {rel}")?;
+                            }
                         }
                     }
                     let messages = obj
@@ -619,7 +773,9 @@ impl<'data> std::fmt::Debug for SymbolName<'data> {
 
 pub(crate) struct AddressIndex<'data> {
     address_resolutions: HashMap<u64, Vec<AddressResolution<'data>>>,
+    plt_indexes: Vec<PltIndex<'data>>,
     name_to_address: HashMap<&'data [u8], u64>,
+    name_to_plt_address: HashMap<&'data [u8], u64>,
     tls_by_offset: HashMap<u64, &'data [u8]>,
     index_error: Option<anyhow::Error>,
     file_header_addresses: Range<u64>,
@@ -632,11 +788,36 @@ pub(crate) struct AddressIndex<'data> {
     tls_segment_size: u64,
     load_offset: u64,
 
+    /// The address of the start of the .got section.
+    got_base_address: Option<u64>,
+
+    name_to_got_address: HashMap<&'data [u8], u64>,
+
     /// Version names by their index.
     verneed: Vec<Option<&'data [u8]>>,
 
     /// Dynamic symbol names by their index.
     dynamic_symbol_names: Vec<SymbolName<'data>>,
+}
+
+struct PltIndex<'data> {
+    plt_base: u64,
+    entry_length: u64,
+    resolutions: Vec<AddressResolution<'data>>,
+}
+
+impl<'data> PltIndex<'data> {
+    fn resolve_address(&self, address: u64) -> Option<AddressResolution> {
+        let offset = address.checked_sub(self.plt_base)?;
+        let index = offset / self.entry_length;
+        if address == 0x30001678 {
+            println!("@@ 0x{offset:x}, {index}, {}", offset % self.entry_length);
+        }
+        if (offset % self.entry_length) != 0 {
+            return None;
+        }
+        self.resolutions.get(index as usize).cloned()
+    }
 }
 
 struct FunctionDef<'data> {
@@ -651,6 +832,8 @@ impl<'data> AddressIndex<'data> {
         let mut info = Self {
             address_resolutions: Default::default(),
             name_to_address: Default::default(),
+            name_to_got_address: Default::default(),
+            name_to_plt_address: Default::default(),
             tls_by_offset: Default::default(),
             index_error: None,
             file_header_addresses: Default::default(),
@@ -660,6 +843,8 @@ impl<'data> AddressIndex<'data> {
             got_plt_address: None,
             versym_address: None,
             dynamic_segment_address: None,
+            got_base_address: None,
+            plt_indexes: Default::default(),
             tls_segment_size: 0,
             verneed: Default::default(),
             load_offset: decide_load_offset(object),
@@ -947,6 +1132,7 @@ impl<'data> AddressIndex<'data> {
 
         let plt_base = section.address();
         let mut plt_offset = 0;
+        let mut plt_resolutions = Vec::with_capacity(bytes.len() / entry_length);
         for chunk in bytes.chunks(entry_length) {
             let mut new_resolutions = Vec::new();
             if let Some(got_address) = PltEntry::decode(chunk, plt_base, plt_offset)
@@ -985,11 +1171,26 @@ impl<'data> AddressIndex<'data> {
             } else {
                 new_resolutions.push(AddressResolution::UnrecognisedPlt);
             }
+            plt_resolutions.push(
+                new_resolutions
+                    .first()
+                    .cloned()
+                    .unwrap_or(AddressResolution::UnrecognisedPlt),
+            );
             for res in new_resolutions {
-                self.add_resolution(plt_base + self.load_offset + plt_offset, res);
+                let address = plt_base + self.load_offset + plt_offset;
+                self.add_resolution(address, res);
+                if let Some(name) = res.symbol_name() {
+                    self.name_to_plt_address.insert(name.bytes, address);
+                }
             }
             plt_offset += entry_length as u64;
         }
+        self.plt_indexes.push(PltIndex {
+            plt_base: plt_base + self.load_offset,
+            entry_length: entry_length as u64,
+            resolutions: plt_resolutions,
+        });
         Ok(())
     }
 
@@ -1103,11 +1304,13 @@ impl<'data> AddressIndex<'data> {
             .0;
         let mut new_resolutions = Vec::new();
         let base_address = got.address() + self.load_offset;
+        self.got_base_address = Some(base_address);
         for (entry, address) in entries.iter().zip((base_address..).step_by(entry_size)) {
             // If there's already a resolution for our GOT entry (e.g. a dynamic relocation), then
             // we assume that will overwrite whatever value is in the GOT entry in the file, so we
             // ignore it.
-            if !self.resolve(address).is_empty() {
+            if let &[res, ..] = self.resolve(address) {
+                self.index_got_entry(&res, address);
                 continue;
             }
             new_resolutions.extend(self.resolve(*entry).iter().filter_map(|res| {
@@ -1117,6 +1320,9 @@ impl<'data> AddressIndex<'data> {
                     None
                 }
             }));
+            if let Some(res) = new_resolutions.first() {
+                self.index_got_entry(res, address);
+            }
             for res in new_resolutions.drain(..) {
                 self.add_resolution(address, res);
             }
@@ -1167,6 +1373,22 @@ impl<'data> AddressIndex<'data> {
                 _ => {}
             });
         Ok(())
+    }
+
+    fn index_got_entry(&mut self, res: &AddressResolution<'data>, address: u64) {
+        if let Some(name) = res.symbol_name() {
+            self.name_to_got_address.insert(name.bytes, address);
+        }
+    }
+}
+
+impl<'data> AddressResolution<'data> {
+    fn symbol_name(&self) -> Option<SymbolName<'data>> {
+        match self {
+            AddressResolution::Basic(basic) => Some(basic.symbol_name()),
+            AddressResolution::Got(basic) => Some(basic.symbol_name()),
+            _ => None,
+        }
     }
 }
 
@@ -1591,28 +1813,44 @@ impl Instruction<'_> {
 #[derive(PartialEq, Eq)]
 struct UnifiedInstruction<'data> {
     instruction: iced_x86::Instruction,
-    resolution: Option<AddressResolution<'data>>,
+    relocation: UnifiedRelocation<'data>,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+enum UnifiedRelocation<'data> {
+    NoRelocation,
+    Legacy(AddressResolution<'data>),
+    Relocation(Relocation<'data>),
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+struct Relocation<'data> {
+    symbol_name: &'data [u8],
+    r_type: u32,
+    offset_in_instruction: u32,
+    addend: i64,
 }
 
 impl<'data> UnifiedInstruction<'data> {
     fn new(
         instructions: &[Instruction],
         objects: &'data [Object<'data>],
-        original: Option<&OriginalInstructionAndRelocations>,
+        original: Option<&OriginalInstructionAndRelocations<'data, '_>>,
     ) -> Option<Self> {
         let first = instructions.first()?;
         let first_object = objects.first()?;
         if first_equals_any(instructions.iter().map(|i| i.raw_instruction)) {
             return Some(UnifiedInstruction {
                 instruction: first.raw_instruction,
-                resolution: None,
+                relocation: UnifiedRelocation::NoRelocation,
             });
         }
+
         // We might have multiple resolutions. e.g. if there is more than one symbol at the address.
         // Try to find a resolution shared by all objects and use that.
-        let mut common = UnifiedInstruction::all_resolved(first, first_object);
+        let mut common = UnifiedInstruction::all_resolved(first, first_object, original);
         for (ins, obj) in instructions[1..].iter().zip(&objects[1..]) {
-            let mut unified = UnifiedInstruction::all_resolved(ins, obj);
+            let mut unified = UnifiedInstruction::all_resolved(ins, obj, original);
             // If any reference object has an instruction that we know is undefined behaviour, then
             // we ignore the instructions from the other objects.
             if let Some(ub) = extract_undefined_behaviour(&mut unified) {
@@ -1622,7 +1860,7 @@ impl<'data> UnifiedInstruction<'data> {
         }
 
         // In case there's still multiple resolutions, select one in a deterministic way.
-        common.sort_by_key(|u| u.resolution);
+        common.sort_by_key(|u| u.relocation);
         if let Some(selected) = common.pop() {
             return Some(selected);
         }
@@ -1630,90 +1868,122 @@ impl<'data> UnifiedInstruction<'data> {
         Self::try_resolve_anon(original)
     }
 
-    fn all_resolved(instruction: &Instruction, object: &'data Object<'data>) -> Vec<Self> {
-        split_value(object, instruction)
-            .into_iter()
-            .flat_map(|(updated_instruction, value)| {
-                Self::resolve_address(updated_instruction, value, object)
-            })
-            .collect()
-    }
-
-    fn resolve_address(
-        raw_instruction: iced_x86::Instruction,
-        address: u64,
+    fn all_resolved(
+        instruction: &Instruction,
         object: &'data Object<'data>,
-    ) -> Vec<UnifiedInstruction<'data>> {
-        let mut resolutions = object
-            .address_index
-            .resolve(address)
-            .iter()
-            .map(|resolution| Self {
-                instruction: raw_instruction,
-                resolution: Some(*resolution),
-            })
-            .collect::<Vec<_>>();
-
-        // We need to treat points to ELF headers separately since they're expected to have
-        // different file contents.
-        if object
-            .address_index
-            .file_header_addresses
-            .contains(&address)
+        original: Option<&OriginalInstructionAndRelocations<'data, '_>>,
+    ) -> Vec<Self> {
+        if let Some(res) = original.and_then(|o| try_resolve_with_original(o, instruction, object))
         {
-            resolutions.push(Self {
-                instruction: raw_instruction,
-                resolution: Some(AddressResolution::FileHeaderOffset(
-                    address - object.address_index.file_header_addresses.start,
-                )),
-            });
-        }
-        if object
-            .address_index
-            .program_header_addresses
-            .contains(&address)
-        {
-            resolutions.push(Self {
-                instruction: raw_instruction,
-                resolution: Some(AddressResolution::ProgramHeaderOffset(
-                    address - object.address_index.program_header_addresses.start,
-                )),
-            });
+            return vec![res];
         }
 
-        // If we don't have a resolution by now, just see what byte we're pointing at.
-        if resolutions.is_empty() {
-            let resolution = if address < object.address_index.tls_segment_size
-                || address > 0_u64.wrapping_sub(object.address_index.tls_segment_size)
-            {
-                Some(AddressResolution::UnknownTls)
-            } else {
-                read_segment_byte(object.elf_file, &object.address_index, address).map(
-                    |(_byte, segment_type)| {
-                        AddressResolution::PointerTo(RawMemory {
-                            segment_details: segment_type,
-                            section_name: RESOLVE_SECTION_NAMES
-                                .then(|| section_name_for_address(object.elf_file, address))
-                                .flatten(),
-                        })
-                    },
-                )
+        let resolution_mode = ResolutionMode::from_orig(original);
+        let mut resolved_out = Vec::new();
+
+        for (updated_instruction, value) in split_value(object, instruction) {
+            let resolutions = match resolution_mode {
+                ResolutionMode::Legacy => resolve_address_legacy(value, object),
+                ResolutionMode::PltRelGotBase => resolve_plt_got_base(value, object),
+                ResolutionMode::PcRelative(addend) => {
+                    resolve_address_legacy(value.wrapping_sub(addend as u64), object)
+                }
             };
-            if let Some(resolution) = resolution {
-                return vec![Self {
-                    instruction: raw_instruction,
-                    resolution: Some(resolution),
-                }];
-            }
+            resolved_out.extend(resolutions.into_iter().map(|res| UnifiedInstruction {
+                instruction: updated_instruction,
+                relocation: UnifiedRelocation::Legacy(res),
+            }))
         }
-        resolutions
+        resolved_out
+    }
+}
+
+fn resolve_plt_got_base<'data>(
+    value: u64,
+    object: &'data Object<'data>,
+) -> Vec<AddressResolution<'data>> {
+    let mut out = Vec::new();
+    let Some(got_base) = object.address_index.got_base_address else {
+        return out;
+    };
+    let address = value.wrapping_add(got_base);
+    if value == 0xFFFFFFFFFFFFD720 {
+        println!("@@@a: 0x{address:x}");
+    }
+    for plt_index in &object.address_index.plt_indexes {
+        if let Some(res) = plt_index.resolve_address(address) {
+            out.push(res);
+        }
+    }
+    // A R_X86_64_PLTOFF64 can be optimised to bypass the PLT. i.e. it can provide the offset from
+    // the GOT to the function.
+    if out.is_empty() {
+        return object.address_index.resolve(address).to_owned();
+    }
+    out
+}
+
+fn resolve_address_legacy<'data>(
+    address: u64,
+    object: &'data Object<'data>,
+) -> Vec<AddressResolution<'data>> {
+    let mut resolutions = object.address_index.resolve(address).to_vec();
+
+    // We need to treat pointers to ELF headers separately since they're expected to have
+    // different file contents.
+    if object
+        .address_index
+        .file_header_addresses
+        .contains(&address)
+    {
+        resolutions.push(AddressResolution::FileHeaderOffset(
+            address - object.address_index.file_header_addresses.start,
+        ));
+    }
+    if object
+        .address_index
+        .program_header_addresses
+        .contains(&address)
+    {
+        resolutions.push(AddressResolution::ProgramHeaderOffset(
+            address - object.address_index.program_header_addresses.start,
+        ));
     }
 
+    // If we don't have a resolution by now, just see what byte we're pointing at.
+    if resolutions.is_empty() {
+        let resolution = if address < object.address_index.tls_segment_size
+            || address > 0_u64.wrapping_sub(object.address_index.tls_segment_size)
+        {
+            Some(AddressResolution::UnknownTls)
+        } else {
+            read_segment_byte(object.elf_file, &object.address_index, address).map(
+                |(_byte, segment_type)| {
+                    AddressResolution::PointerTo(RawMemory {
+                        segment_details: segment_type,
+                        section_name: RESOLVE_SECTION_NAMES
+                            .then(|| section_name_for_address(object.elf_file, address))
+                            .flatten(),
+                    })
+                },
+            )
+        };
+        if let Some(resolution) = resolution {
+            return vec![resolution];
+        }
+    }
+    resolutions
+}
+
+impl<'data> UnifiedInstruction<'data> {
     fn is_undefined_behaviour(&self) -> bool {
-        self.instruction.mnemonic() == Mnemonic::Call
-            && self.resolution.is_some_and(|res| {
-                matches!(res, AddressResolution::Null | AddressResolution::NullPlt)
-            })
+        if self.instruction.mnemonic() != Mnemonic::Call {
+            return false;
+        }
+        if let UnifiedRelocation::Legacy(res) = self.relocation {
+            return matches!(res, AddressResolution::Null | AddressResolution::NullPlt);
+        }
+        false
     }
 
     /// If one of our objects has a layout associated with it, finds the original instruction and
@@ -1733,11 +2003,40 @@ impl<'data> UnifiedInstruction<'data> {
             if symbol.is_local() && (symbol_name.is_empty() || symbol_name.starts_with(b".L")) {
                 return Some(UnifiedInstruction {
                     instruction: original.instruction.raw_instruction,
-                    resolution: Some(AddressResolution::AnonymousData),
+                    relocation: UnifiedRelocation::Legacy(AddressResolution::AnonymousData),
                 });
             }
         }
         None
+    }
+}
+
+/// How we should go about interpreting the address / value that an instruction refers to.
+#[derive(Clone, Copy)]
+enum ResolutionMode {
+    /// Try almost everything. We may eventually want to get rid of this.
+    Legacy,
+
+    /// Expect the offset of a PLT entry relative to the GOT base.
+    PltRelGotBase,
+
+    /// Expect a PC-relative address with the specified addend.
+    PcRelative(i64),
+}
+
+impl ResolutionMode {
+    fn from_orig(original: Option<&OriginalInstructionAndRelocations>) -> Self {
+        let Some((_, rel)) = original.and_then(|o| o.relocations.first()) else {
+            return ResolutionMode::Legacy;
+        };
+        let object::RelocationFlags::Elf { r_type } = rel.flags() else {
+            unimplemented!();
+        };
+        match r_type {
+            object::elf::R_X86_64_PLTOFF64 => ResolutionMode::PltRelGotBase,
+            object::elf::R_X86_64_GOTPC64 => ResolutionMode::PcRelative(rel.addend()),
+            _ => ResolutionMode::Legacy,
+        }
     }
 }
 
@@ -1978,11 +2277,17 @@ impl Display for UnifiedInstruction<'_> {
         let mut formatter = iced_x86::GasFormatter::new();
         formatter.format(&self.instruction, &mut out);
         write!(f, "{out}")?;
-        if self.resolution.is_some() || f.alternate() {
+        if self.relocation != UnifiedRelocation::NoRelocation || f.alternate() {
             write!(f, "  //")?;
         }
-        if let Some(res) = &self.resolution {
-            write!(f, " 0x{PLACEHOLDER:X}={res}")?;
+        match &self.relocation {
+            UnifiedRelocation::Legacy(res) => {
+                write!(f, " 0x{PLACEHOLDER:X}={res}")?;
+            }
+            UnifiedRelocation::Relocation(rel) => {
+                write!(f, " {rel}")?;
+            }
+            UnifiedRelocation::NoRelocation => {}
         }
         Ok(())
     }
@@ -2010,5 +2315,18 @@ impl Display for SegmentDetails {
             write!(f, "X")?;
         }
         Ok(())
+    }
+}
+
+impl Display for Relocation<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} at 0x{:x} for `{}` {:+}",
+            rel_type_to_string(self.r_type),
+            self.offset_in_instruction,
+            String::from_utf8_lossy(self.symbol_name),
+            self.addend,
+        )
     }
 }

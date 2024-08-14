@@ -11,6 +11,8 @@
 //! allocation going on that with a little work could be avoided. If we end up using this library as
 //! part of a fuzzer this may need to be optimised.
 
+#![allow(clippy::too_many_arguments)]
+
 use anyhow::bail;
 use anyhow::Context as _;
 use asm_diff::AddressIndex;
