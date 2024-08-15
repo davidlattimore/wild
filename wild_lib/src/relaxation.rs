@@ -69,10 +69,7 @@ impl Relaxation {
             // This only fails for relocation types that we don't support and if we relax to a type
             // we don't support, then that's a bug.
             let rel_info = RelocationKindInfo::from_raw(new_r_type).unwrap();
-            Some(Relaxation {
-                kind,
-                rel_info,
-            })
+            Some(Relaxation { kind, rel_info })
         }
 
         let is_known_address = value_flags.contains(ValueFlags::ADDRESS);
@@ -201,6 +198,9 @@ impl Relaxation {
             object::elf::R_X86_64_PLT32 if can_bypass_got => {
                 return create(RelaxationKind::NoOp, object::elf::R_X86_64_PC32);
             }
+            object::elf::R_X86_64_PLTOFF64 if can_bypass_got => {
+                return create(RelaxationKind::NoOp, object::elf::R_X86_64_GOTOFF64);
+            }
             object::elf::R_X86_64_TLSGD if can_bypass_got && output_kind.is_executable() => {
                 if offset < 4 || section_bytes[offset - 4..offset] != [0x66, 0x48, 0x8d, 0x3d] {
                     return None;
@@ -225,7 +225,6 @@ impl Relaxation {
                 }
                 return create(RelaxationKind::TlsLdToLocalExec, object::elf::R_X86_64_NONE);
             }
-
             _ => return None,
         };
         None
