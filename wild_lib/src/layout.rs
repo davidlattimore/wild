@@ -2109,14 +2109,14 @@ fn process_relocation(
         let rel_offset = rel.r_offset.get(LittleEndian);
         let mut r_type = rel.r_type(LittleEndian, false);
 
-        if let Some((_relaxation, new_r_type)) = Relaxation::new(
+        if let Some(relaxation) = Relaxation::new(
             r_type,
             object.object.section_data(section)?,
             rel_offset,
             symbol_value_flags,
             args.output_kind,
         ) {
-            r_type = new_r_type;
+            r_type = relaxation.new_r_type;
         }
 
         let section_is_writable =

@@ -1459,11 +1459,11 @@ fn apply_relocation(
     let r_type = rel.r_type(e, false);
     let rel_info;
     let output_kind = layout.args().output_kind;
-    if let Some((relaxation, r_type)) =
+    if let Some(relaxation) =
         Relaxation::new(r_type, out, offset_in_section, value_flags, output_kind)
     {
         tracing::trace!(?relaxation, %value_flags, %resolution_flags);
-        rel_info = RelocationKindInfo::from_raw(r_type)?;
+        rel_info = RelocationKindInfo::from_raw(relaxation.new_r_type)?;
         relaxation.apply(out, &mut offset_in_section, &mut addend, &mut next_modifier);
         let new_address = section_address + offset_in_section;
         if new_address != place {
