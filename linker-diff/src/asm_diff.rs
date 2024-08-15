@@ -505,59 +505,49 @@ impl Display for FunctionVersions<'_> {
             }
             let mut trace_messages = Vec::new();
             writeln!(f)?;
-            for (value, obj) in values.iter().zip(self.objects) {
-                let Some(value) = value else {
-                    continue;
-                };
+            for (instruction, obj) in instructions.iter().zip(self.objects) {
                 let display_name = &obj.name;
                 write!(f, "{display_name:gutter_width$}")?;
-                if let Some(instruction_address) = value.instruction_address() {
-                    write!(f, " 0x{instruction_address:08x}")?;
+                write!(f, " 0x{:08x}", instruction.address())?;
+                write!(f, " {instruction}")?;
+                write!(f, "  // {:?}", instruction.raw_instruction.code())?;
+                let split = split_value(obj, instruction);
+                if split.is_empty() {
+                    write!(
+                        f,
+                        "({})",
+                        (0..instruction.raw_instruction.op_count())
+                            .map(|o| format!("{:?}", instruction.raw_instruction.op_kind(o)))
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    )?;
                 } else {
-                    write!(f, "           ")?;
+                    write!(
+                        f,
+                        "({})",
+                        split
+                            .into_iter()
+                            .map(|(_, value)| format!("0x{value:x}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )?;
                 }
-                write!(f, " {value}")?;
-                if let Line::Instruction(instruction) = value {
-                    write!(f, "  // {:?}", instruction.raw_instruction.code())?;
-                    let split = split_value(obj, instruction);
-                    if split.is_empty() {
-                        write!(
-                            f,
-                            "({})",
-                            (0..instruction.raw_instruction.op_count())
-                                .map(|o| format!("{:?}", instruction.raw_instruction.op_kind(o)))
-                                .collect::<Vec<_>>()
-                                .join(",")
-                        )?;
-                    } else {
-                        write!(
-                            f,
-                            "({})",
-                            split
-                                .into_iter()
-                                .map(|(_, value)| format!("0x{value:x}"))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )?;
-                    }
-                    for unified in
-                        UnifiedInstruction::all_resolved(instruction, obj, original.as_ref())
-                    {
-                        match unified.relocation {
-                            UnifiedRelocation::NoRelocation => {}
-                            UnifiedRelocation::Legacy(resolution) => {
-                                write!(f, " {resolution}")?;
-                            }
-                            UnifiedRelocation::Relocation(rel) => {
-                                write!(f, " {rel}")?;
-                            }
+                for unified in UnifiedInstruction::all_resolved(instruction, obj, original.as_ref())
+                {
+                    match unified.relocation {
+                        UnifiedRelocation::NoRelocation => {}
+                        UnifiedRelocation::Legacy(resolution) => {
+                            write!(f, " {resolution}")?;
+                        }
+                        UnifiedRelocation::Relocation(rel) => {
+                            write!(f, " {rel}")?;
                         }
                     }
-                    let messages = obj
-                        .trace
-                        .messages_in(instruction.non_relocated_address_range());
-                    trace_messages.extend(messages);
                 }
+                let messages = obj
+                    .trace
+                    .messages_in(instruction.non_relocated_address_range());
+                trace_messages.extend(messages);
                 writeln!(f)?;
             }
             if let Some(orig) = original.as_ref() {
@@ -1808,6 +1798,10 @@ impl Instruction<'_> {
         let base = self.base_address + self.offset;
         base..base + self.bytes.len() as u64
     }
+
+    fn address(&self) -> u64 {
+        self.base_address + self.offset
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -2179,15 +2173,6 @@ impl<'data> BasicResolution<'data> {
             BasicResolution::Dynamic(s) => *s,
             BasicResolution::Copy(s) => *s,
             BasicResolution::IFunc(s) => *s,
-        }
-    }
-}
-
-impl Line<'_> {
-    fn instruction_address(&self) -> Option<u64> {
-        match self {
-            Line::Instruction(i) => Some(i.base_address + i.offset),
-            _ => None,
         }
     }
 }
