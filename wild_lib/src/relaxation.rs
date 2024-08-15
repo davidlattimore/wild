@@ -4,16 +4,17 @@
 //! binary because dynamic relocations haven't yet been applied to the GOT yet.
 
 use crate::args::OutputKind;
+use crate::elf::RelocationKindInfo;
 use crate::resolution::ValueFlags;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Relaxation {
-    kind: RelaxationKind,
-    pub(crate) new_r_type: u32,
+    pub(crate) kind: RelaxationKind,
+    pub(crate) rel_info: RelocationKindInfo,
 }
 
 #[derive(Debug, Clone, Copy)]
-enum RelaxationKind {
+pub(crate) enum RelaxationKind {
     /// Transforms a mov instruction that would have loaded an address to not use the GOT. The
     /// transformation will look like `mov *x(%rip), reg` -> `lea x(%rip), reg`.
     MovIndirectToLea,
@@ -65,7 +66,13 @@ impl Relaxation {
         output_kind: OutputKind,
     ) -> Option<Self> {
         fn create(kind: RelaxationKind, new_r_type: u32) -> Option<Relaxation> {
-            Some(Relaxation { kind, new_r_type })
+            // This only fails for relocation types that we don't support and if we relax to a type
+            // we don't support, then that's a bug.
+            let rel_info = RelocationKindInfo::from_raw(new_r_type).unwrap();
+            Some(Relaxation {
+                kind,
+                rel_info,
+            })
         }
 
         let is_known_address = value_flags.contains(ValueFlags::ADDRESS);

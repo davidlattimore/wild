@@ -2107,21 +2107,22 @@ fn process_relocation(
         let symbol_value_flags = symbol_db.local_symbol_value_flags(symbol_id);
         let canonical_symbol_value_flags = symbol_db.symbol_value_flags(symbol_id);
         let rel_offset = rel.r_offset.get(LittleEndian);
-        let mut r_type = rel.r_type(LittleEndian, false);
+        let r_type = rel.r_type(LittleEndian, false);
 
-        if let Some(relaxation) = Relaxation::new(
+        let rel_info = if let Some(relaxation) = Relaxation::new(
             r_type,
             object.object.section_data(section)?,
             rel_offset,
             symbol_value_flags,
             args.output_kind,
         ) {
-            r_type = relaxation.new_r_type;
-        }
+            relaxation.rel_info
+        } else {
+            RelocationKindInfo::from_raw(r_type)?
+        };
 
         let section_is_writable =
             section.sh_flags(LittleEndian) & object::elf::SHF_WRITE as u64 != 0;
-        let rel_info = RelocationKindInfo::from_raw(r_type)?;
         let mut resolution_kind = resolution_flags(rel_info.kind);
         if resolution_kind.contains(ResolutionFlags::DIRECT)
             && symbol_value_flags.contains(ValueFlags::DYNAMIC)
