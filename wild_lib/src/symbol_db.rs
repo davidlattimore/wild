@@ -611,7 +611,8 @@ impl SymbolLoader for RegularObjectSymbolLoader<'_> {
 impl SymbolLoader for DynamicObjectSymbolLoader {
     fn compute_value_flags(&self, symbol: &crate::elf::Symbol) -> ValueFlags {
         let mut flags = ValueFlags::DYNAMIC;
-        if symbol.st_type() == object::elf::STT_FUNC {
+        let st_type = symbol.st_type();
+        if st_type == object::elf::STT_FUNC || st_type == object::elf::STT_GNU_IFUNC {
             flags |= ValueFlags::FUNCTION;
         }
         flags
