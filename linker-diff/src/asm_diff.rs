@@ -651,9 +651,9 @@ fn take_instructions_until_sync<'data, 'file>(
             let offset = instructions.last().unwrap().next_instruction_offset();
             if offset < max_next_offset {
                 if let Some(Line::Instruction(next)) = decoder.next() {
-                    max_next_offset = next.next_instruction_offset();
-                    instructions.push(next);
+                    max_next_offset = max_next_offset.max(next.next_instruction_offset());
                     done = false;
+                    instructions.push(next);
                 }
             }
         }
@@ -661,9 +661,10 @@ fn take_instructions_until_sync<'data, 'file>(
             let offset = orig.instruction.next_instruction_offset();
             if offset < max_next_offset {
                 if let Some(next) = original_decoder.as_mut().and_then(|o| o.next()) {
-                    max_next_offset = next.instruction.next_instruction_offset();
-                    originals.push(next);
+                    max_next_offset =
+                        max_next_offset.max(next.instruction.next_instruction_offset());
                     done = false;
+                    originals.push(next);
                 }
             }
         }
@@ -718,7 +719,7 @@ impl Display for RelocationDisplay<'_, '_> {
                 if let Err(error) = self.write_symbol_or_section_name(f, symbol_index) {
                     write!(f, "<{error}>")?
                 } else {
-                    write!(f, "+0x{:x}", self.rel.addend())?
+                    write!(f, " {:+}", self.rel.addend())?
                 }
             }
             RelocationTarget::Absolute => write!(f, "0x{:x}", self.rel.addend())?,
