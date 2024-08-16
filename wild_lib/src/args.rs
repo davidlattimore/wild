@@ -582,7 +582,7 @@ fn arguments_from_string(input: &str) -> Result<Vec<String>> {
                 }
             } else {
                 // beginning of a new argument
-                ensure!(heap.is_none(), "Missing openning quote '{ch}'");
+                ensure!(heap.is_none(), "Missing opening quote '{ch}'");
                 quote = Some(ch);
             }
         } else if ch.is_whitespace() {
