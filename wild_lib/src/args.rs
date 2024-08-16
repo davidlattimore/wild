@@ -6,8 +6,8 @@ use crate::error::Result;
 use crate::input_data::FileId;
 use crate::save_dir::SaveDir;
 use anyhow::bail;
+use anyhow::ensure;
 use anyhow::Context as _;
-use std::borrow::Cow;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -538,49 +538,69 @@ impl OutputKind {
     }
 }
 
-/// Parses arguments from a string, handling double quotes, escapes etc. All arguments must be
-/// surrounded by double quotes and separated by a single space.
-fn arguments_from_string(mut input: &str) -> Result<Vec<Cow<str>>> {
+/// Parses arguments from a string, handling quoting, escapes etc.
+/// All arguments must be surrounded by a white space.
+fn arguments_from_string(input: &str) -> Result<Vec<String>> {
+    const QUOTES: [char; 2] = ['\'', '"'];
+
     let mut out = Vec::new();
+    let mut chars = input.chars();
+    let mut heap = None;
+    let mut quote = None;
+    let mut expect_whitespace = false;
+
     loop {
-        let mut char_indices = input.char_indices();
-        if let Some((_, char)) = char_indices.next() {
-            if char != '"' {
-                bail!("Expected '\"', found '{char}'");
+        let Some(mut ch) = chars.next() else {
+            if let Some(quote) = quote.take() {
+                bail!("Missing closing '{quote}'");
+            }
+            if let Some(arg) = heap.take() {
+                out.push(arg);
+            }
+            break;
+        };
+
+        ensure!(
+            !expect_whitespace || ch.is_whitespace(),
+            "Expected white space after quoted argument"
+        );
+        expect_whitespace = false;
+
+        if QUOTES.contains(&ch) {
+            if let Some(qchr) = quote {
+                if qchr != ch {
+                    // accept the other quoting character as normal char
+                    heap.get_or_insert(String::new()).push(ch);
+                } else {
+                    // close the argument
+                    if let Some(arg) = heap.take() {
+                        out.push(arg);
+                    }
+                    quote = None;
+                    expect_whitespace = true;
+                }
+            } else {
+                // beginning of a new argument
+                ensure!(heap.is_none(), "Missing openning quote '{ch}'");
+                quote = Some(ch);
+            }
+        } else if ch.is_whitespace() {
+            if quote.is_none() {
+                if let Some(arg) = heap.take() {
+                    out.push(arg);
+                }
+            } else {
+                heap.get_or_insert(String::new()).push(ch);
             }
         } else {
-            return Ok(out);
-        }
-        let mut heap_arg: Option<String> = None;
-        loop {
-            let Some((index, char)) = char_indices.next() else {
-                bail!("Missing closing '\"'");
-            };
-            if char == '"' {
-                if let Some(arg) = heap_arg.take() {
-                    out.push(Cow::Owned(arg));
-                } else {
-                    out.push(Cow::Borrowed(&input[1..index]));
-                }
-                if let Some((space_index, char)) = char_indices.next() {
-                    if char != ' ' {
-                        bail!("Expected space, got '{char}'");
-                    }
-                    input = &input[space_index + 1..];
-                } else {
-                    input = &input[index + 1..];
-                }
-                break;
+            if ch == '\\' {
+                ch = chars.next().context("Invalid escape")?;
             }
-            if char == '\\' {
-                let arg = heap_arg.get_or_insert_with(|| input[1..index].to_owned());
-                let (_, ch) = char_indices.next().context("Invalid escape")?;
-                arg.push(ch);
-            } else if let Some(heap_arg) = heap_arg.as_mut() {
-                heap_arg.push(char);
-            }
+            heap.get_or_insert(String::new()).push(ch);
         }
     }
+
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -703,20 +723,40 @@ mod tests {
     #[test]
     fn test_arguments_from_string() {
         use super::arguments_from_string;
-        use std::borrow::Cow;
 
         assert!(arguments_from_string("").unwrap().is_empty());
+        assert!(arguments_from_string("''").unwrap().is_empty());
+        assert!(arguments_from_string("\"\"").unwrap().is_empty());
         assert_eq!(
-            arguments_from_string(r#""foo" "bar""#).unwrap().as_slice(),
-            &[Cow::Borrowed("foo"), Cow::Borrowed("bar")]
+            arguments_from_string(r#""foo" "bar""#).unwrap(),
+            ["foo", "bar"]
         );
-
         assert_eq!(
-            arguments_from_string(r#""foo\"" "\"b\"ar""#)
-                .unwrap()
-                .as_slice(),
-            &[Cow::Borrowed("foo\""), Cow::Borrowed("\"b\"ar")]
+            arguments_from_string(r#""foo\"" "\"b\"ar""#).unwrap(),
+            ["foo\"", "\"b\"ar"]
         );
+        assert_eq!(
+            arguments_from_string("   foo  bar      ").unwrap(),
+            ["foo", "bar"]
+        );
+        assert!(arguments_from_string("'foo''bar'").is_err());
+        assert_eq!(
+            arguments_from_string("'foo' 'bar' baz").unwrap(),
+            ["foo", "bar", "baz"]
+        );
+        assert_eq!(arguments_from_string("foo\nbar").unwrap(), ["foo", "bar"]);
+        assert_eq!(
+            arguments_from_string(r#"'foo' "bar" baz"#).unwrap(),
+            ["foo", "bar", "baz"]
+        );
+        assert_eq!(arguments_from_string("'foo bar'").unwrap(), ["foo bar"]);
+        assert_eq!(
+            arguments_from_string("'foo \"  bar'").unwrap(),
+            ["foo \"  bar"]
+        );
+        assert!(arguments_from_string("foo\\").is_err());
+        assert!(arguments_from_string("'foo").is_err());
+        assert!(arguments_from_string("foo\"").is_err());
     }
 
     #[test]
