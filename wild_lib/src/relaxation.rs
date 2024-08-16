@@ -141,11 +141,8 @@ impl Relaxation {
                 }
             }
             object::elf::R_X86_64_GOTPCRELX => {
-                if offset < 2 {
-                    return None;
-                }
                 if is_absolute || is_absolute_address {
-                    match section_bytes[offset - 2] {
+                    match section_bytes.get(offset - 2)? {
                         0x8b => {
                             return create(
                                 RelaxationKind::MovIndirectToAbsolute,
@@ -156,7 +153,7 @@ impl Relaxation {
                     }
                 }
                 if can_bypass_got {
-                    match &section_bytes[offset - 2..offset] {
+                    match section_bytes.get(offset - 2..offset)? {
                         [0xff, 0x15] => {
                             return create(
                                 RelaxationKind::CallIndirectToRelative,
@@ -169,8 +166,7 @@ impl Relaxation {
                 return None;
             }
             object::elf::R_X86_64_GOTPCREL if can_bypass_got && offset >= 2 => {
-                let b1 = section_bytes[offset - 2];
-                match b1 {
+                match section_bytes.get(offset - 2)? {
                     0x8b => {
                         return create(
                             RelaxationKind::MovIndirectToLea,
@@ -182,10 +178,7 @@ impl Relaxation {
                 return None;
             }
             object::elf::R_X86_64_GOTTPOFF if can_bypass_got => {
-                if offset < 3 {
-                    return None;
-                }
-                match section_bytes[offset - 3..offset - 1] {
+                match section_bytes.get(offset - 3..offset - 1)? {
                     [0x48 | 0x4c, 0x8b] => {
                         return create(
                             RelaxationKind::RexMovIndirectToAbsolute,
@@ -202,28 +195,25 @@ impl Relaxation {
                 return create(RelaxationKind::NoOp, object::elf::R_X86_64_GOTOFF64);
             }
             object::elf::R_X86_64_TLSGD if can_bypass_got && output_kind.is_executable() => {
-                if offset < 4 || section_bytes[offset - 4..offset] != [0x66, 0x48, 0x8d, 0x3d] {
-                    return None;
+                if section_bytes.get(offset - 4..offset)? == [0x66, 0x48, 0x8d, 0x3d] {
+                    return create(
+                        RelaxationKind::TlsGdToLocalExec,
+                        object::elf::R_X86_64_TPOFF32,
+                    );
                 }
-                return create(
-                    RelaxationKind::TlsGdToLocalExec,
-                    object::elf::R_X86_64_TPOFF32,
-                );
             }
             object::elf::R_X86_64_TLSGD if output_kind.is_executable() => {
-                if offset < 4 || section_bytes[offset - 4..offset] != [0x66, 0x48, 0x8d, 0x3d] {
-                    return None;
+                if section_bytes.get(offset - 4..offset)? == [0x66, 0x48, 0x8d, 0x3d] {
+                    return create(
+                        RelaxationKind::TlsGdToInitialExec,
+                        object::elf::R_X86_64_GOTTPOFF,
+                    );
                 }
-                return create(
-                    RelaxationKind::TlsGdToInitialExec,
-                    object::elf::R_X86_64_GOTTPOFF,
-                );
             }
             object::elf::R_X86_64_TLSLD if output_kind.is_executable() => {
-                if offset < 3 || section_bytes[offset - 3..offset] != [0x48, 0x8d, 0x3d] {
-                    return None;
+                if section_bytes.get(offset - 3..offset)? == [0x48, 0x8d, 0x3d] {
+                    return create(RelaxationKind::TlsLdToLocalExec, object::elf::R_X86_64_NONE);
                 }
-                return create(RelaxationKind::TlsLdToLocalExec, object::elf::R_X86_64_NONE);
             }
             _ => return None,
         };
