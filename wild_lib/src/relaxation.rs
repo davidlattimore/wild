@@ -42,6 +42,9 @@ pub(crate) enum RelaxationKind {
     /// Transform general dynamic (GD) into local exec.
     TlsGdToLocalExec,
 
+    /// As above, but for the large-model form of the instruction.
+    TlsGdToLocalExecLarge,
+
     /// Transform local dynamic (LD) into local exec.
     TlsLdToLocalExec,
 
@@ -195,20 +198,21 @@ impl Relaxation {
                 return create(RelaxationKind::NoOp, object::elf::R_X86_64_GOTOFF64);
             }
             object::elf::R_X86_64_TLSGD if can_bypass_got && output_kind.is_executable() => {
-                if section_bytes.get(offset - 4..offset)? == [0x66, 0x48, 0x8d, 0x3d] {
-                    return create(
-                        RelaxationKind::TlsGdToLocalExec,
-                        object::elf::R_X86_64_TPOFF32,
-                    );
-                }
+                let kind = match TlsGdForm::identify(section_bytes, offset)? {
+                    TlsGdForm::Regular => RelaxationKind::TlsGdToLocalExec,
+                    TlsGdForm::Large => RelaxationKind::TlsGdToLocalExecLarge,
+                };
+                return create(kind, object::elf::R_X86_64_TPOFF32);
             }
             object::elf::R_X86_64_TLSGD if output_kind.is_executable() => {
-                if section_bytes.get(offset - 4..offset)? == [0x66, 0x48, 0x8d, 0x3d] {
-                    return create(
-                        RelaxationKind::TlsGdToInitialExec,
-                        object::elf::R_X86_64_GOTTPOFF,
-                    );
-                }
+                let kind = match TlsGdForm::identify(section_bytes, offset)? {
+                    TlsGdForm::Regular => RelaxationKind::TlsGdToInitialExec,
+                    TlsGdForm::Large => {
+                        // TODO
+                        return None;
+                    }
+                };
+                return create(kind, object::elf::R_X86_64_GOTTPOFF);
             }
             object::elf::R_X86_64_TLSLD if output_kind.is_executable() => {
                 if section_bytes.get(offset - 3..offset)? == [0x48, 0x8d, 0x3d] {
@@ -272,11 +276,21 @@ impl Relaxation {
                 section_bytes[offset - 2..offset].copy_from_slice(&[0x67, 0xe8]);
             }
             RelaxationKind::TlsGdToLocalExec => {
-                // mov %fs:0,%rax
-                // lea {offset}(%rax),%rax
-                section_bytes[offset - 4..offset + 8]
-                    .copy_from_slice(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0x48, 0x8d, 0x80]);
+                section_bytes[offset - 4..offset + 8].copy_from_slice(&[
+                    0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, // mov %fs:0,%rax
+                    0x48, 0x8d, 0x80, // lea {offset}(%rax),%rax
+                ]);
                 *offset_in_section += 8;
+                *addend = 0;
+                *next_modifier = RelocationModifier::SkipNextRelocation;
+            }
+            RelaxationKind::TlsGdToLocalExecLarge => {
+                section_bytes[offset - 3..offset + 19].copy_from_slice(&[
+                    0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, // mov %fs:0,%rax
+                    0x48, 0x8d, 0x80, 0, 0, 0, 0, // lea {offset}(%rax),%rax
+                    0x66, 0x0f, 0x1f, 0x44, 0, 0, // nopw (%rax,%rax)
+                ]);
+                *offset_in_section += 9;
                 *addend = 0;
                 *next_modifier = RelocationModifier::SkipNextRelocation;
             }
@@ -307,6 +321,28 @@ impl Relaxation {
                 *next_modifier = RelocationModifier::SkipNextRelocation;
             }
             RelaxationKind::NoOp => {}
+        }
+    }
+}
+
+enum TlsGdForm {
+    Regular,
+    Large,
+}
+
+impl TlsGdForm {
+    fn identify(bytes: &[u8], offset: usize) -> Option<Self> {
+        if bytes.get(offset - 4..offset) == Some(&[0x66, 0x48, 0x8d, 0x3d])
+            && bytes.get(offset + 4..offset + 8) == Some(&[0x66, 0x66, 0x48, 0xe8])
+        {
+            Some(Self::Regular)
+        } else if bytes.get(offset - 3..offset) == Some(&[0x48, 0x8d, 0x3d])
+            && bytes.get(offset + 4..offset + 6) == Some(&[0x48, 0xb8])
+            && bytes.get(offset + 14..offset + 19) == Some(&[0x48, 0x01, 0xd8, 0xff, 0xd0])
+        {
+            Some(Self::Large)
+        } else {
+            None
         }
     }
 }
