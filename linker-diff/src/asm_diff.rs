@@ -907,9 +907,6 @@ impl<'data> PltIndex<'data> {
     fn resolve_address(&self, address: u64) -> Option<AddressResolution> {
         let offset = address.checked_sub(self.plt_base)?;
         let index = offset / self.entry_length;
-        if address == 0x30001678 {
-            println!("@@ 0x{offset:x}, {index}, {}", offset % self.entry_length);
-        }
         if (offset % self.entry_length) != 0 {
             return None;
         }
@@ -2013,9 +2010,6 @@ fn resolve_plt_got_base<'data>(
         return out;
     };
     let address = value.wrapping_add(got_base);
-    if value == 0xFFFFFFFFFFFFD720 {
-        println!("@@@a: 0x{address:x}");
-    }
     for plt_index in &object.address_index.plt_indexes {
         if let Some(res) = plt_index.resolve_address(address) {
             out.push(res);
