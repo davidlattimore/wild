@@ -6,6 +6,7 @@ use crate::error::Result;
 use crate::input_data::FileId;
 use crate::save_dir::SaveDir;
 use anyhow::bail;
+use anyhow::ensure;
 use anyhow::Context as _;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -538,24 +539,58 @@ impl OutputKind {
 }
 
 /// Parses arguments from a string, handling quoting, escapes etc.
-/// All arguments must be  surrounded by a white space.
+/// All arguments must be surrounded by a white space.
 fn arguments_from_string(input: &str) -> Result<Vec<String>> {
+    const QUOTES: [char; 2] = ['\'', '"'];
+
     let mut out = Vec::new();
     let mut chars = input.chars();
-    let mut heap: Option<String> = None;
+    let mut heap = None;
+    let mut quote = None;
+    let mut expect_whitespace = false;
 
-    // First split all arguments by whitespace(s).
     loop {
         let Some(mut ch) = chars.next() else {
+            if let Some(quote) = quote.take() {
+                bail!("Missing closing '{quote}'");
+            }
             if let Some(arg) = heap.take() {
                 out.push(arg);
             }
             break;
         };
 
-        if ch.is_whitespace() {
-            if let Some(arg) = heap.take() {
-                out.push(arg);
+        ensure!(
+            !expect_whitespace || ch.is_whitespace(),
+            "Expected white space after quoted argument"
+        );
+        expect_whitespace = false;
+
+        if QUOTES.contains(&ch) {
+            if let Some(qchr) = quote {
+                if qchr != ch {
+                    // accept the other quoting character as normal char
+                    heap.get_or_insert(String::new()).push(ch);
+                } else {
+                    // close the argument
+                    if let Some(arg) = heap.take() {
+                        out.push(arg);
+                        quote = None;
+                    }
+                    expect_whitespace = true;
+                }
+            } else {
+                // beginning of a new argument
+                ensure!(heap.is_none(), "Missing openning quote '{ch}'");
+                quote = Some(ch);
+            }
+        } else if ch.is_whitespace() {
+            if quote.is_none() {
+                if let Some(arg) = heap.take() {
+                    out.push(arg);
+                }
+            } else {
+                heap.get_or_insert(String::new()).push(ch);
             }
         } else {
             if ch == '\\' {
@@ -565,21 +600,7 @@ fn arguments_from_string(input: &str) -> Result<Vec<String>> {
         }
     }
 
-    // Then remove the optional quoting by either double quotes or apostrophes.
-    Ok(out
-        .into_iter()
-        .map(|arg| {
-            for quote in ['\'', '"'] {
-                if let Some(stripped) = arg
-                    .strip_prefix(quote)
-                    .and_then(|arg| arg.strip_suffix(quote))
-                {
-                    return stripped.to_owned();
-                }
-            }
-            arg
-        })
-        .collect())
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -716,14 +737,24 @@ mod tests {
             arguments_from_string("   foo  bar      ").unwrap(),
             ["foo", "bar"]
         );
+        assert!(arguments_from_string("'foo''bar'").is_err());
+        assert_eq!(
+            arguments_from_string("'foo' 'bar' baz").unwrap(),
+            ["foo", "bar", "baz"]
+        );
         assert_eq!(arguments_from_string("foo\nbar").unwrap(), ["foo", "bar"]);
         assert_eq!(
             arguments_from_string(r#"'foo' "bar" baz"#).unwrap(),
             ["foo", "bar", "baz"]
         );
+        assert_eq!(arguments_from_string("'foo bar'").unwrap(), ["foo bar"]);
+        assert_eq!(
+            arguments_from_string("'foo \"  bar'").unwrap(),
+            ["foo \"  bar"]
+        );
         assert!(arguments_from_string("foo\\").is_err());
-        assert_eq!(arguments_from_string("'foo").unwrap(), ["'foo"]);
-        assert_eq!(arguments_from_string("\"foo").unwrap(), ["\"foo"]);
+        assert!(arguments_from_string("'foo").is_err());
+        assert!(arguments_from_string("foo\"").is_err());
     }
 
     #[test]
