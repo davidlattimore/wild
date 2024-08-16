@@ -1465,14 +1465,6 @@ fn apply_relocation(
         tracing::trace!(?relaxation.kind, %value_flags, %resolution_flags);
         rel_info = relaxation.rel_info;
         relaxation.apply(out, &mut offset_in_section, &mut addend, &mut next_modifier);
-        let new_address = section_address + offset_in_section;
-        if new_address != place {
-            // If the relaxation adjusted the offset, then log information for the new location too,
-            // otherwise we often miss that information when processing TLSGD relocations.
-            let _span = tracing::span!(tracing::Level::TRACE, "relocation", address = new_address)
-                .entered();
-            tracing::trace!(?relaxation.kind, %value_flags, %resolution_flags);
-        }
     } else {
         tracing::trace!(%value_flags, %resolution_flags);
         rel_info = RelocationKindInfo::from_raw(r_type)?;

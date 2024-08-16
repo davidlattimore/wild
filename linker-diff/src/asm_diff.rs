@@ -184,11 +184,14 @@ impl<'data> FunctionVersions<'data> {
             if instructions.iter().all(|i| i.is_none()) {
                 return true;
             }
-            let original = original_decoder.as_mut().and_then(|o| o.next());
             let instructions = instructions.into_iter().flatten().collect::<Vec<_>>();
             if instructions.len() != self.resolutions.len() {
                 return false;
             }
+            let original = original_decoder.as_mut().and_then(|o| {
+                let _ = o.sync_position(&instructions);
+                o.next()
+            });
             if UnifiedInstruction::new(&instructions, self.objects, original.as_ref()).is_none() {
                 return false;
             }
@@ -270,7 +273,7 @@ impl<'data, 'file> OriginalDecoder<'data, 'file> {
         })
     }
 
-    fn next(&mut self) -> Option<OriginalInstructionAndRelocations> {
+    fn next(&mut self) -> Option<OriginalInstructionAndRelocations<'data, 'file>> {
         let instruction = self.decoder.next()?;
         let instruct_start = instruction.base_address + instruction.offset;
         let instruction_range = instruct_start..instruct_start + instruction.bytes.len() as u64;
@@ -289,6 +292,27 @@ impl<'data, 'file> OriginalDecoder<'data, 'file> {
             relocations,
             elf_file: self.elf_file,
         })
+    }
+
+    /// Synchronises our position in the function with the supplied instructions, which should all
+    /// be at the same address as each other.
+    fn sync_position(&mut self, instructions: &[Instruction]) -> Result {
+        let offset = instructions.first().map(|i| i.offset).unwrap_or(0);
+        if instructions.iter().any(|i| i.offset != offset) {
+            bail!(
+                "Instruction offsets don't match {:?}",
+                instructions.iter().map(|i| i.offset).collect::<Vec<_>>()
+            );
+        }
+
+        // This would only fail if the original function was shorter than the functions in the
+        // output files, e.g. a version mismatch. If that's the case, then such a mismatch should
+        // get reported elsewhere. Reporting a problem here would only be confusing.
+        let _ = self
+            .decoder
+            .instruction_decoder
+            .set_position(offset as usize);
+        Ok(())
     }
 }
 
@@ -455,6 +479,7 @@ impl Display for FunctionVersions<'_> {
             .max()
             .unwrap_or(0)
             .max(ORIG.len());
+
         match self.determine_input_file() {
             Ok(input_file) => {
                 writeln!(f, "{ORIG:gutter_width$}            {input_file}")?;
@@ -463,18 +488,22 @@ impl Display for FunctionVersions<'_> {
                 writeln!(f, "{ORIG:gutter_width$}            {e}")?;
             }
         }
+
         let mut iterators = self
             .resolutions
             .iter()
             .map(|r| r.iter())
             .collect::<Vec<_>>();
+
         let mut original_decoder = self.original.as_ref().and_then(OriginalDecoder::new);
+
         loop {
             let values = iterators.iter_mut().map(|i| i.next()).collect::<Vec<_>>();
             if values.iter().all(|v| v.is_none()) {
                 // All functions ended concurrently.
                 return Ok(());
             }
+
             let instructions = values
                 .iter()
                 .filter_map(|l| match l {
@@ -482,7 +511,7 @@ impl Display for FunctionVersions<'_> {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
-            let original = original_decoder.as_mut().and_then(|o| o.next());
+
             if instructions.len() != self.objects.len() {
                 for (value, obj) in values.iter().zip(self.objects) {
                     let display_name = &obj.name;
@@ -497,65 +526,89 @@ impl Display for FunctionVersions<'_> {
                 }
                 return Ok(());
             }
+
+            let original = original_decoder.as_mut().and_then(|o| {
+                if let Err(e) = o.sync_position(&instructions) {
+                    let _ = write!(f, "{e}");
+                }
+                o.next()
+            });
+
             if let Some(unified) =
                 UnifiedInstruction::new(&instructions, self.objects, original.as_ref())
             {
                 writeln!(f, "{:gutter_width$}            {unified}", "")?;
                 continue;
             }
+
+            let mut originals = Vec::new();
+            originals.extend(original);
+
+            let instructions_per_object = take_instructions_until_sync(
+                instructions,
+                &mut originals,
+                &mut iterators,
+                &mut original_decoder,
+            );
+
             let mut trace_messages = Vec::new();
             writeln!(f)?;
-            for (instruction, obj) in instructions.iter().zip(self.objects) {
-                let display_name = &obj.name;
-                write!(f, "{display_name:gutter_width$}")?;
-                write!(f, " 0x{:08x}", instruction.address())?;
-                write!(f, " {instruction}")?;
-                write!(f, "  // {:?}", instruction.raw_instruction.code())?;
-                let split = split_value(obj, instruction);
-                if split.is_empty() {
-                    write!(
-                        f,
-                        "({})",
-                        (0..instruction.raw_instruction.op_count())
-                            .map(|o| format!("{:?}", instruction.raw_instruction.op_kind(o)))
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    )?;
-                } else {
-                    write!(
-                        f,
-                        "({})",
-                        split
-                            .into_iter()
-                            .map(|(_, value)| format!("0x{value:x}"))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )?;
-                }
-                for unified in UnifiedInstruction::all_resolved(instruction, obj, original.as_ref())
-                {
-                    match unified.relocation {
-                        UnifiedRelocation::NoRelocation => {}
-                        UnifiedRelocation::Legacy(resolution) => {
-                            write!(f, " {resolution}")?;
-                        }
-                        UnifiedRelocation::Relocation(rel) => {
-                            write!(f, " {rel}")?;
+            for (instructions, obj) in instructions_per_object.iter().zip(self.objects) {
+                let mut originals = originals.iter();
+                for instruction in instructions {
+                    let original = originals.next();
+                    let display_name = &obj.name;
+                    write!(f, "{display_name:gutter_width$}")?;
+                    write!(f, " 0x{:08x}", instruction.address())?;
+                    write!(f, " {instruction}")?;
+                    write!(f, "  // {:?}", instruction.raw_instruction.code())?;
+                    let split = split_value(obj, instruction);
+
+                    if split.is_empty() {
+                        write!(
+                            f,
+                            "({})",
+                            (0..instruction.raw_instruction.op_count())
+                                .map(|o| format!("{:?}", instruction.raw_instruction.op_kind(o)))
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        )?;
+                    } else {
+                        write!(
+                            f,
+                            "({})",
+                            split
+                                .into_iter()
+                                .map(|(_, value)| format!("0x{value:x}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )?;
+                    }
+
+                    for unified in UnifiedInstruction::all_resolved(instruction, obj, original) {
+                        match unified.relocation {
+                            UnifiedRelocation::NoRelocation => {}
+                            UnifiedRelocation::Legacy(resolution) => {
+                                write!(f, " {resolution}")?;
+                            }
+                            UnifiedRelocation::Relocation(rel) => {
+                                write!(f, " {rel}")?;
+                            }
                         }
                     }
+
+                    let messages = obj
+                        .trace
+                        .messages_in(instruction.non_relocated_address_range());
+                    trace_messages.extend(messages);
+                    writeln!(f)?;
                 }
-                let messages = obj
-                    .trace
-                    .messages_in(instruction.non_relocated_address_range());
-                trace_messages.extend(messages);
-                writeln!(f)?;
             }
-            if let Some(orig) = original.as_ref() {
-                if let Err(error) = display_input_resolution(orig, f, gutter_width) {
+
+            for orig in originals {
+                if let Err(error) = display_input_resolution(&orig, f, gutter_width) {
                     write!(f, "           {error}")?;
                 }
-            } else {
-                writeln!(f, "       -- no input resolution --")?;
             }
             for msg in trace_messages {
                 writeln!(f, "TRACE           {msg}")?;
@@ -563,6 +616,59 @@ impl Display for FunctionVersions<'_> {
             writeln!(f)?;
         }
     }
+}
+
+/// Takes additional instructions from all objects until we get them all in sync. Generally no
+/// additional instructions will be needed, however if one linker applied a relaxation that changed
+/// instructions and another didn't, then the number of instructions and/or the instruction
+/// boundaries might be different.
+fn take_instructions_until_sync<'data, 'file>(
+    instructions: Vec<Instruction<'data>>,
+    originals: &mut Vec<OriginalInstructionAndRelocations<'data, 'file>>,
+    iterators: &mut [SymbolResolutionIter<'data>],
+    original_decoder: &mut Option<OriginalDecoder<'data, 'file>>,
+) -> Vec<Vec<Instruction<'data>>> {
+    let mut max_next_offset = instructions
+        .iter()
+        .map(|i| i.next_instruction_offset())
+        .max()
+        .unwrap_or(0)
+        .max(
+            originals
+                .first()
+                .map(|o| o.instruction.next_instruction_offset())
+                .unwrap_or(0),
+        );
+    let mut instructions_per_object = instructions
+        .into_iter()
+        .map(|i| vec![i])
+        .collect::<Vec<_>>();
+    let mut done = false;
+    while !done {
+        done = true;
+        for (instructions, decoder) in instructions_per_object.iter_mut().zip(iterators.iter_mut())
+        {
+            let offset = instructions.last().unwrap().next_instruction_offset();
+            if offset < max_next_offset {
+                if let Some(Line::Instruction(next)) = decoder.next() {
+                    max_next_offset = next.next_instruction_offset();
+                    instructions.push(next);
+                    done = false;
+                }
+            }
+        }
+        if let Some(orig) = originals.last() {
+            let offset = orig.instruction.next_instruction_offset();
+            if offset < max_next_offset {
+                if let Some(next) = original_decoder.as_mut().and_then(|o| o.next()) {
+                    max_next_offset = next.instruction.next_instruction_offset();
+                    originals.push(next);
+                    done = false;
+                }
+            }
+        }
+    }
+    instructions_per_object
 }
 
 fn display_input_resolution(
@@ -1801,6 +1907,11 @@ impl Instruction<'_> {
 
     fn address(&self) -> u64 {
         self.base_address + self.offset
+    }
+
+    /// Returns the offset within the function of the next instruction.
+    fn next_instruction_offset(&self) -> u64 {
+        self.offset + self.bytes.len() as u64
     }
 }
 
