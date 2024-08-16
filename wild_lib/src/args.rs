@@ -575,8 +575,8 @@ fn arguments_from_string(input: &str) -> Result<Vec<String>> {
                     // close the argument
                     if let Some(arg) = heap.take() {
                         out.push(arg);
-                        quote = None;
                     }
+                    quote = None;
                     expect_whitespace = true;
                 }
             } else {
@@ -725,6 +725,8 @@ mod tests {
         use super::arguments_from_string;
 
         assert!(arguments_from_string("").unwrap().is_empty());
+        assert!(arguments_from_string("''").unwrap().is_empty());
+        assert!(arguments_from_string("\"\"").unwrap().is_empty());
         assert_eq!(
             arguments_from_string(r#""foo" "bar""#).unwrap(),
             ["foo", "bar"]
