@@ -128,6 +128,7 @@ const IGNORED_FLAGS: &[&str] = &[
     "no-call-graph-profile-sort",
     "gdb-index",
     "disable-new-dtags",
+    "no-relax",
 ];
 
 pub(crate) fn from_env() -> Result<Action> {
