@@ -962,7 +962,7 @@ impl<'data> AddressIndex<'data> {
         self.index_symbols(object);
         self.index_dynamic_symbols(object)?;
         self.index_dynamic_relocations(object);
-        self.index_got(object).unwrap();
+        self.index_got_tables(object).unwrap();
         self.index_ifuncs(object)?;
         self.index_plt_sections(object)?;
         self.index_undefined_tls(object);
@@ -1387,8 +1387,14 @@ impl<'data> AddressIndex<'data> {
         }
     }
 
-    fn index_got(&mut self, elf_file: &ElfFile64) -> Result {
-        let Some(got) = elf_file.section_by_name(".got") else {
+    fn index_got_tables(&mut self, elf_file: &ElfFile64) -> Result {
+        self.index_got_table(elf_file, ".got.plt")?;
+        self.index_got_table(elf_file, ".got")?;
+        Ok(())
+    }
+
+    fn index_got_table(&mut self, elf_file: &ElfFile64, table_name: &str) -> Result {
+        let Some(got) = elf_file.section_by_name(table_name) else {
             return Ok(());
         };
         let data = got.data()?;
@@ -1398,7 +1404,9 @@ impl<'data> AddressIndex<'data> {
             .0;
         let mut new_resolutions = Vec::new();
         let base_address = got.address() + self.load_offset;
-        self.got_base_address = Some(base_address);
+        if self.got_base_address.is_none() {
+            self.got_base_address = Some(base_address);
+        }
         for (entry, address) in entries.iter().zip((base_address..).step_by(entry_size)) {
             // If there's already a resolution for our GOT entry (e.g. a dynamic relocation), then
             // we assume that will overwrite whatever value is in the GOT entry in the file, so we
