@@ -275,6 +275,14 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             if modifier_stack.is_empty() {
                 bail!("Mismatched --pop-state");
             }
+        } else if long_arg_eq("version-script") {
+            let script = input
+                .next()
+                .context("Missing argument to -version-script")?
+                .as_ref()
+                .to_owned();
+            save_dir.handle_file(&script)?;
+            version_script_path = Some(PathBuf::from(script));
         } else if let Some(script) = long_arg_split_prefix("version-script=") {
             save_dir.handle_file(script)?;
             version_script_path = Some(PathBuf::from(script));
@@ -610,6 +618,8 @@ mod tests {
     use crate::args::Action;
     use crate::args::InputSpec;
     use std::path::Path;
+    use std::path::PathBuf;
+    use std::str::FromStr;
 
     const INPUT1: &[&str] = &[
         "wild",
@@ -690,6 +700,8 @@ mod tests {
         "now",
         "/usr/bin/../lib/gcc/x86_64-linux-gnu/12/crtendS.o",
         "/lib/x86_64-linux-gnu/crtn.o",
+        "--version-script",
+        "a.ver",
     ];
 
     #[track_caller]
@@ -719,6 +731,10 @@ mod tests {
             InputSpec::File(f) => f.as_ref() == Path::new("/usr/bin/ld"),
             _ => false,
         }));
+        assert_eq!(
+            args.version_script_path,
+            Some(PathBuf::from_str("a.ver").unwrap())
+        );
     }
 
     #[test]
