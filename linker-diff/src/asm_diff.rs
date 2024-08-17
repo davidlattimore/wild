@@ -1819,10 +1819,8 @@ enum SymbolResolutionIter<'data> {
     Function(AsmDecoder<'data>),
 }
 
-impl<'data> Iterator for SymbolResolutionIter<'data> {
-    type Item = Line<'data>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl<'data> SymbolResolutionIter<'data> {
+    fn next(&mut self) -> Option<Line<'data>> {
         match self {
             SymbolResolutionIter::Done => None,
             SymbolResolutionIter::Duplicate(count) => {
@@ -1872,12 +1870,11 @@ impl<'data> AsmDecoder<'data> {
             bytes,
         }
     }
-}
 
-impl<'data> Iterator for AsmDecoder<'data> {
-    type Item = Instruction<'data>;
-
-    fn next(&mut self) -> Option<Self::Item> {
+    // Note, this could be (and used to be) in an implementation of the Iterator trait. We don't
+    // need it to be though, since we always call it directly. By not using a trait, it's easier to
+    // find callers of this method.
+    fn next(&mut self) -> Option<Instruction<'data>> {
         if !self.instruction_decoder.can_decode() {
             return None;
         }
