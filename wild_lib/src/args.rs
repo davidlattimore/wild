@@ -315,7 +315,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             write_gc_stats = Some(PathBuf::from(rest));
         } else if let Some(rest) = long_arg_split_prefix("gc-stats-ignore=") {
             gc_stats_ignore.push(rest.to_owned());
-        } else if long_arg_eq("version") {
+        } else if long_arg_eq("version") || arg == "-v" {
             action = Some(Action::Version);
         } else if long_arg_eq("verbose-gc-stats") {
             verbose_gc_stats = true;
