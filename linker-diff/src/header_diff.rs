@@ -8,6 +8,7 @@ use crate::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context as _;
+use object::elf::*;
 use object::read::elf::Dyn;
 use object::read::elf::ElfSection64;
 use object::LittleEndian;
@@ -375,98 +376,98 @@ fn read_dynamic_fields(obj: &Object) -> Result<FieldValues> {
     let entries: &[object::elf::Dyn64<LittleEndian>] = slice_from_all_bytes(dynamic.data()?);
     let mut got_null = false;
     for entry in entries {
-        let (tag_name, converter) = match entry.d_tag(e) {
+        let (tag_name, converter) = match entry.d_tag(e) as u32 {
             // Ignore DT_NULL. All linkers should emit at least one, but many emit more than one.
-            0 => {
+            DT_NULL => {
                 got_null = true;
                 continue;
             }
-            1 => (Cow::Borrowed("DT_NEEDED"), Converter::DynStrOffset),
-            2 => {
+            DT_NEEDED => (Cow::Borrowed("DT_NEEDED"), Converter::DynStrOffset),
+            DT_PLTRELSZ => {
                 // Ignore sizes for now.
                 continue;
                 //(Cow::Borrowed("DT_PLTRELSZ"), Converter::None)
             }
-            3 => (Cow::Borrowed("DT_PLTGOT"), Converter::SectionAddress),
-            4 => (Cow::Borrowed("DT_HASH"), Converter::None),
-            5 => (Cow::Borrowed("DT_STRTAB"), Converter::SectionAddress),
-            6 => (Cow::Borrowed("DT_SYMTAB"), Converter::SectionAddress),
-            7 => (Cow::Borrowed("DT_RELA"), Converter::SectionAddress),
-            8 => {
+            DT_PLTGOT => (Cow::Borrowed("DT_PLTGOT"), Converter::SectionAddress),
+            DT_HASH => (Cow::Borrowed("DT_HASH"), Converter::None),
+            DT_STRTAB => (Cow::Borrowed("DT_STRTAB"), Converter::SectionAddress),
+            DT_SYMTAB => (Cow::Borrowed("DT_SYMTAB"), Converter::SectionAddress),
+            DT_RELA => (Cow::Borrowed("DT_RELA"), Converter::SectionAddress),
+            DT_RELASZ => {
                 // Ignore sizes for now.
                 continue;
                 //(Cow::Borrowed("DT_RELASZ"), Converter::None)
             }
-            9 => (Cow::Borrowed("DT_RELAENT"), Converter::None),
-            10 => {
+            DT_RELAENT => (Cow::Borrowed("DT_RELAENT"), Converter::None),
+            DT_STRSZ => {
                 // Ignore sizes for now.
                 continue;
                 //(Cow::Borrowed("DT_STRSZ"), Converter::None)
             }
-            11 => (Cow::Borrowed("DT_SYMENT"), Converter::None),
-            12 => (Cow::Borrowed("DT_INIT"), Converter::SectionAddress),
-            13 => (Cow::Borrowed("DT_FINI"), Converter::SectionAddress),
-            14 => (Cow::Borrowed("DT_SONAME"), Converter::DynStrOffset),
-            15 => (Cow::Borrowed("DT_RPATH"), Converter::None),
-            16 => (Cow::Borrowed("DT_SYMBOLIC"), Converter::None),
-            17 => (Cow::Borrowed("DT_REL"), Converter::SectionAddress),
-            18 => (Cow::Borrowed("DT_RELSZ"), Converter::None),
-            19 => (Cow::Borrowed("DT_RELENT"), Converter::None),
-            20 => (Cow::Borrowed("DT_PLTREL"), Converter::None),
-            21 => (Cow::Borrowed("DT_DEBUG"), Converter::None),
-            22 => (Cow::Borrowed("DT_TEXTREL"), Converter::SectionAddress),
-            23 => (Cow::Borrowed("DT_JMPREL"), Converter::SectionAddress),
-            24 => (Cow::Borrowed("DT_BIND_NOW"), Converter::None),
-            25 => (Cow::Borrowed("DT_INIT_ARRAY"), Converter::SectionAddress),
-            26 => (Cow::Borrowed("DT_FINI_ARRAY"), Converter::SectionAddress),
-            27 => (Cow::Borrowed("DT_INIT_ARRAYSZ"), Converter::None),
-            28 => (Cow::Borrowed("DT_FINI_ARRAYSZ"), Converter::None),
-            29 => (Cow::Borrowed("DT_RUNPATH"), Converter::DynStrOffset),
-            30 => (Cow::Borrowed("DT_FLAGS"), Converter::None),
-            32 => (Cow::Borrowed("DT_PREINIT_ARRAY"), Converter::None),
-            33 => (Cow::Borrowed("DT_PREINIT_ARRAYSZ"), Converter::None),
-            34 => (Cow::Borrowed("DT_SYMTAB_SHNDX"), Converter::None),
-            0x6ffffffb => (Cow::Borrowed("DT_FLAGS_1"), Converter::None),
-            0x6ffffff9 => {
+            DT_SYMENT => (Cow::Borrowed("DT_SYMENT"), Converter::None),
+            DT_INIT => (Cow::Borrowed("DT_INIT"), Converter::SectionAddress),
+            DT_FINI => (Cow::Borrowed("DT_FINI"), Converter::SectionAddress),
+            DT_SONAME => (Cow::Borrowed("DT_SONAME"), Converter::DynStrOffset),
+            DT_RPATH => (Cow::Borrowed("DT_RPATH"), Converter::None),
+            DT_SYMBOLIC => (Cow::Borrowed("DT_SYMBOLIC"), Converter::None),
+            DT_REL => (Cow::Borrowed("DT_REL"), Converter::SectionAddress),
+            DT_RELSZ => (Cow::Borrowed("DT_RELSZ"), Converter::None),
+            DT_RELENT => (Cow::Borrowed("DT_RELENT"), Converter::None),
+            DT_PLTREL => (Cow::Borrowed("DT_PLTREL"), Converter::None),
+            DT_DEBUG => (Cow::Borrowed("DT_DEBUG"), Converter::None),
+            DT_TEXTREL => (Cow::Borrowed("DT_TEXTREL"), Converter::SectionAddress),
+            DT_JMPREL => (Cow::Borrowed("DT_JMPREL"), Converter::SectionAddress),
+            DT_BIND_NOW => (Cow::Borrowed("DT_BIND_NOW"), Converter::None),
+            DT_INIT_ARRAY => (Cow::Borrowed("DT_INIT_ARRAY"), Converter::SectionAddress),
+            DT_FINI_ARRAY => (Cow::Borrowed("DT_FINI_ARRAY"), Converter::SectionAddress),
+            DT_INIT_ARRAYSZ => (Cow::Borrowed("DT_INIT_ARRAYSZ"), Converter::None),
+            DT_FINI_ARRAYSZ => (Cow::Borrowed("DT_FINI_ARRAYSZ"), Converter::None),
+            DT_RUNPATH => (Cow::Borrowed("DT_RUNPATH"), Converter::DynStrOffset),
+            DT_FLAGS => (Cow::Borrowed("DT_FLAGS"), Converter::None),
+            DT_PREINIT_ARRAY => (Cow::Borrowed("DT_PREINIT_ARRAY"), Converter::None),
+            DT_PREINIT_ARRAYSZ => (Cow::Borrowed("DT_PREINIT_ARRAYSZ"), Converter::None),
+            DT_SYMTAB_SHNDX => (Cow::Borrowed("DT_SYMTAB_SHNDX"), Converter::None),
+            DT_FLAGS_1 => (Cow::Borrowed("DT_FLAGS_1"), Converter::None),
+            DT_RELACOUNT => {
                 // Ignore sizes for now.
                 continue;
                 //(Cow::Borrowed("DT_RELACOUNT"), Converter::None)
             }
-            0x6ffffef5 => (Cow::Borrowed("DT_GNU_HASH"), Converter::SectionAddress),
-            0x6ffffff0 => (Cow::Borrowed("DT_VERSYM"), Converter::SectionAddress),
-            0x6fffffff => (Cow::Borrowed("DT_VERNEEDNUM"), Converter::None),
-            0x6ffffffe => (Cow::Borrowed("DT_VERNEED"), Converter::SectionAddress),
-            0x6000_000d => (Cow::Borrowed("DT_LOOS"), Converter::None),
-            0x6fff_f000 => (Cow::Borrowed("DT_HIOS"), Converter::None),
-            0x7000_0000 => (Cow::Borrowed("DT_LOPROC"), Converter::None),
-            0x7fff_ffff => (Cow::Borrowed("DT_HIPROC"), Converter::None),
-            0x6fff_fd00 => (Cow::Borrowed("DT_VALRNGLO"), Converter::None),
-            0x6fff_fdf5 => (Cow::Borrowed("DT_GNU_PRELINKED"), Converter::None),
-            0x6fff_fdf6 => (Cow::Borrowed("DT_GNU_CONFLICTSZ"), Converter::None),
-            0x6fff_fdf7 => (Cow::Borrowed("DT_GNU_LIBLISTSZ"), Converter::None),
-            0x6fff_fdf8 => (Cow::Borrowed("DT_CHECKSUM"), Converter::None),
-            0x6fff_fdf9 => (Cow::Borrowed("DT_PLTPADSZ"), Converter::None),
-            0x6fff_fdfa => (Cow::Borrowed("DT_MOVEENT"), Converter::None),
-            0x6fff_fdfb => (Cow::Borrowed("DT_MOVESZ"), Converter::None),
-            0x6fff_fdfc => (Cow::Borrowed("DT_FEATURE_1"), Converter::None),
-            0x6fff_fdfd => (Cow::Borrowed("DT_POSFLAG_1"), Converter::None),
-            0x6fff_fdfe => (Cow::Borrowed("DT_SYMINSZ"), Converter::None),
-            0x6fff_fdff => (Cow::Borrowed("DT_SYMINENT"), Converter::None),
-            0x6fff_fe00 => (Cow::Borrowed("DT_ADDRRNGLO"), Converter::None),
-            0x6fff_fef6 => (Cow::Borrowed("DT_TLSDESC_PLT"), Converter::None),
-            0x6fff_fef7 => (Cow::Borrowed("DT_TLSDESC_GOT"), Converter::None),
-            0x6fff_fef8 => (Cow::Borrowed("DT_GNU_CONFLICT"), Converter::None),
-            0x6fff_fef9 => (Cow::Borrowed("DT_GNU_LIBLIST"), Converter::None),
-            0x6fff_fefa => (Cow::Borrowed("DT_CONFIG"), Converter::None),
-            0x6fff_fefb => (Cow::Borrowed("DT_DEPAUDIT"), Converter::None),
-            0x6fff_fefc => (Cow::Borrowed("DT_AUDIT"), Converter::None),
-            0x6fff_fefd => (Cow::Borrowed("DT_PLTPAD"), Converter::None),
-            0x6fff_fefe => (Cow::Borrowed("DT_MOVETAB"), Converter::None),
-            0x6fff_feff => (Cow::Borrowed("DT_SYMINFO"), Converter::None),
-            0x6fff_fffa => (Cow::Borrowed("DT_RELCOUNT"), Converter::None),
-            0x6fff_fffc => (Cow::Borrowed("DT_VERDEF"), Converter::None),
-            0x6fff_fffd => (Cow::Borrowed("DT_VERDEFNUM"), Converter::None),
-            0x7fff_fffd => (Cow::Borrowed("DT_AUXILIARY"), Converter::None),
+            DT_GNU_HASH => (Cow::Borrowed("DT_GNU_HASH"), Converter::SectionAddress),
+            DT_VERSYM => (Cow::Borrowed("DT_VERSYM"), Converter::SectionAddress),
+            DT_VERNEEDNUM => (Cow::Borrowed("DT_VERNEEDNUM"), Converter::None),
+            DT_VERNEED => (Cow::Borrowed("DT_VERNEED"), Converter::SectionAddress),
+            DT_LOOS => (Cow::Borrowed("DT_LOOS"), Converter::None),
+            DT_HIOS => (Cow::Borrowed("DT_HIOS"), Converter::None),
+            DT_LOPROC => (Cow::Borrowed("DT_LOPROC"), Converter::None),
+            DT_HIPROC => (Cow::Borrowed("DT_HIPROC"), Converter::None),
+            DT_VALRNGLO => (Cow::Borrowed("DT_VALRNGLO"), Converter::None),
+            DT_GNU_PRELINKED => (Cow::Borrowed("DT_GNU_PRELINKED"), Converter::None),
+            DT_GNU_CONFLICTSZ => (Cow::Borrowed("DT_GNU_CONFLICTSZ"), Converter::None),
+            DT_GNU_LIBLISTSZ => (Cow::Borrowed("DT_GNU_LIBLISTSZ"), Converter::None),
+            DT_CHECKSUM => (Cow::Borrowed("DT_CHECKSUM"), Converter::None),
+            DT_PLTPADSZ => (Cow::Borrowed("DT_PLTPADSZ"), Converter::None),
+            DT_MOVEENT => (Cow::Borrowed("DT_MOVEENT"), Converter::None),
+            DT_MOVESZ => (Cow::Borrowed("DT_MOVESZ"), Converter::None),
+            DT_FEATURE_1 => (Cow::Borrowed("DT_FEATURE_1"), Converter::None),
+            DT_POSFLAG_1 => (Cow::Borrowed("DT_POSFLAG_1"), Converter::None),
+            DT_SYMINSZ => (Cow::Borrowed("DT_SYMINSZ"), Converter::None),
+            DT_SYMINENT => (Cow::Borrowed("DT_SYMINENT"), Converter::None),
+            DT_ADDRRNGLO => (Cow::Borrowed("DT_ADDRRNGLO"), Converter::None),
+            DT_TLSDESC_PLT => (Cow::Borrowed("DT_TLSDESC_PLT"), Converter::None),
+            DT_TLSDESC_GOT => (Cow::Borrowed("DT_TLSDESC_GOT"), Converter::None),
+            DT_GNU_CONFLICT => (Cow::Borrowed("DT_GNU_CONFLICT"), Converter::None),
+            DT_GNU_LIBLIST => (Cow::Borrowed("DT_GNU_LIBLIST"), Converter::None),
+            DT_CONFIG => (Cow::Borrowed("DT_CONFIG"), Converter::None),
+            DT_DEPAUDIT => (Cow::Borrowed("DT_DEPAUDIT"), Converter::None),
+            DT_AUDIT => (Cow::Borrowed("DT_AUDIT"), Converter::None),
+            DT_PLTPAD => (Cow::Borrowed("DT_PLTPAD"), Converter::None),
+            DT_MOVETAB => (Cow::Borrowed("DT_MOVETAB"), Converter::None),
+            DT_SYMINFO => (Cow::Borrowed("DT_SYMINFO"), Converter::None),
+            DT_RELCOUNT => (Cow::Borrowed("DT_RELCOUNT"), Converter::None),
+            DT_VERDEF => (Cow::Borrowed("DT_VERDEF"), Converter::None),
+            DT_VERDEFNUM => (Cow::Borrowed("DT_VERDEFNUM"), Converter::None),
+            DT_AUXILIARY => (Cow::Borrowed("DT_AUXILIARY"), Converter::None),
             other => (
                 Cow::Owned(format!("Unknown (0x{other:x})")),
                 Converter::None,
