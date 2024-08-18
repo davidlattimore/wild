@@ -21,6 +21,7 @@ use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
 use crate::threading::prelude::*;
 use anyhow::Context;
+use itertools::Itertools;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::collections::hash_map;
@@ -238,7 +239,7 @@ impl<'data> SymbolDb<'data> {
                     symbol_file_ids_writer.take_shard(num_symbols),
                 )
             })
-            .collect::<Vec<_>>();
+            .collect_vec();
 
         let symbol_per_file = read_symbols(groups, &version_script, &mut per_group_writers, args)?;
 

@@ -53,6 +53,7 @@ use anyhow::bail;
 use anyhow::Context;
 use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
+use itertools::Itertools;
 use object::elf::gnu_hash;
 use object::elf::Rela64;
 use object::read::elf::Dyn;
@@ -142,7 +143,7 @@ pub fn compute<'data>(
     let mut per_group_res_writers = group_states
         .iter()
         .map(|group| res_writer.take_shard(group.num_symbols))
-        .collect::<Vec<_>>();
+        .collect_vec();
 
     let resources = FinaliseLayoutResources {
         symbol_db,
@@ -1258,7 +1259,7 @@ fn compute_start_offsets_by_group(
             mem_offsets.merge(&group.common.mem_sizes);
             group_mem_starts
         })
-        .collect::<Vec<_>>()
+        .collect_vec()
 }
 
 #[tracing::instrument(skip_all, name = "Assign symbol addresses")]

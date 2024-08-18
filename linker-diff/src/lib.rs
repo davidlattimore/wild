@@ -17,6 +17,7 @@ use anyhow::bail;
 use anyhow::Context as _;
 use asm_diff::AddressIndex;
 use clap::Parser;
+use itertools::Itertools;
 use object::read::elf::ElfSection64;
 use object::read::elf::ProgramHeader as _;
 use object::LittleEndian;
@@ -165,7 +166,7 @@ impl Config {
                 .equiv
                 .iter()
                 .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>();
+                .collect_vec();
             out.push_str(&parts.join(","));
             out.push_str("' ");
         }
@@ -299,7 +300,7 @@ fn validate_objects(
             Ok(_) => "OK".to_owned(),
             Err(e) => e.to_string(),
         })
-        .collect::<Vec<_>>();
+        .collect_vec();
     if first_equals_any(values.iter()) {
         return;
     }
@@ -571,7 +572,7 @@ fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
     let mut names = paths
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
+        .collect_vec();
     if names.iter().all(|name| name.ends_with(".so")) {
         names = names
             .into_iter()
@@ -580,7 +581,7 @@ fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
     }
     // This is not quite right, since we might split in the middle of a multibyte character.
     // But this is a dev tool, so we'll punt on that for now.
-    let mut iterators = names.iter().map(|n| n.bytes()).collect::<Vec<_>>();
+    let mut iterators = names.iter().map(|n| n.bytes()).collect_vec();
     let mut n = 0;
     while first_equals_all(iterators.iter_mut().map(|i| i.next())) {
         n += 1;
@@ -590,7 +591,7 @@ fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
         .map(|name| {
             String::from_utf8_lossy(&name.bytes().skip(n).collect::<Vec<u8>>()).into_owned()
         })
-        .collect::<Vec<_>>();
+        .collect_vec();
     Ok(names)
 }
 

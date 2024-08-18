@@ -36,6 +36,7 @@ use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use crossbeam_utils::atomic::AtomicCell;
+use itertools::Itertools;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::fmt::Display;
@@ -106,9 +107,9 @@ pub(crate) fn resolve_symbols_in_files<'data>(
                         file.num_symbols(),
                     ))))
                 })
-                .collect::<Vec<_>>()
+                .collect_vec()
         })
-        .collect::<Vec<_>>();
+        .collect_vec();
 
     let mut prelude = None;
     let mut resolved: Vec<ResolvedGroup<'_>> = groups

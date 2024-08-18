@@ -319,6 +319,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -338,6 +347,7 @@ dependencies = [
  "bytemuck",
  "clap",
  "iced-x86",
+ "itertools",
  "linker-layout",
  "linker-trace",
  "object",
@@ -714,6 +724,7 @@ name = "wild"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "itertools",
  "linker-diff",
  "object",
  "tracing",
@@ -733,6 +744,7 @@ dependencies = [
  "bytemuck",
  "crossbeam-queue",
  "crossbeam-utils",
+ "itertools",
  "linker-layout",
  "linker-trace",
  "memchr",

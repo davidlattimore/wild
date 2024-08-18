@@ -27,6 +27,7 @@ use crate::output_section_id;
 use crate::output_section_id::TemporaryOutputSectionId;
 use crate::resolution::SectionSlot;
 use anyhow::Context as _;
+use itertools::Itertools;
 use object::LittleEndian;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -123,7 +124,7 @@ fn write_gc_stats(
         }
     }
 
-    let mut files = files.values().collect::<Vec<_>>();
+    let mut files = files.values().collect_vec();
     files.sort_by_key(|f| f.discarded);
 
     let mut out = std::io::BufWriter::new(

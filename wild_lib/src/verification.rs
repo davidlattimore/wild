@@ -8,6 +8,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_part_map::OutputSectionPartMap;
 use anyhow::bail;
+use itertools::Itertools;
 
 pub(crate) struct OffsetVerifier {
     expected: OutputSectionPartMap<u64>,
@@ -53,7 +54,7 @@ impl OffsetVerifier {
                 ));
             }
         }
-        let files = files.iter().map(|f| f.to_string()).collect::<Vec<_>>();
+        let files = files.iter().map(|f| f.to_string()).collect_vec();
         bail!(
             "Unexpected memory offsets:\n{}\nfor files:\n{}",
             problems.join(""),
