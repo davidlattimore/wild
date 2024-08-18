@@ -78,7 +78,10 @@ impl Linker {
                 link(args)
             }
             args::Action::Version => {
-                println!("Wild version {}", env!("CARGO_PKG_VERSION"));
+                println!(
+                    "Wild version {} (compatible with GNU linkers)",
+                    env!("CARGO_PKG_VERSION")
+                );
                 Ok(())
             }
         }
