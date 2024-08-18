@@ -169,13 +169,6 @@ struct Bytes(u64);
 
 impl std::fmt::Display for Bytes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let v = self.0;
-        if v < 10 * 1024 {
-            return write!(f, "{v} B");
-        }
-        if v < 10 * 1024 * 1024 {
-            return write!(f, "{} KiB", v / 1024);
-        }
-        write!(f, "{} MiB", v / 1024 / 1024)
+        write!(f, "{}", bytesize::to_string(self.0, true))
     }
 }
