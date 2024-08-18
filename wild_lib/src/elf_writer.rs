@@ -2139,20 +2139,20 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |layout| {
             let mut flags = 0;
             if layout.args().bind_now {
-                flags |= elf::flags::BIND_NOW;
+                flags |= object::elf::DF_BIND_NOW;
             }
-            flags
+            flags as u64
         },
     ),
     DynamicEntryWriter::new(object::elf::DT_FLAGS_1, |layout| {
         let mut flags = 0;
         if layout.args().bind_now {
-            flags |= elf::flags_1::NOW;
+            flags |= object::elf::DF_1_NOW;
         }
         if layout.args().output_kind.is_executable() && layout.args().is_relocatable() {
-            flags |= elf::flags_1::PIE;
+            flags |= object::elf::DF_1_PIE;
         }
-        flags
+        flags as u64
     }),
     DynamicEntryWriter::new(object::elf::DT_NULL, |_layout| 0),
 ];
