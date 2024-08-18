@@ -1,17 +1,14 @@
 //! Optionally writes garbage collection statistics to a text file. To use this, pass
 //! `--write-gc-stats=/path/to/file.txt`
 //!
-//! Only input files under the current working directory will be included in the GC stats. This is
-//! because the purpose of writing these stats is to see how much of the code we just compiled is
-//! actually being used. We assume that the code we just compiled is somewhere in a subdirectory of
-//! the current directory.
-//!
-//! You can also ignore selected files even if they're under the current directory by passing
-//! `--gc-stats-ignore=some-string`. Any files that contain `some-string` in their filename will be
-//! ignored.
+//! You can also ignore selected files by passing `--gc-stats-ignore=some-string`.
+//! Any files that contain `some-string` in their filename will be ignored.
 //!
 //! By default, only the stats per input file and the totals for all input files are shown. If you'd
 //! like to also see what sections are discarded, you can run with `--verbose-gc-stats`.
+//!
+//! Note that only .text sections are reported, the other sections like .data, .rodata and .bss
+//! are commonly garbage collected, but ignored for the purpose of this report.
 //!
 //! Example usage:
 //!
