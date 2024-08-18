@@ -1158,8 +1158,7 @@ impl<'data> Layout<'data> {
     }
 
     pub(crate) fn has_data_in_section(&self, id: OutputSectionId) -> bool {
-        alignment::all_alignments()
-            .any(|alignment| self.section_part_layouts.regular(id, alignment).mem_size > 0)
+        self.size_of_section(id) > 0
     }
 
     pub(crate) fn layout_data(&self) -> linker_layout::Layout {
