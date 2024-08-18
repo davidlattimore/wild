@@ -273,15 +273,6 @@ pub(crate) enum SegmentType {
     EhFrame = 0x6474e550,
 }
 
-pub(crate) mod flags_1 {
-    pub(crate) const NOW: u64 = 0x1;
-    pub(crate) const PIE: u64 = 0x08000000;
-}
-
-pub(crate) mod flags {
-    pub(crate) const BIND_NOW: u64 = 0x8;
-}
-
 /// See https://refspecs.linuxfoundation.org/LSB_1.3.0/gLSB/gLSB/ehframehdr.html
 #[derive(Zeroable, Pod, Clone, Copy)]
 #[repr(C)]
