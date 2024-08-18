@@ -379,14 +379,11 @@ impl<T: Copy> OutputSectionPartMap<T> {
             debug_assert_eq!(output_section_id.as_usize(), values_out.len());
             values_out.push(cb(values));
         };
+        // Note, this needs to be in order of increasing section ID.
         update(output_section_id::FILE_HEADER, &[self.file_header]);
         update(output_section_id::PROGRAM_HEADERS, &[self.program_headers]);
         update(output_section_id::SECTION_HEADERS, &[self.section_headers]);
         update(output_section_id::SHSTRTAB, &[self.shstrtab]);
-        update(
-            output_section_id::SYMTAB,
-            &[self.symtab_locals, self.symtab_globals],
-        );
         update(output_section_id::STRTAB, &[self.symtab_strings]);
         update(output_section_id::GOT, &[self.got]);
         update(output_section_id::PLT, &[self.plt]);
@@ -397,13 +394,17 @@ impl<T: Copy> OutputSectionPartMap<T> {
         update(output_section_id::GNU_HASH, &[self.gnu_hash]);
         update(output_section_id::DYNSYM, &[self.dynsym]);
         update(output_section_id::DYNSTR, &[self.dynstr]);
+        update(output_section_id::INTERP, &[self.interp]);
+        update(output_section_id::GNU_VERSION, &[self.gnu_version]);
+        update(output_section_id::GNU_VERSION_R, &[self.gnu_version_r]);
+        update(
+            output_section_id::SYMTAB,
+            &[self.symtab_locals, self.symtab_globals],
+        );
         update(
             output_section_id::RELA_DYN,
             &[self.rela_dyn_relative, self.rela_dyn_general],
         );
-        update(output_section_id::INTERP, &[self.interp]);
-        update(output_section_id::GNU_VERSION, &[self.gnu_version]);
-        update(output_section_id::GNU_VERSION_R, &[self.gnu_version_r]);
         values_out.extend(self.regular.iter().map(|parts| cb(parts.raw_values())));
         debug_assert!(
             values_out.len() == values_out.capacity(),

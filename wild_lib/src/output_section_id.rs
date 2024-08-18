@@ -55,24 +55,28 @@ pub(crate) const FILE_HEADER: OutputSectionId = OutputSectionId(0);
 pub(crate) const PROGRAM_HEADERS: OutputSectionId = OutputSectionId(1);
 pub(crate) const SECTION_HEADERS: OutputSectionId = OutputSectionId(2);
 pub(crate) const SHSTRTAB: OutputSectionId = OutputSectionId(3);
-pub(crate) const SYMTAB: OutputSectionId = OutputSectionId(4);
-pub(crate) const STRTAB: OutputSectionId = OutputSectionId(5);
-pub(crate) const GOT: OutputSectionId = OutputSectionId(6);
-pub(crate) const PLT: OutputSectionId = OutputSectionId(7);
-pub(crate) const RELA_PLT: OutputSectionId = OutputSectionId(8);
-pub(crate) const EH_FRAME: OutputSectionId = OutputSectionId(9);
-pub(crate) const EH_FRAME_HDR: OutputSectionId = OutputSectionId(10);
-pub(crate) const DYNAMIC: OutputSectionId = OutputSectionId(11);
-pub(crate) const GNU_HASH: OutputSectionId = OutputSectionId(12);
-pub(crate) const DYNSYM: OutputSectionId = OutputSectionId(13);
-pub(crate) const DYNSTR: OutputSectionId = OutputSectionId(14);
-pub(crate) const RELA_DYN: OutputSectionId = OutputSectionId(15);
-pub(crate) const INTERP: OutputSectionId = OutputSectionId(16);
-pub(crate) const GNU_VERSION: OutputSectionId = OutputSectionId(17);
-pub(crate) const GNU_VERSION_R: OutputSectionId = OutputSectionId(18);
+pub(crate) const STRTAB: OutputSectionId = OutputSectionId(4);
+pub(crate) const GOT: OutputSectionId = OutputSectionId(5);
+pub(crate) const PLT: OutputSectionId = OutputSectionId(6);
+pub(crate) const RELA_PLT: OutputSectionId = OutputSectionId(7);
+pub(crate) const EH_FRAME: OutputSectionId = OutputSectionId(8);
+pub(crate) const EH_FRAME_HDR: OutputSectionId = OutputSectionId(9);
+pub(crate) const DYNAMIC: OutputSectionId = OutputSectionId(10);
+pub(crate) const GNU_HASH: OutputSectionId = OutputSectionId(11);
+pub(crate) const DYNSYM: OutputSectionId = OutputSectionId(12);
+pub(crate) const DYNSTR: OutputSectionId = OutputSectionId(13);
+pub(crate) const INTERP: OutputSectionId = OutputSectionId(14);
+pub(crate) const GNU_VERSION: OutputSectionId = OutputSectionId(15);
+pub(crate) const GNU_VERSION_R: OutputSectionId = OutputSectionId(16);
+
+const NUM_SINGLE_PART_SECTIONS: u16 = 17;
+
+// Generated sections that have more than one part.
+pub(crate) const SYMTAB: OutputSectionId = OutputSectionId(NUM_SINGLE_PART_SECTIONS);
+pub(crate) const RELA_DYN: OutputSectionId = OutputSectionId(NUM_SINGLE_PART_SECTIONS + 1);
 
 /// Regular sections are sections that come from input files and can contain a mix of alignments.
-pub(crate) const NUM_GENERATED_SECTIONS: usize = 19;
+pub(crate) const NUM_GENERATED_SECTIONS: usize = NUM_SINGLE_PART_SECTIONS as usize + 2;
 
 // Sections that need to be referenced from code. When adding new sections here, be sure to update
 // `test_constant_ids`.
@@ -274,18 +278,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".symtab".as_bytes(),
-            ty: object::elf::SHT_SYMTAB,
-            element_size: size_of::<elf::SymtabEntry>() as u64,
-            ..SectionDetails::default()
-        },
-        min_alignment: alignment::SYMTAB_ENTRY,
-        link: &[STRTAB],
-        info_fn: Some(symtab_info),
-        ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
-        details: SectionDetails {
             name: ".strtab".as_bytes(),
             ty: object::elf::SHT_STRTAB,
             ..SectionDetails::default()
@@ -398,18 +390,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".rela.dyn".as_bytes(),
-            ty: object::elf::SHT_RELA,
-            section_flags: elf::shf::ALLOC,
-            element_size: elf::RELA_ENTRY_SIZE,
-            ..SectionDetails::default()
-        },
-        min_alignment: alignment::RELA_ENTRY,
-        link: &[DYNSYM],
-        ..DEFAULT_DEFS
-    },
-    BuiltInSectionDetails {
-        details: SectionDetails {
             name: ".interp".as_bytes(),
             ty: object::elf::SHT_PROGBITS,
             section_flags: elf::shf::ALLOC,
@@ -439,6 +419,31 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         info_fn: Some(version_r_info),
         min_alignment: alignment::VERSION_R,
         link: &[DYNSTR],
+        ..DEFAULT_DEFS
+    },
+    // Multi-part generated sections
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: ".symtab".as_bytes(),
+            ty: object::elf::SHT_SYMTAB,
+            element_size: size_of::<elf::SymtabEntry>() as u64,
+            ..SectionDetails::default()
+        },
+        min_alignment: alignment::SYMTAB_ENTRY,
+        link: &[STRTAB],
+        info_fn: Some(symtab_info),
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: ".rela.dyn".as_bytes(),
+            ty: object::elf::SHT_RELA,
+            section_flags: elf::shf::ALLOC,
+            element_size: elf::RELA_ENTRY_SIZE,
+            ..SectionDetails::default()
+        },
+        min_alignment: alignment::RELA_ENTRY,
+        link: &[DYNSYM],
         ..DEFAULT_DEFS
     },
     // Start of regular sections
