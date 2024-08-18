@@ -63,13 +63,6 @@ fn write_gc_stats(
             let FileLayout::Object(obj) = file else {
                 continue;
             };
-            // Ignore files outside of our current working directory. Our use-case for GC stats is to
-            // see how much code we compiled, but then discarded at link time. Code outside of our
-            // current directory is code that we didn't just compile.
-            let filename = std::fs::canonicalize(&obj.input.file.filename)?;
-            if !filename.starts_with(&current_dir) {
-                continue;
-            }
             let file_display_name = obj.input.file.filename.to_string_lossy();
             if args
                 .gc_stats_ignore
@@ -125,7 +118,7 @@ fn write_gc_stats(
     }
 
     let mut files = files.values().collect_vec();
-    files.sort_by_key(|f| f.discarded);
+    files.sort_by_key(|f| (f.discarded, &f.path));
 
     let mut out = std::io::BufWriter::new(
         std::fs::OpenOptions::new()
