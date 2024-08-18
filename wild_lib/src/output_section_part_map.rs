@@ -526,6 +526,8 @@ fn test_merge_with_custom_sections() {
 /// that they iterate through the sections in the same order.
 #[test]
 fn test_output_order_map_consistent() {
+    use itertools::Itertools;
+
     let output_sections = output_section_id::OutputSections::for_testing();
     let mut part_map = OutputSectionPartMap::<u32>::with_size(output_sections.len());
     part_map.resize(output_sections.len());
@@ -543,7 +545,7 @@ fn test_output_order_map_consistent() {
         missing
             .iter()
             .map(|id| output_sections.display_name(*id))
-            .collect::<Vec<_>>()
+            .collect_vec()
             .join(", ")
     );
 

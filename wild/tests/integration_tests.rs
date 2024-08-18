@@ -16,6 +16,7 @@
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
+use itertools::Itertools;
 use object::LittleEndian;
 use object::Object;
 use object::ObjectSection;
@@ -372,7 +373,7 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
     let mut configs = config_by_name
         .into_values()
         .filter(|c| !c.is_abstract)
-        .collect::<Vec<_>>();
+        .collect_vec();
     configs.push(config);
     Ok(configs)
 }
@@ -656,7 +657,7 @@ fn command_as_str(command: &Command) -> String {
         command
             .get_args()
             .map(|arg| arg.to_string_lossy())
-            .collect::<Vec<_>>()
+            .collect_vec()
             .join(" ")
     )
 }
@@ -1118,7 +1119,7 @@ fn diff_shared_objects(instructions: &Config, programs: &[Program]) -> Result {
         }
     }
     for so_group in so_groups {
-        let filenames = so_group.iter().map(|i| i.path.clone()).collect::<Vec<_>>();
+        let filenames = so_group.iter().map(|i| i.path.clone()).collect_vec();
         diff_files(
             instructions,
             filenames,
@@ -1133,7 +1134,7 @@ fn diff_executables(instructions: &Config, programs: &[Program]) -> Result {
     let filenames = programs
         .iter()
         .map(|p| p.link_output.binary.clone())
-        .collect::<Vec<_>>();
+        .collect_vec();
     diff_files(instructions, filenames, programs.last().unwrap())
 }
 

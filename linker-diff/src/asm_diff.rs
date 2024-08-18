@@ -16,6 +16,7 @@ use iced_x86::Formatter as _;
 use iced_x86::Mnemonic;
 use iced_x86::OpKind;
 use iced_x86::Register;
+use itertools::Itertools;
 use object::read::elf::FileHeader;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::Rela;
@@ -171,20 +172,17 @@ impl<'data> FunctionVersions<'data> {
                 SymbolResolution::Error(_) => None,
                 SymbolResolution::Function(f) => Some(f.decode()),
             })
-            .collect::<Vec<_>>();
+            .collect_vec();
         if disassemblers.len() != self.resolutions.len() {
             return false;
         }
         let mut original_decoder = self.original.as_ref().and_then(OriginalDecoder::new);
         loop {
-            let instructions = disassemblers
-                .iter_mut()
-                .map(|d| d.next())
-                .collect::<Vec<_>>();
+            let instructions = disassemblers.iter_mut().map(|d| d.next()).collect_vec();
             if instructions.iter().all(|i| i.is_none()) {
                 return true;
             }
-            let instructions = instructions.into_iter().flatten().collect::<Vec<_>>();
+            let instructions = instructions.into_iter().flatten().collect_vec();
             if instructions.len() != self.resolutions.len() {
                 return false;
             }
@@ -202,7 +200,7 @@ impl<'data> FunctionVersions<'data> {
         let resolutions = objects
             .iter()
             .map(|obj| SymbolResolution::new(obj, symbol_name))
-            .collect::<Vec<_>>();
+            .collect_vec();
 
         let original = resolutions.iter().zip(objects).find_map(|(res, object)| {
             if let SymbolResolution::Function(function) = res {
@@ -301,7 +299,7 @@ impl<'data, 'file> OriginalDecoder<'data, 'file> {
         if instructions.iter().any(|i| i.offset != offset) {
             bail!(
                 "Instruction offsets don't match {:?}",
-                instructions.iter().map(|i| i.offset).collect::<Vec<_>>()
+                instructions.iter().map(|i| i.offset).collect_vec()
             );
         }
 
@@ -489,16 +487,12 @@ impl Display for FunctionVersions<'_> {
             }
         }
 
-        let mut iterators = self
-            .resolutions
-            .iter()
-            .map(|r| r.iter())
-            .collect::<Vec<_>>();
+        let mut iterators = self.resolutions.iter().map(|r| r.iter()).collect_vec();
 
         let mut original_decoder = self.original.as_ref().and_then(OriginalDecoder::new);
 
         loop {
-            let values = iterators.iter_mut().map(|i| i.next()).collect::<Vec<_>>();
+            let values = iterators.iter_mut().map(|i| i.next()).collect_vec();
             if values.iter().all(|v| v.is_none()) {
                 // All functions ended concurrently.
                 return Ok(());
@@ -510,7 +504,7 @@ impl Display for FunctionVersions<'_> {
                     Some(Line::Instruction(i)) => Some(*i),
                     _ => None,
                 })
-                .collect::<Vec<_>>();
+                .collect_vec();
 
             if instructions.len() != self.objects.len() {
                 for (value, obj) in values.iter().zip(self.objects) {
@@ -570,7 +564,7 @@ impl Display for FunctionVersions<'_> {
                             "({})",
                             (0..instruction.raw_instruction.op_count())
                                 .map(|o| format!("{:?}", instruction.raw_instruction.op_kind(o)))
-                                .collect::<Vec<_>>()
+                                .collect_vec()
                                 .join(",")
                         )?;
                     } else {
@@ -580,7 +574,7 @@ impl Display for FunctionVersions<'_> {
                             split
                                 .into_iter()
                                 .map(|(_, value)| format!("0x{value:x}"))
-                                .collect::<Vec<_>>()
+                                .collect_vec()
                                 .join(", ")
                         )?;
                     }
@@ -639,10 +633,7 @@ fn take_instructions_until_sync<'data, 'file>(
                 .map(|o| o.instruction.next_instruction_offset())
                 .unwrap_or(0),
         );
-    let mut instructions_per_object = instructions
-        .into_iter()
-        .map(|i| vec![i])
-        .collect::<Vec<_>>();
+    let mut instructions_per_object = instructions.into_iter().map(|i| vec![i]).collect_vec();
     let mut done = false;
     while !done {
         done = true;
@@ -1075,7 +1066,7 @@ impl<'data> AddressIndex<'data> {
                         bail!(
                         "Dynamic symbol `{}` points to 0x{sym_address:x}, but that address resolves to: {}",
                         String::from_utf8_lossy(name_bytes),
-                        resolutions.iter().map(|r| r.to_string()).collect::<Vec<_>>().join(", ")
+                        resolutions.iter().map(|r| r.to_string()).collect_vec().join(", ")
                     );
                     }
                 }

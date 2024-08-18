@@ -23,3 +23,4 @@ anyhow = "1.0.80"
 clap = { version = "4.5.4", features = ["derive"] }
 rayon = "1.8.0"
 bytemuck = { version = "1.14.0", features = ["derive"] }
+itertools = "0.13.0"

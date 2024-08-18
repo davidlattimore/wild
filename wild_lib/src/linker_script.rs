@@ -353,6 +353,7 @@ fn take_up_to<'a>(input: &mut &'a str, pattern: &str) -> Result<&'a str> {
 mod tests {
     use super::*;
     use crate::args::InputSpec;
+    use itertools::assert_equal;
 
     #[test]
     fn test_tokenisation() {
@@ -383,18 +384,18 @@ mod tests {
             Modifiers::default(),
         )
         .unwrap();
-        assert_eq!(
-            inputs.into_iter().map(|i| i.spec).collect::<Vec<_>>(),
-            vec![
+        assert_equal(
+            inputs.into_iter().map(|i| i.spec),
+            [
                 InputSpec::File(Box::from(Path::new("libgcc_s.so.1"))),
-                InputSpec::Lib(Box::from("gcc"))
-            ]
+                InputSpec::Lib(Box::from("gcc")),
+            ],
         );
 
         let inputs = inputs_from_script("INPUT(libfoo.so)", Modifiers::default()).unwrap();
-        assert_eq!(
-            inputs.into_iter().map(|i| i.spec).collect::<Vec<_>>(),
-            vec![InputSpec::File(Box::from(Path::new("libfoo.so"))),]
+        assert_equal(
+            inputs.into_iter().map(|i| i.spec),
+            [InputSpec::File(Box::from(Path::new("libfoo.so")))],
         );
     }
 
@@ -407,15 +408,15 @@ mod tests {
         Modifiers::default(),
         )
         .unwrap();
-        assert_eq!(
-            inputs.into_iter().map(|i| i.spec).collect::<Vec<_>>(),
-            vec![
+        assert_equal(
+            inputs.into_iter().map(|i| i.spec),
+            [
                 InputSpec::File(Box::from(Path::new("/lib/x86_64-linux-gnu/libc.so.6"))),
                 InputSpec::File(Box::from(Path::new(
-                    "/usr/lib/x86_64-linux-gnu/libc_nonshared.a"
+                    "/usr/lib/x86_64-linux-gnu/libc_nonshared.a",
                 ))),
                 InputSpec::File(Box::from(Path::new("/lib64/ld-linux-x86-64.so.2"))),
-            ]
+            ],
         )
     }
 
@@ -435,23 +436,21 @@ mod tests {
         };
         let script = VersionScript::parse(&data).unwrap();
         let version = script.version.unwrap();
-        assert_eq!(
+        assert_equal(
             version
                 .globals
                 .exact
                 .iter()
-                .map(|s| std::str::from_utf8(s.bytes()).unwrap())
-                .collect::<Vec<_>>(),
-            &["foo"]
+                .map(|s| std::str::from_utf8(s.bytes()).unwrap()),
+            ["foo"],
         );
-        assert_eq!(
+        assert_equal(
             version
                 .globals
                 .prefixes
                 .iter()
-                .map(|s| std::str::from_utf8(s).unwrap())
-                .collect::<Vec<_>>(),
-            &["bar"]
+                .map(|s| std::str::from_utf8(s).unwrap()),
+            ["bar"],
         );
         assert!(version.locals.matches_all);
     }
