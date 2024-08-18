@@ -355,15 +355,15 @@ fn populate_file_header(
     };
     let e = LittleEndian;
     header.e_ident.magic = object::elf::ELFMAG;
-    header.e_ident.class = 2; // 64 bit
-    header.e_ident.data = 1; // Little endian
+    header.e_ident.class = object::elf::ELFCLASS64;
+    header.e_ident.data = object::elf::ELFDATA2LSB; // Little endian
     header.e_ident.version = 1;
-    header.e_ident.os_abi = 0;
+    header.e_ident.os_abi = object::elf::ELFOSABI_NONE;
     header.e_ident.abi_version = 0;
     header.e_ident.padding = Default::default();
     header.e_type.set(e, ty as u16);
-    header.e_machine.set(e, 0x3e); // x86-64
-    header.e_version.set(e, 1);
+    header.e_machine.set(e, object::elf::EM_X86_64);
+    header.e_version.set(e, object::elf::EV_CURRENT as u32);
     header.e_entry.set(e, layout.entry_symbol_address()?);
     header.e_phoff.set(e, elf::PHEADER_OFFSET);
     header.e_shoff.set(
