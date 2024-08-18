@@ -92,8 +92,6 @@ pub(crate) const GCC_EXCEPT_TABLE: OutputSectionId = OutputSectionId::regular(12
 
 pub(crate) const NUM_REGULAR_SECTIONS: usize = 13;
 
-// pub(crate) const DYNSTR: BuiltInId = BuiltInId(14);
-
 /// How many built-in sections we define. These are regular sections plus sections that we generate
 /// like GOT, PLT, STRTAB etc. This doesn't include custom sections.
 pub(crate) const NUM_BUILT_IN_SECTIONS: usize = NUM_GENERATED_SECTIONS + NUM_REGULAR_SECTIONS;
@@ -578,20 +576,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         },
         ..DEFAULT_DEFS
     },
-    // OutputSectionDef {
-    //     name: ".dynamic",
-    //     ty: elf::Sht::Dynamic,
-    //     segment_type: SegmentType::Dynamic,
-    //     indexing: SectionIndexing::element::<elf::DynamicEntry>(),
-    //     link: &[DYNSTR),
-    //     ..DEFAULT_DEFS
-    // },
-    // OutputSectionDef {
-    //     name: ".dynstr",
-    //     ty: elf::Sht::Strtab,
-    //     indexing: SectionIndexing::indexed(1),
-    //     ..DEFAULT_DEFS
-    // },
 ];
 
 impl<'data> UnloadedSection<'data> {
