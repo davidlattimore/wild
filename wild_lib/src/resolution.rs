@@ -14,17 +14,17 @@ use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::input_data::UNINITIALISED_FILE_ID;
-use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::OutputSectionsBuilder;
 use crate::output_section_id::SectionDetails;
-use crate::output_section_id::TemporaryOutputSectionId;
-use crate::output_section_id::UnloadedSection;
 use crate::output_section_map::OutputSectionMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ParsedInput;
 use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
+use crate::part_id::PartId;
+use crate::part_id::TemporaryPartId;
+use crate::part_id::UnloadedSection;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolDb;
@@ -347,7 +347,7 @@ pub(crate) struct ResolvedEpilogue {
 
 #[derive(Clone, Copy)]
 pub(crate) struct MergeStringsFileSection<'data> {
-    temporary_section_id: TemporaryOutputSectionId<'data>,
+    temporary_part_id: TemporaryPartId<'data>,
 }
 
 pub(crate) struct UnresolvedMergeStringsFileSection<'data> {
@@ -401,8 +401,7 @@ fn merge_strings<'data>(
     resolved: &mut [ResolvedGroup<'data>],
     output_sections: &OutputSections,
 ) -> Result<OutputSectionMap<MergeStringsSection<'data>>> {
-    let mut strings_by_section: OutputSectionMap<MergeStringsSection> =
-        OutputSectionMap::with_size(output_sections.len());
+    let mut strings_by_section = output_sections.new_section_map::<MergeStringsSection>();
     for group in resolved {
         for file in &mut group.files {
             let ResolvedFile::Object(obj) = file else {
@@ -417,11 +416,10 @@ fn merge_strings<'data>(
                 else {
                     unreachable!();
                 };
-                let output_section_id =
-                    output_sections.output_section_id(sec.temporary_section_id)?;
-                sec.set_precomputed_output_section_id(output_section_id);
+                let part_id = output_sections.part_id(sec.temporary_part_id)?;
+                sec.set_precomputed_part_id(part_id);
 
-                let string_to_offset = strings_by_section.get_mut(output_section_id);
+                let string_to_offset = strings_by_section.get_mut(part_id.output_section_id());
                 for string in &merge_info.strings {
                     string_to_offset.add_string(*string);
                 }
@@ -658,26 +656,24 @@ fn resolve_sections<'data>(
             if let Some(unloaded) = UnloadedSection::from_section(&obj.object, input_section, args)?
             {
                 if unloaded.is_string_merge {
-                    if let TemporaryOutputSectionId::Custom(_custom_section_id) =
-                        unloaded.output_section_id
-                    {
+                    if let TemporaryPartId::Custom(_custom_section_id) = unloaded.part_id {
                         custom_sections.push(unloaded.details);
                     }
                     Ok(SectionSlot::MergeStrings(MergeStringsFileSection::new(
                         &obj.object,
                         input_section,
                         input_section_index,
-                        unloaded.output_section_id,
+                        unloaded.part_id,
                         merge_strings_out,
                     )?))
                 } else {
-                    match unloaded.output_section_id {
-                        TemporaryOutputSectionId::BuiltIn(_) => Ok(SectionSlot::Unloaded(unloaded)),
-                        TemporaryOutputSectionId::Custom(_custom_section_id) => {
+                    match unloaded.part_id {
+                        TemporaryPartId::BuiltIn(_) => Ok(SectionSlot::Unloaded(unloaded)),
+                        TemporaryPartId::Custom(_custom_section_id) => {
                             custom_sections.push(unloaded.details);
                             Ok(SectionSlot::Unloaded(unloaded))
                         }
-                        TemporaryOutputSectionId::EhFrameData => {
+                        TemporaryPartId::EhFrameData => {
                             Ok(SectionSlot::EhFrameData(input_section_index))
                         }
                     }
@@ -825,7 +821,7 @@ impl<'data> MergeStringsFileSection<'data> {
         object: &crate::elf::File<'data>,
         input_section: &crate::elf::SectionHeader,
         input_section_index: object::SectionIndex,
-        section_id: TemporaryOutputSectionId<'data>,
+        section_id: TemporaryPartId<'data>,
         merge_strings_out: &mut Vec<UnresolvedMergeStringsFileSection<'data>>,
     ) -> Result<MergeStringsFileSection<'data>> {
         let mut remaining = object.section_data(input_section)?;
@@ -838,20 +834,20 @@ impl<'data> MergeStringsFileSection<'data> {
             strings,
         });
         Ok(MergeStringsFileSection {
-            temporary_section_id: section_id,
+            temporary_part_id: section_id,
         })
     }
 
-    /// Store the output section ID, so that we don't have to recompute it again later.
-    fn set_precomputed_output_section_id(&mut self, section_id: OutputSectionId) {
+    /// Store the part ID, so that we don't have to recompute it again later.
+    fn set_precomputed_part_id(&mut self, part_id: PartId) {
         // Built-in isn't quite accurate, but it serves out purpose.
-        self.temporary_section_id = TemporaryOutputSectionId::BuiltIn(section_id);
+        self.temporary_part_id = TemporaryPartId::BuiltIn(part_id);
     }
 
-    pub(crate) fn precomputed_output_section_id(&self) -> OutputSectionId {
-        match self.temporary_section_id {
-            TemporaryOutputSectionId::BuiltIn(id) => id,
-            _ => panic!("Call to `precomputed_output_section_id` when we haven't stored the ID"),
+    pub(crate) fn precomputed_part_id(&self) -> PartId {
+        match self.temporary_part_id {
+            TemporaryPartId::BuiltIn(id) => id,
+            _ => panic!("Call to `precomputed_part_id` when we haven't stored the ID"),
         }
     }
 }

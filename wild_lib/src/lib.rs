@@ -35,6 +35,7 @@ pub(crate) mod output_section_map;
 pub(crate) mod output_section_part_map;
 pub(crate) mod output_trace;
 pub(crate) mod parsing;
+pub(crate) mod part_id;
 pub(crate) mod program_segments;
 pub(crate) mod relaxation;
 pub(crate) mod resolution;

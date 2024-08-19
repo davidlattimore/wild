@@ -1,12 +1,16 @@
 use crate::alignment;
 use crate::alignment::Alignment;
-use crate::args::Args;
+use crate::alignment::NUM_ALIGNMENTS;
 use crate::elf;
 use crate::elf::DynamicEntry;
-use crate::elf::SectionHeader;
 use crate::elf::Versym;
 use crate::error::Result;
 use crate::layout::Layout;
+use crate::output_section_map::OutputSectionMap;
+use crate::output_section_part_map::OutputSectionPartMap;
+use crate::part_id;
+use crate::part_id::PartId;
+use crate::part_id::TemporaryPartId;
 use crate::program_segments::ProgramSegmentId;
 use ahash::AHashMap;
 use anyhow::anyhow;
@@ -14,27 +18,19 @@ use anyhow::Context as _;
 use core::mem::size_of;
 use std::fmt::Debug;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TemporaryOutputSectionId<'data> {
-    BuiltIn(OutputSectionId),
-    Custom(CustomSectionId<'data>),
-    EhFrameData,
-}
+/// Number of non-regular sections that we define. A non-regular section is one that isn't split by
+/// alignment. They're always generated. Most of them only have a single part.
+pub(crate) const NUM_NON_REGULAR_SECTIONS: u32 =
+    part_id::NUM_SINGLE_PART_SECTIONS + part_id::NUM_TWO_PART_SECTIONS;
 
+/// Number of sections that we have built-in IDs for.
+pub(crate) const NUM_BUILT_IN_SECTIONS: usize =
+    NUM_NON_REGULAR_SECTIONS as usize + NUM_BUILT_IN_REGULAR_SECTIONS;
+
+/// An ID for an output section. This is used for looking up section info. It's independent of
+/// section ordering.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct OutputSectionId(u16);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct CustomSectionId<'data> {
-    pub(crate) name: &'data [u8],
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct UnloadedSection<'data> {
-    pub(crate) output_section_id: TemporaryOutputSectionId<'data>,
-    pub(crate) details: SectionDetails<'data>,
-    pub(crate) is_string_merge: bool,
-}
+pub(crate) struct OutputSectionId(u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SectionDetails<'data> {
@@ -51,35 +47,29 @@ pub(crate) struct SectionDetails<'data> {
 }
 
 // Sections that we generate ourselves rather than copying directly from input objects.
-pub(crate) const FILE_HEADER: OutputSectionId = OutputSectionId(0);
-pub(crate) const PROGRAM_HEADERS: OutputSectionId = OutputSectionId(1);
-pub(crate) const SECTION_HEADERS: OutputSectionId = OutputSectionId(2);
-pub(crate) const SHSTRTAB: OutputSectionId = OutputSectionId(3);
-pub(crate) const STRTAB: OutputSectionId = OutputSectionId(4);
-pub(crate) const GOT: OutputSectionId = OutputSectionId(5);
-pub(crate) const PLT: OutputSectionId = OutputSectionId(6);
-pub(crate) const RELA_PLT: OutputSectionId = OutputSectionId(7);
-pub(crate) const EH_FRAME: OutputSectionId = OutputSectionId(8);
-pub(crate) const EH_FRAME_HDR: OutputSectionId = OutputSectionId(9);
-pub(crate) const DYNAMIC: OutputSectionId = OutputSectionId(10);
-pub(crate) const GNU_HASH: OutputSectionId = OutputSectionId(11);
-pub(crate) const DYNSYM: OutputSectionId = OutputSectionId(12);
-pub(crate) const DYNSTR: OutputSectionId = OutputSectionId(13);
-pub(crate) const INTERP: OutputSectionId = OutputSectionId(14);
-pub(crate) const GNU_VERSION: OutputSectionId = OutputSectionId(15);
-pub(crate) const GNU_VERSION_R: OutputSectionId = OutputSectionId(16);
+pub(crate) const FILE_HEADER: OutputSectionId = part_id::FILE_HEADER.output_section_id();
+pub(crate) const PROGRAM_HEADERS: OutputSectionId = part_id::PROGRAM_HEADERS.output_section_id();
+pub(crate) const SECTION_HEADERS: OutputSectionId = part_id::SECTION_HEADERS.output_section_id();
+pub(crate) const SHSTRTAB: OutputSectionId = part_id::SHSTRTAB.output_section_id();
+pub(crate) const STRTAB: OutputSectionId = part_id::STRTAB.output_section_id();
+pub(crate) const GOT: OutputSectionId = part_id::GOT.output_section_id();
+pub(crate) const PLT: OutputSectionId = part_id::PLT.output_section_id();
+pub(crate) const RELA_PLT: OutputSectionId = part_id::RELA_PLT.output_section_id();
+pub(crate) const EH_FRAME: OutputSectionId = part_id::EH_FRAME.output_section_id();
+pub(crate) const EH_FRAME_HDR: OutputSectionId = part_id::EH_FRAME_HDR.output_section_id();
+pub(crate) const DYNAMIC: OutputSectionId = part_id::DYNAMIC.output_section_id();
+pub(crate) const GNU_HASH: OutputSectionId = part_id::GNU_HASH.output_section_id();
+pub(crate) const DYNSYM: OutputSectionId = part_id::DYNSYM.output_section_id();
+pub(crate) const DYNSTR: OutputSectionId = part_id::DYNSTR.output_section_id();
+pub(crate) const INTERP: OutputSectionId = part_id::INTERP.output_section_id();
+pub(crate) const GNU_VERSION: OutputSectionId = part_id::GNU_VERSION.output_section_id();
+pub(crate) const GNU_VERSION_R: OutputSectionId = part_id::GNU_VERSION_R.output_section_id();
 
-const NUM_SINGLE_PART_SECTIONS: u16 = 17;
+// These two are multi-part sections, but we can pick any part we wish in order to get the section
+// ID.
+pub(crate) const SYMTAB: OutputSectionId = part_id::SYMTAB_LOCAL.output_section_id();
+pub(crate) const RELA_DYN: OutputSectionId = part_id::RELA_DYN_RELATIVE.output_section_id();
 
-// Generated sections that have more than one part.
-pub(crate) const SYMTAB: OutputSectionId = OutputSectionId(NUM_SINGLE_PART_SECTIONS);
-pub(crate) const RELA_DYN: OutputSectionId = OutputSectionId(NUM_SINGLE_PART_SECTIONS + 1);
-
-/// Regular sections are sections that come from input files and can contain a mix of alignments.
-pub(crate) const NUM_GENERATED_SECTIONS: usize = NUM_SINGLE_PART_SECTIONS as usize + 2;
-
-// Sections that need to be referenced from code. When adding new sections here, be sure to update
-// `test_constant_ids`.
 pub(crate) const RODATA: OutputSectionId = OutputSectionId::regular(0);
 pub(crate) const INIT_ARRAY: OutputSectionId = OutputSectionId::regular(1);
 pub(crate) const FINI_ARRAY: OutputSectionId = OutputSectionId::regular(2);
@@ -94,11 +84,7 @@ pub(crate) const BSS: OutputSectionId = OutputSectionId::regular(10);
 pub(crate) const COMMENT: OutputSectionId = OutputSectionId::regular(11);
 pub(crate) const GCC_EXCEPT_TABLE: OutputSectionId = OutputSectionId::regular(12);
 
-pub(crate) const NUM_REGULAR_SECTIONS: usize = 13;
-
-/// How many built-in sections we define. These are regular sections plus sections that we generate
-/// like GOT, PLT, STRTAB etc. This doesn't include custom sections.
-pub(crate) const NUM_BUILT_IN_SECTIONS: usize = NUM_GENERATED_SECTIONS + NUM_REGULAR_SECTIONS;
+pub(crate) const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 13;
 
 pub struct OutputSections<'data> {
     /// The base address for our output binary.
@@ -129,21 +115,19 @@ impl<'data> OutputSections<'data> {
             .map(|(raw, info)| (OutputSectionId::from_usize(raw), info))
     }
 
-    pub(crate) fn output_section_id(
-        &self,
-        temporary_id: TemporaryOutputSectionId<'_>,
-    ) -> Result<OutputSectionId> {
+    pub(crate) fn part_id(&self, temporary_id: TemporaryPartId<'_>) -> Result<PartId> {
         Ok(match temporary_id {
-            TemporaryOutputSectionId::BuiltIn(sec_id) => sec_id,
-            TemporaryOutputSectionId::Custom(custom_section_id) => self
+            TemporaryPartId::BuiltIn(id) => id,
+            TemporaryPartId::Custom(custom_section_id) => self
                 .custom_name_to_id(custom_section_id.name)
                 .with_context(|| {
                     format!(
                         "Internal error: Didn't allocate ID for custom section `{}`",
                         String::from_utf8_lossy(custom_section_id.name)
                     )
-                })?,
-            TemporaryOutputSectionId::EhFrameData => EH_FRAME,
+                })?
+                .part_id_with_alignment(custom_section_id.alignment),
+            TemporaryPartId::EhFrameData => part_id::EH_FRAME,
         })
     }
 
@@ -184,6 +168,19 @@ impl<'data> OutputSections<'data> {
             })?;
         Ok(())
     }
+
+    pub(crate) fn num_parts(&self) -> usize {
+        part_id::REGULAR_PART_BASE as usize
+            + (self.num_sections() - NUM_NON_REGULAR_SECTIONS as usize) * NUM_ALIGNMENTS
+    }
+
+    pub(crate) fn new_part_map<T: Default>(&self) -> OutputSectionPartMap<T> {
+        OutputSectionPartMap::with_size(self.num_parts())
+    }
+
+    pub(crate) fn new_section_map<T: Default>(&self) -> OutputSectionMap<T> {
+        OutputSectionMap::with_size(self.num_sections())
+    }
 }
 
 pub(crate) struct SectionOutputInfo<'data> {
@@ -192,7 +189,7 @@ pub(crate) struct SectionOutputInfo<'data> {
 }
 
 pub(crate) struct BuiltInSectionDetails {
-    details: SectionDetails<'static>,
+    pub(crate) details: SectionDetails<'static>,
     /// Sections to try to link to. The first section that we're outputting is the one used.
     pub(crate) link: &'static [OutputSectionId],
     pub(crate) start_symbol_name: Option<&'static str>,
@@ -200,13 +197,6 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) min_alignment: Alignment,
     info_fn: Option<fn(&Layout) -> u32>,
     pub(crate) keep_if_empty: bool,
-}
-
-impl BuiltInSectionDetails {
-    pub(crate) fn name(&self) -> &str {
-        core::str::from_utf8(self.details.name)
-            .expect("All built-in sections should have UTF-8 names")
-    }
 }
 
 impl SectionDetails<'static> {
@@ -583,153 +573,44 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
 ];
 
-impl<'data> UnloadedSection<'data> {
-    #[allow(clippy::if_same_then_else)]
-    pub(crate) fn from_section(
-        object: &crate::elf::File<'data>,
-        section: &SectionHeader,
-        args: &Args,
-    ) -> Result<Option<Self>> {
-        // Ideally we support reading an actual linker script to make these decisions, but for now
-        // we just hard code stuff.
-        let e = object::LittleEndian;
-        let section_name = object.section_name(section).unwrap_or_default();
-        let sh_flags = section.sh_flags.get(e);
-        let built_in_id = if section_name.starts_with(b".rodata") {
-            Some(RODATA)
-        } else if section_name.starts_with(b".text") {
-            Some(TEXT)
-        } else if section_name.starts_with(b".data") {
-            Some(DATA)
-        } else if section_name.starts_with(b".bss") {
-            Some(BSS)
-        } else if section_name.starts_with(b".init_array") || section_name.starts_with(b".ctors.") {
-            Some(INIT_ARRAY)
-        } else if section_name.starts_with(b".fini_array") || section_name.starts_with(b".dtors.") {
-            Some(FINI_ARRAY)
-        } else if section_name == b".init" {
-            Some(INIT)
-        } else if section_name == b".fini" {
-            Some(FINI)
-        } else if section_name == b".preinit_array" {
-            Some(PREINIT_ARRAY)
-        } else if section_name.starts_with(b".tdata") {
-            Some(TDATA)
-        } else if section_name.starts_with(b".tbss") {
-            Some(TBSS)
-        } else if section_name == b".comment" {
-            Some(COMMENT)
-        } else if section_name == b".eh_frame" {
-            return Ok(Some(UnloadedSection {
-                output_section_id: TemporaryOutputSectionId::EhFrameData,
-                details: EH_FRAME.built_in_details().details,
-                is_string_merge: false,
-            }));
-        } else if section_name.starts_with(b".gcc_except_table") {
-            Some(GCC_EXCEPT_TABLE)
-        } else if section_name.starts_with(b".rela")
-            || b".strtab" == section_name
-            || b".symtab" == section_name
-            || b".shstrtab" == section_name
-            || b".group" == section_name
-        {
-            // We don't currently allow references to these sections, discard them so that we avoid
-            // allocating output section IDs.
-            None
-        } else if args.strip_debug && section_name == b".debug_str" {
-            None
-        } else {
-            let sh_type = section.sh_type.get(e);
-            let ty = if sh_type == object::elf::SHT_NOBITS {
-                sh_type
-            } else {
-                object::elf::SHT_PROGBITS
-            };
-            let retain = sh_flags & crate::elf::shf::GNU_RETAIN != 0;
-            let section_flags = sh_flags;
-            if !section_name.is_empty() {
-                let custom_section_id = CustomSectionId { name: section_name };
-                let details = SectionDetails {
-                    name: section_name,
-                    ty,
-                    section_flags,
-                    element_size: 0,
-                    retain,
-                    packed: false,
-                };
-                return Ok(Some(UnloadedSection {
-                    output_section_id: TemporaryOutputSectionId::Custom(custom_section_id),
-                    details,
-                    is_string_merge: should_merge_strings(section, args),
-                }));
-            }
-            if sh_flags & u64::from(object::elf::SHF_ALLOC) == 0 {
-                None
-            } else if sh_type == object::elf::SHT_PROGBITS {
-                if sh_flags & u64::from(object::elf::SHF_EXECINSTR) != 0 {
-                    Some(TEXT)
-                } else if sh_flags & u64::from(object::elf::SHF_TLS) != 0 {
-                    Some(TDATA)
-                } else if sh_flags & u64::from(object::elf::SHF_WRITE) != 0 {
-                    Some(DATA)
-                } else {
-                    Some(RODATA)
-                }
-            } else if sh_type == object::elf::SHT_NOBITS {
-                if sh_flags & u64::from(object::elf::SHF_TLS) != 0 {
-                    Some(TBSS)
-                } else {
-                    Some(BSS)
-                }
-            } else {
-                None
-            }
-        };
-        let Some(built_in_id) = built_in_id else {
-            return Ok(None);
-        };
-        Ok(Some(UnloadedSection {
-            output_section_id: TemporaryOutputSectionId::BuiltIn(built_in_id),
-            details: built_in_id.built_in_details().details,
-            is_string_merge: should_merge_strings(section, args),
-        }))
-    }
-}
-
-/// Returns whether the supplied section meets our criteria for string merging. String merging is
-/// optional, so there are cases where we might be able to merge, but don't currently. For example
-/// if alignment is > 1.
-fn should_merge_strings(section: &SectionHeader, args: &Args) -> bool {
-    if !args.merge_strings {
-        return false;
-    }
-    let e = object::LittleEndian;
-    let sh_flags = section.sh_flags.get(e);
-    (sh_flags & crate::elf::shf::MERGE) != 0
-        && (sh_flags & crate::elf::shf::STRINGS) != 0
-        && section.sh_addralign.get(e) <= 1
-}
-
 pub(crate) fn built_in_section_ids(
 ) -> impl ExactSizeIterator<Item = OutputSectionId> + DoubleEndedIterator<Item = OutputSectionId> {
-    (0..NUM_BUILT_IN_SECTIONS).map(|n| OutputSectionId(n as u16))
+    (0..NUM_BUILT_IN_SECTIONS).map(|n| OutputSectionId(n as u32))
 }
 
 impl OutputSectionId {
-    pub(crate) const fn regular(offset: u16) -> OutputSectionId {
-        OutputSectionId(NUM_GENERATED_SECTIONS as u16 + offset)
-    }
-
-    pub(crate) fn from_usize(raw: usize) -> Self {
-        OutputSectionId(u16::try_from(raw).expect("Section IDs overflowed 16 bits"))
+    pub(crate) const fn regular(offset: u32) -> OutputSectionId {
+        OutputSectionId(NUM_NON_REGULAR_SECTIONS + offset)
     }
 
     pub(crate) fn as_usize(self) -> usize {
         self.0 as usize
     }
 
+    pub(crate) const fn from_u32(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    pub(crate) fn from_usize(value: usize) -> Self {
+        Self(value as u32)
+    }
+
+    pub(crate) fn num_parts(&self) -> usize {
+        if self.0 < part_id::NUM_SINGLE_PART_SECTIONS {
+            1
+        } else if self.0 < NUM_NON_REGULAR_SECTIONS {
+            part_id::NUM_PARTS_PER_TWO_PART_SECTION as usize
+        } else {
+            NUM_ALIGNMENTS
+        }
+    }
+
     pub(crate) fn built_in_details(self) -> &'static BuiltInSectionDetails {
         &SECTION_DEFINITIONS[self.as_usize()]
+    }
+
+    pub(crate) fn opt_built_in_details(self) -> Option<&'static BuiltInSectionDetails> {
+        SECTION_DEFINITIONS.get(self.as_usize())
     }
 
     fn event(self) -> OrderEvent<'static> {
@@ -743,11 +624,29 @@ impl OutputSectionId {
             .unwrap_or(alignment::MIN)
     }
 
-    /// Computes the value for the info field for this section. For most sections this is just 0,
-    /// but a few sections put some special value in there.
+    /// Returns the part ID in this section that has the specified alignment. Can only be called for
+    /// regular sections.
+    pub(crate) fn part_id_with_alignment(&self, alignment: Alignment) -> PartId {
+        let regular_offset = self
+            .0
+            .checked_sub(NUM_NON_REGULAR_SECTIONS)
+            .expect("part_id_with_alignment can only be called for regular sections");
+        PartId::from_u32(
+            part_id::REGULAR_PART_BASE
+                + (regular_offset * NUM_ALIGNMENTS as u32)
+                + NUM_ALIGNMENTS as u32
+                - 1
+                - alignment.exponent as u32,
+        )
+    }
+
+    /// Returns the first part ID for this section.
+    pub(crate) fn base_part_id(&self) -> PartId {
+        self.part_id_with_alignment(alignment::MAX)
+    }
+
     pub(crate) fn info(&self, layout: &Layout) -> u32 {
-        SECTION_DEFINITIONS
-            .get(self.as_usize())
+        self.opt_built_in_details()
             .and_then(|d| d.info_fn)
             .map(|info_fn| (info_fn)(layout))
             .unwrap_or(0)
@@ -763,6 +662,7 @@ pub(crate) enum OrderEvent<'data> {
 pub(crate) struct OutputSectionsBuilder<'data> {
     base_address: u64,
     custom_by_name: AHashMap<&'data [u8], OutputSectionId>,
+    // TODO: Change this to be an OutputSectionMap.
     section_infos: Vec<SectionOutputInfo<'data>>,
 }
 
@@ -919,13 +819,13 @@ impl<'data> OutputSections<'data> {
     }
 
     #[must_use]
-    pub(crate) fn len(&self) -> usize {
+    pub(crate) fn num_sections(&self) -> usize {
         self.section_infos.len()
     }
 
     #[must_use]
     pub(crate) fn num_regular_sections(&self) -> usize {
-        self.section_infos.len() - NUM_GENERATED_SECTIONS
+        self.section_infos.len() - NUM_NON_REGULAR_SECTIONS as usize
     }
 
     pub(crate) fn has_data_in_file(&self, id: OutputSectionId) -> bool {
@@ -1015,7 +915,11 @@ impl<'data> SectionDetails<'data> {
 
 fn symtab_info(layout: &Layout) -> u32 {
     // For SYMTAB, the info field holds the index of the first non-local symbol.
-    (layout.section_part_layouts.symtab_locals.file_size / size_of::<elf::SymtabEntry>()) as u32
+    (layout
+        .section_part_layouts
+        .get(part_id::SYMTAB_LOCAL)
+        .file_size
+        / size_of::<elf::SymtabEntry>()) as u32
 }
 
 fn version_r_info(layout: &Layout) -> u32 {
@@ -1025,6 +929,12 @@ fn version_r_info(layout: &Layout) -> u32 {
 fn dynsym_info(_layout: &Layout) -> u32 {
     // For now, we're not putting anything in dynstr, so the only "local" is the null symbol.
     1
+}
+
+impl std::fmt::Display for OutputSectionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.as_usize(), f)
+    }
 }
 
 #[test]
@@ -1065,38 +975,9 @@ fn test_constant_ids() {
     ];
     for (id, name) in check {
         assert_eq!(
-            std::str::from_utf8(SECTION_DEFINITIONS[id.as_usize()].details.name).unwrap(),
+            std::str::from_utf8(id.built_in_details().details.name).unwrap(),
             *name
         );
     }
     assert_eq!(NUM_BUILT_IN_SECTIONS, check.len());
-}
-
-impl std::fmt::Display for OutputSectionId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.as_usize(), f)
-    }
-}
-
-impl<'data> std::fmt::Display for TemporaryOutputSectionId<'data> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TemporaryOutputSectionId::BuiltIn(id) => {
-                write!(
-                    f,
-                    "section #{} ({})",
-                    id.as_usize(),
-                    String::from_utf8_lossy(SECTION_DEFINITIONS[id.as_usize()].details.name)
-                )
-            }
-            TemporaryOutputSectionId::Custom(custom) => {
-                write!(
-                    f,
-                    "custom section `{}`",
-                    String::from_utf8_lossy(custom.name)
-                )
-            }
-            TemporaryOutputSectionId::EhFrameData => write!(f, "eh_frame data"),
-        }
-    }
 }

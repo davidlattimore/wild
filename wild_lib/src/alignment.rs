@@ -2,9 +2,6 @@ use crate::error::Result;
 use anyhow::bail;
 use std::fmt::Debug;
 use std::fmt::Display;
-use std::ops::AddAssign;
-use std::ops::Index;
-use std::ops::IndexMut;
 
 /// An alignment. Always a power of two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PartialOrd, Ord)]
@@ -48,18 +45,10 @@ pub(crate) const USIZE: Alignment = Alignment { exponent: 3 };
 
 pub(crate) const EH_FRAME_HDR: Alignment = Alignment { exponent: 2 };
 
-/// A map from alignments to some value.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct AlignmentMap<T> {
-    // TODO: Consider only storing frequently used alignments in an array and storing less
-    // frequently used alignments in an on-demand sorted Vec or smallvec.
-    values: [T; NUM_ALIGNMENTS],
-}
-
 impl Alignment {
     pub(crate) fn new(raw: u64) -> Result<Self> {
         let exponent = raw.trailing_zeros();
-        if 1 << exponent != raw {
+        if 1_u64.checked_shl(exponent) != Some(raw) {
             bail!("Invalid alignment 0x{raw:x}");
         }
         if exponent > MAX.exponent as u32 {
@@ -107,81 +96,6 @@ impl Alignment {
             adjustment -= self.value();
         }
         mem_offset + adjustment
-    }
-}
-
-impl<T> AlignmentMap<T> {
-    pub(crate) fn iter(&self) -> impl DoubleEndedIterator<Item = (Alignment, &T)> {
-        all_alignments().zip(self.values.iter())
-    }
-
-    /// Returns an iterator over keys, mutable values from `self` and immutable values from `other`.
-    pub(crate) fn mut_zip<'t, 'u, U>(
-        &'t mut self,
-        other: &'u AlignmentMap<U>,
-    ) -> impl ExactSizeIterator<Item = (Alignment, &'t mut T, &'u U)> {
-        all_alignments()
-            .zip(self.values.iter_mut())
-            .zip(other.values.iter())
-            .map(|((id, t), u)| (id, t, u))
-    }
-
-    pub(crate) fn raw_values(&self) -> &[T] {
-        &self.values
-    }
-}
-
-pub(crate) fn all_alignments(
-) -> impl ExactSizeIterator<Item = Alignment> + DoubleEndedIterator<Item = Alignment> {
-    (MIN.exponent..=MAX.exponent).map(|exponent| Alignment { exponent })
-}
-
-impl<T: Default> Default for AlignmentMap<T> {
-    fn default() -> Self {
-        Self {
-            values: Default::default(),
-        }
-    }
-}
-
-impl<T> Index<Alignment> for AlignmentMap<T> {
-    type Output = T;
-
-    fn index(&self, index: Alignment) -> &Self::Output {
-        &self.values[index.exponent as usize]
-    }
-}
-
-impl<T> IndexMut<Alignment> for AlignmentMap<T> {
-    fn index_mut(&mut self, index: Alignment) -> &mut Self::Output {
-        &mut self.values[index.exponent as usize]
-    }
-}
-
-impl<T: AddAssign + Copy> AlignmentMap<T> {
-    pub(crate) fn merge(&mut self, other: &AlignmentMap<T>) {
-        self.values
-            .iter_mut()
-            .zip(other.values.iter())
-            .for_each(|(a, b)| *a += *b);
-    }
-}
-
-impl<T: Default> FromIterator<(Alignment, T)> for AlignmentMap<T> {
-    fn from_iter<I: IntoIterator<Item = (Alignment, T)>>(iter: I) -> Self {
-        let mut out: AlignmentMap<T> = Default::default();
-        for (id, v) in iter {
-            out[id] = v;
-        }
-        out
-    }
-}
-
-impl<T: Clone> Clone for AlignmentMap<T> {
-    fn clone(&self) -> Self {
-        Self {
-            values: self.values.clone(),
-        }
     }
 }
 

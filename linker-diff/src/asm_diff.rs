@@ -2198,8 +2198,10 @@ fn split_value(object: &Object, instruction: &Instruction) -> Vec<(iced_x86::Ins
                 }
                 let mut value = displacement;
                 if is_ip_relative(&instruction.raw_instruction) {
-                    value = instruction.base_address.wrapping_add(displacement)
-                        + object.address_index.load_offset;
+                    value = instruction
+                        .base_address
+                        .wrapping_add(displacement)
+                        .wrapping_add(object.address_index.load_offset);
                 }
                 // Ignore displacements relative to the stack pointer. There's probably an immediate
                 // value that's what we actually want.

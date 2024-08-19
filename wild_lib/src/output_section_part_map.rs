@@ -1,10 +1,11 @@
+use crate::alignment;
 use crate::alignment::Alignment;
-use crate::alignment::AlignmentMap;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
-use crate::output_section_id::NUM_GENERATED_SECTIONS;
 use crate::output_section_map::OutputSectionMap;
+use crate::part_id;
+use crate::part_id::PartId;
 use std::ops::AddAssign;
 
 /// A map from each part of each output section to some value. Different sections are split into
@@ -13,64 +14,44 @@ use std::ops::AddAssign;
 /// For example the symbol table is split into local then global symbols.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) struct OutputSectionPartMap<T> {
-    pub(crate) regular: Vec<AlignmentMap<T>>,
-    pub(crate) file_header: T,
-    pub(crate) program_headers: T,
-    pub(crate) section_headers: T,
-    pub(crate) got: T,
-    pub(crate) plt: T,
-    pub(crate) symtab_locals: T,
-    pub(crate) symtab_globals: T,
-    pub(crate) symtab_strings: T,
-    pub(crate) shstrtab: T,
-    pub(crate) rela_plt: T,
-    pub(crate) eh_frame: T,
-    pub(crate) eh_frame_hdr: T,
-    pub(crate) dynamic: T,
-    pub(crate) gnu_hash: T,
-    pub(crate) dynsym: T,
-    pub(crate) dynstr: T,
-    pub(crate) rela_dyn_relative: T,
-    pub(crate) rela_dyn_general: T,
-    pub(crate) interp: T,
-    pub(crate) gnu_version: T,
-    pub(crate) gnu_version_r: T,
+    // TODO: We used to store all the generated parts in separate instance variables. When we
+    // switched to instead storing them in this Vec, we saw a small drop in performance (about 2%).
+    // This may be due to an extra pointer indirection and/or bounds checking. Experiment with
+    // storing all our built-in parts an an array.
+    pub(crate) parts: Vec<T>,
 }
 
 impl<T: Default> OutputSectionPartMap<T> {
     pub(crate) fn with_size(size: usize) -> Self {
-        let mut regular = Vec::new();
-        regular.resize_with(size - NUM_GENERATED_SECTIONS, Default::default);
-        Self {
-            regular,
-            file_header: Default::default(),
-            program_headers: Default::default(),
-            section_headers: Default::default(),
-            got: Default::default(),
-            plt: Default::default(),
-            symtab_locals: Default::default(),
-            symtab_globals: Default::default(),
-            symtab_strings: Default::default(),
-            shstrtab: Default::default(),
-            rela_plt: Default::default(),
-            eh_frame: Default::default(),
-            eh_frame_hdr: Default::default(),
-            dynamic: Default::default(),
-            gnu_hash: Default::default(),
-            dynsym: Default::default(),
-            dynstr: Default::default(),
-            gnu_version: Default::default(),
-            gnu_version_r: Default::default(),
-            rela_dyn_relative: Default::default(),
-            rela_dyn_general: Default::default(),
-            interp: Default::default(),
-        }
+        let mut parts = Vec::new();
+        parts.resize_with(size, Default::default);
+        Self { parts }
     }
 }
 
 impl<T> OutputSectionPartMap<T> {
-    pub(crate) fn len(&self) -> usize {
-        self.regular.len() + NUM_GENERATED_SECTIONS
+    pub(crate) fn num_parts(&self) -> usize {
+        self.parts.len()
+    }
+
+    pub(crate) fn get_mut(&mut self, part_id: PartId) -> &mut T {
+        &mut self.parts[part_id.as_usize()]
+    }
+
+    pub(crate) fn get(&self, part_id: PartId) -> &T {
+        &self.parts[part_id.as_usize()]
+    }
+}
+
+impl<T: Default> OutputSectionPartMap<T> {
+    pub(crate) fn take(&mut self, part_id: PartId) -> T {
+        core::mem::take(self.get_mut(part_id))
+    }
+}
+
+impl OutputSectionPartMap<u64> {
+    pub(crate) fn increment(&mut self, part_id: PartId, size: u64) {
+        *self.get_mut(part_id) += size;
     }
 }
 
@@ -79,208 +60,107 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
     /// callback.
     pub(crate) fn map<U: Default>(
         &self,
-        output_sections: &OutputSections,
-        mut cb: impl FnMut(OutputSectionId, &T) -> U,
+        mut cb: impl FnMut(PartId, &T) -> U,
     ) -> OutputSectionPartMap<U> {
-        // For now we just iterate in output order.
-        // TODO: Try iterating all regular sections as a single block, since that's likely more
-        // efficient.
-        self.output_order_map(output_sections, |section_id, _, v| cb(section_id, v))
-    }
-
-    /// Iterate through all contained T in output order, producing a new map of U from the values
-    /// returned by the callback.
-    pub(crate) fn output_order_map<U: Default>(
-        &self,
-        output_sections: &OutputSections,
-        mut cb: impl FnMut(OutputSectionId, Alignment, &T) -> U,
-    ) -> OutputSectionPartMap<U> {
-        let mut regular = Vec::new();
-        regular.resize_with(self.regular.len(), AlignmentMap::<U>::default);
-        let file_header = cb(
-            output_section_id::FILE_HEADER,
-            output_section_id::FILE_HEADER.min_alignment(),
-            &self.file_header,
-        );
-        let program_headers = cb(
-            output_section_id::PROGRAM_HEADERS,
-            output_section_id::PROGRAM_HEADERS.min_alignment(),
-            &self.program_headers,
-        );
-        let section_headers = cb(
-            output_section_id::SECTION_HEADERS,
-            output_section_id::SECTION_HEADERS.min_alignment(),
-            &self.section_headers,
-        );
-        let interp = cb(
-            output_section_id::INTERP,
-            output_section_id::INTERP.min_alignment(),
-            &self.interp,
-        );
-        let gnu_hash = cb(
-            output_section_id::GNU_HASH,
-            output_section_id::GNU_HASH.min_alignment(),
-            &self.gnu_hash,
-        );
-        let dynsym = cb(
-            output_section_id::DYNSYM,
-            output_section_id::DYNSYM.min_alignment(),
-            &self.dynsym,
-        );
-        let dynstr = cb(
-            output_section_id::DYNSTR,
-            output_section_id::DYNSTR.min_alignment(),
-            &self.dynstr,
-        );
-        let gnu_version = cb(
-            output_section_id::GNU_VERSION,
-            output_section_id::GNU_VERSION.min_alignment(),
-            &self.gnu_version,
-        );
-        let gnu_version_r = cb(
-            output_section_id::GNU_VERSION_R,
-            output_section_id::GNU_VERSION_R.min_alignment(),
-            &self.gnu_version_r,
-        );
-        let rela_dyn_relative = cb(
-            output_section_id::RELA_DYN,
-            output_section_id::RELA_DYN.min_alignment(),
-            &self.rela_dyn_relative,
-        );
-        let rela_dyn_general = cb(
-            output_section_id::RELA_DYN,
-            output_section_id::RELA_DYN.min_alignment(),
-            &self.rela_dyn_general,
-        );
-        self.map_regular(output_section_id::RODATA, &mut cb, &mut regular);
-        let eh_frame_hdr = cb(
-            output_section_id::EH_FRAME_HDR,
-            output_section_id::EH_FRAME_HDR.min_alignment(),
-            &self.eh_frame_hdr,
-        );
-        self.map_regular(output_section_id::PREINIT_ARRAY, &mut cb, &mut regular);
-        let shstrtab = cb(
-            output_section_id::SHSTRTAB,
-            output_section_id::SHSTRTAB.min_alignment(),
-            &self.shstrtab,
-        );
-        let symtab_locals = cb(
-            output_section_id::SYMTAB,
-            output_section_id::SYMTAB.min_alignment(),
-            &self.symtab_locals,
-        );
-        let symtab_globals = cb(
-            output_section_id::SYMTAB,
-            output_section_id::SYMTAB.min_alignment(),
-            &self.symtab_globals,
-        );
-        let symtab_strings = cb(
-            output_section_id::STRTAB,
-            output_section_id::STRTAB.min_alignment(),
-            &self.symtab_strings,
-        );
-        self.map_regular(output_section_id::GCC_EXCEPT_TABLE, &mut cb, &mut regular);
-        output_sections.ro_custom.iter().for_each(|id| {
-            self.map_regular(*id, &mut cb, &mut regular);
-        });
-        let plt = cb(
-            output_section_id::PLT,
-            output_section_id::PLT.min_alignment(),
-            &self.plt,
-        );
-        self.map_regular(output_section_id::TEXT, &mut cb, &mut regular);
-        self.map_regular(output_section_id::INIT, &mut cb, &mut regular);
-        self.map_regular(output_section_id::FINI, &mut cb, &mut regular);
-        output_sections.exec_custom.iter().for_each(|id| {
-            self.map_regular(*id, &mut cb, &mut regular);
-        });
-        let got = cb(
-            output_section_id::GOT,
-            output_section_id::GOT.min_alignment(),
-            &self.got,
-        );
-        let rela_plt = cb(
-            output_section_id::RELA_PLT,
-            output_section_id::RELA_PLT.min_alignment(),
-            &self.rela_plt,
-        );
-        self.map_regular(output_section_id::INIT_ARRAY, &mut cb, &mut regular);
-        self.map_regular(output_section_id::FINI_ARRAY, &mut cb, &mut regular);
-        self.map_regular(output_section_id::DATA, &mut cb, &mut regular);
-        let eh_frame = cb(
-            output_section_id::EH_FRAME,
-            output_section_id::EH_FRAME.min_alignment(),
-            &self.eh_frame,
-        );
-        let dynamic = cb(
-            output_section_id::DYNAMIC,
-            output_section_id::DYNAMIC.min_alignment(),
-            &self.dynamic,
-        );
-        output_sections.data_custom.iter().for_each(|id| {
-            self.map_regular(*id, &mut cb, &mut regular);
-        });
-        self.map_regular(output_section_id::TDATA, &mut cb, &mut regular);
-        self.map_regular(output_section_id::TBSS, &mut cb, &mut regular);
-        self.map_regular(output_section_id::BSS, &mut cb, &mut regular);
-        output_sections.bss_custom.iter().for_each(|id| {
-            self.map_regular(*id, &mut cb, &mut regular);
-        });
-        self.map_regular(output_section_id::COMMENT, &mut cb, &mut regular);
-
         OutputSectionPartMap {
-            regular,
-            file_header,
-            program_headers,
-            section_headers,
-            got,
-            plt,
-            symtab_locals,
-            symtab_globals,
-            symtab_strings,
-            shstrtab,
-            rela_plt,
-            eh_frame,
-            eh_frame_hdr,
-            dynamic,
-            gnu_hash,
-            dynsym,
-            dynstr,
-            gnu_version,
-            gnu_version_r,
-            rela_dyn_relative,
-            rela_dyn_general,
-            interp,
+            parts: self
+                .parts
+                .iter()
+                .enumerate()
+                .map(|(i, value)| cb(PartId::from_usize(i), value))
+                .collect(),
         }
     }
 
-    fn map_regular<U: Default>(
+    /// Iterate through all contained T in output order, producing a new map of U from the values
+    /// returned by the callback. Note, the alignment is the alignment of the PartId, but capped at
+    /// the maximum alignment of highest alignment PartId with a non-default value.
+    pub(crate) fn output_order_map<U: Default>(
         &self,
-        id: OutputSectionId,
-        cb: &mut impl FnMut(OutputSectionId, Alignment, &T) -> U,
-        out: &mut [AlignmentMap<U>],
-    ) {
-        let offset = id.as_usize() - NUM_GENERATED_SECTIONS;
-        let alignment_map = &self.regular[offset];
-        out[offset] = map_alignment_map(alignment_map, cb, id);
-    }
+        output_sections: &OutputSections,
+        mut cb: impl FnMut(PartId, Alignment, &T) -> U,
+    ) -> OutputSectionPartMap<U> {
+        let mut parts_out = Vec::new();
+        parts_out.resize_with(self.parts.len(), U::default);
 
-    pub(crate) fn regular_mut(
-        &mut self,
-        output_section_id: OutputSectionId,
-        alignment: Alignment,
-    ) -> &mut T {
-        debug_assert!(
-            output_section_id.as_usize() >= NUM_GENERATED_SECTIONS,
-            "regular_mut called with non-regular section ID `{}`",
-            output_section_id.built_in_details().name()
-        );
-        &mut self.regular[output_section_id.as_usize() - NUM_GENERATED_SECTIONS][alignment]
-    }
+        let mut map_part = |base_part_id: PartId, count: usize| {
+            let max_alignment = self.parts
+                [base_part_id.as_usize()..base_part_id.as_usize() + count]
+                .iter()
+                .position(|p| *p != T::default())
+                .map(|o| base_part_id.offset(o).alignment())
+                .unwrap_or(alignment::MIN)
+                .max(base_part_id.output_section_id().min_alignment());
+            parts_out[base_part_id.as_usize()..base_part_id.as_usize() + count]
+                .iter_mut()
+                .enumerate()
+                .for_each(|(offset, out)| {
+                    let part_id = base_part_id.offset(offset);
+                    let alignment = part_id.alignment().min(max_alignment);
+                    *out = cb(part_id, alignment, self.get(part_id))
+                });
+        };
 
-    #[allow(dead_code)]
-    pub(crate) fn regular(&self, output_section_id: OutputSectionId, alignment: Alignment) -> &T {
-        &self.regular[output_section_id.as_usize() - NUM_GENERATED_SECTIONS][alignment]
+        map_part(part_id::FILE_HEADER, 1);
+        map_part(part_id::PROGRAM_HEADERS, 1);
+        map_part(part_id::SECTION_HEADERS, 1);
+        map_part(part_id::INTERP, 1);
+        map_part(part_id::GNU_HASH, 1);
+        map_part(part_id::DYNSYM, 1);
+        map_part(part_id::DYNSTR, 1);
+        map_part(part_id::GNU_VERSION, 1);
+        map_part(part_id::GNU_VERSION_R, 1);
+        map_part(part_id::RELA_DYN_RELATIVE, 1);
+        map_part(part_id::RELA_DYN_GENERAL, 1);
+        map_part(output_section_id::RODATA.base_part_id(), 16);
+
+        map_part(part_id::EH_FRAME_HDR, 1);
+        map_part(output_section_id::PREINIT_ARRAY.base_part_id(), 16);
+
+        map_part(part_id::SHSTRTAB, 1);
+        map_part(part_id::SYMTAB_LOCAL, 1);
+        map_part(part_id::SYMTAB_GLOBAL, 1);
+        map_part(part_id::STRTAB, 1);
+        map_part(output_section_id::GCC_EXCEPT_TABLE.base_part_id(), 16);
+
+        output_sections.ro_custom.iter().for_each(|id| {
+            map_part(id.base_part_id(), 16);
+        });
+        map_part(part_id::PLT, 1);
+        map_part(output_section_id::TEXT.base_part_id(), 16);
+
+        map_part(output_section_id::INIT.base_part_id(), 16);
+
+        map_part(output_section_id::FINI.base_part_id(), 16);
+
+        output_sections.exec_custom.iter().for_each(|id| {
+            map_part(id.base_part_id(), 16);
+        });
+        map_part(part_id::GOT, 1);
+        map_part(part_id::RELA_PLT, 1);
+        map_part(output_section_id::INIT_ARRAY.base_part_id(), 16);
+
+        map_part(output_section_id::FINI_ARRAY.base_part_id(), 16);
+
+        map_part(output_section_id::DATA.base_part_id(), 16);
+
+        map_part(part_id::EH_FRAME, 1);
+        map_part(part_id::DYNAMIC, 1);
+        output_sections.data_custom.iter().for_each(|id| {
+            map_part(id.base_part_id(), 16);
+        });
+        map_part(output_section_id::TDATA.base_part_id(), 16);
+
+        map_part(output_section_id::TBSS.base_part_id(), 16);
+
+        map_part(output_section_id::BSS.base_part_id(), 16);
+
+        output_sections.bss_custom.iter().for_each(|id| {
+            map_part(id.base_part_id(), 16);
+        });
+        map_part(output_section_id::COMMENT.base_part_id(), 16);
+
+        OutputSectionPartMap { parts: parts_out }
     }
 
     /// Zip mutable references to values in `self` with shared references from `other` producing a
@@ -291,81 +171,21 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
         other: &OutputSectionPartMap<U>,
         mut cb: impl FnMut(&mut T, &U) -> V,
     ) -> OutputSectionPartMap<V> {
-        let regular = self
-            .regular
+        let parts = self
+            .parts
             .iter_mut()
-            .zip(other.regular.iter())
-            .map(|(t, u)| {
-                t.mut_zip(u)
-                    .map(|(alignment, t, u)| (alignment, cb(t, u)))
-                    .collect::<AlignmentMap<V>>()
-            })
+            .zip(other.parts.iter())
+            .map(|(t, u)| cb(t, u))
             .collect();
 
-        OutputSectionPartMap {
-            regular,
-            file_header: cb(&mut self.file_header, &other.file_header),
-            program_headers: cb(&mut self.program_headers, &other.program_headers),
-            section_headers: cb(&mut self.section_headers, &other.section_headers),
-            got: cb(&mut self.got, &other.got),
-            plt: cb(&mut self.plt, &other.plt),
-            symtab_locals: cb(&mut self.symtab_locals, &other.symtab_locals),
-            symtab_globals: cb(&mut self.symtab_globals, &other.symtab_globals),
-            symtab_strings: cb(&mut self.symtab_strings, &other.symtab_strings),
-            shstrtab: cb(&mut self.shstrtab, &other.shstrtab),
-            rela_plt: cb(&mut self.rela_plt, &other.rela_plt),
-            eh_frame: cb(&mut self.eh_frame, &other.eh_frame),
-            eh_frame_hdr: cb(&mut self.eh_frame_hdr, &other.eh_frame_hdr),
-            dynamic: cb(&mut self.dynamic, &other.dynamic),
-            gnu_hash: cb(&mut self.gnu_hash, &other.gnu_hash),
-            dynsym: cb(&mut self.dynsym, &other.dynsym),
-            dynstr: cb(&mut self.dynstr, &other.dynstr),
-            gnu_version: cb(&mut self.gnu_version, &other.gnu_version),
-            gnu_version_r: cb(&mut self.gnu_version_r, &other.gnu_version_r),
-            rela_dyn_relative: cb(&mut self.rela_dyn_relative, &other.rela_dyn_relative),
-            rela_dyn_general: cb(&mut self.rela_dyn_general, &other.rela_dyn_general),
-            interp: cb(&mut self.interp, &other.interp),
-        }
+        OutputSectionPartMap { parts }
     }
 }
 
 impl<T: Default> OutputSectionPartMap<T> {
-    pub(crate) fn resize(&mut self, num_sections: usize) {
-        self.regular
-            .resize_with(num_sections - NUM_GENERATED_SECTIONS, Default::default)
+    pub(crate) fn resize(&mut self, num_parts: usize) {
+        self.parts.resize_with(num_parts, Default::default)
     }
-}
-
-fn map_alignment_map<T: Default + PartialEq, U: Default>(
-    alignment_map: &AlignmentMap<T>,
-    cb: &mut impl FnMut(OutputSectionId, Alignment, &T) -> U,
-    output_section_id: OutputSectionId,
-) -> AlignmentMap<U> {
-    // The maximum alignment is the alignment of the first non-default bucket when iterating the
-    // alignment buckets in reverse order. We cap alignment to at most this value unless the minimum
-    // alignment of the section is greater.
-    let max_alignment = alignment_map
-        .iter()
-        .rev()
-        .find(|(_, value)| *value != &Default::default())
-        .map(|(alignment, _)| alignment)
-        .unwrap_or_default();
-    alignment_map
-        .iter()
-        .rev()
-        .map(|(alignment, value)| {
-            (
-                alignment,
-                cb(
-                    output_section_id,
-                    max_alignment
-                        .min(alignment)
-                        .max(output_section_id.min_alignment()),
-                    value,
-                ),
-            )
-        })
-        .collect()
 }
 
 impl<T: Copy> OutputSectionPartMap<T> {
@@ -374,76 +194,30 @@ impl<T: Copy> OutputSectionPartMap<T> {
         &self,
         mut cb: impl FnMut(&[T]) -> U,
     ) -> OutputSectionMap<U> {
-        let mut values_out = Vec::with_capacity(NUM_GENERATED_SECTIONS + self.regular.len());
-        let mut update = |output_section_id: OutputSectionId, values: &[T]| {
-            debug_assert_eq!(output_section_id.as_usize(), values_out.len());
-            values_out.push(cb(values));
-        };
-        // Note, this needs to be in order of increasing section ID.
-        update(output_section_id::FILE_HEADER, &[self.file_header]);
-        update(output_section_id::PROGRAM_HEADERS, &[self.program_headers]);
-        update(output_section_id::SECTION_HEADERS, &[self.section_headers]);
-        update(output_section_id::SHSTRTAB, &[self.shstrtab]);
-        update(output_section_id::STRTAB, &[self.symtab_strings]);
-        update(output_section_id::GOT, &[self.got]);
-        update(output_section_id::PLT, &[self.plt]);
-        update(output_section_id::RELA_PLT, &[self.rela_plt]);
-        update(output_section_id::EH_FRAME, &[self.eh_frame]);
-        update(output_section_id::EH_FRAME_HDR, &[self.eh_frame_hdr]);
-        update(output_section_id::DYNAMIC, &[self.dynamic]);
-        update(output_section_id::GNU_HASH, &[self.gnu_hash]);
-        update(output_section_id::DYNSYM, &[self.dynsym]);
-        update(output_section_id::DYNSTR, &[self.dynstr]);
-        update(output_section_id::INTERP, &[self.interp]);
-        update(output_section_id::GNU_VERSION, &[self.gnu_version]);
-        update(output_section_id::GNU_VERSION_R, &[self.gnu_version_r]);
-        update(
-            output_section_id::SYMTAB,
-            &[self.symtab_locals, self.symtab_globals],
-        );
-        update(
-            output_section_id::RELA_DYN,
-            &[self.rela_dyn_relative, self.rela_dyn_general],
-        );
-        values_out.extend(self.regular.iter().map(|parts| cb(parts.raw_values())));
-        debug_assert!(
-            values_out.len() == values_out.capacity(),
-            "merge_parts didn't merge {} section(s)",
-            values_out.capacity() - values_out.len()
-        );
+        let num_sections = PartId::from_usize(self.parts.len())
+            .output_section_id()
+            .as_usize();
+        let mut parts = self.parts.as_slice();
+        let values_out = (0..num_sections)
+            .map(|i| {
+                let num_parts = OutputSectionId::from_usize(i).num_parts();
+                let (section_parts, rest) = parts.split_at(num_parts);
+                parts = rest;
+                cb(section_parts)
+            })
+            .collect();
         OutputSectionMap::from_values(values_out)
     }
 }
 
 impl<T: AddAssign + Copy + Default> OutputSectionPartMap<T> {
     pub(crate) fn merge(&mut self, rhs: &Self) {
-        if self.len() < rhs.len() {
-            self.resize(rhs.len());
+        if self.num_parts() < rhs.num_parts() {
+            self.resize(rhs.num_parts());
         }
-        for (left, right) in self.regular.iter_mut().zip(rhs.regular.iter()) {
-            left.merge(right);
+        for (left, right) in self.parts.iter_mut().zip(rhs.parts.iter()) {
+            *left += *right;
         }
-        self.file_header += rhs.file_header;
-        self.program_headers += rhs.program_headers;
-        self.section_headers += rhs.section_headers;
-        self.got += rhs.got;
-        self.plt += rhs.plt;
-        self.symtab_locals += rhs.symtab_locals;
-        self.symtab_globals += rhs.symtab_globals;
-        self.symtab_strings += rhs.symtab_strings;
-        self.shstrtab += rhs.shstrtab;
-        self.rela_plt += rhs.rela_plt;
-        self.eh_frame += rhs.eh_frame;
-        self.eh_frame_hdr += rhs.eh_frame_hdr;
-        self.dynamic += rhs.dynamic;
-        self.gnu_hash += rhs.gnu_hash;
-        self.dynsym += rhs.dynsym;
-        self.dynstr += rhs.dynstr;
-        self.gnu_version += rhs.gnu_version;
-        self.gnu_version_r += rhs.gnu_version_r;
-        self.rela_dyn_relative += rhs.rela_dyn_relative;
-        self.rela_dyn_general += rhs.rela_dyn_general;
-        self.interp += rhs.interp;
     }
 }
 
@@ -462,38 +236,41 @@ impl<'out> OutputSectionPartMap<&'out mut [u8]> {
 fn test_merge_parts() {
     let output_sections = OutputSections::for_testing();
     let mut expected_sum_of_sums = 0;
-    let all_1 = OutputSectionPartMap::<u32>::with_size(output_sections.len()).output_order_map(
-        &output_sections,
-        |_, _, _| {
-            expected_sum_of_sums += 1;
-            1
-        },
-    );
+    let all_1 =
+        output_sections
+            .new_part_map::<u32>()
+            .output_order_map(&output_sections, |_, _, _| {
+                expected_sum_of_sums += 1;
+                1
+            });
+    let num_regular_sections = output_sections.num_regular_sections();
+    let mut num_sections_with_16 = 0;
     let sum_of_1s: OutputSectionMap<u32> = all_1.merge_parts(|values| values.iter().sum());
     let mut sum_of_sums = 0;
     sum_of_1s.for_each(|section_id, sum| {
         sum_of_sums += *sum;
+        if *sum == 16 {
+            num_sections_with_16 += 1;
+        }
         assert!(*sum > 0, "Expected non-zero sum for section {section_id:?}");
     });
+    assert_eq!(num_regular_sections, num_sections_with_16);
     assert_eq!(sum_of_sums, expected_sum_of_sums);
 
-    let mut headers_only = OutputSectionPartMap::<u32>::with_size(output_sections.len());
-    headers_only.file_header += 42;
+    let mut headers_only = output_sections.new_part_map::<u32>();
+    *headers_only.get_mut(part_id::FILE_HEADER) += 42;
     let merged: OutputSectionMap<u32> = headers_only.merge_parts(|values| values.iter().sum());
-    assert_eq!(*merged.built_in(output_section_id::FILE_HEADER), 42);
-    assert_eq!(*merged.built_in(output_section_id::TEXT), 0);
-    assert_eq!(*merged.built_in(output_section_id::BSS), 0);
+    assert_eq!(*merged.get(output_section_id::FILE_HEADER), 42);
+    assert_eq!(*merged.get(output_section_id::TEXT), 0);
+    assert_eq!(*merged.get(output_section_id::BSS), 0);
 }
 
 #[test]
 fn test_mut_with_map() {
     let output_sections = OutputSections::for_testing();
-    let mut input1 = OutputSectionPartMap::<u32>::with_size(output_sections.len())
-        .output_order_map(&output_sections, |_, _, _| 1);
-    let input2 = OutputSectionPartMap::<u32>::with_size(output_sections.len())
-        .output_order_map(&output_sections, |_, _, _| 2);
-    let expected = OutputSectionPartMap::<u32>::with_size(output_sections.len())
-        .output_order_map(&output_sections, |_, _, _| 3);
+    let mut input1 = output_sections.new_part_map::<u32>().map(|_, _| 1);
+    let input2 = output_sections.new_part_map::<u32>().map(|_, _| 2);
+    let expected = output_sections.new_part_map::<u32>().map(|_, _| 3);
     input1.mut_with_map(&input2, |a, b| *a += *b);
     assert_eq!(input1, expected);
 }
@@ -501,12 +278,9 @@ fn test_mut_with_map() {
 #[test]
 fn test_merge() {
     let output_sections = OutputSections::for_testing();
-    let mut input1 = OutputSectionPartMap::<u32>::with_size(output_sections.len())
-        .output_order_map(&output_sections, |_, _, _| 1);
-    let input2 = OutputSectionPartMap::<u32>::with_size(output_sections.len())
-        .output_order_map(&output_sections, |_, _, _| 2);
-    let expected = OutputSectionPartMap::<u32>::with_size(output_sections.len())
-        .output_order_map(&output_sections, |_, _, _| 3);
+    let mut input1 = output_sections.new_part_map::<u32>().map(|_, _| 1);
+    let input2 = output_sections.new_part_map::<u32>().map(|_, _| 2);
+    let expected = output_sections.new_part_map::<u32>().map(|_, _| 3);
     input1.merge(&input2);
     assert_eq!(input1, expected);
 }
@@ -514,12 +288,12 @@ fn test_merge() {
 #[test]
 fn test_merge_with_custom_sections() {
     let output_sections = OutputSections::for_testing();
-    let mut m1 = OutputSectionPartMap::<u32>::with_size(output_sections.len());
-    let mut m2 = OutputSectionPartMap::<u32>::with_size(output_sections.len());
-    assert_eq!(m2.len(), output_sections.len());
-    m2.resize(output_sections.len() + 2);
+    let mut m1 = output_sections.new_part_map::<u32>();
+    let mut m2 = output_sections.new_part_map::<u32>();
+    assert_eq!(m2.num_parts(), output_sections.num_parts());
+    m2.resize(output_sections.num_parts() + 2);
     m1.merge(&m2);
-    assert_eq!(m1.len(), output_sections.len() + 2);
+    assert_eq!(m1.num_parts(), output_sections.num_parts() + 2);
 }
 
 /// We have two functions that iterate through all sections in output order (but in different ways).
@@ -530,30 +304,34 @@ fn test_output_order_map_consistent() {
     use itertools::Itertools;
 
     let output_sections = output_section_id::OutputSections::for_testing();
-    let mut part_map = OutputSectionPartMap::<u32>::with_size(output_sections.len());
-    part_map.resize(output_sections.len());
+    let part_map = output_sections.new_part_map::<u32>();
 
-    // First, make sure that all our built-in sections are here. If they're not, we'd fail anyway,
+    // First, make sure that all our built-in part-ids are here. If they're not, we'd fail anyway,
     // but we can give a much better failure message if we check first.
-    let mut missing: std::collections::HashSet<OutputSectionId> =
-        output_section_id::built_in_section_ids().collect();
-    part_map.output_order_map(&output_sections, |output_section_id, _, _| {
-        missing.remove(&output_section_id);
+    let mut missing: std::collections::HashSet<PartId> = part_id::built_in_part_ids().collect();
+    part_map.map(|part_id, _| {
+        missing.remove(&part_id);
     });
+    let mut missing = missing.into_iter().collect_vec();
+    missing.sort();
     assert!(
         missing.is_empty(),
         "Built-in sections missing from output_order_map: {}",
         missing
             .iter()
-            .map(|id| output_sections.display_name(*id))
+            .map(|id| format!(
+                "{id} (in {})",
+                output_sections.display_name(id.output_section_id())
+            ))
             .collect_vec()
             .join(", ")
     );
 
     let mut ordering_a = Vec::new();
-    part_map.output_order_map(&output_sections, |output_section_id, _, _| {
-        if ordering_a.last() != Some(&output_section_id.as_usize()) {
-            ordering_a.push(output_section_id.as_usize());
+    part_map.output_order_map(&output_sections, |part_id, _, _| {
+        let section_id = part_id.output_section_id();
+        if ordering_a.last() != Some(&section_id.as_usize()) {
+            ordering_a.push(section_id.as_usize());
         }
     });
     let mut ordering_b = Vec::new();

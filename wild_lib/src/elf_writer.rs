@@ -1,3 +1,4 @@
+use crate::alignment;
 use crate::args::Args;
 use crate::args::OutputKind;
 use crate::debug_assert_bail;
@@ -37,6 +38,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
+use crate::part_id;
 use crate::relaxation::Relaxation;
 use crate::relaxation::RelocationModifier;
 use crate::resolution::SectionSlot;
@@ -306,11 +308,15 @@ fn split_buffers_by_alignment<'out>(
     section_buffers: &'out mut OutputSectionMap<&mut [u8]>,
     layout: &Layout,
 ) -> OutputSectionPartMap<&'out mut [u8]> {
-    layout
-        .section_part_layouts
-        .output_order_map(&layout.output_sections, |section_id, _, rec| {
-            crate::slice::slice_take_prefix_mut(section_buffers.get_mut(section_id), rec.file_size)
-        })
+    layout.section_part_layouts.output_order_map(
+        &layout.output_sections,
+        |part_id, _alignment, rec| {
+            crate::slice::slice_take_prefix_mut(
+                section_buffers.get_mut(part_id.output_section_id()),
+                rec.file_size,
+            )
+        },
+    )
 }
 
 fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: &Layout) -> Result {
@@ -381,7 +387,7 @@ fn populate_file_header(
         e,
         layout
             .output_sections
-            .output_index_of_section(crate::output_section_id::SHSTRTAB)
+            .output_index_of_section(output_section_id::SHSTRTAB)
             .expect("we always write .shstrtab"),
     );
     Ok(())
@@ -447,14 +453,14 @@ impl<'out> VersionWriter<'out> {
             bail!(
                 "Allocated too much space in .gnu.version. {} of {} entries remain",
                 self.versym.len(),
-                mem_sizes.gnu_version / elf::GNU_VERSION_ENTRY_SIZE
+                mem_sizes.get(part_id::GNU_VERSION) / elf::GNU_VERSION_ENTRY_SIZE
             );
         }
         if !self.version_r.is_empty() {
             bail!(
                 "Allocated too much space in .gnu.version_r. {} of {} bytes remain",
                 self.version_r.len(),
-                mem_sizes.gnu_version_r
+                mem_sizes.get(part_id::GNU_VERSION_R)
             );
         }
         Ok(())
@@ -513,26 +519,22 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         debug_symbol_writer: SymbolTableWriter<'data, 'out>,
         eh_frame_start_address: u64,
     ) -> TableWriter<'data, 'out> {
-        let eh_frame = core::mem::take(&mut buffers.eh_frame);
-        let eh_frame_hdr = core::mem::take(&mut buffers.eh_frame_hdr);
-        let dynamic = DynamicEntriesWriter::new(core::mem::take(&mut buffers.dynamic));
+        let eh_frame = buffers.take(part_id::EH_FRAME);
+        let eh_frame_hdr = buffers.take(part_id::EH_FRAME_HDR);
+        let dynamic = DynamicEntriesWriter::new(buffers.take(part_id::DYNAMIC));
         let version_writer = VersionWriter::new(
-            core::mem::take(&mut buffers.gnu_version_r),
-            slice_from_all_bytes_mut(core::mem::take(&mut buffers.gnu_version)),
+            buffers.take(part_id::GNU_VERSION_R),
+            slice_from_all_bytes_mut(buffers.take(part_id::GNU_VERSION)),
         );
 
         TableWriter {
             output_kind,
-            got: bytemuck::cast_slice_mut(core::mem::take(&mut buffers.got)),
-            plt: core::mem::take(&mut buffers.plt),
-            rela_plt: slice_from_all_bytes_mut(core::mem::take(&mut buffers.rela_plt)),
+            got: bytemuck::cast_slice_mut(buffers.take(part_id::GOT)),
+            plt: buffers.take(part_id::PLT),
+            rela_plt: slice_from_all_bytes_mut(buffers.take(part_id::RELA_PLT)),
             tls,
-            rela_dyn_relative: slice_from_all_bytes_mut(core::mem::take(
-                &mut buffers.rela_dyn_relative,
-            )),
-            rela_dyn_general: slice_from_all_bytes_mut(core::mem::take(
-                &mut buffers.rela_dyn_general,
-            )),
+            rela_dyn_relative: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_RELATIVE)),
+            rela_dyn_general: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_GENERAL)),
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
@@ -580,7 +582,7 @@ impl<'data, 'out> TableWriter<'data, 'out> {
                 && !res.value_flags.contains(ValueFlags::IFUNC)
         {
             debug_assert_bail!(
-                compute_allocations(res, self.output_kind).rela_dyn_general > 0,
+                *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
                 "Tried to write glob-dat with no allocation. {}",
                 ResFlagsDisplay(res)
             );
@@ -624,7 +626,7 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             *got_entry = address.wrapping_sub(self.tls.end);
         } else {
             debug_assert_bail!(
-                compute_allocations(res, self.output_kind).rela_dyn_general > 0,
+                *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
                 "Tried to write tpoff with no allocation. {}",
                 ResFlagsDisplay(res)
             );
@@ -640,7 +642,7 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         } else {
             let dynamic_symbol_index = res.dynamic_symbol_index.map(|i| i.get()).unwrap_or(0);
             debug_assert_bail!(
-                compute_allocations(res, self.output_kind).rela_dyn_general > 0,
+                *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
                 "Tried to write dtpmod with no allocation. {}",
                 ResFlagsDisplay(res)
             );
@@ -692,14 +694,14 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             bail!(
                 "Allocated too much relative space in .rela.dyn. {} of {} entries remain unused.",
                 self.rela_dyn_relative.len(),
-                mem_sizes.rela_dyn_relative / elf::RELA_ENTRY_SIZE,
+                mem_sizes.get(part_id::RELA_DYN_RELATIVE) / elf::RELA_ENTRY_SIZE,
             );
         }
         if !self.rela_dyn_general.is_empty() {
             bail!(
                 "Allocated too much general space in .rela.dyn. {} of {} entries remain unused.",
                 self.rela_dyn_general.len(),
-                mem_sizes.rela_dyn_general / elf::RELA_ENTRY_SIZE,
+                mem_sizes.get(part_id::RELA_DYN_GENERAL) / elf::RELA_ENTRY_SIZE,
             );
         }
         self.dynsym_writer.check_exhausted()?;
@@ -709,14 +711,14 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             bail!(
                 "Allocated too much space in .eh_frame. {} of {} bytes remain",
                 self.eh_frame.len(),
-                mem_sizes.eh_frame
+                mem_sizes.get(part_id::EH_FRAME)
             );
         }
         if !self.eh_frame_hdr.is_empty() {
             bail!(
                 "Allocated too much space in .eh_frame_hdr. {} of {} bytes remain",
                 self.eh_frame_hdr.len(),
-                mem_sizes.eh_frame_hdr
+                mem_sizes.get(part_id::EH_FRAME_HDR)
             );
         }
         Ok(())
@@ -879,9 +881,9 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
         output_sections: &'data OutputSections<'data>,
     ) -> Self {
-        let local_entries = slice_from_all_bytes_mut(core::mem::take(&mut buffers.symtab_locals));
-        let global_entries = slice_from_all_bytes_mut(core::mem::take(&mut buffers.symtab_globals));
-        let strings = core::mem::take(&mut buffers.symtab_strings);
+        let local_entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB_LOCAL));
+        let global_entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB_GLOBAL));
+        let strings = buffers.take(part_id::STRTAB);
         Self {
             local_entries,
             global_entries,
@@ -899,8 +901,8 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
         output_sections: &'data OutputSections<'data>,
     ) -> Self {
-        let global_entries = slice_from_all_bytes_mut(core::mem::take(&mut buffers.dynsym));
-        let strings = slice_from_all_bytes_mut(core::mem::take(&mut buffers.dynstr));
+        let global_entries = slice_from_all_bytes_mut(buffers.take(part_id::DYNSYM));
+        let strings = slice_from_all_bytes_mut(buffers.take(part_id::DYNSTR));
         Self {
             local_entries: Default::default(),
             global_entries,
@@ -1090,9 +1092,9 @@ impl<'data> ObjectLayout<'data> {
     ) -> Result {
         if layout
             .output_sections
-            .has_data_in_file(sec.output_section_id.unwrap())
+            .has_data_in_file(sec.output_section_id().unwrap())
         {
-            let section_buffer = buffers.regular_mut(sec.output_section_id.unwrap(), sec.alignment);
+            let section_buffer = buffers.get_mut(sec.output_part_id().unwrap());
             let allocation_size = sec.capacity() as usize;
             if section_buffer.len() < allocation_size {
                 bail!(
@@ -1142,12 +1144,12 @@ impl<'data> ObjectLayout<'data> {
                 &self.sections,
             ) {
                 let e = LittleEndian;
-                let output_section_id =
+                let section_id =
                     if let Some(section_index) = self.object.symbol_section(sym, sym_index)? {
                         match &self.sections[section_index.0] {
-                            SectionSlot::Loaded(section) => section.output_section_id.unwrap(),
+                            SectionSlot::Loaded(section) => section.output_section_id().unwrap(),
                             SectionSlot::MergeStrings(section) => {
-                                section.precomputed_output_section_id()
+                                section.precomputed_part_id().output_section_id()
                             }
                             SectionSlot::EhFrameData(..) => output_section_id::EH_FRAME,
                             _ => bail!("Tried to copy a symbol in a section we didn't load"),
@@ -1178,7 +1180,7 @@ impl<'data> ObjectLayout<'data> {
                     symbol_value -= tls_start_address;
                 }
                 symbol_writer
-                    .copy_symbol(sym, info.name, output_section_id, symbol_value)
+                    .copy_symbol(sym, info.name, section_id, symbol_value)
                     .with_context(|| {
                         format!("Failed to copy {}", layout.symbol_debug(symbol_id))
                     })?;
@@ -1580,17 +1582,18 @@ impl PreludeLayout {
         table_writer: &mut TableWriter,
         layout: &Layout,
     ) -> Result {
-        let header: &mut FileHeader = from_bytes_mut(buffers.file_header)
+        let header: &mut FileHeader = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
             .map_err(|_| anyhow!("Invalid file header allocation"))?
             .0;
         populate_file_header(layout, &self.header_info, header)?;
 
-        let mut program_headers = ProgramHeaderWriter::new(buffers.program_headers);
+        let mut program_headers =
+            ProgramHeaderWriter::new(buffers.get_mut(part_id::PROGRAM_HEADERS));
         write_program_headers(&mut program_headers, layout)?;
 
-        write_section_headers(buffers.section_headers, layout);
+        write_section_headers(buffers.get_mut(part_id::SECTION_HEADERS), layout);
 
-        write_section_header_strings(buffers.shstrtab, &layout.output_sections);
+        write_section_header_strings(buffers.get_mut(part_id::SHSTRTAB), &layout.output_sections);
 
         self.write_plt_got_entries(layout, table_writer)?;
 
@@ -1627,7 +1630,7 @@ impl PreludeLayout {
     fn write_interp(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>) {
         if let Some(dynamic_linker) = self.dynamic_linker.as_ref() {
             buffers
-                .interp
+                .get_mut(part_id::INTERP)
                 .copy_from_slice(dynamic_linker.as_bytes_with_nul());
         }
     }
@@ -1635,7 +1638,8 @@ impl PreludeLayout {
     fn write_merged_strings(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>, layout: &Layout) {
         layout.merged_strings.for_each(|section_id, merged| {
             if merged.len() > 0 {
-                let buffer = buffers.regular_mut(section_id, crate::alignment::MIN);
+                let buffer =
+                    buffers.get_mut(section_id.part_id_with_alignment(crate::alignment::MIN));
                 for string in &merged.strings {
                     let dest = crate::slice::slice_take_prefix_mut(buffer, string.len());
                     dest.copy_from_slice(string)
@@ -1644,7 +1648,8 @@ impl PreludeLayout {
         });
 
         // Write linker identity into .comment section.
-        let comment_buffer = buffers.regular_mut(output_section_id::COMMENT, crate::alignment::MIN);
+        let comment_buffer =
+            buffers.get_mut(output_section_id::COMMENT.part_id_with_alignment(alignment::MIN));
         crate::slice::slice_take_prefix_mut(comment_buffer, self.identity.len())
             .copy_from_slice(self.identity.as_bytes());
     }
@@ -1755,8 +1760,9 @@ fn write_gnu_hash_tables(
         return Ok(());
     };
 
-    let (header, rest) = object::from_bytes_mut::<GnuHashHeader>(buffers.gnu_hash)
-        .map_err(|_| anyhow!("Insufficient .gnu.hash allocation"))?;
+    let (header, rest) =
+        object::from_bytes_mut::<GnuHashHeader>(buffers.get_mut(part_id::GNU_HASH))
+            .map_err(|_| anyhow!("Insufficient .gnu.hash allocation"))?;
     let e = LittleEndian;
     header.bucket_count.set(e, gnu_hash_layout.bucket_count);
     header.bloom_shift.set(e, gnu_hash_layout.bloom_shift);
@@ -1908,7 +1914,7 @@ fn write_regular_object_dynamic_symbol_definition(
         let SectionSlot::Loaded(section) = &object.sections[section_index.0] else {
             bail!("Internal error: Defined symbols should always be for a loaded section");
         };
-        let output_section_id = section.output_section_id.unwrap();
+        let output_section_id = section.output_section_id().unwrap();
         let symbol_id = sym_def.symbol_id;
         let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
             format!(
@@ -2007,9 +2013,7 @@ fn write_eh_frame_hdr(table_writer: &mut TableWriter, layout: &Layout<'_>) -> Re
 }
 
 fn eh_frame_hdr_entry_count(layout: &Layout<'_>) -> Result<u32> {
-    let hdr_sec = layout
-        .section_layouts
-        .built_in(output_section_id::EH_FRAME_HDR);
+    let hdr_sec = layout.section_layouts.get(output_section_id::EH_FRAME_HDR);
     u32::try_from(
         (hdr_sec.mem_size - core::mem::size_of::<elf::EhFrameHdr>() as u64)
             / core::mem::size_of::<elf::EhFrameHdrEntry>() as u64,
@@ -2077,17 +2081,35 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     }),
     DynamicEntryWriter::optional(
         object::elf::DT_VERNEED,
-        |layout| layout.section_part_layouts.gnu_version_r.mem_size > 0,
+        |layout| {
+            layout
+                .section_part_layouts
+                .get(part_id::GNU_VERSION_R)
+                .mem_size
+                > 0
+        },
         |layout| layout.vma_of_section(output_section_id::GNU_VERSION_R),
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_VERNEEDNUM,
-        |layout| layout.section_part_layouts.gnu_version_r.mem_size > 0,
+        |layout| {
+            layout
+                .section_part_layouts
+                .get(part_id::GNU_VERSION_R)
+                .mem_size
+                > 0
+        },
         |layout| layout.non_addressable_counts.verneed_count,
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_VERSYM,
-        |layout| layout.section_part_layouts.gnu_version.mem_size > 0,
+        |layout| {
+            layout
+                .section_part_layouts
+                .get(part_id::GNU_VERSION)
+                .mem_size
+                > 0
+        },
         |layout| layout.vma_of_section(output_section_id::GNU_VERSION),
     ),
     DynamicEntryWriter::optional(
@@ -2101,18 +2123,18 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_JMPREL,
-        |layout| layout.section_part_layouts.rela_plt.mem_size > 0,
+        |layout| layout.section_part_layouts.get(part_id::RELA_PLT).mem_size > 0,
         |layout| layout.vma_of_section(output_section_id::RELA_PLT),
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_PLTREL,
-        |layout| layout.section_part_layouts.rela_plt.mem_size > 0,
+        |layout| layout.section_part_layouts.get(part_id::RELA_PLT).mem_size > 0,
         |_| object::elf::DT_RELA.into(),
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_PLTRELSZ,
-        |layout| layout.section_part_layouts.rela_plt.mem_size > 0,
-        |layout| layout.section_part_layouts.rela_plt.mem_size,
+        |layout| layout.section_part_layouts.get(part_id::RELA_PLT).mem_size > 0,
+        |layout| layout.section_part_layouts.get(part_id::RELA_PLT).mem_size,
     ),
     DynamicEntryWriter::new(object::elf::DT_RELA, |layout| {
         layout.vma_of_section(output_section_id::RELA_DYN)
@@ -2124,7 +2146,10 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     // Note, rela-count is just the count of the relative relocations and doesn't include any
     // glob-dat relocations. This is as opposed to rela-size, which includes both.
     DynamicEntryWriter::new(object::elf::DT_RELACOUNT, |layout| {
-        layout.section_part_layouts.rela_dyn_relative.mem_size
+        layout
+            .section_part_layouts
+            .get(part_id::RELA_DYN_RELATIVE)
+            .mem_size
             / core::mem::size_of::<elf::Rela>() as u64
     }),
     DynamicEntryWriter::new(object::elf::DT_GNU_HASH, |layout| {
@@ -2508,14 +2533,14 @@ pub(crate) fn verify_resolution_allocation(
 ) -> Result {
     // Allocate however much space was requested.
     let mut total_bytes_allocated = 0;
-    mem_sizes.output_order_map(output_sections, |_, alignment, &size| {
+    mem_sizes.output_order_map(output_sections, |_part_id, alignment, &size| {
         total_bytes_allocated = alignment.align_up(total_bytes_allocated) + size;
     });
     total_bytes_allocated = crate::alignment::USIZE.align_up(total_bytes_allocated);
     let mut all_mem = vec![0_u64; total_bytes_allocated as usize / core::mem::size_of::<u64>()];
     let mut all_mem: &mut [u8] = bytemuck::cast_slice_mut(all_mem.as_mut_slice());
     let mut offset = 0;
-    let mut buffers = mem_sizes.output_order_map(output_sections, |_, alignment, &size| {
+    let mut buffers = mem_sizes.output_order_map(output_sections, |_part_id, alignment, &size| {
         let aligned_offset = alignment.align_up(offset);
         crate::slice::slice_take_prefix_mut(&mut all_mem, (aligned_offset - offset) as usize);
         offset = aligned_offset + size;

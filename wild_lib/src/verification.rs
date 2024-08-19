@@ -1,12 +1,12 @@
 //! Used after `finalise_layout` to verify that all section output offsets were bumped by an amount
 //! equal to the size requested for that section.
 
-use crate::alignment::Alignment;
 use crate::error::Result;
 use crate::layout::FileLayout;
-use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_part_map::OutputSectionPartMap;
+use crate::part_id;
+use crate::part_id::PartId;
 use anyhow::bail;
 use itertools::Itertools;
 
@@ -42,15 +42,15 @@ impl OffsetVerifier {
         let actual = offsets_by_key(memory_offsets, output_sections);
         let sizes = offsets_by_key(&self.sizes, output_sections);
         let mut problems = Vec::new();
-        for (((section_id, alignment, exp), (_, _, act)), (_, _, size)) in
-            expected.iter().zip(actual.iter()).zip(sizes)
+        for (((part_id, exp), (_, act)), (_, size)) in expected.iter().zip(actual.iter()).zip(sizes)
         {
+            let alignment = part_id.alignment();
             if exp != act {
                 let actual_bump = *act as i64 - (*exp as i64 - size as i64);
                 problems.push(format!(
-                    "Section `{}` alignment: {alignment} expected: 0x{exp:x} actual: 0x{act:x} \
-                     bumped by: 0x{actual_bump:x} requested size: 0x{size:x}\n",
-                    String::from_utf8_lossy(output_sections.name(*section_id))
+                    "Part #{part_id} (section `{}` alignment: {alignment}) expected: 0x{exp:x} \
+                     actual: 0x{act:x} bumped by: 0x{actual_bump:x} requested size: 0x{size:x}\n",
+                    String::from_utf8_lossy(output_sections.name(part_id.output_section_id()))
                 ));
             }
         }
@@ -69,28 +69,34 @@ pub(crate) fn clear_ignored(expected: &mut OutputSectionPartMap<u64>) {
     /// A distinctive value that should definitely make things fail if we actually do make use of
     /// one of these offsets during `finalise_layout`.
     const IGNORED_OFFSET: u64 = 0x98760000;
-    expected.rela_plt = IGNORED_OFFSET;
-    expected.eh_frame_hdr = IGNORED_OFFSET;
-    expected.rela_dyn_general = IGNORED_OFFSET;
-    expected.rela_dyn_relative = IGNORED_OFFSET;
-    expected.rela_dyn_relative = IGNORED_OFFSET;
-    expected.gnu_version = IGNORED_OFFSET;
-    expected.gnu_hash = IGNORED_OFFSET;
-    expected.dynamic = IGNORED_OFFSET;
-    expected.interp = IGNORED_OFFSET;
-    expected.file_header = IGNORED_OFFSET;
-    expected.program_headers = IGNORED_OFFSET;
-    expected.section_headers = IGNORED_OFFSET;
-    expected.shstrtab = IGNORED_OFFSET;
+
+    const IGNORED: &[PartId] = &[
+        part_id::RELA_PLT,
+        part_id::EH_FRAME_HDR,
+        part_id::RELA_DYN_GENERAL,
+        part_id::RELA_DYN_RELATIVE,
+        part_id::GNU_VERSION,
+        part_id::GNU_HASH,
+        part_id::DYNAMIC,
+        part_id::INTERP,
+        part_id::FILE_HEADER,
+        part_id::PROGRAM_HEADERS,
+        part_id::SECTION_HEADERS,
+        part_id::SHSTRTAB,
+    ];
+
+    for part_id in IGNORED {
+        *expected.get_mut(*part_id) = IGNORED_OFFSET;
+    }
 }
 
 fn offsets_by_key(
     memory_offsets: &OutputSectionPartMap<u64>,
     output_sections: &OutputSections,
-) -> Vec<(OutputSectionId, Alignment, u64)> {
+) -> Vec<(PartId, u64)> {
     let mut offsets_by_key = Vec::new();
-    memory_offsets.output_order_map(output_sections, |section_id, alignment, offset| {
-        offsets_by_key.push((section_id, alignment, *offset))
+    memory_offsets.output_order_map(output_sections, |part_id, _alignment, offset| {
+        offsets_by_key.push((part_id, *offset))
     });
     offsets_by_key
 }

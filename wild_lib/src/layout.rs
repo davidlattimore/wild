@@ -23,11 +23,13 @@ use crate::input_data::PRELUDE_FILE_ID;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
-use crate::output_section_id::UnloadedSection;
-use crate::output_section_id::NUM_GENERATED_SECTIONS;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
+use crate::part_id;
+use crate::part_id::PartId;
+use crate::part_id::UnloadedSection;
+use crate::part_id::NUM_GENERATED_PARTS;
 use crate::program_segments;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::MAX_SEGMENTS;
@@ -129,8 +131,7 @@ pub fn compute<'data>(
     let header_info = internal.header_info.as_ref().unwrap();
     let segment_layouts = compute_segment_layout(&section_layouts, &output_sections, header_info);
 
-    let mem_offsets: OutputSectionPartMap<u64> =
-        starting_memory_offsets(&section_part_layouts, &output_sections);
+    let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(&section_part_layouts);
     let starting_mem_offsets_by_group = compute_start_offsets_by_group(&group_states, mem_offsets);
     let merged_string_start_addresses =
         MergedStringStartAddresses::compute(&output_sections, &starting_mem_offsets_by_group);
@@ -428,8 +429,8 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                         })?;
                 } else {
                     let name = symbol_db.symbol_name(symbol_id)?;
-                    common.mem_sizes.dynstr += name.len() as u64 + 1;
-                    common.mem_sizes.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;
+                    common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
+                    common.allocate(part_id::DYNSYM, crate::elf::SYMTAB_ENTRY_SIZE);
                     tracing::trace!(
                         "Allocate dynsym for {symbol_id} ({})",
                         symbol_db.symbol_name_for_display(symbol_id)
@@ -460,8 +461,15 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
             );
         }
         if symbol_db.args.should_output_symbol_versions() {
-            let num_dynamic_symbols = common.mem_sizes.dynsym / crate::elf::SYMTAB_ENTRY_SIZE;
-            common.mem_sizes.gnu_version = num_dynamic_symbols * crate::elf::GNU_VERSION_ENTRY_SIZE;
+            let num_dynamic_symbols =
+                common.mem_sizes.get(part_id::DYNSYM) / crate::elf::SYMTAB_ENTRY_SIZE;
+            // Note, sets the GNU_VERSION allocation rather than incrementing it. Assuming there are
+            // multiple files in our group, we'll update this same value multiple times, each time
+            // with a possibly revised dynamic symbol count. The important thing is that when we're
+            // done finalising the group sizes, the GNU_VERSION size should be consistent with the
+            // DYNSYM size.
+            *common.mem_sizes.get_mut(part_id::GNU_VERSION) =
+                num_dynamic_symbols * crate::elf::GNU_VERSION_ENTRY_SIZE;
         }
         Ok(())
     }
@@ -514,7 +522,7 @@ fn allocate_symbol_resolution(
     }
     let resolution_flags = resolution_flags.get();
     if resolution_flags.contains(ResolutionFlags::PLT) {
-        mem_sizes.plt += elf::PLT_ENTRY_SIZE;
+        mem_sizes.increment(part_id::PLT, elf::PLT_ENTRY_SIZE);
     }
 
     allocate_resolution(value_flags, resolution_flags, mem_sizes, output_kind);
@@ -526,7 +534,7 @@ pub(crate) fn compute_allocations(
     resolution: &Resolution,
     output_kind: OutputKind,
 ) -> OutputSectionPartMap<u64> {
-    let mut sizes = OutputSectionPartMap::with_size(NUM_GENERATED_SECTIONS);
+    let mut sizes = OutputSectionPartMap::with_size(NUM_GENERATED_PARTS);
     allocate_resolution(
         resolution.value_flags,
         resolution.resolution_flags,
@@ -547,42 +555,42 @@ fn allocate_resolution(
     if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
         // Allocate space required for a copy relocation.
         tracing::trace!("Allocate .rela.dyn general for copy relocation");
-        mem_sizes.rela_dyn_general += crate::elf::RELA_ENTRY_SIZE;
+        mem_sizes.increment(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
     }
     if resolution_flags.contains(ResolutionFlags::GOT) {
-        mem_sizes.got += elf::GOT_ENTRY_SIZE;
+        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
         if value_flags.contains(ValueFlags::IFUNC) {
-            mem_sizes.rela_plt += elf::RELA_ENTRY_SIZE;
+            mem_sizes.increment(part_id::RELA_PLT, elf::RELA_ENTRY_SIZE);
         } else if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
             // Copy relocation means that we know the relative address.
             if output_kind.is_relocatable() {
-                mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
+                mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
             }
         } else if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
             tracing::trace!("Allocate .rela.dyn general for GOT");
-            mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
+            mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         } else if value_flags.contains(ValueFlags::ADDRESS) && output_kind.is_relocatable() {
-            mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
+            mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
         }
     }
     if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
-        mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
+        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
         // For executables, the TLS module ID is known at link time. For shared objects, we
         // need a runtime relocation to fill it in.
         if !output_kind.is_executable() {
             tracing::trace!("Allocate .rela.dyn general for GOT_TLS_MODULE");
-            mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
+            mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
         if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
             tracing::trace!("Allocate .rela.dyn general for GOT_TLS_MODULE");
-            mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
+            mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
     }
     if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
-        mem_sizes.got += elf::GOT_ENTRY_SIZE;
+        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
         if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) {
             tracing::trace!("Allocate .rela.dyn general for GOT_TLS_OFFSET");
-            mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
+            mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
     }
 }
@@ -612,9 +620,10 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
             self.load_sections(common, resources, queue)?;
         } else if local_symbol.is_common(LittleEndian) {
             let common_symbol = CommonSymbol::new(local_symbol)?;
-            *common
-                .mem_sizes
-                .regular_mut(output_section_id::BSS, common_symbol.alignment) += common_symbol.size;
+            common.allocate(
+                output_section_id::BSS.part_id_with_alignment(common_symbol.alignment),
+                common_symbol.size,
+            );
         }
         Ok(())
     }
@@ -684,9 +693,10 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
 
         // Allocate space in BSS for the copy of the symbol.
         let st_size = symbol.st_size(LittleEndian);
-        *common
-            .mem_sizes
-            .regular_mut(output_section_id::BSS, alignment) += st_size;
+        common.allocate(
+            output_section_id::BSS.part_id_with_alignment(alignment),
+            st_size,
+        );
 
         Ok(())
     }
@@ -745,19 +755,21 @@ struct CommonGroupState<'data> {
 impl CommonGroupState<'_> {
     fn new(output_sections: &OutputSections) -> Self {
         Self {
-            mem_sizes: OutputSectionPartMap::with_size(output_sections.len()),
+            mem_sizes: output_sections.new_part_map(),
             dynamic_symbol_definitions: Default::default(),
         }
     }
 
     fn validate_sizes(&self) -> Result {
-        if self.mem_sizes.gnu_version > 0 {
-            let num_dynamic_symbols = self.mem_sizes.dynsym / crate::elf::SYMTAB_ENTRY_SIZE;
-            let num_versym = self.mem_sizes.gnu_version / core::mem::size_of::<Versym>() as u64;
+        if *self.mem_sizes.get(part_id::GNU_VERSION) > 0 {
+            let num_dynamic_symbols =
+                self.mem_sizes.get(part_id::DYNSYM) / crate::elf::SYMTAB_ENTRY_SIZE;
+            let num_versym =
+                self.mem_sizes.get(part_id::GNU_VERSION) / core::mem::size_of::<Versym>() as u64;
             if num_versym != num_dynamic_symbols {
                 bail!(
                     "Object has {num_dynamic_symbols} dynamic symbols, but \
-                         has versym {num_versym} entries"
+                         has {num_versym} versym entries"
                 );
             }
         }
@@ -770,20 +782,28 @@ impl CommonGroupState<'_> {
         section_layouts: &OutputSectionMap<OutputRecordLayout>,
     ) -> u32 {
         // strtab
-        let offset = &mut memory_offsets.symtab_strings;
+        let offset = memory_offsets.get_mut(part_id::STRTAB);
         let strtab_offset_start = (*offset
-            - section_layouts
-                .built_in(output_section_id::STRTAB)
-                .mem_offset)
+            - section_layouts.get(output_section_id::STRTAB).mem_offset)
             .try_into()
             .expect("Symbol string table overflowed 32 bits");
-        *offset += self.mem_sizes.symtab_strings;
+        *offset += self.mem_sizes.get(part_id::STRTAB);
 
         // symtab
-        memory_offsets.symtab_locals += self.mem_sizes.symtab_locals;
-        memory_offsets.symtab_globals += self.mem_sizes.symtab_globals;
+        memory_offsets.increment(
+            part_id::SYMTAB_LOCAL,
+            *self.mem_sizes.get(part_id::SYMTAB_LOCAL),
+        );
+        memory_offsets.increment(
+            part_id::SYMTAB_GLOBAL,
+            *self.mem_sizes.get(part_id::SYMTAB_GLOBAL),
+        );
 
         strtab_offset_start
+    }
+
+    fn allocate(&mut self, part_id: PartId, size: u64) {
+        self.mem_sizes.increment(part_id, size);
     }
 }
 
@@ -958,11 +978,12 @@ pub(crate) struct DynamicSymbolDefinition<'data> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Section<'data> {
     pub(crate) index: object::SectionIndex,
-    pub(crate) output_section_id: Option<OutputSectionId>,
+    pub(crate) output_part_id: Option<PartId>,
     /// Size in memory.
     pub(crate) size: u64,
     /// Our data. May be empty if we're in a zero-initialised section.
     pub(crate) data: &'data [u8],
+    // TODO: Can this be removed? It should be encoded in output_part_id now.
     pub(crate) alignment: Alignment,
     pub(crate) resolution_kind: ResolutionFlags,
     packed: bool,
@@ -1135,15 +1156,15 @@ impl<'data> Layout<'data> {
     }
 
     pub(crate) fn tls_start_address(&self) -> u64 {
-        let tdata = &self.section_layouts.built_in(output_section_id::TDATA);
+        let tdata = &self.section_layouts.get(output_section_id::TDATA);
         tdata.mem_offset
     }
 
     /// Returns the memory address of the end of the TLS segment including any padding required to
     /// make sure that the TCB will be usize-aligned.
     pub(crate) fn tls_end_address(&self) -> u64 {
-        let tbss = self.section_layouts.built_in(output_section_id::TBSS);
-        let tdata = self.section_layouts.built_in(output_section_id::TDATA);
+        let tbss = self.section_layouts.get(output_section_id::TBSS);
+        let tdata = self.section_layouts.get(output_section_id::TDATA);
         let tls_end = tbss.mem_offset + tbss.mem_size;
         let alignment = tbss.alignment.max(tdata.alignment);
         alignment.align_up(tls_end)
@@ -1383,8 +1404,7 @@ fn compute_total_section_part_sizes(
     symbol_resolution_flags: &[ResolutionFlags],
     sections_with_content: OutputSectionMap<bool>,
 ) -> OutputSectionPartMap<u64> {
-    let mut total_sizes: OutputSectionPartMap<u64> =
-        OutputSectionPartMap::with_size(output_sections.len());
+    let mut total_sizes: OutputSectionPartMap<u64> = output_sections.new_part_map();
     for group_state in group_states.iter() {
         total_sizes.merge(&group_state.common.mem_sizes);
     }
@@ -1431,7 +1451,7 @@ fn apply_non_addressable_indexes(
     // mostly in order match what GNU ld does.
     if counts.verneed_count == 0 && args.should_output_symbol_versions() {
         for g in group_states {
-            g.common.mem_sizes.gnu_version = 0;
+            *g.common.mem_sizes.get_mut(part_id::GNU_VERSION) = 0;
         }
     }
     Ok(counts)
@@ -1451,9 +1471,8 @@ pub(crate) struct NonAddressableCounts {
 #[tracing::instrument(skip_all, name = "Compute per-alignment offsets")]
 fn starting_memory_offsets(
     section_layouts: &OutputSectionPartMap<OutputRecordLayout>,
-    output_sections: &OutputSections,
 ) -> OutputSectionPartMap<u64> {
-    section_layouts.map(output_sections, |_, rec| rec.mem_offset)
+    section_layouts.map(|_, rec| rec.mem_offset)
 }
 
 #[derive(Default)]
@@ -1493,7 +1512,7 @@ fn find_required_sections<'data>(
         done: AtomicBool::new(false),
         output_sections,
         symbol_resolution_flags,
-        sections_with_content: OutputSectionMap::with_size(output_sections.len()),
+        sections_with_content: output_sections.new_section_map(),
         merged_strings,
     };
     let resources_ref = &resources;
@@ -1652,7 +1671,7 @@ impl<'data> GroupState<'data> {
         resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution>>,
         resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<GroupLayout<'data>> {
-        let eh_frame_start_address = memory_offsets.eh_frame;
+        let eh_frame_start_address = *memory_offsets.get(part_id::EH_FRAME);
         let mut files = self
             .files
             .into_iter()
@@ -1661,12 +1680,12 @@ impl<'data> GroupState<'data> {
         let strtab_start_offset = self
             .common
             .finalise_layout(memory_offsets, resources.section_layouts);
-        let dynstr_start_offset = (memory_offsets.dynstr
+        let dynstr_start_offset = (memory_offsets.get(part_id::DYNSTR)
             - resources
                 .section_layouts
                 .get(output_section_id::DYNSTR)
                 .mem_offset) as u32;
-        memory_offsets.dynstr += self.common.mem_sizes.dynstr;
+        memory_offsets.increment(part_id::DYNSTR, *self.common.mem_sizes.get(part_id::DYNSTR));
 
         set_last_verneed(&self.common, resources, memory_offsets, &mut files);
 
@@ -1694,8 +1713,8 @@ fn set_last_verneed(
     let gnu_version_r_layout = resources
         .section_layouts
         .get(output_section_id::GNU_VERSION_R);
-    let is_last_verneed = common.mem_sizes.gnu_version_r > 0
-        && (memory_offsets.gnu_version_r
+    let is_last_verneed = *common.mem_sizes.get(part_id::GNU_VERSION_R) > 0
+        && (*memory_offsets.get(part_id::GNU_VERSION_R)
             == gnu_version_r_layout.mem_offset + gnu_version_r_layout.mem_size);
     if is_last_verneed {
         for file in files.iter_mut().rev() {
@@ -1928,8 +1947,8 @@ fn compute_file_sizes(
     mem_sizes: &OutputSectionPartMap<u64>,
     output_sections: &OutputSections<'_>,
 ) -> OutputSectionPartMap<usize> {
-    mem_sizes.map(output_sections, |output_section_id, size| {
-        if output_sections.has_data_in_file(output_section_id) {
+    mem_sizes.map(|part_id, size| {
+        if output_sections.has_data_in_file(part_id.output_section_id()) {
             *size as usize
         } else {
             0
@@ -2070,7 +2089,7 @@ impl<'data> Section<'data> {
         }
         let section = Section {
             index: section_id,
-            output_section_id: None,
+            output_part_id: None,
             alignment,
             size,
             data: section_data,
@@ -2089,6 +2108,14 @@ impl<'data> Section<'data> {
         } else {
             self.alignment.align_up(self.size)
         }
+    }
+
+    pub(crate) fn output_section_id(&self) -> Option<OutputSectionId> {
+        self.output_part_id.map(|p| p.output_section_id())
+    }
+
+    pub(crate) fn output_part_id(&self) -> Option<PartId> {
+        self.output_part_id
     }
 }
 
@@ -2132,7 +2159,7 @@ fn process_relocation(
                     "Allocate .rela.dyn general for direct reference in section {}",
                     String::from_utf8_lossy(object.object.section_name(section).unwrap())
                 );
-                common.mem_sizes.rela_dyn_general += elf::RELA_ENTRY_SIZE;
+                common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             } else if canonical_symbol_value_flags.contains(ValueFlags::FUNCTION) {
                 resolution_kind.remove(ResolutionFlags::DIRECT);
                 resolution_kind |= ResolutionFlags::PLT | ResolutionFlags::GOT;
@@ -2148,7 +2175,7 @@ fn process_relocation(
             && rel_info.kind == RelocationKind::Absolute
             && symbol_value_flags.contains(ValueFlags::ADDRESS)
         {
-            common.mem_sizes.rela_dyn_relative += elf::RELA_ENTRY_SIZE;
+            common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
         }
 
         if previous_flags.is_empty() {
@@ -2209,20 +2236,24 @@ impl<'data> PreludeLayoutState {
     ) -> Result {
         resources.merged_strings.for_each(|section_id, merged| {
             if merged.len() > 0 {
-                *common.mem_sizes.regular_mut(section_id, alignment::MIN) += merged.len();
+                common.allocate(
+                    section_id.part_id_with_alignment(alignment::MIN),
+                    merged.len(),
+                );
             }
         });
 
         // Allocate space to store the identify of the linker in the .comment section.
-        *common
-            .mem_sizes
-            .regular_mut(output_section_id::COMMENT, alignment::MIN) += self.identity.len() as u64;
+        common.allocate(
+            output_section_id::COMMENT.part_id_with_alignment(alignment::MIN),
+            self.identity.len() as u64,
+        );
 
         // The first entry in the symbol table must be null. Similarly, the first string in the
         // strings table must be empty.
         if !resources.symbol_db.args.strip_all {
-            common.mem_sizes.symtab_locals = size_of::<elf::SymtabEntry>() as u64;
-            common.mem_sizes.symtab_strings = 1;
+            common.allocate(part_id::SYMTAB_LOCAL, size_of::<elf::SymtabEntry>() as u64);
+            common.allocate(part_id::STRTAB, 1);
         }
 
         if resources.symbol_db.args.output_kind.is_executable() {
@@ -2230,19 +2261,19 @@ impl<'data> PreludeLayoutState {
         }
         if resources.symbol_db.args.tls_mode() == TlsMode::Preserve {
             // Allocate space for a TLS module number and offset for use with TLSLD relocations.
-            common.mem_sizes.got += elf::GOT_ENTRY_SIZE * 2;
+            common.allocate(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
             self.needs_tlsld_got_entry = true;
             // For shared objects, we'll need to use a DTPMOD relocation to fill in the TLS module
             // number.
             if !resources.symbol_db.args.output_kind.is_executable() {
-                common.mem_sizes.rela_dyn_general += crate::elf::RELA_ENTRY_SIZE;
+                common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
             }
         }
 
         if resources.symbol_db.args.needs_dynsym() {
             // Allocate space for the null symbol.
-            common.mem_sizes.dynstr += 1;
-            common.mem_sizes.dynsym += size_of::<elf::SymtabEntry>() as u64;
+            common.allocate(part_id::DYNSTR, 1);
+            common.allocate(part_id::DYNSYM, size_of::<elf::SymtabEntry>() as u64);
         }
 
         self.dynamic_linker = resources
@@ -2253,7 +2284,10 @@ impl<'data> PreludeLayoutState {
             .map(|p| CString::new(p.as_os_str().as_encoded_bytes()))
             .transpose()?;
         if let Some(dynamic_linker) = self.dynamic_linker.as_ref() {
-            common.mem_sizes.interp += dynamic_linker.as_bytes_with_nul().len() as u64;
+            common.allocate(
+                part_id::INTERP,
+                dynamic_linker.as_bytes_with_nul().len() as u64,
+            );
         }
 
         Ok(())
@@ -2294,7 +2328,10 @@ impl<'data> PreludeLayoutState {
         }
 
         if symbol_db.args.should_write_eh_frame_hdr {
-            common.mem_sizes.eh_frame_hdr += core::mem::size_of::<elf::EhFrameHdr>() as u64;
+            common.allocate(
+                part_id::EH_FRAME_HDR,
+                core::mem::size_of::<elf::EhFrameHdr>() as u64,
+            );
         }
 
         Ok(())
@@ -2320,9 +2357,9 @@ impl<'data> PreludeLayoutState {
 
         // Next, keep any sections for which we've recorded a non-zero size, even if we didn't
         // record the loading of an input section. This covers sections where we generate content.
-        total_sizes.output_order_map(output_sections, |section_id, _alignment, size| {
+        total_sizes.map(|part_id, size| {
             if *size > 0 {
-                keep_sections[section_id.as_usize()] = true;
+                keep_sections[part_id.output_section_id().as_usize()] = true;
             }
         });
 
@@ -2348,7 +2385,7 @@ impl<'data> PreludeLayoutState {
 
         // Compute output indexes of each of section.
         let mut next_output_index = 0;
-        let mut output_section_indexes = vec![None; output_sections.len()];
+        let mut output_section_indexes = vec![None; output_sections.num_sections()];
         output_sections.sections_and_segments_do(|event| {
             if let OrderEvent::Section(id, _) = event {
                 if keep_sections[id.as_usize()] {
@@ -2388,17 +2425,17 @@ impl<'data> PreludeLayoutState {
         };
 
         // Allocate space for headers based on segment and section counts.
-        let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.len());
+        let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.num_parts());
 
-        extra_sizes.file_header = u64::from(elf::FILE_HEADER_SIZE);
-        extra_sizes.program_headers = header_info.program_headers_size();
-        extra_sizes.section_headers = header_info.section_headers_size();
-        extra_sizes.shstrtab = output_sections
+        extra_sizes.increment(part_id::FILE_HEADER, u64::from(elf::FILE_HEADER_SIZE));
+        extra_sizes.increment(part_id::PROGRAM_HEADERS, header_info.program_headers_size());
+        extra_sizes.increment(part_id::SECTION_HEADERS, header_info.section_headers_size());
+        self.shstrtab_size = output_sections
             .ids_with_info()
             .filter(|(id, _info)| output_sections.output_index_of_section(*id).is_some())
             .map(|(_id, info)| info.details.name.len() as u64 + 1)
             .sum::<u64>();
-        self.shstrtab_size = extra_sizes.shstrtab;
+        extra_sizes.increment(part_id::SHSTRTAB, self.shstrtab_size);
 
         // We need to allocate both our own size record and the file totals, since they've already
         // been computed.
@@ -2416,13 +2453,13 @@ impl<'data> PreludeLayoutState {
     ) -> Result<PreludeLayout> {
         let header_layout = resources
             .section_layouts
-            .built_in(output_section_id::FILE_HEADER);
+            .get(output_section_id::FILE_HEADER);
         assert_eq!(header_layout.file_offset, 0);
 
         let tlsld_got_entry = self.needs_tlsld_got_entry.then(|| {
-            let address =
-                NonZeroU64::new(memory_offsets.got).expect("GOT address must never be zero");
-            memory_offsets.got += elf::GOT_ENTRY_SIZE * 2;
+            let address = NonZeroU64::new(*memory_offsets.get(part_id::GOT))
+                .expect("GOT address must never be zero");
+            memory_offsets.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
             address
         });
 
@@ -2434,11 +2471,16 @@ impl<'data> PreludeLayoutState {
         self.internal_symbols
             .finalise_layout(memory_offsets, resolutions_out, resources)?;
 
-        *memory_offsets.regular_mut(output_section_id::COMMENT, alignment::MIN) +=
-            self.identity.len() as u64;
+        memory_offsets.increment(
+            output_section_id::COMMENT.part_id_with_alignment(alignment::MIN),
+            self.identity.len() as u64,
+        );
         resources.merged_strings.for_each(|section_id, merged| {
             if merged.len() > 0 {
-                *memory_offsets.regular_mut(section_id, alignment::MIN) += merged.len();
+                memory_offsets.increment(
+                    section_id.part_id_with_alignment(alignment::MIN),
+                    merged.len(),
+                );
             }
         });
 
@@ -2476,9 +2518,9 @@ impl InternalSymbols {
                 continue;
             }
 
-            common.mem_sizes.symtab_globals += size_of::<elf::SymtabEntry>() as u64;
+            common.allocate(part_id::SYMTAB_GLOBAL, size_of::<elf::SymtabEntry>() as u64);
             let symbol_name = symbol_db.symbol_name(symbol_id)?;
-            common.mem_sizes.symtab_strings += symbol_name.len() as u64 + 1;
+            common.allocate(part_id::STRTAB, symbol_name.len() as u64 + 1);
         }
         Ok(())
     }
@@ -2506,11 +2548,11 @@ impl InternalSymbols {
             let (raw_value, value_flags) = match def_info {
                 InternalSymDefInfo::Undefined => (0, ValueFlags::ABSOLUTE),
                 InternalSymDefInfo::SectionStart(section_id) => (
-                    resources.section_layouts.built_in(*section_id).mem_offset,
+                    resources.section_layouts.get(*section_id).mem_offset,
                     ValueFlags::ADDRESS,
                 ),
                 InternalSymDefInfo::SectionEnd(section_id) => {
-                    let sec = &resources.section_layouts.built_in(*section_id);
+                    let sec = resources.section_layouts.get(*section_id);
                     (sec.mem_offset + sec.mem_size, ValueFlags::ADDRESS)
                 }
             };
@@ -2563,26 +2605,32 @@ impl<'data> EpilogueLayoutState<'data> {
 
         if symbol_db.args.needs_dynamic() {
             let dynamic_entry_size = core::mem::size_of::<crate::elf::DynamicEntry>();
-            common.mem_sizes.dynamic +=
-                (elf_writer::NUM_EPILOGUE_DYNAMIC_ENTRIES * dynamic_entry_size) as u64;
+            common.allocate(
+                part_id::DYNAMIC,
+                (elf_writer::NUM_EPILOGUE_DYNAMIC_ENTRIES * dynamic_entry_size) as u64,
+            );
             for rpath in &symbol_db.args.rpaths {
-                common.mem_sizes.dynamic += dynamic_entry_size as u64;
-                common.mem_sizes.dynstr += rpath.len() as u64 + 1;
+                common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
+                common.allocate(part_id::DYNSTR, rpath.len() as u64 + 1);
             }
             if let Some(soname) = symbol_db.args.soname.as_ref() {
-                common.mem_sizes.dynstr += soname.len() as u64 + 1;
-                common.mem_sizes.dynamic += dynamic_entry_size as u64;
+                common.allocate(part_id::DYNSTR, soname.len() as u64 + 1);
+                common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
             }
 
             self.allocate_gnu_hash(common);
 
-            common.mem_sizes.dynstr += self
-                .dynamic_symbol_definitions
-                .iter()
-                .map(|n| n.name.len() + 1)
-                .sum::<usize>() as u64;
-            common.mem_sizes.dynsym +=
-                (self.dynamic_symbol_definitions.len() * size_of::<elf::SymtabEntry>()) as u64;
+            common.allocate(
+                part_id::DYNSTR,
+                self.dynamic_symbol_definitions
+                    .iter()
+                    .map(|n| n.name.len() + 1)
+                    .sum::<usize>() as u64,
+            );
+            common.allocate(
+                part_id::DYNSYM,
+                (self.dynamic_symbol_definitions.len() * size_of::<elf::SymtabEntry>()) as u64,
+            );
         }
 
         Ok(())
@@ -2607,10 +2655,13 @@ impl<'data> EpilogueLayoutState<'data> {
         self.dynamic_symbol_definitions
             .par_sort_unstable_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
         let num_blume = 1;
-        common.mem_sizes.gnu_hash += (core::mem::size_of::<elf::GnuHashHeader>()
-            + core::mem::size_of::<u64>() * num_blume
-            + core::mem::size_of::<u32>() * gnu_hash_layout.bucket_count as usize
-            + core::mem::size_of::<u32>() * num_defs) as u64;
+        common.allocate(
+            part_id::GNU_HASH,
+            (core::mem::size_of::<elf::GnuHashHeader>()
+                + core::mem::size_of::<u64>() * num_blume
+                + core::mem::size_of::<u32>() * gnu_hash_layout.bucket_count as usize
+                + core::mem::size_of::<u32>() * num_defs) as u64,
+        );
         self.gnu_hash_layout = Some(gnu_hash_layout);
     }
 
@@ -2623,10 +2674,10 @@ impl<'data> EpilogueLayoutState<'data> {
         self.internal_symbols
             .finalise_layout(memory_offsets, resolutions_out, resources)?;
 
-        let dynsym_start_index = ((memory_offsets.dynsym
+        let dynsym_start_index = ((memory_offsets.get(part_id::DYNSYM)
             - resources
                 .section_layouts
-                .built_in(output_section_id::DYNSYM)
+                .get(output_section_id::DYNSYM)
                 .mem_offset)
             / elf::SYMTAB_ENTRY_SIZE)
             .try_into()
@@ -2636,8 +2687,10 @@ impl<'data> EpilogueLayoutState<'data> {
             gnu_hash_layout.symbol_base = dynsym_start_index;
         }
 
-        memory_offsets.dynsym +=
-            self.dynamic_symbol_definitions.len() as u64 * elf::SYMTAB_ENTRY_SIZE;
+        memory_offsets.increment(
+            part_id::DYNSYM,
+            self.dynamic_symbol_definitions.len() as u64 * elf::SYMTAB_ENTRY_SIZE,
+        );
 
         Ok(EpilogueLayout {
             internal_symbols: self.internal_symbols,
@@ -2790,21 +2843,20 @@ impl<'data> ObjectLayoutState<'data> {
             return Ok(());
         }
         let mut section = Section::create(self, common, queue, &unloaded, section_id, resources)?;
-        let sec_id = resources
-            .output_sections
-            .output_section_id(unloaded.output_section_id)?;
-        let allocation = common.mem_sizes.regular_mut(sec_id, section.alignment);
-        *allocation += section.capacity();
+        let part_id = resources.output_sections.part_id(unloaded.part_id)?;
+        common.allocate(part_id, section.capacity());
         resources
             .sections_with_content
-            .get(sec_id)
+            .get(part_id.output_section_id())
             .fetch_or(true, atomic::Ordering::Relaxed);
-        section.output_section_id = Some(sec_id);
+        section.output_part_id = Some(part_id);
         if let Some(frame_data) = self.section_frame_data.get_mut(section_id.0) {
             self.eh_frame_size += u64::from(frame_data.total_fde_size);
             if resources.symbol_db.args.should_write_eh_frame_hdr {
-                common.mem_sizes.eh_frame_hdr +=
-                    core::mem::size_of::<EhFrameHdrEntry>() as u64 * u64::from(frame_data.num_fdes);
+                common.allocate(
+                    part_id::EH_FRAME_HDR,
+                    core::mem::size_of::<EhFrameHdrEntry>() as u64 * u64::from(frame_data.num_fdes),
+                );
             }
             // Take ownership of the section's frame data relocations. We only apply
             // these once when the section is loaded, so after this we won't need them
@@ -2831,7 +2883,7 @@ impl<'data> ObjectLayoutState<'data> {
         output_sections: &OutputSections,
         symbol_resolution_flags: &[AtomicResolutionFlags],
     ) -> Result {
-        common.mem_sizes.resize(output_sections.len());
+        common.mem_sizes.resize(output_sections.num_parts());
         if !symbol_db.args.strip_all {
             self.allocate_symtab_space(common, symbol_db, symbol_resolution_flags)?;
         }
@@ -2851,7 +2903,7 @@ impl<'data> ObjectLayoutState<'data> {
         for cie in &self.state.cies {
             self.eh_frame_size += cie.cie.bytes.len() as u64;
         }
-        common.mem_sizes.eh_frame += self.eh_frame_size;
+        common.allocate(part_id::EH_FRAME, self.eh_frame_size);
         Ok(())
     }
 
@@ -2894,9 +2946,9 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
         let entry_size = size_of::<elf::SymtabEntry>() as u64;
-        common.mem_sizes.symtab_locals += num_locals * entry_size;
-        common.mem_sizes.symtab_globals += num_globals * entry_size;
-        common.mem_sizes.symtab_strings += strings_size as u64;
+        common.allocate(part_id::SYMTAB_LOCAL, num_locals * entry_size);
+        common.allocate(part_id::SYMTAB_GLOBAL, num_globals * entry_size);
+        common.allocate(part_id::STRTAB, strings_size as u64);
         Ok(())
     }
 
@@ -2915,13 +2967,13 @@ impl<'data> ObjectLayoutState<'data> {
         for slot in self.state.sections.iter_mut() {
             match slot {
                 SectionSlot::Loaded(sec) => {
-                    let output_section_id = sec.output_section_id.with_context(|| {
+                    let part_id = sec.output_part_id.with_context(|| {
                         format!(
                             "Tried to load section `{}` which isn't mapped to an output section",
                             self.object.section_display_name(sec.index)
                         )
                     })?;
-                    let address = *memory_offsets.regular(output_section_id, sec.alignment);
+                    let address = *memory_offsets.get(part_id);
                     // TODO: We probably need to be able to handle sections that are ifuncs and sections
                     // that need a TLS GOT struct.
                     section_resolutions.push(Some(create_resolution(
@@ -2931,7 +2983,7 @@ impl<'data> ObjectLayoutState<'data> {
                         ValueFlags::ADDRESS,
                         memory_offsets,
                     )?));
-                    *memory_offsets.regular_mut(output_section_id, sec.alignment) += sec.capacity();
+                    *memory_offsets.get_mut(part_id) += sec.capacity();
                 }
                 SectionSlot::EhFrameData(..) => {
                     // References to symbols defined in .eh_frame are a bit weird, since it's a
@@ -2939,7 +2991,7 @@ impl<'data> ObjectLayoutState<'data> {
                     // order to find the start and end of the whole .eh_frame section.
                     section_resolutions.push(Some(create_resolution(
                         ResolutionFlags::DIRECT,
-                        memory_offsets.eh_frame,
+                        *memory_offsets.get(part_id::EH_FRAME),
                         None,
                         ValueFlags::ADDRESS,
                         memory_offsets,
@@ -2969,7 +3021,7 @@ impl<'data> ObjectLayoutState<'data> {
             )?;
         }
 
-        memory_offsets.eh_frame += self.eh_frame_size;
+        memory_offsets.increment(part_id::EH_FRAME, self.eh_frame_size);
 
         Ok(ObjectLayout {
             input: self.input,
@@ -3030,7 +3082,8 @@ impl<'data> ObjectLayoutState<'data> {
             }
         } else if local_symbol.is_common(e) {
             let common = CommonSymbol::new(local_symbol)?;
-            let offset = memory_offsets.regular_mut(output_section_id::BSS, common.alignment);
+            let offset = memory_offsets
+                .get_mut(output_section_id::BSS.part_id_with_alignment(common.alignment));
             let address = *offset;
             *offset += common.size;
             address
@@ -3140,12 +3193,12 @@ impl MergedStringStartAddresses {
         output_sections: &OutputSections<'_>,
         starting_mem_offsets_by_group: &[OutputSectionPartMap<u64>],
     ) -> Self {
-        let mut addresses = OutputSectionMap::with_size(output_sections.len());
+        let mut addresses = OutputSectionMap::with_size(output_sections.num_sections());
         let internal_start_offsets = starting_mem_offsets_by_group.first().unwrap();
         for i in 0..output_sections.num_regular_sections() {
-            let section_id = OutputSectionId::regular(i as u16);
+            let section_id = OutputSectionId::regular(i as u32);
             *addresses.get_mut(section_id) =
-                *internal_start_offsets.regular(section_id, alignment::MIN);
+                *internal_start_offsets.get(section_id.part_id_with_alignment(alignment::MIN));
         }
         Self { addresses }
     }
@@ -3403,14 +3456,14 @@ fn create_resolution(
 }
 
 fn allocate_got(num_entries: u64, memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
-    let got_address = NonZeroU64::new(memory_offsets.got).unwrap();
-    memory_offsets.got += elf::GOT_ENTRY_SIZE * num_entries;
+    let got_address = NonZeroU64::new(*memory_offsets.get(part_id::GOT)).unwrap();
+    memory_offsets.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * num_entries);
     got_address
 }
 
 fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
-    let plt_address = NonZeroU64::new(memory_offsets.plt).unwrap();
-    memory_offsets.plt += elf::PLT_ENTRY_SIZE;
+    let plt_address = NonZeroU64::new(*memory_offsets.get(part_id::PLT)).unwrap();
+    memory_offsets.increment(part_id::PLT, elf::PLT_ENTRY_SIZE);
     plt_address
 }
 
@@ -3573,14 +3626,13 @@ fn get_merged_string_output_address(
         offset_into_string += 1;
     }
     let string = StringToMerge::take_hashed(&mut &data[input_offset as usize..])?;
-    let output_section_id = merge_slot.precomputed_output_section_id();
-    let strings_section = merged_strings.get(output_section_id);
+    let part_id = merge_slot.precomputed_part_id();
+    let section_id = part_id.output_section_id();
+    let strings_section = merged_strings.get(section_id);
     let output_offset = strings_section
         .get(&string)
         .with_context(|| format!("Failed to find merge-string `{}`", *string))?;
-    let section_base = merged_string_start_addresses
-        .addresses
-        .get(output_section_id);
+    let section_base = merged_string_start_addresses.addresses.get(section_id);
     let mut address = section_base + output_offset + offset_into_string;
     if symbol_has_name {
         address = address.wrapping_add(addend);
@@ -3595,39 +3647,36 @@ fn layout_section_parts(
     let mut file_offset = 0;
     let mut mem_offset = output_sections.base_address;
     let mut current_seg_id = None;
-    sizes.output_order_map(
-        output_sections,
-        |section_id, section_alignment, part_size| {
-            let defs = output_sections.details(section_id);
-            let mem_size = *part_size;
-            // Note, we align up even if our size is zero, otherwise our section will start at an
-            // unaligned address.
-            file_offset = section_alignment.align_up_usize(file_offset);
-            mem_offset = section_alignment.align_up(mem_offset);
-            let seg_id = output_sections.loadable_segment_id_for(section_id);
-            if current_seg_id != seg_id {
-                current_seg_id = seg_id;
-                let segment_alignment = seg_id.map(|s| s.alignment()).unwrap_or(alignment::MIN);
-                mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
-            }
-            let file_size = if defs.has_data_in_file() {
-                mem_size as usize
-            } else {
-                0
-            };
+    sizes.output_order_map(output_sections, |part_id, section_alignment, part_size| {
+        let defs = output_sections.details(part_id.output_section_id());
+        let mem_size = *part_size;
+        // Note, we align up even if our size is zero, otherwise our section will start at an
+        // unaligned address.
+        file_offset = section_alignment.align_up_usize(file_offset);
+        mem_offset = section_alignment.align_up(mem_offset);
+        let seg_id = output_sections.loadable_segment_id_for(part_id.output_section_id());
+        if current_seg_id != seg_id {
+            current_seg_id = seg_id;
+            let segment_alignment = seg_id.map(|s| s.alignment()).unwrap_or(alignment::MIN);
+            mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
+        }
+        let file_size = if defs.has_data_in_file() {
+            mem_size as usize
+        } else {
+            0
+        };
 
-            let section_layout = OutputRecordLayout {
-                alignment: section_alignment,
-                file_offset,
-                mem_offset,
-                file_size,
-                mem_size,
-            };
-            file_offset += file_size;
-            mem_offset += mem_size;
-            section_layout
-        },
-    )
+        let section_layout = OutputRecordLayout {
+            alignment: section_alignment,
+            file_offset,
+            mem_offset,
+            file_size,
+            mem_size,
+        };
+        file_offset += file_size;
+        mem_offset += mem_size;
+        section_layout
+    })
 }
 
 impl<'data> DynamicLayoutState<'data> {
@@ -3642,8 +3691,11 @@ impl<'data> DynamicLayoutState<'data> {
         if let Some(soname) = dt_info.soname {
             self.lib_name = soname;
         }
-        common.mem_sizes.dynamic += core::mem::size_of::<crate::elf::DynamicEntry>() as u64;
-        common.mem_sizes.dynstr += self.lib_name.len() as u64 + 1;
+        common.allocate(
+            part_id::DYNAMIC,
+            core::mem::size_of::<crate::elf::DynamicEntry>() as u64,
+        );
+        common.allocate(part_id::DYNSTR, self.lib_name.len() as u64 + 1);
         self.request_all_undefined_symbols(common, resources, queue)
     }
 
@@ -3718,17 +3770,20 @@ impl<'data> DynamicLayoutState<'data> {
                         // are emitted as Vernaux.
                         base_size = name_size;
                     } else {
-                        common.mem_sizes.dynstr += name_size;
+                        common.allocate(part_id::DYNSTR, name_size);
                         version_count += 1;
                     }
                 }
             }
 
             if version_count > 0 {
-                common.mem_sizes.dynstr += base_size;
-                common.mem_sizes.gnu_version_r += core::mem::size_of::<crate::elf::Verneed>()
-                    as u64
-                    + u64::from(version_count) * core::mem::size_of::<crate::elf::Vernaux>() as u64;
+                common.allocate(part_id::DYNSTR, base_size);
+                common.allocate(
+                    part_id::GNU_VERSION_R,
+                    core::mem::size_of::<crate::elf::Verneed>() as u64
+                        + u64::from(version_count)
+                            * core::mem::size_of::<crate::elf::Vernaux>() as u64,
+                );
 
                 self.verdef_info = Some(VerdefInfo {
                     defs,
@@ -3807,8 +3862,12 @@ impl<'data> DynamicLayoutState<'data> {
         }
 
         if let Some(v) = self.verdef_info.as_ref() {
-            memory_offsets.gnu_version_r += core::mem::size_of::<crate::elf::Verneed>() as u64
-                + u64::from(v.version_count) * core::mem::size_of::<crate::elf::Vernaux>() as u64;
+            memory_offsets.increment(
+                part_id::GNU_VERSION_R,
+                core::mem::size_of::<crate::elf::Verneed>() as u64
+                    + u64::from(v.version_count)
+                        * core::mem::size_of::<crate::elf::Vernaux>() as u64,
+            );
         }
 
         Ok(DynamicLayout {
@@ -3848,7 +3907,7 @@ fn assign_copy_relocation_address(
     let section_index = local_symbol.st_shndx(LittleEndian);
     let section = file.section(SectionIndex(usize::from(section_index)))?;
     let alignment = Alignment::new(section.sh_addralign(LittleEndian))?;
-    let bss = memory_offsets.regular_mut(output_section_id::BSS, alignment);
+    let bss = memory_offsets.get_mut(output_section_id::BSS.part_id_with_alignment(alignment));
     let a = *bss;
     *bss += local_symbol.st_size(LittleEndian);
     Ok(a)
@@ -3893,17 +3952,18 @@ fn take_dynsym_index(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
 ) -> Result<u32> {
     let index = u32::try_from(
-        (memory_offsets.dynsym - section_layouts.get(output_section_id::DYNSYM).mem_offset)
+        (memory_offsets.get(part_id::DYNSYM)
+            - section_layouts.get(output_section_id::DYNSYM).mem_offset)
             / crate::elf::SYMTAB_ENTRY_SIZE,
     )
     .context("Too many dynamic symbols")?;
-    memory_offsets.dynsym += crate::elf::SYMTAB_ENTRY_SIZE;
+    memory_offsets.increment(part_id::DYNSYM, crate::elf::SYMTAB_ENTRY_SIZE);
     Ok(index)
 }
 
 impl<'data> Layout<'data> {
-    pub(crate) fn mem_address_of_built_in(&self, output_section_id: OutputSectionId) -> u64 {
-        self.section_layouts.built_in(output_section_id).mem_offset
+    pub(crate) fn mem_address_of_built_in(&self, section_id: OutputSectionId) -> u64 {
+        self.section_layouts.get(section_id).mem_offset
     }
 }
 
@@ -4007,8 +4067,7 @@ fn test_no_disallowed_overlaps() {
         crate::output_section_id::OutputSectionsBuilder::with_base_address(0x1000)
             .build()
             .unwrap();
-    let section_part_sizes = OutputSectionPartMap::<u64>::with_size(output_sections.len())
-        .output_order_map(&output_sections, |_, _, _| 7);
+    let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
     let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections);
     let section_layouts = layout_sections(&section_part_layouts);
 
@@ -4105,7 +4164,7 @@ fn test_resolution_allocation_consistency() -> Result {
                     continue;
                 }
 
-                let mut mem_sizes = OutputSectionPartMap::with_size(output_sections.len());
+                let mut mem_sizes = output_sections.new_part_map();
                 let resolution_flags = AtomicResolutionFlags::new(resolution_flags);
                 allocate_symbol_resolution(
                     value_flags,
@@ -4116,9 +4175,9 @@ fn test_resolution_allocation_consistency() -> Result {
                 let resolution_flags = resolution_flags.get();
 
                 let mut memory_offsets =
-                    OutputSectionPartMap::with_size(output_section_id::NUM_BUILT_IN_SECTIONS);
-                memory_offsets.got = 1;
-                memory_offsets.plt = 1;
+                    OutputSectionPartMap::with_size(part_id::NUM_BUILT_IN_PARTS);
+                *memory_offsets.get_mut(part_id::GOT) = 1;
+                *memory_offsets.get_mut(part_id::PLT) = 1;
 
                 let has_dynamic_symbol = value_flags.contains(ValueFlags::DYNAMIC)
                     || (resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
