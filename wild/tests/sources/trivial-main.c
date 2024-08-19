@@ -4,6 +4,9 @@
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.data
 
+//#Config:clang:default
+//#Compiler: clang
+
 int main()
 {
     return 42;
