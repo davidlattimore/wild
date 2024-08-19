@@ -217,37 +217,6 @@ pub(crate) enum FileType {
     CoreFile = 0x4,
 }
 
-// TODO: Consider just getting rid of this enum and using the constants provided by the object
-// crate.
-/// Section types
-#[allow(unused)]
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-#[repr(u32)]
-pub(crate) enum Sht {
-    #[default]
-    Null = 0x0,
-    Progbits = 0x1,
-    Symtab = 0x2,
-    Strtab = 0x3,
-    Rela = 0x4,
-    Hash = 0x5,
-    Dynamic = 0x6,
-    Note = 0x7,
-    Nobits = 0x8,
-    Rel = 0x9,
-    Shlib = 0xa,
-    DynSym = 0xb,
-    InitArray = 0xe,
-    FiniArray = 0xf,
-    PreinitArray = 0x10,
-    Group = 0x11,
-    SymtabShndx = 0x12,
-    Num = 0x13,
-    GnuHash = object::elf::SHT_GNU_HASH,
-    GnuVersym = object::elf::SHT_GNU_VERSYM,
-    GnuVerneed = object::elf::SHT_GNU_VERNEED,
-}
-
 #[allow(unused)]
 #[derive(Clone, Copy)]
 #[repr(u8)]

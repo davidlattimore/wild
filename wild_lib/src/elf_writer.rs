@@ -2234,7 +2234,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         let entsize = section_details.element_size;
         let size;
         let alignment;
-        if section_details.ty == elf::Sht::Null {
+        if section_details.ty == object::elf::SHT_NULL {
             size = 0;
             alignment = 0;
         } else {
@@ -2250,7 +2250,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         let entry = entries.next().unwrap();
         let e = LittleEndian;
         entry.sh_name.set(e, name_offset);
-        entry.sh_type.set(e, section_details.ty as u32);
+        entry.sh_type.set(e, section_details.ty);
         entry.sh_flags.set(e, section_details.section_flags);
         entry.sh_addr.set(e, section_layout.mem_offset);
         entry.sh_offset.set(e, section_layout.file_offset as u64);
