@@ -1,5 +1,3 @@
-use crate::elf::SegmentType;
-
 pub(crate) const MAX_SEGMENTS: usize = PROGRAM_SEGMENT_DEFS.len();
 
 #[derive(Default, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, Debug)]
@@ -15,7 +13,7 @@ pub(crate) const EH_FRAME: ProgramSegmentId = ProgramSegmentId(6);
 pub(crate) const DYNAMIC: ProgramSegmentId = ProgramSegmentId(7);
 
 pub(crate) struct ProgramSegmentDef {
-    pub(crate) segment_type: SegmentType,
+    pub(crate) segment_type: u32,
     pub(crate) segment_flags: u32,
 }
 
@@ -25,35 +23,35 @@ const PF_R: u32 = 4;
 
 const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
     ProgramSegmentDef {
-        segment_type: SegmentType::Phdr,
+        segment_type: object::elf::PT_PHDR,
         segment_flags: PF_R,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::Interp,
+        segment_type: object::elf::PT_INTERP,
         segment_flags: PF_R,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::Load,
+        segment_type: object::elf::PT_LOAD,
         segment_flags: PF_R,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::Load,
+        segment_type: object::elf::PT_LOAD,
         segment_flags: PF_R | PF_X,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::Load,
+        segment_type: object::elf::PT_LOAD,
         segment_flags: PF_R | PF_W,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::Tls,
+        segment_type: object::elf::PT_TLS,
         segment_flags: PF_R,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::EhFrame,
+        segment_type: object::elf::PT_GNU_EH_FRAME,
         segment_flags: PF_R,
     },
     ProgramSegmentDef {
-        segment_type: SegmentType::Dynamic,
+        segment_type: object::elf::PT_DYNAMIC,
         segment_flags: PF_R | PF_W,
     },
 ];
@@ -63,7 +61,7 @@ impl ProgramSegmentId {
         self.0.into()
     }
 
-    pub(crate) fn segment_type(self) -> SegmentType {
+    pub(crate) fn segment_type(self) -> u32 {
         PROGRAM_SEGMENT_DEFS[self.as_usize()].segment_type
     }
 
@@ -80,7 +78,7 @@ impl ProgramSegmentId {
     }
 
     pub(crate) fn alignment(&self) -> crate::alignment::Alignment {
-        if self.segment_type() == SegmentType::Load {
+        if self.segment_type() == object::elf::PT_LOAD {
             crate::alignment::PAGE
         } else {
             crate::alignment::MIN
@@ -107,7 +105,7 @@ fn test_all_alloc_sections_in_a_loadable_segment() {
         OrderEvent::Section(section_id, section_details) => {
             let has_load_segment = active
                 .iter()
-                .any(|seg_id| seg_id.segment_type() == crate::elf::SegmentType::Load);
+                .any(|seg_id| seg_id.segment_type() == object::elf::PT_LOAD);
             let is_alloc = (section_details.section_flags & crate::elf::shf::ALLOC) != 0;
             if section_details.has_data_in_file() && is_alloc && !has_load_segment {
                 panic!(
@@ -131,18 +129,18 @@ fn test_constant_segment_ids() {
     );
     assert_eq!(
         PROGRAM_SEGMENT_DEFS[TLS.as_usize()].segment_type,
-        SegmentType::Tls
+        object::elf::PT_TLS
     );
     assert_eq!(
         PROGRAM_SEGMENT_DEFS[DYNAMIC.as_usize()].segment_type,
-        SegmentType::Dynamic
+        object::elf::PT_DYNAMIC
     );
     assert_eq!(
         PROGRAM_SEGMENT_DEFS[PHDR.as_usize()].segment_type,
-        SegmentType::Phdr
+        object::elf::PT_PHDR
     );
     assert_eq!(
         PROGRAM_SEGMENT_DEFS[INTERP.as_usize()].segment_type,
-        SegmentType::Interp
+        object::elf::PT_INTERP
     );
 }

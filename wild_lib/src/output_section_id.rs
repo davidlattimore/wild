@@ -155,7 +155,7 @@ impl<'data> OutputSections<'data> {
 
         self.sections_and_segments_do(|event| match event {
             OrderEvent::SegmentStart(seg_id) => {
-                if seg_id.segment_type() == crate::elf::SegmentType::Load {
+                if seg_id.segment_type() == object::elf::PT_LOAD {
                     current_load_seg = Some(seg_id);
                 }
             }

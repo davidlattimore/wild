@@ -208,41 +208,6 @@ pub(crate) mod shf {
     pub(crate) const GNU_RETAIN: u64 = 0x200_000;
 }
 
-#[allow(unused)]
-#[repr(u16)]
-pub(crate) enum FileType {
-    Unknown = 0,
-    Relocatable = 0x1,
-    Executable = 0x2,
-    SharedObject = 0x3,
-    CoreFile = 0x4,
-}
-
-#[allow(unused)]
-#[derive(Clone, Copy)]
-#[repr(u8)]
-pub(crate) enum Binding {
-    Local = 0,
-    Global = 1,
-    Weak = 2,
-}
-
-#[allow(unused)]
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
-#[repr(u32)]
-pub(crate) enum SegmentType {
-    #[default]
-    Null = 0,
-    Load = 1,
-    Dynamic = 2,
-    Interp = 3,
-    Note = 4,
-    Shlib = 5,
-    Phdr = 6,
-    Tls = 7,
-    EhFrame = 0x6474e550,
-}
-
 /// See https://refspecs.linuxfoundation.org/LSB_1.3.0/gLSB/gLSB/ehframehdr.html
 #[derive(Zeroable, Pod, Clone, Copy)]
 #[repr(C)]

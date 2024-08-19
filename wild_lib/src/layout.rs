@@ -4050,7 +4050,7 @@ fn test_no_disallowed_overlaps() {
     let mut last_mem = 0;
     for seg_layout in segment_layouts.segments.iter() {
         let seg_id = seg_layout.id;
-        if seg_id.segment_type() != elf::SegmentType::Load {
+        if seg_id.segment_type() != object::elf::PT_LOAD {
             continue;
         }
         assert!(
