@@ -167,6 +167,7 @@ struct Config {
     section_equiv: Vec<(String, String)>,
     is_abstract: bool,
     deps: Vec<Dep>,
+    compiler: String,
 }
 impl Config {
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
@@ -261,6 +262,7 @@ impl Default for Config {
             section_equiv: Default::default(),
             is_abstract: false,
             deps: Default::default(),
+            compiler: "gcc".to_owned(),
         }
     }
 }
@@ -370,6 +372,7 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                     filename: arg.to_owned(),
                     input_type: InputType::SharedObject,
                 }),
+                "Compiler" => config.compiler = arg.trim().to_owned(),
                 other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
             }
         }
@@ -521,17 +524,26 @@ enum CompilerKind {
 }
 
 struct ToolPaths {
-    gcc: &'static str,
-    gpp: &'static str,
+    cc: &'static str,
+    cpp: &'static str,
 }
 
 impl ToolPaths {
-    fn get() -> &'static ToolPaths {
-        static INSTANCE: OnceLock<ToolPaths> = OnceLock::new();
-        INSTANCE.get_or_init(|| ToolPaths {
-            gcc: select_bin(&["gcc-13", "gcc"]),
-            gpp: select_bin(&["g++-13", "g++"]),
-        })
+    fn get(compiler: &str) -> Option<&'static ToolPaths> {
+        static CLANG_INSTANCE: OnceLock<ToolPaths> = OnceLock::new();
+        static GCC_INSTANCE: OnceLock<ToolPaths> = OnceLock::new();
+
+        match compiler {
+            "gcc" => Some(GCC_INSTANCE.get_or_init(|| ToolPaths {
+                cc: select_bin(&["gcc-13", "gcc"]),
+                cpp: select_bin(&["g++-13", "g++"]),
+            })),
+            "clang" => Some(CLANG_INSTANCE.get_or_init(|| ToolPaths {
+                cc: select_bin(&["clang"]),
+                cpp: select_bin(&["clang++"]),
+            })),
+            _ => None,
+        }
     }
 }
 
@@ -543,11 +555,13 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
         .context("Missing extension")?
         .to_str()
         .context("Extension isn't valid UTF-8")?;
-    let tool_paths = ToolPaths::get();
+
+    let tool_paths = ToolPaths::get(&config.compiler)
+        .ok_or(anyhow::anyhow!("Unknown compiler `{}`", config.compiler))?;
     let (compiler, compiler_kind) = match extension {
-        "cc" => (tool_paths.gpp, CompilerKind::C),
-        "c" => (tool_paths.gcc, CompilerKind::C),
-        "s" => (tool_paths.gcc, CompilerKind::C),
+        "cc" => (tool_paths.cpp, CompilerKind::C),
+        "c" => (tool_paths.cc, CompilerKind::C),
+        "s" => (tool_paths.cc, CompilerKind::C),
         "rs" => ("rustc", CompilerKind::Rust),
         _ => bail!("Don't know how to compile {extension} files"),
     };
