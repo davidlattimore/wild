@@ -57,6 +57,16 @@ pub(crate) fn check_object(obj: &Object) -> Result {
                 dynamic symbols ({num_symbols})"
             )
         })?;
+
+    // For a simple binary, both LLD and BFD create .gnu.hash section that does not contain any chain:
+    // Contents of section .gnu.hash:
+    // objdump -s -j .gnu.hash
+    // 4003e8 01000000 01000000 01000000 00000000
+    // 4003f8 00000000 00000000 00000000
+    if buckets == [0] && rest.is_empty() {
+        return Ok(());
+    }
+
     let (chains, _) = object::slice_from_bytes::<u32>(rest, chain_count).map_err(|_| {
         anyhow!(
             "Insufficient data for .gnu.hash chains. \
