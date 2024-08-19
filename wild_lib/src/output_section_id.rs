@@ -635,9 +635,10 @@ impl<'data> UnloadedSection<'data> {
             None
         } else {
             let sh_type = section.sh_type.get(e);
-            let ty = match sh_type {
-                flag @ object::elf::SHT_NOBITS => flag,
-                _ => object::elf::SHT_PROGBITS,
+            let ty = if sh_type == object::elf::SHT_NOBITS {
+                sh_type
+            } else {
+                object::elf::SHT_PROGBITS
             };
             let retain = sh_flags & crate::elf::shf::GNU_RETAIN != 0;
             let section_flags = sh_flags;
