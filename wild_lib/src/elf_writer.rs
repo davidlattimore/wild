@@ -12,7 +12,6 @@ use crate::elf::ProgramHeader;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::SectionHeader;
-use crate::elf::SegmentType;
 use crate::elf::SymtabEntry;
 use crate::elf::Vernaux;
 use crate::elf::Verneed;
@@ -320,13 +319,11 @@ fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: 
         let segment_id = segment_layout.id;
         let segment_header = program_headers_out.take_header()?;
         let mut alignment = segment_sizes.alignment;
-        if segment_id.segment_type() == SegmentType::Load {
+        if segment_id.segment_type() == object::elf::PT_LOAD {
             alignment = alignment.max(crate::alignment::PAGE);
         }
         let e = LittleEndian;
-        segment_header
-            .p_type
-            .set(e, segment_id.segment_type() as u32);
+        segment_header.p_type.set(e, segment_id.segment_type());
         segment_header.p_flags.set(e, segment_id.segment_flags());
         segment_header
             .p_offset
@@ -349,9 +346,9 @@ fn populate_file_header(
 ) -> Result {
     let args = layout.args();
     let ty = if args.output_kind.is_relocatable() {
-        elf::FileType::SharedObject
+        object::elf::ET_DYN
     } else {
-        elf::FileType::Executable
+        object::elf::ET_EXEC
     };
     let e = LittleEndian;
     header.e_ident.magic = object::elf::ELFMAG;
@@ -361,7 +358,7 @@ fn populate_file_header(
     header.e_ident.os_abi = object::elf::ELFOSABI_NONE;
     header.e_ident.abi_version = 0;
     header.e_ident.padding = Default::default();
-    header.e_type.set(e, ty as u16);
+    header.e_type.set(e, ty);
     header.e_machine.set(e, object::elf::EM_X86_64);
     header.e_version.set(e, object::elf::EV_CURRENT as u32);
     header.e_entry.set(e, layout.entry_symbol_address()?);
@@ -1986,7 +1983,7 @@ fn write_internal_symbols(
         let entry = symbol_writer
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
-        entry.st_info = (elf::Binding::Global as u8) << 4;
+        entry.st_info = object::elf::STB_GLOBAL << 4;
     }
     Ok(())
 }
