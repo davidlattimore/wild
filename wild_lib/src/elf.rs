@@ -194,16 +194,17 @@ pub(crate) const CURRENT_EXE_TLS_MOD: u64 = 1;
 /// Section flag bit values.
 #[allow(unused)]
 pub(crate) mod shf {
-    pub(crate) const WRITE: u64 = 0x1;
-    pub(crate) const ALLOC: u64 = 0x2;
-    pub(crate) const EXECINSTR: u64 = 0x4;
-    pub(crate) const MERGE: u64 = 0x10;
-    pub(crate) const STRINGS: u64 = 0x20;
-    pub(crate) const INFO_LINK: u64 = 0x40;
-    pub(crate) const LINK_ORDER: u64 = 0x80;
-    pub(crate) const OS_NONCONFORMING: u64 = 0x100;
-    pub(crate) const GROUP: u64 = 0x200;
-    pub(crate) const TLS: u64 = 0x400;
+    pub(crate) const WRITE: u64 = object::elf::SHF_WRITE as u64;
+    pub(crate) const ALLOC: u64 = object::elf::SHF_ALLOC as u64;
+    pub(crate) const EXECINSTR: u64 = object::elf::SHF_EXECINSTR as u64;
+    pub(crate) const MERGE: u64 = object::elf::SHF_MERGE as u64;
+    pub(crate) const STRINGS: u64 = object::elf::SHF_STRINGS as u64;
+    pub(crate) const INFO_LINK: u64 = object::elf::SHF_INFO_LINK as u64;
+    pub(crate) const LINK_ORDER: u64 = object::elf::SHF_LINK_ORDER as u64;
+    pub(crate) const OS_NONCONFORMING: u64 = object::elf::SHF_OS_NONCONFORMING as u64;
+    pub(crate) const GROUP: u64 = object::elf::SHF_GROUP as u64;
+    pub(crate) const TLS: u64 = object::elf::SHF_TLS as u64;
+    // TODO: add with the new release of object crate (https://github.com/gimli-rs/object/pull/720)
     pub(crate) const GNU_RETAIN: u64 = 0x200_000;
 }
 
