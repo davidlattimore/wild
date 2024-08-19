@@ -1215,6 +1215,7 @@ fn setup_symlink() {
 fn integration_test(
     #[values(
         "trivial.c",
+        "trivial-main.c",
         "link_args.c",
         "global_definitions.c",
         "data.c",
