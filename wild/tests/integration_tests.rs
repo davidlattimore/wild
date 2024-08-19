@@ -21,6 +21,7 @@ use object::LittleEndian;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
+use rstest::rstest;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -1199,42 +1200,40 @@ fn select_bin<'a>(names: &[&'a str]) -> &'a str {
         .unwrap_or_else(|| names.last().unwrap())
 }
 
-#[test]
-fn integration_test() -> Result {
-    // We could potentially just discover the source files, but having a hand-written ordering is
-    // nice, since it means we can run the more basic tests first. If we do ever implement automatic
-    // discovery, then we need a way to mitigate the possibility of creating a source file and
-    // having it not get run because of a typo. e.g. we should make sure that all files in the
-    // source directory get used either as test roots or test dependencies.
-    let programs = [
-        ProgramInputs::new("trivial.c")?,
-        ProgramInputs::new("link_args.c")?,
-        ProgramInputs::new("global_definitions.c")?,
-        ProgramInputs::new("data.c")?,
-        ProgramInputs::new("weak-vars.c")?,
-        ProgramInputs::new("weak-vars-archive.c")?,
-        ProgramInputs::new("weak-fns.c")?,
-        ProgramInputs::new("weak-fns-archive.c")?,
-        ProgramInputs::new("init_test.c")?,
-        ProgramInputs::new("ifunc.c")?,
-        ProgramInputs::new("internal-syms.c")?,
-        ProgramInputs::new("tls.c")?,
-        ProgramInputs::new("old_init.c")?,
-        ProgramInputs::new("custom_section.c")?,
-        ProgramInputs::new("stack_alignment.s")?,
-        ProgramInputs::new("got_ref_to_local.c")?,
-        ProgramInputs::new("local_symbol_refs.s")?,
-        ProgramInputs::new("archive_activation.c")?,
-        ProgramInputs::new("common_section.c")?,
-        ProgramInputs::new("string_merging.c")?,
-        ProgramInputs::new("comments.c")?,
-        ProgramInputs::new("eh_frame.c")?,
-        ProgramInputs::new("trivial_asm.s")?,
-        ProgramInputs::new("libc-integration.c")?,
-        ProgramInputs::new("rust-integration.rs")?,
-        ProgramInputs::new("rust-integration-dynamic.rs")?,
-        ProgramInputs::new("cpp-integration.cc")?,
-    ];
+#[rstest]
+fn integration_test(
+    #[values(
+        "trivial.c",
+        "link_args.c",
+        "global_definitions.c",
+        "data.c",
+        "weak-vars.c",
+        "weak-vars-archive.c",
+        "weak-fns.c",
+        "weak-fns-archive.c",
+        "init_test.c",
+        "ifunc.c",
+        "internal-syms.c",
+        "tls.c",
+        "old_init.c",
+        "custom_section.c",
+        "stack_alignment.s",
+        "got_ref_to_local.c",
+        "local_symbol_refs.s",
+        "archive_activation.c",
+        "common_section.c",
+        "string_merging.c",
+        "comments.c",
+        "eh_frame.c",
+        "trivial_asm.s",
+        "libc-integration.c",
+        "rust-integration.rs",
+        "rust-integration-dynamic.rs",
+        "cpp-integration.cc"
+    )]
+    program_name: &'static str,
+) -> Result {
+    let program_inputs = ProgramInputs::new(program_name)?;
 
     let mut linkers = vec![
         Linker::ThirdParty(ThirdPartyLinker {
@@ -1276,51 +1275,49 @@ fn integration_test() -> Result {
 
     let print_timing = std::env::var("WILD_TEST_PRINT_TIMING").is_ok();
 
-    for program_inputs in &programs {
-        let filename = &program_inputs.source_file;
-        let configs = parse_configs(&src_path(filename))
-            .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
-        for config in configs {
-            let programs = linkers
-                .iter()
-                .filter(|linker| config.is_linker_enabled(linker))
-                .map(|linker| {
-                    let start = Instant::now();
-                    let result = program_inputs.build(linker, &config).with_context(|| {
-                        format!(
-                            "Failed to build program `{program_inputs}` \
-                                    with linker `{linker}` config `{}`",
-                            config.name
-                        )
-                    });
-                    let is_cache_hit = result
-                        .as_ref()
-                        .is_ok_and(|p| p.link_output.command.can_skip);
-                    if !is_cache_hit && print_timing {
-                        println!(
-                            "{program_inputs}-{config} with {linker} took {} ms",
-                            start.elapsed().as_millis()
-                        );
-                    }
-                    result
-                })
-                .collect::<Result<Vec<_>>>()?;
+    let filename = &program_inputs.source_file;
+    let configs = parse_configs(&src_path(filename))
+        .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
+    for config in configs {
+        let programs = linkers
+            .iter()
+            .filter(|linker| config.is_linker_enabled(linker))
+            .map(|linker| {
+                let start = Instant::now();
+                let result = program_inputs.build(linker, &config).with_context(|| {
+                    format!(
+                        "Failed to build program `{program_inputs}` \
+                                with linker `{linker}` config `{}`",
+                        config.name
+                    )
+                });
+                let is_cache_hit = result
+                    .as_ref()
+                    .is_ok_and(|p| p.link_output.command.can_skip);
+                if !is_cache_hit && print_timing {
+                    println!(
+                        "{program_inputs}-{config} with {linker} took {} ms",
+                        start.elapsed().as_millis()
+                    );
+                }
+                result
+            })
+            .collect::<Result<Vec<_>>>()?;
 
-            let start = Instant::now();
-            diff_shared_objects(&config, &programs)?;
-            diff_executables(&config, &programs)?;
-            if print_timing {
-                println!(
-                    "{program_inputs}-{config} diff took {} ms",
-                    start.elapsed().as_millis()
-                );
-            }
+        let start = Instant::now();
+        diff_shared_objects(&config, &programs)?;
+        diff_executables(&config, &programs)?;
+        if print_timing {
+            println!(
+                "{program_inputs}-{config} diff took {} ms",
+                start.elapsed().as_millis()
+            );
+        }
 
-            for program in programs {
-                program
-                    .run()
-                    .with_context(|| format!("Failed to run program. {program}"))?;
-            }
+        for program in programs {
+            program
+                .run()
+                .with_context(|| format!("Failed to run program. {program}"))?;
         }
     }
 
