@@ -21,6 +21,7 @@ use object::LittleEndian;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
+use rstest::fixture;
 use rstest::rstest;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -30,6 +31,7 @@ use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Instant;
 use wait_timeout::ChildExt;
@@ -1200,6 +1202,15 @@ fn select_bin<'a>(names: &[&'a str]) -> &'a str {
         .unwrap_or_else(|| names.last().unwrap())
 }
 
+static INIT: Once = Once::new();
+
+#[fixture]
+fn setup_symlink() {
+    INIT.call_once(|| {
+        setup_wild_ld_symlink().unwrap();
+    });
+}
+
 #[rstest]
 fn integration_test(
     #[values(
@@ -1232,6 +1243,7 @@ fn integration_test(
         "cpp-integration.cc"
     )]
     program_name: &'static str,
+    #[allow(unused_variables)] setup_symlink: (),
 ) -> Result {
     let program_inputs = ProgramInputs::new(program_name)?;
 
@@ -1270,9 +1282,6 @@ fn integration_test(
     }
 
     linkers.push(Linker::Wild);
-
-    setup_wild_ld_symlink()?;
-
     let print_timing = std::env::var("WILD_TEST_PRINT_TIMING").is_ok();
 
     let filename = &program_inputs.source_file;
