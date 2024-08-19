@@ -19,3 +19,4 @@ object = { version = "0.36.0", default-features = false, features = [
 ] }
 linker-diff = { path = "../linker-diff" }
 which = "6.0.1"
+rstest = "0.22.0"
