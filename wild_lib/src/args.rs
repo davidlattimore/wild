@@ -251,7 +251,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if arg == "-z" {
             if let Some(z) = input.next() {
                 match z.as_ref() {
+                    // NOTE: Wild sets bind_now on by default!
                     "now" => bind_now = true,
+                    "lazy" => bind_now = false,
                     _ => {
                         // TODO: Handle these
                     }
@@ -699,6 +701,8 @@ mod tests {
         "relro",
         "-z",
         "now",
+        "-z",
+        "lazy",
         "/usr/bin/../lib/gcc/x86_64-linux-gnu/12/crtendS.o",
         "/lib/x86_64-linux-gnu/crtn.o",
         "--version-script",
@@ -736,6 +740,7 @@ mod tests {
             args.version_script_path,
             Some(PathBuf::from_str("a.ver").unwrap())
         );
+        assert!(!args.bind_now);
     }
 
     #[test]
