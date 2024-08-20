@@ -744,51 +744,80 @@ impl<'elf, 'data> RelocationDisplay<'elf, 'data> {
     }
 }
 
+macro_rules! const_name_by_value {
+    ($needle: expr, $( $const:ident ),*) => {
+        match $needle {
+            $(object::elf::$const => Some(stringify!($const)),)*
+            _ => None
+        }
+    };
+}
+
 fn rel_type_to_string(r_type: u32) -> Cow<'static, str> {
-    Cow::Borrowed(match r_type {
-        0 => "R_X86_64_NONE",
-        1 => "R_X86_64_64",
-        2 => "R_X86_64_PC32",
-        3 => "R_X86_64_GOT32",
-        4 => "R_X86_64_PLT32",
-        5 => "R_X86_64_COPY",
-        6 => "R_X86_64_GLOB_DAT",
-        7 => "R_X86_64_JUMP_SLOT",
-        8 => "R_X86_64_RELATIVE",
-        9 => "R_X86_64_GOTPCREL",
-        10 => "R_X86_64_32",
-        11 => "R_X86_64_32S",
-        12 => "R_X86_64_16",
-        13 => "R_X86_64_PC16",
-        14 => "R_X86_64_8",
-        15 => "R_X86_64_PC8",
-        16 => "R_X86_64_DTPMOD64",
-        17 => "R_X86_64_DTPOFF64",
-        18 => "R_X86_64_TPOFF64",
-        19 => "R_X86_64_TLSGD",
-        20 => "R_X86_64_TLSLD",
-        21 => "R_X86_64_DTPOFF32",
-        22 => "R_X86_64_GOTTPOFF",
-        23 => "R_X86_64_TPOFF32",
-        24 => "R_X86_64_PC64",
-        25 => "R_X86_64_GOTOFF64",
-        26 => "R_X86_64_GOTPC32",
-        27 => "R_X86_64_GOT64",
-        28 => "R_X86_64_GOTPCREL64",
-        29 => "R_X86_64_GOTPC64",
-        30 => "R_X86_64_GOTPLT64",
-        31 => "R_X86_64_PLTOFF64",
-        32 => "R_X86_64_SIZE32",
-        33 => "R_X86_64_SIZE64",
-        34 => "R_X86_64_GOTPC32_TLSDESC",
-        35 => "R_X86_64_TLSDESC_CALL",
-        36 => "R_X86_64_TLSDESC",
-        37 => "R_X86_64_IRELATIVE",
-        38 => "R_X86_64_RELATIVE64",
-        41 => "R_X86_64_GOTPCRELX",
-        42 => "R_X86_64_REX_GOTPCRELX",
-        other => return Cow::Owned(format!("Unknown relocation type 0x{other:x}")),
-    })
+    if let Some(name) = const_name_by_value![
+        r_type,
+        R_X86_64_NONE,
+        R_X86_64_64,
+        R_X86_64_PC32,
+        R_X86_64_GOT32,
+        R_X86_64_PLT32,
+        R_X86_64_COPY,
+        R_X86_64_GLOB_DAT,
+        R_X86_64_JUMP_SLOT,
+        R_X86_64_RELATIVE,
+        R_X86_64_GOTPCREL,
+        R_X86_64_32,
+        R_X86_64_32S,
+        R_X86_64_16,
+        R_X86_64_PC16,
+        R_X86_64_8,
+        R_X86_64_PC8,
+        R_X86_64_DTPMOD64,
+        R_X86_64_DTPOFF64,
+        R_X86_64_TPOFF64,
+        R_X86_64_TLSGD,
+        R_X86_64_TLSLD,
+        R_X86_64_DTPOFF32,
+        R_X86_64_GOTTPOFF,
+        R_X86_64_TPOFF32,
+        R_X86_64_PC64,
+        R_X86_64_GOTOFF64,
+        R_X86_64_GOTPC32,
+        R_X86_64_GOT64,
+        R_X86_64_GOTPCREL64,
+        R_X86_64_GOTPC64,
+        R_X86_64_GOTPLT64,
+        R_X86_64_PLTOFF64,
+        R_X86_64_SIZE32,
+        R_X86_64_SIZE64,
+        R_X86_64_GOTPC32_TLSDESC,
+        R_X86_64_TLSDESC_CALL,
+        R_X86_64_TLSDESC,
+        R_X86_64_IRELATIVE,
+        R_X86_64_RELATIVE64,
+        R_X86_64_GOTPCRELX,
+        R_X86_64_REX_GOTPCRELX
+    ] {
+        Cow::Borrowed(name)
+    } else {
+        Cow::Owned(format!("Unknown relocation type 0x{r_type:x}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use object::elf::*;
+
+    #[test]
+    fn test_rel_type_to_string() {
+        assert_eq!(&rel_type_to_string(R_X86_64_32), stringify!(R_X86_64_32));
+        assert_eq!(
+            &rel_type_to_string(R_X86_64_GOTPC32_TLSDESC),
+            stringify!(R_X86_64_GOTPC32_TLSDESC)
+        );
+        assert_eq!(&rel_type_to_string(64), "Unknown relocation type 0x40");
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
