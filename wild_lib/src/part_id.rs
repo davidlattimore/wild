@@ -249,7 +249,7 @@ impl PartId {
         PartId(self.0 + offset as u32)
     }
 
-    pub(crate) fn from_u32(value: u32) -> PartId {
+    pub(crate) const fn from_u32(value: u32) -> PartId {
         PartId(value)
     }
 

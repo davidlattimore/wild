@@ -280,3 +280,40 @@ fn test_output_order_map_consistent() {
     output_sections.sections_do(|id, _| ordering_b.push(id.as_usize()));
     assert_eq!(ordering_a, ordering_b);
 }
+
+#[test]
+fn test_output_order_map() {
+    use crate::output_section_id;
+
+    let output_sections = crate::output_section_id::OutputSections::for_testing();
+    let mut part_map = output_sections.new_part_map::<u32>();
+
+    const PART_ID1: PartId = output_section_id::DATA.part_id_with_alignment(alignment::USIZE);
+    *part_map.get_mut(PART_ID1) += 32;
+
+    const PART_ID2: PartId = output_section_id::DATA.part_id_with_alignment(alignment::MIN);
+    *part_map.get_mut(PART_ID2) += 5;
+
+    part_map.output_order_map(
+        &output_sections,
+        |part_id, alignment, &value| match part_id {
+            PART_ID1 => {
+                assert_eq!(alignment, alignment::USIZE);
+                assert_eq!(value, 32);
+            }
+            PART_ID2 => {
+                assert_eq!(alignment, alignment::MIN);
+                assert_eq!(value, 5);
+            }
+            _ => {
+                if part_id.output_section_id() == output_section_id::DATA {
+                    assert!(
+                        alignment <= alignment::USIZE,
+                        "Unexpected alignment {alignment}"
+                    );
+                }
+                assert_eq!(value, 0);
+            }
+        },
+    );
+}

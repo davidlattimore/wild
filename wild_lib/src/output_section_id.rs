@@ -629,11 +629,10 @@ impl OutputSectionId {
 
     /// Returns the part ID in this section that has the specified alignment. Can only be called for
     /// regular sections.
-    pub(crate) fn part_id_with_alignment(&self, alignment: Alignment) -> PartId {
-        let regular_offset = self
-            .0
-            .checked_sub(NUM_NON_REGULAR_SECTIONS)
-            .expect("part_id_with_alignment can only be called for regular sections");
+    pub(crate) const fn part_id_with_alignment(&self, alignment: Alignment) -> PartId {
+        let Some(regular_offset) = self.0.checked_sub(NUM_NON_REGULAR_SECTIONS) else {
+            panic!("part_id_with_alignment can only be called for regular sections");
+        };
         PartId::from_u32(
             part_id::REGULAR_PART_BASE
                 + (regular_offset * NUM_ALIGNMENTS as u32)
