@@ -31,6 +31,7 @@ use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
 use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -607,6 +608,12 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
             command.env("WILD_SAVE_DIR", &output_path);
         }
     }
+
+    // The function is called in parallel from multiple threads and that's why
+    // the object storage should be guarded with a lock.
+    // TODO: Maybe come up with a more fine-grained locking.
+    static FS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let _guard = FS_LOCK.get_or_init(|| Mutex::new(())).lock();
 
     if is_newer(&output_path, &src_path) {
         return Ok(output_path);
