@@ -17,6 +17,7 @@ use crate::input_data::UNINITIALISED_FILE_ID;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::OutputSectionsBuilder;
 use crate::output_section_id::SectionDetails;
+use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ParsedInput;
@@ -574,7 +575,7 @@ fn allocate_start_stop_symbol_id<'data>(
     } else {
         return None;
     };
-    let section_id = output_sections.custom_name_to_id(section_name)?;
+    let section_id = output_sections.custom_name_to_id(SectionName(section_name))?;
 
     let symbol_id = symbol_db.add_start_stop_symbol(name);
     let def_info = if is_start {

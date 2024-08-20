@@ -37,6 +37,7 @@ use anyhow::anyhow;
 use anyhow::Context as _;
 use core::mem::size_of;
 use std::fmt::Debug;
+use std::fmt::Display;
 
 /// Number of non-regular sections that we define. A non-regular section is one that isn't split by
 /// alignment. They're always generated. Most of them only have a single part.
@@ -54,7 +55,7 @@ pub(crate) struct OutputSectionId(u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SectionDetails<'data> {
-    pub(crate) name: &'data [u8],
+    pub(crate) name: SectionName<'data>,
     pub(crate) ty: u32,
     pub(crate) section_flags: u64,
     pub(crate) element_size: u64,
@@ -117,7 +118,7 @@ pub struct OutputSections<'data> {
     /// being output.
     pub(crate) output_section_indexes: Vec<Option<u16>>,
 
-    custom_by_name: AHashMap<&'data [u8], OutputSectionId>,
+    custom_by_name: AHashMap<SectionName<'data>, OutputSectionId>,
     pub(crate) ro_custom: Vec<OutputSectionId>,
     pub(crate) exec_custom: Vec<OutputSectionId>,
     pub(crate) data_custom: Vec<OutputSectionId>,
@@ -143,7 +144,7 @@ impl<'data> OutputSections<'data> {
                 .with_context(|| {
                     format!(
                         "Internal error: Didn't allocate ID for custom section `{}`",
-                        String::from_utf8_lossy(custom_section_id.name)
+                        custom_section_id.name
                     )
                 })?
                 .part_id_with_alignment(custom_section_id.alignment),
@@ -180,7 +181,7 @@ impl<'data> OutputSections<'data> {
                 let load_seg_id = load_seg.ok_or_else(|| {
                     anyhow!(
                         "Section `{}` is missing from output order (update sections_and_segments_do)",
-                        String::from_utf8_lossy(info.details.name),
+                        info.details.name,
                     )
                 })?;
                 info.loadable_segment_id = load_seg_id;
@@ -222,7 +223,7 @@ pub(crate) struct BuiltInSectionDetails {
 impl SectionDetails<'static> {
     const fn default() -> Self {
         Self {
-            name: &[],
+            name: SectionName(&[]),
             ty: object::elf::SHT_NULL,
             section_flags: 0,
             retain: false,
@@ -234,7 +235,7 @@ impl SectionDetails<'static> {
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     details: SectionDetails {
-        name: &[],
+        name: SectionName(&[]),
         packed: false,
         ..SectionDetails::default()
     },
@@ -250,7 +251,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     // A section into which we write headers.
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: "".as_bytes(),
+            name: SectionName("".as_bytes()),
             section_flags: 0,
             ..SectionDetails::default()
         },
@@ -260,7 +261,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".phdr".as_bytes(),
+            name: SectionName(".phdr".as_bytes()),
             section_flags: 0,
             ..SectionDetails::default()
         },
@@ -270,7 +271,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".shdr".as_bytes(),
+            name: SectionName(".shdr".as_bytes()),
             section_flags: 0,
             ..SectionDetails::default()
         },
@@ -279,7 +280,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".shstrtab".as_bytes(),
+            name: SectionName(".shstrtab".as_bytes()),
             ty: object::elf::SHT_STRTAB,
             ..SectionDetails::default()
         },
@@ -288,7 +289,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".strtab".as_bytes(),
+            name: SectionName(".strtab".as_bytes()),
             ty: object::elf::SHT_STRTAB,
             ..SectionDetails::default()
         },
@@ -296,7 +297,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".got".as_bytes(),
+            name: SectionName(".got".as_bytes()),
             ty: object::elf::SHT_PROGBITS,
             section_flags: elf::shf::WRITE | elf::shf::ALLOC,
             element_size: core::mem::size_of::<u64>() as u64,
@@ -308,7 +309,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".plt".as_bytes(),
+            name: SectionName(".plt".as_bytes()),
             ty: object::elf::SHT_PROGBITS,
             section_flags: elf::shf::ALLOC | elf::shf::EXECINSTR,
             element_size: crate::elf::PLT_ENTRY_SIZE,
@@ -319,7 +320,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".rela.plt".as_bytes(),
+            name: SectionName(".rela.plt".as_bytes()),
             ty: object::elf::SHT_RELA,
             section_flags: elf::shf::ALLOC | elf::shf::INFO_LINK,
             element_size: elf::RELA_ENTRY_SIZE,
@@ -333,7 +334,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".eh_frame".as_bytes(),
+            name: SectionName(".eh_frame".as_bytes()),
             ty: object::elf::SHT_PROGBITS,
             section_flags: elf::shf::ALLOC,
             ..SectionDetails::default()
@@ -343,7 +344,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".eh_frame_hdr".as_bytes(),
+            name: SectionName(".eh_frame_hdr".as_bytes()),
             ty: object::elf::SHT_PROGBITS,
             section_flags: elf::shf::ALLOC,
             ..SectionDetails::default()
@@ -353,7 +354,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".dynamic".as_bytes(),
+            name: SectionName(".dynamic".as_bytes()),
             ty: object::elf::SHT_DYNAMIC,
             section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             element_size: core::mem::size_of::<DynamicEntry>() as u64,
@@ -366,7 +367,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".gnu.hash".as_bytes(),
+            name: SectionName(".gnu.hash".as_bytes()),
             ty: object::elf::SHT_GNU_HASH,
             section_flags: elf::shf::ALLOC,
             ..SectionDetails::default()
@@ -377,7 +378,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".dynsym".as_bytes(),
+            name: SectionName(".dynsym".as_bytes()),
             ty: object::elf::SHT_DYNSYM,
             section_flags: elf::shf::ALLOC,
             element_size: size_of::<elf::SymtabEntry>() as u64,
@@ -390,7 +391,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".dynstr".as_bytes(),
+            name: SectionName(".dynstr".as_bytes()),
             ty: object::elf::SHT_STRTAB,
             section_flags: elf::shf::ALLOC,
             ..SectionDetails::default()
@@ -400,7 +401,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".interp".as_bytes(),
+            name: SectionName(".interp".as_bytes()),
             ty: object::elf::SHT_PROGBITS,
             section_flags: elf::shf::ALLOC,
             ..SectionDetails::default()
@@ -409,7 +410,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".gnu.version".as_bytes(),
+            name: SectionName(".gnu.version".as_bytes()),
             ty: object::elf::SHT_GNU_VERSYM,
             section_flags: elf::shf::ALLOC,
             element_size: core::mem::size_of::<Versym>() as u64,
@@ -421,7 +422,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".gnu.version_r".as_bytes(),
+            name: SectionName(".gnu.version_r".as_bytes()),
             ty: object::elf::SHT_GNU_VERNEED,
             section_flags: elf::shf::ALLOC,
             ..SectionDetails::default()
@@ -434,7 +435,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     // Multi-part generated sections
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".symtab".as_bytes(),
+            name: SectionName(".symtab".as_bytes()),
             ty: object::elf::SHT_SYMTAB,
             element_size: size_of::<elf::SymtabEntry>() as u64,
             ..SectionDetails::default()
@@ -446,7 +447,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".rela.dyn".as_bytes(),
+            name: SectionName(".rela.dyn".as_bytes()),
             ty: object::elf::SHT_RELA,
             section_flags: elf::shf::ALLOC,
             element_size: elf::RELA_ENTRY_SIZE,
@@ -459,7 +460,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     // Start of regular sections
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".rodata".as_bytes(),
+            name: SectionName(".rodata".as_bytes()),
             ty: object::elf::SHT_PROGBITS,
             section_flags: elf::shf::ALLOC,
             ..SectionDetails::default()
@@ -468,7 +469,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".init_array".as_bytes(),
+            name: SectionName(".init_array".as_bytes()),
             ty: object::elf::SHT_INIT_ARRAY,
             section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             retain: true,
@@ -481,7 +482,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".fini_array".as_bytes(),
+            name: SectionName(".fini_array".as_bytes()),
             ty: object::elf::SHT_FINI_ARRAY,
             section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             retain: true,
@@ -494,7 +495,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".preinit_array".as_bytes(),
+            name: SectionName(".preinit_array".as_bytes()),
             ty: object::elf::SHT_PREINIT_ARRAY,
             retain: true,
             ..SectionDetails::default()
@@ -505,7 +506,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".text".as_bytes(),
+            name: SectionName(".text".as_bytes()),
             ty: object::elf::SHT_PROGBITS,
             section_flags: elf::shf::ALLOC | elf::shf::EXECINSTR,
             ..SectionDetails::default()
@@ -514,7 +515,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".init".as_bytes(),
+            name: SectionName(".init".as_bytes()),
             ty: object::elf::SHT_PROGBITS,
             section_flags: elf::shf::ALLOC | elf::shf::EXECINSTR,
             retain: true,
@@ -525,7 +526,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".fini".as_bytes(),
+            name: SectionName(".fini".as_bytes()),
             retain: true,
             ty: object::elf::SHT_PROGBITS,
             section_flags: elf::shf::ALLOC | elf::shf::EXECINSTR,
@@ -536,7 +537,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".data".as_bytes(),
+            name: SectionName(".data".as_bytes()),
             ty: object::elf::SHT_PROGBITS,
             section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             ..SectionDetails::default()
@@ -545,7 +546,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".tdata".as_bytes(),
+            name: SectionName(".tdata".as_bytes()),
             ty: object::elf::SHT_PROGBITS,
             section_flags: elf::shf::WRITE | elf::shf::ALLOC | elf::shf::TLS,
             ..SectionDetails::default()
@@ -554,7 +555,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".tbss".as_bytes(),
+            name: SectionName(".tbss".as_bytes()),
             ty: object::elf::SHT_NOBITS,
             section_flags: elf::shf::WRITE | elf::shf::ALLOC | elf::shf::TLS,
             ..SectionDetails::default()
@@ -563,7 +564,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".bss".as_bytes(),
+            name: SectionName(".bss".as_bytes()),
             ty: object::elf::SHT_NOBITS,
             section_flags: elf::shf::ALLOC | elf::shf::WRITE,
             ..SectionDetails::default()
@@ -573,7 +574,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".comment".as_bytes(),
+            name: SectionName(".comment".as_bytes()),
             ty: object::elf::SHT_PROGBITS,
             retain: true,
             section_flags: elf::shf::STRINGS | elf::shf::MERGE,
@@ -584,7 +585,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     BuiltInSectionDetails {
         details: SectionDetails {
-            name: ".gcc_except_table".as_bytes(),
+            name: SectionName(".gcc_except_table".as_bytes()),
             ty: object::elf::SHT_PROGBITS,
             section_flags: elf::shf::ALLOC,
             ..SectionDetails::default()
@@ -687,9 +688,22 @@ pub(crate) enum OrderEvent<'data> {
     Section(OutputSectionId, &'data SectionDetails<'data>),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct SectionName<'data>(pub(crate) &'data [u8]);
+
+impl<'data> SectionName<'data> {
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        self.0
+    }
+}
+
 pub(crate) struct OutputSectionsBuilder<'data> {
     base_address: u64,
-    custom_by_name: AHashMap<&'data [u8], OutputSectionId>,
+    custom_by_name: AHashMap<SectionName<'data>, OutputSectionId>,
     // TODO: Change this to be an OutputSectionMap.
     section_infos: Vec<SectionOutputInfo<'data>>,
 }
@@ -888,23 +902,23 @@ impl<'data> OutputSections<'data> {
             .unwrap_or_default()
     }
 
-    pub(crate) fn name(&self, section_id: OutputSectionId) -> &[u8] {
+    pub(crate) fn name(&self, section_id: OutputSectionId) -> SectionName<'data> {
         self.section_infos[section_id.as_usize()].details.name
     }
 
     pub(crate) fn display_name(&self, section_id: OutputSectionId) -> std::borrow::Cow<str> {
-        String::from_utf8_lossy(self.name(section_id))
+        String::from_utf8_lossy(self.name(section_id).0)
     }
 
-    pub(crate) fn custom_name_to_id(&self, name: &[u8]) -> Option<OutputSectionId> {
-        self.custom_by_name.get(name).cloned()
+    pub(crate) fn custom_name_to_id(&self, name: SectionName) -> Option<OutputSectionId> {
+        self.custom_by_name.get(&name).cloned()
     }
 
     #[cfg(test)]
     pub(crate) fn for_testing() -> OutputSections<'static> {
         let mut builder = OutputSectionsBuilder::with_base_address(0x1000);
         let section_details = SectionDetails {
-            name: b"ro",
+            name: SectionName(b"ro"),
             ty: object::elf::SHT_PROGBITS,
             section_flags: 0,
             element_size: 0,
@@ -915,17 +929,17 @@ impl<'data> OutputSections<'data> {
             .add_sections(&[
                 section_details,
                 SectionDetails {
-                    name: b"exec",
+                    name: SectionName(b"exec"),
                     section_flags: crate::elf::shf::EXECINSTR,
                     ..section_details
                 },
                 SectionDetails {
-                    name: b"data",
+                    name: SectionName(b"data"),
                     section_flags: crate::elf::shf::WRITE,
                     ..section_details
                 },
                 SectionDetails {
-                    name: b"bss",
+                    name: SectionName(b"bss"),
                     ty: object::elf::SHT_NOBITS,
                     ..section_details
                 },
@@ -938,6 +952,12 @@ impl<'data> OutputSections<'data> {
 impl<'data> SectionDetails<'data> {
     pub(crate) fn has_data_in_file(&self) -> bool {
         self.ty != object::elf::SHT_NOBITS
+    }
+}
+
+impl Display for SectionName<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", String::from_utf8_lossy(self.0))
     }
 }
 
@@ -1005,7 +1025,7 @@ fn test_constant_ids() {
     ];
     for (id, name) in check {
         assert_eq!(
-            std::str::from_utf8(id.built_in_details().details.name).unwrap(),
+            std::str::from_utf8(id.built_in_details().details.name.bytes()).unwrap(),
             *name
         );
     }

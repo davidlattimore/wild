@@ -50,7 +50,7 @@ impl OffsetVerifier {
                 problems.push(format!(
                     "Part #{part_id} (section `{}` alignment: {alignment}) expected: 0x{exp:x} \
                      actual: 0x{act:x} bumped by: 0x{actual_bump:x} requested size: 0x{size:x}\n",
-                    String::from_utf8_lossy(output_sections.name(part_id.output_section_id()))
+                    output_sections.name(part_id.output_section_id())
                 ));
             }
         }

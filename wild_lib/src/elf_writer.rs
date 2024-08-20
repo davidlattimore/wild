@@ -2294,7 +2294,7 @@ fn write_section_header_strings(mut out: &mut [u8], sections: &OutputSections) {
         if sections.output_index_of_section(id).is_some() {
             let name = sections.name(id);
             let name_out = crate::slice::slice_take_prefix_mut(&mut out, name.len() + 1);
-            name_out[..name.len()].copy_from_slice(name);
+            name_out[..name.len()].copy_from_slice(name.bytes());
             name_out[name.len()] = 0;
         }
     });

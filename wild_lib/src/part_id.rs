@@ -7,6 +7,7 @@ use crate::output_section_id;
 use crate::output_section_id::BuiltInSectionDetails;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionDetails;
+use crate::output_section_id::SectionName;
 use object::read::elf::SectionHeader as _;
 use std::fmt::Debug;
 
@@ -26,7 +27,7 @@ pub(crate) struct PartId(u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct CustomSectionId<'data> {
-    pub(crate) name: &'data [u8],
+    pub(crate) name: SectionName<'data>,
     pub(crate) alignment: Alignment,
 }
 
@@ -146,11 +147,11 @@ impl<'data> UnloadedSection<'data> {
             let section_flags = sh_flags;
             if !section_name.is_empty() {
                 let custom_section_id = CustomSectionId {
-                    name: section_name,
+                    name: SectionName(section_name),
                     alignment,
                 };
                 let details = SectionDetails {
-                    name: section_name,
+                    name: SectionName(section_name),
                     ty,
                     section_flags,
                     element_size: 0,
@@ -284,15 +285,11 @@ impl<'data> std::fmt::Display for TemporaryPartId<'data> {
                     f,
                     "section #{} ({})",
                     id.as_usize(),
-                    String::from_utf8_lossy(id.built_in_details().details.name)
+                    id.built_in_details().details.name
                 )
             }
             TemporaryPartId::Custom(custom) => {
-                write!(
-                    f,
-                    "custom section `{}`",
-                    String::from_utf8_lossy(custom.name)
-                )
+                write!(f, "custom section `{}`", custom.name)
             }
             TemporaryPartId::EhFrameData => write!(f, "eh_frame data"),
         }
