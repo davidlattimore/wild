@@ -128,6 +128,7 @@ const IGNORED_FLAGS: &[&str] = &[
     "no-call-graph-profile-sort",
     "gdb-index",
     "disable-new-dtags",
+    "relax",
     "no-relax",
 ];
 
