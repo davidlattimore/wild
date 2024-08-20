@@ -84,13 +84,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
         output_sections.sections_do(|section_id, _| {
             let count = section_id.num_parts();
             let base_part_id = section_id.base_part_id();
-            let max_alignment = self.parts
-                [base_part_id.as_usize()..base_part_id.as_usize() + count]
-                .iter()
-                .position(|p| *p != T::default())
-                .map(|o| base_part_id.offset(o).alignment())
-                .unwrap_or(alignment::MIN)
-                .max(base_part_id.output_section_id().min_alignment());
+            let max_alignment = self.max_alignment(base_part_id, count);
             parts_out[base_part_id.as_usize()..base_part_id.as_usize() + count]
                 .iter_mut()
                 .enumerate()
@@ -102,6 +96,18 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
         });
 
         OutputSectionPartMap { parts: parts_out }
+    }
+
+    /// Returns the maximum alignment for any part with a non-default value starting from
+    /// `base_part_id` for the next `count` parts. The returned value will not be any less than the
+    /// minimum alignment for the section.
+    fn max_alignment(&self, base_part_id: PartId, count: usize) -> Alignment {
+        self.parts[base_part_id.as_usize()..base_part_id.as_usize() + count]
+            .iter()
+            .position(|p| *p != T::default())
+            .map(|o| base_part_id.offset(o).alignment())
+            .unwrap_or(alignment::MIN)
+            .max(base_part_id.output_section_id().min_alignment())
     }
 
     /// Zip mutable references to values in `self` with shared references from `other` producing a
@@ -315,5 +321,29 @@ fn test_output_order_map() {
                 assert_eq!(value, 0);
             }
         },
+    );
+}
+
+#[test]
+fn test_max_alignment() {
+    use crate::output_section_id;
+
+    let output_sections = crate::output_section_id::OutputSections::for_testing();
+    let mut part_map = output_sections.new_part_map::<u32>();
+
+    assert_eq!(
+        part_map.max_alignment(output_section_id::DATA.base_part_id(), 16),
+        alignment::MIN
+    );
+
+    const PART_ID1: PartId = output_section_id::DATA.part_id_with_alignment(alignment::USIZE);
+    *part_map.get_mut(PART_ID1) += 32;
+
+    const PART_ID2: PartId = output_section_id::DATA.part_id_with_alignment(alignment::MIN);
+    *part_map.get_mut(PART_ID2) += 5;
+
+    assert_eq!(
+        part_map.max_alignment(output_section_id::DATA.base_part_id(), 16),
+        alignment::USIZE
     );
 }
