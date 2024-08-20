@@ -1267,7 +1267,8 @@ fn integration_test(
         "libc-integration.c",
         "rust-integration.rs",
         "rust-integration-dynamic.rs",
-        "cpp-integration.cc"
+        "cpp-integration.cc",
+        "rust-tls.rs"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
