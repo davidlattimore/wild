@@ -983,8 +983,6 @@ pub(crate) struct Section<'data> {
     pub(crate) size: u64,
     /// Our data. May be empty if we're in a zero-initialised section.
     pub(crate) data: &'data [u8],
-    // TODO: Can this be removed? It should be encoded in output_part_id now.
-    pub(crate) alignment: Alignment,
     pub(crate) resolution_kind: ResolutionFlags,
     packed: bool,
     pub(crate) is_writable: bool,
@@ -2081,7 +2079,6 @@ impl<'data> Section<'data> {
     ) -> Result<Section<'data>> {
         let e = LittleEndian;
         let object_section = object_state.object.section(section_id)?;
-        let alignment = Alignment::new(object_section.sh_addralign(e))?;
         let size = object_section.sh_size(e);
         let section_data = object_state.object.section_data(object_section)?;
         for rel in object_state.object.relocations(section_id)? {
@@ -2090,7 +2087,6 @@ impl<'data> Section<'data> {
         let section = Section {
             index: section_id,
             output_part_id: None,
-            alignment,
             size,
             data: section_data,
             resolution_kind: ResolutionFlags::empty(),
@@ -2106,7 +2102,7 @@ impl<'data> Section<'data> {
         if self.packed {
             self.size
         } else {
-            self.alignment.align_up(self.size)
+            self.alignment().align_up(self.size)
         }
     }
 
@@ -2116,6 +2112,16 @@ impl<'data> Section<'data> {
 
     pub(crate) fn output_part_id(&self) -> Option<PartId> {
         self.output_part_id
+    }
+
+    /// Returns the alignment for this section. Note, for sections with no output section, we'll
+    /// return the minimum alignment, which may not be the same as was specified in the input file.
+    /// This shouldn't matter because we're not going to output that section anyway, so the
+    /// alignment is irrelevant.
+    fn alignment(&self) -> Alignment {
+        self.output_part_id
+            .map(|p| p.alignment())
+            .unwrap_or(alignment::MIN)
     }
 }
 
@@ -2844,12 +2850,12 @@ impl<'data> ObjectLayoutState<'data> {
         }
         let mut section = Section::create(self, common, queue, &unloaded, section_id, resources)?;
         let part_id = resources.output_sections.part_id(unloaded.part_id)?;
+        section.output_part_id = Some(part_id);
         common.allocate(part_id, section.capacity());
         resources
             .sections_with_content
             .get(part_id.output_section_id())
             .fetch_or(true, atomic::Ordering::Relaxed);
-        section.output_part_id = Some(part_id);
         if let Some(frame_data) = self.section_frame_data.get_mut(section_id.0) {
             self.eh_frame_size += u64::from(frame_data.total_fde_size);
             if resources.symbol_db.args.should_write_eh_frame_hdr {
