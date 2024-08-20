@@ -11,6 +11,9 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
 use crate::part_id::PartId;
 use crate::part_id::TemporaryPartId;
+use crate::part_id::NUM_PARTS_PER_TWO_PART_SECTION;
+use crate::part_id::NUM_SINGLE_PART_SECTIONS;
+use crate::part_id::REGULAR_PART_BASE;
 use crate::program_segments::ProgramSegmentId;
 use ahash::AHashMap;
 use anyhow::anyhow;
@@ -642,7 +645,16 @@ impl OutputSectionId {
 
     /// Returns the first part ID for this section.
     pub(crate) fn base_part_id(&self) -> PartId {
-        self.part_id_with_alignment(alignment::MAX)
+        if self.0 < NUM_SINGLE_PART_SECTIONS {
+            PartId::from_u32(self.0)
+        } else if let Some(offset) = self.0.checked_sub(NUM_NON_REGULAR_SECTIONS) {
+            PartId::from_u32(REGULAR_PART_BASE + offset * NUM_ALIGNMENTS as u32)
+        } else {
+            PartId::from_u32(
+                (self.0 - NUM_SINGLE_PART_SECTIONS) * NUM_PARTS_PER_TWO_PART_SECTION
+                    + NUM_SINGLE_PART_SECTIONS,
+            )
+        }
     }
 
     pub(crate) fn info(&self, layout: &Layout) -> u32 {

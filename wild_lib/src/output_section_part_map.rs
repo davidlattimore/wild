@@ -4,7 +4,6 @@ use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
-use crate::part_id;
 use crate::part_id::PartId;
 use std::ops::AddAssign;
 
@@ -83,7 +82,9 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
         let mut parts_out = Vec::new();
         parts_out.resize_with(self.parts.len(), U::default);
 
-        let mut map_part = |base_part_id: PartId, count: usize| {
+        let mut map_part = |section_id: OutputSectionId| {
+            let count = section_id.num_parts();
+            let base_part_id = section_id.base_part_id();
             let max_alignment = self.parts
                 [base_part_id.as_usize()..base_part_id.as_usize() + count]
                 .iter()
@@ -101,64 +102,62 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
                 });
         };
 
-        map_part(part_id::FILE_HEADER, 1);
-        map_part(part_id::PROGRAM_HEADERS, 1);
-        map_part(part_id::SECTION_HEADERS, 1);
-        map_part(part_id::INTERP, 1);
-        map_part(part_id::GNU_HASH, 1);
-        map_part(part_id::DYNSYM, 1);
-        map_part(part_id::DYNSTR, 1);
-        map_part(part_id::GNU_VERSION, 1);
-        map_part(part_id::GNU_VERSION_R, 1);
-        map_part(part_id::RELA_DYN_RELATIVE, 1);
-        map_part(part_id::RELA_DYN_GENERAL, 1);
-        map_part(output_section_id::RODATA.base_part_id(), 16);
+        map_part(output_section_id::FILE_HEADER);
+        map_part(output_section_id::PROGRAM_HEADERS);
+        map_part(output_section_id::SECTION_HEADERS);
+        map_part(output_section_id::INTERP);
+        map_part(output_section_id::GNU_HASH);
+        map_part(output_section_id::DYNSYM);
+        map_part(output_section_id::DYNSTR);
+        map_part(output_section_id::GNU_VERSION);
+        map_part(output_section_id::GNU_VERSION_R);
+        map_part(output_section_id::RELA_DYN);
+        map_part(output_section_id::RODATA);
 
-        map_part(part_id::EH_FRAME_HDR, 1);
-        map_part(output_section_id::PREINIT_ARRAY.base_part_id(), 16);
+        map_part(output_section_id::EH_FRAME_HDR);
+        map_part(output_section_id::PREINIT_ARRAY);
 
-        map_part(part_id::SHSTRTAB, 1);
-        map_part(part_id::SYMTAB_LOCAL, 1);
-        map_part(part_id::SYMTAB_GLOBAL, 1);
-        map_part(part_id::STRTAB, 1);
-        map_part(output_section_id::GCC_EXCEPT_TABLE.base_part_id(), 16);
+        map_part(output_section_id::SHSTRTAB);
+        map_part(output_section_id::SYMTAB);
+        map_part(output_section_id::STRTAB);
+        map_part(output_section_id::GCC_EXCEPT_TABLE);
 
         output_sections.ro_custom.iter().for_each(|id| {
-            map_part(id.base_part_id(), 16);
+            map_part(*id);
         });
-        map_part(part_id::PLT, 1);
-        map_part(output_section_id::TEXT.base_part_id(), 16);
+        map_part(output_section_id::PLT);
+        map_part(output_section_id::TEXT);
 
-        map_part(output_section_id::INIT.base_part_id(), 16);
+        map_part(output_section_id::INIT);
 
-        map_part(output_section_id::FINI.base_part_id(), 16);
+        map_part(output_section_id::FINI);
 
         output_sections.exec_custom.iter().for_each(|id| {
-            map_part(id.base_part_id(), 16);
+            map_part(*id);
         });
-        map_part(part_id::GOT, 1);
-        map_part(part_id::RELA_PLT, 1);
-        map_part(output_section_id::INIT_ARRAY.base_part_id(), 16);
+        map_part(output_section_id::GOT);
+        map_part(output_section_id::RELA_PLT);
+        map_part(output_section_id::INIT_ARRAY);
 
-        map_part(output_section_id::FINI_ARRAY.base_part_id(), 16);
+        map_part(output_section_id::FINI_ARRAY);
 
-        map_part(output_section_id::DATA.base_part_id(), 16);
+        map_part(output_section_id::DATA);
 
-        map_part(part_id::EH_FRAME, 1);
-        map_part(part_id::DYNAMIC, 1);
+        map_part(output_section_id::EH_FRAME);
+        map_part(output_section_id::DYNAMIC);
         output_sections.data_custom.iter().for_each(|id| {
-            map_part(id.base_part_id(), 16);
+            map_part(*id);
         });
-        map_part(output_section_id::TDATA.base_part_id(), 16);
+        map_part(output_section_id::TDATA);
 
-        map_part(output_section_id::TBSS.base_part_id(), 16);
+        map_part(output_section_id::TBSS);
 
-        map_part(output_section_id::BSS.base_part_id(), 16);
+        map_part(output_section_id::BSS);
 
         output_sections.bss_custom.iter().for_each(|id| {
-            map_part(id.base_part_id(), 16);
+            map_part(*id);
         });
-        map_part(output_section_id::COMMENT.base_part_id(), 16);
+        map_part(output_section_id::COMMENT);
 
         OutputSectionPartMap { parts: parts_out }
     }
@@ -258,7 +257,7 @@ fn test_merge_parts() {
     assert_eq!(sum_of_sums, expected_sum_of_sums);
 
     let mut headers_only = output_sections.new_part_map::<u32>();
-    *headers_only.get_mut(part_id::FILE_HEADER) += 42;
+    *headers_only.get_mut(crate::part_id::FILE_HEADER) += 42;
     let merged: OutputSectionMap<u32> = headers_only.merge_parts(|values| values.iter().sum());
     assert_eq!(*merged.get(output_section_id::FILE_HEADER), 42);
     assert_eq!(*merged.get(output_section_id::TEXT), 0);
@@ -308,7 +307,8 @@ fn test_output_order_map_consistent() {
 
     // First, make sure that all our built-in part-ids are here. If they're not, we'd fail anyway,
     // but we can give a much better failure message if we check first.
-    let mut missing: std::collections::HashSet<PartId> = part_id::built_in_part_ids().collect();
+    let mut missing: std::collections::HashSet<PartId> =
+        crate::part_id::built_in_part_ids().collect();
     part_map.map(|part_id, _| {
         missing.remove(&part_id);
     });
