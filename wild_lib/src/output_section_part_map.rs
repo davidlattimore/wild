@@ -1,6 +1,5 @@
 use crate::alignment;
 use crate::alignment::Alignment;
-use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
@@ -82,7 +81,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
         let mut parts_out = Vec::new();
         parts_out.resize_with(self.parts.len(), U::default);
 
-        let mut map_part = |section_id: OutputSectionId| {
+        output_sections.sections_do(|section_id, _| {
             let count = section_id.num_parts();
             let base_part_id = section_id.base_part_id();
             let max_alignment = self.parts
@@ -100,64 +99,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
                     let alignment = part_id.alignment().min(max_alignment);
                     *out = cb(part_id, alignment, self.get(part_id))
                 });
-        };
-
-        map_part(output_section_id::FILE_HEADER);
-        map_part(output_section_id::PROGRAM_HEADERS);
-        map_part(output_section_id::SECTION_HEADERS);
-        map_part(output_section_id::INTERP);
-        map_part(output_section_id::GNU_HASH);
-        map_part(output_section_id::DYNSYM);
-        map_part(output_section_id::DYNSTR);
-        map_part(output_section_id::GNU_VERSION);
-        map_part(output_section_id::GNU_VERSION_R);
-        map_part(output_section_id::RELA_DYN);
-        map_part(output_section_id::RODATA);
-
-        map_part(output_section_id::EH_FRAME_HDR);
-        map_part(output_section_id::PREINIT_ARRAY);
-
-        map_part(output_section_id::SHSTRTAB);
-        map_part(output_section_id::SYMTAB);
-        map_part(output_section_id::STRTAB);
-        map_part(output_section_id::GCC_EXCEPT_TABLE);
-
-        output_sections.ro_custom.iter().for_each(|id| {
-            map_part(*id);
         });
-        map_part(output_section_id::PLT);
-        map_part(output_section_id::TEXT);
-
-        map_part(output_section_id::INIT);
-
-        map_part(output_section_id::FINI);
-
-        output_sections.exec_custom.iter().for_each(|id| {
-            map_part(*id);
-        });
-        map_part(output_section_id::GOT);
-        map_part(output_section_id::RELA_PLT);
-        map_part(output_section_id::INIT_ARRAY);
-
-        map_part(output_section_id::FINI_ARRAY);
-
-        map_part(output_section_id::DATA);
-
-        map_part(output_section_id::EH_FRAME);
-        map_part(output_section_id::DYNAMIC);
-        output_sections.data_custom.iter().for_each(|id| {
-            map_part(*id);
-        });
-        map_part(output_section_id::TDATA);
-
-        map_part(output_section_id::TBSS);
-
-        map_part(output_section_id::BSS);
-
-        output_sections.bss_custom.iter().for_each(|id| {
-            map_part(*id);
-        });
-        map_part(output_section_id::COMMENT);
 
         OutputSectionPartMap { parts: parts_out }
     }
@@ -259,9 +201,9 @@ fn test_merge_parts() {
     let mut headers_only = output_sections.new_part_map::<u32>();
     *headers_only.get_mut(crate::part_id::FILE_HEADER) += 42;
     let merged: OutputSectionMap<u32> = headers_only.merge_parts(|values| values.iter().sum());
-    assert_eq!(*merged.get(output_section_id::FILE_HEADER), 42);
-    assert_eq!(*merged.get(output_section_id::TEXT), 0);
-    assert_eq!(*merged.get(output_section_id::BSS), 0);
+    assert_eq!(*merged.get(crate::output_section_id::FILE_HEADER), 42);
+    assert_eq!(*merged.get(crate::output_section_id::TEXT), 0);
+    assert_eq!(*merged.get(crate::output_section_id::BSS), 0);
 }
 
 #[test]
@@ -295,14 +237,14 @@ fn test_merge_with_custom_sections() {
     assert_eq!(m1.num_parts(), output_sections.num_parts() + 2);
 }
 
-/// We have two functions that iterate through all sections in output order (but in different ways).
-/// Neither can practically and efficiently be implemented in terms of the other. This test verifies
-/// that they iterate through the sections in the same order.
+/// output_order_map and `OutputSections::sections_and_segments_do` used to each independently
+/// define the output order. This test made sure that they were consistent. Now the former is uses
+/// the latter, so this test is less important. It's kept for the time being anyway.
 #[test]
 fn test_output_order_map_consistent() {
     use itertools::Itertools;
 
-    let output_sections = output_section_id::OutputSections::for_testing();
+    let output_sections = crate::output_section_id::OutputSections::for_testing();
     let part_map = output_sections.new_part_map::<u32>();
 
     // First, make sure that all our built-in part-ids are here. If they're not, we'd fail anyway,
