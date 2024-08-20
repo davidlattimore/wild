@@ -382,6 +382,11 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
         .filter(|c| !c.is_abstract)
         .collect_vec();
     configs.push(config);
+
+    if configs.iter().all(|config| config.is_abstract) {
+        bail!("Missing non-abstract Config");
+    }
+
     Ok(configs)
 }
 

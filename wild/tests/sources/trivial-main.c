@@ -4,6 +4,8 @@
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.data
 
+//#Config:gcc:default
+
 //#Config:clang:default
 //#Compiler: clang
 
