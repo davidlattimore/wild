@@ -93,7 +93,7 @@ pub fn compute<'data>(
         print_symbol_info(symbol_db, sym_info);
     }
     let symbol_resolution_flags = vec![AtomicResolutionFlags::empty(); symbol_db.num_symbols()];
-    let (mut group_states, sections_with_content) = find_required_sections(
+    let gc_outputs = find_required_sections(
         groups,
         symbol_db,
         &output_sections,
@@ -101,6 +101,8 @@ pub fn compute<'data>(
         &merged_strings,
         custom_start_stop_defs,
     )?;
+    let mut group_states = gc_outputs.group_states;
+
     merge_dynamic_symbol_definitions(&mut group_states)?;
     finalise_all_sizes(
         symbol_db,
@@ -117,7 +119,7 @@ pub fn compute<'data>(
         &mut group_states,
         &mut output_sections,
         &symbol_resolution_flags,
-        sections_with_content,
+        gc_outputs.sections_with_content,
     );
     let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections);
     let section_layouts = layout_sections(&section_part_layouts);
@@ -1479,6 +1481,11 @@ struct WorkerSlot<'data> {
     worker: Option<GroupState<'data>>,
 }
 
+struct GcOutputs<'data> {
+    group_states: Vec<GroupState<'data>>,
+    sections_with_content: OutputSectionMap<bool>,
+}
+
 #[tracing::instrument(skip_all, name = "Find required sections")]
 fn find_required_sections<'data>(
     groups_in: Vec<resolution::ResolvedGroup<'data>>,
@@ -1487,7 +1494,7 @@ fn find_required_sections<'data>(
     symbol_resolution_flags: &[AtomicResolutionFlags],
     merged_strings: &OutputSectionMap<MergeStringsSection<'data>>,
     custom_start_stop_defs: Vec<InternalSymDefInfo>,
-) -> Result<(Vec<GroupState<'data>>, OutputSectionMap<bool>)> {
+) -> Result<GcOutputs<'data>> {
     let num_workers = groups_in.len();
     let (worker_slots, groups) = create_worker_slots(
         groups_in,
@@ -1575,7 +1582,10 @@ fn find_required_sections<'data>(
     }
     let group_states = unwrap_worker_states(&resources.worker_slots)?;
     let sections_with_content = resources.sections_with_content.into_map(|v| v.into_inner());
-    Ok((group_states, sections_with_content))
+    Ok(GcOutputs {
+        group_states,
+        sections_with_content,
+    })
 }
 
 fn create_worker_slots<'data>(
