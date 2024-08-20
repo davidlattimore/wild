@@ -1,3 +1,20 @@
+//! Instructions for adding a new generated, single-part output section:
+//!
+//! * Add a new constant `PartId` to `part_id.rs`.
+//! * Update `NUM_SINGLE_PART_SECTIONS` in `part_id.rs`.
+//! * Define a constant `OutputSectionId` below.
+//! * Add the section definition info to `SECTION_DEFINITIONS`, most likely inserting it just before
+//!   the multi-part sections.
+//! * Add the section to `test_constant_ids` to make sure the ID is consistent with its position in
+//!   `SECTION_DEFINITIONS`.
+//! * Insert the new section into the output order in `sections_and_segments_do`. The position needs
+//!   to be consistent with the access flags on the section. e.g. if the section is read-only data,
+//!   it should go between the start and end of the read-only segment.
+//!
+//! Adding a new alignment-base (regular) section is similar to the above, but skip the steps
+//! related to `part_id.rs` and insert later in `SECTION_DEFINITIONS` (probably at the end). Also,
+//! update `NUM_BUILT_IN_REGULAR_SECTIONS`.
+
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
@@ -49,7 +66,7 @@ pub(crate) struct SectionDetails<'data> {
     pub(crate) packed: bool,
 }
 
-// Sections that we generate ourselves rather than copying directly from input objects.
+// Single-part sections that we generate ourselves rather than copying directly from input objects.
 pub(crate) const FILE_HEADER: OutputSectionId = part_id::FILE_HEADER.output_section_id();
 pub(crate) const PROGRAM_HEADERS: OutputSectionId = part_id::PROGRAM_HEADERS.output_section_id();
 pub(crate) const SECTION_HEADERS: OutputSectionId = part_id::SECTION_HEADERS.output_section_id();
@@ -948,6 +965,8 @@ impl std::fmt::Display for OutputSectionId {
     }
 }
 
+/// Verifies that our constants for section IDs match their respective offsets in
+/// `SECTION_DEFINITIONS`.
 #[test]
 fn test_constant_ids() {
     let check = &[
