@@ -535,8 +535,8 @@ impl ToolPaths {
 
         match compiler {
             "gcc" => Some(GCC_INSTANCE.get_or_init(|| ToolPaths {
-                cc: select_bin(&["gcc-13", "gcc"]),
-                cpp: select_bin(&["g++-13", "g++"]),
+                cc: select_bin(&["gcc"]),
+                cpp: select_bin(&["g++"]),
             })),
             "clang" => Some(CLANG_INSTANCE.get_or_init(|| ToolPaths {
                 cc: select_bin(&["clang"]),
@@ -1279,7 +1279,7 @@ fn integration_test(
         Linker::ThirdParty(ThirdPartyLinker {
             name: "lld",
             gcc_name: "lld",
-            path: find_bin(&["ld.lld-18", "ld.lld-17", "ld.lld-16", "ld.lld-15"])?,
+            path: find_bin(&["ld.lld"])?,
             enabled_by_default: false,
         }),
     ];
