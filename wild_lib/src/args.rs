@@ -240,6 +240,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             time_phases = true;
         } else if let Some(rest) = long_arg_split_prefix("threads=") {
             num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
+        } else if long_arg_eq("no-threads") {
+            num_threads = Some(NonZeroUsize::new(1).unwrap());
         } else if long_arg_eq("strip-all") {
             strip_all = true;
             strip_debug = true;
@@ -620,6 +622,7 @@ mod tests {
     use super::IGNORED_FLAGS;
     use crate::args::Action;
     use crate::args::InputSpec;
+    use std::num::NonZeroUsize;
     use std::path::Path;
     use std::path::PathBuf;
     use std::str::FromStr;
@@ -707,6 +710,7 @@ mod tests {
         "/lib/x86_64-linux-gnu/crtn.o",
         "--version-script",
         "a.ver",
+        "--no-threads",
     ];
 
     #[track_caller]
@@ -741,6 +745,7 @@ mod tests {
             Some(PathBuf::from_str("a.ver").unwrap())
         );
         assert!(!args.bind_now);
+        assert_eq!(args.num_threads, NonZeroUsize::new(1).unwrap());
     }
 
     #[test]
