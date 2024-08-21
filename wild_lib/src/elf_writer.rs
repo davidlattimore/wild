@@ -52,6 +52,7 @@ use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
+use linker_utils::elf::rel_type_to_string;
 use memmap2::MmapOptions;
 use object::from_bytes_mut;
 use object::read::elf::Rela;
@@ -1409,7 +1410,11 @@ struct DisplayRelocation<'a> {
 impl<'a> Display for DisplayRelocation<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let e = LittleEndian;
-        write!(f, "relocation of type {} to ", self.rel.r_type(e, false))?;
+        write!(
+            f,
+            "relocation of type {} to ",
+            rel_type_to_string(self.rel.r_type(e, false))
+        )?;
         match self.rel.symbol(e, false) {
             None => write!(f, "absolute")?,
             Some(local_symbol_index) => {
