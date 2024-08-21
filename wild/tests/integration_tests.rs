@@ -31,6 +31,7 @@ use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Once;
 use std::sync::OnceLock;
@@ -631,11 +632,10 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
         }
     }
 
-    // The function is called in parallel from multiple threads and that's why
-    // the object storage should be guarded with a lock.
-    // TODO: Maybe come up with a more fine-grained locking.
-    static FS_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let _guard = FS_LOCK.get_or_init(|| Mutex::new(())).lock();
+    // If multiple threads try to create a file at the same time, only one should do so and the
+    // others should wait.
+    let mutex = mutex_for_path(&output_path);
+    let _guard = mutex.lock().unwrap();
 
     if is_newer(&output_path, &src_path) {
         return Ok(output_path);
@@ -649,6 +649,18 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
     }
 
     Ok(output_path)
+}
+
+/// Returns a mutex that should be locked while we're writing to `path`.
+fn mutex_for_path(path: &Path) -> Arc<Mutex<()>> {
+    static PATH_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    PATH_LOCKS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .entry(path.to_owned())
+        .or_default()
+        .clone()
 }
 
 /// Newer versions of rustc pass -soname=... to the linker when writing shared objects. This sets
