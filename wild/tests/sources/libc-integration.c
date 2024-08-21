@@ -6,8 +6,6 @@
 //#DiffIgnore:.dynamic.DT_JMPREL
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic.DT_PLTREL
-// TODO: Figure out these flags
-//#DiffIgnore:.dynamic.DT_FLAGS_1
 //#DiffIgnore:section.plt.entsize
 //#DiffIgnore:section.rodata.cst32.entsize
 // This is only an issue on openSUSE
