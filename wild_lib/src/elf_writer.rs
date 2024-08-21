@@ -2165,16 +2165,11 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |layout| layout.dt_flags() != 0,
         |layout| layout.dt_flags(),
     ),
-    DynamicEntryWriter::new(object::elf::DT_FLAGS_1, |layout| {
-        let mut flags = 0;
-        if layout.args().bind_now {
-            flags |= object::elf::DF_1_NOW;
-        }
-        if layout.args().output_kind.is_executable() && layout.args().is_relocatable() {
-            flags |= object::elf::DF_1_PIE;
-        }
-        flags as u64
-    }),
+    DynamicEntryWriter::optional(
+        object::elf::DT_FLAGS_1,
+        |layout| layout.dt_flags_1() != 0,
+        |layout| layout.dt_flags_1(),
+    ),
     DynamicEntryWriter::new(object::elf::DT_NULL, |_layout| 0),
 ];
 

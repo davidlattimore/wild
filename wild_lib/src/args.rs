@@ -177,10 +177,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         write_layout = true;
         write_trace = true;
     }
-    // Lazy binding isn't used so much these days, since it makes things less secure. It adds
-    // quite a bit of complexity and we don't properly support it. We may eventually drop
-    // support completely.
-    let mut bind_now = true;
+    let mut bind_now = false;
     // Skip program name
     input.next();
     let mut arg_num = 0;
@@ -253,7 +250,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if arg == "-z" {
             if let Some(z) = input.next() {
                 match z.as_ref() {
-                    // NOTE: Wild sets bind_now on by default!
                     "now" => bind_now = true,
                     "lazy" => bind_now = false,
                     _ => {

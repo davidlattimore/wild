@@ -16,21 +16,21 @@
 //#DoesNotContain:.debug_str
 
 //#Config:clang-static:default
-//#LinkArgs:--cc=clang -static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkArgs:--cc=clang -static -Wl,--strip-debug -Wl,--gc-sections
 //#Object:libc-integration-0.c
 
 //#Config:clang-static-pie:default
 //#CompArgs:-fPIE
-//#LinkArgs:--cc=clang -static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkArgs:--cc=clang -static-pie -Wl,--strip-debug -Wl,--gc-sections
 //#Object:libc-integration-0.c
 
 //#Config:gcc-static:default
-//#LinkArgs:--cc=gcc -static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkArgs:--cc=gcc -static -Wl,--strip-debug -Wl,--gc-sections
 //#Object:libc-integration-0.c
 
 //#Config:gcc-static-pie:default
 //#CompArgs:-fPIE
-//#LinkArgs:--cc=gcc -static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkArgs:--cc=gcc -static-pie -Wl,--strip-debug -Wl,--gc-sections
 //#Object:libc-integration-0.c
 
 //#Config:clang-initial-exec:default

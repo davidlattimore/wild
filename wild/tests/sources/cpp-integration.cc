@@ -3,19 +3,20 @@
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.data
 //#DiffIgnore:section.rodata.alignment
+//#DiffIgnore:.got.plt
 //#Object:cpp-integration-2.cc
 
 //#Config:pie:default
 //#CompArgs:-fpie -fmerge-constants
-//#LinkArgs:--cc=g++ -pie -Wl,-z,now
+//#LinkArgs:--cc=g++ -pie
 
 //#Config:no-pie:default
 //#CompArgs:-fno-pie -fmerge-constants
-//#LinkArgs:--cc=g++ -no-pie -Wl,-z,now
+//#LinkArgs:--cc=g++ -no-pie
 
 //#Config:model-large:default
 //#CompArgs:-mcmodel=large
-//#LinkArgs:--cc=g++ -Wl,-z,now
+//#LinkArgs:--cc=g++
 
 #include <iostream>
 #include <string>

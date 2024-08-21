@@ -1,8 +1,9 @@
 //#AbstractConfig:default
-//#LinkArgs:--cc=gcc -Wl,-z,now
+//#LinkArgs:--cc=gcc
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.data
+//#DiffIgnore:.got.plt
 
 //#Config:gcc:default
 

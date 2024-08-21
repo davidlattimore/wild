@@ -239,10 +239,7 @@ impl ArgumentSet {
     }
 
     fn default_for_linking() -> Self {
-        Self {
-            // Wild linker uses -znow by default!
-            args: vec!["-z".to_owned(), "now".to_owned()],
-        }
+        Self { args: Vec::new() }
     }
 
     fn default_for_compiling() -> Self {

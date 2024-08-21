@@ -1253,6 +1253,18 @@ impl<'data> Layout<'data> {
         }
         flags as u64
     }
+
+    pub(crate) fn dt_flags_1(&self) -> u64 {
+        let mut flags = 0;
+        let args = self.args();
+        if args.bind_now {
+            flags |= object::elf::DF_1_NOW;
+        }
+        if args.output_kind.is_executable() && args.is_relocatable() {
+            flags |= object::elf::DF_1_PIE;
+        }
+        flags as u64
+    }
 }
 
 fn layout_sections(
