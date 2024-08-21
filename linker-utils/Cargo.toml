@@ -1,0 +1,12 @@
+[package]
+name = "linker-utils"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+object = { version = "0.36.0", default-features = false, features = [
+    "elf",
+    "read_core",
+    "std",
+    "unaligned",
+] }

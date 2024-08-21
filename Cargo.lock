@@ -488,6 +488,7 @@ dependencies = [
  "itertools",
  "linker-layout",
  "linker-trace",
+ "linker-utils",
  "object",
  "rayon",
  "symbolic-demangle",
@@ -509,6 +510,13 @@ dependencies = [
  "anyhow",
  "postcard",
  "serde",
+]
+
+[[package]]
+name = "linker-utils"
+version = "0.1.0"
+dependencies = [
+ "object",
 ]
 
 [[package]]
@@ -993,6 +1001,7 @@ dependencies = [
  "itertools",
  "linker-layout",
  "linker-trace",
+ "linker-utils",
  "memchr",
  "memmap2",
  "object",
