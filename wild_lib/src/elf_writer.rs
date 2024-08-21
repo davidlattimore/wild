@@ -2157,14 +2157,8 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     }),
     DynamicEntryWriter::optional(
         object::elf::DT_FLAGS,
-        |layout| layout.args().bind_now,
-        |layout| {
-            let mut flags = 0;
-            if layout.args().bind_now {
-                flags |= object::elf::DF_BIND_NOW;
-            }
-            flags as u64
-        },
+        |layout| layout.dt_flags() != 0,
+        |layout| layout.dt_flags(),
     ),
     DynamicEntryWriter::new(object::elf::DT_FLAGS_1, |layout| {
         let mut flags = 0;

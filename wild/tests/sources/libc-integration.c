@@ -7,7 +7,6 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic.DT_PLTREL
 // TODO: Figure out these flags
-//#DiffIgnore:.dynamic.DT_FLAGS
 //#DiffIgnore:.dynamic.DT_FLAGS_1
 //#DiffIgnore:section.plt.entsize
 //#DiffIgnore:section.rodata.cst32.entsize
@@ -17,33 +16,33 @@
 //#DoesNotContain:.debug_str
 
 //#Config:clang-static:default
-//#LinkArgs:--cc=clang -static -Wl,--strip-debug -Wl,--gc-sections
+//#LinkArgs:--cc=clang -static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
 
 //#Config:clang-static-pie:default
 //#CompArgs:-fPIE
-//#LinkArgs:--cc=clang -static-pie -Wl,--strip-debug -Wl,--gc-sections
+//#LinkArgs:--cc=clang -static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
 
 //#Config:gcc-static:default
-//#LinkArgs:--cc=gcc -static -Wl,--strip-debug -Wl,--gc-sections
+//#LinkArgs:--cc=gcc -static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
 
 //#Config:gcc-static-pie:default
 //#CompArgs:-fPIE
-//#LinkArgs:--cc=gcc -static-pie -Wl,--strip-debug -Wl,--gc-sections
+//#LinkArgs:--cc=gcc -static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
 
 //#Config:clang-initial-exec:default
 //#CompArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP
-//#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN
+//#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#EnableLinker:lld
 //#Shared:libc-integration-0.c
 //#DiffIgnore:section.relro_padding
 
 //#Config:clang-global-dynamic:default
 //#CompArgs:-g -fPIC -ftls-model=global-dynamic -DDYNAMIC_DEP
-//#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN
+//#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#EnableLinker:lld
 //#Shared:libc-integration-0.c
 //#DiffIgnore:section.relro_padding
@@ -51,19 +50,19 @@
 //#Config:gcc-dynamic-pie:default
 //#CompArgs:-g -fpie -DDYNAMIC_DEP
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
-//#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections
+//#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Shared:libc-integration-0.c
 
 //#Config:gcc-dynamic-no-pie:default
 //#CompArgs:-g -no-pie -DDYNAMIC_DEP
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
-//#LinkArgs:--cc=gcc -dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections
+//#LinkArgs:--cc=gcc -dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Shared:libc-integration-0.c
 
 //#Config:gcc-dynamic-pie-large:default
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -mcmodel=large
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
-//#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections
+//#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Shared:libc-integration-0.c
 
 #include <stdlib.h>

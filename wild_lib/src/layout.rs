@@ -58,7 +58,7 @@ use crossbeam_queue::ArrayQueue;
 use itertools::Itertools;
 use object::elf::gnu_hash;
 use object::elf::Rela64;
-use object::read::elf::Dyn;
+use object::read::elf::Dyn as _;
 use object::read::elf::Rela as _;
 use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym as _;
@@ -180,6 +180,7 @@ pub fn compute<'data>(
         symbol_resolution_flags,
         merged_strings,
         merged_string_start_addresses,
+        has_static_tls: gc_outputs.has_static_tls,
     })
 }
 
@@ -248,6 +249,7 @@ pub struct Layout<'data> {
     pub(crate) symbol_resolution_flags: Vec<ResolutionFlags>,
     pub(crate) merged_strings: OutputSectionMap<MergeStringsSection<'data>>,
     pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
+    pub(crate) has_static_tls: bool,
 }
 
 pub(crate) struct SegmentLayouts {
@@ -1054,6 +1056,8 @@ struct GraphResources<'data, 'scope> {
     sections_with_content: OutputSectionMap<AtomicBool>,
 
     merged_strings: &'scope OutputSectionMap<MergeStringsSection<'data>>,
+
+    has_static_tls: AtomicBool,
 }
 
 struct FinaliseLayoutResources<'scope, 'data> {
@@ -1236,6 +1240,18 @@ impl<'data> Layout<'data> {
     /// Returns the base address of the global offset table.
     pub(crate) fn got_base(&self) -> u64 {
         self.section_layouts.get(output_section_id::GOT).mem_offset
+    }
+
+    pub(crate) fn dt_flags(&self) -> u64 {
+        let mut flags = 0;
+        let args = self.args();
+        if args.bind_now {
+            flags |= object::elf::DF_BIND_NOW;
+        }
+        if !args.output_kind.is_executable() && self.has_static_tls {
+            flags |= object::elf::DF_STATIC_TLS;
+        }
+        flags as u64
     }
 }
 
@@ -1484,6 +1500,7 @@ struct WorkerSlot<'data> {
 struct GcOutputs<'data> {
     group_states: Vec<GroupState<'data>>,
     sections_with_content: OutputSectionMap<bool>,
+    has_static_tls: bool,
 }
 
 #[tracing::instrument(skip_all, name = "Find required sections")]
@@ -1519,6 +1536,7 @@ fn find_required_sections<'data>(
         symbol_resolution_flags,
         sections_with_content: output_sections.new_section_map(),
         merged_strings,
+        has_static_tls: AtomicBool::new(false),
     };
     let resources_ref = &resources;
 
@@ -1585,6 +1603,7 @@ fn find_required_sections<'data>(
     Ok(GcOutputs {
         group_states,
         sections_with_content,
+        has_static_tls: resources.has_static_tls.load(atomic::Ordering::Relaxed),
     })
 }
 
@@ -2163,6 +2182,11 @@ fn process_relocation(
         } else {
             RelocationKindInfo::from_raw(r_type)?
         };
+        if does_relocation_require_static_tls(r_type) {
+            resources
+                .has_static_tls
+                .store(true, atomic::Ordering::Relaxed);
+        }
 
         let section_is_writable =
             section.sh_flags(LittleEndian) & object::elf::SHF_WRITE as u64 != 0;
@@ -2206,6 +2230,13 @@ fn process_relocation(
         }
     }
     Ok(())
+}
+
+/// Returns whether the supplied relocation type requires static TLS. If true and we're writing a
+/// shared object, then the STATIC_TLS will be set in the shared object which is a signal to the
+/// runtime loader that the shared object cannot be loaded at runtime (e.g. with dlopen).
+fn does_relocation_require_static_tls(r_type: u32) -> bool {
+    r_type == object::elf::R_X86_64_GOTTPOFF
 }
 
 fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
