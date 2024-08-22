@@ -57,8 +57,10 @@ pub(crate) const DYNSTR: PartId = PartId(13);
 pub(crate) const INTERP: PartId = PartId(14);
 pub(crate) const GNU_VERSION: PartId = PartId(15);
 pub(crate) const GNU_VERSION_R: PartId = PartId(16);
+pub(crate) const GOT_PLT: PartId = PartId(17);
+pub(crate) const PLT_GOT: PartId = PartId(18);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 17;
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 19;
 
 // Generated sections that have more than one part. Fortunately they all have exactly 2 parts.
 pub(crate) const SYMTAB_LOCAL: PartId = PartId::multi(0);

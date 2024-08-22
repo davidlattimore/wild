@@ -63,6 +63,14 @@
 //#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Shared:libc-integration-0.c
 
+//#Config:clang-lazy:default
+//#CompArgs:-g -fPIC -ftls-model=global-dynamic -DDYNAMIC_DEP
+//#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,lazy
+//#EnableLinker:lld
+//#Shared:libc-integration-0.c
+//#DiffIgnore:.dynamic.DT_NEEDED
+//#DiffIgnore:section.relro_padding
+
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>

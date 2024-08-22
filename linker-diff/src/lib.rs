@@ -130,6 +130,11 @@ impl Config {
                 ".dynamic.DT_JMPREL",
                 ".dynamic.DT_PLTGOT",
                 ".dynamic.DT_PLTREL",
+                // We currently produce a .got.plt whenever we produce .plt, but GNU ld doesn't
+                "section.got.plt",
+                ".got.plt",
+                // We don't currently produce a separate .plt.sec section.
+                "section.plt.sec",
                 // We don't yet write this.
                 ".dynamic.DT_HASH",
                 // We do support this. TODO: Should definitely look into why we're seeing this missing

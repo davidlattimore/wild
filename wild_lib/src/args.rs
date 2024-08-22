@@ -500,6 +500,19 @@ impl Args {
         let should_trace = self.print_allocations == Some(file_id);
         should_trace.then(|| tracing::trace_span!(crate::debug_trace::TRACE_SPAN_NAME).entered())
     }
+
+    /// Returns whether we should use a separate .got.plt section. This is required if we're using
+    /// lazy PLT entries.
+    pub(crate) fn should_use_got_plt(&self) -> bool {
+        // If we're statically linking, then we can't use jump slots for PLT entries. A jump slot is
+        // used when the PLT flag is set but not the GOT flag. So for static linking, we set the GOT
+        // flag whenever the PLT flag is set. Ideally we should perhaps do this when `-z now` is set
+        // too, but the other linkers don't, so we don't too.
+        if self.output_kind.is_static_executable() {
+            return false;
+        }
+        !self.bind_now
+    }
 }
 
 fn parse_number(s: &str) -> Result<u64> {

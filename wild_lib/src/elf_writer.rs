@@ -17,7 +17,6 @@ use crate::elf::SymtabEntry;
 use crate::elf::Vernaux;
 use crate::elf::Verneed;
 use crate::elf::Versym;
-use crate::elf::PLT_ENTRY_TEMPLATE;
 use crate::error::Result;
 use crate::layout::compute_allocations;
 use crate::layout::DynamicLayout;
@@ -474,7 +473,9 @@ impl<'out> VersionWriter<'out> {
 struct TableWriter<'data, 'out> {
     output_kind: OutputKind,
     got: &'out mut [u64],
+    got_plt: &'out mut [u64],
     plt: &'out mut [u8],
+    plt_got: &'out mut [u8],
     rela_plt: &'out mut [elf::Rela],
     tls: Range<u64>,
     rela_dyn_relative: &'out mut [crate::elf::Rela],
@@ -483,6 +484,7 @@ struct TableWriter<'data, 'out> {
     debug_symbol_writer: SymbolTableWriter<'data, 'out>,
     eh_frame_start_address: u64,
     eh_frame: &'out mut [u8],
+    plt_base: u64,
 
     /// Note, this is stored as raw bytes because it starts with an EhFrameHdr, but is then followed
     /// by multiple EhFrameHdrEntry.
@@ -512,6 +514,7 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             dynsym_writer,
             debug_symbol_writer,
             eh_frame_start_address,
+            layout.mem_address_of_built_in(output_section_id::PLT),
         )
     }
 
@@ -522,6 +525,7 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         dynsym_writer: SymbolTableWriter<'data, 'out>,
         debug_symbol_writer: SymbolTableWriter<'data, 'out>,
         eh_frame_start_address: u64,
+        plt_base: u64,
     ) -> TableWriter<'data, 'out> {
         let eh_frame = buffers.take(part_id::EH_FRAME);
         let eh_frame_hdr = buffers.take(part_id::EH_FRAME_HDR);
@@ -534,7 +538,9 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         TableWriter {
             output_kind,
             got: bytemuck::cast_slice_mut(buffers.take(part_id::GOT)),
+            got_plt: bytemuck::cast_slice_mut(buffers.take(part_id::GOT_PLT)),
             plt: buffers.take(part_id::PLT),
+            plt_got: buffers.take(part_id::PLT_GOT),
             rela_plt: slice_from_all_bytes_mut(buffers.take(part_id::RELA_PLT)),
             tls,
             rela_dyn_relative: slice_from_all_bytes_mut(buffers.take(part_id::RELA_DYN_RELATIVE)),
@@ -546,6 +552,7 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             eh_frame_hdr,
             dynamic,
             version_writer,
+            plt_base,
         }
     }
 
@@ -579,18 +586,28 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             return Ok(());
         }
 
-        let got_entry = self.take_next_got_entry()?;
+        let got_entry = if resolution_flags.contains(ResolutionFlags::GOT) {
+            // Non-lazy
+            self.take_next_got_entry()?
+        } else {
+            // Lazy
+            self.take_next_got_plt_entry()?
+        };
         if (res.value_flags.contains(ValueFlags::DYNAMIC) && !is_copy_relocation)
             || (resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
                 && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
                 && !res.value_flags.contains(ValueFlags::IFUNC)
         {
-            debug_assert_bail!(
-                *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
-                "Tried to write glob-dat with no allocation. {}",
-                ResFlagsDisplay(res)
-            );
-            self.write_dynamic_symbol_relocation(got_address, 0, res.dynamic_symbol_index()?)?;
+            if res.resolution_flags.contains(ResolutionFlags::GOT) {
+                debug_assert_bail!(
+                    *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
+                    "Tried to write glob-dat with no allocation. {}",
+                    ResFlagsDisplay(res)
+                );
+                self.write_dynamic_symbol_relocation(got_address, 0, res.dynamic_symbol_index()?)?;
+            } else {
+                self.write_jump_slot_relocation(res)?;
+            }
         } else if res.value_flags.contains(ValueFlags::IFUNC) {
             self.write_ifunc_relocation(res)?;
         } else {
@@ -602,7 +619,11 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             }
         }
         if let Some(plt_address) = res.plt_address {
-            self.write_plt_entry(got_address, plt_address.get())?;
+            if res.resolution_flags.contains(ResolutionFlags::GOT) {
+                self.write_plt_entry(got_address, plt_address.get())?;
+            } else {
+                self.write_jump_slot(plt_address.get())?;
+            }
         }
         Ok(())
     }
@@ -668,12 +689,22 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         Ok(())
     }
 
+    fn write_jump_slot(&mut self, plt_address: u64) -> Result {
+        let plt_entry = self.take_plt_entry()?;
+        plt_entry.copy_from_slice(elf::JUMP_SLOT_TEMPLATE);
+        let index = ((plt_address - self.plt_base) / elf::PLT_ENTRY_SIZE - 1) as u32;
+        plt_entry[5..9].copy_from_slice(&index.to_le_bytes());
+        // Update the jmp instruction to jump to the PLT base address.
+        let pc_after_jmp = plt_address + 15;
+        let relative_offset = self.plt_base.wrapping_sub(pc_after_jmp) as u32;
+        plt_entry[11..15].copy_from_slice(&relative_offset.to_le_bytes());
+        Ok(())
+    }
+
     fn write_plt_entry(&mut self, got_address: u64, plt_address: u64) -> Result {
-        if self.plt.len() < elf::PLT_ENTRY_SIZE as usize {
-            bail!("Didn't allocate enough space in PLT");
-        }
-        let plt_entry = slice_take_prefix_mut(&mut self.plt, elf::PLT_ENTRY_SIZE as usize);
-        plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
+        let plt_entry = self.take_plt_got_entry()?;
+
+        plt_entry.copy_from_slice(elf::PLT_ENTRY_TEMPLATE);
         let offset: i32 = ((got_address.wrapping_sub(plt_address + 0xb)) as i64)
             .try_into()
             .map_err(|_| anyhow!("PLT is more than 2GB away from GOT"))?;
@@ -681,8 +712,53 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         Ok(())
     }
 
+    fn write_plt_lazy_header(&mut self, got_plt_base: u64) -> Result {
+        let plt_entry = self.take_plt_entry()?;
+        plt_entry.copy_from_slice(elf::PLT_LAZY_HEADER_TEMPLATE);
+
+        let offset: i32 = ((got_plt_base
+            .wrapping_sub(self.plt_base + 0x6)
+            .wrapping_add(0x8)) as i64)
+            .try_into()
+            .map_err(|_| anyhow!("PLT is more than 2GB away from GOT"))?;
+        plt_entry[2..6].copy_from_slice(&offset.to_le_bytes());
+
+        let offset: i32 = ((got_plt_base
+            .wrapping_sub(self.plt_base + 0xd)
+            .wrapping_add(0x10)) as i64)
+            .try_into()
+            .map_err(|_| anyhow!("PLT is more than 2GB away from GOT"))?;
+        plt_entry[9..13].copy_from_slice(&offset.to_le_bytes());
+
+        Ok(())
+    }
+
+    fn take_plt_entry(&mut self) -> Result<&'out mut [u8]> {
+        if self.plt.len() < elf::PLT_ENTRY_SIZE as usize {
+            bail!("Didn't allocate enough space in .plt");
+        }
+        Ok(slice_take_prefix_mut(
+            &mut self.plt,
+            elf::PLT_ENTRY_SIZE as usize,
+        ))
+    }
+
+    fn take_plt_got_entry(&mut self) -> Result<&'out mut [u8]> {
+        if self.plt_got.len() < elf::PLT_ENTRY_SIZE as usize {
+            bail!("Didn't allocate enough space in .plt.got");
+        }
+        Ok(slice_take_prefix_mut(
+            &mut self.plt_got,
+            elf::PLT_ENTRY_SIZE as usize,
+        ))
+    }
+
     fn take_next_got_entry(&mut self) -> Result<&'out mut u64> {
         crate::slice::take_first_mut(&mut self.got).context("Insufficient GOT allocation")
+    }
+
+    fn take_next_got_plt_entry(&mut self) -> Result<&'out mut u64> {
+        crate::slice::take_first_mut(&mut self.got_plt).context("Insufficient .got.plt allocation")
     }
 
     /// Checks that we used all of the entries that we requested during layout.
@@ -725,6 +801,24 @@ impl<'data, 'out> TableWriter<'data, 'out> {
                 mem_sizes.get(part_id::EH_FRAME_HDR)
             );
         }
+        Ok(())
+    }
+
+    fn write_jump_slot_relocation(&mut self, res: &Resolution) -> Result {
+        let out = slice_take_prefix_mut(&mut self.rela_plt, 1);
+        let out = &mut out[0];
+        let e = LittleEndian;
+        let got_address = res
+            .got_address
+            .context("Missing GOT entry for jump slot")?
+            .get();
+        out.r_offset.set(e, got_address);
+        out.set_r_info(
+            LittleEndian,
+            false,
+            res.dynamic_symbol_index()?,
+            object::elf::R_X86_64_JUMP_SLOT,
+        );
         Ok(())
     }
 
@@ -803,15 +897,11 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         let rela = self.take_rela_dyn()?;
         rela.r_offset.set(e, place);
         rela.r_addend.set(e, addend as i64);
-        // We could plausibly use R_X86_64_JUMP_SLOT here in cases where we have only PLT
-        // references to a symbol and no GOT references. If we did that, we'd need to put
-        // the relocation in .rela.plt not .rela.dyn. Right now, we don't track whether a
-        // symbol has only PLT references and no GOT references. Also, we currently set the
-        // BIND_NOW flag, which means all the PLT relocations would be eagerly bound, making
-        // use of JUMP_SLOT relocations pointless.
-        rela.r_info.set(
-            e,
-            u64::from(symbol_index) << 32 | u64::from(object::elf::R_X86_64_GLOB_DAT),
+        rela.set_r_info(
+            LittleEndian,
+            false,
+            symbol_index,
+            object::elf::R_X86_64_GLOB_DAT,
         );
         Ok(())
     }
@@ -1121,7 +1211,9 @@ impl<'data> ObjectLayout<'data> {
                     )
                 })?;
         }
-        if sec.resolution_kind.contains(ResolutionFlags::GOT) {
+        if sec.resolution_kind.contains(ResolutionFlags::GOT)
+            || sec.resolution_kind.contains(ResolutionFlags::PLT)
+        {
             let res = self.section_resolutions[sec.index.0]
                 .as_ref()
                 .ok_or_else(|| anyhow!("Section requires GOT, but hasn't been resolved"))?;
@@ -1515,7 +1607,7 @@ fn apply_relocation(
             .wrapping_sub(place),
         RelocationKind::GotRelGotBase => resolution
             .got_address()?
-            .sub(layout.got_base())
+            .wrapping_sub(layout.got_base())
             .wrapping_add(addend),
         RelocationKind::SymRelGotBase => resolution.value().wrapping_sub(layout.got_base()),
         RelocationKind::PltRelGotBase => resolution.plt_address()?.wrapping_sub(layout.got_base()),
@@ -1675,6 +1767,20 @@ impl PreludeLayout {
     }
 
     fn write_plt_got_entries(&self, layout: &Layout, table_writer: &mut TableWriter) -> Result {
+        if self.needs_lazy_plt {
+            table_writer.write_plt_lazy_header(
+                layout.mem_address_of_built_in(output_section_id::GOT_PLT),
+            )?;
+        }
+
+        if layout.has_got_plt() {
+            *table_writer.take_next_got_plt_entry()? =
+                layout.mem_address_of_built_in(output_section_id::DYNAMIC);
+            // These two entries are filled in at runtime.
+            *table_writer.take_next_got_plt_entry()? = 0;
+            *table_writer.take_next_got_plt_entry()? = 0;
+        }
+
         // Write a pair of GOT entries for use by any TLSLD or TLSGD relocations.
         if let Some(got_address) = self.tlsld_got_entry {
             if layout.args().output_kind.is_executable() {
@@ -2147,6 +2253,17 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |layout| layout.vma_of_section(output_section_id::RELA_PLT),
     ),
     DynamicEntryWriter::optional(
+        object::elf::DT_PLTGOT,
+        |layout| layout.args().needs_dynamic(),
+        |layout| {
+            layout.vma_of_section(if layout.size_of_section(output_section_id::GOT_PLT) > 0 {
+                output_section_id::GOT_PLT
+            } else {
+                output_section_id::GOT
+            })
+        },
+    ),
+    DynamicEntryWriter::optional(
         object::elf::DT_PLTREL,
         |layout| layout.section_part_layouts.get(part_id::RELA_PLT).mem_size > 0,
         |_| object::elf::DT_RELA.into(),
@@ -2180,16 +2297,11 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |layout| layout.dt_flags() != 0,
         |layout| layout.dt_flags(),
     ),
-    DynamicEntryWriter::new(object::elf::DT_FLAGS_1, |layout| {
-        let mut flags = 0;
-        if layout.args().bind_now {
-            flags |= object::elf::DF_1_NOW;
-        }
-        if layout.args().output_kind.is_executable() && layout.args().is_relocatable() {
-            flags |= object::elf::DF_1_PIE;
-        }
-        flags as u64
-    }),
+    DynamicEntryWriter::optional(
+        object::elf::DT_FLAGS_1,
+        |layout| layout.dt_flags_1() != 0,
+        |layout| layout.dt_flags_1(),
+    ),
     DynamicEntryWriter::new(object::elf::DT_NULL, |_layout| 0),
 ];
 
@@ -2572,6 +2684,7 @@ pub(crate) fn verify_resolution_allocation(
         &mut buffers,
         dynsym_writer,
         debug_symbol_writer,
+        0,
         0,
     );
     table_writer.process_resolution(resolution)?;

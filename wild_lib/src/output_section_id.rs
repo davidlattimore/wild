@@ -108,6 +108,8 @@ pub(crate) const DYNSTR: OutputSectionId = part_id::DYNSTR.output_section_id();
 pub(crate) const INTERP: OutputSectionId = part_id::INTERP.output_section_id();
 pub(crate) const GNU_VERSION: OutputSectionId = part_id::GNU_VERSION.output_section_id();
 pub(crate) const GNU_VERSION_R: OutputSectionId = part_id::GNU_VERSION_R.output_section_id();
+pub(crate) const GOT_PLT: OutputSectionId = part_id::GOT_PLT.output_section_id();
+pub(crate) const PLT_GOT: OutputSectionId = part_id::PLT_GOT.output_section_id();
 
 // These two are multi-part sections, but we can pick any part we wish in order to get the section
 // ID.
@@ -328,7 +330,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             element_size: core::mem::size_of::<u64>() as u64,
             ..SectionDetails::default()
         },
-        start_symbol_name: Some("_GLOBAL_OFFSET_TABLE_"),
         min_alignment: alignment::GOT_ENTRY,
         ..DEFAULT_DEFS
     },
@@ -455,6 +456,29 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         info_fn: Some(version_r_info),
         min_alignment: alignment::VERSION_R,
         link: &[DYNSTR],
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: SectionName(b".got.plt"),
+            ty: object::elf::SHT_PROGBITS,
+            section_flags: SectionFlags(shf::WRITE | shf::ALLOC),
+            element_size: core::mem::size_of::<u64>() as u64,
+            ..SectionDetails::default()
+        },
+        start_symbol_name: Some("_GLOBAL_OFFSET_TABLE_"),
+        min_alignment: alignment::GOT_ENTRY,
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        details: SectionDetails {
+            name: SectionName(b".plt.got"),
+            ty: object::elf::SHT_PROGBITS,
+            section_flags: SectionFlags(shf::ALLOC | shf::EXECINSTR),
+            element_size: crate::elf::PLT_ENTRY_SIZE,
+            ..SectionDetails::default()
+        },
+        min_alignment: alignment::PLT,
         ..DEFAULT_DEFS
     },
     // Multi-part generated sections
@@ -852,6 +876,7 @@ impl<'data> OutputSections<'data> {
 
         cb(OrderEvent::SegmentStart(crate::program_segments::LOAD_EXEC));
         cb(PLT.event());
+        cb(PLT_GOT.event());
         cb(TEXT.event());
         cb(INIT.event());
         cb(FINI.event());
@@ -860,6 +885,7 @@ impl<'data> OutputSections<'data> {
 
         cb(OrderEvent::SegmentStart(crate::program_segments::LOAD_RW));
         cb(GOT.event());
+        cb(GOT_PLT.event());
         cb(RELA_PLT.event());
         cb(INIT_ARRAY.event());
         cb(FINI_ARRAY.event());
@@ -1063,6 +1089,8 @@ fn test_constant_ids() {
         (PROGRAM_HEADERS, ".phdr"),
         (SECTION_HEADERS, ".shdr"),
         (GNU_HASH, ".gnu.hash"),
+        (GOT_PLT, ".got.plt"),
+        (PLT_GOT, ".plt.got"),
     ];
     for (id, name) in check {
         assert_eq!(

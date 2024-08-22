@@ -829,6 +829,9 @@ pub(crate) struct AddressIndex<'data> {
     tls_segment_size: u64,
     load_offset: u64,
 
+    /// GOT addresses for each JMPREL relocation by their index.
+    jmprel_got_addresses: Vec<u64>,
+
     /// The address of the start of the .got section.
     got_base_address: Option<u64>,
 
@@ -887,6 +890,7 @@ impl<'data> AddressIndex<'data> {
             verneed: Default::default(),
             load_offset: decide_load_offset(object),
             dynamic_symbol_names: Default::default(),
+            jmprel_got_addresses: Vec::new(),
         };
 
         if let Err(error) = info.build_indexes(object) {
@@ -1084,29 +1088,38 @@ impl<'data> AddressIndex<'data> {
                 if let Ok(Some((relocations, _))) =
                     elf_section_header.rela(LittleEndian, elf_file.data())
                 {
+                    let mut jmprel_got_addresses = (Some(elf_section_header.sh_addr(LittleEndian))
+                        == self.jmprel_address)
+                        .then(|| Vec::with_capacity(relocations.len()));
                     for rel in relocations {
-                        self.index_dynamic_relocation(rel, elf_file);
+                        let address = self.index_dynamic_relocation(rel, elf_file);
+                        if let Some(j) = jmprel_got_addresses.as_mut() {
+                            j.push(address);
+                        }
+                    }
+                    if let Some(j) = jmprel_got_addresses {
+                        self.jmprel_got_addresses = j;
                     }
                 }
             }
         }
     }
 
-    fn index_dynamic_relocation(&mut self, rel: &Rela64, elf_file: &ElfFile64) {
+    fn index_dynamic_relocation(&mut self, rel: &Rela64, elf_file: &ElfFile64) -> u64 {
         let e = LittleEndian;
         let r_type = rel.r_type(e, false);
         let address = self.load_offset + rel.r_offset(e);
         let symbol_index = rel.r_sym(e, false);
         if symbol_index != 0 {
             let Some(symbol_name) = self.dynamic_symbol_names.get(symbol_index as usize) else {
-                return;
+                return address;
             };
             let basic = match r_type {
                 object::elf::R_X86_64_COPY => BasicResolution::Copy(*symbol_name),
                 _ => BasicResolution::Dynamic(*symbol_name),
             };
             self.add_resolution(address, AddressResolution::Basic(basic));
-            return;
+            return address;
         }
         match r_type {
             object::elf::R_X86_64_DTPMOD64 => {
@@ -1144,6 +1157,7 @@ impl<'data> AddressIndex<'data> {
             }
             _ => {}
         }
+        address
     }
 
     fn index_plt_sections(&mut self, elf_file: &ElfFile64<'data>) -> Result {
@@ -1176,7 +1190,6 @@ impl<'data> AddressIndex<'data> {
             if let Some(got_address) = PltEntry::decode(chunk, plt_base, plt_offset)
                 .map(|entry| self.got_address(entry))
                 .transpose()?
-                .map(|o| self.load_offset + o)
             {
                 for res in self.resolve(got_address) {
                     if let AddressResolution::Basic(got_resolution) = res {
@@ -1234,11 +1247,17 @@ impl<'data> AddressIndex<'data> {
 
     fn got_address(&self, plt_entry: PltEntry) -> Result<u64> {
         match plt_entry {
-            PltEntry::DerefJmp(address) => Ok(address),
-            PltEntry::GotIndex(got_index) => Ok(self
-                .got_plt_address
-                .context("Index-based PLT entry with no DT_PLTGOT")?
-                + u64::from(got_index) * 8),
+            PltEntry::DerefJmp(address) => Ok(address + self.load_offset),
+            PltEntry::JumpSlot(index) => self
+                .jmprel_got_addresses
+                .get(index as usize)
+                .copied()
+                .with_context(|| {
+                    format!(
+                        "Invalid jump slot index {index} out of {}",
+                        self.jmprel_got_addresses.len()
+                    )
+                }),
         }
     }
 
@@ -1475,9 +1494,8 @@ enum PltEntry {
     /// PLT entry then jumped to.
     DerefJmp(u64),
 
-    /// The parameter is an index into the GOT. This is used by PLT entries that are going to be
-    /// lazily evaluated.
-    GotIndex(u32),
+    /// The parameter is an index into .rela.plt.
+    JumpSlot(u32),
 }
 
 impl PltEntry {
@@ -1539,7 +1557,7 @@ impl PltEntry {
             // instructions, so that we support these variants.
             if plt_entry[..5] == PLT_ENTRY_TEMPLATE[..5] {
                 let index = u32::from_le_bytes(*plt_entry[5..].first_chunk::<4>().unwrap());
-                return Some(PltEntry::GotIndex(index));
+                return Some(PltEntry::JumpSlot(index));
             }
         }
 
