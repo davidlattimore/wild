@@ -435,10 +435,6 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                     let name = symbol_db.symbol_name(symbol_id)?;
                     common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
                     common.allocate(part_id::DYNSYM, crate::elf::SYMTAB_ENTRY_SIZE);
-                    tracing::trace!(
-                        "Allocate dynsym for {symbol_id} ({})",
-                        symbol_db.symbol_name_for_display(symbol_id)
-                    );
                 }
             }
 
@@ -558,7 +554,6 @@ fn allocate_resolution(
         || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC);
     if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
         // Allocate space required for a copy relocation.
-        tracing::trace!("Allocate .rela.dyn general for copy relocation");
         mem_sizes.increment(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
     }
     if resolution_flags.contains(ResolutionFlags::GOT) {
@@ -571,7 +566,6 @@ fn allocate_resolution(
                 mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
             }
         } else if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
-            tracing::trace!("Allocate .rela.dyn general for GOT");
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         } else if value_flags.contains(ValueFlags::ADDRESS) && output_kind.is_relocatable() {
             mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
@@ -582,18 +576,15 @@ fn allocate_resolution(
         // For executables, the TLS module ID is known at link time. For shared objects, we
         // need a runtime relocation to fill it in.
         if !output_kind.is_executable() {
-            tracing::trace!("Allocate .rela.dyn general for GOT_TLS_MODULE");
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
         if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
-            tracing::trace!("Allocate .rela.dyn general for GOT_TLS_MODULE");
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
     }
     if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
         if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) {
-            tracing::trace!("Allocate .rela.dyn general for GOT_TLS_OFFSET");
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
     }
@@ -2195,10 +2186,6 @@ fn process_relocation(
             && symbol_value_flags.contains(ValueFlags::DYNAMIC)
         {
             if section_is_writable {
-                tracing::trace!(
-                    "Allocate .rela.dyn general for direct reference in section {}",
-                    String::from_utf8_lossy(object.object.section_name(section).unwrap())
-                );
                 common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             } else if canonical_symbol_value_flags.contains(ValueFlags::FUNCTION) {
                 resolution_kind.remove(ResolutionFlags::DIRECT);
@@ -2225,7 +2212,6 @@ fn process_relocation(
         if resolution_kind.contains(ResolutionFlags::COPY_RELOCATION)
             && !previous_flags.contains(ResolutionFlags::COPY_RELOCATION)
         {
-            tracing::trace!("Request copy relocation. symbol_id={symbol_id}");
             queue.send_copy_relocation_request(symbol_id, resources);
         }
     }
