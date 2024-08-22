@@ -273,7 +273,7 @@ impl Default for Config {
             section_equiv: Default::default(),
             is_abstract: false,
             deps: Default::default(),
-            compiler: "gcc".to_owned(),
+            compiler: "clang".to_owned(),
             should_diff: true,
             should_run: true,
         }

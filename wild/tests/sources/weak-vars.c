@@ -1,6 +1,7 @@
 //#AbstractConfig:default
 //#Object:weak-vars1.c
 //#Object:exit.c
+//#Object:string.c
 //#CompArgs:-ffreestanding -fno-builtin
 
 #include "exit.h"

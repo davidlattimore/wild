@@ -131,6 +131,8 @@ void *thread_function(void *data) {
 
     int* out = (int*)data;
     *out = 30;
+
+    return 0;
 }
 
 int main() {
