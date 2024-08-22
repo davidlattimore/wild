@@ -4,6 +4,7 @@ use anyhow::bail;
 use anyhow::Context;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
+use linker_utils::elf::rel_type_to_string;
 use object::read::elf::FileHeader as _;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::RelocationSections;
@@ -377,7 +378,7 @@ impl RelocationKindInfo {
             }
             object::elf::R_X86_64_TPOFF32 => (RelocationKind::TpOff, 4),
             object::elf::R_X86_64_NONE => (RelocationKind::None, 0),
-            _ => bail!("Unsupported relocation type {r_type}"),
+            _ => bail!("Unsupported relocation type {}", rel_type_to_string(r_type)),
         };
         Ok(Self {
             kind,
