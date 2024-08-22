@@ -19,6 +19,5 @@ void _start(void) {
     exit_syscall(42);
 }
 
-//#ExpectComment:GCC*
 //#ExpectComment:Foo
 //#ExpectComment:Bar

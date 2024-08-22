@@ -1,6 +1,7 @@
 //#AbstractConfig:default
 //#Archive:weak-fns1.c
 //#Object:exit.c
+//#Object:string.c
 //#CompArgs:-fno-stack-protector
 
 #include "exit.h"
