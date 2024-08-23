@@ -268,13 +268,6 @@ pub(crate) enum ExceptionHeaderApplication {
     EhFrameHdrRelative = 0x30,
 }
 
-#[allow(unused)]
-#[derive(Clone, Copy)]
-#[repr(u32)]
-pub(crate) enum RelocationType {
-    IRelative = 37,
-}
-
 /// The offset of the pc_begin field in an FDE.
 pub(crate) const FDE_PC_BEGIN_OFFSET: usize = 8;
 

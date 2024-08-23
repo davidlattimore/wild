@@ -735,8 +735,7 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             .context("Missing GOT entry for ifunc")?
             .get();
         out.r_offset.set(e, got_address);
-        out.r_info
-            .set(e, elf::RelocationType::IRelative as u32 as u64);
+        out.r_info.set(e, object::elf::R_X86_64_IRELATIVE as u64);
         Ok(())
     }
 
