@@ -1,4 +1,6 @@
-//! A hand-written parser for our arguments. We don't currently use a 3rd party library because
+//! A hand-written parser for our arguments.
+//!
+//! We don't currently use a 3rd party library because
 //! order is important for some arguments and it's not clear how easy it would be to get that
 //! correct with something like clap.
 
