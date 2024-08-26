@@ -688,7 +688,7 @@ pub(crate) enum OrderEvent<'data> {
     Section(OutputSectionId, &'data SectionDetails<'data>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct SectionName<'data>(pub(crate) &'data [u8]);
 
 impl<'data> SectionName<'data> {
@@ -698,6 +698,12 @@ impl<'data> SectionName<'data> {
 
     pub(crate) fn bytes(&self) -> &[u8] {
         self.0
+    }
+}
+
+impl<'data> Debug for SectionName<'data> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("{}", String::from_utf8_lossy(self.0)))
     }
 }
 
