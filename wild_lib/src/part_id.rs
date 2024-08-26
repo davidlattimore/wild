@@ -1,6 +1,7 @@
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
 use crate::args::Args;
+use crate::elf;
 use crate::elf::SectionHeader;
 use crate::error::Result;
 use crate::output_section_id;
@@ -164,20 +165,20 @@ impl<'data> UnloadedSection<'data> {
                     is_string_merge: should_merge_strings(section, args),
                 }));
             }
-            if sh_flags & u64::from(object::elf::SHF_ALLOC) == 0 {
+            if sh_flags & elf::shf::ALLOC == 0 {
                 None
             } else if sh_type == object::elf::SHT_PROGBITS {
-                if sh_flags & u64::from(object::elf::SHF_EXECINSTR) != 0 {
+                if sh_flags & elf::shf::EXECINSTR != 0 {
                     Some(output_section_id::TEXT)
-                } else if sh_flags & u64::from(object::elf::SHF_TLS) != 0 {
+                } else if sh_flags & elf::shf::TLS != 0 {
                     Some(output_section_id::TDATA)
-                } else if sh_flags & u64::from(object::elf::SHF_WRITE) != 0 {
+                } else if sh_flags & elf::shf::WRITE != 0 {
                     Some(output_section_id::DATA)
                 } else {
                     Some(output_section_id::RODATA)
                 }
             } else if sh_type == object::elf::SHT_NOBITS {
-                if sh_flags & u64::from(object::elf::SHF_TLS) != 0 {
+                if sh_flags & elf::shf::TLS != 0 {
                     Some(output_section_id::TBSS)
                 } else {
                     Some(output_section_id::BSS)
