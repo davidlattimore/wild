@@ -2111,7 +2111,7 @@ impl<'data> Section<'data> {
             data: section_data,
             resolution_kind: ResolutionFlags::empty(),
             packed: unloaded.details.packed,
-            is_writable: (object_section.sh_flags(e) & object::elf::SHF_WRITE as u64) != 0,
+            is_writable: object_section.sh_flags(e) & elf::shf::WRITE != 0,
         };
         Ok(section)
     }
@@ -2179,8 +2179,7 @@ fn process_relocation(
                 .store(true, atomic::Ordering::Relaxed);
         }
 
-        let section_is_writable =
-            section.sh_flags(LittleEndian) & object::elf::SHF_WRITE as u64 != 0;
+        let section_is_writable = section.sh_flags(LittleEndian) & elf::shf::WRITE != 0;
         let mut resolution_kind = resolution_flags(rel_info.kind);
         if resolution_kind.contains(ResolutionFlags::DIRECT)
             && symbol_value_flags.contains(ValueFlags::DYNAMIC)
