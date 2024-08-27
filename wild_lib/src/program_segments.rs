@@ -17,42 +17,38 @@ pub(crate) struct ProgramSegmentDef {
     pub(crate) segment_flags: u32,
 }
 
-const PF_X: u32 = 1;
-const PF_W: u32 = 2;
-const PF_R: u32 = 4;
-
 const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
     ProgramSegmentDef {
         segment_type: object::elf::PT_PHDR,
-        segment_flags: PF_R,
+        segment_flags: object::elf::PF_R,
     },
     ProgramSegmentDef {
         segment_type: object::elf::PT_INTERP,
-        segment_flags: PF_R,
+        segment_flags: object::elf::PF_R,
     },
     ProgramSegmentDef {
         segment_type: object::elf::PT_LOAD,
-        segment_flags: PF_R,
+        segment_flags: object::elf::PF_R,
     },
     ProgramSegmentDef {
         segment_type: object::elf::PT_LOAD,
-        segment_flags: PF_R | PF_X,
+        segment_flags: object::elf::PF_R | object::elf::PF_X,
     },
     ProgramSegmentDef {
         segment_type: object::elf::PT_LOAD,
-        segment_flags: PF_R | PF_W,
+        segment_flags: object::elf::PF_R | object::elf::PF_W,
     },
     ProgramSegmentDef {
         segment_type: object::elf::PT_TLS,
-        segment_flags: PF_R,
+        segment_flags: object::elf::PF_R,
     },
     ProgramSegmentDef {
         segment_type: object::elf::PT_GNU_EH_FRAME,
-        segment_flags: PF_R,
+        segment_flags: object::elf::PF_R,
     },
     ProgramSegmentDef {
         segment_type: object::elf::PT_DYNAMIC,
-        segment_flags: PF_R | PF_W,
+        segment_flags: object::elf::PF_R | object::elf::PF_W,
     },
 ];
 
@@ -120,14 +116,17 @@ fn test_all_alloc_sections_in_a_loadable_segment() {
 
 #[test]
 fn test_constant_segment_ids() {
-    assert_eq!(PROGRAM_SEGMENT_DEFS[LOAD_RO.as_usize()].segment_flags, PF_R);
+    assert_eq!(
+        PROGRAM_SEGMENT_DEFS[LOAD_RO.as_usize()].segment_flags,
+        object::elf::PF_R
+    );
     assert_eq!(
         PROGRAM_SEGMENT_DEFS[LOAD_RW.as_usize()].segment_flags,
-        PF_R | PF_W
+        object::elf::PF_R | object::elf::PF_W
     );
     assert_eq!(
         PROGRAM_SEGMENT_DEFS[LOAD_EXEC.as_usize()].segment_flags,
-        PF_R | PF_X
+        object::elf::PF_R | object::elf::PF_X
     );
     assert_eq!(
         PROGRAM_SEGMENT_DEFS[TLS.as_usize()].segment_type,
