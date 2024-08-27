@@ -10,6 +10,7 @@ use object::read::elf::FileHeader as _;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
+use object::CompressedData;
 use object::LittleEndian;
 use std::borrow::Cow;
 
@@ -122,7 +123,26 @@ impl<'data> File<'data> {
     }
 
     pub(crate) fn section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
-        Ok(section.data(LittleEndian, self.data)?)
+        let data = section.data(LittleEndian, self.data)?;
+
+        if let Some((compression, offset, _)) = section.compression(LittleEndian, self.data)? {
+            let format = match compression.ch_type.get(LittleEndian) {
+                object::elf::ELFCOMPRESS_ZLIB => object::CompressionFormat::Zlib,
+                object::elf::ELFCOMPRESS_ZSTD => object::CompressionFormat::Zstandard,
+                c => bail!("Unsupported compression format: {}", c),
+            };
+
+            let decompressed = CompressedData {
+                format,
+                data: &data[(offset as usize)..],
+                uncompressed_size: compression.ch_size.get(LittleEndian),
+            }
+            .decompress()?;
+            // TODO: find a proper lifetime for the uncompressed data!!!
+            Ok(decompressed.into_owned().leak())
+        } else {
+            Ok(data)
+        }
     }
 
     pub(crate) fn section_size(&self, section: &SectionHeader) -> Result<u64> {
