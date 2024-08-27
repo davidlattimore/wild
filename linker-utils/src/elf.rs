@@ -60,6 +60,58 @@ pub fn rel_type_to_string(r_type: u32) -> Cow<'static, str> {
     }
 }
 
+/// Section flag bit values.
+#[allow(unused)]
+pub mod shf {
+    pub const WRITE: u64 = object::elf::SHF_WRITE as u64;
+    pub const ALLOC: u64 = object::elf::SHF_ALLOC as u64;
+    pub const EXECINSTR: u64 = object::elf::SHF_EXECINSTR as u64;
+    pub const MERGE: u64 = object::elf::SHF_MERGE as u64;
+    pub const STRINGS: u64 = object::elf::SHF_STRINGS as u64;
+    pub const INFO_LINK: u64 = object::elf::SHF_INFO_LINK as u64;
+    pub const LINK_ORDER: u64 = object::elf::SHF_LINK_ORDER as u64;
+    pub const OS_NONCONFORMING: u64 = object::elf::SHF_OS_NONCONFORMING as u64;
+    pub const GROUP: u64 = object::elf::SHF_GROUP as u64;
+    pub const TLS: u64 = object::elf::SHF_TLS as u64;
+    // TODO: add with the new release of object crate (https://github.com/gimli-rs/object/pull/720)
+    pub const GNU_RETAIN: u64 = 0x200_000;
+
+    pub fn flag_to_string(value: u64) -> String {
+        let mut flags = String::new();
+        if value & WRITE != 0 {
+            flags.push('W');
+        }
+        if value & ALLOC != 0 {
+            flags.push('A');
+        }
+        if value & EXECINSTR != 0 {
+            flags.push('X');
+        }
+        if value & MERGE != 0 {
+            flags.push('M');
+        }
+        if value & STRINGS != 0 {
+            flags.push('S');
+        }
+        if value & INFO_LINK != 0 {
+            flags.push('I');
+        }
+        if value & LINK_ORDER != 0 {
+            flags.push('L');
+        }
+        if value & OS_NONCONFORMING != 0 {
+            flags.push('O');
+        }
+        if value & GROUP != 0 {
+            flags.push('G');
+        }
+        if value & TLS != 0 {
+            flags.push('T');
+        }
+        flags
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

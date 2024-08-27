@@ -1,7 +1,6 @@
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
 use crate::args::Args;
-use crate::elf;
 use crate::elf::SectionHeader;
 use crate::error::Result;
 use crate::output_section_id;
@@ -9,6 +8,7 @@ use crate::output_section_id::BuiltInSectionDetails;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionDetails;
 use crate::output_section_id::SectionName;
+use linker_utils::elf::shf;
 use object::read::elf::SectionHeader as _;
 use std::fmt::Debug;
 
@@ -144,7 +144,7 @@ impl<'data> UnloadedSection<'data> {
             } else {
                 object::elf::SHT_PROGBITS
             };
-            let retain = sh_flags & crate::elf::shf::GNU_RETAIN != 0;
+            let retain = sh_flags & shf::GNU_RETAIN != 0;
             let section_flags = sh_flags;
             if !section_name.is_empty() {
                 let custom_section_id = CustomSectionId {
@@ -165,20 +165,20 @@ impl<'data> UnloadedSection<'data> {
                     is_string_merge: should_merge_strings(section, args),
                 }));
             }
-            if sh_flags & elf::shf::ALLOC == 0 {
+            if sh_flags & shf::ALLOC == 0 {
                 None
             } else if sh_type == object::elf::SHT_PROGBITS {
-                if sh_flags & elf::shf::EXECINSTR != 0 {
+                if sh_flags & shf::EXECINSTR != 0 {
                     Some(output_section_id::TEXT)
-                } else if sh_flags & elf::shf::TLS != 0 {
+                } else if sh_flags & shf::TLS != 0 {
                     Some(output_section_id::TDATA)
-                } else if sh_flags & elf::shf::WRITE != 0 {
+                } else if sh_flags & shf::WRITE != 0 {
                     Some(output_section_id::DATA)
                 } else {
                     Some(output_section_id::RODATA)
                 }
             } else if sh_type == object::elf::SHT_NOBITS {
-                if sh_flags & elf::shf::TLS != 0 {
+                if sh_flags & shf::TLS != 0 {
                     Some(output_section_id::TBSS)
                 } else {
                     Some(output_section_id::BSS)
@@ -208,8 +208,8 @@ fn should_merge_strings(section: &SectionHeader, args: &Args) -> bool {
     }
     let e = object::LittleEndian;
     let sh_flags = section.sh_flags.get(e);
-    (sh_flags & crate::elf::shf::MERGE) != 0
-        && (sh_flags & crate::elf::shf::STRINGS) != 0
+    (sh_flags & shf::MERGE) != 0
+        && (sh_flags & shf::STRINGS) != 0
         && section.sh_addralign.get(e) <= 1
 }
 

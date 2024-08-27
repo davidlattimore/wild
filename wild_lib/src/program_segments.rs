@@ -92,6 +92,8 @@ impl ProgramSegmentId {
 #[test]
 fn test_all_alloc_sections_in_a_loadable_segment() {
     use crate::output_section_id::OrderEvent;
+    use linker_utils::elf::shf;
+
     let output_sections = crate::output_section_id::OutputSections::for_testing();
     let mut active = Vec::new();
     output_sections.sections_and_segments_do(|event| match event {
@@ -106,7 +108,7 @@ fn test_all_alloc_sections_in_a_loadable_segment() {
             let has_load_segment = active
                 .iter()
                 .any(|seg_id| seg_id.segment_type() == object::elf::PT_LOAD);
-            let is_alloc = (section_details.section_flags & crate::elf::shf::ALLOC) != 0;
+            let is_alloc = (section_details.section_flags & shf::ALLOC) != 0;
             if section_details.has_data_in_file() && is_alloc && !has_load_segment {
                 panic!(
                     "alloc section {section_id:?} is not NOBITS, but isn't allocated to a LOAD segment"
