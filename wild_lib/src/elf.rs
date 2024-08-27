@@ -125,7 +125,7 @@ impl<'data> File<'data> {
     pub(crate) fn section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
         let data = section.data(LittleEndian, self.data)?;
 
-        if let Some((compression, offset, _)) = section.compression(LittleEndian, self.data)? {
+        if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
             let format = match compression.ch_type.get(LittleEndian) {
                 object::elf::ELFCOMPRESS_ZLIB => object::CompressionFormat::Zlib,
                 object::elf::ELFCOMPRESS_ZSTD => object::CompressionFormat::Zstandard,
@@ -134,7 +134,8 @@ impl<'data> File<'data> {
 
             let decompressed = CompressedData {
                 format,
-                data: &data[(offset as usize)..],
+                data: &data
+                    [core::mem::size_of::<object::elf::CompressionHeader64<LittleEndian>>()..],
                 uncompressed_size: compression.ch_size.get(LittleEndian),
             }
             .decompress()?;
