@@ -7,6 +7,7 @@ use crate::output_section_id;
 use crate::output_section_id::BuiltInSectionDetails;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionDetails;
+use crate::output_section_id::SectionFlags;
 use crate::output_section_id::SectionName;
 use linker_utils::elf::shf;
 use object::read::elf::SectionHeader as _;
@@ -154,7 +155,7 @@ impl<'data> UnloadedSection<'data> {
                 let details = SectionDetails {
                     name: SectionName(section_name),
                     ty,
-                    section_flags,
+                    section_flags: SectionFlags(section_flags),
                     element_size: 0,
                     retain,
                     packed: false,

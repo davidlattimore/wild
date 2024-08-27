@@ -2271,7 +2271,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         let e = LittleEndian;
         entry.sh_name.set(e, name_offset);
         entry.sh_type.set(e, section_details.ty);
-        entry.sh_flags.set(e, section_details.section_flags);
+        entry.sh_flags.set(e, section_details.section_flags.0);
         entry.sh_addr.set(e, section_layout.mem_offset);
         entry.sh_offset.set(e, section_layout.file_offset as u64);
         entry.sh_size.set(e, size);
