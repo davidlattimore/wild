@@ -8,6 +8,7 @@ use crate::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context as _;
+use linker_utils::elf::shf;
 use object::elf::*;
 use object::read::elf::Dyn;
 use object::read::elf::ElfSection64;
@@ -47,8 +48,7 @@ impl Converter {
                     let SectionFlags::Elf { sh_flags } = section.flags() else {
                         unreachable!();
                     };
-                    if section.address() == value && (sh_flags & object::elf::SHF_ALLOC as u64) != 0
-                    {
+                    if section.address() == value && sh_flags & shf::ALLOC != 0 {
                         if section.data().map(|d| d.len()).unwrap_or(0) == 0 {
                             empty_section_name = Some(section.name()?.to_owned());
                         } else {
@@ -87,41 +87,7 @@ impl Converter {
                 .section_by_index(object::SectionIndex(value as usize))?
                 .name()?
                 .to_owned()),
-            Converter::SectionFlags => {
-                let value = value as u32;
-                let mut flags = String::new();
-                if value & object::elf::SHF_WRITE != 0 {
-                    flags.push('W');
-                }
-                if value & object::elf::SHF_ALLOC != 0 {
-                    flags.push('A');
-                }
-                if value & object::elf::SHF_EXECINSTR != 0 {
-                    flags.push('X');
-                }
-                if value & object::elf::SHF_MERGE != 0 {
-                    flags.push('M');
-                }
-                if value & object::elf::SHF_STRINGS != 0 {
-                    flags.push('S');
-                }
-                if value & object::elf::SHF_INFO_LINK != 0 {
-                    flags.push('I');
-                }
-                if value & object::elf::SHF_LINK_ORDER != 0 {
-                    flags.push('L');
-                }
-                if value & object::elf::SHF_OS_NONCONFORMING != 0 {
-                    flags.push('O');
-                }
-                if value & object::elf::SHF_GROUP != 0 {
-                    flags.push('G');
-                }
-                if value & object::elf::SHF_TLS != 0 {
-                    flags.push('T');
-                }
-                Ok(flags)
-            }
+            Converter::SectionFlags => Ok(shf::flag_to_string(value)),
         }
     }
 }
