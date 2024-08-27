@@ -97,7 +97,7 @@ impl SaveDir {
         let mut is_output_file = false;
         let mut original_output_file = None;
         for arg in args {
-            out.write_all(" \\\n  ".as_bytes())?;
+            out.write_all(b" \\\n  ")?;
             if is_output_file {
                 out.write_all(b"$OUT")?;
                 is_output_file = false;
