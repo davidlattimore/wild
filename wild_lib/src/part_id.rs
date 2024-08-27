@@ -10,7 +10,6 @@ use crate::output_section_id::SectionDetails;
 use crate::output_section_id::SectionFlags;
 use crate::output_section_id::SectionName;
 use linker_utils::elf::shf;
-use object::read::elf::SectionHeader as _;
 use std::fmt::Debug;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,7 +93,7 @@ impl<'data> UnloadedSection<'data> {
         let e = object::LittleEndian;
         let section_name = object.section_name(section).unwrap_or_default();
         let sh_flags = section.sh_flags.get(e);
-        let alignment = Alignment::new(section.sh_addralign(e).max(1))?;
+        let alignment = Alignment::new(object.section_alignment(section)?.max(1))?;
         let built_in_section_id = if section_name.starts_with(b".rodata") {
             Some(output_section_id::RODATA)
         } else if section_name.starts_with(b".text") {
@@ -163,7 +162,11 @@ impl<'data> UnloadedSection<'data> {
                 return Ok(Some(UnloadedSection {
                     part_id: TemporaryPartId::Custom(custom_section_id),
                     details,
-                    is_string_merge: should_merge_strings(section, args),
+                    is_string_merge: should_merge_strings(
+                        section,
+                        object.section_alignment(section)?,
+                        args,
+                    ),
                 }));
             }
             if sh_flags & shf::ALLOC == 0 {
@@ -195,7 +198,11 @@ impl<'data> UnloadedSection<'data> {
         Ok(Some(UnloadedSection {
             part_id: TemporaryPartId::BuiltIn(part_id),
             details: built_in_section_id.built_in_details().details,
-            is_string_merge: should_merge_strings(section, args),
+            is_string_merge: should_merge_strings(
+                section,
+                object.section_alignment(section)?,
+                args,
+            ),
         }))
     }
 }
@@ -203,7 +210,7 @@ impl<'data> UnloadedSection<'data> {
 /// Returns whether the supplied section meets our criteria for string merging. String merging is
 /// optional, so there are cases where we might be able to merge, but don't currently. For example
 /// if alignment is > 1.
-fn should_merge_strings(section: &SectionHeader, args: &Args) -> bool {
+fn should_merge_strings(section: &SectionHeader, section_alignment: u64, args: &Args) -> bool {
     if !args.merge_strings {
         return false;
     }
@@ -211,7 +218,9 @@ fn should_merge_strings(section: &SectionHeader, args: &Args) -> bool {
     let sh_flags = section.sh_flags.get(e);
     (sh_flags & shf::MERGE) != 0
         && (sh_flags & shf::STRINGS) != 0
-        && section.sh_addralign.get(e) <= 1
+        && section_alignment <= 1
+        // TODO: support also debug info sections?
+        && sh_flags & shf::COMPRESSED == 0
 }
 
 impl PartId {

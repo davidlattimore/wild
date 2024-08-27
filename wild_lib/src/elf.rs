@@ -5,6 +5,7 @@ use anyhow::Context;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
 use linker_utils::elf::rel_type_to_string;
+use object::read::elf::CompressionHeader;
 use object::read::elf::FileHeader as _;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::RelocationSections;
@@ -122,6 +123,20 @@ impl<'data> File<'data> {
 
     pub(crate) fn section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
         Ok(section.data(LittleEndian, self.data)?)
+    }
+
+    pub(crate) fn section_size(&self, section: &SectionHeader) -> Result<u64> {
+        Ok(section.compression(LittleEndian, self.data)?.map_or_else(
+            || section.sh_size.get(LittleEndian),
+            |compression| compression.0.ch_size(LittleEndian),
+        ))
+    }
+
+    pub(crate) fn section_alignment(&self, section: &SectionHeader) -> Result<u64> {
+        Ok(section.compression(LittleEndian, self.data)?.map_or_else(
+            || section.sh_addralign(LittleEndian),
+            |compression| compression.0.ch_addralign(LittleEndian),
+        ))
     }
 
     pub(crate) fn relocations(&self, index: object::SectionIndex) -> Result<&'data [Rela]> {
