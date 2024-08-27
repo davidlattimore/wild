@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn test_parse_decimal_int() {
-        assert_eq!(parse_decimal_int("123   ".as_bytes()), 123);
-        assert_eq!(parse_decimal_int("0   ".as_bytes()), 0);
+        assert_eq!(parse_decimal_int(b"123   "), 123);
+        assert_eq!(parse_decimal_int(b"0   "), 0);
     }
 }
