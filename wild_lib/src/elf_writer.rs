@@ -53,6 +53,7 @@ use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
 use linker_utils::elf::rel_type_to_string;
+use linker_utils::elf::shf;
 use memmap2::MmapOptions;
 use object::from_bytes_mut;
 use object::read::elf::Rela;
@@ -2271,7 +2272,10 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         let e = LittleEndian;
         entry.sh_name.set(e, name_offset);
         entry.sh_type.set(e, section_details.ty);
-        entry.sh_flags.set(e, section_details.section_flags.0);
+        // TODO: Section are always uncompressed and the output compression is not supported yet.
+        entry
+            .sh_flags
+            .set(e, section_details.section_flags.0 & !shf::COMPRESSED);
         entry.sh_addr.set(e, section_layout.mem_offset);
         entry.sh_offset.set(e, section_layout.file_offset as u64);
         entry.sh_size.set(e, size);

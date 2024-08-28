@@ -685,7 +685,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         let section = self
             .object
             .section(SectionIndex(usize::from(section_index)))?;
-        let alignment = Alignment::new(section.sh_addralign(LittleEndian))?;
+        let alignment = Alignment::new(self.object.section_alignment(section)?)?;
 
         // Allocate space in BSS for the copy of the symbol.
         let st_size = symbol.st_size(LittleEndian);
@@ -1179,7 +1179,6 @@ impl<'data> Layout<'data> {
     }
 
     pub(crate) fn layout_data(&self) -> linker_layout::Layout {
-        let e = object::LittleEndian;
         let files = self
             .group_layouts
             .iter()
@@ -1201,14 +1200,15 @@ impl<'data> Layout<'data> {
                             .map(|((maybe_res, section), section_slot)| {
                                 maybe_res.and_then(|res| {
                                     (matches!(section_slot, SectionSlot::Loaded(..))
-                                        && section.sh_size.get(e) > 0)
-                                        .then(|| {
-                                            let address = res.address().unwrap();
-                                            linker_layout::Section {
-                                                mem_range: address
-                                                    ..(address + section.sh_size.get(e)),
-                                            }
-                                        })
+                                        && obj.object.section_size(section).is_ok_and(|s| s > 0))
+                                    .then(|| {
+                                        let address = res.address().unwrap();
+                                        linker_layout::Section {
+                                            mem_range: address
+                                                ..(address
+                                                    + obj.object.section_size(section).unwrap()),
+                                        }
+                                    })
                                 })
                             })
                             .collect(),
@@ -2100,7 +2100,7 @@ impl<'data> Section<'data> {
     ) -> Result<Section<'data>> {
         let e = LittleEndian;
         let object_section = object_state.object.section(section_id)?;
-        let size = object_section.sh_size(e);
+        let size = object_state.object.section_size(object_section)?;
         let section_data = object_state.object.section_data(object_section)?;
         for rel in object_state.object.relocations(section_id)? {
             process_relocation(object_state, common, rel, object_section, resources, queue)?;
@@ -3939,7 +3939,7 @@ fn assign_copy_relocation_address(
 ) -> Result<u64, Error> {
     let section_index = local_symbol.st_shndx(LittleEndian);
     let section = file.section(SectionIndex(usize::from(section_index)))?;
-    let alignment = Alignment::new(section.sh_addralign(LittleEndian))?;
+    let alignment = Alignment::new(file.section_alignment(section)?)?;
     let bss = memory_offsets.get_mut(output_section_id::BSS.part_id_with_alignment(alignment));
     let a = *bss;
     *bss += local_symbol.st_size(LittleEndian);

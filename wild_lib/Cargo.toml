@@ -16,6 +16,7 @@ linker-utils = { path = "../linker-utils" }
 memchr = "2.7.1"
 memmap2 = "0.9.0"
 object = { version = "0.36.0", default-features = false, features = [
+    "compression",
     "elf",
     "read_core",
     "std",

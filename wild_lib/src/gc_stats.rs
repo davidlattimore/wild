@@ -25,7 +25,6 @@ use crate::part_id::TemporaryPartId;
 use crate::resolution::SectionSlot;
 use anyhow::Context as _;
 use itertools::Itertools;
-use object::LittleEndian;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -87,7 +86,7 @@ fn write_gc_stats(
                     SectionSlot::Unloaded(s) => match s.part_id {
                         TemporaryPartId::BuiltIn(id) => {
                             if id.output_section_id() == output_section_id::TEXT {
-                                file_discarded += section.sh_size.get(LittleEndian);
+                                file_discarded += obj.object.section_size(section)?;
                                 if args.verbose_gc_stats {
                                     file_record
                                         .discarded_names
@@ -101,7 +100,7 @@ fn write_gc_stats(
                         if s.output_part_id.is_some_and(|part_id| {
                             part_id.output_section_id() == output_section_id::TEXT
                         }) {
-                            file_kept += section.sh_size.get(LittleEndian);
+                            file_kept += obj.object.section_size(section)?;
                         }
                     }
                     _ => {}
