@@ -135,7 +135,8 @@ const IGNORED_FLAGS: &[&str] = &[
 ];
 
 pub(crate) fn from_env() -> Result<Action> {
-    parse(std::env::args())
+    // Skip program name here
+    parse(std::env::args().skip(1))
 }
 
 // Parse the supplied input arguments, which should not include the program name.
@@ -183,8 +184,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     // quite a bit of complexity and we don't properly support it. We may eventually drop
     // support completely.
     let mut bind_now = true;
-    // Skip program name
-    input.next();
     let mut arg_num = 0;
     while let Some(arg) = input.next() {
         arg_num += 1;
@@ -630,7 +629,6 @@ mod tests {
     use std::str::FromStr;
 
     const INPUT1: &[&str] = &[
-        "wild",
         "-pie",
         "-z",
         "relro",
@@ -725,7 +723,7 @@ mod tests {
         let Action::Link(args) = super::parse(INPUT1.iter()).unwrap() else {
             panic!("Unexpected action");
         };
-
+        assert!(args.is_relocatable());
         assert_eq!(
             args.inputs
                 .iter()
