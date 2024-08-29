@@ -276,6 +276,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         details: SectionDetails {
             name: SectionName(b""),
+            section_flags: SectionFlags(shf::ALLOC),
             ..SectionDetails::default()
         },
         start_symbol_name: Some("__ehdr_start"),

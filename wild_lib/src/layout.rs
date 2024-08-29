@@ -24,6 +24,7 @@ use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionFlags;
+use crate::output_section_id::FILE_HEADER;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
@@ -1369,7 +1370,7 @@ fn compute_segment_layout(
             let part = section_layouts.get(section_id);
             // Segments only cover sections that are allocated and have a non-zero address.
             if section_details.section_flags.contains(shf::ALLOC) {
-                assert!(part.mem_offset != 0);
+                assert!(part.mem_offset != 0 || section_id == FILE_HEADER);
                 for rec in active_records.values_mut() {
                     rec.file_start = rec.file_start.min(part.file_offset);
                     rec.mem_start = rec.mem_start.min(part.mem_offset);
