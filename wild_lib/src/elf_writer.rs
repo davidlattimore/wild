@@ -1244,7 +1244,7 @@ impl<'data> ObjectLayout<'data> {
         table_writer: &mut TableWriter,
     ) -> Result {
         let eh_frame_section = self.object.section(eh_frame_section_index)?;
-        let data = self.object.section_data(eh_frame_section)?;
+        let data = self.object.raw_section_data(eh_frame_section)?;
         const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
         let e = LittleEndian;
         let section_flags = SectionFlags(eh_frame_section.sh_flags(e));

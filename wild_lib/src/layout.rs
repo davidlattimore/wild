@@ -2162,7 +2162,7 @@ fn process_relocation(
 
         let rel_info = if let Some(relaxation) = Relaxation::new(
             r_type,
-            object.object.section_data(section)?,
+            object.object.raw_section_data(section)?,
             rel_offset,
             symbol_value_flags,
             args.output_kind,
@@ -3247,7 +3247,7 @@ fn process_eh_frame_data(
         .section_frame_data
         .resize_with(object.state.sections.len(), Default::default);
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
-    let data = object.object.section_data(eh_frame_section)?;
+    let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
     let e = LittleEndian;
     let relocations = object.object.relocations(eh_frame_section_index)?;

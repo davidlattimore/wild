@@ -123,6 +123,11 @@ impl<'data> File<'data> {
             .unwrap_or_else(|_| format!("<index {}>", index.0).into())
     }
 
+    /// Returns the raw section data. Doesn't handle decompression.
+    pub(crate) fn raw_section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
+        Ok(section.data(LittleEndian, self.data)?)
+    }
+
     pub(crate) fn section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
         let data = section.data(LittleEndian, self.data)?;
 
@@ -151,6 +156,7 @@ impl<'data> File<'data> {
     }
 
     /// Copies the data for the specified section into `out`, which must be the correct size.
+    /// Decompresses the data if necessary.
     pub(crate) fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
         let data = section.data(LittleEndian, self.data)?;
 
