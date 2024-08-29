@@ -99,7 +99,8 @@ fn link(args: &Args) -> crate::error::Result {
     let groups = grouping::group_files(files, args);
     let mut symbol_db =
         symbol_db::SymbolDb::build(&groups, input_data.version_script_data.as_ref(), args)?;
-    let resolved = resolution::resolve_symbols_and_sections(&groups, &mut symbol_db)?;
+    let herd = bumpalo_herd::Herd::new();
+    let resolved = resolution::resolve_symbols_and_sections(&groups, &mut symbol_db, &herd)?;
     let layout = layout::compute(&symbol_db, resolved, &mut output)?;
     let output_file = output.write(&layout)?;
     diff::maybe_diff()?;

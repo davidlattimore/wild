@@ -26,7 +26,7 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
     let Some((_, got)) = object.section_by_name(".got") else {
         return Ok(());
     };
-    let got_data = object.section_data(got)?;
+    let got_data = object.raw_section_data(got)?;
     for (symbol_name, symbol_id) in &layout.symbol_db.global_names {
         match layout.local_symbol_resolution(*symbol_id) {
             None => {}

@@ -55,8 +55,10 @@ pub(crate) struct ResolutionOutputs<'data> {
 pub fn resolve_symbols_and_sections<'data>(
     groups: &'data [Group<'data>],
     symbol_db: &mut SymbolDb<'data>,
+    herd: &'data bumpalo_herd::Herd,
 ) -> Result<ResolutionOutputs<'data>> {
-    let (mut groups, undefined_symbols, internal) = resolve_symbols_in_files(groups, symbol_db)?;
+    let (mut groups, undefined_symbols, internal) =
+        resolve_symbols_in_files(groups, symbol_db, herd)?;
 
     let output_sections = assign_section_ids(&groups, symbol_db.args)?;
 
@@ -87,6 +89,7 @@ type DefinitionsCell<'definitions> = AtomicCell<Option<Box<&'definitions mut [Sy
 pub(crate) fn resolve_symbols_in_files<'data>(
     groups: &'data [Group<'data>],
     symbol_db: &mut SymbolDb<'data>,
+    herd: &'data bumpalo_herd::Herd,
 ) -> Result<(
     Vec<ResolvedGroup<'data>>,
     SegQueue<UndefinedSymbol<'data>>,
@@ -181,11 +184,16 @@ pub(crate) fn resolve_symbols_in_files<'data>(
     crate::threading::scope(|s| {
         for _ in 0..symbol_db.args.num_threads.get() {
             s.spawn(|_| {
+                let allocator = herd.get();
                 let mut idle = false;
                 while !done.load(Ordering::Relaxed) {
                     while let Some(work_item) = resources.work_queue.pop() {
-                        let r =
-                            process_object(work_item.file_id, work_item.definitions, &resources);
+                        let r = process_object(
+                            work_item.file_id,
+                            work_item.definitions,
+                            &resources,
+                            &allocator,
+                        );
                         if let Err(e) = r {
                             // We currently only store the first error.
                             let _ = resources.outputs.errors.push(e);
@@ -530,6 +538,7 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
     file_id: FileId,
     definitions_out: &mut [SymbolId],
     resources: &'scope ResolutionResources<'data, 'definitions, 'scope>,
+    allocator: &bumpalo_herd::Member<'data>,
 ) -> Result {
     if let ParsedInput::Object(obj) = &resources.groups[file_id.group()].files[file_id.file()] {
         let input = obj.input.clone();
@@ -538,6 +547,7 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
             resources,
             definitions_out,
             &resources.outputs.undefined_symbols,
+            allocator,
         )
         .with_context(|| format!("Failed to process {input}"))?;
         let _ = resources.outputs.loaded.push(res);
@@ -633,6 +643,7 @@ impl<'data> ResolvedObject<'data> {
         resources: &ResolutionResources<'data, '_, '_>,
         definitions_out: &mut [SymbolId],
         undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
+        allocator: &bumpalo_herd::Member<'data>,
     ) -> Result<Self> {
         let mut non_dynamic = None;
 
@@ -648,6 +659,7 @@ impl<'data> ResolvedObject<'data> {
                 &mut custom_sections,
                 &mut merge_strings_sections,
                 resources.symbol_db.args,
+                allocator,
             )?;
 
             resolve_symbols(obj, resources, undefined_symbols_out, definitions_out)
@@ -675,6 +687,7 @@ fn resolve_sections<'data>(
     custom_sections: &mut Vec<SectionDetails<'data>>,
     merge_strings_out: &mut Vec<UnresolvedMergeStringsFileSection<'data>>,
     args: &Args,
+    allocator: &bumpalo_herd::Member<'data>,
 ) -> Result<Vec<SectionSlot<'data>>> {
     let sections = obj
         .object
@@ -693,6 +706,7 @@ fn resolve_sections<'data>(
                         input_section_index,
                         unloaded.part_id,
                         merge_strings_out,
+                        allocator,
                     )?))
                 } else {
                     match unloaded.part_id {
@@ -846,8 +860,9 @@ impl<'data> MergeStringsFileSection<'data> {
         input_section_index: object::SectionIndex,
         section_id: TemporaryPartId<'data>,
         merge_strings_out: &mut Vec<UnresolvedMergeStringsFileSection<'data>>,
+        allocator: &bumpalo_herd::Member<'data>,
     ) -> Result<MergeStringsFileSection<'data>> {
-        let section_data = object.section_data(input_section)?;
+        let section_data = object.section_data(input_section, allocator)?;
         let mut remaining = section_data;
         let mut strings = Vec::new();
         while !remaining.is_empty() {

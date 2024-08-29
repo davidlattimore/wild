@@ -10,7 +10,6 @@ use object::read::elf::FileHeader as _;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
-use object::CompressedData;
 use object::LittleEndian;
 use std::borrow::Cow;
 use std::io::Read as _;
@@ -128,27 +127,18 @@ impl<'data> File<'data> {
         Ok(section.data(LittleEndian, self.data)?)
     }
 
-    pub(crate) fn section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
+    pub(crate) fn section_data(
+        &self,
+        section: &SectionHeader,
+        member: &bumpalo_herd::Member<'data>,
+    ) -> Result<&'data [u8]> {
         let data = section.data(LittleEndian, self.data)?;
 
-        // TODO: Consider removing support for decompression from this method once the last caller
-        // that needs to handle compressed data has been resolved. I think the only thing that's
-        // left is merge-string sections.
         if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
-            let format = match compression.ch_type.get(LittleEndian) {
-                object::elf::ELFCOMPRESS_ZLIB => object::CompressionFormat::Zlib,
-                object::elf::ELFCOMPRESS_ZSTD => object::CompressionFormat::Zstandard,
-                c => bail!("Unsupported compression format: {}", c),
-            };
-
-            let decompressed = CompressedData {
-                format,
-                data: &data[COMPRESSION_HEADER_SIZE..],
-                uncompressed_size: compression.ch_size.get(LittleEndian),
-            }
-            .decompress()?;
-            // TODO: find a proper lifetime for the uncompressed data!!!
-            Ok(decompressed.into_owned().leak())
+            let len = self.section_size(section)?;
+            let decompressed = member.alloc_slice_fill_default(len as usize);
+            decompress_into(compression, &data[COMPRESSION_HEADER_SIZE..], decompressed)?;
+            Ok(decompressed)
         } else {
             Ok(data)
         }
@@ -160,20 +150,7 @@ impl<'data> File<'data> {
         let data = section.data(LittleEndian, self.data)?;
 
         if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
-            let data = &data[COMPRESSION_HEADER_SIZE..];
-            match compression.ch_type.get(LittleEndian) {
-                object::elf::ELFCOMPRESS_ZLIB => {
-                    flate2::Decompress::new(true).decompress(
-                        data,
-                        out,
-                        flate2::FlushDecompress::Finish,
-                    )?;
-                }
-                object::elf::ELFCOMPRESS_ZSTD => {
-                    ruzstd::StreamingDecoder::new(data)?.read_exact(out)?;
-                }
-                c => bail!("Unsupported compression format: {}", c),
-            };
+            decompress_into(compression, data, out)?;
         } else {
             out.copy_from_slice(data);
         }
@@ -235,6 +212,27 @@ impl<'data> File<'data> {
         }
         Ok(&[])
     }
+}
+
+fn decompress_into(
+    compression: &object::elf::CompressionHeader64<LittleEndian>,
+    input: &[u8],
+    out: &mut [u8],
+) -> Result {
+    match compression.ch_type.get(LittleEndian) {
+        object::elf::ELFCOMPRESS_ZLIB => {
+            flate2::Decompress::new(true).decompress(
+                input,
+                out,
+                flate2::FlushDecompress::Finish,
+            )?;
+        }
+        object::elf::ELFCOMPRESS_ZSTD => {
+            ruzstd::StreamingDecoder::new(input)?.read_exact(out)?;
+        }
+        c => bail!("Unsupported compression format: {}", c),
+    };
+    Ok(())
 }
 
 /// Get some entries from `data` as a slice of some Pod type. Alignment of `T` must be 1.
