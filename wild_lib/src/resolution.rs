@@ -41,6 +41,8 @@ use itertools::Itertools;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::fmt::Display;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 pub(crate) struct ResolutionOutputs<'data> {
     pub(crate) groups: Vec<ResolvedGroup<'data>>,
@@ -133,7 +135,10 @@ pub(crate) fn resolve_symbols_in_files<'data>(
                     }
                     ParsedInput::Object(s) => {
                         if !s.is_optional() {
-                            objects.push((s, definitions.take().unwrap()));
+                            objects.push(WorkItem {
+                                file_id: s.file_id,
+                                definitions: *definitions.take().unwrap(),
+                            });
                         }
                         num_objects += 1;
                         ResolvedFile::NotLoaded(NotLoaded {
@@ -150,29 +155,61 @@ pub(crate) fn resolve_symbols_in_files<'data>(
             ResolvedGroup { files }
         })
         .collect();
+
     if num_objects == 0 {
         bail!("Cannot link with 0 input files");
     }
+
     let outputs = Outputs::new(num_objects);
+
+    let work_queue = SegQueue::new();
+    for work_item in objects {
+        work_queue.push(work_item);
+    }
+
     let resources = ResolutionResources {
         groups,
         definitions_per_file: &definitions_per_group_and_file,
         symbol_db,
         outputs: &outputs,
+        work_queue,
     };
 
+    let idle_threads = ArrayQueue::new(symbol_db.args.num_threads.get() - 1);
+    let done = AtomicBool::new(false);
+
     crate::threading::scope(|s| {
-        for (obj, definitions) in objects {
-            s.spawn(|s| {
-                let r = process_object(obj, *definitions, s, &resources);
-                if let Err(e) = r {
-                    // We currently only store the first error.
-                    let _ = resources.outputs.errors.push(e);
+        for _ in 0..symbol_db.args.num_threads.get() {
+            s.spawn(|_| {
+                let mut idle = false;
+                while !done.load(Ordering::Relaxed) {
+                    while let Some(work_item) = resources.work_queue.pop() {
+                        let r =
+                            process_object(work_item.file_id, work_item.definitions, &resources);
+                        if let Err(e) = r {
+                            // We currently only store the first error.
+                            let _ = resources.outputs.errors.push(e);
+                        }
+                    }
+                    if idle_threads.push(std::thread::current()).is_err() {
+                        // No space left in our idle queue means that all other threads are idle, so
+                        // we're done.
+                        done.store(true, Ordering::Relaxed);
+                        while let Some(thread) = idle_threads.pop() {
+                            thread.unpark();
+                        }
+                    } else if idle {
+                        std::thread::park();
+                        idle = false;
+                    } else {
+                        idle = true;
+                    }
                 }
-            })
+            });
         }
     });
 
+    drop(resources);
     drop(definitions_per_group_and_file);
     symbol_db.restore_definitions(symbol_definitions);
     if let Some(e) = outputs.errors.pop() {
@@ -187,11 +224,17 @@ pub(crate) fn resolve_symbols_in_files<'data>(
     Ok((resolved, outputs.undefined_symbols, prelude.unwrap()))
 }
 
+struct WorkItem<'definitions> {
+    file_id: FileId,
+    definitions: &'definitions mut [SymbolId],
+}
+
 struct ResolutionResources<'data, 'definitions, 'outer_scope> {
     groups: &'data [Group<'data>],
     definitions_per_file: &'outer_scope Vec<Vec<DefinitionsCell<'definitions>>>,
     symbol_db: &'outer_scope SymbolDb<'data>,
     outputs: &'outer_scope Outputs<'data>,
+    work_queue: SegQueue<WorkItem<'definitions>>,
 }
 
 /// For each symbol that has multiple definitions, some of which may be weak, some strong, some
@@ -472,37 +515,33 @@ impl<'data> Outputs<'data> {
 }
 
 fn process_object<'scope, 'data: 'scope, 'definitions>(
-    obj: &'data ParsedInputObject<'data>,
+    file_id: FileId,
     definitions_out: &mut [SymbolId],
-    s: &crate::threading::Scope<'scope>,
     resources: &'scope ResolutionResources<'data, 'definitions, 'scope>,
 ) -> Result {
     let request_file_id = |file_id: FileId| {
         if let Some(definitions) =
             resources.definitions_per_file[file_id.group()][file_id.file()].take()
         {
-            s.spawn(move |s| {
-                if let ParsedInput::Object(obj) =
-                    &resources.groups[file_id.group()].files[file_id.file()]
-                {
-                    let r = process_object(obj, *definitions, s, resources);
-                    if let Err(error) = r {
-                        let _ = resources.outputs.errors.push(error);
-                    }
-                }
-            });
+            resources.work_queue.push(WorkItem {
+                definitions: *definitions,
+                file_id,
+            })
         }
     };
-    let input = obj.input.clone();
-    let res = ResolvedObject::new(
-        obj,
-        resources.symbol_db,
-        request_file_id,
-        definitions_out,
-        &resources.outputs.undefined_symbols,
-    )
-    .with_context(|| format!("Failed to process {input}"))?;
-    let _ = resources.outputs.loaded.push(res);
+
+    if let ParsedInput::Object(obj) = &resources.groups[file_id.group()].files[file_id.file()] {
+        let input = obj.input.clone();
+        let res = ResolvedObject::new(
+            obj,
+            resources.symbol_db,
+            request_file_id,
+            definitions_out,
+            &resources.outputs.undefined_symbols,
+        )
+        .with_context(|| format!("Failed to process {input}"))?;
+        let _ = resources.outputs.loaded.push(res);
+    }
     Ok(())
 }
 
