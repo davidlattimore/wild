@@ -314,7 +314,7 @@ pub(crate) struct NotLoaded {
 pub(crate) enum SectionSlot<'data> {
     Discard,
     Unloaded(UnloadedSection<'data>),
-    Loaded(crate::layout::Section<'data>),
+    Loaded(crate::layout::Section),
     EhFrameData(object::SectionIndex),
     MergeStrings(MergeStringsFileSection<'data>),
 }

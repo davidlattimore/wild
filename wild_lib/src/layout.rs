@@ -973,13 +973,11 @@ pub(crate) struct DynamicSymbolDefinition<'data> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Section<'data> {
+pub(crate) struct Section {
     pub(crate) index: object::SectionIndex,
     pub(crate) output_part_id: Option<PartId>,
     /// Size in memory.
     pub(crate) size: u64,
-    /// Our data. May be empty if we're in a zero-initialised section.
-    pub(crate) data: &'data [u8],
     pub(crate) resolution_kind: ResolutionFlags,
     packed: bool,
     pub(crate) is_writable: bool,
@@ -2090,19 +2088,18 @@ impl SectionRequest {
     }
 }
 
-impl<'data> Section<'data> {
-    fn create<'scope>(
-        object_state: &mut ObjectLayoutState<'data>,
-        common: &mut CommonGroupState<'data>,
+impl Section {
+    fn create(
+        object_state: &mut ObjectLayoutState,
+        common: &mut CommonGroupState,
         queue: &mut LocalWorkQueue,
-        unloaded: &UnloadedSection<'data>,
+        unloaded: &UnloadedSection,
         section_id: object::SectionIndex,
-        resources: &GraphResources<'data, 'scope>,
-    ) -> Result<Section<'data>> {
+        resources: &GraphResources,
+    ) -> Result<Section> {
         let e = LittleEndian;
         let object_section = object_state.object.section(section_id)?;
         let size = object_state.object.section_size(object_section)?;
-        let section_data = object_state.object.section_data(object_section)?;
         for rel in object_state.object.relocations(section_id)? {
             process_relocation(object_state, common, rel, object_section, resources, queue)?;
         }
@@ -2110,7 +2107,6 @@ impl<'data> Section<'data> {
             index: section_id,
             output_part_id: None,
             size,
-            data: section_data,
             resolution_kind: ResolutionFlags::empty(),
             packed: unloaded.details.packed,
             is_writable: object_section.sh_flags(e) & shf::WRITE != 0,
