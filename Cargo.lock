@@ -612,7 +612,7 @@ checksum = "576dfe1fc8f9df304abb159d767a29d0476f7750fbf8aa7ad07816004a207434"
 dependencies = [
  "flate2",
  "memchr",
- "ruzstd",
+ "ruzstd 0.6.0",
 ]
 
 [[package]]
@@ -793,6 +793,16 @@ checksum = "5174a470eeb535a721ae9fdd6e291c2411a906b96592182d05217591d5c5cf7b"
 dependencies = [
  "byteorder",
  "derive_more",
+ "twox-hash",
+]
+
+[[package]]
+name = "ruzstd"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c8b8f3d26bd9f945e5cbae77f7cdfbf37af9a66956f1115eb4516e45df519f4"
+dependencies = [
+ "byteorder",
  "twox-hash",
 ]
 
@@ -1072,6 +1082,7 @@ dependencies = [
  "bytesize",
  "crossbeam-queue",
  "crossbeam-utils",
+ "flate2",
  "itertools",
  "linker-layout",
  "linker-trace",
@@ -1080,6 +1091,7 @@ dependencies = [
  "memmap2",
  "object",
  "rayon",
+ "ruzstd 0.7.1",
  "sharded-vec-writer",
  "smallvec",
  "tracing",

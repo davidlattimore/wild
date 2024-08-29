@@ -13,6 +13,7 @@ use object::read::elf::SectionHeader as _;
 use object::CompressedData;
 use object::LittleEndian;
 use std::borrow::Cow;
+use std::io::Read as _;
 
 /// Our starting address in memory when linking non-relocatable executables. We can start memory
 /// addresses wherever we like, even from 0. We pick 400k because it's the same as what ld does and
@@ -125,6 +126,9 @@ impl<'data> File<'data> {
     pub(crate) fn section_data(&self, section: &SectionHeader) -> Result<&'data [u8]> {
         let data = section.data(LittleEndian, self.data)?;
 
+        // TODO: Consider removing support for decompression from this method once the last caller
+        // that needs to handle compressed data has been resolved. I think the only thing that's
+        // left is merge-string sections.
         if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
             let format = match compression.ch_type.get(LittleEndian) {
                 object::elf::ELFCOMPRESS_ZLIB => object::CompressionFormat::Zlib,
@@ -144,6 +148,30 @@ impl<'data> File<'data> {
         } else {
             Ok(data)
         }
+    }
+
+    /// Copies the data for the specified section into `out`, which must be the correct size.
+    pub(crate) fn copy_section_data(&self, section: &SectionHeader, out: &mut [u8]) -> Result {
+        let data = section.data(LittleEndian, self.data)?;
+
+        if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
+            match compression.ch_type.get(LittleEndian) {
+                object::elf::ELFCOMPRESS_ZLIB => {
+                    flate2::Decompress::new(true).decompress(
+                        data,
+                        out,
+                        flate2::FlushDecompress::Finish,
+                    )?;
+                }
+                object::elf::ELFCOMPRESS_ZSTD => {
+                    ruzstd::StreamingDecoder::new(data)?.read_exact(out)?;
+                }
+                c => bail!("Unsupported compression format: {}", c),
+            };
+        } else {
+            out.copy_from_slice(data);
+        }
+        Ok(())
     }
 
     pub(crate) fn section_size(&self, section: &SectionHeader) -> Result<u64> {

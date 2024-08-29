@@ -1109,9 +1109,9 @@ impl<'data> ObjectLayout<'data> {
             let out = slice_take_prefix_mut(section_buffer, allocation_size);
             // Cut off any padding so that our output buffer is the size of our input buffer.
             let object_section = self.object.section(sec.index)?;
-            let section_data = self.object.section_data(object_section)?;
-            let out = &mut out[..section_data.len()];
-            out.copy_from_slice(section_data);
+            let section_size = self.object.section_size(object_section)?;
+            let out = &mut out[..section_size as usize];
+            self.object.copy_section_data(object_section, out)?;
             self.apply_relocations(out, sec, layout, table_writer)
                 .with_context(|| {
                     format!(
