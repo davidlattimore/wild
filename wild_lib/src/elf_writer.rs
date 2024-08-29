@@ -36,6 +36,7 @@ use crate::layout::SymbolCopyInfo;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SectionFlags;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
@@ -57,6 +58,7 @@ use linker_utils::elf::shf;
 use memmap2::MmapOptions;
 use object::from_bytes_mut;
 use object::read::elf::Rela;
+use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::fmt::Display;
@@ -1201,6 +1203,8 @@ impl<'data> ObjectLayout<'data> {
             .as_ref()
             .unwrap()
             .address()?;
+        let object_section = self.object.section(section.index)?;
+        let section_flags = SectionFlags(object_section.sh_flags(LittleEndian));
         let mut modifier = RelocationModifier::Normal;
         for rel in self.object.relocations(section.index)? {
             if modifier == RelocationModifier::SkipNextRelocation {
@@ -1215,6 +1219,7 @@ impl<'data> ObjectLayout<'data> {
                 SectionInfo {
                     section_address,
                     is_writable: section.is_writable,
+                    section_flags,
                 },
                 layout,
                 out,
@@ -1240,6 +1245,7 @@ impl<'data> ObjectLayout<'data> {
         let data = self.object.section_data(eh_frame_section)?;
         const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
         let e = LittleEndian;
+        let section_flags = SectionFlags(eh_frame_section.sh_flags(e));
         let mut relocations = self
             .object
             .relocations(eh_frame_section_index)?
@@ -1345,6 +1351,7 @@ impl<'data> ObjectLayout<'data> {
                             section_address: output_pos as u64
                                 + table_writer.eh_frame_start_address,
                             is_writable: false,
+                            section_flags,
                         },
                         layout,
                         entry_out,
@@ -1429,6 +1436,7 @@ impl<'a> Display for DisplayRelocation<'a> {
 struct SectionInfo {
     section_address: u64,
     is_writable: bool,
+    section_flags: SectionFlags,
 }
 
 /// Applies the relocation `rel` at `offset_in_section`, where the section bytes are `out`. See "ELF
@@ -1463,9 +1471,14 @@ fn apply_relocation(
     let r_type = rel.r_type(e, false);
     let rel_info;
     let output_kind = layout.args().output_kind;
-    if let Some(relaxation) =
-        Relaxation::new(r_type, out, offset_in_section, value_flags, output_kind)
-    {
+    if let Some(relaxation) = Relaxation::new(
+        r_type,
+        out,
+        offset_in_section,
+        value_flags,
+        output_kind,
+        section_info.section_flags,
+    ) {
         tracing::trace!(?relaxation.kind, %value_flags, %resolution_flags);
         rel_info = relaxation.rel_info;
         relaxation.apply(out, &mut offset_in_section, &mut addend, &mut next_modifier);

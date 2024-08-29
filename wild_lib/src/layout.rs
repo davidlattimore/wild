@@ -23,6 +23,7 @@ use crate::input_data::PRELUDE_FILE_ID;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::SectionFlags;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
@@ -61,7 +62,7 @@ use object::elf::gnu_hash;
 use object::elf::Rela64;
 use object::read::elf::Dyn as _;
 use object::read::elf::Rela as _;
-use object::read::elf::SectionHeader as _;
+use object::read::elf::SectionHeader;
 use object::read::elf::Sym as _;
 use object::read::elf::VerdefIterator;
 use object::LittleEndian;
@@ -2169,6 +2170,7 @@ fn process_relocation(
             rel_offset,
             symbol_value_flags,
             args.output_kind,
+            SectionFlags(section.sh_flags(LittleEndian)),
         ) {
             relaxation.rel_info
         } else {

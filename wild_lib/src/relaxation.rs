@@ -5,7 +5,9 @@
 
 use crate::args::OutputKind;
 use crate::elf::RelocationKindInfo;
+use crate::output_section_id::SectionFlags;
 use crate::resolution::ValueFlags;
+use linker_utils::elf::shf;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Relaxation {
@@ -67,6 +69,7 @@ impl Relaxation {
         offset_in_section: u64,
         value_flags: ValueFlags,
         output_kind: OutputKind,
+        section_flags: SectionFlags,
     ) -> Option<Self> {
         fn create(kind: RelaxationKind, new_r_type: u32) -> Option<Relaxation> {
             // This only fails for relocation types that we don't support and if we relax to a type
@@ -93,6 +96,12 @@ impl Relaxation {
                 }
                 _ => None,
             };
+        }
+
+        // All relaxations below only apply to executable code, so we shouldn't attempt them if a
+        // relocation is in a non-executable section.
+        if !section_flags.contains(shf::EXECINSTR) {
+            return None;
         }
 
         let offset = offset_in_section as usize;
@@ -362,6 +371,7 @@ fn test_relaxation() {
             offset,
             ValueFlags::ADDRESS,
             OutputKind::StaticExecutable(RelocationModel::Relocatable),
+            SectionFlags(shf::EXECINSTR),
         ) {
             r.apply(&mut out, &mut offset, &mut 0, &mut modifier);
 
@@ -376,6 +386,7 @@ fn test_relaxation() {
             offset,
             ValueFlags::ABSOLUTE,
             OutputKind::StaticExecutable(RelocationModel::Relocatable),
+            SectionFlags(shf::EXECINSTR),
         ) {
             out.copy_from_slice(bytes_in);
             r.apply(&mut out, &mut offset, &mut 0, &mut modifier);
