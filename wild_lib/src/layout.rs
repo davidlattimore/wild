@@ -3621,8 +3621,7 @@ fn get_merged_string_output_address(
     let SectionSlot::MergeStrings(merge_slot) = &sections[section_index.0] else {
         return Ok(None);
     };
-    let section = object.section(section_index)?;
-    let data = object.section_data(section)?;
+    let data = merge_slot.section_data;
     let mut input_offset = symbol.st_value(LittleEndian);
 
     // When we reference data in a string-merge section via a named symbol, we determine which

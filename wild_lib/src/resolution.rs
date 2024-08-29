@@ -349,6 +349,7 @@ pub(crate) struct ResolvedEpilogue {
 #[derive(Clone, Copy)]
 pub(crate) struct MergeStringsFileSection<'data> {
     temporary_part_id: TemporaryPartId<'data>,
+    pub(crate) section_data: &'data [u8],
 }
 
 pub(crate) struct UnresolvedMergeStringsFileSection<'data> {
@@ -825,7 +826,8 @@ impl<'data> MergeStringsFileSection<'data> {
         section_id: TemporaryPartId<'data>,
         merge_strings_out: &mut Vec<UnresolvedMergeStringsFileSection<'data>>,
     ) -> Result<MergeStringsFileSection<'data>> {
-        let mut remaining = object.section_data(input_section)?;
+        let section_data = object.section_data(input_section)?;
+        let mut remaining = section_data;
         let mut strings = Vec::new();
         while !remaining.is_empty() {
             strings.push(StringToMerge::take_hashed(&mut remaining)?);
@@ -836,6 +838,7 @@ impl<'data> MergeStringsFileSection<'data> {
         });
         Ok(MergeStringsFileSection {
             temporary_part_id: section_id,
+            section_data,
         })
     }
 
