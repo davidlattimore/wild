@@ -1908,6 +1908,11 @@ impl<'data> UnifiedInstruction<'data> {
             if let Some(ub) = extract_undefined_behaviour(&mut unified) {
                 return Some(ub);
             }
+            // If a reference object failed to resolve, then we allow a match even if our linker
+            // managed a match, since our match may have been a false match.
+            if let Some(u) = extract_unresolved(&mut unified) {
+                return Some(u);
+            }
             common.retain(|u| unified.iter().any(|a| u == a));
         }
 
@@ -2035,6 +2040,13 @@ impl<'data> UnifiedInstruction<'data> {
         false
     }
 
+    fn is_unresolved(&self) -> bool {
+        matches!(
+            self.relocation,
+            UnifiedRelocation::Legacy(AddressResolution::PointerTo(_))
+        )
+    }
+
     /// If one of our objects has a layout associated with it, finds the original instruction and
     /// relocation. If the relocation points to a local symbol without a name, or starting with
     /// ".L", then that would have been discarded by the linkers, so we then use that as the
@@ -2094,6 +2106,15 @@ fn extract_undefined_behaviour<'data>(
 ) -> Option<UnifiedInstruction<'data>> {
     if unified.iter().any(|ins| ins.is_undefined_behaviour()) {
         return unified.drain(..).find(|ins| ins.is_undefined_behaviour());
+    }
+    None
+}
+
+fn extract_unresolved<'data>(
+    unified: &mut Vec<UnifiedInstruction<'data>>,
+) -> Option<UnifiedInstruction<'data>> {
+    if unified.iter().any(|ins| ins.is_unresolved()) {
+        return unified.drain(..).find(|ins| ins.is_unresolved());
     }
     None
 }
