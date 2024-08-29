@@ -8,7 +8,7 @@ foo:
 
 
 
-.section        .data.rel.ro,"aM",@progbits,16
+.section        .data.rel.ro,"aw"
 .p2align        4, 0x0
 
 .type .Ldata0, @object
