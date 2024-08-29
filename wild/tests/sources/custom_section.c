@@ -38,7 +38,8 @@ int __stop_w3 = 88;
 int __init_array_start = 89;
 
 int fn1(void);
-
+void set_foo1(int value);
+int get_foo1(void);
 int h1();
 int h2(int x);
 
@@ -76,6 +77,11 @@ void _start(void) {
     }
     if (dot2 != 8) {
         exit_syscall(108);
+    }
+    // Verify that we can write to a custom section.
+    set_foo1(10);
+    if (get_foo1() != 10) {
+        exit_syscall(109);
     }
 
     exit_syscall(value);

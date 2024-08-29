@@ -748,7 +748,7 @@ impl<'data> OutputSectionsBuilder<'data> {
             let id = OutputSectionId::from_usize(NUM_BUILT_IN_SECTIONS + offset);
             if info.details.section_flags.contains(shf::EXECINSTR) {
                 exec_custom.push(id);
-            } else if info.details.section_flags.contains(shf::WRITE) {
+            } else if !info.details.section_flags.contains(shf::WRITE) {
                 ro_custom.push(id)
             } else if info.details.ty == object::elf::SHT_NOBITS {
                 bss_custom.push(id);

@@ -15,3 +15,11 @@ int __attribute__ ((section ("hot"))) h1() {
 int __attribute__ ((section ("hot"))) h2(int x) {
     return 6 + x;
 }
+
+void set_foo1(int value) {
+    foo1 = value;
+}
+
+int get_foo1(void) {
+    return foo1;
+}
