@@ -143,8 +143,7 @@ impl<'data> File<'data> {
 
             let decompressed = CompressedData {
                 format,
-                data: &data
-                    [core::mem::size_of::<object::elf::CompressionHeader64<LittleEndian>>()..],
+                data: &data[COMPRESSION_HEADER_SIZE..],
                 uncompressed_size: compression.ch_size.get(LittleEndian),
             }
             .decompress()?;
@@ -161,6 +160,7 @@ impl<'data> File<'data> {
         let data = section.data(LittleEndian, self.data)?;
 
         if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
+            let data = &data[COMPRESSION_HEADER_SIZE..];
             match compression.ch_type.get(LittleEndian) {
                 object::elf::ELFCOMPRESS_ZLIB => {
                     flate2::Decompress::new(true).decompress(
@@ -332,6 +332,8 @@ pub(crate) const PHEADER_OFFSET: u64 = FILE_HEADER_SIZE as u64;
 pub(crate) const FILE_HEADER_SIZE: u16 = 0x40;
 pub(crate) const PROGRAM_HEADER_SIZE: u16 = 0x38;
 pub(crate) const SECTION_HEADER_SIZE: u16 = 0x40;
+pub(crate) const COMPRESSION_HEADER_SIZE: usize =
+    core::mem::size_of::<object::elf::CompressionHeader64<LittleEndian>>();
 
 pub(crate) const GOT_ENTRY_SIZE: u64 = 0x8;
 pub(crate) const PLT_ENTRY_SIZE: u64 = PLT_ENTRY_TEMPLATE.len() as u64;
