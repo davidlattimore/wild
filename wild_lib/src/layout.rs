@@ -4101,13 +4101,16 @@ fn test_no_disallowed_overlaps() {
     let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections);
     let section_layouts = layout_sections(&section_part_layouts);
 
-    // Make sure no sections overlap
+    // Make sure no alloc sections overlap
     let mut last_file_start = 0;
     let mut last_mem_start = 0;
     let mut last_file_end = 0;
     let mut last_mem_end = 0;
     let mut last_section_id = output_section_id::FILE_HEADER;
-    output_sections.sections_do(|section_id, _section_details| {
+    output_sections.sections_do(|section_id, section_details| {
+        if !section_details.section_flags.contains(shf::ALLOC) {
+            return;
+        }
         let section = section_layouts.get(section_id);
         let mem_offset = section.mem_offset;
         let mem_end = mem_offset + section.mem_size;
