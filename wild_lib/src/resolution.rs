@@ -237,6 +237,18 @@ struct ResolutionResources<'data, 'definitions, 'outer_scope> {
     work_queue: SegQueue<WorkItem<'definitions>>,
 }
 
+impl<'data, 'definitions, 'outer_scope> ResolutionResources<'data, 'definitions, 'outer_scope> {
+    fn request_file_id(&self, file_id: FileId) {
+        if let Some(definitions) = self.definitions_per_file[file_id.group()][file_id.file()].take()
+        {
+            self.work_queue.push(WorkItem {
+                definitions: *definitions,
+                file_id,
+            })
+        }
+    }
+}
+
 /// For each symbol that has multiple definitions, some of which may be weak, some strong, some
 /// "common" symbols and some in archive entries that weren't loaded, resolve which version of the
 /// symbol we're using. The symbol we select will be the first strongly defined symbol in a loaded
@@ -519,23 +531,11 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
     definitions_out: &mut [SymbolId],
     resources: &'scope ResolutionResources<'data, 'definitions, 'scope>,
 ) -> Result {
-    let request_file_id = |file_id: FileId| {
-        if let Some(definitions) =
-            resources.definitions_per_file[file_id.group()][file_id.file()].take()
-        {
-            resources.work_queue.push(WorkItem {
-                definitions: *definitions,
-                file_id,
-            })
-        }
-    };
-
     if let ParsedInput::Object(obj) = &resources.groups[file_id.group()].files[file_id.file()] {
         let input = obj.input.clone();
         let res = ResolvedObject::new(
             obj,
-            resources.symbol_db,
-            request_file_id,
+            resources,
             definitions_out,
             &resources.outputs.undefined_symbols,
         )
@@ -630,22 +630,15 @@ fn allocate_start_stop_symbol_id<'data>(
 impl<'data> ResolvedObject<'data> {
     fn new(
         obj: &'data ParsedInputObject<'data>,
-        symbol_db: &SymbolDb<'data>,
-        request_file_id: impl FnMut(FileId),
+        resources: &ResolutionResources<'data, '_, '_>,
         definitions_out: &mut [SymbolId],
         undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     ) -> Result<Self> {
         let mut non_dynamic = None;
 
         if obj.is_dynamic() {
-            resolve_dynamic_symbols(
-                obj,
-                symbol_db,
-                request_file_id,
-                undefined_symbols_out,
-                definitions_out,
-            )
-            .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
+            resolve_dynamic_symbols(obj, resources, undefined_symbols_out, definitions_out)
+                .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
         } else {
             let mut custom_sections = Vec::new();
             let mut merge_strings_sections = Vec::new();
@@ -654,17 +647,11 @@ impl<'data> ResolvedObject<'data> {
                 obj,
                 &mut custom_sections,
                 &mut merge_strings_sections,
-                symbol_db.args,
+                resources.symbol_db.args,
             )?;
 
-            resolve_symbols(
-                obj,
-                symbol_db,
-                request_file_id,
-                undefined_symbols_out,
-                definitions_out,
-            )
-            .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
+            resolve_symbols(obj, resources, undefined_symbols_out, definitions_out)
+                .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
 
             non_dynamic = Some(NonDynamicResolved {
                 sections,
@@ -729,8 +716,7 @@ fn resolve_sections<'data>(
 
 fn resolve_symbols<'data>(
     obj: &ParsedInputObject<'data>,
-    symbol_db: &SymbolDb<'data>,
-    mut request_file_id: impl FnMut(FileId),
+    resources: &ResolutionResources<'data, '_, '_>,
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     definitions_out: &mut [SymbolId],
 ) -> Result {
@@ -744,9 +730,8 @@ fn resolve_symbols<'data>(
                     local_symbol_index,
                     local_symbol,
                     definition,
-                    symbol_db,
+                    resources,
                     obj,
-                    &mut request_file_id,
                     undefined_symbols_out,
                 )
             },
@@ -756,8 +741,7 @@ fn resolve_symbols<'data>(
 
 fn resolve_dynamic_symbols<'data>(
     obj: &ParsedInputObject<'data>,
-    symbol_db: &SymbolDb<'data>,
-    mut request_file_id: impl FnMut(FileId),
+    resources: &ResolutionResources<'data, '_, '_>,
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     definitions_out: &mut [SymbolId],
 ) -> Result {
@@ -771,9 +755,8 @@ fn resolve_dynamic_symbols<'data>(
                     local_symbol_index,
                     local_symbol,
                     definition,
-                    symbol_db,
+                    resources,
                     obj,
-                    &mut request_file_id,
                     undefined_symbols_out,
                 )
             },
@@ -785,9 +768,8 @@ fn resolve_symbol<'data>(
     local_symbol_index: object::SymbolIndex,
     local_symbol: &crate::elf::SymtabEntry,
     definition_out: &mut SymbolId,
-    symbol_db: &SymbolDb<'data>,
+    resources: &ResolutionResources<'data, '_, '_>,
     obj: &ParsedInputObject<'data>,
-    request_file_id: &mut impl FnMut(FileId),
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
 ) -> Result {
     // Don't try to resolve symbols that are already defined, e.g. locals and globals that we
@@ -803,12 +785,12 @@ fn resolve_symbol<'data>(
     );
     assert!(!local_symbol.is_definition(LittleEndian));
     let prehashed_name = SymbolName::prehashed(name_bytes);
-    match symbol_db.global_names.get(&prehashed_name) {
+    match resources.symbol_db.global_names.get(&prehashed_name) {
         Some(&symbol_id) => {
             *definition_out = symbol_id;
-            let symbol_file_id = symbol_db.file_id_for_symbol(symbol_id);
+            let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
             if symbol_file_id != obj.file_id && !local_symbol.is_weak() {
-                request_file_id(symbol_file_id);
+                resources.request_file_id(symbol_file_id);
             } else if symbol_file_id != PRELUDE_FILE_ID {
                 // The symbol is weak and we can't be sure that the file that defined it will end up
                 // being loaded, so the symbol might actually be undefined. Register it as an
