@@ -146,6 +146,7 @@ pub struct OutputSections<'data> {
     pub(crate) exec_custom: Vec<OutputSectionId>,
     pub(crate) data_custom: Vec<OutputSectionId>,
     pub(crate) bss_custom: Vec<OutputSectionId>,
+    pub(crate) debug: Vec<OutputSectionId>,
 }
 
 impl<'data> OutputSections<'data> {
@@ -284,6 +285,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         details: SectionDetails {
             name: SectionName(b".phdr"),
+            section_flags: SectionFlags(shf::ALLOC),
             ..SectionDetails::default()
         },
         min_alignment: alignment::PROGRAM_HEADER_ENTRY,
@@ -293,6 +295,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         details: SectionDetails {
             name: SectionName(b".shdr"),
+            section_flags: SectionFlags(shf::ALLOC),
             ..SectionDetails::default()
         },
         keep_if_empty: true,
@@ -740,6 +743,7 @@ impl<'data> OutputSectionsBuilder<'data> {
         let mut exec_custom = Vec::new();
         let mut data_custom = Vec::new();
         let mut bss_custom = Vec::new();
+        let mut debug = Vec::new();
 
         for (offset, info) in self.section_infos[NUM_BUILT_IN_SECTIONS..]
             .iter()
@@ -749,7 +753,11 @@ impl<'data> OutputSectionsBuilder<'data> {
             if info.details.section_flags.contains(shf::EXECINSTR) {
                 exec_custom.push(id);
             } else if !info.details.section_flags.contains(shf::WRITE) {
-                ro_custom.push(id)
+                if info.details.name.0.starts_with(b".debug") {
+                    debug.push(id);
+                } else {
+                    ro_custom.push(id);
+                }
             } else if info.details.ty == object::elf::SHT_NOBITS {
                 bss_custom.push(id);
             } else {
@@ -765,6 +773,7 @@ impl<'data> OutputSectionsBuilder<'data> {
             exec_custom,
             data_custom,
             bss_custom,
+            debug,
             output_section_indexes: Default::default(),
         };
 
@@ -830,10 +839,8 @@ impl<'data> OutputSections<'data> {
         cb(OrderEvent::SegmentStart(crate::program_segments::EH_FRAME));
         cb(EH_FRAME_HDR.event());
         cb(OrderEvent::SegmentEnd(crate::program_segments::EH_FRAME));
+        cb(EH_FRAME.event());
         cb(PREINIT_ARRAY.event());
-        cb(SHSTRTAB.event());
-        cb(SYMTAB.event());
-        cb(STRTAB.event());
         cb(GCC_EXCEPT_TABLE.event());
         self.ids_do(&self.ro_custom, &mut cb);
         cb(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RO));
@@ -852,7 +859,6 @@ impl<'data> OutputSections<'data> {
         cb(INIT_ARRAY.event());
         cb(FINI_ARRAY.event());
         cb(DATA.event());
-        cb(EH_FRAME.event());
         cb(OrderEvent::SegmentStart(crate::program_segments::DYNAMIC));
         cb(DYNAMIC.event());
         cb(OrderEvent::SegmentEnd(crate::program_segments::DYNAMIC));
@@ -865,7 +871,11 @@ impl<'data> OutputSections<'data> {
         self.ids_do(&self.bss_custom, &mut cb);
         cb(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RW));
 
+        self.ids_do(&self.debug, &mut cb);
         cb(COMMENT.event());
+        cb(SHSTRTAB.event());
+        cb(SYMTAB.event());
+        cb(STRTAB.event());
     }
 
     fn ids_do(&self, ids: &Vec<OutputSectionId>, cb: &mut impl FnMut(OrderEvent<'_>)) {

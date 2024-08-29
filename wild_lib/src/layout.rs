@@ -68,6 +68,7 @@ use object::read::elf::VerdefIterator;
 use object::LittleEndian;
 use object::SectionIndex;
 use smallvec::SmallVec;
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt::Display;
 use std::mem::size_of;
@@ -1364,14 +1365,18 @@ fn compute_segment_layout(
                 .expect("SegmentEnd without matching SegmentStart");
             complete.push(record);
         }
-        OrderEvent::Section(section_id, _section_details) => {
+        OrderEvent::Section(section_id, section_details) => {
             let part = section_layouts.get(section_id);
-            for rec in active_records.values_mut() {
-                rec.file_start = rec.file_start.min(part.file_offset);
-                rec.mem_start = rec.mem_start.min(part.mem_offset);
-                rec.file_end = rec.file_end.max(part.file_offset + part.file_size);
-                rec.mem_end = rec.mem_end.max(part.mem_offset + part.mem_size);
-                rec.alignment = rec.alignment.max(part.alignment);
+            // Segments only cover sections that are allocated and have a non-zero address.
+            if section_details.section_flags.contains(shf::ALLOC) {
+                assert!(part.mem_offset != 0);
+                for rec in active_records.values_mut() {
+                    rec.file_start = rec.file_start.min(part.file_offset);
+                    rec.mem_start = rec.mem_start.min(part.mem_offset);
+                    rec.file_end = rec.file_end.max(part.file_offset + part.file_size);
+                    rec.mem_end = rec.mem_end.max(part.mem_offset + part.mem_size);
+                    rec.alignment = rec.alignment.max(part.alignment);
+                }
             }
         }
     });
@@ -3677,35 +3682,58 @@ fn layout_section_parts(
     let mut file_offset = 0;
     let mut mem_offset = output_sections.base_address;
     let mut current_seg_id = None;
+    let mut nonalloc_mem_offsets = HashMap::new();
+
     sizes.output_order_map(output_sections, |part_id, section_alignment, part_size| {
         let defs = output_sections.details(part_id.output_section_id());
         let mem_size = *part_size;
         // Note, we align up even if our size is zero, otherwise our section will start at an
         // unaligned address.
         file_offset = section_alignment.align_up_usize(file_offset);
-        mem_offset = section_alignment.align_up(mem_offset);
-        let seg_id = output_sections.loadable_segment_id_for(part_id.output_section_id());
-        if current_seg_id != seg_id {
-            current_seg_id = seg_id;
-            let segment_alignment = seg_id.map(|s| s.alignment()).unwrap_or(alignment::MIN);
-            mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
-        }
-        let file_size = if defs.has_data_in_file() {
-            mem_size as usize
-        } else {
-            0
-        };
 
-        let section_layout = OutputRecordLayout {
-            alignment: section_alignment,
-            file_offset,
-            mem_offset,
-            file_size,
-            mem_size,
-        };
-        file_offset += file_size;
-        mem_offset += mem_size;
-        section_layout
+        if defs.section_flags.contains(shf::ALLOC) {
+            mem_offset = section_alignment.align_up(mem_offset);
+            let seg_id = output_sections.loadable_segment_id_for(part_id.output_section_id());
+            if current_seg_id != seg_id {
+                current_seg_id = seg_id;
+                let segment_alignment = seg_id.map(|s| s.alignment()).unwrap_or(alignment::MIN);
+                mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
+            }
+            let file_size = if defs.has_data_in_file() {
+                mem_size as usize
+            } else {
+                0
+            };
+
+            let section_layout = OutputRecordLayout {
+                alignment: section_alignment,
+                file_offset,
+                mem_offset,
+                file_size,
+                mem_size,
+            };
+            file_offset += file_size;
+            mem_offset += mem_size;
+            section_layout
+        } else {
+            let mem_offset =
+                section_alignment.align_up(*nonalloc_mem_offsets.get(&defs.name).unwrap_or(&0));
+
+            nonalloc_mem_offsets
+                .entry(&defs.name)
+                .and_modify(|o| *o += mem_size)
+                .or_insert(mem_size);
+
+            let section_layout = OutputRecordLayout {
+                alignment: section_alignment,
+                file_offset,
+                mem_offset,
+                file_size: mem_size as usize,
+                mem_size,
+            };
+            file_offset += mem_size as usize;
+            section_layout
+        }
     })
 }
 
