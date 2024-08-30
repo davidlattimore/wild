@@ -3,6 +3,7 @@
 use crate::elf;
 use crate::error::Result;
 use anyhow::bail;
+use object::read::elf::FileHeader;
 use object::LittleEndian;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -31,6 +32,17 @@ impl FileKind {
             if header.e_ident.data != object::elf::ELFDATA2LSB {
                 bail!("Only little endian is currently supported");
             }
+
+            let sections = header.sections(LittleEndian, bytes)?;
+            if sections.iter().any(|sec| {
+                sections
+                    .section_name(LittleEndian, sec)
+                    .map(|section_name| section_name.starts_with(b".gnu.lto_.symtab"))
+                    .unwrap_or(false)
+            }) {
+                bail!("GCC IR (LTO mode) is not supported yet");
+            }
+
             match header.e_type.get(LittleEndian) {
                 object::elf::ET_REL => Ok(FileKind::ElfObject),
                 object::elf::ET_DYN => Ok(FileKind::ElfDynamic),
@@ -38,6 +50,8 @@ impl FileKind {
             }
         } else if bytes.is_ascii() {
             Ok(FileKind::Text)
+        } else if bytes.starts_with(b"BC") {
+            bail!("LLVM IR (LTO mode) is not supported yet");
         } else {
             bail!("Couldn't identify file type");
         }
