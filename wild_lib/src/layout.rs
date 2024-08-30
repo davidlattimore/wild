@@ -1201,6 +1201,8 @@ impl<'data> Layout<'data> {
                             .map(|((maybe_res, section), section_slot)| {
                                 maybe_res.and_then(|res| {
                                     (matches!(section_slot, SectionSlot::Loaded(..))
+                                        && SectionFlags(section.sh_flags(LittleEndian))
+                                            .contains(shf::ALLOC)
                                         && obj.object.section_size(section).is_ok_and(|s| s > 0))
                                     .then(|| {
                                         let address = res.address().unwrap();
