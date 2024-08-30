@@ -1368,9 +1368,24 @@ fn compute_segment_layout(
         }
         OrderEvent::Section(section_id, section_details) => {
             let part = section_layouts.get(section_id);
-            // Segments only cover sections that are allocated and have a non-zero address.
-            if section_details.section_flags.contains(shf::ALLOC) {
-                assert!(part.mem_offset != 0 || section_id == FILE_HEADER);
+
+            // Skip all ignored sections that will not end up in the final file.
+            if output_sections.output_section_indexes[section_id.as_usize()].is_none() {
+                return;
+            }
+
+            if !active_records.is_empty() {
+                // All segments should only cover sections that are allocated and have a non-zero address.
+                assert!(
+                    part.mem_offset != 0 || section_id == FILE_HEADER,
+                    "Missing memory offset for section `{}` present in a program segment.",
+                    section_details.name
+                );
+                assert!(
+                    section_details.section_flags.contains(shf::ALLOC),
+                    "Missing SHF_ALLOC section flag for section `{}` present in a program segment.",
+                    section_details.name
+                );
                 for rec in active_records.values_mut() {
                     rec.file_start = rec.file_start.min(part.file_offset);
                     rec.mem_start = rec.mem_start.min(part.mem_offset);
@@ -1378,6 +1393,17 @@ fn compute_segment_layout(
                     rec.mem_end = rec.mem_end.max(part.mem_offset + part.mem_size);
                     rec.alignment = rec.alignment.max(part.alignment);
                 }
+            } else {
+                assert_eq!(
+                    part.mem_offset, 0,
+                    "Expected zero address for section `{}` not present in any program segment.",
+                    section_details.name
+                );
+                assert!(
+                    !section_details.section_flags.contains(shf::ALLOC),
+                    "Section with SHF_ALLOC flag `{}` not present in any program segment.",
+                    section_details.name
+                );
             }
         }
     });
@@ -4122,7 +4148,7 @@ impl<'data> DynamicSymbolDefinition<'data> {
 /// overlap and that sections don't overlap.
 #[test]
 fn test_no_disallowed_overlaps() {
-    let output_sections =
+    let mut output_sections =
         crate::output_section_id::OutputSectionsBuilder::with_base_address(0x1000)
             .build()
             .unwrap();
@@ -4163,6 +4189,18 @@ fn test_no_disallowed_overlaps() {
         num_output_sections_with_content: 0,
         active_segment_ids: (0..MAX_SEGMENTS).map(ProgramSegmentId::new).collect(),
     };
+
+    let mut section_index = 0;
+    for section in output_sections.section_infos.iter() {
+        if section.details.section_flags.contains(shf::ALLOC) {
+            output_sections
+                .output_section_indexes
+                .push(Some(section_index));
+            section_index += 1;
+        } else {
+            output_sections.output_section_indexes.push(None)
+        }
+    }
 
     let segment_layouts = compute_segment_layout(&section_layouts, &output_sections, &header_info);
 
