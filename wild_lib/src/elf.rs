@@ -150,7 +150,7 @@ impl<'data> File<'data> {
         let data = section.data(LittleEndian, self.data)?;
 
         if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
-            decompress_into(compression, data, out)?;
+            decompress_into(compression, &data[COMPRESSION_HEADER_SIZE..], out)?;
         } else {
             out.copy_from_slice(data);
         }
