@@ -139,7 +139,7 @@ impl<'data> DisplaySection<'data> {
     fn new(info: &SectionInfo, files: &'data [InputFile]) -> Self {
         Self {
             info: info.clone(),
-            file: &files[info.section_index],
+            file: &files[info.file_index],
         }
     }
 }
@@ -157,8 +157,10 @@ impl Display for DisplaySection<'_> {
         {
             write!(
                 f,
-                "section `{section_name}` (0x{:x}..0x{:x})",
-                self.info.addresses.start, self.info.addresses.end
+                "section `{section_name}` (0x{:x}..0x{:x}) ({})",
+                self.info.addresses.start,
+                self.info.addresses.end,
+                self.file.filename.to_string_lossy()
             )?;
         }
         Ok(())
