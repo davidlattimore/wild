@@ -146,7 +146,7 @@ pub struct OutputSections<'data> {
     pub(crate) exec_custom: Vec<OutputSectionId>,
     pub(crate) data_custom: Vec<OutputSectionId>,
     pub(crate) bss_custom: Vec<OutputSectionId>,
-    pub(crate) debug: Vec<OutputSectionId>,
+    pub(crate) nonalloc_debug: Vec<OutputSectionId>,
 }
 
 impl<'data> OutputSections<'data> {
@@ -228,6 +228,7 @@ impl<'data> OutputSections<'data> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct SectionOutputInfo<'data> {
     pub(crate) loadable_segment_id: Option<ProgramSegmentId>,
     pub(crate) details: SectionDetails<'data>,
@@ -521,6 +522,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: SectionName(b".preinit_array"),
             ty: object::elf::SHT_PREINIT_ARRAY,
+            section_flags: SectionFlags(shf::ALLOC),
             retain: true,
             ..SectionDetails::default()
         },
@@ -744,7 +746,7 @@ impl<'data> OutputSectionsBuilder<'data> {
         let mut exec_custom = Vec::new();
         let mut data_custom = Vec::new();
         let mut bss_custom = Vec::new();
-        let mut debug = Vec::new();
+        let mut nonalloc_debug = Vec::new();
 
         for (offset, info) in self.section_infos[NUM_BUILT_IN_SECTIONS..]
             .iter()
@@ -754,8 +756,10 @@ impl<'data> OutputSectionsBuilder<'data> {
             if info.details.section_flags.contains(shf::EXECINSTR) {
                 exec_custom.push(id);
             } else if !info.details.section_flags.contains(shf::WRITE) {
-                if info.details.name.0.starts_with(b".debug") {
-                    debug.push(id);
+                if info.details.name.0.starts_with(b".debug")
+                    && !info.details.section_flags.contains(shf::ALLOC)
+                {
+                    nonalloc_debug.push(id);
                 } else {
                     ro_custom.push(id);
                 }
@@ -774,7 +778,7 @@ impl<'data> OutputSectionsBuilder<'data> {
             exec_custom,
             data_custom,
             bss_custom,
-            debug,
+            nonalloc_debug,
             output_section_indexes: Default::default(),
         };
 
@@ -872,7 +876,7 @@ impl<'data> OutputSections<'data> {
         self.ids_do(&self.bss_custom, &mut cb);
         cb(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RW));
 
-        self.ids_do(&self.debug, &mut cb);
+        self.ids_do(&self.nonalloc_debug, &mut cb);
         cb(COMMENT.event());
         cb(SHSTRTAB.event());
         cb(SYMTAB.event());
