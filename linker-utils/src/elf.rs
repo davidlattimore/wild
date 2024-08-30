@@ -74,8 +74,7 @@ pub mod shf {
     pub const GROUP: u64 = object::elf::SHF_GROUP as u64;
     pub const TLS: u64 = object::elf::SHF_TLS as u64;
     pub const COMPRESSED: u64 = object::elf::SHF_COMPRESSED as u64;
-    // TODO: add with the new release of object crate (https://github.com/gimli-rs/object/pull/720)
-    pub const GNU_RETAIN: u64 = 0x200_000;
+    pub const GNU_RETAIN: u64 = object::elf::SHF_GNU_RETAIN as u64;
 
     pub fn flag_to_string(value: u64) -> String {
         let mut flags = String::new();
