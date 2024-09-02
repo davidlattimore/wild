@@ -39,7 +39,7 @@ pub(crate) struct IndexedLayout<'data> {
 }
 
 impl<'data> IndexedLayout<'data> {
-    pub(crate) fn new(layout_and_files: &'data LayoutAndFiles) -> Result<IndexedLayout> {
+    pub(crate) fn new(layout_and_files: &'data LayoutAndFiles) -> Result<IndexedLayout<'data>> {
         let mut files = Vec::with_capacity(layout_and_files.layout.files.len());
         let mut sections = Vec::new();
         for ((file_index, file), object_bytes) in layout_and_files
