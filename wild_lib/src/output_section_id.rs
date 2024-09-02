@@ -36,6 +36,7 @@ use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::Context as _;
 use core::mem::size_of;
+use itertools::Itertools;
 use linker_utils::elf::shf;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -184,21 +185,23 @@ impl<'data> OutputSections<'data> {
         let mut load_seg_by_section_id = vec![None; self.section_infos.len()];
         let mut current_load_seg = None;
 
-        self.sections_and_segments_do(|event| match event {
-            OrderEvent::SegmentStart(seg_id) => {
-                if seg_id.segment_type() == object::elf::PT_LOAD {
-                    current_load_seg = Some(seg_id);
+        for event in self.sections_and_segments_events() {
+            match event {
+                OrderEvent::SegmentStart(seg_id) => {
+                    if seg_id.segment_type() == object::elf::PT_LOAD {
+                        current_load_seg = Some(seg_id);
+                    }
+                }
+                OrderEvent::SegmentEnd(seg_id) => {
+                    if current_load_seg == Some(seg_id) {
+                        current_load_seg = None;
+                    }
+                }
+                OrderEvent::Section(section_id, _section_details) => {
+                    load_seg_by_section_id[section_id.as_usize()] = Some(current_load_seg);
                 }
             }
-            OrderEvent::SegmentEnd(seg_id) => {
-                if current_load_seg == Some(seg_id) {
-                    current_load_seg = None;
-                }
-            }
-            OrderEvent::Section(section_id, _section_details) => {
-                load_seg_by_section_id[section_id.as_usize()] = Some(current_load_seg);
-            }
-        });
+        }
 
         load_seg_by_section_id
             .iter()
@@ -732,6 +735,7 @@ impl OutputSectionId {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum OrderEvent<'data> {
     SegmentStart(ProgramSegmentId),
     SegmentEnd(ProgramSegmentId),
@@ -846,85 +850,78 @@ impl<'data> OutputSectionsBuilder<'data> {
 }
 
 impl<'data> OutputSections<'data> {
-    /// Calls `cb` for each section and segment in output order. Segments span multiple sections and
-    /// can overlap, so are represented as start and end events.
-    pub(crate) fn sections_and_segments_do(&self, mut cb: impl FnMut(OrderEvent)) {
-        cb(OrderEvent::SegmentStart(crate::program_segments::LOAD_RO));
-        cb(FILE_HEADER.event());
-        cb(OrderEvent::SegmentStart(crate::program_segments::PHDR));
-        cb(PROGRAM_HEADERS.event());
-        cb(OrderEvent::SegmentEnd(crate::program_segments::PHDR));
-        cb(SECTION_HEADERS.event());
-        cb(OrderEvent::SegmentStart(crate::program_segments::INTERP));
-        cb(INTERP.event());
-        cb(OrderEvent::SegmentEnd(crate::program_segments::INTERP));
-        cb(GNU_HASH.event());
-        cb(DYNSYM.event());
-        cb(DYNSTR.event());
-        cb(GNU_VERSION.event());
-        cb(GNU_VERSION_R.event());
-        cb(RELA_DYN.event());
-        cb(RODATA.event());
-        cb(OrderEvent::SegmentStart(crate::program_segments::EH_FRAME));
-        cb(EH_FRAME_HDR.event());
-        cb(OrderEvent::SegmentEnd(crate::program_segments::EH_FRAME));
-        cb(EH_FRAME.event());
-        cb(PREINIT_ARRAY.event());
-        cb(GCC_EXCEPT_TABLE.event());
-        self.ids_do(&self.ro_custom, &mut cb);
-        cb(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RO));
+    /// Returns vector of events for each section and segment in output order.
+    /// Segments span multiple sections and can overlap, so are represented as start and end events.
+    pub(crate) fn sections_and_segments_events(&self) -> Vec<OrderEvent> {
+        let mut events = Vec::with_capacity(64);
 
-        cb(OrderEvent::SegmentStart(crate::program_segments::LOAD_EXEC));
-        cb(PLT.event());
-        cb(PLT_GOT.event());
-        cb(TEXT.event());
-        cb(INIT.event());
-        cb(FINI.event());
-        self.ids_do(&self.exec_custom, &mut cb);
-        cb(OrderEvent::SegmentEnd(crate::program_segments::LOAD_EXEC));
+        events.push(OrderEvent::SegmentStart(crate::program_segments::LOAD_RO));
+        events.push(FILE_HEADER.event());
+        events.push(OrderEvent::SegmentStart(crate::program_segments::PHDR));
+        events.push(PROGRAM_HEADERS.event());
+        events.push(OrderEvent::SegmentEnd(crate::program_segments::PHDR));
+        events.push(SECTION_HEADERS.event());
+        events.push(OrderEvent::SegmentStart(crate::program_segments::INTERP));
+        events.push(INTERP.event());
+        events.push(OrderEvent::SegmentEnd(crate::program_segments::INTERP));
+        events.push(GNU_HASH.event());
+        events.push(DYNSYM.event());
+        events.push(DYNSTR.event());
+        events.push(GNU_VERSION.event());
+        events.push(GNU_VERSION_R.event());
+        events.push(RELA_DYN.event());
+        events.push(RODATA.event());
+        events.push(OrderEvent::SegmentStart(crate::program_segments::EH_FRAME));
+        events.push(EH_FRAME_HDR.event());
+        events.push(OrderEvent::SegmentEnd(crate::program_segments::EH_FRAME));
+        events.push(EH_FRAME.event());
+        events.push(PREINIT_ARRAY.event());
+        events.push(GCC_EXCEPT_TABLE.event());
+        events.extend(self.build_section_events(&self.ro_custom));
+        events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RO));
 
-        cb(OrderEvent::SegmentStart(crate::program_segments::LOAD_RW));
-        cb(GOT.event());
-        cb(GOT_PLT.event());
-        cb(RELA_PLT.event());
-        cb(INIT_ARRAY.event());
-        cb(FINI_ARRAY.event());
-        cb(DATA.event());
-        cb(OrderEvent::SegmentStart(crate::program_segments::DYNAMIC));
-        cb(DYNAMIC.event());
-        cb(OrderEvent::SegmentEnd(crate::program_segments::DYNAMIC));
-        self.ids_do(&self.data_custom, &mut cb);
-        cb(OrderEvent::SegmentStart(crate::program_segments::TLS));
-        cb(TDATA.event());
-        cb(TBSS.event());
-        cb(OrderEvent::SegmentEnd(crate::program_segments::TLS));
-        cb(BSS.event());
-        self.ids_do(&self.bss_custom, &mut cb);
-        cb(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RW));
+        events.push(OrderEvent::SegmentStart(crate::program_segments::LOAD_EXEC));
+        events.push(PLT.event());
+        events.push(PLT_GOT.event());
+        events.push(TEXT.event());
+        events.push(INIT.event());
+        events.push(FINI.event());
+        events.extend(self.build_section_events(&self.exec_custom));
+        events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_EXEC));
 
-        self.ids_do(&self.nonalloc_debug, &mut cb);
-        cb(COMMENT.event());
-        cb(SHSTRTAB.event());
-        cb(SYMTAB.event());
-        cb(STRTAB.event());
+        events.push(OrderEvent::SegmentStart(crate::program_segments::LOAD_RW));
+        events.push(GOT.event());
+        events.push(GOT_PLT.event());
+        events.push(RELA_PLT.event());
+        events.push(INIT_ARRAY.event());
+        events.push(FINI_ARRAY.event());
+        events.push(DATA.event());
+        events.push(OrderEvent::SegmentStart(crate::program_segments::DYNAMIC));
+        events.push(DYNAMIC.event());
+        events.push(OrderEvent::SegmentEnd(crate::program_segments::DYNAMIC));
+        events.extend(self.build_section_events(&self.data_custom));
+        events.push(OrderEvent::SegmentStart(crate::program_segments::TLS));
+        events.push(TDATA.event());
+        events.push(TBSS.event());
+        events.push(OrderEvent::SegmentEnd(crate::program_segments::TLS));
+        events.push(BSS.event());
+        events.extend(self.build_section_events(&self.bss_custom));
+        events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RW));
+
+        events.extend(self.build_section_events(&self.nonalloc_debug));
+        events.push(COMMENT.event());
+        events.push(SHSTRTAB.event());
+        events.push(SYMTAB.event());
+        events.push(STRTAB.event());
+
+        events
     }
 
-    fn ids_do(&self, ids: &Vec<OutputSectionId>, cb: &mut impl FnMut(OrderEvent<'_>)) {
-        for id in ids {
-            (*cb)(OrderEvent::Section(
-                *id,
-                &self.section_infos[id.as_usize()].details,
-            ));
-        }
-    }
-
-    /// Calls `cb` for each section in output order.
-    pub(crate) fn sections_do(&self, mut cb: impl FnMut(OutputSectionId, &'_ SectionDetails)) {
-        self.sections_and_segments_do(|event| {
-            if let OrderEvent::Section(id, details) = event {
-                cb(id, details);
-            }
-        });
+    fn build_section_events(&self, sections: &[OutputSectionId]) -> Vec<OrderEvent> {
+        sections
+            .iter()
+            .map(|id| OrderEvent::Section(*id, &self.section_infos[id.as_usize()].details))
+            .collect_vec()
     }
 
     #[must_use]

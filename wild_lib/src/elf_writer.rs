@@ -33,6 +33,7 @@ use crate::layout::ResolutionFlags;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
 use crate::output_section_id;
+use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionFlags;
@@ -2371,13 +2372,17 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
     let output_sections = &layout.output_sections;
     let mut entries = entries.iter_mut();
     let mut name_offset = 0;
-    output_sections.sections_do(|section_id, section_details| {
+
+    for event in output_sections.sections_and_segments_events() {
+        let OrderEvent::Section(section_id, section_details) = event else {
+            continue;
+        };
         let section_layout = layout.section_layouts.get(section_id);
         if output_sections
             .output_index_of_section(section_id)
             .is_none()
         {
-            return;
+            continue;
         }
         let entsize = section_details.element_size;
         let size;
@@ -2411,7 +2416,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         entry.sh_addralign.set(e, alignment);
         entry.sh_entsize.set(e, entsize);
         name_offset += layout.output_sections.name(section_id).len() as u32 + 1;
-    });
+    }
     assert!(
         entries.next().is_none(),
         "Allocated section entries that weren't used"
@@ -2419,14 +2424,16 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
 }
 
 fn write_section_header_strings(mut out: &mut [u8], sections: &OutputSections) {
-    sections.sections_do(|id, _details| {
-        if sections.output_index_of_section(id).is_some() {
-            let name = sections.name(id);
-            let name_out = crate::slice::slice_take_prefix_mut(&mut out, name.len() + 1);
-            name_out[..name.len()].copy_from_slice(name.bytes());
-            name_out[name.len()] = 0;
+    for event in sections.sections_and_segments_events() {
+        if let OrderEvent::Section(id, _) = event {
+            if sections.output_index_of_section(id).is_some() {
+                let name = sections.name(id);
+                let name_out = crate::slice::slice_take_prefix_mut(&mut out, name.len() + 1);
+                name_out[..name.len()].copy_from_slice(name.bytes());
+                name_out[name.len()] = 0;
+            }
         }
-    });
+    }
 }
 
 struct ProgramHeaderWriter<'out> {

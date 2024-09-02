@@ -1,5 +1,6 @@
 use crate::alignment;
 use crate::alignment::Alignment;
+use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
@@ -81,7 +82,11 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
         let mut parts_out = Vec::new();
         parts_out.resize_with(self.parts.len(), U::default);
 
-        output_sections.sections_do(|section_id, _| {
+        for event in output_sections.sections_and_segments_events() {
+            let OrderEvent::Section(section_id, _) = event else {
+                continue;
+            };
+
             let count = section_id.num_parts();
             let base_part_id = section_id.base_part_id();
             let max_alignment = self.max_alignment(base_part_id, count);
@@ -93,7 +98,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
                     let alignment = part_id.alignment().min(max_alignment);
                     *out = cb(part_id, alignment, self.get(part_id))
                 });
-        });
+        }
 
         OutputSectionPartMap { parts: parts_out }
     }
@@ -282,8 +287,18 @@ fn test_output_order_map_consistent() {
             ordering_a.push(section_id.as_usize());
         }
     });
-    let mut ordering_b = Vec::new();
-    output_sections.sections_do(|id, _| ordering_b.push(id.as_usize()));
+    let ordering_b = output_sections
+        .sections_and_segments_events()
+        .iter()
+        .filter_map(|event| {
+            if let OrderEvent::Section(id, _) = event {
+                Some(id.as_usize())
+            } else {
+                None
+            }
+        })
+        .collect_vec();
+
     assert_eq!(ordering_a, ordering_b);
 }
 
