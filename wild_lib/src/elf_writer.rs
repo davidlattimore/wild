@@ -202,7 +202,12 @@ impl SizedOutput {
             .truncate(true)
             .open(&path)
             .with_context(|| format!("Failed to open `{}`", path.display()))?;
-        file.set_len(file_size)?;
+        file.set_len(file_size).with_context(|| {
+            format!(
+                "Failed to set length of the mmapped output file `{}`",
+                path.display()
+            )
+        })?;
         let mmap = unsafe { MmapOptions::new().map_mut(&file) }
             .with_context(|| format!("Failed to mmap output file `{}`", path.display()))?;
         Ok(SizedOutput { file, mmap, path })
