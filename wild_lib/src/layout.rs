@@ -51,7 +51,6 @@ use crate::symbol_db::SymbolDebug;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::threading::prelude::*;
-use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::ensure;
@@ -1397,12 +1396,12 @@ fn compute_segment_layout(
 
     use output_section_id::OrderEvent;
     let mut complete = Vec::with_capacity(crate::program_segments::MAX_SEGMENTS);
-    let mut active_records = AHashMap::new();
+    let mut active_records = Vec::new();
 
     for event in output_sections.sections_and_segments_events() {
         match event {
             OrderEvent::SegmentStart(segment_id) => {
-                active_records.insert(
+                active_records.push((
                     segment_id,
                     Record {
                         segment_id,
@@ -1412,12 +1411,20 @@ fn compute_segment_layout(
                         mem_end: 0,
                         alignment: alignment::MIN,
                     },
-                );
+                ));
             }
             OrderEvent::SegmentEnd(segment_id) => {
-                let record = active_records
-                    .remove(&segment_id)
+                let (popped_segment_id, record) = active_records
+                    .pop()
                     .expect("SegmentEnd without matching SegmentStart");
+                ensure!(
+                    popped_segment_id == segment_id,
+                    format!(
+                        "Expected SegmentEnd event for segment `{}`, got `{}`",
+                        segment_id.as_usize(),
+                        popped_segment_id.as_usize()
+                    )
+                );
                 complete.push(record);
             }
             OrderEvent::Section(section_id, section_details) => {
@@ -1440,7 +1447,7 @@ fn compute_segment_layout(
                     "Missing SHF_ALLOC section flag for section `{}` present in a program segment.",
                     section_details.name
                 );
-                    for rec in active_records.values_mut() {
+                    for (_, rec) in active_records.iter_mut() {
                         rec.file_start = rec.file_start.min(part.file_offset);
                         rec.mem_start = rec.mem_start.min(part.mem_offset);
                         rec.file_end = rec.file_end.max(part.file_offset + part.file_size);
