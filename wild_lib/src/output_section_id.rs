@@ -196,7 +196,7 @@ impl<'data> OutputSections<'data> {
                         current_load_seg = None;
                     }
                 }
-                OrderEvent::Section(section_id, _section_details) => {
+                OrderEvent::Section(section_id) => {
                     load_seg_by_section_id[section_id.as_usize()] = Some(current_load_seg);
                 }
             }
@@ -686,8 +686,8 @@ impl OutputSectionId {
         SECTION_DEFINITIONS.get(self.as_usize())
     }
 
-    fn event(self) -> OrderEvent<'static> {
-        OrderEvent::Section(self, &SECTION_DEFINITIONS[self.as_usize()].details)
+    fn event(self) -> OrderEvent {
+        OrderEvent::Section(self)
     }
 
     pub(crate) fn min_alignment(&self) -> Alignment {
@@ -735,10 +735,10 @@ impl OutputSectionId {
 }
 
 #[derive(Debug)]
-pub(crate) enum OrderEvent<'data> {
+pub(crate) enum OrderEvent {
     SegmentStart(ProgramSegmentId),
     SegmentEnd(ProgramSegmentId),
-    Section(OutputSectionId, &'data SectionDetails<'data>),
+    Section(OutputSectionId),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -852,6 +852,12 @@ impl<'data> OutputSections<'data> {
     /// Returns vector of events for each section and segment in output order.
     /// Segments span multiple sections and can overlap, so are represented as start and end events.
     pub(crate) fn sections_and_segments_events(&self) -> Vec<OrderEvent> {
+        fn build_section_events(
+            sections: &[OutputSectionId],
+        ) -> impl Iterator<Item = OrderEvent> + '_ {
+            sections.iter().copied().map(OrderEvent::Section)
+        }
+
         let mut events = Vec::with_capacity(64);
 
         events.push(OrderEvent::SegmentStart(crate::program_segments::LOAD_RO));
@@ -876,7 +882,7 @@ impl<'data> OutputSections<'data> {
         events.push(EH_FRAME.event());
         events.push(PREINIT_ARRAY.event());
         events.push(GCC_EXCEPT_TABLE.event());
-        events.extend(self.build_section_events(&self.ro_custom));
+        events.extend(build_section_events(&self.ro_custom));
         events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RO));
 
         events.push(OrderEvent::SegmentStart(crate::program_segments::LOAD_EXEC));
@@ -885,7 +891,7 @@ impl<'data> OutputSections<'data> {
         events.push(TEXT.event());
         events.push(INIT.event());
         events.push(FINI.event());
-        events.extend(self.build_section_events(&self.exec_custom));
+        events.extend(build_section_events(&self.exec_custom));
         events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_EXEC));
 
         events.push(OrderEvent::SegmentStart(crate::program_segments::LOAD_RW));
@@ -898,31 +904,22 @@ impl<'data> OutputSections<'data> {
         events.push(OrderEvent::SegmentStart(crate::program_segments::DYNAMIC));
         events.push(DYNAMIC.event());
         events.push(OrderEvent::SegmentEnd(crate::program_segments::DYNAMIC));
-        events.extend(self.build_section_events(&self.data_custom));
+        events.extend(build_section_events(&self.data_custom));
         events.push(OrderEvent::SegmentStart(crate::program_segments::TLS));
         events.push(TDATA.event());
         events.push(TBSS.event());
         events.push(OrderEvent::SegmentEnd(crate::program_segments::TLS));
         events.push(BSS.event());
-        events.extend(self.build_section_events(&self.bss_custom));
+        events.extend(build_section_events(&self.bss_custom));
         events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RW));
 
-        events.extend(self.build_section_events(&self.nonalloc_debug));
+        events.extend(build_section_events(&self.nonalloc_debug));
         events.push(COMMENT.event());
         events.push(SHSTRTAB.event());
         events.push(SYMTAB.event());
         events.push(STRTAB.event());
 
         events
-    }
-
-    fn build_section_events<'a>(
-        &'a self,
-        sections: &'a [OutputSectionId],
-    ) -> impl Iterator<Item = OrderEvent<'a>> + 'a {
-        sections
-            .iter()
-            .map(|id| OrderEvent::Section(*id, &self.section_infos[id.as_usize()].details))
     }
 
     #[must_use]

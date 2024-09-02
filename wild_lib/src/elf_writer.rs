@@ -2379,9 +2379,10 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
     let mut name_offset = 0;
 
     for event in output_sections.sections_and_segments_events() {
-        let OrderEvent::Section(section_id, section_details) = event else {
+        let OrderEvent::Section(section_id) = event else {
             continue;
         };
+        let section_details = output_sections.details(section_id);
         let section_layout = layout.section_layouts.get(section_id);
         if output_sections
             .output_index_of_section(section_id)
@@ -2430,7 +2431,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
 
 fn write_section_header_strings(mut out: &mut [u8], sections: &OutputSections) {
     for event in sections.sections_and_segments_events() {
-        if let OrderEvent::Section(id, _) = event {
+        if let OrderEvent::Section(id) = event {
             if sections.output_index_of_section(id).is_some() {
                 let name = sections.name(id);
                 let name_out = crate::slice::slice_take_prefix_mut(&mut out, name.len() + 1);

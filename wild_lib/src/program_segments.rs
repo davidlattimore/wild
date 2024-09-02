@@ -101,7 +101,8 @@ fn test_all_alloc_sections_in_a_loadable_segment() {
                 let end = active.pop();
                 assert_eq!(end, Some(segment_id));
             }
-            OrderEvent::Section(section_id, section_details) => {
+            OrderEvent::Section(section_id) => {
+                let section_details = output_sections.details(section_id);
                 let has_load_segment = active
                     .iter()
                     .any(|seg_id| seg_id.segment_type() == object::elf::PT_LOAD);

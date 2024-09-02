@@ -1427,13 +1427,14 @@ fn compute_segment_layout(
                 );
                 complete.push(record);
             }
-            OrderEvent::Section(section_id, section_details) => {
+            OrderEvent::Section(section_id) => {
                 let part = section_layouts.get(section_id);
 
                 // Skip all ignored sections that will not end up in the final file.
                 if output_sections.output_section_indexes[section_id.as_usize()].is_none() {
                     continue;
                 }
+                let section_details = output_sections.details(section_id);
 
                 if !active_records.is_empty() {
                     // All segments should only cover sections that are allocated and have a non-zero address.
@@ -2524,7 +2525,7 @@ impl<'data> PreludeLayoutState {
         let mut next_output_index = 0;
         let mut output_section_indexes = vec![None; output_sections.num_sections()];
         for event in output_sections.sections_and_segments_events() {
-            if let OrderEvent::Section(id, _) = event {
+            if let OrderEvent::Section(id) = event {
                 if keep_sections[id.as_usize()] {
                     output_section_indexes[id.as_usize()] = Some(next_output_index);
                     next_output_index += 1;
@@ -2540,7 +2541,7 @@ impl<'data> PreludeLayoutState {
             match event {
                 OrderEvent::SegmentStart(segment_id) => active_segments.push(segment_id),
                 OrderEvent::SegmentEnd(segment_id) => active_segments.retain(|a| *a != segment_id),
-                OrderEvent::Section(section_id, _) => {
+                OrderEvent::Section(section_id) => {
                     if keep_sections[section_id.as_usize()] {
                         for segment_id in &active_segments {
                             keep_segments[segment_id.as_usize()] = true;
@@ -4291,9 +4292,11 @@ fn test_no_disallowed_overlaps() {
     let mut last_mem_end = 0;
     let mut last_section_id = output_section_id::FILE_HEADER;
     for event in output_sections.sections_and_segments_events() {
-        let OrderEvent::Section(section_id, section_details) = event else {
+        let OrderEvent::Section(section_id) = event else {
             continue;
         };
+
+        let section_details = output_sections.details(section_id);
 
         if !section_details.section_flags.contains(shf::ALLOC) {
             return;
