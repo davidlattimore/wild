@@ -144,7 +144,7 @@ pub(crate) struct OutputSections<'data> {
     pub(crate) output_section_indexes: Vec<Option<u16>>,
 
     custom_by_name: AHashMap<SectionName<'data>, OutputSectionId>,
-    custom: CustomSectionIds,
+    sections_and_segments_events: Vec<OrderEvent>,
 }
 
 #[derive(Default)]
@@ -739,7 +739,7 @@ impl OutputSectionId {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum OrderEvent {
     SegmentStart(ProgramSegmentId),
     SegmentEnd(ProgramSegmentId),
@@ -803,7 +803,7 @@ impl<'data> OutputSectionsBuilder<'data> {
             section_infos: self.section_infos,
             custom_by_name: self.custom_by_name,
             output_section_indexes: Default::default(),
-            custom,
+            sections_and_segments_events: custom.sections_and_segments_events(),
         };
 
         output_sections.determine_loadable_segment_ids()?;
@@ -845,10 +845,10 @@ impl<'data> OutputSectionsBuilder<'data> {
     }
 }
 
-impl<'data> OutputSections<'data> {
+impl CustomSectionIds {
     /// Returns vector of events for each section and segment in output order.
     /// Segments span multiple sections and can overlap, so are represented as start and end events.
-    pub(crate) fn sections_and_segments_events(&self) -> Vec<OrderEvent> {
+    fn sections_and_segments_events(&self) -> Vec<OrderEvent> {
         fn build_section_events(
             sections: &[OutputSectionId],
         ) -> impl Iterator<Item = OrderEvent> + '_ {
@@ -879,7 +879,7 @@ impl<'data> OutputSections<'data> {
         events.push(EH_FRAME.event());
         events.push(PREINIT_ARRAY.event());
         events.push(GCC_EXCEPT_TABLE.event());
-        events.extend(build_section_events(&self.custom.ro));
+        events.extend(build_section_events(&self.ro));
         events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RO));
 
         events.push(OrderEvent::SegmentStart(crate::program_segments::LOAD_EXEC));
@@ -888,7 +888,7 @@ impl<'data> OutputSections<'data> {
         events.push(TEXT.event());
         events.push(INIT.event());
         events.push(FINI.event());
-        events.extend(build_section_events(&self.custom.exec));
+        events.extend(build_section_events(&self.exec));
         events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_EXEC));
 
         events.push(OrderEvent::SegmentStart(crate::program_segments::LOAD_RW));
@@ -901,22 +901,30 @@ impl<'data> OutputSections<'data> {
         events.push(OrderEvent::SegmentStart(crate::program_segments::DYNAMIC));
         events.push(DYNAMIC.event());
         events.push(OrderEvent::SegmentEnd(crate::program_segments::DYNAMIC));
-        events.extend(build_section_events(&self.custom.data));
+        events.extend(build_section_events(&self.data));
         events.push(OrderEvent::SegmentStart(crate::program_segments::TLS));
         events.push(TDATA.event());
         events.push(TBSS.event());
         events.push(OrderEvent::SegmentEnd(crate::program_segments::TLS));
         events.push(BSS.event());
-        events.extend(build_section_events(&self.custom.bss));
+        events.extend(build_section_events(&self.bss));
         events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RW));
 
-        events.extend(build_section_events(&self.custom.nonalloc));
+        events.extend(build_section_events(&self.nonalloc));
         events.push(COMMENT.event());
         events.push(SHSTRTAB.event());
         events.push(SYMTAB.event());
         events.push(STRTAB.event());
 
         events
+    }
+}
+
+impl<'data> OutputSections<'data> {
+    /// Returns an iterator of events for each section and segment in output order. Segments span
+    /// multiple sections and can overlap, so are represented as start and end events.
+    pub(crate) fn sections_and_segments_events(&self) -> impl Iterator<Item = OrderEvent> + '_ {
+        self.sections_and_segments_events.iter().copied()
     }
 
     #[must_use]

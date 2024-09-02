@@ -289,7 +289,6 @@ fn test_output_order_map_consistent() {
     });
     let ordering_b = output_sections
         .sections_and_segments_events()
-        .iter()
         .filter_map(|event| {
             if let OrderEvent::Section(id) = event {
                 Some(id.as_usize())
