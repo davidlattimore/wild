@@ -652,7 +652,7 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
         post_process_run_script(&output_path)?;
     }
     if !status.success() {
-        bail!("Compilation failed");
+        bail!("Compilation failed: {}", command_as_str(&command));
     }
 
     Ok(output_path)
@@ -1205,12 +1205,17 @@ fn diff_files(instructions: &Config, files: Vec<PathBuf>, display: &dyn Display)
     config
         .equiv
         .extend(instructions.section_equiv.iter().cloned());
-    config.references = files;
+    config.references = files.clone();
     config.file = config
         .references
         .pop()
         .context("Tried to diff zero files")?;
-    let report = linker_diff::Report::from_config(config.clone())?;
+    let report = linker_diff::Report::from_config(config.clone()).with_context(|| {
+        format!(
+            "Report::from_config failed for the following files: {}",
+            files.iter().map(|f| f.to_string_lossy()).join(" ")
+        )
+    })?;
     if report.has_problems() {
         eprintln!("{report}");
         bail!(
