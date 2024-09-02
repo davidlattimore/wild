@@ -132,7 +132,7 @@ pub(crate) const GCC_EXCEPT_TABLE: OutputSectionId = OutputSectionId::regular(12
 
 pub(crate) const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 13;
 
-pub struct OutputSections<'data> {
+pub(crate) struct OutputSections<'data> {
     /// The base address for our output binary.
     pub(crate) base_address: u64,
     pub(crate) section_infos: Vec<SectionOutputInfo<'data>>,
@@ -144,11 +144,16 @@ pub struct OutputSections<'data> {
     pub(crate) output_section_indexes: Vec<Option<u16>>,
 
     custom_by_name: AHashMap<SectionName<'data>, OutputSectionId>,
-    pub(crate) ro_custom: Vec<OutputSectionId>,
-    pub(crate) exec_custom: Vec<OutputSectionId>,
-    pub(crate) data_custom: Vec<OutputSectionId>,
-    pub(crate) bss_custom: Vec<OutputSectionId>,
-    pub(crate) nonalloc_debug: Vec<OutputSectionId>,
+    custom: CustomSectionIds,
+}
+
+#[derive(Default)]
+struct CustomSectionIds {
+    ro: Vec<OutputSectionId>,
+    exec: Vec<OutputSectionId>,
+    data: Vec<OutputSectionId>,
+    bss: Vec<OutputSectionId>,
+    nonalloc: Vec<OutputSectionId>,
 }
 
 impl<'data> OutputSections<'data> {
@@ -769,11 +774,7 @@ pub(crate) struct OutputSectionsBuilder<'data> {
 
 impl<'data> OutputSectionsBuilder<'data> {
     pub(crate) fn build(self) -> Result<OutputSections<'data>> {
-        let mut ro_custom = Vec::new();
-        let mut exec_custom = Vec::new();
-        let mut data_custom = Vec::new();
-        let mut bss_custom = Vec::new();
-        let mut nonalloc_debug = Vec::new();
+        let mut custom = CustomSectionIds::default();
 
         for (offset, info) in self.section_infos[NUM_BUILT_IN_SECTIONS..]
             .iter()
@@ -781,19 +782,19 @@ impl<'data> OutputSectionsBuilder<'data> {
         {
             let id = OutputSectionId::from_usize(NUM_BUILT_IN_SECTIONS + offset);
             if info.details.section_flags.contains(shf::EXECINSTR) {
-                exec_custom.push(id);
+                custom.exec.push(id);
             } else if !info.details.section_flags.contains(shf::WRITE) {
                 if info.details.name.0.starts_with(b".debug")
                     && !info.details.section_flags.contains(shf::ALLOC)
                 {
-                    nonalloc_debug.push(id);
+                    custom.nonalloc.push(id);
                 } else {
-                    ro_custom.push(id);
+                    custom.ro.push(id);
                 }
             } else if info.details.ty == object::elf::SHT_NOBITS {
-                bss_custom.push(id);
+                custom.bss.push(id);
             } else {
-                data_custom.push(id);
+                custom.data.push(id);
             }
         }
 
@@ -801,12 +802,8 @@ impl<'data> OutputSectionsBuilder<'data> {
             base_address: self.base_address,
             section_infos: self.section_infos,
             custom_by_name: self.custom_by_name,
-            ro_custom,
-            exec_custom,
-            data_custom,
-            bss_custom,
-            nonalloc_debug,
             output_section_indexes: Default::default(),
+            custom,
         };
 
         output_sections.determine_loadable_segment_ids()?;
@@ -882,7 +879,7 @@ impl<'data> OutputSections<'data> {
         events.push(EH_FRAME.event());
         events.push(PREINIT_ARRAY.event());
         events.push(GCC_EXCEPT_TABLE.event());
-        events.extend(build_section_events(&self.ro_custom));
+        events.extend(build_section_events(&self.custom.ro));
         events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RO));
 
         events.push(OrderEvent::SegmentStart(crate::program_segments::LOAD_EXEC));
@@ -891,7 +888,7 @@ impl<'data> OutputSections<'data> {
         events.push(TEXT.event());
         events.push(INIT.event());
         events.push(FINI.event());
-        events.extend(build_section_events(&self.exec_custom));
+        events.extend(build_section_events(&self.custom.exec));
         events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_EXEC));
 
         events.push(OrderEvent::SegmentStart(crate::program_segments::LOAD_RW));
@@ -904,16 +901,16 @@ impl<'data> OutputSections<'data> {
         events.push(OrderEvent::SegmentStart(crate::program_segments::DYNAMIC));
         events.push(DYNAMIC.event());
         events.push(OrderEvent::SegmentEnd(crate::program_segments::DYNAMIC));
-        events.extend(build_section_events(&self.data_custom));
+        events.extend(build_section_events(&self.custom.data));
         events.push(OrderEvent::SegmentStart(crate::program_segments::TLS));
         events.push(TDATA.event());
         events.push(TBSS.event());
         events.push(OrderEvent::SegmentEnd(crate::program_segments::TLS));
         events.push(BSS.event());
-        events.extend(build_section_events(&self.bss_custom));
+        events.extend(build_section_events(&self.custom.bss));
         events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RW));
 
-        events.extend(build_section_events(&self.nonalloc_debug));
+        events.extend(build_section_events(&self.custom.nonalloc));
         events.push(COMMENT.event());
         events.push(SHSTRTAB.event());
         events.push(SYMTAB.event());
