@@ -36,7 +36,6 @@ use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::Context as _;
 use core::mem::size_of;
-use itertools::Itertools;
 use linker_utils::elf::shf;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -917,11 +916,13 @@ impl<'data> OutputSections<'data> {
         events
     }
 
-    fn build_section_events(&self, sections: &[OutputSectionId]) -> Vec<OrderEvent> {
+    fn build_section_events<'a>(
+        &'a self,
+        sections: &'a [OutputSectionId],
+    ) -> impl Iterator<Item = OrderEvent<'a>> + 'a {
         sections
             .iter()
             .map(|id| OrderEvent::Section(*id, &self.section_infos[id.as_usize()].details))
-            .collect_vec()
     }
 
     #[must_use]
