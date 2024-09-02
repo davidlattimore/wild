@@ -136,7 +136,7 @@ pub fn compute<'data>(
         unreachable!();
     };
     let header_info = internal.header_info.as_ref().unwrap();
-    let segment_layouts = compute_segment_layout(&section_layouts, &output_sections, header_info);
+    let segment_layouts = compute_segment_layout(&section_layouts, &output_sections, header_info)?;
 
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(&section_part_layouts);
     let starting_mem_offsets_by_group = compute_start_offsets_by_group(&group_states, mem_offsets);
@@ -1385,7 +1385,7 @@ fn compute_segment_layout(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections,
     header_info: &HeaderInfo,
-) -> SegmentLayouts {
+) -> Result<SegmentLayouts> {
     struct Record {
         segment_id: ProgramSegmentId,
         file_start: usize,
@@ -1398,67 +1398,71 @@ fn compute_segment_layout(
     use output_section_id::OrderEvent;
     let mut complete = Vec::with_capacity(crate::program_segments::MAX_SEGMENTS);
     let mut active_records = AHashMap::new();
-    output_sections.sections_and_segments_do(|event| match event {
-        OrderEvent::SegmentStart(segment_id) => {
-            active_records.insert(
-                segment_id,
-                Record {
+
+    for event in output_sections.sections_and_segments_events() {
+        match event {
+            OrderEvent::SegmentStart(segment_id) => {
+                active_records.insert(
                     segment_id,
-                    file_start: usize::MAX,
-                    file_end: 0,
-                    mem_start: u64::MAX,
-                    mem_end: 0,
-                    alignment: alignment::MIN,
-                },
-            );
-        }
-        OrderEvent::SegmentEnd(segment_id) => {
-            let record = active_records
-                .remove(&segment_id)
-                .expect("SegmentEnd without matching SegmentStart");
-            complete.push(record);
-        }
-        OrderEvent::Section(section_id, section_details) => {
-            let part = section_layouts.get(section_id);
-
-            // Skip all ignored sections that will not end up in the final file.
-            if output_sections.output_section_indexes[section_id.as_usize()].is_none() {
-                return;
-            }
-
-            if !active_records.is_empty() {
-                // All segments should only cover sections that are allocated and have a non-zero address.
-                assert!(
-                    part.mem_offset != 0 || section_id == FILE_HEADER,
-                    "Missing memory offset for section `{}` present in a program segment.",
-                    section_details.name
+                    Record {
+                        segment_id,
+                        file_start: usize::MAX,
+                        file_end: 0,
+                        mem_start: u64::MAX,
+                        mem_end: 0,
+                        alignment: alignment::MIN,
+                    },
                 );
-                assert!(
+            }
+            OrderEvent::SegmentEnd(segment_id) => {
+                let record = active_records
+                    .remove(&segment_id)
+                    .expect("SegmentEnd without matching SegmentStart");
+                complete.push(record);
+            }
+            OrderEvent::Section(section_id, section_details) => {
+                let part = section_layouts.get(section_id);
+
+                // Skip all ignored sections that will not end up in the final file.
+                if output_sections.output_section_indexes[section_id.as_usize()].is_none() {
+                    continue;
+                }
+
+                if !active_records.is_empty() {
+                    // All segments should only cover sections that are allocated and have a non-zero address.
+                    ensure!(
+                        part.mem_offset != 0 || section_id == FILE_HEADER,
+                        "Missing memory offset for section `{}` present in a program segment.",
+                        section_details.name
+                    );
+                    ensure!(
                     section_details.section_flags.contains(shf::ALLOC),
                     "Missing SHF_ALLOC section flag for section `{}` present in a program segment.",
                     section_details.name
                 );
-                for rec in active_records.values_mut() {
-                    rec.file_start = rec.file_start.min(part.file_offset);
-                    rec.mem_start = rec.mem_start.min(part.mem_offset);
-                    rec.file_end = rec.file_end.max(part.file_offset + part.file_size);
-                    rec.mem_end = rec.mem_end.max(part.mem_offset + part.mem_size);
-                    rec.alignment = rec.alignment.max(part.alignment);
-                }
-            } else {
-                assert_eq!(
-                    part.mem_offset, 0,
+                    for rec in active_records.values_mut() {
+                        rec.file_start = rec.file_start.min(part.file_offset);
+                        rec.mem_start = rec.mem_start.min(part.mem_offset);
+                        rec.file_end = rec.file_end.max(part.file_offset + part.file_size);
+                        rec.mem_end = rec.mem_end.max(part.mem_offset + part.mem_size);
+                        rec.alignment = rec.alignment.max(part.alignment);
+                    }
+                } else {
+                    ensure!(
+                    part.mem_offset == 0,
                     "Expected zero address for section `{}` not present in any program segment.",
                     section_details.name
                 );
-                assert!(
-                    !section_details.section_flags.contains(shf::ALLOC),
-                    "Section with SHF_ALLOC flag `{}` not present in any program segment.",
-                    section_details.name
-                );
+                    ensure!(
+                        !section_details.section_flags.contains(shf::ALLOC),
+                        "Section with SHF_ALLOC flag `{}` not present in any program segment.",
+                        section_details.name
+                    );
+                }
             }
         }
-    });
+    }
+
     complete.sort_by_key(|r| r.segment_id);
     assert_eq!(complete.len(), MAX_SEGMENTS);
     let mut tls_start_address = None;
@@ -1482,10 +1486,10 @@ fn compute_segment_layout(
             }
         })
         .collect();
-    SegmentLayouts {
+    Ok(SegmentLayouts {
         segments,
         tls_start_address,
-    }
+    })
 }
 
 #[tracing::instrument(skip_all, name = "Compute total section sizes")]
@@ -2512,31 +2516,33 @@ impl<'data> PreludeLayoutState {
         // Compute output indexes of each of section.
         let mut next_output_index = 0;
         let mut output_section_indexes = vec![None; output_sections.num_sections()];
-        output_sections.sections_and_segments_do(|event| {
+        for event in output_sections.sections_and_segments_events() {
             if let OrderEvent::Section(id, _) = event {
                 if keep_sections[id.as_usize()] {
                     output_section_indexes[id.as_usize()] = Some(next_output_index);
                     next_output_index += 1;
                 }
-            }
-        });
+            };
+        }
         output_sections.output_section_indexes = output_section_indexes;
 
         // Determine which program segments contain sections that we're keeping.
         let mut keep_segments = [false; crate::program_segments::MAX_SEGMENTS];
         let mut active_segments = Vec::with_capacity(4);
-        output_sections.sections_and_segments_do(|event| match event {
-            OrderEvent::SegmentStart(segment_id) => active_segments.push(segment_id),
-            OrderEvent::SegmentEnd(segment_id) => active_segments.retain(|a| *a != segment_id),
-            OrderEvent::Section(section_id, _) => {
-                if keep_sections[section_id.as_usize()] {
-                    for segment_id in &active_segments {
-                        keep_segments[segment_id.as_usize()] = true;
+        for event in output_sections.sections_and_segments_events() {
+            match event {
+                OrderEvent::SegmentStart(segment_id) => active_segments.push(segment_id),
+                OrderEvent::SegmentEnd(segment_id) => active_segments.retain(|a| *a != segment_id),
+                OrderEvent::Section(section_id, _) => {
+                    if keep_sections[section_id.as_usize()] {
+                        for segment_id in &active_segments {
+                            keep_segments[segment_id.as_usize()] = true;
+                        }
+                        active_segments.clear();
                     }
-                    active_segments.clear();
                 }
             }
-        });
+        }
         let active_segment_ids = (0..crate::program_segments::MAX_SEGMENTS)
             .filter(|i| keep_segments[*i])
             .map(ProgramSegmentId::new)
@@ -4261,6 +4267,8 @@ impl<'data> DynamicSymbolDefinition<'data> {
 /// overlap and that sections don't overlap.
 #[test]
 fn test_no_disallowed_overlaps() {
+    use crate::output_section_id::OrderEvent;
+
     let mut output_sections =
         crate::output_section_id::OutputSectionsBuilder::with_base_address(0x1000)
             .build()
@@ -4275,7 +4283,11 @@ fn test_no_disallowed_overlaps() {
     let mut last_file_end = 0;
     let mut last_mem_end = 0;
     let mut last_section_id = output_section_id::FILE_HEADER;
-    output_sections.sections_do(|section_id, section_details| {
+    for event in output_sections.sections_and_segments_events() {
+        let OrderEvent::Section(section_id, section_details) = event else {
+            continue;
+        };
+
         if !section_details.section_flags.contains(shf::ALLOC) {
             return;
         }
@@ -4297,7 +4309,8 @@ fn test_no_disallowed_overlaps() {
         last_mem_end = mem_end;
         last_file_end = file_end;
         last_section_id = section_id;
-    });
+    }
+
     let header_info = HeaderInfo {
         num_output_sections_with_content: 0,
         active_segment_ids: (0..MAX_SEGMENTS).map(ProgramSegmentId::new).collect(),
@@ -4315,7 +4328,8 @@ fn test_no_disallowed_overlaps() {
         }
     }
 
-    let segment_layouts = compute_segment_layout(&section_layouts, &output_sections, &header_info);
+    let segment_layouts =
+        compute_segment_layout(&section_layouts, &output_sections, &header_info).unwrap();
 
     // Make sure loadable segments don't overlap in memory or in the file.
     let mut last_file = 0;
