@@ -160,6 +160,7 @@ struct Config {
     assertions: Assertions,
     linker_args: ArgumentSet,
     linker_so_args: ArgumentSet,
+    wild_extra_linker_args: ArgumentSet,
     compiler_args: ArgumentSet,
     compiler_so_args: ArgumentSet,
     diff_ignore: Vec<String>,
@@ -248,6 +249,10 @@ impl ArgumentSet {
     fn default_for_compiling() -> Self {
         Self { args: Vec::new() }
     }
+
+    fn empty() -> Self {
+        Self { args: Vec::new() }
+    }
 }
 
 impl Default for Config {
@@ -260,6 +265,7 @@ impl Default for Config {
             linker_so_args: ArgumentSet::default_for_linking(),
             compiler_args: ArgumentSet::default_for_compiling(),
             compiler_so_args: ArgumentSet::default_for_compiling(),
+            wild_extra_linker_args: ArgumentSet::empty(),
             diff_ignore: Default::default(),
             skip_linkers: Default::default(),
             enabled_linkers: Default::default(),
@@ -333,6 +339,7 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                     }
                     config.linker_so_args = ArgumentSet::parse(arg)?
                 }
+                "WildExtraLinkArgs" => config.wild_extra_linker_args = ArgumentSet::parse(arg)?,
                 "CompArgs" => config.compiler_args = ArgumentSet::parse(arg)?,
                 "CompSoArgs" => config.compiler_so_args = ArgumentSet::parse(arg)?,
                 "ExpectSym" => config
@@ -743,7 +750,13 @@ impl Linker {
     /// resulting binary.
     fn link(&self, basename: &str, inputs: &[LinkerInput], config: &Config) -> Result<LinkOutput> {
         let output_path = self.output_path(basename, config);
-        let mut command = LinkCommand::new(self, inputs, &output_path, &config.linker_args);
+        let mut linker_args = config.linker_args.clone();
+        if self.is_wild() {
+            linker_args
+                .args
+                .extend(config.wild_extra_linker_args.args.iter().cloned());
+        }
+        let mut command = LinkCommand::new(self, inputs, &output_path, &linker_args);
         if !command.can_skip {
             command.run()?;
             write_cmd_file(&output_path, &command.to_string())?;

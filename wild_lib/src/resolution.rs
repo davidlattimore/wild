@@ -178,7 +178,8 @@ pub(crate) fn resolve_symbols_in_files<'data>(
         work_queue,
     };
 
-    let idle_threads = ArrayQueue::new(symbol_db.args.num_threads.get() - 1);
+    let num_threads = symbol_db.args.num_threads.get();
+    let idle_threads = (num_threads > 1).then(|| ArrayQueue::new(num_threads - 1));
     let done = AtomicBool::new(false);
 
     crate::threading::scope(|s| {
@@ -199,18 +200,23 @@ pub(crate) fn resolve_symbols_in_files<'data>(
                             let _ = resources.outputs.errors.push(e);
                         }
                     }
-                    if idle_threads.push(std::thread::current()).is_err() {
-                        // No space left in our idle queue means that all other threads are idle, so
-                        // we're done.
-                        done.store(true, Ordering::Relaxed);
-                        while let Some(thread) = idle_threads.pop() {
-                            thread.unpark();
+                    if let Some(idle_threads) = idle_threads.as_ref() {
+                        if idle_threads.push(std::thread::current()).is_err() {
+                            // No space left in our idle queue means that all other threads are idle, so
+                            // we're done.
+                            done.store(true, Ordering::Relaxed);
+                            while let Some(thread) = idle_threads.pop() {
+                                thread.unpark();
+                            }
+                        } else if idle {
+                            std::thread::park();
+                            idle = false;
+                        } else {
+                            idle = true;
                         }
-                    } else if idle {
-                        std::thread::park();
-                        idle = false;
                     } else {
-                        idle = true;
+                        // We're running single-threaded, so we're done
+                        done.store(true, Ordering::Relaxed);
                     }
                 }
             });
