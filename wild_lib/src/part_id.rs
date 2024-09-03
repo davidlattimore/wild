@@ -11,7 +11,9 @@ use crate::output_section_id::SectionName;
 use crate::output_section_id::FINI;
 use crate::output_section_id::INIT;
 use linker_utils::elf::shf;
+use linker_utils::elf::sht;
 use linker_utils::elf::SectionFlags;
+use linker_utils::elf::SectionType;
 use std::fmt::Debug;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,7 +96,6 @@ impl<'data> UnloadedSection<'data> {
     ) -> Result<Option<Self>> {
         // Ideally we support reading an actual linker script to make these decisions, but for now
         // we just hard code stuff.
-        let e = object::LittleEndian;
         let section_name = object.section_name(section).unwrap_or_default();
         let section_flags = SectionFlags::from_header(section);
         let alignment = Alignment::new(object.section_alignment(section)?.max(1))?;
@@ -142,11 +143,11 @@ impl<'data> UnloadedSection<'data> {
         } else if args.strip_debug && section_name == b".debug_str" {
             None
         } else {
-            let sh_type = section.sh_type.get(e);
-            let ty = if sh_type == object::elf::SHT_NOBITS {
+            let sh_type = SectionType::from_header(section);
+            let ty = if sh_type == sht::NOBITS {
                 sh_type
             } else {
-                object::elf::SHT_PROGBITS
+                sht::PROGBITS
             };
             if !section_name.is_empty() {
                 let custom_section_id = CustomSectionId {
@@ -166,7 +167,7 @@ impl<'data> UnloadedSection<'data> {
             }
             if !section_flags.contains(shf::ALLOC) {
                 None
-            } else if sh_type == object::elf::SHT_PROGBITS {
+            } else if sh_type == sht::PROGBITS {
                 if section_flags.contains(shf::EXECINSTR) {
                     Some(output_section_id::TEXT)
                 } else if section_flags.contains(shf::TLS) {
@@ -176,7 +177,7 @@ impl<'data> UnloadedSection<'data> {
                 } else {
                     Some(output_section_id::RODATA)
                 }
-            } else if sh_type == object::elf::SHT_NOBITS {
+            } else if sh_type == sht::NOBITS {
                 if section_flags.contains(shf::TLS) {
                     Some(output_section_id::TBSS)
                 } else {

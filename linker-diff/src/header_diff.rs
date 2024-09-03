@@ -9,6 +9,7 @@ use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context as _;
 use linker_utils::elf::shf;
+use linker_utils::elf::SectionFlags;
 use object::elf::*;
 use object::read::elf::Dyn;
 use object::read::elf::ElfSection64;
@@ -20,7 +21,6 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use linker_utils::elf::SectionFlags;
 
 pub(crate) enum Converter {
     None,

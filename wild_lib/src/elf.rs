@@ -5,6 +5,8 @@ use anyhow::Context;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
 use linker_utils::elf::rel_type_to_string;
+use linker_utils::elf::sht;
+use linker_utils::elf::SectionType;
 use object::read::elf::CompressionHeader;
 use object::read::elf::FileHeader as _;
 use object::read::elf::ProgramHeader as _;
@@ -62,17 +64,17 @@ impl<'data> File<'data> {
         // Find all the sections that we're interested in in a single scan of the section table so
         // as to avoid multiple scans.
         for (section_index, section) in sections.enumerate() {
-            match section.sh_type(endian) {
-                object::elf::SHT_DYNSYM if is_dynamic => {
+            match SectionType::from_header(section) {
+                sht::DYNSYM if is_dynamic => {
                     symbols = SymbolTable::parse(endian, data, &sections, section_index, section)?;
                 }
-                object::elf::SHT_SYMTAB if !is_dynamic => {
+                sht::SYMTAB if !is_dynamic => {
                     symbols = SymbolTable::parse(endian, data, &sections, section_index, section)?;
                 }
-                object::elf::SHT_GNU_VERSYM => {
+                sht::GNU_VERSYM => {
                     versym = section.data_as_array(endian, data)?;
                 }
-                object::elf::SHT_GNU_VERDEF => {
+                sht::GNU_VERDEF => {
                     verdef = section.gnu_verdef(endian, data)?;
                 }
                 _ => {}

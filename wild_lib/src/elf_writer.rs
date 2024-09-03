@@ -54,6 +54,7 @@ use anyhow::bail;
 use anyhow::Context;
 use linker_utils::elf::rel_type_to_string;
 use linker_utils::elf::shf;
+use linker_utils::elf::sht;
 use linker_utils::elf::SectionFlags;
 use memmap2::MmapOptions;
 use object::from_bytes_mut;
@@ -2393,7 +2394,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         let entsize = section_id.element_size();
         let size;
         let alignment;
-        if section_details.ty == object::elf::SHT_NULL {
+        if section_details.ty == sht::NULL {
             size = 0;
             alignment = 0;
         } else {
@@ -2409,7 +2410,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         let entry = entries.next().unwrap();
         let e = LittleEndian;
         entry.sh_name.set(e, name_offset);
-        entry.sh_type.set(e, section_details.ty);
+        entry.sh_type.set(e, section_details.ty.raw());
         // TODO: Section are always uncompressed and the output compression is not supported yet.
         entry.sh_flags.set(
             e,

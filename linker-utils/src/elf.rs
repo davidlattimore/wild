@@ -63,7 +63,6 @@ pub fn rel_type_to_string(r_type: u32) -> Cow<'static, str> {
 }
 
 /// Section flag bit values.
-#[allow(unused)]
 pub mod shf {
     use super::SectionFlags;
 
@@ -80,6 +79,45 @@ pub mod shf {
     pub const TLS: SectionFlags = SectionFlags::from_u32(object::elf::SHF_TLS);
     pub const COMPRESSED: SectionFlags = SectionFlags::from_u32(object::elf::SHF_COMPRESSED);
     pub const GNU_RETAIN: SectionFlags = SectionFlags::from_u32(object::elf::SHF_GNU_RETAIN);
+}
+
+pub mod sht {
+    use super::SectionType;
+
+    pub const NULL: SectionType = SectionType(object::elf::SHT_NULL);
+    pub const PROGBITS: SectionType = SectionType(object::elf::SHT_PROGBITS);
+    pub const SYMTAB: SectionType = SectionType(object::elf::SHT_SYMTAB);
+    pub const STRTAB: SectionType = SectionType(object::elf::SHT_STRTAB);
+    pub const RELA: SectionType = SectionType(object::elf::SHT_RELA);
+    pub const HASH: SectionType = SectionType(object::elf::SHT_HASH);
+    pub const DYNAMIC: SectionType = SectionType(object::elf::SHT_DYNAMIC);
+    pub const NOTE: SectionType = SectionType(object::elf::SHT_NOTE);
+    pub const NOBITS: SectionType = SectionType(object::elf::SHT_NOBITS);
+    pub const REL: SectionType = SectionType(object::elf::SHT_REL);
+    pub const SHLIB: SectionType = SectionType(object::elf::SHT_SHLIB);
+    pub const DYNSYM: SectionType = SectionType(object::elf::SHT_DYNSYM);
+    pub const INIT_ARRAY: SectionType = SectionType(object::elf::SHT_INIT_ARRAY);
+    pub const FINI_ARRAY: SectionType = SectionType(object::elf::SHT_FINI_ARRAY);
+    pub const PREINIT_ARRAY: SectionType = SectionType(object::elf::SHT_PREINIT_ARRAY);
+    pub const GROUP: SectionType = SectionType(object::elf::SHT_GROUP);
+    pub const SYMTAB_SHNDX: SectionType = SectionType(object::elf::SHT_SYMTAB_SHNDX);
+    pub const LOOS: SectionType = SectionType(object::elf::SHT_LOOS);
+    pub const GNU_ATTRIBUTES: SectionType = SectionType(object::elf::SHT_GNU_ATTRIBUTES);
+    pub const GNU_HASH: SectionType = SectionType(object::elf::SHT_GNU_HASH);
+    pub const GNU_LIBLIST: SectionType = SectionType(object::elf::SHT_GNU_LIBLIST);
+    pub const CHECKSUM: SectionType = SectionType(object::elf::SHT_CHECKSUM);
+    pub const LOSUNW: SectionType = SectionType(object::elf::SHT_LOSUNW);
+    pub const SUNW_COMDAT: SectionType = SectionType(object::elf::SHT_SUNW_COMDAT);
+    pub const SUNW_SYMINFO: SectionType = SectionType(object::elf::SHT_SUNW_syminfo);
+    pub const GNU_VERDEF: SectionType = SectionType(object::elf::SHT_GNU_VERDEF);
+    pub const GNU_VERNEED: SectionType = SectionType(object::elf::SHT_GNU_VERNEED);
+    pub const GNU_VERSYM: SectionType = SectionType(object::elf::SHT_GNU_VERSYM);
+    pub const HISUNW: SectionType = SectionType(object::elf::SHT_HISUNW);
+    pub const HIOS: SectionType = SectionType(object::elf::SHT_HIOS);
+    pub const LOPROC: SectionType = SectionType(object::elf::SHT_LOPROC);
+    pub const HIPROC: SectionType = SectionType(object::elf::SHT_HIPROC);
+    pub const LOUSER: SectionType = SectionType(object::elf::SHT_LOUSER);
+    pub const HIUSER: SectionType = SectionType(object::elf::SHT_HIUSER);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -173,6 +211,19 @@ impl std::fmt::Debug for SectionFlags {
 impl std::ops::BitOrAssign for SectionFlags {
     fn bitor_assign(&mut self, rhs: Self) {
         self.0 |= rhs.0;
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SectionType(u32);
+
+impl SectionType {
+    pub fn raw(self) -> u32 {
+        self.0
+    }
+
+    pub fn from_header(header: &object::elf::SectionHeader64<LittleEndian>) -> Self {
+        Self(header.sh_type(LittleEndian))
     }
 }
 

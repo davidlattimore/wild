@@ -1,6 +1,8 @@
 use crate::Object;
 use crate::Result;
 use anyhow::bail;
+use linker_utils::elf::sht;
+use linker_utils::elf::SectionType;
 use object::read::elf::SectionHeader as _;
 use object::LittleEndian;
 use object::Object as _;
@@ -18,12 +20,12 @@ pub(crate) fn validate_dynamic(object: &Object) -> Result {
 fn validate(object: &Object, dynamic: bool) -> Result {
     let mut symtab_info = 0;
     let (symtab_section_type, mut symbols) = if dynamic {
-        (object::elf::SHT_DYNSYM, object.elf_file.dynamic_symbols())
+        (sht::DYNSYM, object.elf_file.dynamic_symbols())
     } else {
-        (object::elf::SHT_SYMTAB, object.elf_file.symbols())
+        (sht::SYMTAB, object.elf_file.symbols())
     };
     for section in object.elf_file.elf_section_table().iter() {
-        if section.sh_type(LittleEndian) == symtab_section_type {
+        if SectionType::from_header(section) == symtab_section_type {
             symtab_info = section.sh_info(LittleEndian);
         }
     }
