@@ -25,6 +25,7 @@ use itertools::Itertools;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::collections::hash_map;
+use std::fmt::Display;
 
 pub struct SymbolDb<'data> {
     pub(crate) args: &'data Args,
@@ -199,6 +200,24 @@ struct SymbolLoadOutputs<'data> {
     pending_symbols: Vec<PendingSymbol<'data>>,
 }
 
+pub(crate) enum SymbolInfo<'data> {
+    Symbol(SymbolName<'data>),
+    Section(SymbolName<'data>),
+    Unnamed(&'static str),
+}
+
+impl<'data> Display for SymbolInfo<'data> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SymbolInfo::Symbol(symbol_name) => write!(f, "symbol `{symbol_name}`")?,
+            SymbolInfo::Section(section_name) => write!(f, "section `{}`", section_name)?,
+            SymbolInfo::Unnamed(name) => write!(f, "{}", name)?,
+        }
+
+        Ok(())
+    }
+}
+
 impl<'data> SymbolDb<'data> {
     #[tracing::instrument(skip_all, name = "Build symbol DB")]
     pub fn build(
@@ -354,6 +373,36 @@ impl<'data> SymbolDb<'data> {
                 Ok(self.start_stop_symbol_names[symbol_id.offset_from(o.start_symbol_id)])
             }
         }
+    }
+
+    pub(crate) fn symbol_info(&self, symbol_id: SymbolId) -> Result<SymbolInfo<'data>> {
+        let Ok(symbol_name) = self.symbol_name(symbol_id) else {
+            return Ok(SymbolInfo::Unnamed(""));
+        };
+
+        Ok(if symbol_name.bytes().is_empty() {
+            let file_id = self.file_id_for_symbol(symbol_id);
+            let file = self.file(file_id);
+            match file {
+                ParsedInput::Prelude(..) => SymbolInfo::Unnamed("<unnamed internal symbol>"),
+                ParsedInput::Object(o) => {
+                    let symbol_index = symbol_id.to_input(file.symbol_id_range());
+                    if let Some(section_index) =
+                        o.object.symbol(symbol_index).ok().and_then(|symbol| {
+                            o.object.symbol_section(symbol, symbol_index).ok().flatten()
+                        })
+                    {
+                        let section = o.object.section(section_index)?;
+                        SymbolInfo::Section(SymbolName::new(o.object.section_name(section)?))
+                    } else {
+                        SymbolInfo::Unnamed("<unnamed symbol>")
+                    }
+                }
+                ParsedInput::Epilogue(..) => SymbolInfo::Unnamed("<unnamed custom-section symbol>"),
+            }
+        } else {
+            SymbolInfo::Symbol(symbol_name)
+        })
     }
 
     /// Returns the value flags for the specified symbol without taking into consideration what
@@ -636,10 +685,6 @@ pub(crate) struct SymbolDebug<'db, 'data> {
 impl<'db, 'data> std::fmt::Display for SymbolDebug<'db, 'data> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let symbol_id = self.symbol_id;
-        let symbol_name = self
-            .db
-            .symbol_name(symbol_id)
-            .unwrap_or_else(|_| SymbolName::new(b"??"));
         let definition = self.db.definition(symbol_id);
         let file_id = self.db.file_id_for_symbol(symbol_id);
         let file = self.db.file(file_id);
@@ -647,29 +692,8 @@ impl<'db, 'data> std::fmt::Display for SymbolDebug<'db, 'data> {
         if definition.is_undefined() {
             write!(f, "undefined ")?;
         }
-        if symbol_name.bytes().is_empty() {
-            match file {
-                ParsedInput::Prelude(_) => write!(f, "<unnamed internal symbol>")?,
-                ParsedInput::Object(o) => {
-                    let symbol_index = symbol_id.to_input(file.symbol_id_range());
-                    if let Some(section_name) = o
-                        .object
-                        .symbol(symbol_index)
-                        .ok()
-                        .and_then(|symbol| {
-                            o.object.symbol_section(symbol, symbol_index).ok().flatten()
-                        })
-                        .map(|section_index| o.object.section_display_name(section_index))
-                    {
-                        write!(f, "section `{}`", section_name)?;
-                    } else {
-                        write!(f, "<unnamed symbol>")?;
-                    }
-                }
-                ParsedInput::Epilogue(_) => write!(f, "<unnamed custom-section symbol>")?,
-            }
-        } else {
-            write!(f, "symbol `{symbol_name}`")?;
+        if let Ok(symbol_info) = self.db.symbol_info(self.symbol_id) {
+            write!(f, "{}", symbol_info)?;
         }
         write!(
             f,

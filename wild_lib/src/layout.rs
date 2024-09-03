@@ -2296,6 +2296,15 @@ fn process_relocation(
         }
 
         if previous_flags.is_empty() {
+            let symbol_info = resources.symbol_db.symbol_info(symbol_id)?;
+            let source_section_name =
+                String::from_utf8_lossy(object.object.section_name(section).unwrap()).to_string();
+            println!(
+                "{} {} -> {}",
+                object.input.file.filename.to_str().unwrap(),
+                source_section_name,
+                symbol_info
+            );
             queue.send_symbol_request(symbol_id, resources);
         }
 
