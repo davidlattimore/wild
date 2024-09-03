@@ -155,6 +155,10 @@ impl SectionFlags {
     pub const fn raw(self) -> u64 {
         self.0 as u64
     }
+
+    pub fn should_retain(&self) -> bool {
+        self.contains(shf::GNU_RETAIN)
+    }
 }
 
 impl From<u64> for SectionFlags {

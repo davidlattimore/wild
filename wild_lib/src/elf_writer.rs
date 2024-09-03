@@ -2383,7 +2383,6 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         let OrderEvent::Section(section_id) = event else {
             continue;
         };
-        let section_details = output_sections.details(section_id);
         let section_type = output_sections.section_type(section_id);
         let section_layout = layout.section_layouts.get(section_id);
         if output_sections
@@ -2415,7 +2414,10 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         // TODO: Section are always uncompressed and the output compression is not supported yet.
         entry.sh_flags.set(
             e,
-            section_details.section_flags.without(shf::COMPRESSED).raw(),
+            output_sections
+                .section_flags(section_id)
+                .without(shf::COMPRESSED)
+                .raw(),
         );
         entry.sh_addr.set(e, section_layout.mem_offset);
         entry.sh_offset.set(e, section_layout.file_offset as u64);

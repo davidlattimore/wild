@@ -38,6 +38,7 @@ use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use crossbeam_utils::atomic::AtomicCell;
 use itertools::Itertools;
+use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
@@ -382,10 +383,22 @@ pub(crate) struct NotLoaded {
 /// A section, but where we may or may not yet have decided to load it.
 #[derive(Clone, Copy)]
 pub(crate) enum SectionSlot<'data> {
+    /// We've decided that this section won't be loaded.
     Discard,
+
+    /// The section hasn't been loaded yet, but may be loaded if it's referenced.
     Unloaded(UnloadedSection<'data>),
+
+    /// The section had the retain bit set, so must be loaded.
+    MustLoad(UnloadedSection<'data>),
+
+    /// We've already loaded the section.
     Loaded(crate::layout::Section),
+
+    /// The section contain .eh_frame data.
     EhFrameData(object::SectionIndex),
+
+    /// The section is a string-merge section.
     MergeStrings(MergeStringsFileSection<'data>),
 }
 
@@ -707,7 +720,7 @@ fn resolve_sections<'data>(
                     if let TemporaryPartId::Custom(_custom_section_id) = unloaded.part_id {
                         custom_sections.push(CustomSectionDetails {
                             name: unloaded.name(),
-                            details: unloaded.details,
+                            section_flags: SectionFlags::from_header(input_section),
                             ty: SectionType::from_header(input_section),
                         });
                     }
@@ -721,14 +734,28 @@ fn resolve_sections<'data>(
                     )?))
                 } else {
                     match unloaded.part_id {
-                        TemporaryPartId::BuiltIn(_) => Ok(SectionSlot::Unloaded(unloaded)),
+                        TemporaryPartId::BuiltIn(id)
+                            if id
+                                .output_section_id()
+                                .built_in_details()
+                                .section_flags
+                                .should_retain() =>
+                        {
+                            Ok(SectionSlot::MustLoad(unloaded))
+                        }
+                        TemporaryPartId::BuiltIn(_id) => Ok(SectionSlot::Unloaded(unloaded)),
                         TemporaryPartId::Custom(custom_section_id) => {
+                            let section_flags = SectionFlags::from_header(input_section);
                             custom_sections.push(CustomSectionDetails {
                                 name: custom_section_id.name,
-                                details: unloaded.details,
+                                section_flags,
                                 ty: SectionType::from_header(input_section),
                             });
-                            Ok(SectionSlot::Unloaded(unloaded))
+                            if section_flags.should_retain() {
+                                Ok(SectionSlot::MustLoad(unloaded))
+                            } else {
+                                Ok(SectionSlot::Unloaded(unloaded))
+                            }
                         }
                         TemporaryPartId::EhFrameData => {
                             Ok(SectionSlot::EhFrameData(input_section_index))

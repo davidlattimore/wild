@@ -58,14 +58,9 @@ pub(crate) const NUM_BUILT_IN_SECTIONS: usize =
 pub(crate) struct OutputSectionId(u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SectionDetails {
-    pub(crate) section_flags: SectionFlags,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CustomSectionDetails<'data> {
     pub(crate) name: SectionName<'data>,
-    pub(crate) details: SectionDetails,
+    pub(crate) section_flags: SectionFlags,
     pub(crate) ty: SectionType,
 }
 
@@ -218,19 +213,23 @@ impl<'data> OutputSections<'data> {
     pub(crate) fn section_type(&self, section_id: OutputSectionId) -> SectionType {
         self.output_info(section_id).ty
     }
+
+    pub(crate) fn section_flags(&self, section_id: OutputSectionId) -> SectionFlags {
+        self.output_info(section_id).section_flags
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct SectionOutputInfo<'data> {
     pub(crate) loadable_segment_id: Option<ProgramSegmentId>,
     pub(crate) name: SectionName<'data>,
-    pub(crate) details: SectionDetails,
+    pub(crate) section_flags: SectionFlags,
     pub(crate) ty: SectionType,
 }
 
 pub(crate) struct BuiltInSectionDetails {
     pub(crate) name: SectionName<'static>,
-    pub(crate) details: SectionDetails,
+    pub(crate) section_flags: SectionFlags,
     /// Sections to try to link to. The first section that we're outputting is the one used.
     pub(crate) link: &'static [OutputSectionId],
     pub(crate) start_symbol_name: Option<&'static str>,
@@ -242,21 +241,9 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) ty: SectionType,
 }
 
-impl SectionDetails {
-    const fn default() -> Self {
-        Self {
-            section_flags: SectionFlags::empty(),
-        }
-    }
-
-    pub(crate) fn should_retain(&self) -> bool {
-        self.section_flags.contains(shf::GNU_RETAIN)
-    }
-}
-
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     name: SectionName(&[]),
-    details: SectionDetails::default(),
+    section_flags: SectionFlags::empty(),
     link: &[],
     start_symbol_name: None,
     end_symbol_name: None,
@@ -271,57 +258,39 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     // A section into which we write headers.
     BuiltInSectionDetails {
         name: SectionName(b""),
-        details: SectionDetails {
-            section_flags: shf::ALLOC,
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC,
         start_symbol_name: Some("__ehdr_start"),
         keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".phdr"),
-        details: SectionDetails {
-            section_flags: shf::ALLOC,
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC,
         min_alignment: alignment::PROGRAM_HEADER_ENTRY,
         keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".shdr"),
-        details: SectionDetails {
-            section_flags: shf::ALLOC,
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC,
         keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".shstrtab"),
         ty: sht::STRTAB,
-        details: SectionDetails {
-            ..SectionDetails::default()
-        },
         keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".strtab"),
         ty: sht::STRTAB,
-        details: SectionDetails {
-            ..SectionDetails::default()
-        },
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".got"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::WRITE.with(shf::ALLOC),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::WRITE.with(shf::ALLOC),
         element_size: crate::elf::GOT_ENTRY_SIZE,
         min_alignment: alignment::GOT_ENTRY,
         ..DEFAULT_DEFS
@@ -329,10 +298,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".plt"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::ALLOC.with(shf::EXECINSTR),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC.with(shf::EXECINSTR),
         element_size: crate::elf::PLT_ENTRY_SIZE,
         min_alignment: alignment::PLT,
         ..DEFAULT_DEFS
@@ -340,10 +306,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".rela.plt"),
         ty: sht::RELA,
-        details: SectionDetails {
-            section_flags: shf::ALLOC.with(shf::INFO_LINK),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC.with(shf::INFO_LINK),
         element_size: elf::RELA_ENTRY_SIZE,
         link: &[DYNSYM, SYMTAB],
         min_alignment: alignment::RELA_ENTRY,
@@ -354,30 +317,21 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".eh_frame"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::ALLOC,
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC,
         min_alignment: alignment::USIZE,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".eh_frame_hdr"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::ALLOC,
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC,
         min_alignment: alignment::EH_FRAME_HDR,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".dynamic"),
         ty: sht::DYNAMIC,
-        details: SectionDetails {
-            section_flags: shf::ALLOC.with(shf::WRITE),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC.with(shf::WRITE),
         element_size: core::mem::size_of::<DynamicEntry>() as u64,
         link: &[DYNSTR],
         min_alignment: alignment::USIZE,
@@ -387,10 +341,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".gnu.hash"),
         ty: sht::GNU_HASH,
-        details: SectionDetails {
-            section_flags: shf::ALLOC,
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC,
         link: &[DYNSYM],
         min_alignment: alignment::GNU_HASH,
         ..DEFAULT_DEFS
@@ -398,10 +349,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".dynsym"),
         ty: sht::DYNSYM,
-        details: SectionDetails {
-            section_flags: shf::ALLOC,
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC,
         element_size: size_of::<elf::SymtabEntry>() as u64,
         link: &[DYNSTR],
         min_alignment: alignment::SYMTAB_ENTRY,
@@ -411,29 +359,20 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".dynstr"),
         ty: sht::STRTAB,
-        details: SectionDetails {
-            section_flags: shf::ALLOC,
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC,
         min_alignment: alignment::MIN,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".interp"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::ALLOC,
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".gnu.version"),
         ty: sht::GNU_VERSYM,
-        details: SectionDetails {
-            section_flags: shf::ALLOC,
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC,
         element_size: core::mem::size_of::<Versym>() as u64,
         min_alignment: alignment::VERSYM,
         link: &[DYNSYM],
@@ -442,10 +381,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".gnu.version_r"),
         ty: sht::GNU_VERNEED,
-        details: SectionDetails {
-            section_flags: shf::ALLOC,
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC,
         info_fn: Some(version_r_info),
         min_alignment: alignment::VERSION_R,
         link: &[DYNSTR],
@@ -454,10 +390,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".got.plt"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::WRITE.with(shf::ALLOC),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::WRITE.with(shf::ALLOC),
         element_size: core::mem::size_of::<u64>() as u64,
         start_symbol_name: Some("_GLOBAL_OFFSET_TABLE_"),
         min_alignment: alignment::GOT_ENTRY,
@@ -466,10 +399,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".plt.got"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::ALLOC.with(shf::EXECINSTR),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC.with(shf::EXECINSTR),
         element_size: crate::elf::PLT_ENTRY_SIZE,
         min_alignment: alignment::PLT,
         ..DEFAULT_DEFS
@@ -478,9 +408,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".symtab"),
         ty: sht::SYMTAB,
-        details: SectionDetails {
-            ..SectionDetails::default()
-        },
         element_size: size_of::<elf::SymtabEntry>() as u64,
         min_alignment: alignment::SYMTAB_ENTRY,
         link: &[STRTAB],
@@ -490,10 +417,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".rela.dyn"),
         ty: sht::RELA,
-        details: SectionDetails {
-            section_flags: shf::ALLOC,
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC,
         element_size: elf::RELA_ENTRY_SIZE,
         min_alignment: alignment::RELA_ENTRY,
         link: &[DYNSYM],
@@ -503,19 +427,13 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".rodata"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::ALLOC,
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".init_array"),
         ty: sht::INIT_ARRAY,
-        details: SectionDetails {
-            section_flags: shf::ALLOC.with(shf::WRITE).with(shf::GNU_RETAIN),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC.with(shf::WRITE).with(shf::GNU_RETAIN),
         element_size: core::mem::size_of::<u64>() as u64,
         start_symbol_name: Some("__init_array_start"),
         end_symbol_name: Some("__init_array_end"),
@@ -524,10 +442,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".fini_array"),
         ty: sht::FINI_ARRAY,
-        details: SectionDetails {
-            section_flags: shf::ALLOC.with(shf::WRITE).with(shf::GNU_RETAIN),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC.with(shf::WRITE).with(shf::GNU_RETAIN),
         element_size: core::mem::size_of::<u64>() as u64,
         start_symbol_name: Some("__fini_array_start"),
         end_symbol_name: Some("__fini_array_end"),
@@ -536,10 +451,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".preinit_array"),
         ty: sht::PREINIT_ARRAY,
-        details: SectionDetails {
-            section_flags: shf::ALLOC.with(shf::GNU_RETAIN),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC.with(shf::GNU_RETAIN),
         start_symbol_name: Some("__preinit_array_start"),
         end_symbol_name: Some("__preinit_array_end"),
         ..DEFAULT_DEFS
@@ -547,84 +459,57 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(b".text"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::ALLOC.with(shf::EXECINSTR),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC.with(shf::EXECINSTR),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".init"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::ALLOC.with(shf::EXECINSTR).with(shf::GNU_RETAIN),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC.with(shf::EXECINSTR).with(shf::GNU_RETAIN),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".fini"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::ALLOC.with(shf::EXECINSTR).with(shf::GNU_RETAIN),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC.with(shf::EXECINSTR).with(shf::GNU_RETAIN),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".data"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::ALLOC.with(shf::WRITE),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC.with(shf::WRITE),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".tdata"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".tbss"),
         ty: sht::NOBITS,
-        details: SectionDetails {
-            section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".bss"),
         ty: sht::NOBITS,
-        details: SectionDetails {
-            section_flags: shf::ALLOC.with(shf::WRITE),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC.with(shf::WRITE),
         end_symbol_name: Some("_end"),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".comment"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::STRINGS.with(shf::MERGE).with(shf::GNU_RETAIN),
-            ..SectionDetails::default()
-        },
+        section_flags: shf::STRINGS.with(shf::MERGE).with(shf::GNU_RETAIN),
         element_size: 1,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(b".gcc_except_table"),
         ty: sht::PROGBITS,
-        details: SectionDetails {
-            section_flags: shf::ALLOC,
-            ..SectionDetails::default()
-        },
+        section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
     },
 ];
@@ -765,12 +650,10 @@ impl<'data> OutputSectionsBuilder<'data> {
             .enumerate()
         {
             let id = OutputSectionId::from_usize(NUM_BUILT_IN_SECTIONS + offset);
-            if info.details.section_flags.contains(shf::EXECINSTR) {
+            if info.section_flags.contains(shf::EXECINSTR) {
                 custom.exec.push(id);
-            } else if !info.details.section_flags.contains(shf::WRITE) {
-                if info.name.0.starts_with(b".debug")
-                    && !info.details.section_flags.contains(shf::ALLOC)
-                {
+            } else if !info.section_flags.contains(shf::WRITE) {
+                if info.name.0.starts_with(b".debug") && !info.section_flags.contains(shf::ALLOC) {
                     custom.nonalloc.push(id);
                 } else {
                     custom.ro.push(id);
@@ -803,7 +686,7 @@ impl<'data> OutputSectionsBuilder<'data> {
             let id = self.custom_by_name.entry(custom.name).or_insert_with(|| {
                 let id = OutputSectionId::from_usize(self.section_infos.len());
                 self.section_infos.push(SectionOutputInfo {
-                    details: custom.details,
+                    section_flags: custom.section_flags,
                     name: custom.name,
                     // We'll fill this in properly in `determine_loadable_segment_ids`.
                     loadable_segment_id: None,
@@ -813,7 +696,7 @@ impl<'data> OutputSectionsBuilder<'data> {
             });
             // Section flags are sometimes different, take the union of everything we're
             // given.
-            self.section_infos[id.as_usize()].details.section_flags |= custom.details.section_flags;
+            self.section_infos[id.as_usize()].section_flags |= custom.section_flags;
         }
         Ok(())
     }
@@ -822,7 +705,7 @@ impl<'data> OutputSectionsBuilder<'data> {
         let section_infos: Vec<_> = SECTION_DEFINITIONS
             .iter()
             .map(|d| SectionOutputInfo {
-                details: d.details,
+                section_flags: d.section_flags,
                 name: d.name,
                 loadable_segment_id: Some(crate::program_segments::LOAD_RO),
                 ty: d.ty,
@@ -949,10 +832,6 @@ impl<'data> OutputSections<'data> {
         self.output_info(id).loadable_segment_id
     }
 
-    pub(crate) fn details(&self, id: OutputSectionId) -> &SectionDetails {
-        &self.output_info(id).details
-    }
-
     pub(crate) fn link_ids(&self, section_id: OutputSectionId) -> &[OutputSectionId] {
         SECTION_DEFINITIONS
             .get(section_id.as_usize())
@@ -975,36 +854,27 @@ impl<'data> OutputSections<'data> {
     #[cfg(test)]
     pub(crate) fn for_testing() -> OutputSections<'static> {
         let mut builder = OutputSectionsBuilder::with_base_address(0x1000);
-        let section_details = SectionDetails {
-            section_flags: shf::GNU_RETAIN,
-        };
         builder
             .add_sections(&[
                 CustomSectionDetails {
                     name: SectionName(b"ro"),
-                    details: section_details,
+                    section_flags: shf::GNU_RETAIN,
                     ty: sht::PROGBITS,
                 },
                 CustomSectionDetails {
                     name: SectionName(b"exec"),
                     ty: sht::PROGBITS,
-                    details: SectionDetails {
-                        section_flags: shf::EXECINSTR,
-                        ..section_details
-                    },
+                    section_flags: shf::EXECINSTR,
                 },
                 CustomSectionDetails {
                     name: SectionName(b"data"),
                     ty: sht::PROGBITS,
-                    details: SectionDetails {
-                        section_flags: shf::WRITE,
-                        ..section_details
-                    },
+                    section_flags: shf::WRITE,
                 },
                 CustomSectionDetails {
                     name: SectionName(b"bss"),
                     ty: sht::NOBITS,
-                    details: SectionDetails { ..section_details },
+                    section_flags: shf::WRITE,
                 },
             ])
             .unwrap();

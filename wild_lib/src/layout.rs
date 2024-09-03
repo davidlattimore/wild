@@ -1431,7 +1431,7 @@ fn compute_segment_layout(
                 if output_sections.output_section_indexes[section_id.as_usize()].is_none() {
                     continue;
                 }
-                let section_details = output_sections.details(section_id);
+                let section_flags = output_sections.section_flags(section_id);
 
                 if !active_records.is_empty() {
                     // All segments should only cover sections that are allocated and have a non-zero address.
@@ -1441,10 +1441,11 @@ fn compute_segment_layout(
                         output_sections.name(section_id)
                     );
                     ensure!(
-                    section_details.section_flags.contains(shf::ALLOC),
-                    "Missing SHF_ALLOC section flag for section `{}` present in a program segment.",
-                    output_sections.name(section_id)
-                );
+                        section_flags.contains(shf::ALLOC),
+                        "Missing SHF_ALLOC section flag for section `{}` present in a program \
+                         segment.",
+                        output_sections.name(section_id)
+                    );
                     for (_, rec) in active_records.iter_mut() {
                         rec.file_start = rec.file_start.min(part.file_offset);
                         rec.mem_start = rec.mem_start.min(part.mem_offset);
@@ -1459,7 +1460,7 @@ fn compute_segment_layout(
                     output_sections.name(section_id)
                 );
                     ensure!(
-                        !section_details.section_flags.contains(shf::ALLOC),
+                        !section_flags.contains(shf::ALLOC),
                         "Section with SHF_ALLOC flag `{}` not present in any program segment.",
                         output_sections.name(section_id)
                     );
@@ -2928,12 +2929,10 @@ impl<'data> ObjectLayoutState<'data> {
         let mut eh_frame_section = None;
         for (i, section) in self.state.sections.iter().enumerate() {
             match section {
-                SectionSlot::Unloaded(unloaded_section) => {
-                    if unloaded_section.details.should_retain() {
-                        self.state
-                            .sections_required
-                            .push(SectionRequest::new(object::SectionIndex(i)));
-                    }
+                SectionSlot::MustLoad(_unloaded_section) => {
+                    self.state
+                        .sections_required
+                        .push(SectionRequest::new(object::SectionIndex(i)));
                 }
                 SectionSlot::EhFrameData(index) => {
                     eh_frame_section = Some(*index);
@@ -2970,7 +2969,7 @@ impl<'data> ObjectLayoutState<'data> {
         while let Some(section_request) = self.state.sections_required.pop() {
             let section_id = section_request.id;
             match &self.state.sections[section_id.0] {
-                SectionSlot::Unloaded(unloaded) => {
+                SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => {
                     self.load_section(common, queue, *unloaded, section_id, resources)?;
                 }
                 SectionSlot::Discard => {
@@ -3836,13 +3835,13 @@ fn layout_section_parts(
 
     sizes.output_order_map(output_sections, |part_id, section_alignment, part_size| {
         let section_id = part_id.output_section_id();
-        let defs = output_sections.details(section_id);
+        let section_flags = output_sections.section_flags(section_id);
         let mem_size = *part_size;
         // Note, we align up even if our size is zero, otherwise our section will start at an
         // unaligned address.
         file_offset = section_alignment.align_up_usize(file_offset);
 
-        if defs.section_flags.contains(shf::ALLOC) {
+        if section_flags.contains(shf::ALLOC) {
             mem_offset = section_alignment.align_up(mem_offset);
             let seg_id = output_sections.loadable_segment_id_for(section_id);
             if current_seg_id != seg_id {
@@ -4290,11 +4289,11 @@ fn test_no_disallowed_overlaps() {
             continue;
         };
 
-        let section_details = output_sections.details(section_id);
-
-        if !section_details.section_flags.contains(shf::ALLOC) {
+        let section_flags = output_sections.section_flags(section_id);
+        if !section_flags.contains(shf::ALLOC) {
             return;
         }
+
         let section = section_layouts.get(section_id);
         let mem_offset = section.mem_offset;
         let mem_end = mem_offset + section.mem_size;
@@ -4322,7 +4321,7 @@ fn test_no_disallowed_overlaps() {
 
     let mut section_index = 0;
     for section in output_sections.section_infos.iter() {
-        if section.details.section_flags.contains(shf::ALLOC) {
+        if section.section_flags.contains(shf::ALLOC) {
             output_sections
                 .output_section_indexes
                 .push(Some(section_index));

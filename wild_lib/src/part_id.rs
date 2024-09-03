@@ -6,7 +6,6 @@ use crate::error::Result;
 use crate::output_section_id;
 use crate::output_section_id::BuiltInSectionDetails;
 use crate::output_section_id::OutputSectionId;
-use crate::output_section_id::SectionDetails;
 use crate::output_section_id::SectionName;
 use crate::output_section_id::FINI;
 use crate::output_section_id::INIT;
@@ -39,7 +38,6 @@ pub(crate) struct CustomSectionId<'data> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UnloadedSection<'data> {
     pub(crate) part_id: TemporaryPartId<'data>,
-    pub(crate) details: SectionDetails,
     pub(crate) is_string_merge: bool,
 }
 
@@ -126,7 +124,6 @@ impl<'data> UnloadedSection<'data> {
         } else if section_name == b".eh_frame" {
             return Ok(Some(UnloadedSection {
                 part_id: TemporaryPartId::EhFrameData,
-                details: output_section_id::EH_FRAME.built_in_details().details,
                 is_string_merge: false,
             }));
         } else if section_name.starts_with(b".gcc_except_table") {
@@ -149,10 +146,8 @@ impl<'data> UnloadedSection<'data> {
                     name: SectionName(section_name),
                     alignment,
                 };
-                let details = SectionDetails { section_flags };
                 return Ok(Some(UnloadedSection {
                     part_id: TemporaryPartId::Custom(custom_section_id),
-                    details,
                     is_string_merge: should_merge_strings(
                         section,
                         object.section_alignment(section)?,
@@ -188,7 +183,6 @@ impl<'data> UnloadedSection<'data> {
         let part_id = built_in_section_id.part_id_with_alignment(alignment);
         Ok(Some(UnloadedSection {
             part_id: TemporaryPartId::BuiltIn(part_id),
-            details: built_in_section_id.built_in_details().details,
             is_string_merge: should_merge_strings(
                 section,
                 object.section_alignment(section)?,
