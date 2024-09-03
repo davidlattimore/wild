@@ -83,7 +83,7 @@ pub mod shf {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct SectionFlags(u64);
+pub struct SectionFlags(u32);
 
 impl SectionFlags {
     pub const fn empty() -> Self {
@@ -91,7 +91,7 @@ impl SectionFlags {
     }
 
     pub fn from_header(header: &object::elf::SectionHeader64<LittleEndian>) -> Self {
-        Self(header.sh_flags(LittleEndian))
+        Self(header.sh_flags(LittleEndian) as u32)
     }
 
     pub fn contains(self, flag: SectionFlags) -> bool {
@@ -99,7 +99,7 @@ impl SectionFlags {
     }
 
     pub const fn from_u32(raw: u32) -> SectionFlags {
-        SectionFlags(raw as u64)
+        SectionFlags(raw)
     }
 
     /// Returns self with the specified flags set.
@@ -115,13 +115,13 @@ impl SectionFlags {
     }
 
     pub const fn raw(self) -> u64 {
-        self.0
+        self.0 as u64
     }
 }
 
 impl From<u64> for SectionFlags {
     fn from(value: u64) -> Self {
-        Self(value)
+        Self(value as u32)
     }
 }
 
