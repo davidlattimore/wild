@@ -68,7 +68,6 @@ use object::read::elf::VerdefIterator;
 use object::LittleEndian;
 use object::SectionIndex;
 use smallvec::SmallVec;
-use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt::Display;
 use std::mem::size_of;
@@ -3832,7 +3831,8 @@ fn layout_section_parts(
     let mut file_offset = 0;
     let mut mem_offset = output_sections.base_address;
     let mut current_seg_id = None;
-    let mut nonalloc_mem_offsets = HashMap::new();
+    let mut nonalloc_mem_offsets: OutputSectionMap<u64> =
+        OutputSectionMap::with_size(output_sections.num_sections());
 
     sizes.output_order_map(output_sections, |part_id, section_alignment, part_size| {
         let defs = output_sections.details(part_id.output_section_id());
@@ -3866,13 +3866,10 @@ fn layout_section_parts(
             mem_offset += mem_size;
             section_layout
         } else {
-            let mem_offset =
-                section_alignment.align_up(*nonalloc_mem_offsets.get(&defs.name).unwrap_or(&0));
+            let section_id = part_id.output_section_id();
+            let mem_offset = section_alignment.align_up(*nonalloc_mem_offsets.get(section_id));
 
-            nonalloc_mem_offsets
-                .entry(&defs.name)
-                .and_modify(|o| *o += mem_size)
-                .or_insert(mem_size);
+            *nonalloc_mem_offsets.get_mut(section_id) += mem_size;
 
             let section_layout = OutputRecordLayout {
                 alignment: section_alignment,
