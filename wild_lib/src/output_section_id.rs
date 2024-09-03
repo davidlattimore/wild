@@ -82,9 +82,6 @@ pub(crate) struct SectionDetails<'data> {
     pub(crate) ty: u32,
     pub(crate) section_flags: SectionFlags,
     pub(crate) element_size: u64,
-
-    /// In a "packed" section, no padding will be added for alignment purposes.
-    pub(crate) packed: bool,
 }
 
 // Single-part sections that we generate ourselves rather than copying directly from input objects.
@@ -258,7 +255,6 @@ impl SectionDetails<'static> {
             ty: object::elf::SHT_NULL,
             section_flags: SectionFlags(0),
             element_size: 0,
-            packed: false,
         }
     }
 }
@@ -270,11 +266,7 @@ impl SectionDetails<'_> {
 }
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
-    details: SectionDetails {
-        name: SectionName(&[]),
-        packed: false,
-        ..SectionDetails::default()
-    },
+    details: SectionDetails::default(),
     link: &[],
     start_symbol_name: None,
     end_symbol_name: None,
@@ -574,7 +566,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             name: SectionName(b".init"),
             ty: object::elf::SHT_PROGBITS,
             section_flags: SectionFlags(shf::ALLOC | shf::EXECINSTR | shf::GNU_RETAIN),
-            packed: true,
             ..SectionDetails::default()
         },
         ..DEFAULT_DEFS
@@ -584,7 +575,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
             name: SectionName(b".fini"),
             ty: object::elf::SHT_PROGBITS,
             section_flags: SectionFlags(shf::ALLOC | shf::EXECINSTR | shf::GNU_RETAIN),
-            packed: true,
             ..SectionDetails::default()
         },
         ..DEFAULT_DEFS
@@ -985,7 +975,6 @@ impl<'data> OutputSections<'data> {
             ty: object::elf::SHT_PROGBITS,
             section_flags: SectionFlags(shf::GNU_RETAIN),
             element_size: 0,
-            packed: false,
         };
         builder
             .add_sections(&[

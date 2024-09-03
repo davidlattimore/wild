@@ -2190,21 +2190,21 @@ impl Section {
         common: &mut CommonGroupState,
         queue: &mut LocalWorkQueue,
         unloaded: &UnloadedSection,
-        section_id: object::SectionIndex,
+        section_index: object::SectionIndex,
         resources: &GraphResources,
     ) -> Result<Section> {
         let e = LittleEndian;
-        let object_section = object_state.object.section(section_id)?;
+        let object_section = object_state.object.section(section_index)?;
         let size = object_state.object.section_size(object_section)?;
-        for rel in object_state.object.relocations(section_id)? {
+        for rel in object_state.object.relocations(section_index)? {
             process_relocation(object_state, common, rel, object_section, resources, queue)?;
         }
         let section = Section {
-            index: section_id,
+            index: section_index,
             output_part_id: None,
             size,
             resolution_kind: ResolutionFlags::empty(),
-            packed: unloaded.details.packed,
+            packed: unloaded.part_id.should_pack(),
             is_writable: object_section.sh_flags(e) & shf::WRITE != 0,
         };
         Ok(section)

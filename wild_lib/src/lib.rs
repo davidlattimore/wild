@@ -1,6 +1,7 @@
 // It's not always desirable to use if-let instead of a match, especially if you might later end up
 // adding more branches to the match.
 #![allow(clippy::single_match)]
+
 // Sure, less arguments is good, but it's a trade-off. Sometimes you have a complex function that
 // you'd like to split by extracting part of it out into a new function. That new function might
 // have lots of arguments. It might be possible to group some of those arguments together into some
@@ -9,6 +10,9 @@
 // Especially since that function is generally only ever called from one place and the arguments all
 // have distinct types.
 #![allow(clippy::too_many_arguments)]
+
+// I might add additional fields later, so why make me remove ..Default::default()?
+#![allow(clippy::needless_update)]
 
 use args::Args;
 

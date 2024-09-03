@@ -9,6 +9,8 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionDetails;
 use crate::output_section_id::SectionFlags;
 use crate::output_section_id::SectionName;
+use crate::output_section_id::FINI;
+use crate::output_section_id::INIT;
 use linker_utils::elf::shf;
 use std::fmt::Debug;
 
@@ -157,7 +159,6 @@ impl<'data> UnloadedSection<'data> {
                     ty,
                     section_flags: SectionFlags(section_flags),
                     element_size: 0,
-                    packed: false,
                 };
                 return Ok(Some(UnloadedSection {
                     part_id: TemporaryPartId::Custom(custom_section_id),
@@ -272,6 +273,23 @@ impl PartId {
             }
         } else {
             self.built_in_details().min_alignment
+        }
+    }
+}
+
+impl TemporaryPartId<'_> {
+    /// Returns whether we should skip adding padding after this section. This is a special rule
+    /// that's just for `.init` and `.fini`. The `.init` section `crti.o` contains the starts of a
+    /// function and `crtn.o` contains the end of that function. If `.init` has say alignment = 4
+    /// and we add padding after it to bring it up to a multiple of 4 bytes, then we'll break the
+    /// function, since the padding bytes won't be valid instructions.
+    pub(crate) fn should_pack(&self) -> bool {
+        match self {
+            TemporaryPartId::BuiltIn(part_id) => {
+                let section_id = part_id.output_section_id();
+                section_id == INIT || section_id == FINI
+            }
+            _ => false,
         }
     }
 }
