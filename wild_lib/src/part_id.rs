@@ -153,11 +153,7 @@ impl<'data> UnloadedSection<'data> {
                     name: SectionName(section_name),
                     alignment,
                 };
-                let details = SectionDetails {
-                    ty,
-                    section_flags,
-                    element_size: 0,
-                };
+                let details = SectionDetails { ty, section_flags };
                 return Ok(Some(UnloadedSection {
                     part_id: TemporaryPartId::Custom(custom_section_id),
                     details,

@@ -2390,7 +2390,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         {
             continue;
         }
-        let entsize = section_details.element_size;
+        let entsize = section_id.element_size();
         let size;
         let alignment;
         if section_details.ty == object::elf::SHT_NULL {

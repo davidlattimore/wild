@@ -59,7 +59,6 @@ pub(crate) struct OutputSectionId(u32);
 pub(crate) struct SectionDetails {
     pub(crate) ty: u32,
     pub(crate) section_flags: SectionFlags,
-    pub(crate) element_size: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -232,6 +231,7 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) min_alignment: Alignment,
     info_fn: Option<fn(&Layout) -> u32>,
     pub(crate) keep_if_empty: bool,
+    pub(crate) element_size: u64,
 }
 
 impl SectionDetails {
@@ -239,7 +239,6 @@ impl SectionDetails {
         Self {
             ty: object::elf::SHT_NULL,
             section_flags: SectionFlags::empty(),
-            element_size: 0,
         }
     }
 
@@ -257,6 +256,7 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     min_alignment: alignment::MIN,
     info_fn: None,
     keep_if_empty: false,
+    element_size: 0,
 };
 
 const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
@@ -312,9 +312,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             ty: object::elf::SHT_PROGBITS,
             section_flags: shf::WRITE.with(shf::ALLOC),
-            element_size: core::mem::size_of::<u64>() as u64,
             ..SectionDetails::default()
         },
+        element_size: crate::elf::GOT_ENTRY_SIZE,
         min_alignment: alignment::GOT_ENTRY,
         ..DEFAULT_DEFS
     },
@@ -323,9 +323,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             ty: object::elf::SHT_PROGBITS,
             section_flags: shf::ALLOC.with(shf::EXECINSTR),
-            element_size: crate::elf::PLT_ENTRY_SIZE,
             ..SectionDetails::default()
         },
+        element_size: crate::elf::PLT_ENTRY_SIZE,
         min_alignment: alignment::PLT,
         ..DEFAULT_DEFS
     },
@@ -334,9 +334,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             ty: object::elf::SHT_RELA,
             section_flags: shf::ALLOC.with(shf::INFO_LINK),
-            element_size: elf::RELA_ENTRY_SIZE,
             ..SectionDetails::default()
         },
+        element_size: elf::RELA_ENTRY_SIZE,
         link: &[DYNSYM, SYMTAB],
         min_alignment: alignment::RELA_ENTRY,
         start_symbol_name: Some("__rela_iplt_start"),
@@ -368,9 +368,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             ty: object::elf::SHT_DYNAMIC,
             section_flags: shf::ALLOC.with(shf::WRITE),
-            element_size: core::mem::size_of::<DynamicEntry>() as u64,
             ..SectionDetails::default()
         },
+        element_size: core::mem::size_of::<DynamicEntry>() as u64,
         link: &[DYNSTR],
         min_alignment: alignment::USIZE,
         start_symbol_name: Some("_DYNAMIC"),
@@ -392,9 +392,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             ty: object::elf::SHT_DYNSYM,
             section_flags: shf::ALLOC,
-            element_size: size_of::<elf::SymtabEntry>() as u64,
             ..SectionDetails::default()
         },
+        element_size: size_of::<elf::SymtabEntry>() as u64,
         link: &[DYNSTR],
         min_alignment: alignment::SYMTAB_ENTRY,
         info_fn: Some(dynsym_info),
@@ -424,9 +424,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             ty: object::elf::SHT_GNU_VERSYM,
             section_flags: shf::ALLOC,
-            element_size: core::mem::size_of::<Versym>() as u64,
             ..SectionDetails::default()
         },
+        element_size: core::mem::size_of::<Versym>() as u64,
         min_alignment: alignment::VERSYM,
         link: &[DYNSYM],
         ..DEFAULT_DEFS
@@ -448,9 +448,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             ty: object::elf::SHT_PROGBITS,
             section_flags: shf::WRITE.with(shf::ALLOC),
-            element_size: core::mem::size_of::<u64>() as u64,
             ..SectionDetails::default()
         },
+        element_size: core::mem::size_of::<u64>() as u64,
         start_symbol_name: Some("_GLOBAL_OFFSET_TABLE_"),
         min_alignment: alignment::GOT_ENTRY,
         ..DEFAULT_DEFS
@@ -460,9 +460,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             ty: object::elf::SHT_PROGBITS,
             section_flags: shf::ALLOC.with(shf::EXECINSTR),
-            element_size: crate::elf::PLT_ENTRY_SIZE,
             ..SectionDetails::default()
         },
+        element_size: crate::elf::PLT_ENTRY_SIZE,
         min_alignment: alignment::PLT,
         ..DEFAULT_DEFS
     },
@@ -471,9 +471,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         name: SectionName(b".symtab"),
         details: SectionDetails {
             ty: object::elf::SHT_SYMTAB,
-            element_size: size_of::<elf::SymtabEntry>() as u64,
             ..SectionDetails::default()
         },
+        element_size: size_of::<elf::SymtabEntry>() as u64,
         min_alignment: alignment::SYMTAB_ENTRY,
         link: &[STRTAB],
         info_fn: Some(symtab_info),
@@ -484,9 +484,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             ty: object::elf::SHT_RELA,
             section_flags: shf::ALLOC,
-            element_size: elf::RELA_ENTRY_SIZE,
             ..SectionDetails::default()
         },
+        element_size: elf::RELA_ENTRY_SIZE,
         min_alignment: alignment::RELA_ENTRY,
         link: &[DYNSYM],
         ..DEFAULT_DEFS
@@ -506,9 +506,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             ty: object::elf::SHT_INIT_ARRAY,
             section_flags: shf::ALLOC.with(shf::WRITE).with(shf::GNU_RETAIN),
-            element_size: core::mem::size_of::<u64>() as u64,
             ..SectionDetails::default()
         },
+        element_size: core::mem::size_of::<u64>() as u64,
         start_symbol_name: Some("__init_array_start"),
         end_symbol_name: Some("__init_array_end"),
         ..DEFAULT_DEFS
@@ -518,9 +518,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             ty: object::elf::SHT_FINI_ARRAY,
             section_flags: shf::ALLOC.with(shf::WRITE).with(shf::GNU_RETAIN),
-            element_size: core::mem::size_of::<u64>() as u64,
             ..SectionDetails::default()
         },
+        element_size: core::mem::size_of::<u64>() as u64,
         start_symbol_name: Some("__fini_array_start"),
         end_symbol_name: Some("__fini_array_end"),
         ..DEFAULT_DEFS
@@ -605,9 +605,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             ty: object::elf::SHT_PROGBITS,
             section_flags: shf::STRINGS.with(shf::MERGE).with(shf::GNU_RETAIN),
-            element_size: 1,
             ..SectionDetails::default()
         },
+        element_size: 1,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -705,6 +705,12 @@ impl OutputSectionId {
         self.opt_built_in_details()
             .and_then(|d| d.info_fn)
             .map(|info_fn| (info_fn)(layout))
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn element_size(&self) -> u64 {
+        self.opt_built_in_details()
+            .map(|d| d.element_size)
             .unwrap_or(0)
     }
 }
@@ -962,7 +968,6 @@ impl<'data> OutputSections<'data> {
         let section_details = SectionDetails {
             ty: object::elf::SHT_PROGBITS,
             section_flags: shf::GNU_RETAIN,
-            element_size: 0,
         };
         builder
             .add_sections(&[
