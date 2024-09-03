@@ -146,7 +146,6 @@ impl<'data> UnloadedSection<'data> {
             } else {
                 object::elf::SHT_PROGBITS
             };
-            let retain = sh_flags & shf::GNU_RETAIN != 0;
             let section_flags = sh_flags;
             if !section_name.is_empty() {
                 let custom_section_id = CustomSectionId {
@@ -158,7 +157,6 @@ impl<'data> UnloadedSection<'data> {
                     ty,
                     section_flags: SectionFlags(section_flags),
                     element_size: 0,
-                    retain,
                     packed: false,
                 };
                 return Ok(Some(UnloadedSection {

@@ -83,9 +83,6 @@ pub(crate) struct SectionDetails<'data> {
     pub(crate) section_flags: SectionFlags,
     pub(crate) element_size: u64,
 
-    /// Whether this section should always be linked, even if it's not referenced.
-    pub(crate) retain: bool,
-
     /// In a "packed" section, no padding will be added for alignment purposes.
     pub(crate) packed: bool,
 }
@@ -260,10 +257,15 @@ impl SectionDetails<'static> {
             name: SectionName(&[]),
             ty: object::elf::SHT_NULL,
             section_flags: SectionFlags(0),
-            retain: false,
             element_size: 0,
             packed: false,
         }
+    }
+}
+
+impl SectionDetails<'_> {
+    pub(crate) fn should_retain(&self) -> bool {
+        self.section_flags.contains(shf::GNU_RETAIN)
     }
 }
 
@@ -527,8 +529,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: SectionName(b".init_array"),
             ty: object::elf::SHT_INIT_ARRAY,
-            section_flags: SectionFlags(shf::ALLOC | shf::WRITE),
-            retain: true,
+            section_flags: SectionFlags(shf::ALLOC | shf::WRITE | shf::GNU_RETAIN),
             element_size: core::mem::size_of::<u64>() as u64,
             ..SectionDetails::default()
         },
@@ -540,8 +541,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: SectionName(b".fini_array"),
             ty: object::elf::SHT_FINI_ARRAY,
-            section_flags: SectionFlags(shf::ALLOC | shf::WRITE),
-            retain: true,
+            section_flags: SectionFlags(shf::ALLOC | shf::WRITE | shf::GNU_RETAIN),
             element_size: core::mem::size_of::<u64>() as u64,
             ..SectionDetails::default()
         },
@@ -553,8 +553,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: SectionName(b".preinit_array"),
             ty: object::elf::SHT_PREINIT_ARRAY,
-            section_flags: SectionFlags(shf::ALLOC),
-            retain: true,
+            section_flags: SectionFlags(shf::ALLOC | shf::GNU_RETAIN),
             ..SectionDetails::default()
         },
         start_symbol_name: Some("__preinit_array_start"),
@@ -574,8 +573,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: SectionName(b".init"),
             ty: object::elf::SHT_PROGBITS,
-            section_flags: SectionFlags(shf::ALLOC | shf::EXECINSTR),
-            retain: true,
+            section_flags: SectionFlags(shf::ALLOC | shf::EXECINSTR | shf::GNU_RETAIN),
             packed: true,
             ..SectionDetails::default()
         },
@@ -584,9 +582,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         details: SectionDetails {
             name: SectionName(b".fini"),
-            retain: true,
             ty: object::elf::SHT_PROGBITS,
-            section_flags: SectionFlags(shf::ALLOC | shf::EXECINSTR),
+            section_flags: SectionFlags(shf::ALLOC | shf::EXECINSTR | shf::GNU_RETAIN),
             packed: true,
             ..SectionDetails::default()
         },
@@ -633,8 +630,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         details: SectionDetails {
             name: SectionName(b".comment"),
             ty: object::elf::SHT_PROGBITS,
-            retain: true,
-            section_flags: SectionFlags(shf::STRINGS | shf::MERGE),
+            section_flags: SectionFlags(shf::STRINGS | shf::MERGE | shf::GNU_RETAIN),
             element_size: 1,
             ..SectionDetails::default()
         },
@@ -987,9 +983,8 @@ impl<'data> OutputSections<'data> {
         let section_details = SectionDetails {
             name: SectionName(b"ro"),
             ty: object::elf::SHT_PROGBITS,
-            section_flags: SectionFlags(0),
+            section_flags: SectionFlags(shf::GNU_RETAIN),
             element_size: 0,
-            retain: true,
             packed: false,
         };
         builder

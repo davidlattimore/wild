@@ -2933,8 +2933,7 @@ impl<'data> ObjectLayoutState<'data> {
         for (i, section) in self.state.sections.iter().enumerate() {
             match section {
                 SectionSlot::Unloaded(unloaded_section) => {
-                    let retain = unloaded_section.details.retain;
-                    if retain {
+                    if unloaded_section.details.should_retain() {
                         self.state
                             .sections_required
                             .push(SectionRequest::new(object::SectionIndex(i)));
