@@ -51,6 +51,10 @@ impl<S> tracing_subscriber::Layer<S> for TimingLayer
 where
     S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
 {
+    fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+        Some(tracing::level_filters::LevelFilter::INFO)
+    }
+
     fn on_new_span(
         &self,
         attributes: &tracing::span::Attributes,
