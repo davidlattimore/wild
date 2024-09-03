@@ -16,11 +16,11 @@ use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
-use object::SectionFlags;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use linker_utils::elf::SectionFlags;
 
 pub(crate) enum Converter {
     None,
@@ -45,10 +45,11 @@ impl Converter {
                 // there is no non-empty sections at that address.
                 let mut empty_section_name = None;
                 for section in obj.elf_file.sections() {
-                    let SectionFlags::Elf { sh_flags } = section.flags() else {
+                    let object::SectionFlags::Elf { sh_flags } = section.flags() else {
                         unreachable!();
                     };
-                    if section.address() == value && sh_flags & shf::ALLOC != 0 {
+                    let section_flags = SectionFlags::from(sh_flags);
+                    if section.address() == value && section_flags.contains(shf::ALLOC) {
                         if section.data().map(|d| d.len()).unwrap_or(0) == 0 {
                             empty_section_name = Some(section.name()?.to_owned());
                         } else {
@@ -87,7 +88,7 @@ impl Converter {
                 .section_by_index(object::SectionIndex(value as usize))?
                 .name()?
                 .to_owned()),
-            Converter::SectionFlags => Ok(shf::flag_to_string(value)),
+            Converter::SectionFlags => Ok(SectionFlags::from(value).to_string()),
         }
     }
 }

@@ -1,3 +1,5 @@
+use object::read::elf::SectionHeader;
+use object::LittleEndian;
 use std::borrow::Cow;
 
 macro_rules! const_name_by_value {
@@ -63,55 +65,114 @@ pub fn rel_type_to_string(r_type: u32) -> Cow<'static, str> {
 /// Section flag bit values.
 #[allow(unused)]
 pub mod shf {
-    pub const WRITE: u64 = object::elf::SHF_WRITE as u64;
-    pub const ALLOC: u64 = object::elf::SHF_ALLOC as u64;
-    pub const EXECINSTR: u64 = object::elf::SHF_EXECINSTR as u64;
-    pub const MERGE: u64 = object::elf::SHF_MERGE as u64;
-    pub const STRINGS: u64 = object::elf::SHF_STRINGS as u64;
-    pub const INFO_LINK: u64 = object::elf::SHF_INFO_LINK as u64;
-    pub const LINK_ORDER: u64 = object::elf::SHF_LINK_ORDER as u64;
-    pub const OS_NONCONFORMING: u64 = object::elf::SHF_OS_NONCONFORMING as u64;
-    pub const GROUP: u64 = object::elf::SHF_GROUP as u64;
-    pub const TLS: u64 = object::elf::SHF_TLS as u64;
-    pub const COMPRESSED: u64 = object::elf::SHF_COMPRESSED as u64;
-    pub const GNU_RETAIN: u64 = object::elf::SHF_GNU_RETAIN as u64;
+    use super::SectionFlags;
 
-    pub fn flag_to_string(value: u64) -> String {
-        let mut flags = String::new();
-        if value & WRITE != 0 {
-            flags.push('W');
+    pub const WRITE: SectionFlags = SectionFlags::from_u32(object::elf::SHF_WRITE);
+    pub const ALLOC: SectionFlags = SectionFlags::from_u32(object::elf::SHF_ALLOC);
+    pub const EXECINSTR: SectionFlags = SectionFlags::from_u32(object::elf::SHF_EXECINSTR);
+    pub const MERGE: SectionFlags = SectionFlags::from_u32(object::elf::SHF_MERGE);
+    pub const STRINGS: SectionFlags = SectionFlags::from_u32(object::elf::SHF_STRINGS);
+    pub const INFO_LINK: SectionFlags = SectionFlags::from_u32(object::elf::SHF_INFO_LINK);
+    pub const LINK_ORDER: SectionFlags = SectionFlags::from_u32(object::elf::SHF_LINK_ORDER);
+    pub const OS_NONCONFORMING: SectionFlags =
+        SectionFlags::from_u32(object::elf::SHF_OS_NONCONFORMING);
+    pub const GROUP: SectionFlags = SectionFlags::from_u32(object::elf::SHF_GROUP);
+    pub const TLS: SectionFlags = SectionFlags::from_u32(object::elf::SHF_TLS);
+    pub const COMPRESSED: SectionFlags = SectionFlags::from_u32(object::elf::SHF_COMPRESSED);
+    pub const GNU_RETAIN: SectionFlags = SectionFlags::from_u32(object::elf::SHF_GNU_RETAIN);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct SectionFlags(u64);
+
+impl SectionFlags {
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub fn from_header(header: &object::elf::SectionHeader64<LittleEndian>) -> Self {
+        Self(header.sh_flags(LittleEndian))
+    }
+
+    pub fn contains(self, flag: SectionFlags) -> bool {
+        self.0 & flag.0 != 0
+    }
+
+    pub const fn from_u32(raw: u32) -> SectionFlags {
+        SectionFlags(raw as u64)
+    }
+
+    /// Returns self with the specified flags set.
+    #[must_use]
+    pub const fn with(self, flags: SectionFlags) -> SectionFlags {
+        SectionFlags(self.0 | flags.0)
+    }
+
+    /// Returns self with the specified flags cleared.
+    #[must_use]
+    pub const fn without(self, flags: SectionFlags) -> SectionFlags {
+        SectionFlags(self.0 & !flags.0)
+    }
+
+    pub const fn raw(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for SectionFlags {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl std::fmt::Display for SectionFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.contains(shf::WRITE) {
+            f.write_str("W")?;
         }
-        if value & ALLOC != 0 {
-            flags.push('A');
+        if self.contains(shf::ALLOC) {
+            f.write_str("A")?;
         }
-        if value & EXECINSTR != 0 {
-            flags.push('X');
+        if self.contains(shf::EXECINSTR) {
+            f.write_str("X")?;
         }
-        if value & MERGE != 0 {
-            flags.push('M');
+        if self.contains(shf::MERGE) {
+            f.write_str("M")?;
         }
-        if value & STRINGS != 0 {
-            flags.push('S');
+        if self.contains(shf::STRINGS) {
+            f.write_str("S")?;
         }
-        if value & INFO_LINK != 0 {
-            flags.push('I');
+        if self.contains(shf::INFO_LINK) {
+            f.write_str("I")?;
         }
-        if value & LINK_ORDER != 0 {
-            flags.push('L');
+        if self.contains(shf::LINK_ORDER) {
+            f.write_str("L")?;
         }
-        if value & OS_NONCONFORMING != 0 {
-            flags.push('O');
+        if self.contains(shf::OS_NONCONFORMING) {
+            f.write_str("O")?;
         }
-        if value & GROUP != 0 {
-            flags.push('G');
+        if self.contains(shf::GROUP) {
+            f.write_str("G")?;
         }
-        if value & TLS != 0 {
-            flags.push('T');
+        if self.contains(shf::TLS) {
+            f.write_str("T")?;
         }
-        if value & COMPRESSED != 0 {
-            flags.push('C');
+        if self.contains(shf::COMPRESSED) {
+            f.write_str("C")?;
         }
-        flags
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for SectionFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self, f)
+    }
+}
+
+impl std::ops::BitOrAssign for SectionFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
     }
 }
 

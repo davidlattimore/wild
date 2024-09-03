@@ -7,11 +7,11 @@ use crate::output_section_id;
 use crate::output_section_id::BuiltInSectionDetails;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionDetails;
-use crate::output_section_id::SectionFlags;
 use crate::output_section_id::SectionName;
 use crate::output_section_id::FINI;
 use crate::output_section_id::INIT;
 use linker_utils::elf::shf;
+use linker_utils::elf::SectionFlags;
 use std::fmt::Debug;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,7 +96,7 @@ impl<'data> UnloadedSection<'data> {
         // we just hard code stuff.
         let e = object::LittleEndian;
         let section_name = object.section_name(section).unwrap_or_default();
-        let sh_flags = section.sh_flags.get(e);
+        let section_flags = SectionFlags::from_header(section);
         let alignment = Alignment::new(object.section_alignment(section)?.max(1))?;
         let built_in_section_id = if section_name.starts_with(b".rodata") {
             Some(output_section_id::RODATA)
@@ -148,7 +148,6 @@ impl<'data> UnloadedSection<'data> {
             } else {
                 object::elf::SHT_PROGBITS
             };
-            let section_flags = sh_flags;
             if !section_name.is_empty() {
                 let custom_section_id = CustomSectionId {
                     name: SectionName(section_name),
@@ -157,7 +156,7 @@ impl<'data> UnloadedSection<'data> {
                 let details = SectionDetails {
                     name: SectionName(section_name),
                     ty,
-                    section_flags: SectionFlags(section_flags),
+                    section_flags,
                     element_size: 0,
                 };
                 return Ok(Some(UnloadedSection {
@@ -170,20 +169,20 @@ impl<'data> UnloadedSection<'data> {
                     ),
                 }));
             }
-            if sh_flags & shf::ALLOC == 0 {
+            if !section_flags.contains(shf::ALLOC) {
                 None
             } else if sh_type == object::elf::SHT_PROGBITS {
-                if sh_flags & shf::EXECINSTR != 0 {
+                if section_flags.contains(shf::EXECINSTR) {
                     Some(output_section_id::TEXT)
-                } else if sh_flags & shf::TLS != 0 {
+                } else if section_flags.contains(shf::TLS) {
                     Some(output_section_id::TDATA)
-                } else if sh_flags & shf::WRITE != 0 {
+                } else if section_flags.contains(shf::WRITE) {
                     Some(output_section_id::DATA)
                 } else {
                     Some(output_section_id::RODATA)
                 }
             } else if sh_type == object::elf::SHT_NOBITS {
-                if sh_flags & shf::TLS != 0 {
+                if section_flags.contains(shf::TLS) {
                     Some(output_section_id::TBSS)
                 } else {
                     Some(output_section_id::BSS)
@@ -215,13 +214,12 @@ fn should_merge_strings(section: &SectionHeader, section_alignment: u64, args: &
     if !args.merge_strings {
         return false;
     }
-    let e = object::LittleEndian;
-    let sh_flags = section.sh_flags.get(e);
-    (sh_flags & shf::MERGE) != 0
-        && (sh_flags & shf::STRINGS) != 0
+    let section_flags = SectionFlags::from_header(section);
+    section_flags.contains(shf::MERGE)
+        && section_flags.contains(shf::STRINGS)
         && section_alignment <= 1
         // TODO: support also debug info sections?
-        && sh_flags & shf::COMPRESSED == 0
+        && !section_flags.contains(shf::COMPRESSED)
 }
 
 impl PartId {

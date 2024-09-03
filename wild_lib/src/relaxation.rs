@@ -5,9 +5,9 @@
 
 use crate::args::OutputKind;
 use crate::elf::RelocationKindInfo;
-use crate::output_section_id::SectionFlags;
 use crate::resolution::ValueFlags;
 use linker_utils::elf::shf;
+use linker_utils::elf::SectionFlags;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Relaxation {
@@ -371,7 +371,7 @@ fn test_relaxation() {
             offset,
             ValueFlags::ADDRESS,
             OutputKind::StaticExecutable(RelocationModel::Relocatable),
-            SectionFlags(shf::EXECINSTR),
+            shf::EXECINSTR,
         ) {
             r.apply(&mut out, &mut offset, &mut 0, &mut modifier);
 
@@ -386,7 +386,7 @@ fn test_relaxation() {
             offset,
             ValueFlags::ABSOLUTE,
             OutputKind::StaticExecutable(RelocationModel::Relocatable),
-            SectionFlags(shf::EXECINSTR),
+            shf::EXECINSTR,
         ) {
             out.copy_from_slice(bytes_in);
             r.apply(&mut out, &mut offset, &mut 0, &mut modifier);

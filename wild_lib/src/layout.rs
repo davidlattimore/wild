@@ -23,7 +23,6 @@ use crate::input_data::PRELUDE_FILE_ID;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
-use crate::output_section_id::SectionFlags;
 use crate::output_section_id::FILE_HEADER;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
@@ -59,11 +58,11 @@ use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use itertools::Itertools;
 use linker_utils::elf::shf;
+use linker_utils::elf::SectionFlags;
 use object::elf::gnu_hash;
 use object::elf::Rela64;
 use object::read::elf::Dyn as _;
 use object::read::elf::Rela as _;
-use object::read::elf::SectionHeader;
 use object::read::elf::Sym as _;
 use object::read::elf::VerdefIterator;
 use object::LittleEndian;
@@ -1233,8 +1232,7 @@ impl<'data> Layout<'data> {
                             .map(|((maybe_res, section), section_slot)| {
                                 maybe_res.and_then(|res| {
                                     (matches!(section_slot, SectionSlot::Loaded(..))
-                                        && SectionFlags(section.sh_flags(LittleEndian))
-                                            .contains(shf::ALLOC)
+                                        && SectionFlags::from_header(section).contains(shf::ALLOC)
                                         && obj.object.section_size(section).is_ok_and(|s| s > 0))
                                     .then(|| {
                                         let address = res.address().unwrap();
@@ -2193,7 +2191,6 @@ impl Section {
         section_index: object::SectionIndex,
         resources: &GraphResources,
     ) -> Result<Section> {
-        let e = LittleEndian;
         let object_section = object_state.object.section(section_index)?;
         let size = object_state.object.section_size(object_section)?;
         for rel in object_state.object.relocations(section_index)? {
@@ -2205,7 +2202,7 @@ impl Section {
             size,
             resolution_kind: ResolutionFlags::empty(),
             packed: unloaded.part_id.should_pack(),
-            is_writable: object_section.sh_flags(e) & shf::WRITE != 0,
+            is_writable: SectionFlags::from_header(object_section).contains(shf::WRITE),
         };
         Ok(section)
     }
@@ -2262,7 +2259,7 @@ fn process_relocation(
             rel_offset,
             symbol_value_flags,
             args.output_kind,
-            SectionFlags(section.sh_flags(LittleEndian)),
+            SectionFlags::from_header(section),
         ) {
             relaxation.rel_info
         } else {
@@ -2274,7 +2271,7 @@ fn process_relocation(
                 .store(true, atomic::Ordering::Relaxed);
         }
 
-        let section_is_writable = section.sh_flags(LittleEndian) & shf::WRITE != 0;
+        let section_is_writable = SectionFlags::from_header(section).contains(shf::WRITE);
         let mut resolution_kind = resolution_flags(rel_info.kind);
         if resolution_kind.contains(ResolutionFlags::DIRECT)
             && symbol_value_flags.contains(ValueFlags::DYNAMIC)

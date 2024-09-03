@@ -36,7 +36,6 @@ use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
-use crate::output_section_id::SectionFlags;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
@@ -55,10 +54,10 @@ use anyhow::bail;
 use anyhow::Context;
 use linker_utils::elf::rel_type_to_string;
 use linker_utils::elf::shf;
+use linker_utils::elf::SectionFlags;
 use memmap2::MmapOptions;
 use object::from_bytes_mut;
 use object::read::elf::Rela;
-use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::fmt::Display;
@@ -1303,8 +1302,9 @@ impl<'data> ObjectLayout<'data> {
             .as_ref()
             .unwrap()
             .address()?;
+
         let object_section = self.object.section(section.index)?;
-        let section_flags = SectionFlags(object_section.sh_flags(LittleEndian));
+        let section_flags = SectionFlags::from_header(object_section);
         let mut modifier = RelocationModifier::Normal;
         for rel in self.object.relocations(section.index)? {
             if modifier == RelocationModifier::SkipNextRelocation {
@@ -1345,7 +1345,7 @@ impl<'data> ObjectLayout<'data> {
         let data = self.object.raw_section_data(eh_frame_section)?;
         const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
         let e = LittleEndian;
-        let section_flags = SectionFlags(eh_frame_section.sh_flags(e));
+        let section_flags = SectionFlags::from_header(eh_frame_section);
         let mut relocations = self
             .object
             .relocations(eh_frame_section_index)?
@@ -2411,9 +2411,10 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         entry.sh_name.set(e, name_offset);
         entry.sh_type.set(e, section_details.ty);
         // TODO: Section are always uncompressed and the output compression is not supported yet.
-        entry
-            .sh_flags
-            .set(e, section_details.section_flags.0 & !shf::COMPRESSED);
+        entry.sh_flags.set(
+            e,
+            section_details.section_flags.without(shf::COMPRESSED).raw(),
+        );
         entry.sh_addr.set(e, section_layout.mem_offset);
         entry.sh_offset.set(e, section_layout.file_offset as u64);
         entry.sh_size.set(e, size);
