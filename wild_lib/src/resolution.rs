@@ -14,9 +14,9 @@ use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::input_data::UNINITIALISED_FILE_ID;
+use crate::output_section_id::CustomSectionDetails;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::OutputSectionsBuilder;
-use crate::output_section_id::SectionDetails;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::parsing::InternalSymDefInfo;
@@ -407,7 +407,7 @@ pub(crate) struct NonDynamicResolved<'data> {
     merge_strings_sections: Vec<UnresolvedMergeStringsFileSection<'data>>,
 
     /// Details about each custom section that is defined in this object.
-    custom_sections: Vec<SectionDetails<'data>>,
+    custom_sections: Vec<CustomSectionDetails<'data>>,
 }
 
 pub(crate) struct ResolvedEpilogue {
@@ -690,7 +690,7 @@ impl<'data> ResolvedObject<'data> {
 
 fn resolve_sections<'data>(
     obj: &ParsedInputObject<'data>,
-    custom_sections: &mut Vec<SectionDetails<'data>>,
+    custom_sections: &mut Vec<CustomSectionDetails<'data>>,
     merge_strings_out: &mut Vec<UnresolvedMergeStringsFileSection<'data>>,
     args: &Args,
     allocator: &bumpalo_herd::Member<'data>,
@@ -704,7 +704,10 @@ fn resolve_sections<'data>(
             {
                 if unloaded.is_string_merge {
                     if let TemporaryPartId::Custom(_custom_section_id) = unloaded.part_id {
-                        custom_sections.push(unloaded.details);
+                        custom_sections.push(CustomSectionDetails {
+                            name: unloaded.name(),
+                            details: unloaded.details,
+                        });
                     }
                     Ok(SectionSlot::MergeStrings(MergeStringsFileSection::new(
                         &obj.object,
@@ -717,8 +720,11 @@ fn resolve_sections<'data>(
                 } else {
                     match unloaded.part_id {
                         TemporaryPartId::BuiltIn(_) => Ok(SectionSlot::Unloaded(unloaded)),
-                        TemporaryPartId::Custom(_custom_section_id) => {
-                            custom_sections.push(unloaded.details);
+                        TemporaryPartId::Custom(custom_section_id) => {
+                            custom_sections.push(CustomSectionDetails {
+                                name: custom_section_id.name,
+                                details: unloaded.details,
+                            });
                             Ok(SectionSlot::Unloaded(unloaded))
                         }
                         TemporaryPartId::EhFrameData => {

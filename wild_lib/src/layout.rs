@@ -1438,12 +1438,12 @@ fn compute_segment_layout(
                     ensure!(
                         part.mem_offset != 0 || section_id == FILE_HEADER,
                         "Missing memory offset for section `{}` present in a program segment.",
-                        section_details.name
+                        output_sections.name(section_id)
                     );
                     ensure!(
                     section_details.section_flags.contains(shf::ALLOC),
                     "Missing SHF_ALLOC section flag for section `{}` present in a program segment.",
-                    section_details.name
+                    output_sections.name(section_id)
                 );
                     for (_, rec) in active_records.iter_mut() {
                         rec.file_start = rec.file_start.min(part.file_offset);
@@ -1456,12 +1456,12 @@ fn compute_segment_layout(
                     ensure!(
                     part.mem_offset == 0,
                     "Expected zero address for section `{}` not present in any program segment.",
-                    section_details.name
+                    output_sections.name(section_id)
                 );
                     ensure!(
                         !section_details.section_flags.contains(shf::ALLOC),
                         "Section with SHF_ALLOC flag `{}` not present in any program segment.",
-                        section_details.name
+                        output_sections.name(section_id)
                     );
                 }
             }
@@ -2569,7 +2569,7 @@ impl<'data> PreludeLayoutState {
         self.shstrtab_size = output_sections
             .ids_with_info()
             .filter(|(id, _info)| output_sections.output_index_of_section(*id).is_some())
-            .map(|(_id, info)| info.details.name.len() as u64 + 1)
+            .map(|(_id, info)| info.name.len() as u64 + 1)
             .sum::<u64>();
         extra_sizes.increment(part_id::SHSTRTAB, self.shstrtab_size);
 

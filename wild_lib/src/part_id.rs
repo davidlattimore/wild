@@ -37,7 +37,7 @@ pub(crate) struct CustomSectionId<'data> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UnloadedSection<'data> {
     pub(crate) part_id: TemporaryPartId<'data>,
-    pub(crate) details: SectionDetails<'data>,
+    pub(crate) details: SectionDetails,
     pub(crate) is_string_merge: bool,
 }
 
@@ -154,7 +154,6 @@ impl<'data> UnloadedSection<'data> {
                     alignment,
                 };
                 let details = SectionDetails {
-                    name: SectionName(section_name),
                     ty,
                     section_flags,
                     element_size: 0,
@@ -204,6 +203,10 @@ impl<'data> UnloadedSection<'data> {
                 args,
             ),
         }))
+    }
+
+    pub(crate) fn name(&self) -> SectionName<'data> {
+        self.part_id.name()
     }
 }
 
@@ -275,7 +278,7 @@ impl PartId {
     }
 }
 
-impl TemporaryPartId<'_> {
+impl<'data> TemporaryPartId<'data> {
     /// Returns whether we should skip adding padding after this section. This is a special rule
     /// that's just for `.init` and `.fini`. The `.init` section `crti.o` contains the starts of a
     /// function and `crtn.o` contains the end of that function. If `.init` has say alignment = 4
@@ -288,6 +291,14 @@ impl TemporaryPartId<'_> {
                 section_id == INIT || section_id == FINI
             }
             _ => false,
+        }
+    }
+
+    fn name(&self) -> SectionName<'data> {
+        match self {
+            TemporaryPartId::BuiltIn(id) => id.built_in_details().name,
+            TemporaryPartId::Custom(id) => id.name,
+            TemporaryPartId::EhFrameData => EH_FRAME.built_in_details().name,
         }
     }
 }
@@ -312,7 +323,7 @@ impl<'data> std::fmt::Display for TemporaryPartId<'data> {
                     f,
                     "section #{} ({})",
                     id.as_usize(),
-                    id.built_in_details().details.name
+                    id.built_in_details().name
                 )
             }
             TemporaryPartId::Custom(custom) => {
