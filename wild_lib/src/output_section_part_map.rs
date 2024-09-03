@@ -248,7 +248,7 @@ fn test_merge_with_custom_sections() {
     assert_eq!(m1.num_parts(), output_sections.num_parts() + 2);
 }
 
-/// output_order_map and `OutputSections::sections_and_segments_do` used to each independently
+/// output_order_map and `OutputSections::sections_and_segments_events` used to each independently
 /// define the output order. This test made sure that they were consistent. Now the former is uses
 /// the latter, so this test is less important. It's kept for the time being anyway.
 #[test]

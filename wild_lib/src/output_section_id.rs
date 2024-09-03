@@ -7,7 +7,7 @@
 //!   the multi-part sections.
 //! * Add the section to `test_constant_ids` to make sure the ID is consistent with its position in
 //!   `SECTION_DEFINITIONS`.
-//! * Insert the new section into the output order in `sections_and_segments_do`. The position needs
+//! * Insert the new section into the output order in `sections_and_segments_events`. The position needs
 //!   to be consistent with the access flags on the section. e.g. if the section is read-only data,
 //!   it should go between the start and end of the read-only segment.
 //!
@@ -187,7 +187,7 @@ impl<'data> OutputSections<'data> {
             .try_for_each(|(load_seg, info)| -> Result {
                 let load_seg_id = load_seg.ok_or_else(|| {
                     anyhow!(
-                        "Section `{}` is missing from output order (update sections_and_segments_do)",
+                        "Section `{}` is missing from output order (update sections_and_segments_events)",
                         info.name,
                     )
                 })?;
