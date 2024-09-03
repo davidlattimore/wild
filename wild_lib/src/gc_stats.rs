@@ -83,19 +83,16 @@ fn write_gc_stats(
             let mut file_discarded = 0;
             for (slot, section) in obj.sections.iter().zip(obj.object.sections.iter()) {
                 match slot {
-                    SectionSlot::Unloaded(s) => match s.part_id {
-                        TemporaryPartId::BuiltIn(id) => {
-                            if id.output_section_id() == output_section_id::TEXT {
-                                file_discarded += obj.object.section_size(section)?;
-                                if args.verbose_gc_stats {
-                                    file_record
-                                        .discarded_names
-                                        .push(obj.object.section_name(section)?);
-                                }
+                    SectionSlot::Unloaded(TemporaryPartId::BuiltIn(id)) => {
+                        if id.output_section_id() == output_section_id::TEXT {
+                            file_discarded += obj.object.section_size(section)?;
+                            if args.verbose_gc_stats {
+                                file_record
+                                    .discarded_names
+                                    .push(obj.object.section_name(section)?);
                             }
                         }
-                        _ => {}
-                    },
+                    }
                     SectionSlot::Loaded(s) => {
                         if s.output_part_id.is_some_and(|part_id| {
                             part_id.output_section_id() == output_section_id::TEXT

@@ -387,10 +387,10 @@ pub(crate) enum SectionSlot<'data> {
     Discard,
 
     /// The section hasn't been loaded yet, but may be loaded if it's referenced.
-    Unloaded(UnloadedSection<'data>),
+    Unloaded(TemporaryPartId<'data>),
 
     /// The section had the retain bit set, so must be loaded.
-    MustLoad(UnloadedSection<'data>),
+    MustLoad(TemporaryPartId<'data>),
 
     /// We've already loaded the section.
     Loaded(crate::layout::Section),
@@ -741,9 +741,11 @@ fn resolve_sections<'data>(
                                 .section_flags
                                 .should_retain() =>
                         {
-                            Ok(SectionSlot::MustLoad(unloaded))
+                            Ok(SectionSlot::MustLoad(unloaded.part_id))
                         }
-                        TemporaryPartId::BuiltIn(_id) => Ok(SectionSlot::Unloaded(unloaded)),
+                        TemporaryPartId::BuiltIn(_id) => {
+                            Ok(SectionSlot::Unloaded(unloaded.part_id))
+                        }
                         TemporaryPartId::Custom(custom_section_id) => {
                             let section_flags = SectionFlags::from_header(input_section);
                             custom_sections.push(CustomSectionDetails {
@@ -752,9 +754,9 @@ fn resolve_sections<'data>(
                                 ty: SectionType::from_header(input_section),
                             });
                             if section_flags.should_retain() {
-                                Ok(SectionSlot::MustLoad(unloaded))
+                                Ok(SectionSlot::MustLoad(unloaded.part_id))
                             } else {
-                                Ok(SectionSlot::Unloaded(unloaded))
+                                Ok(SectionSlot::Unloaded(unloaded.part_id))
                             }
                         }
                         TemporaryPartId::EhFrameData => {

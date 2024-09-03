@@ -29,7 +29,7 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::part_id;
 use crate::part_id::PartId;
-use crate::part_id::UnloadedSection;
+use crate::part_id::TemporaryPartId;
 use crate::part_id::NUM_GENERATED_PARTS;
 use crate::program_segments;
 use crate::program_segments::ProgramSegmentId;
@@ -2187,7 +2187,7 @@ impl Section {
         object_state: &mut ObjectLayoutState,
         common: &mut CommonGroupState,
         queue: &mut LocalWorkQueue,
-        unloaded: &UnloadedSection,
+        unloaded: &TemporaryPartId,
         section_index: object::SectionIndex,
         resources: &GraphResources,
     ) -> Result<Section> {
@@ -2201,7 +2201,7 @@ impl Section {
             output_part_id: None,
             size,
             resolution_kind: ResolutionFlags::empty(),
-            packed: unloaded.part_id.should_pack(),
+            packed: unloaded.should_pack(),
             is_writable: SectionFlags::from_header(object_section).contains(shf::WRITE),
         };
         Ok(section)
@@ -2992,17 +2992,12 @@ impl<'data> ObjectLayoutState<'data> {
         &mut self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
-        unloaded: UnloadedSection<'data>,
+        unloaded: TemporaryPartId<'data>,
         section_id: SectionIndex,
         resources: &GraphResources<'data, 'scope>,
     ) -> Result {
-        if unloaded.is_string_merge {
-            // We currently always load all string-merge data regardless of whether it's
-            // referenced.
-            return Ok(());
-        }
         let mut section = Section::create(self, common, queue, &unloaded, section_id, resources)?;
-        let part_id = resources.output_sections.part_id(unloaded.part_id)?;
+        let part_id = resources.output_sections.part_id(unloaded)?;
         section.output_part_id = Some(part_id);
         common.allocate(part_id, section.capacity());
         resources
