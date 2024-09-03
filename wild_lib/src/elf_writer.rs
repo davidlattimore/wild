@@ -2384,6 +2384,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
             continue;
         };
         let section_details = output_sections.details(section_id);
+        let section_type = output_sections.section_type(section_id);
         let section_layout = layout.section_layouts.get(section_id);
         if output_sections
             .output_index_of_section(section_id)
@@ -2394,7 +2395,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         let entsize = section_id.element_size();
         let size;
         let alignment;
-        if section_details.ty == sht::NULL {
+        if section_type == sht::NULL {
             size = 0;
             alignment = 0;
         } else {
@@ -2410,7 +2411,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         let entry = entries.next().unwrap();
         let e = LittleEndian;
         entry.sh_name.set(e, name_offset);
-        entry.sh_type.set(e, section_details.ty.raw());
+        entry.sh_type.set(e, section_type.raw());
         // TODO: Section are always uncompressed and the output compression is not supported yet.
         entry.sh_flags.set(
             e,

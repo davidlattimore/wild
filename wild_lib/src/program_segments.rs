@@ -107,7 +107,7 @@ fn test_all_alloc_sections_in_a_loadable_segment() {
                     .iter()
                     .any(|seg_id| seg_id.segment_type() == object::elf::PT_LOAD);
                 let is_alloc = section_details.section_flags.contains(shf::ALLOC);
-                if section_details.has_data_in_file() && is_alloc && !has_load_segment {
+                if output_sections.has_data_in_file(section_id) && is_alloc && !has_load_segment {
                     panic!(
                     "alloc section {section_id:?} is not NOBITS, but isn't allocated to a LOAD segment"
                 );

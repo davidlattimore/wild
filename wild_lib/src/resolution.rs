@@ -38,6 +38,7 @@ use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use crossbeam_utils::atomic::AtomicCell;
 use itertools::Itertools;
+use linker_utils::elf::SectionType;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::fmt::Display;
@@ -707,6 +708,7 @@ fn resolve_sections<'data>(
                         custom_sections.push(CustomSectionDetails {
                             name: unloaded.name(),
                             details: unloaded.details,
+                            ty: SectionType::from_header(input_section),
                         });
                     }
                     Ok(SectionSlot::MergeStrings(MergeStringsFileSection::new(
@@ -724,6 +726,7 @@ fn resolve_sections<'data>(
                             custom_sections.push(CustomSectionDetails {
                                 name: custom_section_id.name,
                                 details: unloaded.details,
+                                ty: SectionType::from_header(input_section),
                             });
                             Ok(SectionSlot::Unloaded(unloaded))
                         }

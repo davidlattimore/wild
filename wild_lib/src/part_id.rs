@@ -144,17 +144,12 @@ impl<'data> UnloadedSection<'data> {
             None
         } else {
             let sh_type = SectionType::from_header(section);
-            let ty = if sh_type == sht::NOBITS {
-                sh_type
-            } else {
-                sht::PROGBITS
-            };
             if !section_name.is_empty() {
                 let custom_section_id = CustomSectionId {
                     name: SectionName(section_name),
                     alignment,
                 };
-                let details = SectionDetails { ty, section_flags };
+                let details = SectionDetails { section_flags };
                 return Ok(Some(UnloadedSection {
                     part_id: TemporaryPartId::Custom(custom_section_id),
                     details,

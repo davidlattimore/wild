@@ -3835,7 +3835,8 @@ fn layout_section_parts(
         OutputSectionMap::with_size(output_sections.num_sections());
 
     sizes.output_order_map(output_sections, |part_id, section_alignment, part_size| {
-        let defs = output_sections.details(part_id.output_section_id());
+        let section_id = part_id.output_section_id();
+        let defs = output_sections.details(section_id);
         let mem_size = *part_size;
         // Note, we align up even if our size is zero, otherwise our section will start at an
         // unaligned address.
@@ -3843,13 +3844,13 @@ fn layout_section_parts(
 
         if defs.section_flags.contains(shf::ALLOC) {
             mem_offset = section_alignment.align_up(mem_offset);
-            let seg_id = output_sections.loadable_segment_id_for(part_id.output_section_id());
+            let seg_id = output_sections.loadable_segment_id_for(section_id);
             if current_seg_id != seg_id {
                 current_seg_id = seg_id;
                 let segment_alignment = seg_id.map(|s| s.alignment()).unwrap_or(alignment::MIN);
                 mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
             }
-            let file_size = if defs.has_data_in_file() {
+            let file_size = if output_sections.has_data_in_file(section_id) {
                 mem_size as usize
             } else {
                 0
