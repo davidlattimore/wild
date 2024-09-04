@@ -6,7 +6,7 @@ use std::fmt::Display;
 /// An alignment. Always a power of two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, PartialOrd, Ord)]
 pub(crate) struct Alignment {
-    pub(crate) exponent: u16,
+    pub(crate) exponent: u8,
 }
 
 pub(crate) const NUM_ALIGNMENTS: usize = 16;
@@ -55,7 +55,7 @@ impl Alignment {
             bail!("Unsupported alignment 0x{raw:x}");
         }
         Ok(Alignment {
-            exponent: exponent as u16,
+            exponent: exponent as u8,
         })
     }
 

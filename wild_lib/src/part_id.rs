@@ -256,7 +256,7 @@ impl PartId {
     pub(crate) fn alignment(&self) -> Alignment {
         if let Some(offset) = self.0.checked_sub(REGULAR_PART_BASE) {
             Alignment {
-                exponent: NUM_ALIGNMENTS as u16 - 1 - (offset % NUM_ALIGNMENTS as u32) as u16,
+                exponent: NUM_ALIGNMENTS as u8 - 1 - (offset % NUM_ALIGNMENTS as u32) as u8,
             }
         } else {
             self.built_in_details().min_alignment
