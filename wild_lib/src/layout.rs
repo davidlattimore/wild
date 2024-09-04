@@ -1011,7 +1011,6 @@ pub(crate) struct Section {
     /// Size in memory.
     pub(crate) size: u64,
     pub(crate) resolution_kind: ResolutionFlags,
-    packed: bool,
     pub(crate) is_writable: bool,
 }
 
@@ -2187,7 +2186,6 @@ impl Section {
         object_state: &mut ObjectLayoutState,
         common: &mut CommonGroupState,
         queue: &mut LocalWorkQueue,
-        unloaded: &TemporaryPartId,
         section_index: object::SectionIndex,
         resources: &GraphResources,
         part_id: PartId,
@@ -2202,7 +2200,6 @@ impl Section {
             part_id,
             size,
             resolution_kind: ResolutionFlags::empty(),
-            packed: unloaded.should_pack(),
             is_writable: SectionFlags::from_header(object_section).contains(shf::WRITE),
         };
         Ok(section)
@@ -2211,7 +2208,7 @@ impl Section {
     // How much space we take up. This is our size rounded up to the next multiple of our alignment,
     // unless we're in a packed section, in which case it's just our size.
     pub(crate) fn capacity(&self) -> u64 {
-        if self.packed {
+        if self.part_id.should_pack() {
             self.size
         } else {
             self.alignment().align_up(self.size)
@@ -2993,9 +2990,7 @@ impl<'data> ObjectLayoutState<'data> {
         resources: &GraphResources<'data, 'scope>,
     ) -> Result {
         let part_id = resources.output_sections.part_id(unloaded)?;
-        let section = Section::create(
-            self, common, queue, &unloaded, section_id, resources, part_id,
-        )?;
+        let section = Section::create(self, common, queue, section_id, resources, part_id)?;
         common.allocate(part_id, section.capacity());
         resources
             .sections_with_content

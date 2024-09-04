@@ -264,22 +264,19 @@ impl PartId {
     }
 }
 
-impl<'data> TemporaryPartId<'data> {
+impl PartId {
     /// Returns whether we should skip adding padding after this section. This is a special rule
     /// that's just for `.init` and `.fini`. The `.init` section `crti.o` contains the starts of a
     /// function and `crtn.o` contains the end of that function. If `.init` has say alignment = 4
     /// and we add padding after it to bring it up to a multiple of 4 bytes, then we'll break the
     /// function, since the padding bytes won't be valid instructions.
     pub(crate) fn should_pack(&self) -> bool {
-        match self {
-            TemporaryPartId::BuiltIn(part_id) => {
-                let section_id = part_id.output_section_id();
-                section_id == INIT || section_id == FINI
-            }
-            _ => false,
-        }
+        let section_id = self.output_section_id();
+        section_id == INIT || section_id == FINI
     }
+}
 
+impl<'data> TemporaryPartId<'data> {
     fn name(&self) -> SectionName<'data> {
         match self {
             TemporaryPartId::BuiltIn(id) => id.built_in_details().name,
