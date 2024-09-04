@@ -8,6 +8,7 @@ wild_lib = { version = "0.2.0", path = "../wild_lib" }
 anyhow = "1.0.75"
 tracing = "0.1.40"
 itertools = "0.13.0"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
 [dev-dependencies]
 wait-timeout = "0.2.0"

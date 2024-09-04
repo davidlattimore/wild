@@ -172,7 +172,7 @@ impl Output {
         };
         sized_output.write(layout)?;
         // This triggers writing our .trace file if any. See output_trace module.
-        tracing::event!(tracing::Level::TRACE, output_write_complete = true);
+        tracing::trace!(output_write_complete = true);
         Ok(sized_output)
     }
 

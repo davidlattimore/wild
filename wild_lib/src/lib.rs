@@ -13,6 +13,10 @@
 #![allow(clippy::needless_update)]
 
 use args::Args;
+use tracing_subscriber::fmt;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 pub(crate) mod alignment;
 pub(crate) mod archive;
@@ -77,6 +81,11 @@ impl Linker {
                     output_trace::init(args);
                 } else if args.print_allocations.is_some() {
                     debug_trace::init();
+                } else {
+                    tracing_subscriber::registry()
+                        .with(fmt::layer())
+                        .with(EnvFilter::from_default_env())
+                        .init();
                 }
                 link(args)
             }
