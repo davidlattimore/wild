@@ -653,7 +653,7 @@ impl<'data> OutputSectionsBuilder<'data> {
             if info.section_flags.contains(shf::EXECINSTR) {
                 custom.exec.push(id);
             } else if !info.section_flags.contains(shf::WRITE) {
-                if info.name.0.starts_with(b".debug") && !info.section_flags.contains(shf::ALLOC) {
+                if !info.section_flags.contains(shf::ALLOC) {
                     custom.nonalloc.push(id);
                 } else {
                     custom.ro.push(id);

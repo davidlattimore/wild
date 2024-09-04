@@ -1297,6 +1297,7 @@ fn integration_test(
         "comments.c",
         "eh_frame.c",
         "trivial_asm.s",
+        "non-alloc.s",
         "libc-integration.c",
         "rust-integration.rs",
         "rust-integration-dynamic.rs",
