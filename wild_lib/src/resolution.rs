@@ -431,11 +431,15 @@ pub(crate) struct ResolvedEpilogue {
 
 #[derive(Clone, Copy)]
 pub(crate) struct MergeStringsFileSection<'data> {
-    temporary_part_id: TemporaryPartId<'data>,
+    pub(crate) part_id: PartId,
     pub(crate) section_data: &'data [u8],
 }
 
+/// Information about a string-merge section prior to merging. When merging occurs, this is turned
+/// into a MergeStringsFileSection.
 pub(crate) struct UnresolvedMergeStringsFileSection<'data> {
+    section_data: &'data [u8],
+    temporary_part_id: TemporaryPartId<'data>,
     section_index: object::SectionIndex,
     strings: Vec<PreHashed<StringToMerge<'data>>>,
 }
@@ -496,13 +500,14 @@ fn merge_strings<'data>(
                 continue;
             };
             for merge_info in &non_dynamic.merge_strings_sections {
-                let SectionSlot::MergeStrings(sec) =
-                    &mut non_dynamic.sections[merge_info.section_index.0]
-                else {
-                    unreachable!();
-                };
-                let part_id = output_sections.part_id(sec.temporary_part_id)?;
-                sec.set_precomputed_part_id(part_id);
+                let part_id = output_sections.part_id(merge_info.temporary_part_id)?;
+
+                // Now that we know the proper part-id, we can create the slot.
+                non_dynamic.sections[merge_info.section_index.0] =
+                    SectionSlot::MergeStrings(MergeStringsFileSection {
+                        part_id,
+                        section_data: merge_info.section_data,
+                    });
 
                 let string_to_offset = strings_by_section.get_mut(part_id.output_section_id());
                 for string in &merge_info.strings {
@@ -724,14 +729,16 @@ fn resolve_sections<'data>(
                             ty: SectionType::from_header(input_section),
                         });
                     }
-                    Ok(SectionSlot::MergeStrings(MergeStringsFileSection::new(
+                    merge_strings_out.push(UnresolvedMergeStringsFileSection::new(
                         &obj.object,
                         input_section,
                         input_section_index,
                         unloaded.part_id,
-                        merge_strings_out,
                         allocator,
-                    )?))
+                    )?);
+                    // We can't create the proper slot yet, because we don't yet know the PartId.
+                    // We'll fill it in later once we resolve part IDs for custom sections.
+                    Ok(SectionSlot::Discard)
                 } else {
                     match unloaded.part_id {
                         TemporaryPartId::BuiltIn(id)
@@ -897,42 +904,26 @@ impl<'data> SectionSlot<'data> {
     }
 }
 
-impl<'data> MergeStringsFileSection<'data> {
+impl<'data> UnresolvedMergeStringsFileSection<'data> {
     fn new(
         object: &crate::elf::File<'data>,
         input_section: &crate::elf::SectionHeader,
-        input_section_index: object::SectionIndex,
-        section_id: TemporaryPartId<'data>,
-        merge_strings_out: &mut Vec<UnresolvedMergeStringsFileSection<'data>>,
+        section_index: object::SectionIndex,
+        temporary_part_id: TemporaryPartId<'data>,
         allocator: &bumpalo_herd::Member<'data>,
-    ) -> Result<MergeStringsFileSection<'data>> {
+    ) -> Result<UnresolvedMergeStringsFileSection<'data>> {
         let section_data = object.section_data(input_section, allocator)?;
         let mut remaining = section_data;
         let mut strings = Vec::new();
         while !remaining.is_empty() {
             strings.push(StringToMerge::take_hashed(&mut remaining)?);
         }
-        merge_strings_out.push(UnresolvedMergeStringsFileSection {
-            section_index: input_section_index,
+        Ok(UnresolvedMergeStringsFileSection {
+            temporary_part_id,
+            section_index,
             strings,
-        });
-        Ok(MergeStringsFileSection {
-            temporary_part_id: section_id,
             section_data,
         })
-    }
-
-    /// Store the part ID, so that we don't have to recompute it again later.
-    fn set_precomputed_part_id(&mut self, part_id: PartId) {
-        // Built-in isn't quite accurate, but it serves out purpose.
-        self.temporary_part_id = TemporaryPartId::BuiltIn(part_id);
-    }
-
-    pub(crate) fn precomputed_part_id(&self) -> PartId {
-        match self.temporary_part_id {
-            TemporaryPartId::BuiltIn(id) => id,
-            _ => panic!("Call to `precomputed_part_id` when we haven't stored the ID"),
-        }
     }
 }
 

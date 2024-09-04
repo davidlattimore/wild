@@ -1247,31 +1247,30 @@ impl<'data> ObjectLayout<'data> {
                 &self.sections,
             ) {
                 let e = LittleEndian;
-                let section_id =
-                    if let Some(section_index) = self.object.symbol_section(sym, sym_index)? {
-                        match &self.sections[section_index.0] {
-                            SectionSlot::Loaded(section) => section.output_section_id().unwrap(),
-                            SectionSlot::MergeStrings(section) => {
-                                section.precomputed_part_id().output_section_id()
-                            }
-                            SectionSlot::EhFrameData(..) => output_section_id::EH_FRAME,
-                            _ => bail!("Tried to copy a symbol in a section we didn't load"),
-                        }
-                    } else if sym.is_common(e) {
-                        output_section_id::BSS
-                    } else if sym.is_absolute(e) {
-                        symbol_writer
-                            .copy_absolute_symbol(sym, info.name)
-                            .with_context(|| {
-                                format!(
-                                    "Failed to absolute {}",
-                                    layout.symbol_db.symbol_debug(symbol_id)
-                                )
-                            })?;
-                        continue;
-                    } else {
-                        bail!("Attempted to output a symtab entry with an unexpected section type")
-                    };
+                let section_id = if let Some(section_index) =
+                    self.object.symbol_section(sym, sym_index)?
+                {
+                    match &self.sections[section_index.0] {
+                        SectionSlot::Loaded(section) => section.output_section_id().unwrap(),
+                        SectionSlot::MergeStrings(section) => section.part_id.output_section_id(),
+                        SectionSlot::EhFrameData(..) => output_section_id::EH_FRAME,
+                        _ => bail!("Tried to copy a symbol in a section we didn't load"),
+                    }
+                } else if sym.is_common(e) {
+                    output_section_id::BSS
+                } else if sym.is_absolute(e) {
+                    symbol_writer
+                        .copy_absolute_symbol(sym, info.name)
+                        .with_context(|| {
+                            format!(
+                                "Failed to absolute {}",
+                                layout.symbol_db.symbol_debug(symbol_id)
+                            )
+                        })?;
+                    continue;
+                } else {
+                    bail!("Attempted to output a symtab entry with an unexpected section type")
+                };
                 let Some(res) = layout.local_symbol_resolution(symbol_id) else {
                     bail!("Missing resolution for {}", layout.symbol_debug(symbol_id));
                 };

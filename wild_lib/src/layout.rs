@@ -3804,8 +3804,7 @@ fn get_merged_string_output_address(
         offset_into_string += 1;
     }
     let string = StringToMerge::take_hashed(&mut &data[input_offset as usize..])?;
-    let part_id = merge_slot.precomputed_part_id();
-    let section_id = part_id.output_section_id();
+    let section_id = merge_slot.part_id.output_section_id();
     let strings_section = merged_strings.get(section_id);
     let output_offset = strings_section
         .get(&string)
