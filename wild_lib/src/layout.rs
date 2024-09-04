@@ -1007,7 +1007,7 @@ pub(crate) struct DynamicSymbolDefinition<'data> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Section {
     pub(crate) index: object::SectionIndex,
-    pub(crate) output_part_id: Option<PartId>,
+    pub(crate) part_id: PartId,
     /// Size in memory.
     pub(crate) size: u64,
     pub(crate) resolution_kind: ResolutionFlags,
@@ -2190,6 +2190,7 @@ impl Section {
         unloaded: &TemporaryPartId,
         section_index: object::SectionIndex,
         resources: &GraphResources,
+        part_id: PartId,
     ) -> Result<Section> {
         let object_section = object_state.object.section(section_index)?;
         let size = object_state.object.section_size(object_section)?;
@@ -2198,7 +2199,7 @@ impl Section {
         }
         let section = Section {
             index: section_index,
-            output_part_id: None,
+            part_id,
             size,
             resolution_kind: ResolutionFlags::empty(),
             packed: unloaded.should_pack(),
@@ -2217,22 +2218,17 @@ impl Section {
         }
     }
 
-    pub(crate) fn output_section_id(&self) -> Option<OutputSectionId> {
-        self.output_part_id.map(|p| p.output_section_id())
+    pub(crate) fn output_section_id(&self) -> OutputSectionId {
+        self.part_id.output_section_id()
     }
 
-    pub(crate) fn output_part_id(&self) -> Option<PartId> {
-        self.output_part_id
+    pub(crate) fn output_part_id(&self) -> PartId {
+        self.part_id
     }
 
-    /// Returns the alignment for this section. Note, for sections with no output section, we'll
-    /// return the minimum alignment, which may not be the same as was specified in the input file.
-    /// This shouldn't matter because we're not going to output that section anyway, so the
-    /// alignment is irrelevant.
+    /// Returns the alignment for this section.
     fn alignment(&self) -> Alignment {
-        self.output_part_id
-            .map(|p| p.alignment())
-            .unwrap_or(alignment::MIN)
+        self.part_id.alignment()
     }
 }
 
@@ -2996,9 +2992,10 @@ impl<'data> ObjectLayoutState<'data> {
         section_id: SectionIndex,
         resources: &GraphResources<'data, 'scope>,
     ) -> Result {
-        let mut section = Section::create(self, common, queue, &unloaded, section_id, resources)?;
         let part_id = resources.output_sections.part_id(unloaded)?;
-        section.output_part_id = Some(part_id);
+        let section = Section::create(
+            self, common, queue, &unloaded, section_id, resources, part_id,
+        )?;
         common.allocate(part_id, section.capacity());
         resources
             .sections_with_content
@@ -3121,12 +3118,7 @@ impl<'data> ObjectLayoutState<'data> {
         for slot in self.state.sections.iter_mut() {
             match slot {
                 SectionSlot::Loaded(sec) => {
-                    let part_id = sec.output_part_id.with_context(|| {
-                        format!(
-                            "Tried to load section `{}` which isn't mapped to an output section",
-                            self.object.section_display_name(sec.index)
-                        )
-                    })?;
+                    let part_id = sec.part_id;
                     let address = *memory_offsets.get(part_id);
                     // TODO: We probably need to be able to handle sections that are ifuncs and sections
                     // that need a TLS GOT struct.

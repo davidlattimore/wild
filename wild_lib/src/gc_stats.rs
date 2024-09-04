@@ -94,9 +94,7 @@ fn write_gc_stats(
                         }
                     }
                     SectionSlot::Loaded(s) => {
-                        if s.output_part_id.is_some_and(|part_id| {
-                            part_id.output_section_id() == output_section_id::TEXT
-                        }) {
+                        if s.part_id.output_section_id() == output_section_id::TEXT {
                             file_kept += obj.object.section_size(section)?;
                         }
                     }

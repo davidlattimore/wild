@@ -1191,9 +1191,9 @@ impl<'data> ObjectLayout<'data> {
     ) -> Result {
         if layout
             .output_sections
-            .has_data_in_file(sec.output_section_id().unwrap())
+            .has_data_in_file(sec.output_section_id())
         {
-            let section_buffer = buffers.get_mut(sec.output_part_id().unwrap());
+            let section_buffer = buffers.get_mut(sec.output_part_id());
             let allocation_size = sec.capacity() as usize;
             if section_buffer.len() < allocation_size {
                 bail!(
@@ -1251,7 +1251,7 @@ impl<'data> ObjectLayout<'data> {
                     self.object.symbol_section(sym, sym_index)?
                 {
                     match &self.sections[section_index.0] {
-                        SectionSlot::Loaded(section) => section.output_section_id().unwrap(),
+                        SectionSlot::Loaded(section) => section.output_section_id(),
                         SectionSlot::MergeStrings(section) => section.part_id.output_section_id(),
                         SectionSlot::EhFrameData(..) => output_section_id::EH_FRAME,
                         _ => bail!("Tried to copy a symbol in a section we didn't load"),
@@ -2046,7 +2046,7 @@ fn write_regular_object_dynamic_symbol_definition(
         let SectionSlot::Loaded(section) = &object.sections[section_index.0] else {
             bail!("Internal error: Defined symbols should always be for a loaded section");
         };
-        let output_section_id = section.output_section_id().unwrap();
+        let output_section_id = section.output_section_id();
         let symbol_id = sym_def.symbol_id;
         let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
             format!(
