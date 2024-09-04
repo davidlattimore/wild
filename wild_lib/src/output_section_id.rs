@@ -144,7 +144,7 @@ impl<'data> OutputSections<'data> {
     pub(crate) fn part_id(&self, temporary_id: TemporaryPartId<'_>) -> Result<PartId> {
         Ok(match temporary_id {
             TemporaryPartId::BuiltIn(id) => id,
-            TemporaryPartId::Custom(custom_section_id) => self
+            TemporaryPartId::Custom(custom_section_id, alignment) => self
                 .custom_name_to_id(custom_section_id.name)
                 .with_context(|| {
                     format!(
@@ -152,7 +152,7 @@ impl<'data> OutputSections<'data> {
                         custom_section_id.name
                     )
                 })?
-                .part_id_with_alignment(custom_section_id.alignment),
+                .part_id_with_alignment(alignment),
             TemporaryPartId::EhFrameData => part_id::EH_FRAME,
         })
     }

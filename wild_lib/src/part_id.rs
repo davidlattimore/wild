@@ -18,7 +18,7 @@ use std::fmt::Debug;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TemporaryPartId<'data> {
     BuiltIn(PartId),
-    Custom(CustomSectionId<'data>),
+    Custom(CustomSectionId<'data>, Alignment),
     EhFrameData,
 }
 
@@ -32,7 +32,6 @@ pub(crate) struct PartId(u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct CustomSectionId<'data> {
     pub(crate) name: SectionName<'data>,
-    pub(crate) alignment: Alignment,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -144,10 +143,9 @@ impl<'data> UnloadedSection<'data> {
             if !section_name.is_empty() {
                 let custom_section_id = CustomSectionId {
                     name: SectionName(section_name),
-                    alignment,
                 };
                 return Ok(Some(UnloadedSection {
-                    part_id: TemporaryPartId::Custom(custom_section_id),
+                    part_id: TemporaryPartId::Custom(custom_section_id, alignment),
                     is_string_merge: should_merge_strings(
                         section,
                         object.section_alignment(section)?,
@@ -280,7 +278,7 @@ impl<'data> TemporaryPartId<'data> {
     fn name(&self) -> SectionName<'data> {
         match self {
             TemporaryPartId::BuiltIn(id) => id.built_in_details().name,
-            TemporaryPartId::Custom(id) => id.name,
+            TemporaryPartId::Custom(id, _) => id.name,
             TemporaryPartId::EhFrameData => EH_FRAME.built_in_details().name,
         }
     }
@@ -309,7 +307,7 @@ impl<'data> std::fmt::Display for TemporaryPartId<'data> {
                     id.built_in_details().name
                 )
             }
-            TemporaryPartId::Custom(custom) => {
+            TemporaryPartId::Custom(custom, _) => {
                 write!(f, "custom section `{}`", custom.name)
             }
             TemporaryPartId::EhFrameData => write!(f, "eh_frame data"),

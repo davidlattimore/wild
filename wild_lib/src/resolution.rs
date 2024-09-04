@@ -722,7 +722,7 @@ fn resolve_sections<'data>(
             if let Some(unloaded) = UnloadedSection::from_section(&obj.object, input_section, args)?
             {
                 if unloaded.is_string_merge {
-                    if let TemporaryPartId::Custom(_custom_section_id) = unloaded.part_id {
+                    if let TemporaryPartId::Custom(..) = unloaded.part_id {
                         custom_sections.push(CustomSectionDetails {
                             name: unloaded.name(),
                             section_flags: SectionFlags::from_header(input_section),
@@ -753,7 +753,7 @@ fn resolve_sections<'data>(
                         TemporaryPartId::BuiltIn(_id) => {
                             Ok(SectionSlot::Unloaded(unloaded.part_id))
                         }
-                        TemporaryPartId::Custom(custom_section_id) => {
+                        TemporaryPartId::Custom(custom_section_id, _) => {
                             let section_flags = SectionFlags::from_header(input_section);
                             custom_sections.push(CustomSectionDetails {
                                 name: custom_section_id.name,
