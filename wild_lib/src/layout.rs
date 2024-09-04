@@ -77,6 +77,7 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU8;
 use std::sync::Mutex;
+use tracing::Level;
 
 #[tracing::instrument(skip_all, name = "Layout")]
 pub fn compute<'data>(
@@ -2959,6 +2960,12 @@ impl<'data> ObjectLayoutState<'data> {
         queue: &mut LocalWorkQueue,
     ) -> Result {
         let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
+        let _span = tracing::span!(
+            Level::DEBUG,
+            "load_sections",
+            file = self.input.file.filename.to_string_lossy().to_string()
+        )
+        .entered();
         while let Some(section_request) = self.state.sections_required.pop() {
             let section_id = section_request.id;
             match &self.state.sections[section_id.0] {
@@ -2991,6 +2998,12 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result {
         let part_id = resources.output_sections.part_id(unloaded)?;
         let section = Section::create(self, common, queue, section_id, resources, part_id)?;
+        tracing::debug!(
+            loaded_section = String::from_utf8_lossy(
+                self.object.section_name(self.object.section(section_id)?)?
+            )
+            .to_string(),
+        );
         common.allocate(part_id, section.capacity());
         resources
             .sections_with_content
