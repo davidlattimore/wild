@@ -16,26 +16,31 @@
 //#Config:clang-static:default
 //#LinkArgs:--cc=clang -static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
+//#Object:libc-integration-1.c
 
 //#Config:clang-static-pie:default
 //#CompArgs:-fPIE
 //#LinkArgs:--cc=clang -static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
+//#Object:libc-integration-1.c
 
 //#Config:gcc-static:default
 //#LinkArgs:--cc=gcc -static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
+//#Object:libc-integration-1.c
 
 //#Config:gcc-static-pie:default
 //#CompArgs:-fPIE
 //#LinkArgs:--cc=gcc -static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
+//#Object:libc-integration-1.c
 
 //#Config:clang-initial-exec:default
 //#CompArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP
 //#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#EnableLinker:lld
 //#Shared:libc-integration-0.c
+//#Shared:libc-integration-1.c
 //#DiffIgnore:section.relro_padding
 
 //#Config:clang-global-dynamic:default
@@ -43,6 +48,7 @@
 //#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#EnableLinker:lld
 //#Shared:libc-integration-0.c
+//#Shared:libc-integration-1.c
 //#DiffIgnore:section.relro_padding
 
 //#Config:gcc-dynamic-pie:default
@@ -50,24 +56,28 @@
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Shared:libc-integration-0.c
+//#Shared:libc-integration-1.c
 
 //#Config:gcc-dynamic-no-pie:default
 //#CompArgs:-g -no-pie -DDYNAMIC_DEP
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkArgs:--cc=gcc -dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Shared:libc-integration-0.c
+//#Shared:libc-integration-1.c
 
 //#Config:gcc-dynamic-pie-large:default
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -mcmodel=large
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Shared:libc-integration-0.c
+//#Shared:libc-integration-1.c
 
 //#Config:clang-lazy:default
 //#CompArgs:-g -fPIC -ftls-model=global-dynamic -DDYNAMIC_DEP
 //#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,lazy
 //#EnableLinker:lld
 //#Shared:libc-integration-0.c
+//#Shared:libc-integration-1.c
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.relro_padding
 
@@ -104,6 +114,7 @@ int get_weak_tvar(void);
 int get_weak_tvar2(void);
 int compute_value10(void);
 int black_box(int v);
+int get_42(void);
 
 typedef int(*get_int_fn_t)(void);
 
@@ -227,6 +238,9 @@ int main() {
     }
     if (fn_pointers[black_box(4)]) {
         return 120;
+    }
+    if (get_42() != 42) {
+        return 121;
     }
 
     return 42;

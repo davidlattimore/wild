@@ -1294,6 +1294,14 @@ impl<'data> Layout<'data> {
     pub(crate) fn has_got_plt(&self) -> bool {
         self.section_part_layouts.get(part_id::GOT_PLT).mem_size > 0
     }
+
+    /// Returns whether we're going to output the .gnu.version section.
+    pub(crate) fn gnu_version_enabled(&self) -> bool {
+        self.section_part_layouts
+            .get(part_id::GNU_VERSION)
+            .file_size
+            > 0
+    }
 }
 
 fn layout_sections(

@@ -249,7 +249,9 @@ impl SizedOutput {
                     file.write(&mut buffers, &mut table_writer, layout)
                         .with_context(|| format!("Failed copying from {file} to output file"))?
                 }
-                table_writer.validate_empty(&group.mem_sizes)?;
+                table_writer
+                    .validate_empty(&group.mem_sizes)
+                    .with_context(|| format!("validate_empty failed for {group}"))?;
                 Ok(())
             })?;
         Ok(())
@@ -1167,7 +1169,7 @@ impl<'data> ObjectLayout<'data> {
                     table_writer
                         .dynsym_writer
                         .copy_symbol_shndx(symbol, name, 0, 0)?;
-                    if layout.args().should_output_symbol_versions() {
+                    if layout.gnu_version_enabled() {
                         table_writer
                             .version_writer
                             .set_next_symbol_version(object::elf::VER_NDX_GLOBAL)?;
@@ -1729,7 +1731,7 @@ impl PreludeLayout {
 
         // If we're emitting symbol versions, we should have only one - symbol 0 - the undefined
         // symbol. It needs to be set as local.
-        if layout.args().should_output_symbol_versions() {
+        if layout.gnu_version_enabled() {
             table_writer
                 .version_writer
                 .set_next_symbol_version(object::elf::VER_NDX_GLOBAL)?;
@@ -2612,17 +2614,19 @@ fn write_symbol_version(
     version_mapping: &[u16],
     versym_out: &mut &mut [Versym],
 ) -> Result {
-    let Some(versym) = versym_in.get(local_symbol_index) else {
-        return Ok(());
-    };
-    let input_version = versym.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
-    let output_version = if input_version <= object::elf::VER_NDX_GLOBAL {
-        input_version
-    } else {
-        version_mapping[usize::from(input_version) - 1]
-    };
     let version_out =
         crate::slice::take_first_mut(versym_out).context("Insufficient .gnu.version allocation")?;
+    let output_version = versym_in
+        .get(local_symbol_index)
+        .map(|versym| {
+            let input_version = versym.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
+            if input_version <= object::elf::VER_NDX_GLOBAL {
+                input_version
+            } else {
+                version_mapping[usize::from(input_version) - 1]
+            }
+        })
+        .unwrap_or(object::elf::VER_NDX_GLOBAL);
     version_out.0.set(LittleEndian, output_version);
     Ok(())
 }
