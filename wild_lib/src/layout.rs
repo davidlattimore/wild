@@ -1632,14 +1632,18 @@ fn find_required_sections<'data>(
     };
     let resources_ref = &resources;
 
-    groups.into_par_iter().try_for_each(|mut group| -> Result {
-        for file in &mut group.files {
-            activate(&mut group.common, file, &mut group.queue, resources_ref)
-                .with_context(|| format!("Failed to activate {file}"))?;
-        }
-        let _ = resources_ref.waiting_workers.push(group);
-        Ok(())
-    })?;
+    groups
+        .into_par_iter()
+        .enumerate()
+        .try_for_each(|(i, mut group)| -> Result {
+            let _span = tracing::debug_span!("find_required_sections", gid = i).entered();
+            for file in &mut group.files {
+                activate(&mut group.common, file, &mut group.queue, resources_ref)
+                    .with_context(|| format!("Failed to activate {file}"))?;
+            }
+            let _ = resources_ref.waiting_workers.push(group);
+            Ok(())
+        })?;
 
     crate::threading::scope(|scope| {
         for _ in 0..num_threads {
