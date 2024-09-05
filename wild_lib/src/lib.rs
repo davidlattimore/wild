@@ -116,7 +116,7 @@ fn link(args: &Args) -> crate::error::Result {
     let output_file = output.write(&layout)?;
     diff::maybe_diff()?;
 
-    let scope = tracing::span!(tracing::Level::INFO, "Shutdown");
+    let scope = tracing::info_span!("Shutdown");
     let _scope = scope.enter();
     shutdown::free_output(output_file);
     shutdown::free_layout(layout);

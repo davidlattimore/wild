@@ -77,7 +77,6 @@ use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU8;
 use std::sync::Mutex;
-use tracing::Level;
 
 #[tracing::instrument(skip_all, name = "Layout")]
 pub fn compute<'data>(
@@ -1633,14 +1632,18 @@ fn find_required_sections<'data>(
     };
     let resources_ref = &resources;
 
-    groups.into_par_iter().try_for_each(|mut group| -> Result {
-        for file in &mut group.files {
-            activate(&mut group.common, file, &mut group.queue, resources_ref)
-                .with_context(|| format!("Failed to activate {file}"))?;
-        }
-        let _ = resources_ref.waiting_workers.push(group);
-        Ok(())
-    })?;
+    groups
+        .into_par_iter()
+        .enumerate()
+        .try_for_each(|(i, mut group)| -> Result {
+            let _span = tracing::debug_span!("find_required_sections", gid = i).entered();
+            for file in &mut group.files {
+                activate(&mut group.common, file, &mut group.queue, resources_ref)
+                    .with_context(|| format!("Failed to activate {file}"))?;
+            }
+            let _ = resources_ref.waiting_workers.push(group);
+            Ok(())
+        })?;
 
     crate::threading::scope(|scope| {
         for _ in 0..num_threads {
@@ -2968,12 +2971,9 @@ impl<'data> ObjectLayoutState<'data> {
         queue: &mut LocalWorkQueue,
     ) -> Result {
         let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
-        let _span = tracing::span!(
-            Level::DEBUG,
-            "load_sections",
-            file = self.input.file.filename.to_string_lossy().to_string()
-        )
-        .entered();
+        let _span =
+            tracing::debug_span!("load_sections", file = %self.input.file.filename.to_string_lossy())
+                .entered();
         while let Some(section_request) = self.state.sections_required.pop() {
             let section_id = section_request.id;
             match &self.state.sections[section_id.0] {
@@ -3006,12 +3006,7 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result {
         let part_id = resources.output_sections.part_id(unloaded)?;
         let section = Section::create(self, common, queue, section_id, resources, part_id)?;
-        tracing::debug!(
-            loaded_section = String::from_utf8_lossy(
-                self.object.section_name(self.object.section(section_id)?)?
-            )
-            .to_string(),
-        );
+        tracing::debug!(loaded_section = %self.object.section_display_name(section_id),);
         common.allocate(part_id, section.capacity());
         resources
             .sections_with_content

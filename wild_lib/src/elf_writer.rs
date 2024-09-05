@@ -1555,7 +1555,7 @@ fn apply_relocation(
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
     let place = section_address + offset_in_section;
-    let _span = tracing::span!(tracing::Level::TRACE, "relocation", address = place).entered();
+    let _span = tracing::trace_span!("relocation", address = place).entered();
 
     let e = LittleEndian;
     let symbol_index = rel
