@@ -45,6 +45,7 @@ use object::LittleEndian;
 use std::fmt::Display;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::thread::Thread;
 
 pub(crate) struct ResolutionOutputs<'data> {
     pub(crate) groups: Vec<ResolvedGroup<'data>>,
@@ -172,16 +173,17 @@ pub(crate) fn resolve_symbols_in_files<'data>(
         work_queue.push(work_item);
     }
 
+    let num_threads = symbol_db.args.num_threads.get();
+
     let resources = ResolutionResources {
         groups,
         definitions_per_file: &definitions_per_group_and_file,
+        idle_threads: (num_threads > 1).then(|| ArrayQueue::new(num_threads - 1)),
         symbol_db,
         outputs: &outputs,
         work_queue,
     };
 
-    let num_threads = symbol_db.args.num_threads.get();
-    let idle_threads = (num_threads > 1).then(|| ArrayQueue::new(num_threads - 1));
     let done = AtomicBool::new(false);
 
     crate::threading::scope(|s| {
@@ -202,23 +204,29 @@ pub(crate) fn resolve_symbols_in_files<'data>(
                             let _ = resources.outputs.errors.push(e);
                         }
                     }
-                    if let Some(idle_threads) = idle_threads.as_ref() {
-                        if idle_threads.push(std::thread::current()).is_err() {
-                            // No space left in our idle queue means that all other threads are idle, so
-                            // we're done.
-                            done.store(true, Ordering::Relaxed);
-                            while let Some(thread) = idle_threads.pop() {
-                                thread.unpark();
-                            }
-                        } else if idle {
-                            std::thread::park();
-                            idle = false;
-                        } else {
-                            idle = true;
-                        }
+                    if idle {
+                        // Wait until there's more work to do or until we shut down.
+                        std::thread::park();
+                        idle = false;
                     } else {
-                        // We're running single-threaded, so we're done
-                        done.store(true, Ordering::Relaxed);
+                        if let Some(idle_threads) = resources.idle_threads.as_ref() {
+                            if idle_threads.push(std::thread::current()).is_err() {
+                                // No space left in our idle queue means that all other threads are idle, so
+                                // we're done.
+                                done.store(true, Ordering::Relaxed);
+                                while let Some(thread) = idle_threads.pop() {
+                                    thread.unpark();
+                                }
+                                break;
+                            }
+                        } else {
+                            // We're running on a single thread, so we're done.
+                            break;
+                        }
+                        idle = true;
+                        // Go around the loop again before we park the thread. This ensures that we
+                        // check for waiting work in between when we added our thread to the idle
+                        // list and when we park.
                     }
                 }
             });
@@ -248,6 +256,7 @@ struct WorkItem<'definitions> {
 struct ResolutionResources<'data, 'definitions, 'outer_scope> {
     groups: &'data [Group<'data>],
     definitions_per_file: &'outer_scope Vec<Vec<DefinitionsCell<'definitions>>>,
+    idle_threads: Option<ArrayQueue<Thread>>,
     symbol_db: &'outer_scope SymbolDb<'data>,
     outputs: &'outer_scope Outputs<'data>,
     work_queue: SegQueue<WorkItem<'definitions>>,
@@ -260,7 +269,15 @@ impl<'data, 'definitions, 'outer_scope> ResolutionResources<'data, 'definitions,
             self.work_queue.push(WorkItem {
                 definitions: *definitions,
                 file_id,
-            })
+            });
+            // If there is a thread sleeping, wake it.
+            if let Some(thread) = self
+                .idle_threads
+                .as_ref()
+                .and_then(|idle_threads| idle_threads.pop())
+            {
+                thread.unpark();
+            }
         }
     }
 }
