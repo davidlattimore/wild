@@ -205,8 +205,6 @@ fn should_merge_strings(section: &SectionHeader, section_alignment: u64, args: &
     section_flags.contains(shf::MERGE)
         && section_flags.contains(shf::STRINGS)
         && section_alignment <= 1
-        // TODO: support also debug info sections?
-        && !section_flags.contains(shf::COMPRESSED)
 }
 
 impl PartId {

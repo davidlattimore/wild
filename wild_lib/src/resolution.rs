@@ -458,6 +458,9 @@ pub(crate) struct MergeStringsSection<'data> {
     /// things, then this is the size of the output section.
     pub(crate) next_offset: u64,
 
+    /// The total size of all added strings used for statistics.
+    pub(crate) totally_added: usize,
+
     /// The offsets of each string in the output section keyed by the string contents.
     pub(crate) string_offsets: PassThroughHashMap<StringToMerge<'data>, u64>,
 }
@@ -466,6 +469,7 @@ impl<'data> MergeStringsSection<'data> {
     /// Adds `string`, deduplicating with an existing string if an identical string is already
     /// present. Returns the offset into the section.
     fn add_string(&mut self, string: PreHashed<StringToMerge<'data>>) -> u64 {
+        self.totally_added += string.bytes.len();
         *self.string_offsets.entry(string).or_insert_with(|| {
             let offset = self.next_offset;
             self.next_offset += string.bytes.len() as u64;
@@ -516,6 +520,13 @@ fn merge_strings<'data>(
             }
         }
     }
+
+    strings_by_section.for_each(|section_id, sec| {
+        if sec.len() > 0 {
+            tracing::debug!(section = ?output_sections.name(section_id), size = sec.len(), sec.totally_added, "merge_strings");
+        }
+    });
+
     Ok(strings_by_section)
 }
 
