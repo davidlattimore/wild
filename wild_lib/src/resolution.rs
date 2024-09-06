@@ -523,7 +523,7 @@ fn merge_strings<'data>(
 
     strings_by_section.for_each(|section_id, sec| {
         if sec.len() > 0 {
-            tracing::debug!(section = ?output_sections.name(section_id), size = sec.len(), sec.totally_added, "merge_strings");
+            tracing::debug!(section = ?output_sections.name(section_id), size = sec.len(), sec.totally_added, strings = sec.strings.len(), "merge_strings");
         }
     });
 
