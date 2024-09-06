@@ -3,6 +3,7 @@
 sample-link*
 *.strace
 flamegraph.svg
+profile.json
 perf.data*
 dhat.out.*
 heaptrack*.zst
