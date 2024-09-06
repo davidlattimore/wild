@@ -201,6 +201,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         };
         let long_arg_split_prefix = |option: &str| -> Option<&str> {
             assert!(!option.starts_with('-'));
+            assert!(option.ends_with('='));
             strip_option(arg).and_then(|stripped_arg| stripped_arg.strip_prefix(option))
         };
 
@@ -310,7 +311,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             eh_frame_hdr = true;
         } else if long_arg_eq("shared") {
             output_kind = Some(OutputKind::SharedObject);
-        } else if let Some(rest) = long_arg_split_prefix("soname") {
+        } else if let Some(rest) = long_arg_split_prefix("soname=") {
             soname = Some(rest.to_owned());
         } else if long_arg_split_prefix("plugin-opt=").is_some() {
             // TODO: Implement support for linker plugins.
