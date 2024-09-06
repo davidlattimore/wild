@@ -1758,8 +1758,7 @@ impl PreludeLayout {
     fn write_merged_strings(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>, layout: &Layout) {
         layout.merged_strings.for_each(|section_id, merged| {
             if merged.len() > 0 {
-                let buffer =
-                    buffers.get_mut(section_id.part_id_with_alignment(crate::alignment::MIN));
+                let buffer = buffers.get_mut(section_id.part_id_with_alignment(merged.alignment));
                 for string in &merged.strings {
                     let dest = crate::slice::slice_take_prefix_mut(buffer, string.len());
                     dest.copy_from_slice(string)

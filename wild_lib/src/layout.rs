@@ -2366,7 +2366,7 @@ impl<'data> PreludeLayoutState {
         resources.merged_strings.for_each(|section_id, merged| {
             if merged.len() > 0 {
                 common.allocate(
-                    section_id.part_id_with_alignment(alignment::MIN),
+                    section_id.part_id_with_alignment(merged.alignment),
                     merged.len(),
                 );
             }
@@ -2644,7 +2644,7 @@ impl<'data> PreludeLayoutState {
         resources.merged_strings.for_each(|section_id, merged| {
             if merged.len() > 0 {
                 memory_offsets.increment(
-                    section_id.part_id_with_alignment(alignment::MIN),
+                    section_id.part_id_with_alignment(merged.alignment),
                     merged.len(),
                 );
             }

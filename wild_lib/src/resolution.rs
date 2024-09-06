@@ -2,6 +2,7 @@
 //! entries are needed. We also resolve which output section, if any, each input section should be
 //! assigned to.
 
+use crate::alignment::Alignment;
 use crate::args::Args;
 use crate::debug_assert_bail;
 use crate::elf::File;
@@ -461,6 +462,9 @@ pub(crate) struct MergeStringsSection<'data> {
     /// The total size of all added strings used for statistics.
     pub(crate) totally_added: usize,
 
+    /// The section alignment in the output.
+    pub(crate) alignment: Alignment,
+
     /// The offsets of each string in the output section keyed by the string contents.
     pub(crate) string_offsets: PassThroughHashMap<StringToMerge<'data>, u64>,
 }
@@ -514,6 +518,12 @@ fn merge_strings<'data>(
                     });
 
                 let string_to_offset = strings_by_section.get_mut(part_id.output_section_id());
+                string_to_offset.alignment = string_to_offset
+                    .alignment
+                    .max(Alignment::new(obj.object.section_alignment(
+                        obj.object.section(merge_info.section_index)?,
+                    )?)?);
+
                 for string in &merge_info.strings {
                     string_to_offset.add_string(*string);
                 }
@@ -523,7 +533,7 @@ fn merge_strings<'data>(
 
     strings_by_section.for_each(|section_id, sec| {
         if sec.len() > 0 {
-            tracing::debug!(section = ?output_sections.name(section_id), size = sec.len(), sec.totally_added, "merge_strings");
+            tracing::debug!(section = ?output_sections.name(section_id), size = sec.len(), alignment = ?sec.alignment, sec.totally_added, "merge_strings");
         }
     });
 

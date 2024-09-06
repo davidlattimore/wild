@@ -146,11 +146,7 @@ impl<'data> UnloadedSection<'data> {
                 };
                 return Ok(Some(UnloadedSection {
                     part_id: TemporaryPartId::Custom(custom_section_id, alignment),
-                    is_string_merge: should_merge_strings(
-                        section,
-                        object.section_alignment(section)?,
-                        args,
-                    ),
+                    is_string_merge: should_merge_strings(section, args),
                 }));
             }
             if !section_flags.contains(shf::ALLOC) {
@@ -181,11 +177,7 @@ impl<'data> UnloadedSection<'data> {
         let part_id = built_in_section_id.part_id_with_alignment(alignment);
         Ok(Some(UnloadedSection {
             part_id: TemporaryPartId::BuiltIn(part_id),
-            is_string_merge: should_merge_strings(
-                section,
-                object.section_alignment(section)?,
-                args,
-            ),
+            is_string_merge: should_merge_strings(section, args),
         }))
     }
 
@@ -195,16 +187,13 @@ impl<'data> UnloadedSection<'data> {
 }
 
 /// Returns whether the supplied section meets our criteria for string merging. String merging is
-/// optional, so there are cases where we might be able to merge, but don't currently. For example
-/// if alignment is > 1.
-fn should_merge_strings(section: &SectionHeader, section_alignment: u64, args: &Args) -> bool {
+/// optional, so there are cases where we might be able to merge, but don't currently.
+fn should_merge_strings(section: &SectionHeader, args: &Args) -> bool {
     if !args.merge_strings {
         return false;
     }
     let section_flags = SectionFlags::from_header(section);
-    section_flags.contains(shf::MERGE)
-        && section_flags.contains(shf::STRINGS)
-        && section_alignment <= 1
+    section_flags.contains(shf::MERGE) && section_flags.contains(shf::STRINGS)
 }
 
 impl PartId {
