@@ -417,6 +417,12 @@ pub(crate) enum SectionSlot<'data> {
 
     /// The section is a string-merge section.
     MergeStrings(MergeStringsFileSection<'data>),
+
+    // The section contains a debug info section that might be loaded.
+    UnloadedDebugInfo(TemporaryPartId<'data>),
+
+    // Loaded section with debug info content.
+    LoadedDebugInfo(crate::layout::Section),
 }
 
 pub(crate) struct ResolvedPrelude<'data> {
@@ -788,7 +794,13 @@ fn resolve_sections<'data>(
                                 section_flags,
                                 ty: SectionType::from_header(input_section),
                             });
-                            if section_flags.should_retain() {
+                            if custom_section_id.name.bytes().starts_with(b".debug_") {
+                                if args.strip_debug {
+                                    Ok(SectionSlot::Discard)
+                                } else {
+                                    Ok(SectionSlot::UnloadedDebugInfo(unloaded.part_id))
+                                }
+                            } else if section_flags.should_retain() {
                                 Ok(SectionSlot::MustLoad(unloaded.part_id))
                             } else {
                                 Ok(SectionSlot::Unloaded(unloaded.part_id))

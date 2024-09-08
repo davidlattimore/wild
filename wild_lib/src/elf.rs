@@ -456,6 +456,7 @@ impl RelocationKindInfo {
             object::elf::R_X86_64_TLSGD => (RelocationKind::TlsGd, 4),
             object::elf::R_X86_64_TLSLD => (RelocationKind::TlsLd, 4),
             object::elf::R_X86_64_DTPOFF32 => (RelocationKind::DtpOff, 4),
+            object::elf::R_X86_64_DTPOFF64 => (RelocationKind::DtpOff, 8),
             object::elf::R_X86_64_GOTTPOFF => (RelocationKind::GotTpOff, 4),
             object::elf::R_X86_64_GOTPCRELX | object::elf::R_X86_64_REX_GOTPCRELX => {
                 (RelocationKind::GotRelative, 4)

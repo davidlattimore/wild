@@ -2038,6 +2038,11 @@ impl<'data> FileLayoutState<'data> {
         let resolutions_out = &mut ResolutionWriter { resolutions_out };
         let file_layout = match self {
             Self::Object(s) => {
+                let _span = tracing::debug_span!(
+                    "finalise_layout",
+                    file = s.input.file.filename.to_string_lossy().to_string()
+                )
+                .entered();
                 FileLayout::Object(s.finalise_layout(memory_offsets, resolutions_out, resources)?)
             }
             Self::Prelude(s) => FileLayout::Prelude(s.finalise_layout(
@@ -2196,17 +2201,11 @@ impl SectionRequest {
 impl Section {
     fn create(
         object_state: &mut ObjectLayoutState,
-        common: &mut CommonGroupState,
-        queue: &mut LocalWorkQueue,
         section_index: object::SectionIndex,
-        resources: &GraphResources,
         part_id: PartId,
     ) -> Result<Section> {
         let object_section = object_state.object.section(section_index)?;
         let size = object_state.object.section_size(object_section)?;
-        for rel in object_state.object.relocations(section_index)? {
-            process_relocation(object_state, common, rel, object_section, resources, queue)?;
-        }
         let section = Section {
             index: section_index,
             part_id,
@@ -2934,7 +2933,7 @@ impl<'data> ObjectLayoutState<'data> {
         let mut eh_frame_section = None;
         for (i, section) in self.state.sections.iter().enumerate() {
             match section {
-                SectionSlot::MustLoad(_unloaded_section) => {
+                SectionSlot::MustLoad(..) | SectionSlot::UnloadedDebugInfo(..) => {
                     self.state
                         .sections_required
                         .push(SectionRequest::new(object::SectionIndex(i)));
@@ -2980,13 +2979,18 @@ impl<'data> ObjectLayoutState<'data> {
                 SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => {
                     self.load_section(common, queue, *unloaded, section_id, resources)?;
                 }
+                SectionSlot::UnloadedDebugInfo(temp_part_id) => {
+                    self.load_debug_section(common, *temp_part_id, section_id, resources)?;
+                }
                 SectionSlot::Discard => {
                     bail!(
                         "{self}: Don't know what segment to put `{}` in, but it's referenced",
                         self.object.section_display_name(section_id),
                     );
                 }
-                SectionSlot::Loaded(_) | SectionSlot::EhFrameData(..) => {}
+                SectionSlot::Loaded(_)
+                | SectionSlot::EhFrameData(..)
+                | SectionSlot::LoadedDebugInfo(..) => {}
                 SectionSlot::MergeStrings(_) => {
                     // We currently always load everything in merge-string sections. i.e. we don't
                     // GC unreferenced data. So there's nothing to do here.
@@ -3005,7 +3009,17 @@ impl<'data> ObjectLayoutState<'data> {
         resources: &GraphResources<'data, 'scope>,
     ) -> Result {
         let part_id = resources.output_sections.part_id(unloaded)?;
-        let section = Section::create(self, common, queue, section_id, resources, part_id)?;
+        let section = Section::create(self, section_id, part_id)?;
+        for rel in self.object.relocations(section.index)? {
+            process_relocation(
+                self,
+                common,
+                rel,
+                self.object.section(section.index)?,
+                resources,
+                queue,
+            )?;
+        }
         tracing::debug!(loaded_section = %self.object.section_display_name(section_id),);
         common.allocate(part_id, section.capacity());
         resources
@@ -3035,6 +3049,22 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
         self.state.sections[section_id.0] = SectionSlot::Loaded(section);
+        Ok(())
+    }
+
+    fn load_debug_section<'scope>(
+        &mut self,
+        common: &mut CommonGroupState<'data>,
+        unloaded: TemporaryPartId<'data>,
+        section_id: SectionIndex,
+        resources: &GraphResources<'data, 'scope>,
+    ) -> Result {
+        let part_id = resources.output_sections.part_id(unloaded)?;
+        let section = Section::create(self, section_id, part_id)?;
+        tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_id),);
+        common.allocate(part_id, section.capacity());
+        self.state.sections[section_id.0] = SectionSlot::LoadedDebugInfo(section);
+
         Ok(())
     }
 
@@ -3141,6 +3171,17 @@ impl<'data> ObjectLayoutState<'data> {
                         memory_offsets,
                     )?));
                     *memory_offsets.get_mut(part_id) += sec.capacity();
+                }
+                &mut SectionSlot::LoadedDebugInfo(sec) => {
+                    let address = *memory_offsets.get(sec.part_id);
+                    section_resolutions.push(Some(create_resolution(
+                        ResolutionFlags::DIRECT,
+                        address,
+                        None,
+                        ValueFlags::ADDRESS,
+                        memory_offsets,
+                    )?));
+                    *memory_offsets.get_mut(sec.part_id) += sec.capacity();
                 }
                 SectionSlot::EhFrameData(..) => {
                     // References to symbols defined in .eh_frame are a bit weird, since it's a
@@ -3756,7 +3797,7 @@ impl Resolution {
 
 /// Looks for a merged string at `symbol_index` + `addend` in the input and if found, returns its
 /// address in the output.
-fn get_merged_string_output_address(
+pub(crate) fn get_merged_string_output_address(
     symbol_index: object::SymbolIndex,
     addend: u64,
     object: &crate::elf::File,

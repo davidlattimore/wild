@@ -19,6 +19,7 @@ use crate::elf::Verneed;
 use crate::elf::Versym;
 use crate::error::Result;
 use crate::layout::compute_allocations;
+use crate::layout::get_merged_string_output_address;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
@@ -68,6 +69,7 @@ use std::path::Path;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use tracing::debug_span;
 
 pub struct Output {
     path: Arc<Path>,
@@ -1129,18 +1131,22 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
     }
 }
 
-impl<'data> ObjectLayout<'data> {
+impl<'out> ObjectLayout<'out> {
     fn write_file(
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
         layout: &Layout,
     ) -> Result {
+        let _span = debug_span!("write_file", filename = ?self.input.file.filename).entered();
         let _file_span = layout.args().trace_span_for_file(self.file_id);
         for sec in &self.sections {
             match sec {
                 SectionSlot::Loaded(sec) => {
                     self.write_section(layout, sec, buffers, table_writer)?
+                }
+                SectionSlot::LoadedDebugInfo(sec) => {
+                    self.write_debug_section(layout, sec, buffers)?;
                 }
                 SectionSlot::EhFrameData(section_index) => {
                     self.write_eh_frame_data(*section_index, layout, table_writer)?;
@@ -1191,6 +1197,50 @@ impl<'data> ObjectLayout<'data> {
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
     ) -> Result {
+        let out = self.write_section_raw(layout, sec, buffers)?;
+        self.apply_relocations(out, sec, layout, table_writer)
+            .with_context(|| {
+                format!(
+                    "Failed to apply relocations in section `{}` of {}",
+                    self.object.section_display_name(sec.index),
+                    self.input
+                )
+            })?;
+        if sec.resolution_kind.contains(ResolutionFlags::GOT)
+            || sec.resolution_kind.contains(ResolutionFlags::PLT)
+        {
+            let res = self.section_resolutions[sec.index.0]
+                .as_ref()
+                .ok_or_else(|| anyhow!("Section requires GOT, but hasn't been resolved"))?;
+            table_writer.process_resolution(res)?;
+        };
+        Ok(())
+    }
+
+    fn write_debug_section(
+        &self,
+        layout: &Layout,
+        sec: &Section,
+        buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    ) -> Result {
+        let out = self.write_section_raw(layout, sec, buffers)?;
+        self.apply_debug_relocations(out, sec, layout)
+            .with_context(|| {
+                format!(
+                    "Failed to apply relocations in section `{}` of {}",
+                    self.object.section_display_name(sec.index),
+                    self.input
+                )
+            })?;
+        Ok(())
+    }
+
+    fn write_section_raw(
+        &self,
+        layout: &Layout,
+        sec: &Section,
+        buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
+    ) -> Result<&'out mut [u8]> {
         if layout
             .output_sections
             .has_data_in_file(sec.output_section_id())
@@ -1208,26 +1258,12 @@ impl<'data> ObjectLayout<'data> {
             // Cut off any padding so that our output buffer is the size of our input buffer.
             let object_section = self.object.section(sec.index)?;
             let section_size = self.object.section_size(object_section)?;
-            let out = &mut out[..section_size as usize];
+            let out: &'out mut [u8] = &mut out[..section_size as usize];
             self.object.copy_section_data(object_section, out)?;
-            self.apply_relocations(out, sec, layout, table_writer)
-                .with_context(|| {
-                    format!(
-                        "Failed to apply relocations in section `{}` of {}",
-                        self.object.section_display_name(sec.index),
-                        self.input
-                    )
-                })?;
+            Ok(out)
+        } else {
+            Ok(&mut [])
         }
-        if sec.resolution_kind.contains(ResolutionFlags::GOT)
-            || sec.resolution_kind.contains(ResolutionFlags::PLT)
-        {
-            let res = self.section_resolutions[sec.index.0]
-                .as_ref()
-                .ok_or_else(|| anyhow!("Section requires GOT, but hasn't been resolved"))?;
-            table_writer.process_resolution(res)?;
-        };
-        Ok(())
     }
 
     /// Writes debug symbols.
@@ -1326,6 +1362,62 @@ impl<'data> ObjectLayout<'data> {
                 layout,
                 out,
                 table_writer,
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to apply {} at offset 0x{offset_in_section:x}",
+                    self.display_relocation(rel, layout)
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    fn apply_debug_relocations(
+        &self,
+        out: &mut [u8],
+        section: &Section,
+        layout: &Layout,
+    ) -> Result {
+        let section_address = self.section_resolutions[section.index.0]
+            .as_ref()
+            .unwrap()
+            .address()?;
+
+        let object_section = self.object.section(section.index)?;
+        let section_flags = SectionFlags::from_header(object_section);
+        let section_tombstone_values: Vec<u64> = (0..self.object.sections.len())
+            .map(|section_index| {
+                if section_index == 0 {
+                    return Ok(0);
+                }
+                let section_name = self
+                    .object
+                    .section_name(self.object.section(object::SectionIndex(section_index))?)?;
+                Ok(
+                    if section_name == b".debug_loc" || section_name == b".debug_ranges" {
+                        1
+                    } else {
+                        0
+                    },
+                )
+            })
+            .collect::<Result<_>>()?;
+
+        for rel in self.object.relocations(section.index)? {
+            let offset_in_section = rel.r_offset.get(LittleEndian);
+            apply_debug_relocation(
+                self,
+                offset_in_section,
+                rel,
+                SectionInfo {
+                    section_address,
+                    is_writable: section.is_writable,
+                    section_flags,
+                },
+                layout,
+                &section_tombstone_values,
+                out,
             )
             .with_context(|| {
                 format!(
@@ -1659,6 +1751,82 @@ fn apply_relocation(
     }
     out[offset_in_section as usize..end].copy_from_slice(&value_bytes[..rel_info.byte_size]);
     Ok(next_modifier)
+}
+
+fn apply_debug_relocation(
+    object_layout: &ObjectLayout,
+    offset_in_section: u64,
+    rel: &elf::Rela,
+    section_info: SectionInfo,
+    layout: &Layout,
+    section_tombstone_values: &[u64],
+    out: &mut [u8],
+) -> Result<()> {
+    let section_address = section_info.section_address;
+    let place = section_address + offset_in_section;
+    let _span = tracing::trace_span!("debug relocation", address = place).entered();
+
+    let e = LittleEndian;
+    let symbol_index = rel
+        .symbol(e, false)
+        .context("Unsupported absolute relocation")?;
+    let sym = object_layout.object.symbol(symbol_index)?;
+    let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
+
+    let addend = rel.r_addend.get(e) as u64;
+    let r_type = rel.r_type(e, false);
+    let rel_info = RelocationKindInfo::from_raw(r_type)?;
+
+    let resolution = layout
+        .merged_symbol_resolution(object_layout.symbol_id_range.input_to_id(symbol_index))
+        .or_else(|| {
+            section_index
+                .and_then(|section_index| object_layout.section_resolutions[section_index.0])
+        });
+
+    let value = if let Some(resolution) = resolution {
+        match rel_info.kind {
+            RelocationKind::Absolute => resolution.value_with_addend(
+                addend,
+                symbol_index,
+                object_layout,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+            )?,
+            RelocationKind::DtpOff => resolution
+                .value()
+                .wrapping_sub(layout.tls_end_address())
+                .wrapping_add(addend),
+            kind => bail!("Unsupported debug relocation kind {kind:?}"),
+        }
+    } else if let Some(section_index) = section_index {
+        match object_layout.sections[section_index.0] {
+            SectionSlot::MergeStrings(..) => get_merged_string_output_address(
+                symbol_index,
+                addend,
+                object_layout.object,
+                &object_layout.sections,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+                false,
+            )?
+            .context("Cannot get merged string offset for a debug info section")?,
+            SectionSlot::Discard | SectionSlot::Unloaded(..) => {
+                section_tombstone_values[section_index.0]
+            }
+            _ => bail!("Could not find a relocation resolution for a debug info section"),
+        }
+    } else {
+        bail!("Could not find a relocation resolution for a debug info section");
+    };
+
+    let value_bytes = value.to_le_bytes();
+    let end = offset_in_section as usize + rel_info.byte_size;
+    if out.len() < end {
+        bail!("Relocation outside of bounds of section");
+    }
+    out[offset_in_section as usize..end].copy_from_slice(&value_bytes[..rel_info.byte_size]);
+    Ok(())
 }
 
 fn write_absolute_relocation(
