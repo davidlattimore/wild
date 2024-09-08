@@ -11,7 +11,6 @@
 // This is only an issue on openSUSE
 //#DiffIgnore:section.rela.plt.link
 //#CompArgs:-g -ftls-model=global-dynamic
-//#DoesNotContain:.debug_str
 
 //#Config:clang-static:default
 //#LinkArgs:--cc=clang -static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
