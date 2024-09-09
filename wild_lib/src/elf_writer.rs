@@ -1792,8 +1792,15 @@ fn apply_debug_relocation(
             )?
             .context("Cannot get merged string offset for a debug info section")?,
             SectionSlot::Discard | SectionSlot::Unloaded(..) => {
-                // TODO: tombstone value
-                0
+                let section_name = object_layout
+                    .object
+                    .section_name(object_layout.object.section(section_index)?)?;
+                // Return debug info tombstone value.
+                if section_name == b".debug_loc" || section_name == b".debug_ranges" {
+                    1
+                } else {
+                    0
+                }
             }
             _ => bail!("Could not find a relocation resolution for a debug info section"),
         }
