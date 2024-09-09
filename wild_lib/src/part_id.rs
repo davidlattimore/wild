@@ -136,6 +136,9 @@ impl<'data> UnloadedSection<'data> {
             // We don't currently allow references to these sections, discard them so that we avoid
             // allocating output section IDs.
             None
+        } else if args.strip_debug && section_name.starts_with(b".debug_") {
+            // Drop soon string merge debug info section.
+            None
         } else {
             let sh_type = SectionType::from_header(section);
             if !section_name.is_empty() {
