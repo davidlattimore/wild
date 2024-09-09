@@ -3797,7 +3797,7 @@ impl Resolution {
 
 /// Looks for a merged string at `symbol_index` + `addend` in the input and if found, returns its
 /// address in the output.
-fn get_merged_string_output_address(
+pub(crate) fn get_merged_string_output_address(
     symbol_index: object::SymbolIndex,
     addend: u64,
     object: &crate::elf::File,
