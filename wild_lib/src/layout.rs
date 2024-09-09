@@ -2990,8 +2990,8 @@ impl<'data> ObjectLayoutState<'data> {
                 }
                 SectionSlot::Loaded(_)
                 | SectionSlot::EhFrameData(..)
-                | SectionSlot::MergeStrings(_)
-                | SectionSlot::LoadedDebugInfo(..) => {
+                | SectionSlot::LoadedDebugInfo(..) => {}
+                SectionSlot::MergeStrings(_) => {
                     // We currently always load everything in merge-string sections. i.e. we don't
                     // GC unreferenced data. So there's nothing to do here.
                 }
