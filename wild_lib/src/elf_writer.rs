@@ -1222,7 +1222,6 @@ impl<'data> ObjectLayout<'data> {
         sec: &Section,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
     ) -> Result {
-        let _span = debug_span!("write_debug_section", section = %self.object.section_display_name(sec.index)).entered();
         let out = self.write_section_raw(layout, sec, buffers)?;
         self.apply_debug_relocations(out, sec, layout)
             .with_context(|| {
@@ -1379,7 +1378,6 @@ impl<'data> ObjectLayout<'data> {
         section: &Section,
         layout: &Layout,
     ) -> Result {
-        tracing::debug!("apply_debug_relocations");
         let section_address = self.section_resolutions[section.index.0]
             .as_ref()
             .unwrap()
@@ -1758,13 +1756,6 @@ fn apply_debug_relocation(
     {
         resolution
     } else if let Some(section_index) = object_layout.object.symbol_section(sym, symbol_index)? {
-        // TODO: remove
-        let section_name = String::from_utf8_lossy(
-            object_layout
-                .object
-                .section_name(object_layout.object.section(section_index)?)?,
-        );
-        tracing::debug!(%section_name);
         object_layout.section_resolutions[section_index.0].unwrap_or({
             // TODO: it's likely a string merge section
             Resolution {
@@ -1783,7 +1774,6 @@ fn apply_debug_relocation(
     let addend = rel.r_addend.get(e) as u64;
     let r_type = rel.r_type(e, false);
     let rel_info = RelocationKindInfo::from_raw(r_type)?;
-    tracing::trace!(%resolution.value_flags, %resolution.resolution_flags);
 
     let value = match rel_info.kind {
         RelocationKind::Absolute => resolution.value_with_addend(
