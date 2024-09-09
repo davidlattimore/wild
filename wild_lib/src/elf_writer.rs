@@ -1793,6 +1793,10 @@ fn apply_debug_relocation(
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )?,
+        RelocationKind::DtpOff => resolution
+            .value()
+            .wrapping_sub(layout.tls_end_address())
+            .wrapping_add(addend),
         _ => todo!(),
     };
     let value_bytes = value.to_le_bytes();
