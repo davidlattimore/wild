@@ -19,6 +19,7 @@ use crate::elf::Verneed;
 use crate::elf::Versym;
 use crate::error::Result;
 use crate::layout::compute_allocations;
+use crate::layout::get_merged_string_output_address;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
@@ -1750,45 +1751,56 @@ fn apply_debug_relocation(
         .symbol(e, false)
         .context("Unsupported absolute relocation")?;
     let sym = object_layout.object.symbol(symbol_index)?;
-
-    let resolution = if let Some(resolution) =
-        layout.merged_symbol_resolution(object_layout.symbol_id_range.input_to_id(symbol_index))
-    {
-        resolution
-    } else if let Some(section_index) = object_layout.object.symbol_section(sym, symbol_index)? {
-        object_layout.section_resolutions[section_index.0].unwrap_or({
-            // TODO: it's likely a string merge section
-            Resolution {
-                dynamic_symbol_index: None,
-                got_address: None,
-                plt_address: None,
-                raw_value: 0,
-                resolution_flags: ResolutionFlags::DIRECT,
-                value_flags: ValueFlags::ADDRESS,
-            }
-        })
-    } else {
-        todo!()
-    };
+    let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
 
     let addend = rel.r_addend.get(e) as u64;
     let r_type = rel.r_type(e, false);
     let rel_info = RelocationKindInfo::from_raw(r_type)?;
 
-    let value = match rel_info.kind {
-        RelocationKind::Absolute => resolution.value_with_addend(
-            addend,
-            symbol_index,
-            object_layout,
-            &layout.merged_strings,
-            &layout.merged_string_start_addresses,
-        )?,
-        RelocationKind::DtpOff => resolution
-            .value()
-            .wrapping_sub(layout.tls_end_address())
-            .wrapping_add(addend),
-        _ => todo!(),
+    let resolution = layout
+        .merged_symbol_resolution(object_layout.symbol_id_range.input_to_id(symbol_index))
+        .or_else(|| {
+            section_index
+                .and_then(|section_index| object_layout.section_resolutions[section_index.0])
+        });
+
+    let value = if let Some(resolution) = resolution {
+        match rel_info.kind {
+            RelocationKind::Absolute => resolution.value_with_addend(
+                addend,
+                symbol_index,
+                object_layout,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+            )?,
+            RelocationKind::DtpOff => resolution
+                .value()
+                .wrapping_sub(layout.tls_end_address())
+                .wrapping_add(addend),
+            _ => todo!(),
+        }
+    } else if let Some(section_index) = section_index {
+        match object_layout.sections[section_index.0] {
+            SectionSlot::MergeStrings(..) => get_merged_string_output_address(
+                symbol_index,
+                addend,
+                object_layout.object,
+                &object_layout.sections,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+                false,
+            )?
+            .context("Cannot get merged string offset for a debug info section")?,
+            SectionSlot::Discard | SectionSlot::Unloaded(..) => {
+                // TODO: tombstone value
+                0
+            }
+            _ => bail!("Could not find a relocation resolution for a debug info section"),
+        }
+    } else {
+        bail!("Could not find a relocation resolution for a debug info section");
     };
+
     let value_bytes = value.to_le_bytes();
     let end = offset_in_section as usize + rel_info.byte_size;
     if out.len() < end {
