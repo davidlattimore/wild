@@ -3174,13 +3174,6 @@ impl<'data> ObjectLayoutState<'data> {
                 }
                 &mut SectionSlot::LoadedDebugInfo(sec) => {
                     let address = *memory_offsets.get(sec.part_id);
-                    // TODO: remove
-                    tracing::debug!(
-                        section = self.object.section_display_name(sec.index).to_string(),
-                        address,
-                        sec.size,
-                        "create_resolution",
-                    );
                     section_resolutions.push(Some(create_resolution(
                         ResolutionFlags::DIRECT,
                         address,
