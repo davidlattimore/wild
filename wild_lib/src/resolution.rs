@@ -795,10 +795,10 @@ fn resolve_sections<'data>(
                                 ty: SectionType::from_header(input_section),
                             });
                             if custom_section_id.name.bytes().starts_with(b".debug_") {
-                                if !args.strip_debug {
-                                    Ok(SectionSlot::UnloadedDebugInfo(unloaded.part_id))
-                                } else {
+                                if args.strip_debug {
                                     Ok(SectionSlot::Discard)
+                                } else {
+                                    Ok(SectionSlot::UnloadedDebugInfo(unloaded.part_id))
                                 }
                             } else if section_flags.should_retain() {
                                 Ok(SectionSlot::MustLoad(unloaded.part_id))

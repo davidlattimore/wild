@@ -1131,7 +1131,7 @@ impl<'data, 'out> SymbolTableWriter<'data, 'out> {
     }
 }
 
-impl<'data> ObjectLayout<'data> {
+impl<'out> ObjectLayout<'out> {
     fn write_file(
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
@@ -1239,8 +1239,8 @@ impl<'data> ObjectLayout<'data> {
         &self,
         layout: &Layout,
         sec: &Section,
-        buffers: &'data mut OutputSectionPartMap<&mut [u8]>,
-    ) -> Result<&'data mut [u8]> {
+        buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
+    ) -> Result<&'out mut [u8]> {
         if layout
             .output_sections
             .has_data_in_file(sec.output_section_id())
@@ -1258,7 +1258,7 @@ impl<'data> ObjectLayout<'data> {
             // Cut off any padding so that our output buffer is the size of our input buffer.
             let object_section = self.object.section(sec.index)?;
             let section_size = self.object.section_size(object_section)?;
-            let out: &'data mut [u8] = &mut out[..section_size as usize];
+            let out: &'out mut [u8] = &mut out[..section_size as usize];
             self.object.copy_section_data(object_section, out)?;
             Ok(out)
         } else {
@@ -1386,6 +1386,24 @@ impl<'data> ObjectLayout<'data> {
 
         let object_section = self.object.section(section.index)?;
         let section_flags = SectionFlags::from_header(object_section);
+        let section_tombstone_values: Vec<u64> = (0..self.object.sections.len())
+            .map(|section_index| {
+                if section_index == 0 {
+                    return Ok(0);
+                }
+                let section_name = self
+                    .object
+                    .section_name(self.object.section(object::SectionIndex(section_index))?)?;
+                Ok(
+                    if section_name == b".debug_loc" || section_name == b".debug_ranges" {
+                        1
+                    } else {
+                        0
+                    },
+                )
+            })
+            .collect::<Result<_>>()?;
+
         for rel in self.object.relocations(section.index)? {
             let offset_in_section = rel.r_offset.get(LittleEndian);
             apply_debug_relocation(
@@ -1398,6 +1416,7 @@ impl<'data> ObjectLayout<'data> {
                     section_flags,
                 },
                 layout,
+                &section_tombstone_values,
                 out,
             )
             .with_context(|| {
@@ -1740,6 +1759,7 @@ fn apply_debug_relocation(
     rel: &elf::Rela,
     section_info: SectionInfo,
     layout: &Layout,
+    section_tombstone_values: &[u64],
     out: &mut [u8],
 ) -> Result<()> {
     let section_address = section_info.section_address;
@@ -1777,7 +1797,7 @@ fn apply_debug_relocation(
                 .value()
                 .wrapping_sub(layout.tls_end_address())
                 .wrapping_add(addend),
-            _ => todo!(),
+            kind => bail!("Unsupported debug relocation kind {kind:?}"),
         }
     } else if let Some(section_index) = section_index {
         match object_layout.sections[section_index.0] {
@@ -1792,15 +1812,7 @@ fn apply_debug_relocation(
             )?
             .context("Cannot get merged string offset for a debug info section")?,
             SectionSlot::Discard | SectionSlot::Unloaded(..) => {
-                let section_name = object_layout
-                    .object
-                    .section_name(object_layout.object.section(section_index)?)?;
-                // Return debug info tombstone value.
-                if section_name == b".debug_loc" || section_name == b".debug_ranges" {
-                    1
-                } else {
-                    0
-                }
+                section_tombstone_values[section_index.0]
             }
             _ => bail!("Could not find a relocation resolution for a debug info section"),
         }
