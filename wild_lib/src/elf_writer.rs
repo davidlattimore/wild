@@ -51,7 +51,6 @@ use crate::threading::prelude::*;
 use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::bail;
-use anyhow::ensure;
 use anyhow::Context;
 use linker_utils::elf::rel_type_to_string;
 use linker_utils::elf::shf;
@@ -1225,40 +1224,14 @@ impl<'data> ObjectLayout<'data> {
     ) -> Result {
         let _span = debug_span!("write_debug_section", section = %self.object.section_display_name(sec.index)).entered();
         let out = self.write_section_raw(layout, sec, buffers)?;
-
-        for rel in self.object.relocations(sec.index)? {
-            let e = LittleEndian;
-            let symbol_index = rel
-                .symbol(e, false)
-                .context("Unsupported absolute relocation")?;
-            let symbol = self.object.symbol(symbol_index)?;
-            let section_index = self.object.symbol_section(symbol, symbol_index)?;
-            let symbol_name = section_index
-                .map(|section_index| self.object.section_display_name(section_index))
-                .unwrap_or_else(|| {
-                    String::from_utf8_lossy(self.object.symbol_name(symbol).unwrap())
-                });
-
-            if let Some(section_index) = section_index {
-                let resolution = self.section_resolutions[section_index.0];
-                tracing::trace!(?symbol_name, ?resolution, "section resolution");
-            }
-
-            let rel_info = RelocationKindInfo::from_raw(rel.r_type(e, false))?;
-            ensure!(
-                matches!(
-                    rel_info.kind,
-                    RelocationKind::Absolute | RelocationKind::DtpOff
-                ),
-                "Debug info relocation expects only absolute relocation kind or DtpOff"
-            );
-
-            tracing::trace!(
-                address = rel.r_offset.get(LittleEndian),
-                %symbol_index,
-                "relocation"
-            );
-        }
+        self.apply_debug_relocations(out, sec, layout)
+            .with_context(|| {
+                format!(
+                    "Failed to apply relocations in section `{}` of {}",
+                    self.object.section_display_name(sec.index),
+                    self.input
+                )
+            })?;
         Ok(())
     }
 
@@ -1389,6 +1362,44 @@ impl<'data> ObjectLayout<'data> {
                 layout,
                 out,
                 table_writer,
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to apply {} at offset 0x{offset_in_section:x}",
+                    self.display_relocation(rel, layout)
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    fn apply_debug_relocations(
+        &self,
+        out: &mut [u8],
+        section: &Section,
+        layout: &Layout,
+    ) -> Result {
+        tracing::debug!("apply_debug_relocations");
+        let section_address = self.section_resolutions[section.index.0]
+            .as_ref()
+            .unwrap()
+            .address()?;
+
+        let object_section = self.object.section(section.index)?;
+        let section_flags = SectionFlags::from_header(object_section);
+        for rel in self.object.relocations(section.index)? {
+            let offset_in_section = rel.r_offset.get(LittleEndian);
+            apply_debug_relocation(
+                self,
+                offset_in_section,
+                rel,
+                SectionInfo {
+                    section_address,
+                    is_writable: section.is_writable,
+                    section_flags,
+                },
+                layout,
+                out,
             )
             .with_context(|| {
                 format!(
@@ -1722,6 +1733,75 @@ fn apply_relocation(
     }
     out[offset_in_section as usize..end].copy_from_slice(&value_bytes[..rel_info.byte_size]);
     Ok(next_modifier)
+}
+
+fn apply_debug_relocation(
+    object_layout: &ObjectLayout,
+    offset_in_section: u64,
+    rel: &elf::Rela,
+    section_info: SectionInfo,
+    layout: &Layout,
+    out: &mut [u8],
+) -> Result<()> {
+    let section_address = section_info.section_address;
+    let place = section_address + offset_in_section;
+    let _span = tracing::trace_span!("debug relocation", address = place).entered();
+
+    let e = LittleEndian;
+    let symbol_index = rel
+        .symbol(e, false)
+        .context("Unsupported absolute relocation")?;
+    let sym = object_layout.object.symbol(symbol_index)?;
+
+    let resolution = if let Some(resolution) =
+        layout.merged_symbol_resolution(object_layout.symbol_id_range.input_to_id(symbol_index))
+    {
+        resolution
+    } else if let Some(section_index) = object_layout.object.symbol_section(sym, symbol_index)? {
+        // TODO: remove
+        let section_name = String::from_utf8_lossy(
+            object_layout
+                .object
+                .section_name(object_layout.object.section(section_index)?)?,
+        );
+        tracing::debug!(%section_name);
+        object_layout.section_resolutions[section_index.0].unwrap_or({
+            // TODO: it's likely a string merge section
+            Resolution {
+                dynamic_symbol_index: None,
+                got_address: None,
+                plt_address: None,
+                raw_value: 0,
+                resolution_flags: ResolutionFlags::DIRECT,
+                value_flags: ValueFlags::ADDRESS,
+            }
+        })
+    } else {
+        todo!()
+    };
+
+    let addend = rel.r_addend.get(e) as u64;
+    let r_type = rel.r_type(e, false);
+    let rel_info = RelocationKindInfo::from_raw(r_type)?;
+    tracing::trace!(%resolution.value_flags, %resolution.resolution_flags);
+
+    let value = match rel_info.kind {
+        RelocationKind::Absolute => resolution.value_with_addend(
+            addend,
+            symbol_index,
+            object_layout,
+            &layout.merged_strings,
+            &layout.merged_string_start_addresses,
+        )?,
+        _ => todo!(),
+    };
+    let value_bytes = value.to_le_bytes();
+    let end = offset_in_section as usize + rel_info.byte_size;
+    if out.len() < end {
+        bail!("Relocation outside of bounds of section");
+    }
+    out[offset_in_section as usize..end].copy_from_slice(&value_bytes[..rel_info.byte_size]);
+    Ok(())
 }
 
 fn write_absolute_relocation(
