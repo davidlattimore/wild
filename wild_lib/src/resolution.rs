@@ -15,6 +15,7 @@ use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::input_data::UNINITIALISED_FILE_ID;
 use crate::output_section_id::CustomSectionDetails;
+use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::OutputSectionsBuilder;
 use crate::output_section_id::SectionName;
@@ -43,7 +44,11 @@ use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
+use rayon::iter::ParallelBridge;
+use rayon::iter::ParallelIterator;
+use std::collections::HashMap;
 use std::fmt::Display;
+use std::hash::Hash;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::thread::Thread;
@@ -459,10 +464,12 @@ pub(crate) struct MergeStringsFileSection<'data> {
     pub(crate) section_data: &'data [u8],
 }
 
+const MERGE_STRING_BUCKETS: usize = 32;
+
 /// Information about a string-merge section prior to merging.
 pub(crate) struct UnresolvedMergeStringsFileSection<'data> {
     section_index: object::SectionIndex,
-    strings: Vec<PreHashed<StringToMerge<'data>>>,
+    buckets: [Vec<PreHashed<StringToMerge<'data>>>; MERGE_STRING_BUCKETS],
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -471,7 +478,7 @@ pub(crate) struct StringToMerge<'data> {
 }
 
 #[derive(Default)]
-pub(crate) struct MergeStringsSection<'data> {
+pub(crate) struct MergeStringsSectionBucket<'data> {
     /// The strings in this section in order. Includes null terminators.
     pub(crate) strings: Vec<&'data [u8]>,
 
@@ -486,9 +493,9 @@ pub(crate) struct MergeStringsSection<'data> {
     pub(crate) string_offsets: PassThroughHashMap<StringToMerge<'data>, u64>,
 }
 
-impl<'data> MergeStringsSection<'data> {
+impl<'data> MergeStringsSectionBucket<'data> {
     /// Adds `string`, deduplicating with an existing string if an identical string is already
-    /// present. Returns the offset into the section.
+    /// present. Returns the offset within this bucket.
     fn add_string(&mut self, string: PreHashed<StringToMerge<'data>>) -> u64 {
         self.totally_added += string.bytes.len();
         *self.string_offsets.entry(string).or_insert_with(|| {
@@ -508,6 +515,37 @@ impl<'data> MergeStringsSection<'data> {
     }
 }
 
+#[derive(Default)]
+pub(crate) struct MergeStringsSection<'data> {
+    /// The buckets based on the hash value of the input string.
+    pub(crate) buckets: [MergeStringsSectionBucket<'data>; MERGE_STRING_BUCKETS],
+
+    /// The byte offset of each bucket in the final section.
+    pub(crate) bucket_offsets: [u64; MERGE_STRING_BUCKETS],
+}
+
+impl<'data> MergeStringsSection<'data> {
+    pub(crate) fn get(&self, string: &PreHashed<StringToMerge<'data>>) -> Option<u64> {
+        let bucket_index = (string.hash() as usize) % MERGE_STRING_BUCKETS;
+        self.buckets[bucket_index]
+            .get(string)
+            .map(|offset| self.bucket_offsets[bucket_index] + offset)
+    }
+
+    pub(crate) fn len(&self) -> u64 {
+        self.bucket_offsets[MERGE_STRING_BUCKETS - 1]
+            + self.buckets[MERGE_STRING_BUCKETS - 1].next_offset
+    }
+
+    pub(crate) fn totally_added(&self) -> usize {
+        self.buckets.iter().map(|b| b.totally_added).sum()
+    }
+
+    pub(crate) fn string_count(&self) -> usize {
+        self.buckets.iter().map(|b| b.strings.len()).sum()
+    }
+}
+
 /// Merges identical strings from all loaded objects where those strings are from input sections
 /// that are marked with both the SHF_MERGE and SHF_STRINGS flags.
 #[tracing::instrument(skip_all, name = "Merge strings")]
@@ -515,7 +553,9 @@ fn merge_strings<'data>(
     resolved: &mut [ResolvedGroup<'data>],
     output_sections: &OutputSections,
 ) -> Result<OutputSectionMap<MergeStringsSection<'data>>> {
-    let mut strings_by_section = output_sections.new_section_map::<MergeStringsSection>();
+    let mut worklist_per_section: HashMap<OutputSectionId, [Vec<_>; MERGE_STRING_BUCKETS]> =
+        HashMap::new();
+
     for group in resolved {
         for file in &mut group.files {
             let ResolvedFile::Object(obj) = file else {
@@ -531,17 +571,47 @@ fn merge_strings<'data>(
                     bail!("Internal error: expected SectionSlot::MergeStrings");
                 };
 
-                let string_to_offset = strings_by_section.get_mut(sec.part_id.output_section_id());
-                for string in &merge_info.strings {
-                    string_to_offset.add_string(*string);
+                let id = sec.part_id.output_section_id();
+                worklist_per_section.entry(id).or_default();
+                for (i, bucket) in worklist_per_section
+                    .get_mut(&id)
+                    .unwrap()
+                    .iter_mut()
+                    .enumerate()
+                {
+                    bucket.push(&merge_info.buckets[i]);
                 }
             }
         }
     }
 
+    let mut strings_by_section = output_sections.new_section_map::<MergeStringsSection>();
+
+    for (section_id, buckets) in worklist_per_section.iter() {
+        let merged_strings = strings_by_section.get_mut(*section_id);
+
+        buckets
+            .iter()
+            .zip(merged_strings.buckets.iter_mut())
+            .par_bridge()
+            .for_each(|(string_lists, merged_strings)| {
+                for strings in string_lists {
+                    for string in strings.iter() {
+                        merged_strings.add_string(*string);
+                    }
+                }
+            });
+
+        for i in 1..MERGE_STRING_BUCKETS {
+            merged_strings.bucket_offsets[i] =
+                merged_strings.bucket_offsets[i - 1] + merged_strings.buckets[i - 1].len();
+        }
+    }
+
     strings_by_section.for_each(|section_id, sec| {
         if sec.len() > 0 {
-            tracing::debug!(section = ?output_sections.name(section_id), size = sec.len(), sec.totally_added, strings = sec.strings.len(), "merge_strings");
+            tracing::debug!(section = ?output_sections.name(section_id), size = sec.len(),
+                totally_added = sec.totally_added(), strings = sec.string_count(), "merge_strings");
         }
     });
 
@@ -962,13 +1032,14 @@ impl<'data> UnresolvedMergeStringsFileSection<'data> {
         section_index: object::SectionIndex,
     ) -> Result<UnresolvedMergeStringsFileSection<'data>> {
         let mut remaining = section_data;
-        let mut strings = Vec::new();
+        let mut buckets: [Vec<PreHashed<StringToMerge>>; MERGE_STRING_BUCKETS] = Default::default();
         while !remaining.is_empty() {
-            strings.push(StringToMerge::take_hashed(&mut remaining)?);
+            let string = StringToMerge::take_hashed(&mut remaining)?;
+            buckets[(string.hash() as usize) % MERGE_STRING_BUCKETS].push(string);
         }
         Ok(UnresolvedMergeStringsFileSection {
             section_index,
-            strings,
+            buckets,
         })
     }
 }
