@@ -1385,24 +1385,14 @@ impl<'out> ObjectLayout<'out> {
             .address()?;
 
         let object_section = self.object.section(section.index)?;
+        let section_name = self.object.section_name(object_section)?;
         let section_flags = SectionFlags::from_header(object_section);
-        let section_tombstone_values: Vec<u64> = (0..self.object.sections.len())
-            .map(|section_index| {
-                if section_index == 0 {
-                    return Ok(0);
-                }
-                let section_name = self
-                    .object
-                    .section_name(self.object.section(object::SectionIndex(section_index))?)?;
-                Ok(
-                    if section_name == b".debug_loc" || section_name == b".debug_ranges" {
-                        1
-                    } else {
-                        0
-                    },
-                )
-            })
-            .collect::<Result<_>>()?;
+        let tombstone_value: u64 =
+            if section_name == b".debug_loc" || section_name == b".debug_ranges" {
+                1
+            } else {
+                0
+            };
 
         for rel in self.object.relocations(section.index)? {
             let offset_in_section = rel.r_offset.get(LittleEndian);
@@ -1416,7 +1406,7 @@ impl<'out> ObjectLayout<'out> {
                     section_flags,
                 },
                 layout,
-                &section_tombstone_values,
+                tombstone_value,
                 out,
             )
             .with_context(|| {
@@ -1759,7 +1749,7 @@ fn apply_debug_relocation(
     rel: &elf::Rela,
     section_info: SectionInfo,
     layout: &Layout,
-    section_tombstone_values: &[u64],
+    section_tombstone_value: u64,
     out: &mut [u8],
 ) -> Result<()> {
     let section_address = section_info.section_address;
@@ -1811,9 +1801,7 @@ fn apply_debug_relocation(
                 false,
             )?
             .context("Cannot get merged string offset for a debug info section")?,
-            SectionSlot::Discard | SectionSlot::Unloaded(..) => {
-                section_tombstone_values[section_index.0]
-            }
+            SectionSlot::Discard | SectionSlot::Unloaded(..) => section_tombstone_value,
             _ => bail!("Could not find a relocation resolution for a debug info section"),
         }
     } else {
