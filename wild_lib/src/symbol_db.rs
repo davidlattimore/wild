@@ -61,10 +61,13 @@ pub struct SymbolDb<'data> {
     /// `alternative_definitions`.
     pub(crate) symbols_with_alternatives: Vec<SymbolId>,
 
+    /// The number of symbols in each group, keyed by the index of the group.
     pub(crate) num_symbols_per_group: Vec<usize>,
 
     epilogue_file_id: FileId,
 
+    /// The names of symbols that mark the start / stop of sections. These are indexed by the offset
+    /// into the epilogue's symbol IDs.
     start_stop_symbol_names: Vec<SymbolName<'data>>,
 }
 

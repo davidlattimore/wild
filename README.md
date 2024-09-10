@@ -3,8 +3,7 @@
 Wild is a linker with the goal of being very fast for iterative development.
 
 It's still very much a work-in-progress and definitely shouldn't be used for linking any production
-binaries. It's probably not really ready for development purposes yet, since there's a bunch of
-important stuff it can't yet do like debug info.
+binaries.
 
 ## Q&A
 
@@ -28,13 +27,13 @@ The following is working with the caveat that there may be bugs:
 * Output to shared objects (.so files)
 * Rust proc-macros, when linked with Wild work
 * Most of the top downloaded crates on crates.io have been tested with Wild and pass their tests
+* Debug info
 
 ### What isn't yet supported?
 
 Lots of stuff. Here are some of the larger things that aren't yet done, roughly sorted by current
 priority:
 
-* Debug info
 * Incremental linking
 * Support for architectures other than x86-64
 * Support for a wider range of linker flags
@@ -109,7 +108,9 @@ If you decide to benchmark Wild against other linkers, in order to make it a fai
 should ensure that the other linkers aren't doing work on something that Wild doesn't support. In
 particular:
 
-* No debug info should be linked. e.g. pass --strip-debug to all linkers
+* Wild always does `--gc-sections`, so for a fair comparison, that should be passed to all the
+  linkers.
+* Wild defaults to `-z now`, so best to pass that to all linkers.
 
 There might be other flags that speed up the other linkers by letting them avoid some work that
 they're currently doing. If you know of such flags, please let me know.
