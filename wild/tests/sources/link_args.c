@@ -7,10 +7,11 @@
 //#Object:exit.c
 //#WildExtraLinkArgs:--threads=1
 
-// TODO: Figure out why this fails in CI and fix it.
-// #Config:dev_null
-// #Object:exit.c
-// #LinkArgs:-o /dev/null
+//#Config:dev_null
+//#Object:exit.c
+//#LinkArgs:-o /dev/null
+//#DiffEnabled:false
+//#RunEnabled:false
 
 #include "exit.h"
 
