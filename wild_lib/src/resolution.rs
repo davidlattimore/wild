@@ -459,10 +459,8 @@ pub(crate) struct MergeStringsFileSection<'data> {
     pub(crate) section_data: &'data [u8],
 }
 
-/// Information about a string-merge section prior to merging. When merging occurs, this is turned
-/// into a MergeStringsFileSection.
+/// Information about a string-merge section prior to merging.
 pub(crate) struct UnresolvedMergeStringsFileSection<'data> {
-    section_data: &'data [u8],
     section_index: object::SectionIndex,
     strings: Vec<PreHashed<StringToMerge<'data>>>,
 }
@@ -770,14 +768,11 @@ fn resolve_sections<'data>(
                     _ => (),
                 }
                 let slot = if unloaded.is_string_merge {
-                    let unresolved_merge_strings = UnresolvedMergeStringsFileSection::new(
-                        &obj.object,
-                        input_section,
+                    let section_data = obj.object.section_data(input_section, allocator)?;
+                    merge_strings_out.push(UnresolvedMergeStringsFileSection::new(
+                        section_data,
                         input_section_index,
-                        allocator,
-                    )?;
-                    let section_data = unresolved_merge_strings.section_data;
-                    merge_strings_out.push(unresolved_merge_strings);
+                    )?);
                     SectionSlot::MergeStrings(MergeStringsFileSection {
                         part_id,
                         section_data,
@@ -963,12 +958,9 @@ impl<'data> SectionSlot<'data> {
 
 impl<'data> UnresolvedMergeStringsFileSection<'data> {
     fn new(
-        object: &crate::elf::File<'data>,
-        input_section: &crate::elf::SectionHeader,
+        section_data: &'data [u8],
         section_index: object::SectionIndex,
-        allocator: &bumpalo_herd::Member<'data>,
     ) -> Result<UnresolvedMergeStringsFileSection<'data>> {
-        let section_data = object.section_data(input_section, allocator)?;
         let mut remaining = section_data;
         let mut strings = Vec::new();
         while !remaining.is_empty() {
@@ -977,7 +969,6 @@ impl<'data> UnresolvedMergeStringsFileSection<'data> {
         Ok(UnresolvedMergeStringsFileSection {
             section_index,
             strings,
-            section_data,
         })
     }
 }
