@@ -54,6 +54,10 @@ impl<T> PreHashed<T> {
     pub(crate) fn new(value: T, hash: u64) -> Self {
         Self { value, hash }
     }
+
+    pub(crate) fn hash(&self) -> u64 {
+        self.hash
+    }
 }
 
 impl<T> std::hash::Hash for PreHashed<T> {

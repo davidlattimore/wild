@@ -22,6 +22,3 @@ void _start(void) {
 //#ExpectComment:GCC*
 //#ExpectComment:Foo
 //#ExpectComment:Bar
-
-// Our linker writes this, but GNU ld doesn't, so it's optional.
-//#ExpectComment:?Linker*

@@ -5,11 +5,9 @@
 //! that are tested by examining the resulting binaries. Directives have the format '//#Directive:
 //! Args'.
 //!
-//! ExpectComment: Checks that the the next comment in the .comment section is equal to the supplied
+//! ExpectComment: Checks that the comment in the .comment section is equal to the supplied
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
-//! end with '*' which matches anything. The last ExpectComment directive may start with '?' to
-//! indicate that the comment if present should match the rest of the argument, but that it's OK for
-//! it to be absent.
+//! end with '*' which matches anything.
 //!
 //! TODO: Document the rest of the directives.
 
@@ -973,29 +971,19 @@ impl Assertions {
             return Ok(());
         }
         let actual_comments = read_comments(obj)?;
-        let mut actual_comments_iter = actual_comments.iter();
-        let mut expected_comments = self.expected_comments.iter();
-        loop {
-            match (expected_comments.next(), actual_comments_iter.next()) {
-                (None, None) => break,
-                (None, Some(a)) => bail!("Unexpected .comment `{a}`"),
-                (Some(e), None) => {
-                    if !e.starts_with('?') {
-                        bail!("Missing expected .comment `{e}`")
-                    }
+        for expected in self.expected_comments.iter() {
+            if let Some(expected) = expected.strip_suffix('*') {
+                if !actual_comments
+                    .iter()
+                    .any(|actual| actual.starts_with(expected))
+                {
+                    bail!("Expected .comment starting with `{expected}`");
                 }
-                (Some(e), Some(a)) => {
-                    let e = e.strip_prefix('?').unwrap_or(e.as_str());
-                    if let Some(prefix) = e.strip_suffix('*') {
-                        if !a.starts_with(prefix) {
-                            bail!("Expected .comment starting with `{prefix}`, got `{a}`");
-                        }
-                    } else if e != a {
-                        bail!("Expected .comment `{e}`, got `{a}`");
-                    }
-                }
+            } else if !actual_comments.iter().any(|actual| actual == expected) {
+                bail!("Expected .comment `{expected}`");
             }
         }
+
         Ok(())
     }
 

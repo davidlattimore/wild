@@ -1922,9 +1922,11 @@ impl PreludeLayout {
             if merged.len() > 0 {
                 let buffer =
                     buffers.get_mut(section_id.part_id_with_alignment(crate::alignment::MIN));
-                for string in &merged.strings {
-                    let dest = crate::slice::slice_take_prefix_mut(buffer, string.len());
-                    dest.copy_from_slice(string)
+                for bucket in &merged.buckets {
+                    for string in &bucket.strings {
+                        let dest = crate::slice::slice_take_prefix_mut(buffer, string.len());
+                        dest.copy_from_slice(string)
+                    }
                 }
             }
         });
