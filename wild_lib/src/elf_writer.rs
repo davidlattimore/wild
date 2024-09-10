@@ -1388,7 +1388,13 @@ impl<'out> ObjectLayout<'out> {
         let section_name = self.object.section_name(object_section)?;
         let section_flags = SectionFlags::from_header(object_section);
         let tombstone_value: u64 =
+            // TODO: Starting with DWARF 6, the tombstone value will be defined as -1 and -2.
+            // However, the change is premature as consumers of the DWARF format don't fully support
+            // the new tombstone values.
+            //
+            // Link: https://dwarfstd.org/issues/200609.1.html
             if section_name == b".debug_loc" || section_name == b".debug_ranges" {
+                // These sections use zero as a list terminator.
                 1
             } else {
                 0
