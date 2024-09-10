@@ -57,6 +57,7 @@ struct Program<'a> {
     link_output: LinkOutput,
     assertions: &'a Assertions,
     shared_objects: Vec<LinkerInput>,
+    is_null: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -253,6 +254,12 @@ impl ArgumentSet {
     fn empty() -> Self {
         Self { args: Vec::new() }
     }
+
+    fn is_output_to_dev_null(&self) -> bool {
+        self.args
+            .windows(2)
+            .any(|args| args[0] == "-o" && args[1] == "/dev/null")
+    }
 }
 
 impl Default for Config {
@@ -434,6 +441,7 @@ impl ProgramInputs {
             link_output,
             assertions: &config.assertions,
             shared_objects,
+            is_null: config.linker_args.is_output_to_dev_null(),
         })
     }
 
@@ -854,7 +862,9 @@ impl LinkCommand {
                     .arg("-static")
                     .args(&linker_args.args);
             }
-            command.arg("-o").arg(output_path);
+            if !linker_args.args.iter().any(|arg| arg == "-o") {
+                command.arg("-o").arg(output_path);
+            }
             for input in inputs {
                 command.arg(&input.path);
             }
@@ -1197,6 +1207,10 @@ fn diff_executables(instructions: &Config, programs: &[Program]) -> Result {
 
 /// Diff the supplied files. The last file should be the one that we produced.
 fn diff_files(instructions: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Result {
+    if instructions.linker_args.is_output_to_dev_null() {
+        return Ok(());
+    }
+
     let mut config = linker_diff::Config::default();
     config.wild_defaults = true;
     config
@@ -1386,6 +1400,9 @@ fn integration_test(
         }
 
         for program in programs {
+            if program.is_null {
+                continue;
+            }
             program
                 .run()
                 .with_context(|| format!("Failed to run program. {program}"))?;

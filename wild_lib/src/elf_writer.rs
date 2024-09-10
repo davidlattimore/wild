@@ -63,6 +63,9 @@ use object::read::elf::Rela;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::fmt::Display;
+use std::io::Write;
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::ops::Range;
 use std::ops::Sub;
 use std::path::Path;
@@ -89,8 +92,46 @@ enum FileCreator {
 
 pub(crate) struct SizedOutput {
     file: std::fs::File,
-    mmap: memmap2::MmapMut,
+    out: OutputBuffer,
     path: Arc<Path>,
+}
+
+enum OutputBuffer {
+    Mmap(memmap2::MmapMut),
+    InMemory(Vec<u8>),
+}
+
+impl OutputBuffer {
+    fn new(file: &std::fs::File, file_size: u64) -> Self {
+        Self::new_mmapped(file, file_size)
+            .unwrap_or_else(|| Self::InMemory(vec![0; file_size as usize]))
+    }
+
+    fn new_mmapped(file: &std::fs::File, file_size: u64) -> Option<Self> {
+        file.set_len(file_size).ok()?;
+        let mmap = unsafe { MmapOptions::new().map_mut(file) }.ok()?;
+        Some(Self::Mmap(mmap))
+    }
+}
+
+impl Deref for OutputBuffer {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            OutputBuffer::Mmap(mmap) => mmap.deref(),
+            OutputBuffer::InMemory(vec) => vec.deref(),
+        }
+    }
+}
+
+impl DerefMut for OutputBuffer {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            OutputBuffer::Mmap(mmap) => mmap.deref_mut(),
+            OutputBuffer::InMemory(vec) => vec.deref_mut(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -173,6 +214,7 @@ impl Output {
             }
         };
         sized_output.write(layout)?;
+        sized_output.flush()?;
         // This triggers writing our .trace file if any. See output_trace module.
         tracing::trace!(output_write_complete = true);
         Ok(sized_output)
@@ -204,35 +246,42 @@ impl SizedOutput {
             .truncate(true)
             .open(&path)
             .with_context(|| format!("Failed to open `{}`", path.display()))?;
-        file.set_len(file_size).with_context(|| {
-            format!(
-                "Failed to set length of the mmapped output file `{}`",
-                path.display()
-            )
-        })?;
-        let mmap = unsafe { MmapOptions::new().map_mut(&file) }
-            .with_context(|| format!("Failed to mmap output file `{}`", path.display()))?;
-        Ok(SizedOutput { file, mmap, path })
+        let out = OutputBuffer::new(&file, file_size);
+        Ok(SizedOutput { file, out, path })
     }
 
     pub(crate) fn write(&mut self, layout: &Layout) -> Result {
         self.write_file_contents(layout)?;
         if layout.args().validate_output {
-            crate::validation::validate_bytes(layout, &self.mmap)?;
+            crate::validation::validate_bytes(layout, &self.out)?;
         }
 
         if layout.args().should_write_eh_frame_hdr {
-            let mut section_buffers = split_output_into_sections(layout, &mut self.mmap);
+            let mut section_buffers = split_output_into_sections(layout, &mut self.out);
             sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
         }
-        crate::fs::make_executable(&self.file)
-            .with_context(|| format!("Failed to make `{}` executable", self.path.display()))?;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result {
+        match &self.out {
+            OutputBuffer::Mmap(_) => {}
+            OutputBuffer::InMemory(bytes) => self
+                .file
+                .write_all(bytes)
+                .with_context(|| format!("Failed to write to {}", self.path.display()))?,
+        }
+
+        // Making the file executable is best-effort only. For example if we're writing to a pipe or
+        // something, it isn't going to work and that's OK.
+        let _ = crate::fs::make_executable(&self.file);
+
         Ok(())
     }
 
     #[tracing::instrument(skip_all, name = "Write data to file")]
     pub(crate) fn write_file_contents(&mut self, layout: &Layout) -> Result {
-        let mut section_buffers = split_output_into_sections(layout, &mut self.mmap);
+        let mut section_buffers = split_output_into_sections(layout, &mut self.out);
 
         let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
         let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
@@ -277,7 +326,7 @@ fn split_output_by_group<'data, 'out>(
 
 fn split_output_into_sections<'out>(
     layout: &Layout<'_>,
-    mmap: &'out mut memmap2::MmapMut,
+    mut data: &'out mut [u8],
 ) -> OutputSectionMap<&'out mut [u8]> {
     let mut section_allocations = Vec::with_capacity(layout.section_layouts.len());
     layout.section_layouts.for_each(|id, s| {
@@ -289,7 +338,6 @@ fn split_output_into_sections<'out>(
     });
     section_allocations.sort_by_key(|s| (s.offset, s.offset + s.size));
 
-    let mut data = mmap.as_mut();
     // OutputSectionMap is ordered by section ID, which is not the same as output order. We
     // split the output file by output order, putting the relevant parts of the buffer into the
     // map.
