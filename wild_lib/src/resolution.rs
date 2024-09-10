@@ -23,6 +23,7 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ParsedInput;
 use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
+use crate::part_id;
 use crate::part_id::PartId;
 use crate::part_id::TemporaryPartId;
 use crate::part_id::UnloadedSection;
@@ -63,7 +64,7 @@ pub fn resolve_symbols_and_sections<'data>(
     let (mut groups, undefined_symbols, internal) =
         resolve_symbols_in_files(groups, symbol_db, herd)?;
 
-    let output_sections = assign_section_ids(&groups, symbol_db.args)?;
+    let output_sections = assign_section_ids(&mut groups, symbol_db.args)?;
 
     let merged_strings = merge_strings(&mut groups, &output_sections)?;
 
@@ -404,10 +405,10 @@ pub(crate) enum SectionSlot<'data> {
     Discard,
 
     /// The section hasn't been loaded yet, but may be loaded if it's referenced.
-    Unloaded(TemporaryPartId<'data>),
+    Unloaded(PartId),
 
     /// The section had the retain bit set, so must be loaded.
-    MustLoad(TemporaryPartId<'data>),
+    MustLoad(PartId),
 
     /// We've already loaded the section.
     Loaded(crate::layout::Section),
@@ -419,7 +420,7 @@ pub(crate) enum SectionSlot<'data> {
     MergeStrings(MergeStringsFileSection<'data>),
 
     // The section contains a debug info section that might be loaded.
-    UnloadedDebugInfo(TemporaryPartId<'data>),
+    UnloadedDebugInfo(PartId),
 
     // Loaded section with debug info content.
     LoadedDebugInfo(crate::layout::Section),
@@ -462,7 +463,6 @@ pub(crate) struct MergeStringsFileSection<'data> {
 /// into a MergeStringsFileSection.
 pub(crate) struct UnresolvedMergeStringsFileSection<'data> {
     section_data: &'data [u8],
-    temporary_part_id: TemporaryPartId<'data>,
     section_index: object::SectionIndex,
     strings: Vec<PreHashed<StringToMerge<'data>>>,
 }
@@ -527,16 +527,13 @@ fn merge_strings<'data>(
                 continue;
             };
             for merge_info in &non_dynamic.merge_strings_sections {
-                let part_id = output_sections.part_id(merge_info.temporary_part_id)?;
+                let SectionSlot::MergeStrings(sec) =
+                    non_dynamic.sections[merge_info.section_index.0]
+                else {
+                    bail!("Internal error: expected SectionSlot::MergeStrings");
+                };
 
-                // Now that we know the proper part-id, we can create the slot.
-                non_dynamic.sections[merge_info.section_index.0] =
-                    SectionSlot::MergeStrings(MergeStringsFileSection {
-                        part_id,
-                        section_data: merge_info.section_data,
-                    });
-
-                let string_to_offset = strings_by_section.get_mut(part_id.output_section_id());
+                let string_to_offset = strings_by_section.get_mut(sec.part_id.output_section_id());
                 for string in &merge_info.strings {
                     string_to_offset.add_string(*string);
                 }
@@ -555,17 +552,18 @@ fn merge_strings<'data>(
 
 #[tracing::instrument(skip_all, name = "Assign section IDs")]
 fn assign_section_ids<'data>(
-    resolved: &[ResolvedGroup<'data>],
+    resolved: &mut [ResolvedGroup<'data>],
     args: &Args,
 ) -> Result<OutputSections<'data>> {
     let mut output_sections_builder = OutputSectionsBuilder::with_base_address(args.base_address());
     for group in resolved {
-        for file in &group.files {
+        for file in &mut group.files {
             if let ResolvedFile::Object(s) = file {
-                if let Some(non_dynamic) = s.non_dynamic.as_ref() {
-                    output_sections_builder
-                        .add_sections(&non_dynamic.custom_sections)
-                        .with_context(|| format!("Failed to process custom sections for {s}"))?;
+                if let Some(non_dynamic) = s.non_dynamic.as_mut() {
+                    output_sections_builder.add_sections(
+                        &non_dynamic.custom_sections,
+                        non_dynamic.sections.as_mut_slice(),
+                    );
                 }
             }
         }
@@ -755,24 +753,35 @@ fn resolve_sections<'data>(
         .map(|(input_section_index, input_section)| {
             if let Some(unloaded) = UnloadedSection::from_section(&obj.object, input_section, args)?
             {
-                if unloaded.is_string_merge {
-                    if let TemporaryPartId::Custom(..) = unloaded.part_id {
-                        custom_sections.push(CustomSectionDetails {
+                let section_flags = SectionFlags::from_header(input_section);
+                let mut part_id = part_id::CUSTOM_PLACEHOLDER;
+                let mut custom_section = None;
+                match unloaded.part_id {
+                    TemporaryPartId::Custom(_, alignment) => {
+                        custom_section = Some(CustomSectionDetails {
                             name: unloaded.name(),
-                            section_flags: SectionFlags::from_header(input_section),
+                            alignment,
+                            section_flags,
                             ty: SectionType::from_header(input_section),
+                            index: input_section_index,
                         });
                     }
-                    merge_strings_out.push(UnresolvedMergeStringsFileSection::new(
+                    TemporaryPartId::BuiltIn(p) => part_id = p,
+                    _ => (),
+                }
+                let slot = if unloaded.is_string_merge {
+                    let unresolved_merge_strings = UnresolvedMergeStringsFileSection::new(
                         &obj.object,
                         input_section,
                         input_section_index,
-                        unloaded.part_id,
                         allocator,
-                    )?);
-                    // We can't create the proper slot yet, because we don't yet know the PartId.
-                    // We'll fill it in later once we resolve part IDs for custom sections.
-                    Ok(SectionSlot::Discard)
+                    )?;
+                    let section_data = unresolved_merge_strings.section_data;
+                    merge_strings_out.push(unresolved_merge_strings);
+                    SectionSlot::MergeStrings(MergeStringsFileSection {
+                        part_id,
+                        section_data,
+                    })
                 } else {
                     match unloaded.part_id {
                         TemporaryPartId::BuiltIn(id)
@@ -782,35 +791,30 @@ fn resolve_sections<'data>(
                                 .section_flags
                                 .should_retain() =>
                         {
-                            Ok(SectionSlot::MustLoad(unloaded.part_id))
+                            SectionSlot::MustLoad(id)
                         }
-                        TemporaryPartId::BuiltIn(_id) => {
-                            Ok(SectionSlot::Unloaded(unloaded.part_id))
-                        }
-                        TemporaryPartId::Custom(custom_section_id, _) => {
-                            let section_flags = SectionFlags::from_header(input_section);
-                            custom_sections.push(CustomSectionDetails {
-                                name: custom_section_id.name,
-                                section_flags,
-                                ty: SectionType::from_header(input_section),
-                            });
+                        TemporaryPartId::BuiltIn(id) => SectionSlot::Unloaded(id),
+                        TemporaryPartId::Custom(custom_section_id, _alignment) => {
                             if custom_section_id.name.bytes().starts_with(b".debug_") {
                                 if args.strip_debug {
-                                    Ok(SectionSlot::Discard)
+                                    custom_section = None;
+                                    SectionSlot::Discard
                                 } else {
-                                    Ok(SectionSlot::UnloadedDebugInfo(unloaded.part_id))
+                                    SectionSlot::UnloadedDebugInfo(part_id::CUSTOM_PLACEHOLDER)
                                 }
                             } else if section_flags.should_retain() {
-                                Ok(SectionSlot::MustLoad(unloaded.part_id))
+                                SectionSlot::MustLoad(part_id::CUSTOM_PLACEHOLDER)
                             } else {
-                                Ok(SectionSlot::Unloaded(unloaded.part_id))
+                                SectionSlot::Unloaded(part_id::CUSTOM_PLACEHOLDER)
                             }
                         }
                         TemporaryPartId::EhFrameData => {
-                            Ok(SectionSlot::EhFrameData(input_section_index))
+                            SectionSlot::EhFrameData(input_section_index)
                         }
                     }
-                }
+                };
+                custom_sections.extend(custom_section.into_iter());
+                Ok(slot)
             } else {
                 Ok(SectionSlot::Discard)
             }
@@ -942,6 +946,19 @@ impl<'data> SectionSlot<'data> {
     pub(crate) fn is_loaded(&self) -> bool {
         !matches!(self, SectionSlot::Discard | SectionSlot::Unloaded(..))
     }
+
+    pub(crate) fn set_part_id(&mut self, part_id: PartId) {
+        match self {
+            SectionSlot::Discard => todo!(),
+            SectionSlot::Unloaded(out) => *out = part_id,
+            SectionSlot::MustLoad(out) => *out = part_id,
+            SectionSlot::Loaded(out) => out.part_id = part_id,
+            SectionSlot::EhFrameData(_) => todo!(),
+            SectionSlot::MergeStrings(out) => out.part_id = part_id,
+            SectionSlot::UnloadedDebugInfo(out) => *out = part_id,
+            SectionSlot::LoadedDebugInfo(out) => out.part_id = part_id,
+        }
+    }
 }
 
 impl<'data> UnresolvedMergeStringsFileSection<'data> {
@@ -949,7 +966,6 @@ impl<'data> UnresolvedMergeStringsFileSection<'data> {
         object: &crate::elf::File<'data>,
         input_section: &crate::elf::SectionHeader,
         section_index: object::SectionIndex,
-        temporary_part_id: TemporaryPartId<'data>,
         allocator: &bumpalo_herd::Member<'data>,
     ) -> Result<UnresolvedMergeStringsFileSection<'data>> {
         let section_data = object.section_data(input_section, allocator)?;
@@ -959,7 +975,6 @@ impl<'data> UnresolvedMergeStringsFileSection<'data> {
             strings.push(StringToMerge::take_hashed(&mut remaining)?);
         }
         Ok(UnresolvedMergeStringsFileSection {
-            temporary_part_id,
             section_index,
             strings,
             section_data,

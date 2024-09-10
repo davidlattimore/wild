@@ -21,7 +21,6 @@ use crate::error::Result;
 use crate::layout::FileLayout;
 use crate::layout::GroupLayout;
 use crate::output_section_id;
-use crate::part_id::TemporaryPartId;
 use crate::resolution::SectionSlot;
 use anyhow::Context as _;
 use itertools::Itertools;
@@ -83,7 +82,7 @@ fn write_gc_stats(
             let mut file_discarded = 0;
             for (slot, section) in obj.sections.iter().zip(obj.object.sections.iter()) {
                 match slot {
-                    SectionSlot::Unloaded(TemporaryPartId::BuiltIn(id)) => {
+                    SectionSlot::Unloaded(id) => {
                         if id.output_section_id() == output_section_id::TEXT {
                             file_discarded += obj.object.section_size(section)?;
                             if args.verbose_gc_stats {

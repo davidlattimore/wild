@@ -84,6 +84,9 @@ pub(crate) const NUM_GENERATED_PARTS: usize = REGULAR_PART_BASE as usize;
 pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_GENERATED_PARTS
     + output_section_id::NUM_BUILT_IN_REGULAR_SECTIONS * crate::alignment::NUM_ALIGNMENTS;
 
+/// A placeholder used for custom sections before we know their actual PartId.
+pub(crate) const CUSTOM_PLACEHOLDER: PartId = PartId(u32::MAX);
+
 impl<'data> UnloadedSection<'data> {
     #[allow(clippy::if_same_then_else)]
     pub(crate) fn from_section(

@@ -27,14 +27,13 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
 use crate::part_id::PartId;
-use crate::part_id::TemporaryPartId;
 use crate::part_id::NUM_PARTS_PER_TWO_PART_SECTION;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::REGULAR_PART_BASE;
 use crate::program_segments::ProgramSegmentId;
+use crate::resolution::SectionSlot;
 use ahash::AHashMap;
 use anyhow::anyhow;
-use anyhow::Context as _;
 use core::mem::size_of;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
@@ -60,6 +59,8 @@ pub(crate) struct OutputSectionId(u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CustomSectionDetails<'data> {
     pub(crate) name: SectionName<'data>,
+    pub(crate) index: object::SectionIndex,
+    pub(crate) alignment: Alignment,
     pub(crate) section_flags: SectionFlags,
     pub(crate) ty: SectionType,
 }
@@ -139,22 +140,6 @@ impl<'data> OutputSections<'data> {
             .iter()
             .enumerate()
             .map(|(raw, info)| (OutputSectionId::from_usize(raw), info))
-    }
-
-    pub(crate) fn part_id(&self, temporary_id: TemporaryPartId<'_>) -> Result<PartId> {
-        Ok(match temporary_id {
-            TemporaryPartId::BuiltIn(id) => id,
-            TemporaryPartId::Custom(custom_section_id, alignment) => self
-                .custom_name_to_id(custom_section_id.name)
-                .with_context(|| {
-                    format!(
-                        "Internal error: Didn't allocate ID for custom section `{}`",
-                        custom_section_id.name
-                    )
-                })?
-                .part_id_with_alignment(alignment),
-            TemporaryPartId::EhFrameData => part_id::EH_FRAME,
-        })
     }
 
     /// Determine which loadable segment, if any, each output section is contained within and update
@@ -681,24 +666,37 @@ impl<'data> OutputSectionsBuilder<'data> {
     pub(crate) fn add_sections(
         &mut self,
         custom_sections: &[CustomSectionDetails<'data>],
-    ) -> Result {
+        sections: &mut [SectionSlot],
+    ) {
         for custom in custom_sections {
-            let id = self.custom_by_name.entry(custom.name).or_insert_with(|| {
-                let id = OutputSectionId::from_usize(self.section_infos.len());
-                self.section_infos.push(SectionOutputInfo {
-                    section_flags: custom.section_flags,
-                    name: custom.name,
-                    // We'll fill this in properly in `determine_loadable_segment_ids`.
-                    loadable_segment_id: None,
-                    ty: custom.ty,
-                });
-                id
-            });
+            let section_id = self.add_section(custom.name, custom.section_flags, custom.ty);
             // Section flags are sometimes different, take the union of everything we're
             // given.
-            self.section_infos[id.as_usize()].section_flags |= custom.section_flags;
+            self.section_infos[section_id.as_usize()].section_flags |= custom.section_flags;
+
+            if let Some(slot) = sections.get_mut(custom.index.0) {
+                slot.set_part_id(section_id.part_id_with_alignment(custom.alignment));
+            }
         }
-        Ok(())
+    }
+
+    pub(crate) fn add_section(
+        &mut self,
+        name: SectionName<'data>,
+        section_flags: SectionFlags,
+        section_type: SectionType,
+    ) -> OutputSectionId {
+        *self.custom_by_name.entry(name).or_insert_with(|| {
+            let id = OutputSectionId::from_usize(self.section_infos.len());
+            self.section_infos.push(SectionOutputInfo {
+                section_flags,
+                name,
+                // We'll fill this in properly in `determine_loadable_segment_ids`.
+                loadable_segment_id: None,
+                ty: section_type,
+            });
+            id
+        })
     }
 
     pub(crate) fn with_base_address(base_address: u64) -> Self {
@@ -854,30 +852,10 @@ impl<'data> OutputSections<'data> {
     #[cfg(test)]
     pub(crate) fn for_testing() -> OutputSections<'static> {
         let mut builder = OutputSectionsBuilder::with_base_address(0x1000);
-        builder
-            .add_sections(&[
-                CustomSectionDetails {
-                    name: SectionName(b"ro"),
-                    section_flags: shf::GNU_RETAIN,
-                    ty: sht::PROGBITS,
-                },
-                CustomSectionDetails {
-                    name: SectionName(b"exec"),
-                    ty: sht::PROGBITS,
-                    section_flags: shf::EXECINSTR,
-                },
-                CustomSectionDetails {
-                    name: SectionName(b"data"),
-                    ty: sht::PROGBITS,
-                    section_flags: shf::WRITE,
-                },
-                CustomSectionDetails {
-                    name: SectionName(b"bss"),
-                    ty: sht::NOBITS,
-                    section_flags: shf::WRITE,
-                },
-            ])
-            .unwrap();
+        builder.add_section(SectionName(b"ro"), shf::GNU_RETAIN, sht::PROGBITS);
+        builder.add_section(SectionName(b"exec"), shf::EXECINSTR, sht::PROGBITS);
+        builder.add_section(SectionName(b"data"), shf::WRITE, sht::PROGBITS);
+        builder.add_section(SectionName(b"bss"), shf::WRITE, sht::NOBITS);
         builder.build().unwrap()
     }
 }

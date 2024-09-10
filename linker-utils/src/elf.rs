@@ -229,6 +229,10 @@ impl SectionType {
     pub fn from_header(header: &object::elf::SectionHeader64<LittleEndian>) -> Self {
         Self(header.sh_type(LittleEndian))
     }
+
+    pub fn from_u32(raw: u32) -> Self {
+        Self(raw)
+    }
 }
 
 #[cfg(test)]

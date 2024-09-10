@@ -29,7 +29,6 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::part_id;
 use crate::part_id::PartId;
-use crate::part_id::TemporaryPartId;
 use crate::part_id::NUM_GENERATED_PARTS;
 use crate::program_segments;
 use crate::program_segments::ProgramSegmentId;
@@ -1067,7 +1066,6 @@ struct GraphResources<'data, 'scope> {
     idle_threads: Option<ArrayQueue<std::thread::Thread>>,
 
     done: AtomicBool,
-    output_sections: &'scope OutputSections<'data>,
 
     symbol_resolution_flags: &'scope [AtomicResolutionFlags],
 
@@ -1624,7 +1622,6 @@ fn find_required_sections<'data>(
         // about to go idle, we're done and need to wake up and terminate all the the threads.
         idle_threads,
         done: AtomicBool::new(false),
-        output_sections,
         symbol_resolution_flags,
         sections_with_content: output_sections.new_section_map(),
         merged_strings,
@@ -2979,8 +2976,8 @@ impl<'data> ObjectLayoutState<'data> {
                 SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => {
                     self.load_section(common, queue, *unloaded, section_id, resources)?;
                 }
-                SectionSlot::UnloadedDebugInfo(temp_part_id) => {
-                    self.load_debug_section(common, *temp_part_id, section_id, resources)?;
+                SectionSlot::UnloadedDebugInfo(part_id) => {
+                    self.load_debug_section(common, *part_id, section_id)?;
                 }
                 SectionSlot::Discard => {
                     bail!(
@@ -3004,11 +3001,10 @@ impl<'data> ObjectLayoutState<'data> {
         &mut self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
-        unloaded: TemporaryPartId<'data>,
+        part_id: PartId,
         section_id: SectionIndex,
         resources: &GraphResources<'data, 'scope>,
     ) -> Result {
-        let part_id = resources.output_sections.part_id(unloaded)?;
         let section = Section::create(self, section_id, part_id)?;
         for rel in self.object.relocations(section.index)? {
             process_relocation(
@@ -3052,14 +3048,12 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_debug_section<'scope>(
+    fn load_debug_section(
         &mut self,
         common: &mut CommonGroupState<'data>,
-        unloaded: TemporaryPartId<'data>,
+        part_id: PartId,
         section_id: SectionIndex,
-        resources: &GraphResources<'data, 'scope>,
     ) -> Result {
-        let part_id = resources.output_sections.part_id(unloaded)?;
         let section = Section::create(self, section_id, part_id)?;
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_id),);
         common.allocate(part_id, section.capacity());
