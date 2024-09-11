@@ -486,8 +486,11 @@ pub(crate) struct MergeStringsSectionBucket<'data> {
     /// things, then this is the size of the output section.
     pub(crate) next_offset: u64,
 
-    /// The total size of all added strings used for statistics.
+    /// The total size of all added strings, used for statistics.
     pub(crate) totally_added: usize,
+
+    /// The total number of all added strings, used for statistics.
+    pub(crate) totally_added_strings: usize,
 
     /// The offsets of each string in the output section keyed by the string contents.
     pub(crate) string_offsets: PassThroughHashMap<StringToMerge<'data>, u64>,
@@ -498,6 +501,7 @@ impl<'data> MergeStringsSectionBucket<'data> {
     /// present. Returns the offset within this bucket.
     fn add_string(&mut self, string: PreHashed<StringToMerge<'data>>) -> u64 {
         self.totally_added += string.bytes.len();
+        self.totally_added_strings += 1;
         *self.string_offsets.entry(string).or_insert_with(|| {
             let offset = self.next_offset;
             self.next_offset += string.bytes.len() as u64;
@@ -539,6 +543,10 @@ impl<'data> MergeStringsSection<'data> {
 
     pub(crate) fn totally_added(&self) -> usize {
         self.buckets.iter().map(|b| b.totally_added).sum()
+    }
+
+    pub(crate) fn totally_added_strings(&self) -> usize {
+        self.buckets.iter().map(|b| b.totally_added_strings).sum()
     }
 
     pub(crate) fn string_count(&self) -> usize {
@@ -610,8 +618,10 @@ fn merge_strings<'data>(
 
     strings_by_section.for_each(|section_id, sec| {
         if sec.len() > 0 {
-            tracing::debug!(section = ?output_sections.name(section_id), size = sec.len(),
-                totally_added = sec.totally_added(), strings = sec.string_count(), "merge_strings");
+            let input_sections = worklist_per_section.get(&section_id).unwrap()[0].len();
+            tracing::debug!(target: "metrics", section = ?output_sections.name(section_id), size = sec.len(),
+                totally_added = sec.totally_added(), strings = sec.string_count(), totally_added_strings = sec.totally_added_strings(),
+                input_sections, "merge_strings");
         }
     });
 

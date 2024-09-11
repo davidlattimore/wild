@@ -74,6 +74,7 @@ use std::num::NonZeroU32;
 use std::num::NonZeroU64;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicU8;
 use std::sync::Mutex;
 
@@ -169,6 +170,8 @@ pub fn compute<'data>(
     update_dynamic_symbol_resolutions(&group_layouts, &mut symbol_resolutions.resolutions);
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, symbol_db.args)?;
 
+    let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
+
     Ok(Layout {
         symbol_db,
         symbol_resolutions,
@@ -182,6 +185,7 @@ pub fn compute<'data>(
         merged_strings,
         merged_string_start_addresses,
         has_static_tls: gc_outputs.has_static_tls,
+        relocation_statistics,
     })
 }
 
@@ -250,6 +254,7 @@ pub struct Layout<'data> {
     pub(crate) symbol_resolution_flags: Vec<ResolutionFlags>,
     pub(crate) merged_strings: OutputSectionMap<MergeStringsSection<'data>>,
     pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
+    pub(crate) relocation_statistics: OutputSectionMap<AtomicU64>,
     pub(crate) has_static_tls: bool,
 }
 
