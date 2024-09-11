@@ -1443,14 +1443,8 @@ impl<'out> ObjectLayout<'out> {
         section: &Section,
         layout: &Layout,
     ) -> Result {
-        let section_address = self.section_resolutions[section.index.0]
-            .as_ref()
-            .unwrap()
-            .address()?;
-
         let object_section = self.object.section(section.index)?;
         let section_name = self.object.section_name(object_section)?;
-        let section_flags = SectionFlags::from_header(object_section);
         let tombstone_value: u64 =
             // TODO: Starting with DWARF 6, the tombstone value will be defined as -1 and -2.
             // However, the change is premature as consumers of the DWARF format don't fully support
@@ -1471,25 +1465,13 @@ impl<'out> ObjectLayout<'out> {
             .fetch_add(relocations.len() as u64, Relaxed);
         for rel in relocations {
             let offset_in_section = rel.r_offset.get(LittleEndian);
-            apply_debug_relocation(
-                self,
-                offset_in_section,
-                rel,
-                SectionInfo {
-                    section_address,
-                    is_writable: section.is_writable,
-                    section_flags,
-                },
-                layout,
-                tombstone_value,
-                out,
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to apply {} at offset 0x{offset_in_section:x}",
-                    self.display_relocation(rel, layout)
-                )
-            })?;
+            apply_debug_relocation(self, offset_in_section, rel, layout, tombstone_value, out)
+                .with_context(|| {
+                    format!(
+                        "Failed to apply {} at offset 0x{offset_in_section:x}",
+                        self.display_relocation(rel, layout)
+                    )
+                })?;
         }
         Ok(())
     }
@@ -1822,15 +1804,10 @@ fn apply_debug_relocation(
     object_layout: &ObjectLayout,
     offset_in_section: u64,
     rel: &elf::Rela,
-    section_info: SectionInfo,
     layout: &Layout,
     section_tombstone_value: u64,
     out: &mut [u8],
 ) -> Result<()> {
-    let section_address = section_info.section_address;
-    let place = section_address + offset_in_section;
-    let _span = tracing::trace_span!("debug relocation", address = place).entered();
-
     let e = LittleEndian;
     let symbol_index = rel
         .symbol(e, false)
