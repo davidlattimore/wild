@@ -69,6 +69,7 @@ use std::ops::DerefMut;
 use std::ops::Range;
 use std::ops::Sub;
 use std::path::Path;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -305,6 +306,16 @@ impl SizedOutput {
                     .with_context(|| format!("validate_empty failed for {group}"))?;
                 Ok(())
             })?;
+
+        for (output_section_id, section) in layout.output_sections.ids_with_info() {
+            let relocations = layout
+                .relocation_statistics
+                .get(output_section_id)
+                .load(Relaxed);
+            if relocations > 0 {
+                tracing::debug!(target: "metrics", section = %section.name, relocations, "resolved relocations");
+            }
+        }
         Ok(())
     }
 }
@@ -1392,7 +1403,12 @@ impl<'out> ObjectLayout<'out> {
         let object_section = self.object.section(section.index)?;
         let section_flags = SectionFlags::from_header(object_section);
         let mut modifier = RelocationModifier::Normal;
-        for rel in self.object.relocations(section.index)? {
+        let relocations = self.object.relocations(section.index)?;
+        layout
+            .relocation_statistics
+            .get(section.part_id.output_section_id())
+            .fetch_add(relocations.len() as u64, Relaxed);
+        for rel in relocations {
             if modifier == RelocationModifier::SkipNextRelocation {
                 modifier = RelocationModifier::Normal;
                 continue;
@@ -1448,7 +1464,12 @@ impl<'out> ObjectLayout<'out> {
                 0
             };
 
-        for rel in self.object.relocations(section.index)? {
+        let relocations = self.object.relocations(section.index)?;
+        layout
+            .relocation_statistics
+            .get(section.part_id.output_section_id())
+            .fetch_add(relocations.len() as u64, Relaxed);
+        for rel in relocations {
             let offset_in_section = rel.r_offset.get(LittleEndian);
             apply_debug_relocation(
                 self,
