@@ -55,7 +55,6 @@ struct Program<'a> {
     link_output: LinkOutput,
     assertions: &'a Assertions,
     shared_objects: Vec<LinkerInput>,
-    is_null: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -91,6 +90,7 @@ impl Linker {
             &[LinkerInput::new(obj_path.to_owned())],
             so_path,
             &linker_args,
+            config,
         );
         if self.is_wild() || !is_newer(so_path, obj_path) || !command.can_skip {
             command.run()?;
@@ -169,6 +169,8 @@ struct Config {
     is_abstract: bool,
     deps: Vec<Dep>,
     compiler: String,
+    should_diff: bool,
+    should_run: bool,
 }
 impl Config {
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
@@ -252,12 +254,6 @@ impl ArgumentSet {
     fn empty() -> Self {
         Self { args: Vec::new() }
     }
-
-    fn is_output_to_dev_null(&self) -> bool {
-        self.args
-            .windows(2)
-            .any(|args| args[0] == "-o" && args[1] == "/dev/null")
-    }
 }
 
 impl Default for Config {
@@ -278,6 +274,8 @@ impl Default for Config {
             is_abstract: false,
             deps: Default::default(),
             compiler: "gcc".to_owned(),
+            should_diff: true,
+            should_run: true,
         }
     }
 }
@@ -364,6 +362,12 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                     .contains_strings
                     .push(arg.trim().to_owned()),
                 "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
+                "DiffEnabled" => {
+                    config.should_diff = arg.parse().context("Invalid bool for DiffEnabled")?
+                }
+                "RunEnabled" => {
+                    config.should_run = arg.parse().context("Invalid bool for RunEnabled")?
+                }
                 "SkipLinker" => {
                     config.skip_linkers.insert(arg.trim().to_owned());
                 }
@@ -439,7 +443,6 @@ impl ProgramInputs {
             link_output,
             assertions: &config.assertions,
             shared_objects,
-            is_null: config.linker_args.is_output_to_dev_null(),
         })
     }
 
@@ -762,7 +765,7 @@ impl Linker {
                 .args
                 .extend(config.wild_extra_linker_args.args.iter().cloned());
         }
-        let mut command = LinkCommand::new(self, inputs, &output_path, &linker_args);
+        let mut command = LinkCommand::new(self, inputs, &output_path, &linker_args, config);
         if !command.can_skip {
             command.run()?;
             write_cmd_file(&output_path, &command.to_string())?;
@@ -796,6 +799,7 @@ impl LinkCommand {
         inputs: &[LinkerInput],
         output_path: &Path,
         linker_args: &ArgumentSet,
+        config: &Config,
     ) -> LinkCommand {
         let mut command;
         let mut invocation_mode = LinkerInvocationMode::Direct;
@@ -868,8 +872,10 @@ impl LinkCommand {
             }
         }
         command.env(wild_lib::args::VALIDATE_ENV, "1");
-        command.env(wild_lib::args::WRITE_LAYOUT_ENV, "1");
-        command.env(wild_lib::args::WRITE_TRACE_ENV, "1");
+        if config.should_diff {
+            command.env(wild_lib::args::WRITE_LAYOUT_ENV, "1");
+            command.env(wild_lib::args::WRITE_TRACE_ENV, "1");
+        }
 
         let mut link_command = LinkCommand {
             command,
@@ -1195,7 +1201,7 @@ fn diff_executables(instructions: &Config, programs: &[Program]) -> Result {
 
 /// Diff the supplied files. The last file should be the one that we produced.
 fn diff_files(instructions: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Result {
-    if instructions.linker_args.is_output_to_dev_null() {
+    if !instructions.should_diff {
         return Ok(());
     }
 
@@ -1387,13 +1393,12 @@ fn integration_test(
             );
         }
 
-        for program in programs {
-            if program.is_null {
-                continue;
+        if config.should_run {
+            for program in programs {
+                program
+                    .run()
+                    .with_context(|| format!("Failed to run program. {program}"))?;
             }
-            program
-                .run()
-                .with_context(|| format!("Failed to run program. {program}"))?;
         }
     }
 
