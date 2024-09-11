@@ -3838,14 +3838,6 @@ pub(crate) fn get_merged_string_output_address(
         );
     }
 
-    // The offset might point part way through a string. Look backward to find the start of the
-    // string so that we look up the whole string. We then reverse that offset in our final position
-    // computation.
-    let mut offset_into_string = 0;
-    while input_offset > 0 && data[input_offset as usize - 1] != 0 {
-        input_offset -= 1;
-        offset_into_string += 1;
-    }
     let string = StringToMerge::take_hashed(&mut &data[input_offset as usize..])?;
     let section_id = merge_slot.part_id.output_section_id();
     let strings_section = merged_strings.get(section_id);
@@ -3853,7 +3845,7 @@ pub(crate) fn get_merged_string_output_address(
         .get(&string)
         .with_context(|| format!("Failed to find merge-string `{}`", *string))?;
     let section_base = merged_string_start_addresses.addresses.get(section_id);
-    let mut address = section_base + output_offset + offset_into_string;
+    let mut address = section_base + output_offset;
     if symbol_has_name {
         address = address.wrapping_add(addend);
     }
