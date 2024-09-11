@@ -1603,9 +1603,14 @@ fn apply_relocation(
         .symbol(e, false)
         .context("Unsupported absolute relocation")?;
     let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
-    let Some(resolution) = layout.merged_symbol_resolution(local_symbol_id) else {
-        return Ok(RelocationModifier::Normal);
-    };
+    let resolution = layout
+        .merged_symbol_resolution(local_symbol_id)
+        .with_context(|| {
+            format!(
+                "Missing resolution for: {}",
+                layout.symbol_db.symbol_debug(local_symbol_id)
+            )
+        })?;
 
     let value_flags = resolution.value_flags;
     let resolution_flags = resolution.resolution_flags;
