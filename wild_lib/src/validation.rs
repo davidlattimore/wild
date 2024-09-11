@@ -57,7 +57,9 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
                 crate::layout::FileLayout::Prelude(_) => {}
                 crate::layout::FileLayout::Object(obj) => {
                     for (sec_index, sec) in obj.object.sections.enumerate() {
-                        if let Some(resolution) = obj.section_resolutions[sec_index.0] {
+                        if let Some(resolution) =
+                            obj.section_resolutions[sec_index.0].full_resolution()
+                        {
                             validate_resolution(
                                 obj.object.section_name(sec)?,
                                 &resolution,

@@ -1268,10 +1268,7 @@ impl<'out> ObjectLayout<'out> {
         if sec.resolution_kind.contains(ResolutionFlags::GOT)
             || sec.resolution_kind.contains(ResolutionFlags::PLT)
         {
-            let res = self.section_resolutions[sec.index.0]
-                .as_ref()
-                .ok_or_else(|| anyhow!("Section requires GOT, but hasn't been resolved"))?;
-            table_writer.process_resolution(res)?;
+            bail!("Section has GOT or PLT");
         };
         Ok(())
     }
@@ -1396,9 +1393,8 @@ impl<'out> ObjectLayout<'out> {
         table_writer: &mut TableWriter,
     ) -> Result {
         let section_address = self.section_resolutions[section.index.0]
-            .as_ref()
-            .unwrap()
-            .address()?;
+            .address()
+            .context("Attempted to apply relocations to a section that we didn't load")?;
 
         let object_section = self.object.section(section.index)?;
         let section_flags = SectionFlags::from_header(object_section);
@@ -1535,8 +1531,8 @@ impl<'out> ObjectLayout<'out> {
                             };
                             let offset_in_section =
                                 (elf_symbol.st_value(e) as i64 + rel.r_addend.get(e)) as u64;
-                            if let Some(section_resolution) =
-                                &self.section_resolutions[section_index.0]
+                            if let Some(section_address) =
+                                self.section_resolutions[section_index.0].address()
                             {
                                 should_keep = true;
                                 let cie_pointer_pos = input_pos as u32 + 4;
@@ -1549,9 +1545,8 @@ impl<'out> ObjectLayout<'out> {
                                         )
                                     })?;
                                 if let Some(hdr_out) = table_writer.take_eh_frame_hdr_entry() {
-                                    let frame_ptr =
-                                        (section_resolution.address()? + offset_in_section) as i64
-                                            - eh_frame_hdr_address as i64;
+                                    let frame_ptr = (section_address + offset_in_section) as i64
+                                        - eh_frame_hdr_address as i64;
                                     let frame_info_ptr = (frame_info_ptr_base + output_pos as u64)
                                         as i64
                                         - eh_frame_hdr_address as i64;
@@ -1822,8 +1817,9 @@ fn apply_debug_relocation(
     let resolution = layout
         .merged_symbol_resolution(object_layout.symbol_id_range.input_to_id(symbol_index))
         .or_else(|| {
-            section_index
-                .and_then(|section_index| object_layout.section_resolutions[section_index.0])
+            section_index.and_then(|section_index| {
+                object_layout.section_resolutions[section_index.0].full_resolution()
+            })
         });
 
     let value = if let Some(resolution) = resolution {

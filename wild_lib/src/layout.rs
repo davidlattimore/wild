@@ -288,7 +288,7 @@ pub(crate) struct MergedStringStartAddresses {
     addresses: OutputSectionMap<u64>,
 }
 
-/// Address information for a symbol or section.
+/// Address information for a symbol.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) struct Resolution {
     /// An address or absolute value.
@@ -305,6 +305,41 @@ pub(crate) struct Resolution {
     pub(crate) plt_address: Option<NonZeroU64>,
     pub(crate) resolution_flags: ResolutionFlags,
     pub(crate) value_flags: ValueFlags,
+}
+
+/// Address information for a symbol or section.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) struct SectionResolution {
+    address: u64,
+}
+
+impl SectionResolution {
+    /// Returns a resolution for a section that we didn't load, or for which we don't have an
+    /// address (e.g. string-merge sections).
+    fn none() -> SectionResolution {
+        SectionResolution { address: u64::MAX }
+    }
+
+    pub(crate) fn address(self) -> Option<u64> {
+        if self.address == u64::MAX {
+            None
+        } else {
+            Some(self.address)
+        }
+    }
+
+    /// Converts to a resolution compatible with what's used for symbols.
+    pub(crate) fn full_resolution(&self) -> Option<Resolution> {
+        let address = self.address()?;
+        Some(Resolution {
+            raw_value: address,
+            dynamic_symbol_index: None,
+            got_address: None,
+            plt_address: None,
+            resolution_flags: ResolutionFlags::empty(),
+            value_flags: ValueFlags::empty(),
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -368,7 +403,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) file_id: FileId,
     pub(crate) object: &'data File<'data>,
     pub(crate) sections: Vec<SectionSlot<'data>>,
-    pub(crate) section_resolutions: Vec<Option<Resolution>>,
+    pub(crate) section_resolutions: Vec<SectionResolution>,
     pub(crate) symbol_id_range: SymbolIdRange,
 }
 
@@ -1230,19 +1265,16 @@ impl<'data> Layout<'data> {
                             .iter()
                             .zip(obj.object.sections.iter())
                             .zip(&obj.sections)
-                            .map(|((maybe_res, section), section_slot)| {
-                                maybe_res.and_then(|res| {
-                                    (matches!(section_slot, SectionSlot::Loaded(..))
-                                        && SectionFlags::from_header(section).contains(shf::ALLOC)
-                                        && obj.object.section_size(section).is_ok_and(|s| s > 0))
-                                    .then(|| {
-                                        let address = res.address().unwrap();
-                                        linker_layout::Section {
-                                            mem_range: address
-                                                ..(address
-                                                    + obj.object.section_size(section).unwrap()),
-                                        }
-                                    })
+                            .map(|((res, section), section_slot)| {
+                                (matches!(section_slot, SectionSlot::Loaded(..))
+                                    && SectionFlags::from_header(section).contains(shf::ALLOC)
+                                    && obj.object.section_size(section).is_ok_and(|s| s > 0))
+                                .then(|| {
+                                    let address = res.address;
+                                    linker_layout::Section {
+                                        mem_range: address
+                                            ..(address + obj.object.section_size(section).unwrap()),
+                                    }
                                 })
                             })
                             .collect(),
@@ -3156,48 +3188,30 @@ impl<'data> ObjectLayoutState<'data> {
 
         let mut section_resolutions = Vec::with_capacity(self.state.sections.len());
         for slot in self.state.sections.iter_mut() {
-            match slot {
+            let resolution = match slot {
                 SectionSlot::Loaded(sec) => {
                     let part_id = sec.part_id;
                     let address = *memory_offsets.get(part_id);
                     // TODO: We probably need to be able to handle sections that are ifuncs and sections
                     // that need a TLS GOT struct.
-                    section_resolutions.push(Some(create_resolution(
-                        sec.resolution_kind,
-                        address,
-                        None,
-                        ValueFlags::ADDRESS,
-                        memory_offsets,
-                    )?));
                     *memory_offsets.get_mut(part_id) += sec.capacity();
+                    SectionResolution { address }
                 }
                 &mut SectionSlot::LoadedDebugInfo(sec) => {
                     let address = *memory_offsets.get(sec.part_id);
-                    section_resolutions.push(Some(create_resolution(
-                        ResolutionFlags::DIRECT,
-                        address,
-                        None,
-                        ValueFlags::ADDRESS,
-                        memory_offsets,
-                    )?));
                     *memory_offsets.get_mut(sec.part_id) += sec.capacity();
+                    SectionResolution { address }
                 }
                 SectionSlot::EhFrameData(..) => {
                     // References to symbols defined in .eh_frame are a bit weird, since it's a
                     // section where we're GCing stuff, but crtbegin.o and crtend.o use them in
                     // order to find the start and end of the whole .eh_frame section.
-                    section_resolutions.push(Some(create_resolution(
-                        ResolutionFlags::DIRECT,
-                        *memory_offsets.get(part_id::EH_FRAME),
-                        None,
-                        ValueFlags::ADDRESS,
-                        memory_offsets,
-                    )?));
+                    let address = *memory_offsets.get(part_id::EH_FRAME);
+                    SectionResolution { address }
                 }
-                _ => {
-                    section_resolutions.push(None);
-                }
-            }
+                _ => SectionResolution::none(),
+            };
+            section_resolutions.push(resolution);
         }
 
         for ((local_symbol_index, local_symbol), &resolution_flags) in self
@@ -3236,7 +3250,7 @@ impl<'data> ObjectLayoutState<'data> {
         resolution_flags: ResolutionFlags,
         local_symbol: &object::elf::Sym64<LittleEndian>,
         local_symbol_index: object::SymbolIndex,
-        section_resolutions: &[Option<Resolution>],
+        section_resolutions: &[SectionResolution],
         memory_offsets: &mut OutputSectionPartMap<u64>,
         emitter: &mut GlobalAddressEmitter<'scope>,
         resolutions_out: &mut ResolutionWriter,
@@ -3257,8 +3271,8 @@ impl<'data> ObjectLayoutState<'data> {
             .object
             .symbol_section(local_symbol, local_symbol_index)?
         {
-            if let Some(section_resolution) = section_resolutions[section_index.0].as_ref() {
-                local_symbol.st_value(e) + section_resolution.address()?
+            if let Some(section_address) = section_resolutions[section_index.0].address() {
+                local_symbol.st_value(e) + section_address
             } else {
                 get_merged_string_output_address(
                     local_symbol_index,
