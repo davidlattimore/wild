@@ -82,8 +82,8 @@ fn write_gc_stats(
             let mut file_discarded = 0;
             for (slot, section) in obj.sections.iter().zip(obj.object.sections.iter()) {
                 match slot {
-                    SectionSlot::Unloaded(id) => {
-                        if id.output_section_id() == output_section_id::TEXT {
+                    SectionSlot::Unloaded(unloaded) => {
+                        if unloaded.part_id.output_section_id() == output_section_id::TEXT {
                             file_discarded += obj.object.section_size(section)?;
                             if args.verbose_gc_stats {
                                 file_record

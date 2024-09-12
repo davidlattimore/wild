@@ -35,12 +35,14 @@ use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::MAX_SEGMENTS;
 use crate::relaxation::Relaxation;
 use crate::resolution;
+use crate::resolution::FrameIndex;
 use crate::resolution::MergeStringsSection;
 use crate::resolution::NotLoaded;
 use crate::resolution::ResolutionOutputs;
 use crate::resolution::ResolvedEpilogue;
 use crate::resolution::SectionSlot;
 use crate::resolution::StringToMerge;
+use crate::resolution::UnloadedSection;
 use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
@@ -887,7 +889,10 @@ struct ObjectLayoutState<'data> {
     symbol_id_range: SymbolIdRange,
     object: &'data File<'data>,
     state: ObjectLayoutMutableState<'data>,
-    section_frame_data: Vec<SectionFrameData<'data>>,
+
+    /// Indexed by `FrameIndex`.
+    exception_frames: Vec<ExceptionFrame<'data>>,
+
     eh_frame_section: Option<&'data object::elf::SectionHeader64<LittleEndian>>,
     eh_frame_size: u64,
 }
@@ -907,18 +912,15 @@ struct ObjectLayoutMutableState<'data> {
 }
 
 #[derive(Default)]
-struct SectionFrameData<'data> {
-    /// Outgoing references from the FDE(s) for our section. Generally all relocations for a section
-    /// would be contiguous, so we'd only need one slice. In theory though it's possible that there
-    /// could be more than one group, so we accommodate that, but optimise for the common case of
-    /// one group.
-    relocations: SmallVec<[&'data [Rela64<LittleEndian>]; 1]>,
+struct ExceptionFrame<'data> {
+    /// The relocations that need to be processed if we load this frame.
+    relocations: &'data [Rela64<LittleEndian>],
 
-    /// Number of FDEs associated with symbols in this section.
-    num_fdes: u32,
+    /// Number of bytes required to store this frame.
+    frame_size: u32,
 
-    /// Number of bytes required to store the FDEs associated with this section.
-    total_fde_size: u32,
+    /// The index of the previous frame that is for the same section.
+    previous_frame_for_section: Option<FrameIndex>,
 }
 
 #[derive(Default)]
@@ -2929,7 +2931,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             symbol_id_range: input_state.symbol_id_range,
             input: input_state.input,
             object: input_state.object,
-            section_frame_data: Default::default(),
+            exception_frames: Default::default(),
             eh_frame_section: None,
             eh_frame_size: 0,
             state: ObjectLayoutMutableState {
@@ -3038,10 +3040,11 @@ impl<'data> ObjectLayoutState<'data> {
         &mut self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
-        part_id: PartId,
+        unloaded: UnloadedSection,
         section_id: SectionIndex,
         resources: &GraphResources<'data, 'scope>,
     ) -> Result {
+        let part_id = unloaded.part_id;
         let section = Section::create(self, section_id, part_id)?;
         for rel in self.object.relocations(section.index)? {
             process_relocation(
@@ -3055,33 +3058,55 @@ impl<'data> ObjectLayoutState<'data> {
         }
         tracing::debug!(loaded_section = %self.object.section_display_name(section_id),);
         common.allocate(part_id, section.capacity());
+
         resources
             .sections_with_content
             .get(part_id.output_section_id())
             .fetch_or(true, atomic::Ordering::Relaxed);
-        if let Some(frame_data) = self.section_frame_data.get_mut(section_id.0) {
-            self.eh_frame_size += u64::from(frame_data.total_fde_size);
-            if resources.symbol_db.args.should_write_eh_frame_hdr {
-                common.allocate(
-                    part_id::EH_FRAME_HDR,
-                    core::mem::size_of::<EhFrameHdrEntry>() as u64 * u64::from(frame_data.num_fdes),
-                );
-            }
-            // Take ownership of the section's frame data relocations. We only apply
-            // these once when the section is loaded, so after this we won't need them
-            // any more. By taking ownership, we drop our borrow of self.
-            let frame_data_relocations = core::mem::take(&mut frame_data.relocations);
+
+        self.process_section_exception_frames(unloaded.last_frame_index, common, resources, queue)?;
+
+        self.state.sections[section_id.0] = SectionSlot::Loaded(section);
+
+        Ok(())
+    }
+
+    /// Processes the exception frames for a section that we're loading.
+    fn process_section_exception_frames(
+        &mut self,
+        frame_index: Option<FrameIndex>,
+        common: &mut CommonGroupState<'data>,
+        resources: &GraphResources<'data, '_>,
+        queue: &mut LocalWorkQueue,
+    ) -> Result {
+        let mut num_frames = 0;
+        let mut next_frame_index = frame_index;
+        while let Some(frame_index) = next_frame_index {
+            let frame_data = &self.exception_frames[frame_index.as_usize()];
+            next_frame_index = frame_data.previous_frame_for_section;
+
+            self.eh_frame_size += u64::from(frame_data.frame_size);
+
+            num_frames += 1;
+
+            let frame_data_relocations = frame_data.relocations;
+
             // Request loading of any sections/symbols referenced by the FDEs for our
             // section.
             if let Some(eh_frame_section) = self.eh_frame_section {
-                for relocations in &frame_data_relocations {
-                    for rel in *relocations {
-                        process_relocation(self, common, rel, eh_frame_section, resources, queue)?;
-                    }
+                for rel in frame_data_relocations {
+                    process_relocation(self, common, rel, eh_frame_section, resources, queue)?;
                 }
             }
         }
-        self.state.sections[section_id.0] = SectionSlot::Loaded(section);
+
+        if resources.symbol_db.args.should_write_eh_frame_hdr {
+            common.allocate(
+                part_id::EH_FRAME_HDR,
+                core::mem::size_of::<EhFrameHdrEntry>() as u64 * num_frames,
+            );
+        }
+
         Ok(())
     }
 
@@ -3423,9 +3448,6 @@ fn process_eh_frame_data(
     resources: &GraphResources,
     queue: &mut LocalWorkQueue,
 ) -> Result {
-    object
-        .section_frame_data
-        .resize_with(object.state.sections.len(), Default::default);
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
     let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
@@ -3433,7 +3455,7 @@ fn process_eh_frame_data(
     let relocations = object.object.relocations(eh_frame_section_index)?;
     let mut rel_iter = relocations.iter().enumerate().peekable();
     let mut offset = 0;
-    let mut pending: Option<PendingEhFrameRelocations> = None;
+
     while offset + PREFIX_LEN <= data.len() {
         // Although the section data will be aligned within the object file, there's
         // no guarantee that the object is aligned within the archive to any more
@@ -3502,61 +3524,31 @@ fn process_eh_frame_data(
                     break;
                 }
             }
+
             if let Some(section_index) = section_index {
-                let new_pending = PendingEhFrameRelocations {
-                    section_index,
-                    start: rel_start_index,
-                    end: rel_end_index,
-                };
-                if let Some(p) = pending.as_mut() {
-                    if !p.merge(&new_pending) {
-                        p.apply(&mut object.section_frame_data, relocations);
-                        pending = Some(new_pending);
-                    }
-                } else {
-                    pending = Some(new_pending);
+                if let Some(unloaded) = object.state.sections[section_index.0].unloaded_mut() {
+                    let frame_index = FrameIndex::from_usize(object.exception_frames.len());
+
+                    // Update our unloaded section to point to our new frame. Our frame will then in
+                    // turn point to whatever the section pointed to before.
+                    let previous_frame_for_section =
+                        core::mem::replace(&mut unloaded.last_frame_index, Some(frame_index));
+
+                    object.exception_frames.push(ExceptionFrame {
+                        relocations: &relocations[rel_start_index..rel_end_index],
+                        frame_size: size as u32,
+                        previous_frame_for_section,
+                    });
                 }
-                let section_frame_data = &mut object.section_frame_data[section_index.0];
-                section_frame_data.num_fdes += 1;
-                section_frame_data.total_fde_size += size as u32;
             }
         }
         offset = next_offset;
     }
-    if let Some(p) = pending {
-        p.apply(&mut object.section_frame_data, relocations);
-    }
+
     // Allocate space for any remaining bytes in .eh_frame that aren't large enough to constitute an
     // actual entry. crtend.o has a single u32 equal to 0 as an end marker.
     object.eh_frame_size += (data.len() - offset) as u64;
     Ok(())
-}
-
-struct PendingEhFrameRelocations {
-    section_index: object::SectionIndex,
-    start: usize,
-    end: usize,
-}
-
-impl PendingEhFrameRelocations {
-    fn apply<'data>(
-        &self,
-        section_frame_data: &mut [SectionFrameData<'data>],
-        relocations: &'data [Rela64<LittleEndian>],
-    ) {
-        let section_frame_data = &mut section_frame_data[self.section_index.0];
-        section_frame_data
-            .relocations
-            .push(&relocations[self.start..self.end]);
-    }
-
-    fn merge(&mut self, new_pending: &PendingEhFrameRelocations) -> bool {
-        if self.section_index != new_pending.section_index || new_pending.start != self.end {
-            return false;
-        }
-        self.end = new_pending.end;
-        true
-    }
 }
 
 /// A "common information entry". This is part of the .eh_frame data in ELF.
