@@ -1057,19 +1057,16 @@ impl Display for LinkCommand {
         for sub in &self.input_commands {
             writeln!(f, "{sub}")?;
         }
-        let mut args: Vec<_> = self
+        let command_str = self.command.get_program().to_string_lossy();
+        let mut args = self
             .command
             .get_args()
             .map(|a| a.to_string_lossy())
-            .collect();
+            .collect_vec();
+
         match (self.invocation_mode, &self.linker) {
             (LinkerInvocationMode::Cc, Linker::Wild) => {
-                write!(
-                    f,
-                    "cargo build; {} {}",
-                    self.command.get_program().to_string_lossy(),
-                    args.join(" ")
-                )
+                write!(f, "cargo build; {} {}", command_str, args.join(" "))
             }
             (LinkerInvocationMode::Direct, Linker::Wild) => {
                 write!(f, "cargo run --bin wild -- {}", args.join(" "))
@@ -1088,17 +1085,12 @@ impl Display for LinkCommand {
                 write!(
                     f,
                     "{} cargo run --bin wild -- {}",
-                    self.command.get_program().to_string_lossy(),
+                    command_str,
                     args.join(" ")
                 )
             }
             _ => {
-                write!(
-                    f,
-                    "{} {}",
-                    self.command.get_program().to_string_lossy(),
-                    args.join(" ")
-                )
+                write!(f, "{} {}", command_str, args.join(" "))
             }
         }
     }
