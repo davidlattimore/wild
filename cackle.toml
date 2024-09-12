@@ -93,9 +93,6 @@ from.test.allow_apis = [
 [pkg.crossbeam-deque]
 allow_unsafe = true
 
-[pkg.ruzstd]
-allow_unsafe = true
-
 [pkg.rayon-core]
 allow_unsafe = true
 
