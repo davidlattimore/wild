@@ -229,8 +229,12 @@ fn decompress_into(
                 flate2::FlushDecompress::Finish,
             )?;
         }
+        // We might use pure Rust implementation for the decompression (ruzstd), however the decompression
+        // speed is not on par with the official C library.
+        // With the official library, the linking time of Clang binary (contains 1GB of debug info sections)
+        // shrinks by 30%!
         object::elf::ELFCOMPRESS_ZSTD => {
-            ruzstd::StreamingDecoder::new(input)?.read_exact(out)?;
+            zstd::stream::Decoder::new(input)?.read_exact(out)?;
         }
         c => bail!("Unsupported compression format: {}", c),
     };
