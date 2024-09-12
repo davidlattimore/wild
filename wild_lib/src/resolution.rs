@@ -50,6 +50,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::thread::Thread;
 
@@ -188,6 +189,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
         symbol_db,
         outputs: &outputs,
         work_queue,
+        loaded_metrics: Default::default(),
     };
 
     let done = AtomicBool::new(false);
@@ -239,6 +241,20 @@ pub(crate) fn resolve_symbols_in_files<'data>(
         }
     });
 
+    let loaded_bytes = resources
+        .loaded_metrics
+        .loaded_bytes
+        .load(Ordering::Relaxed);
+    let loaded_compressed_bytes = resources
+        .loaded_metrics
+        .loaded_compressed_bytes
+        .load(Ordering::Relaxed);
+    let decompressed_bytes = resources
+        .loaded_metrics
+        .decompressed_bytes
+        .load(Ordering::Relaxed);
+    tracing::debug!(target: "metrics", loaded_bytes, loaded_compressed_bytes, decompressed_bytes, "input_sections");
+
     drop(resources);
     drop(definitions_per_group_and_file);
     symbol_db.restore_definitions(symbol_definitions);
@@ -259,6 +275,13 @@ struct WorkItem<'definitions> {
     definitions: &'definitions mut [SymbolId],
 }
 
+#[derive(Default)]
+pub(crate) struct LoadedMetrics {
+    pub(crate) loaded_bytes: AtomicUsize,
+    pub(crate) loaded_compressed_bytes: AtomicUsize,
+    pub(crate) decompressed_bytes: AtomicUsize,
+}
+
 struct ResolutionResources<'data, 'definitions, 'outer_scope> {
     groups: &'data [Group<'data>],
     definitions_per_file: &'outer_scope Vec<Vec<DefinitionsCell<'definitions>>>,
@@ -266,6 +289,7 @@ struct ResolutionResources<'data, 'definitions, 'outer_scope> {
     symbol_db: &'outer_scope SymbolDb<'data>,
     outputs: &'outer_scope Outputs<'data>,
     work_queue: SegQueue<WorkItem<'definitions>>,
+    loaded_metrics: LoadedMetrics,
 }
 
 impl<'data, 'definitions, 'outer_scope> ResolutionResources<'data, 'definitions, 'outer_scope> {
@@ -795,6 +819,7 @@ impl<'data> ResolvedObject<'data> {
                 &mut merge_strings_sections,
                 resources.symbol_db.args,
                 allocator,
+                &resources.loaded_metrics,
             )?;
 
             resolve_symbols(obj, resources, undefined_symbols_out, definitions_out)
@@ -823,6 +848,7 @@ fn resolve_sections<'data>(
     merge_strings_out: &mut Vec<UnresolvedMergeStringsFileSection<'data>>,
     args: &Args,
     allocator: &bumpalo_herd::Member<'data>,
+    loaded_metrics: &LoadedMetrics,
 ) -> Result<Vec<SectionSlot<'data>>> {
     let sections = obj
         .object
@@ -848,7 +874,9 @@ fn resolve_sections<'data>(
                     _ => (),
                 }
                 let slot = if unloaded.is_string_merge {
-                    let section_data = obj.object.section_data(input_section, allocator)?;
+                    let section_data =
+                        obj.object
+                            .section_data(input_section, allocator, loaded_metrics)?;
                     merge_strings_out.push(UnresolvedMergeStringsFileSection::new(
                         section_data,
                         input_section_index,
