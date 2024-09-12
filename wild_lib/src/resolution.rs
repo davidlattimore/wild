@@ -27,7 +27,7 @@ use crate::parsing::Prelude;
 use crate::part_id;
 use crate::part_id::PartId;
 use crate::part_id::TemporaryPartId;
-use crate::part_id::UnloadedSection;
+use crate::part_id::UnresolvedSection;
 use crate::sharding::ShardKey;
 use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolDb;
@@ -49,6 +49,7 @@ use rayon::iter::ParallelIterator;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::hash::Hash;
+use std::num::NonZeroU32;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -434,10 +435,10 @@ pub(crate) enum SectionSlot<'data> {
     Discard,
 
     /// The section hasn't been loaded yet, but may be loaded if it's referenced.
-    Unloaded(PartId),
+    Unloaded(UnloadedSection),
 
     /// The section had the retain bit set, so must be loaded.
-    MustLoad(PartId),
+    MustLoad(UnloadedSection),
 
     /// We've already loaded the section.
     Loaded(crate::layout::Section),
@@ -454,6 +455,27 @@ pub(crate) enum SectionSlot<'data> {
     // Loaded section with debug info content.
     LoadedDebugInfo(crate::layout::Section),
 }
+
+#[derive(Clone, Copy)]
+pub(crate) struct UnloadedSection {
+    pub(crate) part_id: PartId,
+
+    /// The index of the last FDE for this section. Previous FDEs will be linked from this.
+    pub(crate) last_frame_index: Option<FrameIndex>,
+}
+
+impl UnloadedSection {
+    fn new(part_id: PartId) -> Self {
+        Self {
+            part_id,
+            last_frame_index: None,
+        }
+    }
+}
+
+/// An index into the exception frames for an object.
+#[derive(Clone, Copy)]
+pub(crate) struct FrameIndex(NonZeroU32);
 
 pub(crate) struct ResolvedPrelude<'data> {
     pub(crate) symbol_definitions: &'data [InternalSymDefInfo],
@@ -855,7 +877,8 @@ fn resolve_sections<'data>(
         .sections
         .enumerate()
         .map(|(input_section_index, input_section)| {
-            if let Some(unloaded) = UnloadedSection::from_section(&obj.object, input_section, args)?
+            if let Some(unloaded) =
+                UnresolvedSection::from_section(&obj.object, input_section, args)?
             {
                 let section_flags = SectionFlags::from_header(input_section);
                 let mut part_id = part_id::CUSTOM_PLACEHOLDER;
@@ -894,9 +917,11 @@ fn resolve_sections<'data>(
                                 .section_flags
                                 .should_retain() =>
                         {
-                            SectionSlot::MustLoad(id)
+                            SectionSlot::MustLoad(UnloadedSection::new(id))
                         }
-                        TemporaryPartId::BuiltIn(id) => SectionSlot::Unloaded(id),
+                        TemporaryPartId::BuiltIn(id) => {
+                            SectionSlot::Unloaded(UnloadedSection::new(id))
+                        }
                         TemporaryPartId::Custom(custom_section_id, _alignment) => {
                             if custom_section_id.name.bytes().starts_with(b".debug_") {
                                 if args.strip_debug {
@@ -906,9 +931,13 @@ fn resolve_sections<'data>(
                                     SectionSlot::UnloadedDebugInfo(part_id::CUSTOM_PLACEHOLDER)
                                 }
                             } else if section_flags.should_retain() {
-                                SectionSlot::MustLoad(part_id::CUSTOM_PLACEHOLDER)
+                                SectionSlot::MustLoad(UnloadedSection::new(
+                                    part_id::CUSTOM_PLACEHOLDER,
+                                ))
                             } else {
-                                SectionSlot::Unloaded(part_id::CUSTOM_PLACEHOLDER)
+                                SectionSlot::Unloaded(UnloadedSection::new(
+                                    part_id::CUSTOM_PLACEHOLDER,
+                                ))
                             }
                         }
                         TemporaryPartId::EhFrameData => {
@@ -1053,13 +1082,20 @@ impl<'data> SectionSlot<'data> {
     pub(crate) fn set_part_id(&mut self, part_id: PartId) {
         match self {
             SectionSlot::Discard => todo!(),
-            SectionSlot::Unloaded(out) => *out = part_id,
-            SectionSlot::MustLoad(out) => *out = part_id,
-            SectionSlot::Loaded(out) => out.part_id = part_id,
+            SectionSlot::Unloaded(section) => section.part_id = part_id,
+            SectionSlot::MustLoad(section) => section.part_id = part_id,
+            SectionSlot::Loaded(section) => section.part_id = part_id,
             SectionSlot::EhFrameData(_) => todo!(),
-            SectionSlot::MergeStrings(out) => out.part_id = part_id,
+            SectionSlot::MergeStrings(section) => section.part_id = part_id,
             SectionSlot::UnloadedDebugInfo(out) => *out = part_id,
-            SectionSlot::LoadedDebugInfo(out) => out.part_id = part_id,
+            SectionSlot::LoadedDebugInfo(section) => section.part_id = part_id,
+        }
+    }
+
+    pub(crate) fn unloaded_mut(&mut self) -> Option<&mut UnloadedSection> {
+        match self {
+            SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => Some(unloaded),
+            _ => None,
         }
     }
 }
@@ -1177,6 +1213,16 @@ impl<'data> SymbolDb<'data> {
         } else {
             SymbolStrength::Undefined
         }
+    }
+}
+
+impl FrameIndex {
+    pub(crate) fn from_usize(raw: usize) -> Self {
+        Self(NonZeroU32::new(raw as u32 + 1).unwrap())
+    }
+
+    pub(crate) fn as_usize(&self) -> usize {
+        self.0.get() as usize - 1
     }
 }
 

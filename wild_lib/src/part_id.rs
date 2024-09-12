@@ -35,7 +35,7 @@ pub(crate) struct CustomSectionId<'data> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct UnloadedSection<'data> {
+pub(crate) struct UnresolvedSection<'data> {
     pub(crate) part_id: TemporaryPartId<'data>,
     pub(crate) is_string_merge: bool,
 }
@@ -87,7 +87,7 @@ pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_GENERATED_PARTS
 /// A placeholder used for custom sections before we know their actual PartId.
 pub(crate) const CUSTOM_PLACEHOLDER: PartId = PartId(u32::MAX);
 
-impl<'data> UnloadedSection<'data> {
+impl<'data> UnresolvedSection<'data> {
     #[allow(clippy::if_same_then_else)]
     pub(crate) fn from_section(
         object: &crate::elf::File<'data>,
@@ -124,7 +124,7 @@ impl<'data> UnloadedSection<'data> {
         } else if section_name == b".comment" {
             Some(output_section_id::COMMENT)
         } else if section_name == b".eh_frame" {
-            return Ok(Some(UnloadedSection {
+            return Ok(Some(UnresolvedSection {
                 part_id: TemporaryPartId::EhFrameData,
                 is_string_merge: false,
             }));
@@ -148,7 +148,7 @@ impl<'data> UnloadedSection<'data> {
                 let custom_section_id = CustomSectionId {
                     name: SectionName(section_name),
                 };
-                return Ok(Some(UnloadedSection {
+                return Ok(Some(UnresolvedSection {
                     part_id: TemporaryPartId::Custom(custom_section_id, alignment),
                     is_string_merge: should_merge_strings(
                         section,
@@ -183,7 +183,7 @@ impl<'data> UnloadedSection<'data> {
             return Ok(None);
         };
         let part_id = built_in_section_id.part_id_with_alignment(alignment);
-        Ok(Some(UnloadedSection {
+        Ok(Some(UnresolvedSection {
             part_id: TemporaryPartId::BuiltIn(part_id),
             is_string_merge: should_merge_strings(
                 section,
