@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::resolution::LoadedMetrics;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
@@ -15,6 +16,7 @@ use object::read::elf::SectionHeader as _;
 use object::LittleEndian;
 use std::borrow::Cow;
 use std::io::Read as _;
+use std::sync::atomic::Ordering;
 
 /// Our starting address in memory when linking non-relocatable executables. We can start memory
 /// addresses wherever we like, even from 0. We pick 400k because it's the same as what ld does and
@@ -133,13 +135,23 @@ impl<'data> File<'data> {
         &self,
         section: &SectionHeader,
         member: &bumpalo_herd::Member<'data>,
+        loaded_metrics: &LoadedMetrics,
     ) -> Result<&'data [u8]> {
         let data = section.data(LittleEndian, self.data)?;
+        loaded_metrics
+            .loaded_bytes
+            .fetch_add(data.len(), Ordering::Relaxed);
 
         if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
+            loaded_metrics
+                .loaded_compressed_bytes
+                .fetch_add(data.len(), Ordering::Relaxed);
             let len = self.section_size(section)?;
             let decompressed = member.alloc_slice_fill_default(len as usize);
             decompress_into(compression, &data[COMPRESSION_HEADER_SIZE..], decompressed)?;
+            loaded_metrics
+                .decompressed_bytes
+                .fetch_add(decompressed.len(), Ordering::Relaxed);
             Ok(decompressed)
         } else {
             Ok(data)
