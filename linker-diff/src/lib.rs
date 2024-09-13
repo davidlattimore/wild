@@ -593,9 +593,7 @@ fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
     }
     names = names
         .iter()
-        .map(|name| {
-            String::from_utf8_lossy(&name.bytes().skip(n).collect::<Vec<u8>>()).into_owned()
-        })
+        .map(|name| String::from_utf8_lossy(&name.bytes().skip(n).collect_vec()).into_owned())
         .collect_vec();
     Ok(names)
 }

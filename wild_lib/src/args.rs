@@ -619,6 +619,7 @@ mod tests {
     use super::IGNORED_FLAGS;
     use crate::args::Action;
     use crate::args::InputSpec;
+    use itertools::Itertools;
     use std::num::NonZeroUsize;
     use std::path::Path;
     use std::path::PathBuf;
@@ -727,7 +728,7 @@ mod tests {
                     InputSpec::File(_) => None,
                     InputSpec::Lib(lib_name) => Some(lib_name.as_ref()),
                 })
-                .collect::<Vec<&str>>(),
+                .collect_vec(),
             &["gcc_s", "util", "rt", "pthread", "m", "dl", "c"]
         );
         assert_contains(&args.lib_search_path, "/lib");
