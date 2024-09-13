@@ -544,16 +544,16 @@ pub(crate) struct MergeStringsSectionBucket<'data> {
 
 impl<'data> MergeStringsSectionBucket<'data> {
     /// Adds `string`, deduplicating with an existing string if an identical string is already
-    /// present. Returns the offset within this bucket.
-    fn add_string(&mut self, string: PreHashed<StringToMerge<'data>>) -> u64 {
+    /// present.
+    fn add_string(&mut self, string: PreHashed<StringToMerge<'data>>) {
         self.totally_added += string.bytes.len();
         self.totally_added_strings += 1;
-        *self.string_offsets.entry(string).or_insert_with(|| {
+        self.string_offsets.entry(string).or_insert_with(|| {
             let offset = self.next_offset;
             self.next_offset += string.bytes.len() as u64;
             self.strings.push(string.bytes);
             offset
-        })
+        });
     }
 
     pub(crate) fn get(&self, string: &PreHashed<StringToMerge<'data>>) -> Option<u64> {
