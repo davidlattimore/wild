@@ -27,21 +27,7 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
         return Ok(());
     };
 
-    let got_start = got.sh_offset(LittleEndian);
-    let mut got_end = got_start + got.sh_size(LittleEndian);
-
-    if let Some((_, got_plt)) = object.section_by_name(".got.plt") {
-        let got_plt_start = got_plt.sh_offset(LittleEndian);
-        if got_plt_start != got_end {
-            bail!(".got.plt isn't immediately after .got 0x{got_end:x}..0x{got_plt_start:x}");
-        }
-        got_end += got_plt.sh_size(LittleEndian);
-    }
-
-    let got_data = object
-        .data
-        .get(got_start as usize..got_end as usize)
-        .context(".got / .got.plt range invalid")?;
+    let got_data = got.data(LittleEndian, object.data)?;
 
     for (symbol_name, symbol_id) in &layout.symbol_db.global_names {
         match layout.local_symbol_resolution(*symbol_id) {

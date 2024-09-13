@@ -368,8 +368,6 @@ struct PreludeLayoutState {
     internal_symbols: InternalSymbols,
     entry_symbol_id: Option<SymbolId>,
     needs_tlsld_got_entry: bool,
-    needs_got_plt: bool,
-    needs_lazy_plt: bool,
     identity: String,
     header_info: Option<HeaderInfo>,
     dynamic_linker: Option<CString>,
@@ -416,7 +414,6 @@ pub(crate) struct PreludeLayout {
     pub(crate) header_info: HeaderInfo,
     pub(crate) internal_symbols: InternalSymbols,
     pub(crate) dynamic_linker: Option<CString>,
-    pub(crate) needs_lazy_plt: bool,
 }
 
 pub(crate) struct InternalSymbols {
@@ -454,7 +451,6 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
         symbol_db: &SymbolDb,
         symbol_resolution_flags: &[AtomicResolutionFlags],
     ) -> Result {
-        let use_got_plt = symbol_db.args.should_use_got_plt();
         let _file_span = symbol_db.args.trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
 
@@ -467,17 +463,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display {
                 continue;
             }
             let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
-            let mut current_res_flags = resolution_flags.get();
-
-            if (!use_got_plt
-                || value_flags.contains(ValueFlags::ADDRESS)
-                || value_flags.contains(ValueFlags::IFUNC))
-                && current_res_flags.contains(ResolutionFlags::PLT)
-                && !current_res_flags.contains(ResolutionFlags::GOT)
-            {
-                resolution_flags.fetch_or(ResolutionFlags::GOT);
-                current_res_flags |= ResolutionFlags::GOT;
-            }
+            let current_res_flags = resolution_flags.get();
 
             // It might be tempting to think that this code should only be run for dynamic objects,
             // however regular objects can own dynamic symbols too if the symbol is an undefined
@@ -616,7 +602,6 @@ fn allocate_resolution(
     if resolution_flags.contains(ResolutionFlags::GOT) {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
         if resolution_flags.contains(ResolutionFlags::PLT) {
-            // Non-lazy PLT entry.
             mem_sizes.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
         }
         if value_flags.contains(ValueFlags::IFUNC) {
@@ -631,11 +616,6 @@ fn allocate_resolution(
         } else if value_flags.contains(ValueFlags::ADDRESS) && output_kind.is_relocatable() {
             mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
         }
-    } else if resolution_flags.contains(ResolutionFlags::PLT) {
-        // GOT is not set, so this is a lazy PLT entry.
-        mem_sizes.increment(part_id::PLT, elf::PLT_ENTRY_SIZE);
-        mem_sizes.increment(part_id::GOT_PLT, elf::GOT_ENTRY_SIZE);
-        mem_sizes.increment(part_id::RELA_PLT, elf::RELA_ENTRY_SIZE);
     }
     if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
@@ -835,14 +815,6 @@ impl CommonGroupState<'_> {
             }
         }
 
-        // .plt and .got.plt should match 1-to-1, otherwise lazy loading can't work.
-        let num_plt = self.mem_sizes.get(part_id::PLT) / elf::PLT_ENTRY_SIZE;
-        let num_got_plt = self.mem_sizes.get(part_id::GOT_PLT) / elf::GOT_ENTRY_SIZE;
-        ensure!(
-            num_plt == num_got_plt,
-            "Number of .plt entries ({num_plt}) doesn't match \
-             number of .got.plt entries ({num_got_plt})"
-        );
         Ok(())
     }
 
@@ -945,9 +917,7 @@ bitflags! {
         /// An address in the global offset table is needed.
         const GOT = 1 << 1;
 
-        /// A PLT entry is needed. This also implies that a GOT entry will be needed. If the GOT
-        /// flag is also set, then it will be resolved at startup. If GOT is not set, then we'll
-        /// make the PLT entry lazy.
+        /// A PLT entry is needed.
         const PLT = 1 << 2;
 
         /// A double GOT entry is needed in order to store the module number and offset within the
@@ -1299,19 +1269,17 @@ impl<'data> Layout<'data> {
         &group_layout.files[file_id.file()]
     }
 
-    /// Returns the base address of the global offset table.
+    /// Returns the base address of the global offset table. This needs to be consistent with the
+    /// symbol `_GLOBAL_OFFSET_TABLE_`.
     pub(crate) fn got_base(&self) -> u64 {
-        self.section_layouts
-            .get(output_section_id::GOT_PLT)
-            .mem_offset
+        let got_layout = self.section_layouts.get(output_section_id::GOT);
+        got_layout.mem_offset
     }
 
     pub(crate) fn dt_flags(&self) -> u64 {
         let mut flags = 0;
         let args = self.args();
-        if args.bind_now {
-            flags |= object::elf::DF_BIND_NOW;
-        }
+        flags |= object::elf::DF_BIND_NOW;
         if !args.output_kind.is_executable() && self.has_static_tls {
             flags |= object::elf::DF_STATIC_TLS;
         }
@@ -1320,17 +1288,11 @@ impl<'data> Layout<'data> {
 
     pub(crate) fn dt_flags_1(&self) -> u64 {
         let mut flags = 0;
-        if self.args().bind_now {
-            flags |= object::elf::DF_1_NOW;
-        }
+        flags |= object::elf::DF_1_NOW;
         if self.args().output_kind.is_executable() && self.args().is_relocatable() {
             flags |= object::elf::DF_1_PIE;
         }
         flags as u64
-    }
-
-    pub(crate) fn has_got_plt(&self) -> bool {
-        self.section_part_layouts.get(part_id::GOT_PLT).mem_size > 0
     }
 
     /// Returns whether we're going to output the .gnu.version section.
@@ -2360,7 +2322,9 @@ fn does_relocation_require_static_tls(r_type: u32) -> bool {
 
 fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
     match rel_kind {
-        RelocationKind::PltRelative | RelocationKind::PltRelGotBase => ResolutionFlags::PLT,
+        RelocationKind::PltRelative | RelocationKind::PltRelGotBase => {
+            ResolutionFlags::PLT | ResolutionFlags::GOT
+        }
         RelocationKind::GotRelGotBase | RelocationKind::GotRelative => ResolutionFlags::GOT,
         RelocationKind::GotTpOff => ResolutionFlags::GOT_TLS_OFFSET,
         RelocationKind::TlsGd => ResolutionFlags::GOT_TLS_MODULE,
@@ -2385,8 +2349,6 @@ impl<'data> PreludeLayoutState {
             },
             entry_symbol_id: None,
             needs_tlsld_got_entry: false,
-            needs_got_plt: false,
-            needs_lazy_plt: false,
             identity: crate::identity::linker_identity(),
             header_info: None,
             dynamic_linker: None,
@@ -2486,17 +2448,6 @@ impl<'data> PreludeLayoutState {
         symbol_resolution_flags: &[AtomicResolutionFlags],
     ) -> Result {
         if !symbol_db.args.strip_all {
-            // If we have a .got.plt, then make sure that we emit the symbol that points to its
-            // start. This makes diagnostics easier, since for example, `objdump -d` will show
-            // pointers to the GOT relative to this symbol.
-            if symbol_db.args.should_use_got_plt() {
-                if let Some(&symbol_id) = symbol_db
-                    .global_names
-                    .get(&SymbolName::prehashed(b"_GLOBAL_OFFSET_TABLE_"))
-                {
-                    symbol_resolution_flags[symbol_id.as_usize()].fetch_or(ResolutionFlags::DIRECT);
-                }
-            }
             self.internal_symbols.allocate_symbol_table_sizes(
                 common,
                 symbol_db,
@@ -2616,20 +2567,6 @@ impl<'data> PreludeLayoutState {
             .sum::<u64>();
         extra_sizes.increment(part_id::SHSTRTAB, self.shstrtab_size);
 
-        // If anything got put into .got.plt, then we need to allocate some initial entries.
-        // @@ Do we want to only do this if lazy loading is enabled?
-        if *total_sizes.get(part_id::GOT_PLT) > 0 {
-            self.needs_got_plt = true;
-            extra_sizes.increment(part_id::GOT_PLT, crate::elf::GOT_ENTRY_SIZE * 3);
-        }
-
-        // If anything got put in .plt, then we need to allocate space for the code that all the
-        // other entries jump to when they're using lazy loading.
-        if *total_sizes.get(part_id::PLT) > 0 {
-            self.needs_lazy_plt = true;
-            extra_sizes.increment(part_id::PLT, elf::PLT_ENTRY_SIZE);
-        }
-
         // We need to allocate both our own size record and the file totals, since they've already
         // been computed.
         common.mem_sizes.merge(&extra_sizes);
@@ -2661,16 +2598,6 @@ impl<'data> PreludeLayoutState {
             take_dynsym_index(memory_offsets, resources.section_layouts)?;
         }
 
-        if self.needs_got_plt {
-            // We need three entries. The first is a pointer to the dynamic section. The next two
-            // are left as zero for use by the runtime.
-            memory_offsets.increment(part_id::GOT_PLT, crate::elf::GOT_ENTRY_SIZE * 3);
-        }
-
-        if self.needs_lazy_plt {
-            memory_offsets.increment(part_id::PLT, elf::PLT_ENTRY_SIZE);
-        }
-
         self.internal_symbols
             .finalise_layout(memory_offsets, resolutions_out, resources)?;
 
@@ -2690,7 +2617,6 @@ impl<'data> PreludeLayoutState {
         Ok(PreludeLayout {
             internal_symbols: self.internal_symbols,
             entry_symbol_id: self.entry_symbol_id,
-            needs_lazy_plt: self.needs_lazy_plt,
             tlsld_got_entry,
             identity: self.identity,
             dynamic_linker: self.dynamic_linker,
@@ -3640,18 +3566,12 @@ fn create_resolution(
         value_flags,
     };
     if res_kind.contains(ResolutionFlags::PLT) {
-        let plt_address = allocate_plt(memory_offsets, res_kind);
+        let plt_address = allocate_plt(memory_offsets);
         resolution.plt_address = Some(plt_address);
         if value_flags.contains(ValueFlags::DYNAMIC) {
             resolution.raw_value = plt_address.get();
         }
-        if res_kind.contains(ResolutionFlags::GOT) {
-            // Non-lazy
-            resolution.got_address = Some(allocate_got(1, memory_offsets));
-        } else {
-            // Lazy
-            resolution.got_address = Some(allocate_got_plt(1, memory_offsets));
-        }
+        resolution.got_address = Some(allocate_got(1, memory_offsets));
     } else if res_kind.contains(ResolutionFlags::GOT) {
         resolution.got_address = Some(allocate_got(1, memory_offsets));
     } else if res_kind.contains(ResolutionFlags::GOT_TLS_OFFSET) {
@@ -3672,28 +3592,9 @@ fn allocate_got(num_entries: u64, memory_offsets: &mut OutputSectionPartMap<u64>
     got_address
 }
 
-fn allocate_got_plt(
-    num_entries: u64,
-    memory_offsets: &mut OutputSectionPartMap<u64>,
-) -> NonZeroU64 {
-    let got_address = NonZeroU64::new(*memory_offsets.get(part_id::GOT_PLT)).unwrap();
-    memory_offsets.increment(part_id::GOT_PLT, elf::GOT_ENTRY_SIZE * num_entries);
-    got_address
-}
-
-fn allocate_plt(
-    memory_offsets: &mut OutputSectionPartMap<u64>,
-    resolution_flags: ResolutionFlags,
-) -> NonZeroU64 {
-    let part_id = if resolution_flags.contains(ResolutionFlags::GOT) {
-        // Non-lazy
-        part_id::PLT_GOT
-    } else {
-        // Lazy
-        part_id::PLT
-    };
-    let plt_address = NonZeroU64::new(*memory_offsets.get(part_id)).unwrap();
-    memory_offsets.increment(part_id, elf::PLT_ENTRY_SIZE);
+fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
+    let plt_address = NonZeroU64::new(*memory_offsets.get(part_id::PLT_GOT)).unwrap();
+    memory_offsets.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
     plt_address
 }
 
@@ -4446,8 +4347,6 @@ fn test_resolution_allocation_consistency() -> Result {
                 // We use NonZero to represent offsets for these sections, so set them all to
                 // non-zero values.
                 *memory_offsets.get_mut(part_id::GOT) = 0x10;
-                *memory_offsets.get_mut(part_id::GOT_PLT) = 0x100;
-                *memory_offsets.get_mut(part_id::PLT) = 0x10;
                 *memory_offsets.get_mut(part_id::PLT_GOT) = 0x10;
 
                 let has_dynamic_symbol = value_flags.contains(ValueFlags::DYNAMIC)
@@ -4570,8 +4469,7 @@ fn are_flags_valid(
     {
         return false;
     }
-    if !value_flags.contains(ValueFlags::DYNAMIC)
-        && resolution_flags.contains(ResolutionFlags::PLT)
+    if resolution_flags.contains(ResolutionFlags::PLT)
         && !resolution_flags.contains(ResolutionFlags::GOT)
     {
         return false;

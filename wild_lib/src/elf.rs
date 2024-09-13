@@ -364,28 +364,10 @@ pub(crate) const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0x0f, 0x1f, 0x44, 0x0, 0x0, // nopl   0x0(%rax,%rax,1)
 ];
 
-/// The first entry in the PLT when we're using lazy loading. All the other entries jump to this
-/// one, which then jumps to the loader function that the runtime put into
-/// _GLOBAL_OFFSET_TABLE_+0x10.
-pub(crate) const PLT_LAZY_HEADER_TEMPLATE: &[u8] = &[
-    0xff, 0x35, 0, 0, 0, 0, // push {_GLOBAL_OFFSET_TABLE_+0x8}(%rip)
-    0xf2, 0xff, 0x25, 0, 0, 0, 0, // bnd jmp *{_GLOBAL_OFFSET_TABLE_+0x10}(%rip)
-    0x0f, 0x1f, 0, // nopl (%rax)
-];
-
-pub(crate) const JUMP_SLOT_TEMPLATE: &[u8] = &[
-    0xf3, 0x0f, 0x1e, 0xfa, // endbr64
-    0x68, 0, 0, 0, 0, // push ${index}
-    0xf2, 0xe9, 0, 0, 0, 0,    // bnd jmp {PLT base address}(%rip)
-    0x90, // nop
-];
-
 const _ASSERTS: () = {
     assert!(FILE_HEADER_SIZE as usize == std::mem::size_of::<FileHeader>());
     assert!(PROGRAM_HEADER_SIZE as usize == std::mem::size_of::<ProgramHeader>());
     assert!(SECTION_HEADER_SIZE as usize == std::mem::size_of::<SectionHeader>());
-    assert!(PLT_LAZY_HEADER_TEMPLATE.len() == PLT_ENTRY_TEMPLATE.len());
-    assert!(JUMP_SLOT_TEMPLATE.len() == PLT_ENTRY_TEMPLATE.len());
 };
 
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -
