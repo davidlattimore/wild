@@ -217,7 +217,7 @@ impl<'data> SymbolDb<'data> {
         let num_symbols_per_group = groups
             .iter()
             .map(|g| g.files.iter().map(|f| f.num_symbols()).sum())
-            .collect::<Vec<usize>>();
+            .collect_vec();
 
         let num_symbols = num_symbols_per_group.iter().sum();
 

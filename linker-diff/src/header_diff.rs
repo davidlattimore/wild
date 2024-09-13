@@ -8,6 +8,7 @@ use crate::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context as _;
+use itertools::Itertools;
 use linker_utils::elf::shf;
 use linker_utils::elf::SectionFlags;
 use object::elf::*;
@@ -223,10 +224,7 @@ pub(crate) fn diff_fields(
     table_name: &str,
     diff_mode: DiffMode,
 ) -> Vec<Diff> {
-    let field_values = objects
-        .iter()
-        .map(get_fields_fn)
-        .collect::<Vec<Result<FieldValues>>>();
+    let field_values = objects.iter().map(get_fields_fn).collect_vec();
     if diff_mode == DiffMode::IgnoreIfAllErrors && field_values.iter().all(|d| d.is_err()) {
         return vec![];
     }

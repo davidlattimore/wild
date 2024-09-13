@@ -682,7 +682,7 @@ impl<'data> OutputSectionsBuilder<'data> {
     }
 
     pub(crate) fn with_base_address(base_address: u64) -> Self {
-        let section_infos: Vec<_> = SECTION_DEFINITIONS
+        let section_infos = SECTION_DEFINITIONS
             .iter()
             .map(|d| SectionOutputInfo {
                 section_flags: d.section_flags,
