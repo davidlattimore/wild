@@ -238,6 +238,11 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             time_phases = true;
         } else if let Some(rest) = long_arg_split_prefix("threads=") {
             num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
+        } else if long_arg_eq("threads") {
+            // Default behavior (multiple threads)
+            num_threads = None;
+        } else if let Some(rest) = long_arg_split_prefix("thread-count=") {
+            num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
         } else if long_arg_eq("no-threads") {
             num_threads = Some(NonZeroUsize::new(1).unwrap());
         } else if long_arg_eq("strip-all") {
@@ -252,7 +257,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             if let Some(z) = input.next() {
                 match z.as_ref() {
                     "lazy" => {
-                        warning!("Wild doesn't support -z lazy");
+                        warning!("wild doesn't support -z lazy");
                     }
                     _ => {
                         // TODO: Handle these
@@ -309,6 +314,14 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             output_kind = Some(OutputKind::SharedObject);
         } else if let Some(rest) = long_arg_split_prefix("soname=") {
             soname = Some(rest.to_owned());
+        } else if long_arg_eq("soname") {
+            soname = Some(
+                input
+                    .next()
+                    .context("Missing argument to -soname")?
+                    .as_ref()
+                    .to_owned(),
+            );
         } else if long_arg_split_prefix("plugin-opt=").is_some() {
             // TODO: Implement support for linker plugins.
         } else if long_arg_eq("plugin") {
@@ -703,6 +716,9 @@ mod tests {
         "now",
         "-z",
         "lazy",
+        "-soname=fpp",
+        "-soname",
+        "bar",
         "/usr/bin/../lib/gcc/x86_64-linux-gnu/12/crtendS.o",
         "/lib/x86_64-linux-gnu/crtn.o",
         "--version-script",
@@ -741,6 +757,7 @@ mod tests {
             args.version_script_path,
             Some(PathBuf::from_str("a.ver").unwrap())
         );
+        assert_eq!(args.soname, Some("bar".to_owned()));
         assert_eq!(args.num_threads, NonZeroUsize::new(1).unwrap());
     }
 
