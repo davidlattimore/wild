@@ -7,6 +7,7 @@
 use crate::error::Result;
 use crate::input_data::FileId;
 use crate::save_dir::SaveDir;
+use crate::warning;
 use anyhow::bail;
 use anyhow::ensure;
 use anyhow::Context as _;
@@ -33,7 +34,6 @@ pub(crate) struct Args {
     pub(crate) validate_output: bool,
     pub(crate) version_script_path: Option<PathBuf>,
     pub(crate) debug_address: Option<u64>,
-    pub(crate) bind_now: bool,
     pub(crate) write_layout: bool,
     pub(crate) should_write_eh_frame_hdr: bool,
     pub(crate) write_trace: bool,
@@ -180,10 +180,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         write_layout = true;
         write_trace = true;
     }
-    // Lazy binding isn't used so much these days, since it makes things less secure. It adds
-    // quite a bit of complexity and we don't properly support it. We may eventually drop
-    // support completely.
-    let mut bind_now = true;
     let mut arg_num = 0;
     while let Some(arg) = input.next() {
         arg_num += 1;
@@ -255,9 +251,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if arg == "-z" {
             if let Some(z) = input.next() {
                 match z.as_ref() {
-                    // NOTE: Wild sets bind_now on by default!
-                    "now" => bind_now = true,
-                    "lazy" => bind_now = false,
+                    "lazy" => {
+                        warning!("Wild doesn't support -z lazy");
+                    }
                     _ => {
                         // TODO: Handle these
                     }
@@ -394,7 +390,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         validate_output,
         version_script_path,
         debug_address,
-        bind_now,
         write_layout,
         write_trace,
         should_write_eh_frame_hdr: eh_frame_hdr,
@@ -500,19 +495,6 @@ impl Args {
     ) -> Option<tracing::span::EnteredSpan> {
         let should_trace = self.print_allocations == Some(file_id);
         should_trace.then(|| tracing::trace_span!(crate::debug_trace::TRACE_SPAN_NAME).entered())
-    }
-
-    /// Returns whether we should use a separate .got.plt section. This is required if we're using
-    /// lazy PLT entries.
-    pub(crate) fn should_use_got_plt(&self) -> bool {
-        // If we're statically linking, then we can't use jump slots for PLT entries. A jump slot is
-        // used when the PLT flag is set but not the GOT flag. So for static linking, we set the GOT
-        // flag whenever the PLT flag is set. Ideally we should perhaps do this when `-z now` is set
-        // too, but the other linkers don't, so we don't too.
-        if self.output_kind.is_static_executable() {
-            return false;
-        }
-        !self.bind_now
     }
 }
 
@@ -758,7 +740,6 @@ mod tests {
             args.version_script_path,
             Some(PathBuf::from_str("a.ver").unwrap())
         );
-        assert!(!args.bind_now);
         assert_eq!(args.num_threads, NonZeroUsize::new(1).unwrap());
     }
 
