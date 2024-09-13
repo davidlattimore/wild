@@ -4,12 +4,12 @@ version = "0.2.0"
 edition = "2021"
 
 [dependencies]
-ahash = { version = "0.8.7", default-features = false, features = ["std"] }
+ahash = { version = "0.8.11", default-features = false, features = ["std"] }
 anyhow = "1.0.88"
 bitflags = "2.6.0"
 bytemuck = { version = "1.18.0", features = ["derive"] }
-crossbeam-queue = "0.3.8"
-crossbeam-utils = "0.8.18"
+crossbeam-queue = "0.3.11"
+crossbeam-utils = "0.8.20"
 linker-layout = { path = "../linker-layout" }
 linker-trace = { path = "../linker-trace" }
 linker-utils = { path = "../linker-utils" }
@@ -22,7 +22,7 @@ object = { version = "0.36.4", default-features = false, features = [
     "unaligned",
 ] }
 rayon = "1.10.0"
-smallvec = "1.13.1"
+smallvec = "1.13.2"
 tracing = { version = "0.1.40" }
 tracing-subscriber = { version = "0.3.18", default-features = false, features = [
     "fmt",
