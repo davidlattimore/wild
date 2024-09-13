@@ -309,7 +309,7 @@ pub(crate) struct Resolution {
     pub(crate) value_flags: ValueFlags,
 }
 
-/// Address information for a symbol or section.
+/// Address information for a section.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) struct SectionResolution {
     address: u64,
@@ -438,7 +438,9 @@ pub(crate) struct DynamicLayout<'data> {
     /// Mapping from local symbol indexes to versions in the input file.
     pub(crate) input_symbol_versions: &'data [Versym],
 
+    /// Mapping from input versions to output versions. Input version 1 is at index 0.
     pub(crate) version_mapping: Vec<u16>,
+
     pub(crate) verdef_info: Option<VerdefInfo<'data>>,
 
     /// Whether this is the last DynamicLayout that puts content into .gnu.version_r.
