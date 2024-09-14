@@ -11,6 +11,7 @@ pub(crate) const LOAD_RW: ProgramSegmentId = ProgramSegmentId(4);
 pub(crate) const TLS: ProgramSegmentId = ProgramSegmentId(5);
 pub(crate) const EH_FRAME: ProgramSegmentId = ProgramSegmentId(6);
 pub(crate) const DYNAMIC: ProgramSegmentId = ProgramSegmentId(7);
+pub(crate) const STACK: ProgramSegmentId = ProgramSegmentId(8);
 
 pub(crate) struct ProgramSegmentDef {
     pub(crate) segment_type: u32,
@@ -48,6 +49,10 @@ const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
     },
     ProgramSegmentDef {
         segment_type: object::elf::PT_DYNAMIC,
+        segment_flags: object::elf::PF_R | object::elf::PF_W,
+    },
+    ProgramSegmentDef {
+        segment_type: object::elf::PT_GNU_STACK,
         segment_flags: object::elf::PF_R | object::elf::PF_W,
     },
 ];
@@ -146,5 +151,9 @@ fn test_constant_segment_ids() {
     assert_eq!(
         PROGRAM_SEGMENT_DEFS[INTERP.as_usize()].segment_type,
         object::elf::PT_INTERP
+    );
+    assert_eq!(
+        PROGRAM_SEGMENT_DEFS[STACK.as_usize()].segment_type,
+        object::elf::PT_GNU_STACK
     );
 }
