@@ -202,6 +202,18 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             assert!(option.ends_with('='));
             strip_option(arg).and_then(|stripped_arg| stripped_arg.strip_prefix(option))
         };
+        let mut handle_z_option = |arg: &str| {
+            match arg {
+                "lazy" => {
+                    warning!("wild doesn't support -z lazy");
+                }
+                "execstack" => execstack = true,
+                "noexecstack" => execstack = false,
+                _ => {
+                    // TODO: Handle these
+                }
+            }
+        };
 
         if let Some(rest) = arg.strip_prefix("-L") {
             if rest.is_empty() {
@@ -256,18 +268,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             // TODO: Handle these flags
             input.next();
         } else if arg == "-z" {
-            if let Some(z) = input.next() {
-                match z.as_ref() {
-                    "lazy" => {
-                        warning!("wild doesn't support -z lazy");
-                    }
-                    "execstack" => execstack = true,
-                    "noexecstack" => execstack = false,
-                    _ => {
-                        // TODO: Handle these
-                    }
-                }
-            }
+            handle_z_option(input.next().context("Missing argument to -z")?.as_ref());
+        } else if let Some(arg) = arg.strip_prefix("-z") {
+            handle_z_option(arg);
         } else if let Some(_rest) = arg.strip_prefix("-O") {
             // We don't use opt-level for now.
         } else if long_arg_eq("prepopulate-maps") {
@@ -647,6 +650,7 @@ mod tests {
         "-pie",
         "-z",
         "relro",
+        "-zrelro",
         "-hash-style=gnu",
         "--hash-style=gnu",
         "-build-id",
@@ -714,6 +718,7 @@ mod tests {
         "--eh-frame-hdr",
         "-z",
         "noexecstack",
+        "-znoexecstack",
         "--gc-sections",
         "-z",
         "relro",
