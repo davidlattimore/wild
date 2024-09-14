@@ -128,6 +128,8 @@ impl<'data> UnresolvedSection<'data> {
             }));
         } else if section_name.starts_with(b".gcc_except_table") {
             Some(output_section_id::GCC_EXCEPT_TABLE)
+        } else if section_name == b".note.ABI-tag" {
+            Some(output_section_id::NOTE_ABI_TAG)
         } else if section_name.starts_with(b".rela")
             || b".strtab" == section_name
             || b".symtab" == section_name

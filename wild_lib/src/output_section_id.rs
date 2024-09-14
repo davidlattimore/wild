@@ -102,8 +102,9 @@ pub(crate) const TBSS: OutputSectionId = OutputSectionId::regular(9);
 pub(crate) const BSS: OutputSectionId = OutputSectionId::regular(10);
 pub(crate) const COMMENT: OutputSectionId = OutputSectionId::regular(11);
 pub(crate) const GCC_EXCEPT_TABLE: OutputSectionId = OutputSectionId::regular(12);
+pub(crate) const NOTE_ABI_TAG: OutputSectionId = OutputSectionId::regular(13);
 
-pub(crate) const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 13;
+pub(crate) const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 14;
 
 pub(crate) struct OutputSections<'data> {
     /// The base address for our output binary.
@@ -479,6 +480,12 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
     },
+    BuiltInSectionDetails {
+        name: SectionName(b".note.ABI-tag"),
+        ty: sht::NOTE,
+        section_flags: shf::ALLOC.with(shf::GNU_RETAIN),
+        ..DEFAULT_DEFS
+    },
 ];
 
 pub(crate) fn built_in_section_ids(
@@ -720,6 +727,9 @@ impl CustomSectionIds {
         events.push(OrderEvent::SegmentStart(crate::program_segments::INTERP));
         events.push(INTERP.event());
         events.push(OrderEvent::SegmentEnd(crate::program_segments::INTERP));
+        events.push(OrderEvent::SegmentStart(crate::program_segments::NOTE));
+        events.push(NOTE_ABI_TAG.event());
+        events.push(OrderEvent::SegmentEnd(crate::program_segments::NOTE));
         events.push(GNU_HASH.event());
         events.push(DYNSYM.event());
         events.push(DYNSTR.event());
@@ -910,6 +920,7 @@ fn test_constant_ids() {
         (SECTION_HEADERS, ".shdr"),
         (GNU_HASH, ".gnu.hash"),
         (PLT_GOT, ".plt.got"),
+        (NOTE_ABI_TAG, ".note.ABI-tag"),
     ];
     for (id, name) in check {
         assert_eq!(
