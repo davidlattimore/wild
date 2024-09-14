@@ -51,6 +51,7 @@ pub(crate) struct Args {
     pub(crate) verbose_gc_stats: bool,
 
     pub(crate) print_allocations: Option<FileId>,
+    pub(crate) execstack: bool,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -172,6 +173,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut unrecognised = Vec::new();
     let mut rpaths = Vec::new();
     let mut soname = None;
+    let mut execstack = false;
     let max_files_per_group = std::env::var(FILES_PER_GROUP_ENV)
         .ok()
         .map(|s| s.parse())
@@ -259,6 +261,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                     "lazy" => {
                         warning!("wild doesn't support -z lazy");
                     }
+                    "execstack" => execstack = true,
+                    "noexecstack" => execstack = false,
                     _ => {
                         // TODO: Handle these
                     }
@@ -416,6 +420,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             .and_then(|s| s.parse().ok())
             .map(FileId::from_encoded),
         files_per_group: max_files_per_group,
+        execstack,
     }))
 }
 

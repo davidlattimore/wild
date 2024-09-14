@@ -762,6 +762,9 @@ impl CustomSectionIds {
         events.extend(build_section_events(&self.bss));
         events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RW));
 
+        events.push(OrderEvent::SegmentStart(crate::program_segments::STACK));
+        events.push(OrderEvent::SegmentEnd(crate::program_segments::STACK));
+
         events.extend(build_section_events(&self.nonalloc));
         events.push(COMMENT.event());
         events.push(SHSTRTAB.event());

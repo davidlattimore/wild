@@ -40,6 +40,7 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
+use crate::program_segments::STACK;
 use crate::relaxation::Relaxation;
 use crate::relaxation::RelocationModifier;
 use crate::resolution::SectionSlot;
@@ -402,7 +403,13 @@ fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: 
         }
         let e = LittleEndian;
         segment_header.p_type.set(e, segment_id.segment_type());
-        segment_header.p_flags.set(e, segment_id.segment_flags());
+
+        // Support executable stack (Wild defaults to non-executable stack)
+        let mut segment_flags = segment_id.segment_flags();
+        if segment_id == STACK && layout.args().execstack {
+            segment_flags |= object::elf::PF_X;
+        }
+        segment_header.p_flags.set(e, segment_flags);
         segment_header
             .p_offset
             .set(e, segment_sizes.file_offset as u64);

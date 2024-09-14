@@ -33,6 +33,7 @@ use crate::part_id::NUM_GENERATED_PARTS;
 use crate::program_segments;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::MAX_SEGMENTS;
+use crate::program_segments::STACK;
 use crate::relaxation::Relaxation;
 use crate::resolution;
 use crate::resolution::FrameIndex;
@@ -1406,17 +1407,32 @@ fn compute_segment_layout(
     for event in output_sections.sections_and_segments_events() {
         match event {
             OrderEvent::SegmentStart(segment_id) => {
-                active_records.push((
-                    segment_id,
-                    Record {
+                if segment_id == STACK {
+                    // STACK segment is special as it does not contain any section.
+                    active_records.push((
                         segment_id,
-                        file_start: usize::MAX,
-                        file_end: 0,
-                        mem_start: u64::MAX,
-                        mem_end: 0,
-                        alignment: alignment::MIN,
-                    },
-                ));
+                        Record {
+                            segment_id,
+                            file_start: 0,
+                            file_end: 0,
+                            mem_start: 0,
+                            mem_end: 0,
+                            alignment: alignment::MIN,
+                        },
+                    ));
+                } else {
+                    active_records.push((
+                        segment_id,
+                        Record {
+                            segment_id,
+                            file_start: usize::MAX,
+                            file_end: 0,
+                            mem_start: u64::MAX,
+                            mem_end: 0,
+                            alignment: alignment::MIN,
+                        },
+                    ));
+                }
             }
             OrderEvent::SegmentEnd(segment_id) => {
                 let (popped_segment_id, record) = active_records
@@ -2542,7 +2558,7 @@ impl<'data> PreludeLayoutState {
             }
         }
         let active_segment_ids = (0..crate::program_segments::MAX_SEGMENTS)
-            .filter(|i| keep_segments[*i])
+            .filter(|i| keep_segments[*i] || i == &STACK.as_usize())
             .map(ProgramSegmentId::new)
             .collect();
 
