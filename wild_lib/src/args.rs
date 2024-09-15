@@ -204,6 +204,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         };
         let mut handle_z_option = |arg: &str| {
             match arg {
+                "now" => {}
                 "lazy" => {
                     warning!("wild doesn't support -z lazy");
                 }
