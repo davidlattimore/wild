@@ -805,8 +805,10 @@ impl LinkCommand {
         let mut invocation_mode = LinkerInvocationMode::Direct;
         let mut opt_save_dir = None;
         if let Some((script, extra_inputs)) = get_script(inputs) {
-            command = Command::new(script);
+            // Workaround for #104 (Text file busy) issue.
+            command = Command::new("bash");
             command.env("OUT", output_path);
+            command.arg(script);
             command.arg(linker.path());
             command.args(extra_inputs.iter().map(|i| &i.path));
             invocation_mode = LinkerInvocationMode::Script;
