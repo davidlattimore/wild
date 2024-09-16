@@ -58,6 +58,7 @@ use anyhow::ensure;
 use anyhow::Context;
 use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
+use fxhash::FxHashMap;
 use itertools::Itertools;
 use linker_utils::elf::shf;
 use linker_utils::elf::SectionFlags;
@@ -3251,6 +3252,7 @@ impl<'data> ObjectLayoutState<'data> {
                     resources.merged_strings,
                     resources.merged_string_start_addresses,
                     true,
+                    &mut StringOffsetCache::no_caching(),
                 )?
                 .ok_or_else(|| {
                     anyhow!(
@@ -3695,6 +3697,7 @@ impl Resolution {
         object_layout: &ObjectLayout,
         merged_strings: &OutputSectionMap<resolution::MergeStringsSection>,
         merged_string_start_addresses: &MergedStringStartAddresses,
+        string_offset_cache: &mut StringOffsetCache,
     ) -> Result<u64> {
         // For most symbols, `raw_value` won't be zero, so we can save ourselves from looking up the
         // section to see if it's a string-merge section. For string-merge symbols with names,
@@ -3708,6 +3711,7 @@ impl Resolution {
                 merged_strings,
                 merged_string_start_addresses,
                 false,
+                string_offset_cache,
             )? {
                 if self.raw_value != 0 {
                     bail!("Merged string resolution has value 0x{}", self.raw_value);
@@ -3729,6 +3733,7 @@ pub(crate) fn get_merged_string_output_address(
     merged_strings: &OutputSectionMap<resolution::MergeStringsSection>,
     merged_string_start_addresses: &MergedStringStartAddresses,
     zero_unnamed: bool,
+    string_offset_cache: &mut StringOffsetCache,
 ) -> Result<Option<u64>> {
     let symbol = object.symbol(symbol_index)?;
     let Some(section_index) = object.symbol_section(symbol, symbol_index)? else {
@@ -3739,6 +3744,18 @@ pub(crate) fn get_merged_string_output_address(
     };
     let data = merge_slot.section_data;
     let mut input_offset = symbol.st_value(LittleEndian);
+
+    let cache_entry = if let Some(section_cache) = string_offset_cache
+        .offsets_by_section
+        .get_mut(merge_slot.part_id.output_section_id().as_usize())
+    {
+        match section_cache.entry(input_offset) {
+            std::collections::hash_map::Entry::Occupied(entry) => return Ok(Some(*entry.get())),
+            std::collections::hash_map::Entry::Vacant(entry) => Some(entry),
+        }
+    } else {
+        None
+    };
 
     // When we reference data in a string-merge section via a named symbol, we determine which
     // string we're referencing without taking the addend into account, then apply the addend
@@ -3773,6 +3790,9 @@ pub(crate) fn get_merged_string_output_address(
     let mut address = section_base + output_offset;
     if symbol_has_name {
         address = address.wrapping_add(addend);
+    }
+    if let Some(cache_entry) = cache_entry {
+        cache_entry.insert(address);
     }
     Ok(Some(address))
 }
@@ -4316,6 +4336,30 @@ fn test_no_disallowed_overlaps() {
 impl Display for ResolutionFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         bitflags::parser::to_writer(self, f)
+    }
+}
+
+pub(crate) struct StringOffsetCache {
+    /// For each output section, a map from input offset to output offset. Empty if caching is
+    /// disabled.
+    offsets_by_section: Vec<FxHashMap<u64, u64>>,
+}
+
+impl StringOffsetCache {
+    pub(crate) fn new(output_sections: &OutputSections) -> Self {
+        Self {
+            offsets_by_section: vec![
+                FxHashMap::with_hasher(fxhash::FxBuildHasher::default());
+                output_sections.num_sections()
+            ],
+        }
+    }
+
+    /// Returns an instance that doesn't cache.
+    pub(crate) fn no_caching() -> StringOffsetCache {
+        Self {
+            offsets_by_section: Vec::new(),
+        }
     }
 }
 
