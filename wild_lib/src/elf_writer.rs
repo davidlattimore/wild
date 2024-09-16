@@ -32,6 +32,7 @@ use crate::layout::PreludeLayout;
 use crate::layout::Resolution;
 use crate::layout::ResolutionFlags;
 use crate::layout::Section;
+use crate::layout::StringOffsetCache;
 use crate::layout::SymbolCopyInfo;
 use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
@@ -1113,13 +1114,14 @@ impl<'out> ObjectLayout<'out> {
     ) -> Result {
         let _span = debug_span!("write_file", filename = ?self.input.file.filename).entered();
         let _file_span = layout.args().trace_span_for_file(self.file_id);
+        let mut string_offset_cache = StringOffsetCache::new(&layout.output_sections);
         for sec in &self.sections {
             match sec {
                 SectionSlot::Loaded(sec) => {
                     self.write_section(layout, sec, buffers, table_writer)?
                 }
                 SectionSlot::LoadedDebugInfo(sec) => {
-                    self.write_debug_section(layout, sec, buffers)?;
+                    self.write_debug_section(layout, sec, buffers, &mut string_offset_cache)?;
                 }
                 SectionSlot::EhFrameData(section_index) => {
                     self.write_eh_frame_data(*section_index, layout, table_writer)?;
@@ -1192,9 +1194,10 @@ impl<'out> ObjectLayout<'out> {
         layout: &Layout,
         sec: &Section,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
+        string_offset_cache: &mut StringOffsetCache,
     ) -> Result {
         let out = self.write_section_raw(layout, sec, buffers)?;
-        self.apply_debug_relocations(out, sec, layout)
+        self.apply_debug_relocations(out, sec, layout, string_offset_cache)
             .with_context(|| {
                 format!(
                     "Failed to apply relocations in section `{}` of {}",
@@ -1336,6 +1339,7 @@ impl<'out> ObjectLayout<'out> {
                 layout,
                 out,
                 table_writer,
+                &mut StringOffsetCache::no_caching(),
             )
             .with_context(|| {
                 format!(
@@ -1352,6 +1356,7 @@ impl<'out> ObjectLayout<'out> {
         out: &mut [u8],
         section: &Section,
         layout: &Layout,
+        string_offset_cache: &mut StringOffsetCache,
     ) -> Result {
         let object_section = self.object.section(section.index)?;
         let section_name = self.object.section_name(object_section)?;
@@ -1375,13 +1380,21 @@ impl<'out> ObjectLayout<'out> {
             .fetch_add(relocations.len() as u64, Relaxed);
         for rel in relocations {
             let offset_in_section = rel.r_offset.get(LittleEndian);
-            apply_debug_relocation(self, offset_in_section, rel, layout, tombstone_value, out)
-                .with_context(|| {
-                    format!(
-                        "Failed to apply {} at offset 0x{offset_in_section:x}",
-                        self.display_relocation(rel, layout)
-                    )
-                })?;
+            apply_debug_relocation(
+                self,
+                offset_in_section,
+                rel,
+                layout,
+                tombstone_value,
+                out,
+                string_offset_cache,
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to apply {} at offset 0x{offset_in_section:x}",
+                    self.display_relocation(rel, layout)
+                )
+            })?;
         }
         Ok(())
     }
@@ -1506,6 +1519,7 @@ impl<'out> ObjectLayout<'out> {
                         layout,
                         entry_out,
                         table_writer,
+                        &mut StringOffsetCache::no_caching(),
                     )
                     .with_context(|| {
                         format!(
@@ -1600,6 +1614,7 @@ fn apply_relocation(
     layout: &Layout,
     out: &mut [u8],
     table_writer: &mut TableWriter,
+    string_offset_cache: &mut StringOffsetCache,
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
     let place = section_address + offset_in_section;
@@ -1659,6 +1674,7 @@ fn apply_relocation(
                 object_layout,
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
+                string_offset_cache,
             )?
             .wrapping_sub(place)
             .wrapping_sub(rel_info.byte_size as u64),
@@ -1721,6 +1737,7 @@ fn apply_debug_relocation(
     layout: &Layout,
     section_tombstone_value: u64,
     out: &mut [u8],
+    string_offset_cache: &mut StringOffsetCache,
 ) -> Result<()> {
     let e = LittleEndian;
     let symbol_index = rel
@@ -1749,6 +1766,7 @@ fn apply_debug_relocation(
                 object_layout,
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
+                string_offset_cache,
             )?,
             RelocationKind::DtpOff => resolution
                 .value()
@@ -1766,6 +1784,7 @@ fn apply_debug_relocation(
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
                 false,
+                string_offset_cache,
             )?
             .context("Cannot get merged string offset for a debug info section")?,
             SectionSlot::Discard | SectionSlot::Unloaded(..) => section_tombstone_value,
@@ -1814,6 +1833,7 @@ fn write_absolute_relocation(
             object_layout,
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
+            &mut StringOffsetCache::no_caching(),
         )
     }
 }
