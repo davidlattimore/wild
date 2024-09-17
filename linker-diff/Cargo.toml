@@ -19,7 +19,7 @@ iced-x86 = { version = "1.21.0", default-features = false, features = [
     "decoder",
     "gas",
 ] }
-symbolic-demangle = "12.11.0"
+symbolic-demangle = "12.11.1"
 anyhow = "1.0.89"
 clap = { version = "4.5.17", features = ["derive"] }
 rayon = "1.10.0"
