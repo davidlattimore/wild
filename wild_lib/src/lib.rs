@@ -49,6 +49,7 @@ pub(crate) mod save_dir;
 pub(crate) mod sharding;
 pub(crate) mod shutdown;
 pub(crate) mod slice;
+pub(crate) mod string_merging;
 pub(crate) mod symbol;
 pub(crate) mod symbol_db;
 #[cfg(not(feature = "single-threaded"))]
