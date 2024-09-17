@@ -37,15 +37,17 @@ use crate::program_segments::STACK;
 use crate::relaxation::Relaxation;
 use crate::resolution;
 use crate::resolution::FrameIndex;
-use crate::resolution::MergeStringsSection;
 use crate::resolution::NotLoaded;
 use crate::resolution::ResolutionOutputs;
 use crate::resolution::ResolvedEpilogue;
 use crate::resolution::SectionSlot;
-use crate::resolution::StringToMerge;
 use crate::resolution::UnloadedSection;
 use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
+use crate::string_merging::get_merged_string_output_address;
+use crate::string_merging::MergeStringsSection;
+use crate::string_merging::MergedStringStartAddresses;
+use crate::string_merging::StringOffsetCache;
 use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolDebug;
@@ -58,7 +60,6 @@ use anyhow::ensure;
 use anyhow::Context;
 use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
-use fxhash::FxHashMap;
 use itertools::Itertools;
 use linker_utils::elf::shf;
 use linker_utils::elf::SectionFlags;
@@ -285,11 +286,6 @@ pub(crate) enum FileLayout<'data> {
     Dynamic(DynamicLayout<'data>),
     Epilogue(EpilogueLayout<'data>),
     NotLoaded,
-}
-
-/// The addresses of the start of the merged strings for each output section.
-pub(crate) struct MergedStringStartAddresses {
-    addresses: OutputSectionMap<u64>,
 }
 
 /// Address information for a symbol.
@@ -3369,23 +3365,6 @@ pub(crate) fn can_export_symbol(sym: &crate::elf::SymtabEntry) -> bool {
         && (visibility == object::elf::STV_DEFAULT || visibility == object::elf::STV_PROTECTED)
 }
 
-impl MergedStringStartAddresses {
-    #[tracing::instrument(skip_all, name = "Compute merged string section start addresses")]
-    fn compute(
-        output_sections: &OutputSections<'_>,
-        starting_mem_offsets_by_group: &[OutputSectionPartMap<u64>],
-    ) -> Self {
-        let mut addresses = OutputSectionMap::with_size(output_sections.num_sections());
-        let internal_start_offsets = starting_mem_offsets_by_group.first().unwrap();
-        for i in 0..output_sections.num_regular_sections() {
-            let section_id = OutputSectionId::regular(i as u32);
-            *addresses.get_mut(section_id) =
-                *internal_start_offsets.get(section_id.part_id_with_alignment(alignment::MIN));
-        }
-        Self { addresses }
-    }
-}
-
 fn process_eh_frame_data(
     object: &mut ObjectLayoutState,
     common: &mut CommonGroupState,
@@ -3695,7 +3674,7 @@ impl Resolution {
         addend: u64,
         symbol_index: object::SymbolIndex,
         object_layout: &ObjectLayout,
-        merged_strings: &OutputSectionMap<resolution::MergeStringsSection>,
+        merged_strings: &OutputSectionMap<MergeStringsSection>,
         merged_string_start_addresses: &MergedStringStartAddresses,
         string_offset_cache: &mut StringOffsetCache,
     ) -> Result<u64> {
@@ -3721,80 +3700,6 @@ impl Resolution {
         }
         Ok(self.raw_value.wrapping_add(addend))
     }
-}
-
-/// Looks for a merged string at `symbol_index` + `addend` in the input and if found, returns its
-/// address in the output.
-pub(crate) fn get_merged_string_output_address(
-    symbol_index: object::SymbolIndex,
-    addend: u64,
-    object: &crate::elf::File,
-    sections: &[SectionSlot],
-    merged_strings: &OutputSectionMap<resolution::MergeStringsSection>,
-    merged_string_start_addresses: &MergedStringStartAddresses,
-    zero_unnamed: bool,
-    string_offset_cache: &mut StringOffsetCache,
-) -> Result<Option<u64>> {
-    let symbol = object.symbol(symbol_index)?;
-    let Some(section_index) = object.symbol_section(symbol, symbol_index)? else {
-        return Ok(None);
-    };
-    let SectionSlot::MergeStrings(merge_slot) = &sections[section_index.0] else {
-        return Ok(None);
-    };
-    let data = merge_slot.section_data;
-    let mut input_offset = symbol.st_value(LittleEndian);
-
-    let cache_entry = if let Some(section_cache) = string_offset_cache
-        .offsets_by_section
-        .get_mut(merge_slot.part_id.output_section_id().as_usize())
-    {
-        match section_cache.entry(input_offset) {
-            std::collections::hash_map::Entry::Occupied(entry) => return Ok(Some(*entry.get())),
-            std::collections::hash_map::Entry::Vacant(entry) => Some(entry),
-        }
-    } else {
-        None
-    };
-
-    // When we reference data in a string-merge section via a named symbol, we determine which
-    // string we're referencing without taking the addend into account, then apply the addend
-    // afterward. However when the reference is to a section (a symbol without a name), we take the
-    // addend into account up-front before we determine which string we're pointing at. This is a
-    // bit weird, but seems to match what other linkers do.
-    let symbol_has_name = symbol.st_name(LittleEndian) != 0;
-    if !symbol_has_name {
-        // We're computing a resolution for an unnamed symbol, just use the value of 0 for now.
-        // We'll compute the address later when we're processing relocations that reference the
-        // section.
-        if zero_unnamed {
-            return Ok(Some(0));
-        }
-        input_offset = input_offset.wrapping_add(addend);
-    }
-
-    if input_offset > data.len() as u64 {
-        bail!(
-            "Invalid merge-string offset {input_offset} in section of length {}",
-            data.len()
-        );
-    }
-
-    let string = StringToMerge::take_hashed(&mut &data[input_offset as usize..])?;
-    let section_id = merge_slot.part_id.output_section_id();
-    let strings_section = merged_strings.get(section_id);
-    let output_offset = strings_section
-        .get(&string)
-        .with_context(|| format!("Failed to find merge-string `{}`", *string))?;
-    let section_base = merged_string_start_addresses.addresses.get(section_id);
-    let mut address = section_base + output_offset;
-    if symbol_has_name {
-        address = address.wrapping_add(addend);
-    }
-    if let Some(cache_entry) = cache_entry {
-        cache_entry.insert(address);
-    }
-    Ok(Some(address))
 }
 
 fn layout_section_parts(
@@ -4336,30 +4241,6 @@ fn test_no_disallowed_overlaps() {
 impl Display for ResolutionFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         bitflags::parser::to_writer(self, f)
-    }
-}
-
-pub(crate) struct StringOffsetCache {
-    /// For each output section, a map from input offset to output offset. Empty if caching is
-    /// disabled.
-    offsets_by_section: Vec<FxHashMap<u64, u64>>,
-}
-
-impl StringOffsetCache {
-    pub(crate) fn new(output_sections: &OutputSections) -> Self {
-        Self {
-            offsets_by_section: vec![
-                FxHashMap::with_hasher(fxhash::FxBuildHasher::default());
-                output_sections.num_sections()
-            ],
-        }
-    }
-
-    /// Returns an instance that doesn't cache.
-    pub(crate) fn no_caching() -> StringOffsetCache {
-        Self {
-            offsets_by_section: Vec::new(),
-        }
     }
 }
 
