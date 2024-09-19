@@ -46,6 +46,8 @@ use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
+use rayon::iter::IntoParallelRefMutIterator;
+use rayon::iter::ParallelIterator;
 use std::num::NonZeroU32;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -65,8 +67,9 @@ pub fn resolve_symbols_and_sections<'data>(
     symbol_db: &mut SymbolDb<'data>,
     herd: &'data bumpalo_herd::Herd,
 ) -> Result<ResolutionOutputs<'data>> {
-    let (mut groups, undefined_symbols, internal) =
-        resolve_symbols_in_files(groups, symbol_db, herd)?;
+    let (mut groups, undefined_symbols, internal) = resolve_symbols_in_files(groups, symbol_db)?;
+
+    resolve_sections(&mut groups, herd, symbol_db.args)?;
 
     let output_sections = assign_section_ids(&mut groups, symbol_db.args)?;
 
@@ -97,7 +100,6 @@ type DefinitionsCell<'definitions> = AtomicCell<Option<Box<&'definitions mut [Sy
 pub(crate) fn resolve_symbols_in_files<'data>(
     groups: &'data [Group<'data>],
     symbol_db: &mut SymbolDb<'data>,
-    herd: &'data bumpalo_herd::Herd,
 ) -> Result<(
     Vec<ResolvedGroup<'data>>,
     SegQueue<UndefinedSymbol<'data>>,
@@ -187,7 +189,6 @@ pub(crate) fn resolve_symbols_in_files<'data>(
         symbol_db,
         outputs: &outputs,
         work_queue,
-        loaded_metrics: Default::default(),
     };
 
     let done = AtomicBool::new(false);
@@ -195,16 +196,11 @@ pub(crate) fn resolve_symbols_in_files<'data>(
     crate::threading::scope(|s| {
         for _ in 0..symbol_db.args.num_threads.get() {
             s.spawn(|_| {
-                let allocator = herd.get();
                 let mut idle = false;
                 while !done.load(Ordering::Relaxed) {
                     while let Some(work_item) = resources.work_queue.pop() {
-                        let r = process_object(
-                            work_item.file_id,
-                            work_item.definitions,
-                            &resources,
-                            &allocator,
-                        );
+                        let r =
+                            process_object(work_item.file_id, work_item.definitions, &resources);
                         if let Err(e) = r {
                             // We currently only store the first error.
                             let _ = resources.outputs.errors.push(e);
@@ -239,20 +235,6 @@ pub(crate) fn resolve_symbols_in_files<'data>(
         }
     });
 
-    let loaded_bytes = resources
-        .loaded_metrics
-        .loaded_bytes
-        .load(Ordering::Relaxed);
-    let loaded_compressed_bytes = resources
-        .loaded_metrics
-        .loaded_compressed_bytes
-        .load(Ordering::Relaxed);
-    let decompressed_bytes = resources
-        .loaded_metrics
-        .decompressed_bytes
-        .load(Ordering::Relaxed);
-    tracing::debug!(target: "metrics", loaded_bytes, loaded_compressed_bytes, decompressed_bytes, "input_sections");
-
     drop(resources);
     drop(definitions_per_group_and_file);
     symbol_db.restore_definitions(symbol_definitions);
@@ -268,6 +250,45 @@ pub(crate) fn resolve_symbols_in_files<'data>(
     Ok((resolved, outputs.undefined_symbols, prelude.unwrap()))
 }
 
+#[tracing::instrument(skip_all, name = "Resolve sections")]
+fn resolve_sections<'data>(
+    groups: &mut [ResolvedGroup<'data>],
+    herd: &'data bumpalo_herd::Herd,
+    args: &Args,
+) -> Result {
+    let loaded_metrics: LoadedMetrics = Default::default();
+
+    groups.par_iter_mut().try_for_each_init(
+        || herd.get(),
+        |allocator, group| -> Result {
+            for file in &mut group.files {
+                let ResolvedFile::Object(obj) = file else {
+                    continue;
+                };
+                let Some(mut non_dynamic) = obj.non_dynamic.take() else {
+                    continue;
+                };
+
+                non_dynamic.sections = resolve_sections_for_object(
+                    obj,
+                    &mut non_dynamic.custom_sections,
+                    &mut non_dynamic.merge_strings_sections,
+                    args,
+                    allocator,
+                    &loaded_metrics,
+                )?;
+
+                obj.non_dynamic = Some(non_dynamic);
+            }
+            Ok(())
+        },
+    )?;
+
+    loaded_metrics.log();
+
+    Ok(())
+}
+
 struct WorkItem<'definitions> {
     file_id: FileId,
     definitions: &'definitions mut [SymbolId],
@@ -280,6 +301,15 @@ pub(crate) struct LoadedMetrics {
     pub(crate) decompressed_bytes: AtomicUsize,
 }
 
+impl LoadedMetrics {
+    fn log(&self) {
+        let loaded_bytes = self.loaded_bytes.load(Ordering::Relaxed);
+        let loaded_compressed_bytes = self.loaded_compressed_bytes.load(Ordering::Relaxed);
+        let decompressed_bytes = self.decompressed_bytes.load(Ordering::Relaxed);
+        tracing::debug!(target: "metrics", loaded_bytes, loaded_compressed_bytes, decompressed_bytes, "input_sections");
+    }
+}
+
 struct ResolutionResources<'data, 'definitions, 'outer_scope> {
     groups: &'data [Group<'data>],
     definitions_per_file: &'outer_scope Vec<Vec<DefinitionsCell<'definitions>>>,
@@ -287,7 +317,6 @@ struct ResolutionResources<'data, 'definitions, 'outer_scope> {
     symbol_db: &'outer_scope SymbolDb<'data>,
     outputs: &'outer_scope Outputs<'data>,
     work_queue: SegQueue<WorkItem<'definitions>>,
-    loaded_metrics: LoadedMetrics,
 }
 
 impl<'data, 'definitions, 'outer_scope> ResolutionResources<'data, 'definitions, 'outer_scope> {
@@ -546,7 +575,6 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
     file_id: FileId,
     definitions_out: &mut [SymbolId],
     resources: &'scope ResolutionResources<'data, 'definitions, 'scope>,
-    allocator: &bumpalo_herd::Member<'data>,
 ) -> Result {
     if let ParsedInput::Object(obj) = &resources.groups[file_id.group()].files[file_id.file()] {
         let input = obj.input.clone();
@@ -555,7 +583,6 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
             resources,
             definitions_out,
             &resources.outputs.undefined_symbols,
-            allocator,
         )
         .with_context(|| format!("Failed to process {input}"))?;
         let _ = resources.outputs.loaded.push(res);
@@ -651,7 +678,6 @@ impl<'data> ResolvedObject<'data> {
         resources: &ResolutionResources<'data, '_, '_>,
         definitions_out: &mut [SymbolId],
         undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
-        allocator: &bumpalo_herd::Member<'data>,
     ) -> Result<Self> {
         let mut non_dynamic = None;
 
@@ -659,25 +685,14 @@ impl<'data> ResolvedObject<'data> {
             resolve_dynamic_symbols(obj, resources, undefined_symbols_out, definitions_out)
                 .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
         } else {
-            let mut custom_sections = Vec::new();
-            let mut merge_strings_sections = Vec::new();
-
-            let sections = resolve_sections(
-                obj,
-                &mut custom_sections,
-                &mut merge_strings_sections,
-                resources.symbol_db.args,
-                allocator,
-                &resources.loaded_metrics,
-            )?;
-
             resolve_symbols(obj, resources, undefined_symbols_out, definitions_out)
                 .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
 
+            // We'll fill this in during section resolution.
             non_dynamic = Some(NonDynamicResolved {
-                sections,
-                merge_strings_sections,
-                custom_sections,
+                sections: Default::default(),
+                merge_strings_sections: Default::default(),
+                custom_sections: Default::default(),
             });
         }
 
@@ -691,8 +706,8 @@ impl<'data> ResolvedObject<'data> {
     }
 }
 
-fn resolve_sections<'data>(
-    obj: &ParsedInputObject<'data>,
+fn resolve_sections_for_object<'data>(
+    obj: &ResolvedObject<'data>,
     custom_sections: &mut Vec<CustomSectionDetails<'data>>,
     merge_strings_out: &mut Vec<UnresolvedMergeStringsFileSection<'data>>,
     args: &Args,
@@ -705,7 +720,7 @@ fn resolve_sections<'data>(
         .enumerate()
         .map(|(input_section_index, input_section)| {
             if let Some(unloaded) =
-                UnresolvedSection::from_section(&obj.object, input_section, args)?
+                UnresolvedSection::from_section(obj.object, input_section, args)?
             {
                 let section_flags = SectionFlags::from_header(input_section);
                 let mut part_id = part_id::CUSTOM_PLACEHOLDER;
