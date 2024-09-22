@@ -1114,7 +1114,7 @@ impl<'out> ObjectLayout<'out> {
     ) -> Result {
         let _span = debug_span!("write_file", filename = ?self.input.file.filename).entered();
         let _file_span = layout.args().trace_span_for_file(self.file_id);
-        let mut string_offset_cache = StringOffsetCache::new(&layout.output_sections);
+        let mut string_offset_cache = StringOffsetCache::new();
         for sec in &self.sections {
             match sec {
                 SectionSlot::Loaded(sec) => {
