@@ -13,6 +13,7 @@ use crate::resolution::SectionSlot;
 use anyhow::bail;
 use anyhow::Context;
 use fxhash::FxHashMap;
+use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use rayon::iter::ParallelBridge;
@@ -44,9 +45,10 @@ pub(crate) struct MergedStringStartAddresses {
 }
 
 pub(crate) struct StringOffsetCache {
-    /// For each output section, a map from input offset to output offset. Empty if caching is
-    /// disabled.
-    offsets_by_section: Vec<FxHashMap<u64, u64>>,
+    /// A map from input offset to output offset. Input offsets are relative to the start of the
+    /// input file. Output offsets are relative to the start of the output section. None if caching
+    /// is disabled.
+    input_to_output: Option<FxHashMap<u64, u64>>,
 }
 
 #[derive(Default)]
@@ -254,11 +256,12 @@ pub(crate) fn get_merged_string_output_address(
     let data = merge_slot.section_data;
     let mut input_offset = symbol.st_value(LittleEndian);
 
-    let cache_entry = if let Some(section_cache) = string_offset_cache
-        .offsets_by_section
-        .get_mut(merge_slot.part_id.output_section_id().as_usize())
-    {
-        match section_cache.entry(input_offset) {
+    let input_section_start = object.section(section_index)?.sh_offset(LittleEndian);
+
+    let input_offset_in_file = input_section_start.wrapping_add(input_offset);
+
+    let cache_entry = if let Some(cache) = string_offset_cache.input_to_output.as_mut() {
+        match cache.entry(input_offset_in_file) {
             std::collections::hash_map::Entry::Occupied(entry) => return Ok(Some(*entry.get())),
             std::collections::hash_map::Entry::Vacant(entry) => Some(entry),
         }
@@ -307,19 +310,16 @@ pub(crate) fn get_merged_string_output_address(
 }
 
 impl StringOffsetCache {
-    pub(crate) fn new(output_sections: &OutputSections) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            offsets_by_section: vec![
-                FxHashMap::with_hasher(fxhash::FxBuildHasher::default());
-                output_sections.num_sections()
-            ],
+            input_to_output: Some(Default::default()),
         }
     }
 
     /// Returns an instance that doesn't cache.
     pub(crate) fn no_caching() -> StringOffsetCache {
         Self {
-            offsets_by_section: Vec::new(),
+            input_to_output: None,
         }
     }
 }
