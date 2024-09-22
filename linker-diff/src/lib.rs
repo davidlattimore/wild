@@ -586,17 +586,20 @@ fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
             .map(|n| n.strip_suffix(".so").unwrap().to_owned())
             .collect();
     }
-    // This is not quite right, since we might split in the middle of a multibyte character.
-    // But this is a dev tool, so we'll punt on that for now.
-    let mut iterators = names.iter().map(|n| n.bytes()).collect_vec();
-    let mut n = 0;
-    while first_equals_all(iterators.iter_mut().map(|i| i.next())) {
-        n += 1;
+
+    if names.len() > 1 {
+        // This is not quite right, since we might split in the middle of a multibyte character.
+        // But this is a dev tool, so we'll punt on that for now.
+        let mut iterators = names.iter().map(|n| n.bytes()).collect_vec();
+        let mut n = 0;
+        while first_equals_all(iterators.iter_mut().map(|i| i.next())) {
+            n += 1;
+        }
+        names = names
+            .iter()
+            .map(|name| String::from_utf8_lossy(&name.bytes().skip(n).collect_vec()).into_owned())
+            .collect_vec();
     }
-    names = names
-        .iter()
-        .map(|name| String::from_utf8_lossy(&name.bytes().skip(n).collect_vec()).into_owned())
-        .collect_vec();
     Ok(names)
 }
 
