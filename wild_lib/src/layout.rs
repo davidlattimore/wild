@@ -47,7 +47,6 @@ use crate::sharding::ShardKey;
 use crate::string_merging::get_merged_string_output_address;
 use crate::string_merging::MergeStringsSection;
 use crate::string_merging::MergedStringStartAddresses;
-use crate::string_merging::StringOffsetCache;
 use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolDebug;
@@ -3248,7 +3247,6 @@ impl<'data> ObjectLayoutState<'data> {
                     resources.merged_strings,
                     resources.merged_string_start_addresses,
                     true,
-                    &mut StringOffsetCache::no_caching(),
                 )?
                 .ok_or_else(|| {
                     anyhow!(
@@ -3676,7 +3674,6 @@ impl Resolution {
         object_layout: &ObjectLayout,
         merged_strings: &OutputSectionMap<MergeStringsSection>,
         merged_string_start_addresses: &MergedStringStartAddresses,
-        string_offset_cache: &mut StringOffsetCache,
     ) -> Result<u64> {
         // For most symbols, `raw_value` won't be zero, so we can save ourselves from looking up the
         // section to see if it's a string-merge section. For string-merge symbols with names,
@@ -3690,7 +3687,6 @@ impl Resolution {
                 merged_strings,
                 merged_string_start_addresses,
                 false,
-                string_offset_cache,
             )? {
                 if self.raw_value != 0 {
                     bail!("Merged string resolution has value 0x{}", self.raw_value);
