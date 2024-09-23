@@ -25,3 +25,5 @@ clap = { version = "4.5.18", features = ["derive"] }
 rayon = "1.10.0"
 bytemuck = { version = "1.18.0", features = ["derive"] }
 itertools = "0.13.0"
+gimli = "0.31.0"
+fallible-iterator = "0.3.0"
