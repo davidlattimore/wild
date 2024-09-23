@@ -12,8 +12,6 @@ use crate::resolution::ResolvedGroup;
 use crate::resolution::SectionSlot;
 use anyhow::bail;
 use anyhow::Context;
-use fxhash::FxHashMap;
-use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use rayon::iter::ParallelBridge;
@@ -42,13 +40,6 @@ pub(crate) struct StringToMerge<'data> {
 /// The addresses of the start of the merged strings for each output section.
 pub(crate) struct MergedStringStartAddresses {
     addresses: OutputSectionMap<u64>,
-}
-
-pub(crate) struct StringOffsetCache {
-    /// A map from input offset to output offset. Input offsets are relative to the start of the
-    /// input file. Output offsets are relative to the start of the output section. None if caching
-    /// is disabled.
-    input_to_output: Option<FxHashMap<u64, u64>>,
 }
 
 #[derive(Default)]
@@ -244,7 +235,6 @@ pub(crate) fn get_merged_string_output_address(
     merged_strings: &OutputSectionMap<MergeStringsSection>,
     merged_string_start_addresses: &MergedStringStartAddresses,
     zero_unnamed: bool,
-    string_offset_cache: &mut StringOffsetCache,
 ) -> Result<Option<u64>> {
     let symbol = object.symbol(symbol_index)?;
     let Some(section_index) = object.symbol_section(symbol, symbol_index)? else {
@@ -279,18 +269,6 @@ pub(crate) fn get_merged_string_output_address(
         );
     }
 
-    let input_section_start = object.section(section_index)?.sh_offset(LittleEndian);
-    let input_offset_in_file = input_section_start.wrapping_add(input_offset);
-
-    let cache_entry = if let Some(cache) = string_offset_cache.input_to_output.as_mut() {
-        match cache.entry(input_offset_in_file) {
-            std::collections::hash_map::Entry::Occupied(entry) => return Ok(Some(*entry.get())),
-            std::collections::hash_map::Entry::Vacant(entry) => Some(entry),
-        }
-    } else {
-        None
-    };
-
     let string = StringToMerge::take_hashed(&mut &data[input_offset as usize..])?;
     let section_id = merge_slot.part_id.output_section_id();
     let strings_section = merged_strings.get(section_id);
@@ -302,25 +280,7 @@ pub(crate) fn get_merged_string_output_address(
     if symbol_has_name {
         address = address.wrapping_add(addend);
     }
-    if let Some(cache_entry) = cache_entry {
-        cache_entry.insert(address);
-    }
     Ok(Some(address))
-}
-
-impl StringOffsetCache {
-    pub(crate) fn new() -> Self {
-        Self {
-            input_to_output: Some(Default::default()),
-        }
-    }
-
-    /// Returns an instance that doesn't cache.
-    pub(crate) fn no_caching() -> StringOffsetCache {
-        Self {
-            input_to_output: None,
-        }
-    }
 }
 
 impl MergedStringStartAddresses {
