@@ -256,19 +256,6 @@ pub(crate) fn get_merged_string_output_address(
     let data = merge_slot.section_data;
     let mut input_offset = symbol.st_value(LittleEndian);
 
-    let input_section_start = object.section(section_index)?.sh_offset(LittleEndian);
-
-    let input_offset_in_file = input_section_start.wrapping_add(input_offset);
-
-    let cache_entry = if let Some(cache) = string_offset_cache.input_to_output.as_mut() {
-        match cache.entry(input_offset_in_file) {
-            std::collections::hash_map::Entry::Occupied(entry) => return Ok(Some(*entry.get())),
-            std::collections::hash_map::Entry::Vacant(entry) => Some(entry),
-        }
-    } else {
-        None
-    };
-
     // When we reference data in a string-merge section via a named symbol, we determine which
     // string we're referencing without taking the addend into account, then apply the addend
     // afterward. However when the reference is to a section (a symbol without a name), we take the
@@ -291,6 +278,18 @@ pub(crate) fn get_merged_string_output_address(
             data.len()
         );
     }
+
+    let input_section_start = object.section(section_index)?.sh_offset(LittleEndian);
+    let input_offset_in_file = input_section_start.wrapping_add(input_offset);
+
+    let cache_entry = if let Some(cache) = string_offset_cache.input_to_output.as_mut() {
+        match cache.entry(input_offset_in_file) {
+            std::collections::hash_map::Entry::Occupied(entry) => return Ok(Some(*entry.get())),
+            std::collections::hash_map::Entry::Vacant(entry) => Some(entry),
+        }
+    } else {
+        None
+    };
 
     let string = StringToMerge::take_hashed(&mut &data[input_offset as usize..])?;
     let section_id = merge_slot.part_id.output_section_id();
