@@ -2052,7 +2052,7 @@ impl<'data> FileLayoutState<'data> {
             Self::Object(s) => {
                 let _span = tracing::debug_span!(
                     "finalise_layout",
-                    file = s.input.file.filename.to_string_lossy().to_string()
+                    file = %s.input
                 )
                 .entered();
                 FileLayout::Object(s.finalise_layout(memory_offsets, resolutions_out, resources)?)
@@ -2946,9 +2946,7 @@ impl<'data> ObjectLayoutState<'data> {
         queue: &mut LocalWorkQueue,
     ) -> Result {
         let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
-        let _span =
-            tracing::debug_span!("load_sections", file = %self.input.file.filename.to_string_lossy())
-                .entered();
+        let _span = tracing::debug_span!("load_sections", file = %self.input).entered();
         while let Some(section_request) = self.state.sections_required.pop() {
             let section_id = section_request.id;
             match &self.state.sections[section_id.0] {
