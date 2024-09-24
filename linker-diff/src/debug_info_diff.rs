@@ -3,7 +3,6 @@ use crate::Diff;
 use crate::DiffValues;
 use crate::Object;
 use crate::Report;
-use anyhow::anyhow;
 use anyhow::Result;
 use fallible_iterator::FallibleIterator;
 use gimli::LittleEndian;
@@ -89,10 +88,7 @@ fn read_file_debug_info(obj: &Object) -> Result<DebugInfo> {
     let dwarf_sections = gimli::DwarfSections::load(&load_section)?;
     let dwarf = dwarf_sections.borrow(borrow_section);
 
-    let units: Vec<_> = dwarf
-        .units()
-        .map_err(|e| anyhow!("cannot parse DWARF compilation unit: {e}"))
-        .collect()?;
+    let units: Vec<_> = dwarf.units().collect()?;
 
     Ok(DebugInfo {
         units: units
