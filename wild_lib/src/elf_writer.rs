@@ -151,7 +151,15 @@ impl Output {
             // for deletion to complete if it hasn't already.
             let (deletion_complete_sender, deletion_complete_recv) = std::sync::mpsc::channel();
             let path = args.output.clone();
-            crate::threading::spawn(move || {
+            // For now, we spawn a new thread for deleting the old output file. Since we're not
+            // using our main thread pool, this means that for a little bit of time, we'll have one
+            // more thread than the number requested. If we don't do this, then when
+            // `resolve_symbols_in_files` attempts to spawn N tasks (where N is the size of our
+            // thread pool), one of those tasks won't get to run until deletion has completed, which
+            // blocks things unnecessarily. TODO: Make symbol resolution (and GC phase) more robust
+            // to not having all threads in the pool available, then change this back to use the
+            // thread pool.
+            std::thread::spawn(move || {
                 let _ = std::fs::remove_file(&path);
                 let _ = deletion_complete_sender.send(());
             });
