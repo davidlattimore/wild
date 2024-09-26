@@ -652,9 +652,7 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
             .object
             .symbol_section(local_symbol, object_symbol_index)?
         {
-            self.state
-                .sections_required
-                .push(SectionRequest::new(section_id));
+            self.sections_required.push(SectionRequest::new(section_id));
             self.load_sections(common, resources, queue)?;
         } else if local_symbol.is_common(LittleEndian) {
             let common_symbol = CommonSymbol::new(local_symbol)?;
@@ -859,19 +857,7 @@ struct ObjectLayoutState<'data> {
     file_id: FileId,
     symbol_id_range: SymbolIdRange,
     object: &'data File<'data>,
-    state: ObjectLayoutMutableState<'data>,
 
-    /// Indexed by `FrameIndex`.
-    exception_frames: Vec<ExceptionFrame<'data>>,
-
-    eh_frame_section: Option<&'data object::elf::SectionHeader64<LittleEndian>>,
-    eh_frame_size: u64,
-}
-
-/// The parts of `ObjectLayoutState` that we mutate during layout. Separate so that we can pass
-/// mutable references to it while holding shared references to the other bits of
-/// `ObjectLayoutState`.
-struct ObjectLayoutMutableState<'data> {
     /// Info about each of our sections. Empty until this object has been activated. Indexed the
     /// same as the sections in the input object.
     sections: Vec<SectionSlot<'data>>,
@@ -880,6 +866,12 @@ struct ObjectLayoutMutableState<'data> {
     sections_required: Vec<SectionRequest>,
 
     cies: SmallVec<[CieAtOffset<'data>; 2]>,
+
+    /// Indexed by `FrameIndex`.
+    exception_frames: Vec<ExceptionFrame<'data>>,
+
+    eh_frame_section: Option<&'data object::elf::SectionHeader64<LittleEndian>>,
+    eh_frame_size: u64,
 }
 
 #[derive(Default)]
@@ -2874,11 +2866,9 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             exception_frames: Default::default(),
             eh_frame_section: None,
             eh_frame_size: 0,
-            state: ObjectLayoutMutableState {
-                sections: non_dynamic.sections,
-                sections_required: Default::default(),
-                cies: Default::default(),
-            },
+            sections: non_dynamic.sections,
+            sections_required: Default::default(),
+            cies: Default::default(),
         })
     } else {
         FileLayoutState::Dynamic(DynamicLayoutState {
@@ -2908,16 +2898,18 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result {
         let mut eh_frame_section = None;
         let no_gc = !resources.symbol_db.args.gc_sections;
-        for (i, section) in self.state.sections.iter().enumerate() {
+        for (i, section) in self.sections.iter().enumerate() {
             match section {
                 SectionSlot::MustLoad(..) | SectionSlot::UnloadedDebugInfo(..) => {
-                    self.state
-                        .sections_required
+                    self.sections_required
                         .push(SectionRequest::new(object::SectionIndex(i)));
                 }
                 SectionSlot::Unloaded(..) if no_gc => {
-                    self.state
-                        .sections_required
+                    self.sections_required
+                        .push(SectionRequest::new(object::SectionIndex(i)));
+                }
+                SectionSlot::Unloaded(..) if no_gc => {
+                    self.sections_required
                         .push(SectionRequest::new(object::SectionIndex(i)));
                 }
                 SectionSlot::EhFrameData(index) => {
@@ -2953,9 +2945,9 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result {
         let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
         let _span = tracing::debug_span!("load_sections", file = %self.input).entered();
-        while let Some(section_request) = self.state.sections_required.pop() {
+        while let Some(section_request) = self.sections_required.pop() {
             let section_id = section_request.id;
-            match &self.state.sections[section_id.0] {
+            match &self.sections[section_id.0] {
                 SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => {
                     self.load_section(common, queue, *unloaded, section_id, resources)?;
                 }
@@ -3010,7 +3002,7 @@ impl<'data> ObjectLayoutState<'data> {
 
         self.process_section_exception_frames(unloaded.last_frame_index, common, resources, queue)?;
 
-        self.state.sections[section_id.0] = SectionSlot::Loaded(section);
+        self.sections[section_id.0] = SectionSlot::Loaded(section);
 
         Ok(())
     }
@@ -3063,7 +3055,7 @@ impl<'data> ObjectLayoutState<'data> {
         let section = Section::create(self, section_id, part_id)?;
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_id),);
         common.allocate(part_id, section.capacity());
-        self.state.sections[section_id.0] = SectionSlot::LoadedDebugInfo(section);
+        self.sections[section_id.0] = SectionSlot::LoadedDebugInfo(section);
 
         Ok(())
     }
@@ -3080,7 +3072,7 @@ impl<'data> ObjectLayoutState<'data> {
             self.allocate_symtab_space(common, symbol_db, symbol_resolution_flags)?;
         }
         let output_kind = symbol_db.args.output_kind;
-        for slot in &mut self.state.sections {
+        for slot in &mut self.sections {
             if let SectionSlot::Loaded(section) = slot {
                 allocate_resolution(
                     ValueFlags::ADDRESS,
@@ -3092,7 +3084,7 @@ impl<'data> ObjectLayoutState<'data> {
         }
         // TODO: Deduplicate CIEs from different objects, then only allocate space for those CIEs
         // that we "won".
-        for cie in &self.state.cies {
+        for cie in &self.cies {
             self.eh_frame_size += cie.cie.bytes.len() as u64;
         }
         common.allocate(part_id::EH_FRAME, self.eh_frame_size);
@@ -3124,7 +3116,7 @@ impl<'data> ObjectLayoutState<'data> {
                 symbol_id,
                 symbol_db,
                 sym_state.get(),
-                &self.state.sections,
+                &self.sections,
             ) {
                 // If we've decided to emit the symbol even though it's not referenced (because it's
                 // in a section we're emitting), then make sure we have a resolution for it.
@@ -3155,8 +3147,8 @@ impl<'data> ObjectLayoutState<'data> {
 
         let mut emitter = create_global_address_emitter(resources.symbol_resolution_flags);
 
-        let mut section_resolutions = Vec::with_capacity(self.state.sections.len());
-        for slot in self.state.sections.iter_mut() {
+        let mut section_resolutions = Vec::with_capacity(self.sections.len());
+        for slot in self.sections.iter_mut() {
             let resolution = match slot {
                 SectionSlot::Loaded(sec) => {
                     let part_id = sec.part_id;
@@ -3207,7 +3199,7 @@ impl<'data> ObjectLayoutState<'data> {
             input: self.input,
             file_id: self.file_id,
             object: self.object,
-            sections: self.state.sections,
+            sections: self.sections,
             section_resolutions,
             symbol_id_range,
         })
@@ -3247,7 +3239,7 @@ impl<'data> ObjectLayoutState<'data> {
                     local_symbol_index,
                     0,
                     self.object,
-                    &self.state.sections,
+                    &self.sections,
                     resources.merged_strings,
                     resources.merged_string_start_addresses,
                     true,
@@ -3420,7 +3412,7 @@ fn process_eh_frame_data(
                 }
                 rel_iter.next();
             }
-            object.state.cies.push(CieAtOffset {
+            object.cies.push(CieAtOffset {
                 offset: offset as u32,
                 cie: Cie {
                     bytes: &data[offset..next_offset],
@@ -3453,7 +3445,7 @@ fn process_eh_frame_data(
             }
 
             if let Some(section_index) = section_index {
-                if let Some(unloaded) = object.state.sections[section_index.0].unloaded_mut() {
+                if let Some(unloaded) = object.sections[section_index.0].unloaded_mut() {
                     let frame_index = FrameIndex::from_usize(object.exception_frames.len());
 
                     // Update our unloaded section to point to our new frame. Our frame will then in
