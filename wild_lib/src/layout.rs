@@ -2908,10 +2908,6 @@ impl<'data> ObjectLayoutState<'data> {
                     self.sections_required
                         .push(SectionRequest::new(object::SectionIndex(i)));
                 }
-                SectionSlot::Unloaded(..) if no_gc => {
-                    self.sections_required
-                        .push(SectionRequest::new(object::SectionIndex(i)));
-                }
                 SectionSlot::EhFrameData(index) => {
                     eh_frame_section = Some(*index);
                 }
