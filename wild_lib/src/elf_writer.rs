@@ -85,7 +85,6 @@ enum FileCreator {
     Background {
         sized_output_sender: Option<Sender<Result<SizedOutput>>>,
         sized_output_recv: Receiver<Result<SizedOutput>>,
-        deletion_complete_recv: Receiver<()>,
     },
     Regular {
         file_size: Option<u64>,
@@ -146,27 +145,15 @@ struct SectionAllocation {
 impl Output {
     pub(crate) fn new(args: &Args) -> Output {
         if args.num_threads.get() > 1 {
-            // Deletion of the old output file can take a while, so we start that in the background.
-            // When we get to the stage where we're going to create the new output file, we'll wait
-            // for deletion to complete if it hasn't already.
-            let (deletion_complete_sender, deletion_complete_recv) = std::sync::mpsc::channel();
-            let path = args.output.clone();
-            crate::threading::spawn(move || {
-                let _ = std::fs::remove_file(&path);
-                let _ = deletion_complete_sender.send(());
-            });
-
             let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
             Output {
                 path: args.output.clone(),
                 creator: FileCreator::Background {
-                    deletion_complete_recv,
                     sized_output_sender: Some(sized_output_sender),
                     sized_output_recv,
                 },
             }
         } else {
-            delete_old_output(args);
             Output {
                 path: args.output.clone(),
                 creator: FileCreator::Regular { file_size: None },
@@ -179,17 +166,37 @@ impl Output {
             FileCreator::Background {
                 sized_output_sender,
                 sized_output_recv: _,
-                deletion_complete_recv,
             } => {
-                // Wait for deletion of any existing output file to complete.
-                let _ = deletion_complete_recv.recv();
-
                 let sender = sized_output_sender
                     .take()
                     .expect("set_size must only be called once");
                 let path = self.path.clone();
+
                 crate::threading::spawn(move || {
-                    let _ = sender.send(SizedOutput::new(path, size));
+                    // Rename the old output file so that we can create a new file in its place.
+                    // Reusing the existing file would also be an option, but that wouldn't error if
+                    // the file is currently being executed.
+                    let renamed_old_file = path.with_extension("delete");
+                    let rename_status = std::fs::rename(&path, &renamed_old_file);
+
+                    // Create the output file.
+                    let sized_output = SizedOutput::new(path, size);
+
+                    // Pass it to the main thread, so that it can start writing it once layout finishes.
+                    let _ = sender.send(sized_output);
+
+                    // If there was an old output file that we renamed, then delete it. We do so
+                    // from a separate task so that it can run in the background while other threads
+                    // continue working. Deleting can take a while for large files.
+                    if rename_status.is_ok() {
+                        crate::threading::spawn(move || {
+                            let _ = std::fs::remove_file(renamed_old_file);
+                            // Note, we don't currently signal when we've finished deleting the
+                            // file. Based on experiments run on Linux 6.9.3, if we exit while an
+                            // unlink syscall is in progress on a separate thread, Linux will wait
+                            // for the unlink syscall to complete before terminating the process.
+                        });
+                    }
                 });
             }
             FileCreator::Regular { file_size } => *file_size = Some(size),
@@ -205,12 +212,12 @@ impl Output {
             FileCreator::Background {
                 sized_output_sender,
                 sized_output_recv,
-                deletion_complete_recv: _,
             } => {
                 assert!(sized_output_sender.is_none(), "set_size was never called");
                 wait_for_sized_output(sized_output_recv)?
             }
             FileCreator::Regular { file_size } => {
+                delete_old_output(&self.path);
                 let file_size = file_size.context("set_size was never called")?;
                 self.create_file_non_lazily(file_size)?
             }
@@ -230,8 +237,8 @@ impl Output {
 
 /// Delete the old output file. Note, this is only used when running from a single thread.
 #[tracing::instrument(skip_all, name = "Delete old output")]
-fn delete_old_output(args: &Args) {
-    let _ = std::fs::remove_file(&args.output);
+fn delete_old_output(path: &Path) {
+    let _ = std::fs::remove_file(path);
 }
 
 #[tracing::instrument(skip_all, name = "Wait for output file creation")]
