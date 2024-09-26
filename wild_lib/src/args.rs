@@ -40,6 +40,7 @@ pub(crate) struct Args {
     pub(crate) rpaths: Vec<String>,
     pub(crate) soname: Option<String>,
     pub(crate) files_per_group: Option<u32>,
+    pub(crate) gc_sections: bool,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -113,8 +114,6 @@ pub(crate) const FILES_PER_GROUP_ENV: &str = "WILD_FILES_PER_GROUP";
 const IGNORED_FLAGS: &[&str] = &[
     // TODO: Support build-ids
     "build-id",
-    // TODO: We currently always GC sections. Support _not_ GCing them.
-    "gc-sections",
     // TODO: Think about if anything is needed here. We don't need groups in order resolve cycles,
     // so perhaps ignoring these is the right thing to do.
     "start-group",
@@ -153,6 +152,12 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut num_threads = None;
     let mut strip_all = false;
     let mut strip_debug = false;
+    // For now, we default to --gc-sections. This is different to other linkers, but other than
+    // being different, there doesn't seem to be any downside to doing this. We don't currently do
+    // any less work if we're not GCing sections, but do end up writing more, so --no-gc-sections
+    // will almost always be as slow or slower than --gc-sections. For that reason, the latter is
+    // probably a good default.
+    let mut gc_sections = true;
     let mut prepopulate_maps = false;
     let mut save_dir = SaveDir::new()?;
     let mut sym_info = None;
@@ -254,7 +259,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if let Some(rest) = long_arg_split_prefix("threads=") {
             num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
         } else if long_arg_eq("threads") {
-            // Default behavior (multiple threads)
+            // Default behaviour (multiple threads)
             num_threads = None;
         } else if let Some(rest) = long_arg_split_prefix("thread-count=") {
             num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
@@ -265,6 +270,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             strip_debug = true;
         } else if long_arg_eq("strip-debug") {
             strip_debug = true;
+        } else if long_arg_eq("gc-sections") {
+            gc_sections = true;
+        } else if long_arg_eq("no-gc-sections") {
+            gc_sections = false;
         } else if arg == "-m" {
             // TODO: Handle these flags
             input.next();
@@ -404,6 +413,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         num_threads,
         strip_all,
         strip_debug,
+        gc_sections,
         prepopulate_maps,
         sym_info,
         merge_strings,

@@ -108,7 +108,7 @@ If you decide to benchmark Wild against other linkers, in order to make it a fai
 should ensure that the other linkers aren't doing work on something that Wild doesn't support. In
 particular:
 
-* Wild always does `--gc-sections`, so for a fair comparison, that should be passed to all the
+* Wild defaults to `--gc-sections`, so for a fair comparison, that should be passed to all the
   linkers.
 * Wild defaults to `-z now`, so best to pass that to all linkers.
 

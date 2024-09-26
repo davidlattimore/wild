@@ -2907,9 +2907,15 @@ impl<'data> ObjectLayoutState<'data> {
         queue: &mut LocalWorkQueue,
     ) -> Result {
         let mut eh_frame_section = None;
+        let no_gc = !resources.symbol_db.args.gc_sections;
         for (i, section) in self.state.sections.iter().enumerate() {
             match section {
                 SectionSlot::MustLoad(..) | SectionSlot::UnloadedDebugInfo(..) => {
+                    self.state
+                        .sections_required
+                        .push(SectionRequest::new(object::SectionIndex(i)));
+                }
+                SectionSlot::Unloaded(..) if no_gc => {
                     self.state
                         .sections_required
                         .push(SectionRequest::new(object::SectionIndex(i)));
