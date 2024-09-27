@@ -92,10 +92,10 @@ fn read_file_debug_info(obj: &Object) -> Result<DebugInfo> {
 
     let units: Vec<_> = dwarf.units().collect()?;
 
-    Ok(units
+    units
         .iter()
         .map(|unit| parse_unit_info(dwarf.unit(*unit)?.unit_ref(&dwarf), unit.unit_length()))
-        .collect::<Result<DebugInfo>>()?)
+        .collect::<Result<DebugInfo>>()
 }
 
 fn diff_debug_info(
@@ -133,7 +133,7 @@ fn diff_debug_info(
 
     for (ref_unit_ident, ref_unit) in ok.first().unwrap().iter() {
         for (object_id, info) in ok.iter().enumerate().skip(1) {
-            let unit = info.get(&ref_unit_ident);
+            let unit = info.get(ref_unit_ident);
             match unit {
                 Some(unit) => {
                     if ref_unit.size != unit.size {
