@@ -9,31 +9,34 @@ use gimli::LittleEndian;
 use itertools::Itertools;
 use object::ObjectSection;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt::Display;
+
+#[derive(Debug, Default, PartialEq, Eq, Hash, Ord, PartialOrd)]
+struct CompilationUnitIdentifier {
+    name: String,
+    comp_dir: String,
+}
 
 #[derive(Debug, Default, PartialEq, Eq, Hash)]
 struct CompilationUnit {
-    name: String,
-    comp_dir: String,
     size: usize,
 }
 
-impl Display for CompilationUnit {
+impl Display for CompilationUnitIdentifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("{} ({})", self.name, self.comp_dir))
     }
 }
 
-struct DebugInfo {
-    units: Vec<CompilationUnit>,
-}
+type DebugInfo = HashMap<CompilationUnitIdentifier, CompilationUnit>;
 
-const DEBUG_INFO_ERROR_KEY: &str = "debug-info";
+const DEBUG_INFO_ERROR_KEY: &str = "debug_info";
 
 fn parse_unit_info(
     unit: gimli::UnitRef<'_, gimli::EndianSlice<'_, LittleEndian>>,
     size: usize,
-) -> Result<CompilationUnit> {
+) -> Result<(CompilationUnitIdentifier, CompilationUnit)> {
     let mut name = None;
     let mut comp_dir = None;
 
@@ -69,11 +72,10 @@ fn parse_unit_info(
     let Some(comp_dir) = comp_dir else {
         anyhow::bail!("Missing comp_dir for a compilation unit");
     };
-    Ok(CompilationUnit {
-        name,
-        comp_dir,
-        size,
-    })
+    Ok((
+        CompilationUnitIdentifier { name, comp_dir },
+        CompilationUnit { size },
+    ))
 }
 
 fn read_file_debug_info(obj: &Object) -> Result<DebugInfo> {
@@ -90,12 +92,10 @@ fn read_file_debug_info(obj: &Object) -> Result<DebugInfo> {
 
     let units: Vec<_> = dwarf.units().collect()?;
 
-    Ok(DebugInfo {
-        units: units
-            .iter()
-            .map(|unit| parse_unit_info(dwarf.unit(*unit)?.unit_ref(&dwarf), unit.unit_length()))
-            .collect::<Result<Vec<_>>>()?,
-    })
+    Ok(units
+        .iter()
+        .map(|unit| parse_unit_info(dwarf.unit(*unit)?.unit_ref(&dwarf), unit.unit_length()))
+        .collect::<Result<DebugInfo>>()?)
 }
 
 fn diff_debug_info(
@@ -131,16 +131,30 @@ fn diff_debug_info(
         }];
     }
 
-    for ref_unit in ok.first().unwrap().units.iter() {
+    for (ref_unit_ident, ref_unit) in ok.first().unwrap().iter() {
         for (object_id, info) in ok.iter().enumerate().skip(1) {
-            if !info.units.iter().any(|u| u == ref_unit) {
-                mismatches.push(Diff {
-                    key: format!("{}.missing_unit", DEBUG_INFO_ERROR_KEY),
-                    values: DiffValues::PreFormatted(format!(
-                        "Missing compilation unit: {ref_unit} in {}",
-                        objects[object_id].name
-                    )),
-                });
+            let unit = info.get(&ref_unit_ident);
+            match unit {
+                Some(unit) => {
+                    if ref_unit.size != unit.size {
+                        mismatches.push(Diff {
+                            key: format!("{}.size_mismatch", DEBUG_INFO_ERROR_KEY),
+                            values: DiffValues::PreFormatted(format!(
+                                "Size mismatch for {ref_unit_ident} in {}, expected: {}, got: {}",
+                                objects[object_id].name, ref_unit.size, unit.size
+                            )),
+                        });
+                    }
+                }
+                None => {
+                    mismatches.push(Diff {
+                        key: format!("{}.missing_unit", DEBUG_INFO_ERROR_KEY),
+                        values: DiffValues::PreFormatted(format!(
+                            "Missing compilation unit: {ref_unit_ident} in {}",
+                            objects[object_id].name
+                        )),
+                    });
+                }
             }
         }
     }
