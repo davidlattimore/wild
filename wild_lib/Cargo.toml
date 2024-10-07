@@ -15,7 +15,7 @@ linker-trace = { path = "../linker-trace" }
 linker-utils = { path = "../linker-utils" }
 memchr = "2.7.4"
 memmap2 = "0.9.5"
-object = { version = "0.36.4", default-features = false, features = [
+object = { version = "0.36.5", default-features = false, features = [
     "elf",
     "read_core",
     "std",
