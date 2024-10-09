@@ -1,9 +1,11 @@
 //#AbstractConfig:default
 //#Object:weak-fns1.c
 //#Object:exit.c
+//#Object:string.c
 //#CompArgs:-fno-stack-protector
 
 #include "exit.h"
+#include "string.h"
 
 #if (VARIANT & 1) != 0
 int __attribute__ ((weak)) weak_fn1(void) {
