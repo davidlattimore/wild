@@ -130,7 +130,7 @@ struct CustomSectionIds {
     nonalloc: Vec<OutputSectionId>,
 }
 
-impl<'data> OutputSections<'data> {
+impl OutputSections<'_> {
     /// Returns an iterator that emits all section IDs and their info.
     pub(crate) fn ids_with_info(
         &self,
@@ -592,7 +592,7 @@ pub(crate) enum OrderEvent {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct SectionName<'data>(pub(crate) &'data [u8]);
 
-impl<'data> SectionName<'data> {
+impl SectionName<'_> {
     pub(crate) fn len(&self) -> usize {
         self.0.len()
     }
@@ -602,7 +602,7 @@ impl<'data> SectionName<'data> {
     }
 }
 
-impl<'data> Debug for SectionName<'data> {
+impl Debug for SectionName<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("{}", String::from_utf8_lossy(self.0)))
     }

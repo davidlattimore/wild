@@ -268,13 +268,13 @@ impl Prelude {
     }
 }
 
-impl<'data> std::fmt::Display for ParsedInputObject<'data> {
+impl std::fmt::Display for ParsedInputObject<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
     }
 }
 
-impl<'data> std::fmt::Display for ParsedInput<'data> {
+impl std::fmt::Display for ParsedInput<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ParsedInput::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),

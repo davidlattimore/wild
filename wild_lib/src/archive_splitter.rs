@@ -69,7 +69,7 @@ pub fn split_archives<'data>(input_data: &'data InputData) -> Result<Vec<InputBy
     Ok(split_output.into_iter().flatten().collect())
 }
 
-impl<'data> Display for InputBytes<'data> {
+impl Display for InputBytes<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&self.input, f)
     }
