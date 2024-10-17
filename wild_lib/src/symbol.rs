@@ -26,7 +26,7 @@ impl<'data> SymbolName<'data> {
     }
 }
 
-impl<'data> Display for SymbolName<'data> {
+impl Display for SymbolName<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         String::from_utf8_lossy(self.bytes).fmt(f)
     }
@@ -34,7 +34,7 @@ impl<'data> Display for SymbolName<'data> {
 
 pub(crate) struct SymDebug<'data>(pub(crate) &'data crate::elf::SymtabEntry);
 
-impl<'data> Display for SymDebug<'data> {
+impl Display for SymDebug<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let e = LittleEndian;
         let sym = self.0;

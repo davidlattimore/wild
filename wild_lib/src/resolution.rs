@@ -319,7 +319,7 @@ struct ResolutionResources<'data, 'definitions, 'outer_scope> {
     work_queue: SegQueue<WorkItem<'definitions>>,
 }
 
-impl<'data, 'definitions, 'outer_scope> ResolutionResources<'data, 'definitions, 'outer_scope> {
+impl ResolutionResources<'_, '_, '_> {
     fn request_file_id(&self, file_id: FileId) {
         if let Some(definitions) = self.definitions_per_file[file_id.group()][file_id.file()].take()
         {
@@ -561,7 +561,7 @@ struct Outputs<'data> {
     undefined_symbols: SegQueue<UndefinedSymbol<'data>>,
 }
 
-impl<'data> Outputs<'data> {
+impl Outputs<'_> {
     fn new(num_objects: usize) -> Self {
         Self {
             loaded: ArrayQueue::new(num_objects),
@@ -899,13 +899,13 @@ fn resolve_symbol<'data>(
     Ok(())
 }
 
-impl<'data> std::fmt::Display for ResolvedObject<'data> {
+impl std::fmt::Display for ResolvedObject<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)
     }
 }
 
-impl<'data> std::fmt::Display for ResolvedFile<'data> {
+impl std::fmt::Display for ResolvedFile<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ResolvedFile::NotLoaded(_) => std::fmt::Display::fmt("<not loaded>", f),
@@ -916,7 +916,7 @@ impl<'data> std::fmt::Display for ResolvedFile<'data> {
     }
 }
 
-impl<'data> SectionSlot<'data> {
+impl SectionSlot<'_> {
     pub(crate) fn is_loaded(&self) -> bool {
         !matches!(self, SectionSlot::Discard | SectionSlot::Unloaded(..))
     }
@@ -997,7 +997,7 @@ impl std::fmt::Display for ValueFlags {
     }
 }
 
-impl<'data> SymbolDb<'data> {
+impl SymbolDb<'_> {
     fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
         if let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] {

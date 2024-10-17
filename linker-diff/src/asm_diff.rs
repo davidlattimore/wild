@@ -720,7 +720,7 @@ impl Display for RelocationDisplay<'_, '_> {
     }
 }
 
-impl<'elf, 'data> RelocationDisplay<'elf, 'data> {
+impl RelocationDisplay<'_, '_> {
     fn write_symbol_or_section_name(
         &self,
         f: &mut std::fmt::Formatter,
@@ -802,7 +802,7 @@ enum Data<'data> {
     Bss,
 }
 
-impl<'data> std::fmt::Debug for SymbolName<'data> {
+impl std::fmt::Debug for SymbolName<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", String::from_utf8_lossy(self.bytes))?;
         if let Some(version) = self.version {
@@ -850,7 +850,7 @@ struct PltIndex<'data> {
     resolutions: Vec<AddressResolution<'data>>,
 }
 
-impl<'data> PltIndex<'data> {
+impl PltIndex<'_> {
     fn resolve_address(&self, address: u64) -> Option<AddressResolution> {
         let offset = address.checked_sub(self.plt_base)?;
         let index = offset / self.entry_length;
@@ -1754,10 +1754,10 @@ impl<'data> SymbolResolution<'data> {
                 let data = section.data()?;
                 let address = symbol.address() - section.address();
                 let bytes = &data[address as usize..(address + symbol.size()) as usize];
-                return Ok(SymbolResolution::Function(FunctionDef {
+                Ok(SymbolResolution::Function(FunctionDef {
                     address: symbol.address(),
                     bytes,
-                }));
+                }))
             }
             _ => todo!(),
         }

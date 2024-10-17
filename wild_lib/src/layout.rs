@@ -1907,7 +1907,7 @@ impl LocalWorkQueue {
     }
 }
 
-impl<'data, 'scope> GraphResources<'data, 'scope> {
+impl GraphResources<'_, '_> {
     fn report_error(&self, error: Error) {
         self.errors.lock().unwrap().push(error);
     }
@@ -2094,13 +2094,13 @@ impl std::fmt::Display for PreludeLayoutState {
     }
 }
 
-impl<'data> std::fmt::Display for EpilogueLayoutState<'data> {
+impl std::fmt::Display for EpilogueLayoutState<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt("<epilogue>", f)
     }
 }
 
-impl<'data> std::fmt::Display for FileLayoutState<'data> {
+impl std::fmt::Display for FileLayoutState<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FileLayoutState::Object(s) => std::fmt::Display::fmt(s, f),
@@ -2112,7 +2112,7 @@ impl<'data> std::fmt::Display for FileLayoutState<'data> {
     }
 }
 
-impl<'data> std::fmt::Display for FileLayout<'data> {
+impl std::fmt::Display for FileLayout<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Object(s) => std::fmt::Display::fmt(s, f),
@@ -2154,13 +2154,13 @@ impl std::fmt::Display for GroupState<'_> {
     }
 }
 
-impl<'data> std::fmt::Debug for FileLayout<'data> {
+impl std::fmt::Debug for FileLayout<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self, f)
     }
 }
 
-impl<'data> std::fmt::Display for ObjectLayoutState<'data> {
+impl std::fmt::Display for ObjectLayoutState<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)?;
         // TODO: This is mostly for debugging use. Consider only showing this if some environment
@@ -2169,21 +2169,21 @@ impl<'data> std::fmt::Display for ObjectLayoutState<'data> {
     }
 }
 
-impl<'data> std::fmt::Display for DynamicLayoutState<'data> {
+impl std::fmt::Display for DynamicLayoutState<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)?;
         write!(f, " ({})", self.file_id())
     }
 }
 
-impl<'data> std::fmt::Display for DynamicLayout<'data> {
+impl std::fmt::Display for DynamicLayout<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)?;
         write!(f, " ({})", self.file_id)
     }
 }
 
-impl<'data> std::fmt::Display for ObjectLayout<'data> {
+impl std::fmt::Display for ObjectLayout<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.input, f)?;
         // TODO: This is mostly for debugging use. Consider only showing this if some environment
@@ -2342,8 +2342,8 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
     }
 }
 
-impl<'data> PreludeLayoutState {
-    fn new(input_state: resolution::ResolvedPrelude<'data>) -> Self {
+impl PreludeLayoutState {
+    fn new(input_state: resolution::ResolvedPrelude<'_>) -> Self {
         Self {
             file_id: PRELUDE_FILE_ID,
             symbol_id_range: SymbolIdRange::prelude(input_state.symbol_definitions.len()),
@@ -3508,14 +3508,14 @@ struct ResolutionWriter<'writer, 'out> {
     resolutions_out: &'writer mut sharded_vec_writer::Shard<'out, Option<Resolution>>,
 }
 
-impl<'writer, 'out> ResolutionWriter<'writer, 'out> {
+impl ResolutionWriter<'_, '_> {
     fn write(&mut self, res: Option<Resolution>) -> Result {
         self.resolutions_out.try_push(res)?;
         Ok(())
     }
 }
 
-impl<'state> GlobalAddressEmitter<'state> {
+impl GlobalAddressEmitter<'_> {
     fn emit_resolution(
         &mut self,
         symbol_id: SymbolId,
@@ -4033,13 +4033,13 @@ fn take_dynsym_index(
     Ok(index)
 }
 
-impl<'data> Layout<'data> {
+impl Layout<'_> {
     pub(crate) fn mem_address_of_built_in(&self, section_id: OutputSectionId) -> u64 {
         self.section_layouts.get(section_id).mem_offset
     }
 }
 
-impl<'data> std::fmt::Debug for FileLayoutState<'data> {
+impl std::fmt::Debug for FileLayoutState<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FileLayoutState::Object(s) => f.debug_tuple("Object").field(&s.input).finish(),

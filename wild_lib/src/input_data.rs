@@ -270,7 +270,7 @@ impl FileId {
     }
 }
 
-impl<'a> std::fmt::Display for InputRef<'a> {
+impl std::fmt::Display for InputRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.file.filename.display(), f)?;
         if let Some(entry) = &self.entry {
@@ -281,7 +281,7 @@ impl<'a> std::fmt::Display for InputRef<'a> {
     }
 }
 
-impl<'data> std::fmt::Debug for InputRef<'data> {
+impl std::fmt::Debug for InputRef<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self, f)
     }

@@ -479,7 +479,7 @@ fn populate_file_header(
     Ok(())
 }
 
-impl<'data> FileLayout<'data> {
+impl FileLayout<'_> {
     fn write(
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
@@ -1571,7 +1571,7 @@ struct DisplayRelocation<'a> {
     object: &'a ObjectLayout<'a>,
 }
 
-impl<'a> Display for DisplayRelocation<'a> {
+impl Display for DisplayRelocation<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let e = LittleEndian;
         write!(
@@ -1977,7 +1977,7 @@ fn write_epilogue_dynamic_entries(layout: &Layout, table_writer: &mut TableWrite
     Ok(())
 }
 
-impl<'data> EpilogueLayout<'data> {
+impl EpilogueLayout<'_> {
     fn write_file(
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
@@ -2469,7 +2469,7 @@ struct DynamicEntriesWriter<'out> {
     out: &'out mut [DynamicEntry],
 }
 
-impl<'out> DynamicEntriesWriter<'out> {
+impl DynamicEntriesWriter<'_> {
     fn new(buffer: &mut [u8]) -> DynamicEntriesWriter {
         DynamicEntriesWriter {
             out: slice_from_all_bytes_mut(buffer),
@@ -2596,7 +2596,7 @@ fn write_internal_symbols_plt_got_entries(
     Ok(())
 }
 
-impl<'data> DynamicLayout<'data> {
+impl DynamicLayout<'_> {
     fn write_file(&self, table_writer: &mut TableWriter, layout: &Layout) -> Result {
         self.write_so_name(table_writer)?;
 
@@ -2748,7 +2748,7 @@ struct StrTabWriter<'out> {
     out: &'out mut [u8],
 }
 
-impl<'out> StrTabWriter<'out> {
+impl StrTabWriter<'_> {
     /// Writes a string to the string table. Returns the offset within the string table at which the
     /// string was written.
     fn write_str(&mut self, str: &[u8]) -> u32 {

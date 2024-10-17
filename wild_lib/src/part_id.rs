@@ -298,7 +298,7 @@ impl std::fmt::Display for PartId {
     }
 }
 
-impl<'data> std::fmt::Display for TemporaryPartId<'data> {
+impl std::fmt::Display for TemporaryPartId<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TemporaryPartId::BuiltIn(id) => {
