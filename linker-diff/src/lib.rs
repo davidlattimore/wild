@@ -148,6 +148,7 @@ impl Config {
                 // GNU ld sometimes makes this writable sometimes not. Presumably this depends on
                 // whether there are relocations or some flags.
                 "section.eh_frame.flags",
+                "section.eh_frame.type",
             ]
             .into_iter()
             .map(|s| s.to_owned()),
