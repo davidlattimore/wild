@@ -244,6 +244,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if long_arg_eq("dynamic-linker") {
             is_dynamic_executable = true;
             dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
+        } else if let Some(rest) = long_arg_split_prefix("dynamic-linker=") {
+            is_dynamic_executable = true;
+            dynamic_linker = Some(Box::from(Path::new(rest)));
         } else if long_arg_eq("no-dynamic-linker") {
             dynamic_linker = None;
         } else if let Some(style) = long_arg_split_prefix("hash-style=") {
