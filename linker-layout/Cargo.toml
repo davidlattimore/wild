@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.91"
+anyhow = "1.0.92"
 postcard = { version = "1.0.10", features = ["use-std"] }
 serde = { version = "1.0.214", features = ["derive"] }
