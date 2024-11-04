@@ -7,7 +7,7 @@ edition = "2021"
 wild_lib = { version = "0.2.0", path = "../wild_lib" }
 
 [dev-dependencies]
-anyhow = "1.0.91"
+anyhow = "1.0.92"
 wait-timeout = "0.2.0"
 itertools = "0.13.0"
 object = { version = "0.36.5", default-features = false, features = [
@@ -17,5 +17,5 @@ object = { version = "0.36.5", default-features = false, features = [
     "unaligned",
 ] }
 linker-diff = { path = "../linker-diff" }
-which = "6.0.3"
+which = "7.0.0"
 rstest = "0.23.0"
