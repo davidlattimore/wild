@@ -4,6 +4,7 @@ sample-link*
 *.strace
 flamegraph.svg
 profile.json
+cachegrind.out*
 perf.data*
 dhat.out.*
 heaptrack*.zst
