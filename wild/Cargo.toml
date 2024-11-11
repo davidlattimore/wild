@@ -7,7 +7,7 @@ edition = "2021"
 wild_lib = { version = "0.2.0", path = "../wild_lib" }
 
 [dev-dependencies]
-anyhow = "1.0.92"
+anyhow = "1.0.93"
 wait-timeout = "0.2.0"
 itertools = "0.13.0"
 object = { version = "0.36.5", default-features = false, features = [
