@@ -6,3 +6,20 @@ resolver = "2"
 [profile.opt-debug]
 inherits = "release"
 debug = true
+
+[workspace.lints.clippy]
+# It's not always desirable to use if-let instead of a match, especially if you might later end up
+# adding more branches to the match.
+single_match = "allow"
+
+# Sure, less arguments is good, but it's a trade-off. Sometimes you have a complex function that
+# you'd like to split by extracting part of it out into a new function. That new function might
+# have lots of arguments. It might be possible to group some of those arguments together into some
+# new struct, but not always. Given the choice between a function that's too large and does too
+# much vs a function that has too many arguments, it's sometimes best to pick the latter.
+# Especially since that function is generally only ever called from one place and the arguments all
+# have distinct types.
+too_many_arguments = "allow"
+
+# I might add additional fields later, so why make me remove ..Default::default()?
+needless_update = "allow"

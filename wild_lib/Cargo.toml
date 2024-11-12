@@ -46,3 +46,6 @@ single-threaded = []
 
 # Enable work-in-progress features
 wip = []
+
+[lints]
+workspace = true
