@@ -122,8 +122,10 @@ impl<'data> File<'data> {
     pub(crate) fn section_display_name(&self, index: object::SectionIndex) -> Cow<'data, str> {
         self.section(index)
             .and_then(|section| self.section_name(section))
-            .map(String::from_utf8_lossy)
-            .unwrap_or_else(|_| format!("<index {}>", index.0).into())
+            .map_or_else(
+                |_| format!("<index {}>", index.0).into(),
+                String::from_utf8_lossy,
+            )
     }
 
     /// Returns the raw section data. Doesn't handle decompression.

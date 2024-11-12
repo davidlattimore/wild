@@ -70,7 +70,7 @@ fn read_eh_frame_hdr_fields(object: &crate::Object) -> Result<FieldValues> {
     );
     values.insert(
         "frame_pointer",
-        (address1 as i64 + header.frame_pointer as i64) as u64
+        (address1 as i64 + i64::from(header.frame_pointer)) as u64
             + core::mem::offset_of!(EhFrameHdr, frame_pointer) as u64,
         Converter::SectionAddress,
         object,
@@ -128,7 +128,7 @@ fn verify_frames(
                 .context("Invalid FDE")?;
             let info_address = eh_frame_base + offset as u64;
             let pc_begin = (info_address + EH_FRAME_PC_BEGIN_OFFSET as u64)
-                .wrapping_add(i32::from_le_bytes(*pc_begin_bytes) as i64 as u64);
+                .wrapping_add(i64::from(i32::from_le_bytes(*pc_begin_bytes)) as u64);
             functions_without_frame_info.remove(&pc_begin);
             // Note, we don't check the symbol that we matched against because some frames won't
             // have symbols.
@@ -157,8 +157,8 @@ fn verify_frames(
 
     let mut seen = HashSet::new();
     for hdr in header_entries {
-        let frame_address = (header_base as i64 + hdr.frame_ptr as i64) as u64;
-        let hdr_info_address = (header_base as i64 + hdr.frame_info_ptr as i64) as u64;
+        let frame_address = (header_base as i64 + i64::from(hdr.frame_ptr)) as u64;
+        let hdr_info_address = (header_base as i64 + i64::from(hdr.frame_info_ptr)) as u64;
         if let Some(info_address) = frame_to_info.remove(&frame_address) {
             seen.insert(frame_address);
             if hdr_info_address != info_address {
@@ -202,7 +202,7 @@ fn read_eh_frame_pc_begin(
     let pc_begin_bytes = eh_frame_data[start_offset..].first_chunk::<4>()?;
     Some(
         (hdr_info_address + EH_FRAME_PC_BEGIN_OFFSET as u64)
-            .wrapping_add(i32::from_le_bytes(*pc_begin_bytes) as i64 as u64),
+            .wrapping_add(i64::from(i32::from_le_bytes(*pc_begin_bytes)) as u64),
     )
 }
 

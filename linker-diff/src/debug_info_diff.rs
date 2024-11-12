@@ -104,7 +104,7 @@ fn diff_debug_info(
     diff_mode: DiffMode,
 ) -> Vec<Diff> {
     let debug_infos = objects.iter().map(get_fields_fn).collect_vec();
-    if diff_mode == DiffMode::IgnoreIfAllErrors && debug_infos.iter().all(|d| d.is_err()) {
+    if diff_mode == DiffMode::IgnoreIfAllErrors && debug_infos.iter().all(Result::is_err) {
         return vec![];
     }
 
@@ -116,7 +116,7 @@ fn diff_debug_info(
         match d {
             Ok(o) => {
                 ok.push(o);
-                errors.push("OK".to_owned())
+                errors.push("OK".to_owned());
             }
             Err(e) => {
                 errors.push(e.to_string());
@@ -131,14 +131,14 @@ fn diff_debug_info(
         }];
     }
 
-    for (ref_unit_ident, ref_unit) in ok.first().unwrap().iter() {
+    for (ref_unit_ident, ref_unit) in ok.first().unwrap() {
         for (object_id, info) in ok.iter().enumerate().skip(1) {
             let unit = info.get(ref_unit_ident);
             match unit {
                 Some(unit) => {
                     if ref_unit.size != unit.size {
                         mismatches.push(Diff {
-                            key: format!("{}.size_mismatch", DEBUG_INFO_ERROR_KEY),
+                            key: format!("{DEBUG_INFO_ERROR_KEY}.size_mismatch"),
                             values: DiffValues::PreFormatted(format!(
                                 "Size mismatch for {ref_unit_ident} in {}, expected: {}, got: {}",
                                 objects[object_id].name, ref_unit.size, unit.size
@@ -148,7 +148,7 @@ fn diff_debug_info(
                 }
                 None => {
                     mismatches.push(Diff {
-                        key: format!("{}.missing_unit", DEBUG_INFO_ERROR_KEY),
+                        key: format!("{DEBUG_INFO_ERROR_KEY}.missing_unit"),
                         values: DiffValues::PreFormatted(format!(
                             "Missing compilation unit: {ref_unit_ident} in {}",
                             objects[object_id].name
@@ -167,5 +167,5 @@ pub(crate) fn check_debug_info(report: &mut Report, objects: &[crate::Object]) {
         objects,
         read_file_debug_info,
         DiffMode::IgnoreIfAllErrors,
-    ))
+    ));
 }

@@ -41,6 +41,7 @@ impl TraceData {
     }
 }
 
+#[must_use]
 pub fn trace_path(base_path: &Path) -> PathBuf {
     let mut new_extension = base_path.extension().unwrap_or_default().to_owned();
     new_extension.push(".trace");

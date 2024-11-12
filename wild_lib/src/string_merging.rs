@@ -111,7 +111,7 @@ pub(crate) fn merge_strings<'data>(
 
     let mut strings_by_section = output_sections.new_section_map::<MergeStringsSection>();
 
-    for (section_id, buckets) in worklist_per_section.iter() {
+    for (section_id, buckets) in &worklist_per_section {
         let merged_strings = strings_by_section.get_mut(*section_id);
 
         buckets
@@ -120,7 +120,7 @@ pub(crate) fn merge_strings<'data>(
             .par_bridge()
             .for_each(|(string_lists, merged_strings)| {
                 for strings in string_lists {
-                    for string in strings.iter() {
+                    for string in *strings {
                         merged_strings.add_string(*string);
                     }
                 }

@@ -96,7 +96,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
                 .for_each(|(offset, out)| {
                     let part_id = base_part_id.offset(offset);
                     let alignment = part_id.alignment().min(max_alignment);
-                    *out = cb(part_id, alignment, self.get(part_id))
+                    *out = cb(part_id, alignment, self.get(part_id));
                 });
         }
 
@@ -110,8 +110,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
         self.parts[base_part_id.as_usize()..base_part_id.as_usize() + count]
             .iter()
             .position(|p| *p != T::default())
-            .map(|o| base_part_id.offset(o).alignment())
-            .unwrap_or(alignment::MIN)
+            .map_or(alignment::MIN, |o| base_part_id.offset(o).alignment())
             .max(base_part_id.output_section_id().min_alignment())
     }
 
@@ -136,7 +135,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
 
 impl<T: Default> OutputSectionPartMap<T> {
     pub(crate) fn resize(&mut self, num_parts: usize) {
-        self.parts.resize_with(num_parts, Default::default)
+        self.parts.resize_with(num_parts, Default::default);
     }
 }
 

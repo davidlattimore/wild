@@ -14,7 +14,7 @@ pub(crate) fn init(args: &Args) {
 
     let trace_path = linker_trace::trace_path(&args.output);
     let layer = OutputTraceLayer {
-        trace_path: trace_path.to_owned(),
+        trace_path,
         data: Default::default(),
     };
     let subscriber = tracing_subscriber::Registry::default().with(layer);

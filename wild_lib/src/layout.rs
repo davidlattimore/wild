@@ -328,7 +328,7 @@ impl SectionResolution {
     }
 
     /// Converts to a resolution compatible with what's used for symbols.
-    pub(crate) fn full_resolution(&self) -> Option<Resolution> {
+    pub(crate) fn full_resolution(self) -> Option<Resolution> {
         let address = self.address()?;
         Some(Resolution {
             raw_value: address,
@@ -1105,14 +1105,14 @@ enum WorkItem {
 }
 
 impl WorkItem {
-    fn file_id(&self, symbol_db: &SymbolDb) -> FileId {
+    fn file_id(self, symbol_db: &SymbolDb) -> FileId {
         symbol_db.file_id_for_symbol(self.symbol_id())
     }
 
-    fn symbol_id(&self) -> SymbolId {
+    fn symbol_id(self) -> SymbolId {
         match self {
-            WorkItem::LoadGlobalSymbol(s) => *s,
-            WorkItem::ExportCopyRelocation(s) => *s,
+            WorkItem::LoadGlobalSymbol(s) => s,
+            WorkItem::ExportCopyRelocation(s) => s,
         }
     }
 }
@@ -1272,7 +1272,7 @@ impl<'data> Layout<'data> {
         if !args.output_kind.is_executable() && self.has_static_tls {
             flags |= object::elf::DF_STATIC_TLS;
         }
-        flags as u64
+        u64::from(flags)
     }
 
     pub(crate) fn dt_flags_1(&self) -> u64 {
@@ -1281,7 +1281,7 @@ impl<'data> Layout<'data> {
         if self.args().output_kind.is_executable() && self.args().is_relocatable() {
             flags |= object::elf::DF_1_PIE;
         }
-        flags as u64
+        u64::from(flags)
     }
 
     /// Returns whether we're going to output the .gnu.version section.
@@ -1445,7 +1445,18 @@ fn compute_segment_layout(
                 }
                 let section_flags = output_sections.section_flags(section_id);
 
-                if !active_records.is_empty() {
+                if active_records.is_empty() {
+                    ensure!(
+                    part.mem_offset == 0,
+                    "Expected zero address for section `{}` not present in any program segment.",
+                    output_sections.name(section_id)
+                );
+                    ensure!(
+                        !section_flags.contains(shf::ALLOC),
+                        "Section with SHF_ALLOC flag `{}` not present in any program segment.",
+                        output_sections.name(section_id)
+                    );
+                } else {
                     // All segments should only cover sections that are allocated and have a non-zero address.
                     ensure!(
                         part.mem_offset != 0 || section_id == FILE_HEADER,
@@ -1458,24 +1469,13 @@ fn compute_segment_layout(
                          segment.",
                         output_sections.name(section_id)
                     );
-                    for (_, rec) in active_records.iter_mut() {
+                    for (_, rec) in &mut active_records {
                         rec.file_start = rec.file_start.min(part.file_offset);
                         rec.mem_start = rec.mem_start.min(part.mem_offset);
                         rec.file_end = rec.file_end.max(part.file_offset + part.file_size);
                         rec.mem_end = rec.mem_end.max(part.mem_offset + part.mem_size);
                         rec.alignment = rec.alignment.max(part.alignment);
                     }
-                } else {
-                    ensure!(
-                    part.mem_offset == 0,
-                    "Expected zero address for section `{}` not present in any program segment.",
-                    output_sections.name(section_id)
-                );
-                    ensure!(
-                        !section_flags.contains(shf::ALLOC),
-                        "Section with SHF_ALLOC flag `{}` not present in any program segment.",
-                        output_sections.name(section_id)
-                    );
                 }
             }
         }
@@ -1549,10 +1549,10 @@ fn apply_non_addressable_indexes(
     };
     let mut counts = NonAddressableCounts { verneed_count: 0 };
     for g in group_states.iter_mut() {
-        for s in g.files.iter_mut() {
+        for s in &mut g.files {
             match s {
                 FileLayoutState::Dynamic(s) => {
-                    s.apply_non_addressable_indexes(&mut indexes, &mut counts)?
+                    s.apply_non_addressable_indexes(&mut indexes, &mut counts)?;
                 }
                 _ => {}
             }
@@ -1666,10 +1666,9 @@ fn find_required_sections<'data>(
                             if resources
                                 .idle_threads
                                 .as_ref()
-                                .map(|idle_threads| {
+                                .map_or(true, |idle_threads| {
                                     idle_threads.push(std::thread::current()).is_err()
                                 })
-                                .unwrap_or(true)
                             {
                                 // We're the only thread running. Either because there is only one
                                 // thread (resources.idle_threads is None) or because all other threads
@@ -1698,7 +1697,7 @@ fn find_required_sections<'data>(
     if let Some(error) = errors.pop() {
         return Err(error);
     }
-    let group_states = unwrap_worker_states(&resources.worker_slots)?;
+    let group_states = unwrap_worker_states(&resources.worker_slots);
     let sections_with_content = resources.sections_with_content.into_map(|v| v.into_inner());
     Ok(GcOutputs {
         group_states,
@@ -1741,11 +1740,11 @@ fn create_worker_slots<'data>(
 
 fn unwrap_worker_states<'data>(
     worker_slots: &[Mutex<WorkerSlot<'data>>],
-) -> Result<Vec<GroupState<'data>>> {
-    Ok(worker_slots
+) -> Vec<GroupState<'data>> {
+    worker_slots
         .iter()
         .filter_map(|w| w.lock().unwrap().worker.take())
-        .collect())
+        .collect()
 }
 
 impl<'data> GroupState<'data> {
@@ -1786,7 +1785,7 @@ impl<'data> GroupState<'data> {
                 symbol_db,
                 output_sections,
                 symbol_resolution_flags,
-            )?
+            )?;
         }
         self.common.validate_sizes()?;
         Ok(())
@@ -1957,8 +1956,7 @@ impl<'data> FileLayoutState<'data> {
     ) -> Result {
         match self {
             FileLayoutState::Object(s) => {
-                s.finalise_sizes(common, symbol_db, output_sections, symbol_resolution_flags)
-                    .with_context(|| format!("finalise_sizes failed for {s}"))?;
+                s.finalise_sizes(common, symbol_db, output_sections, symbol_resolution_flags);
                 s.finalise_symbol_sizes(common, symbol_db, symbol_resolution_flags)?;
             }
             FileLayoutState::Dynamic(s) => {
@@ -1995,9 +1993,7 @@ impl<'data> FileLayoutState<'data> {
                     )
                 }),
             WorkItem::ExportCopyRelocation(symbol_id) => match self {
-                FileLayoutState::Dynamic(state) => {
-                    state.export_copy_relocation(common, symbol_id, resources)
-                }
+                FileLayoutState::Dynamic(_) => export_dynamic(common, symbol_id, resources),
                 _ => {
                     bail!(
                         "Internal error: ExportCopyRelocation sent to non-dynamic object for: {}",
@@ -2023,11 +2019,11 @@ impl<'data> FileLayoutState<'data> {
                 state.load_symbol(common, symbol_id, resources, queue)?;
             }
             FileLayoutState::Dynamic(state) => {
-                state.load_symbol(common, symbol_id, resources, queue)?
+                state.load_symbol(common, symbol_id, resources, queue)?;
             }
             FileLayoutState::NotLoaded(_) => {}
             FileLayoutState::Epilogue(state) => {
-                state.load_symbol(common, symbol_id, resources, queue)?
+                state.load_symbol(common, symbol_id, resources, queue)?;
             }
         }
         Ok(())
@@ -2846,7 +2842,7 @@ impl HeaderInfo {
     }
 
     pub(crate) fn section_headers_size(&self) -> u64 {
-        u64::from(elf::SECTION_HEADER_SIZE) * self.num_output_sections_with_content as u64
+        u64::from(elf::SECTION_HEADER_SIZE) * u64::from(self.num_output_sections_with_content)
     }
 }
 
@@ -3062,10 +3058,10 @@ impl<'data> ObjectLayoutState<'data> {
         symbol_db: &SymbolDb,
         output_sections: &OutputSections,
         symbol_resolution_flags: &[AtomicResolutionFlags],
-    ) -> Result {
+    ) {
         common.mem_sizes.resize(output_sections.num_parts());
         if !symbol_db.args.strip_all {
-            self.allocate_symtab_space(common, symbol_db, symbol_resolution_flags)?;
+            self.allocate_symtab_space(common, symbol_db, symbol_resolution_flags);
         }
         let output_kind = symbol_db.args.output_kind;
         for slot in &mut self.sections {
@@ -3084,7 +3080,6 @@ impl<'data> ObjectLayoutState<'data> {
             self.eh_frame_size += cie.cie.bytes.len() as u64;
         }
         common.allocate(part_id::EH_FRAME, self.eh_frame_size);
-        Ok(())
     }
 
     fn allocate_symtab_space(
@@ -3092,7 +3087,7 @@ impl<'data> ObjectLayoutState<'data> {
         common: &mut CommonGroupState,
         symbol_db: &SymbolDb<'_>,
         symbol_resolution_flags: &[AtomicResolutionFlags],
-    ) -> Result {
+    ) {
         let _file_span = symbol_db.args.trace_span_for_file(self.file_id());
 
         let mut num_locals = 0;
@@ -3129,7 +3124,6 @@ impl<'data> ObjectLayoutState<'data> {
         common.allocate(part_id::SYMTAB_LOCAL, num_locals * entry_size);
         common.allocate(part_id::SYMTAB_GLOBAL, num_globals * entry_size);
         common.allocate(part_id::STRTAB, strings_size as u64);
-        Ok(())
     }
 
     fn finalise_layout(
@@ -3144,7 +3138,7 @@ impl<'data> ObjectLayoutState<'data> {
         let mut emitter = create_global_address_emitter(resources.symbol_resolution_flags);
 
         let mut section_resolutions = Vec::with_capacity(self.sections.len());
-        for slot in self.sections.iter_mut() {
+        for slot in &mut self.sections {
             let resolution = match slot {
                 SectionSlot::Loaded(sec) => {
                     let part_id = sec.part_id;
@@ -3419,7 +3413,7 @@ fn process_eh_frame_data(
         } else {
             // This is an FDE
             let mut section_index = None;
-            let rel_start_index = rel_iter.peek().map(|(i, _)| *i).unwrap_or(0);
+            let rel_start_index = rel_iter.peek().map_or(0, |(i, _)| *i);
             let mut rel_end_index = 0;
 
             while let Some((rel_index, rel)) = rel_iter.peek() {
@@ -3531,7 +3525,7 @@ impl GlobalAddressEmitter<'_> {
             dynamic_symbol_index,
             value_flags,
             memory_offsets,
-        )?;
+        );
         resolutions_out.write(Some(resolution))?;
         Ok(())
     }
@@ -3543,7 +3537,7 @@ fn create_resolution(
     dynamic_symbol_index: Option<NonZeroU32>,
     value_flags: ValueFlags,
     memory_offsets: &mut OutputSectionPartMap<u64>,
-) -> Result<Resolution> {
+) -> Resolution {
     let mut resolution = Resolution {
         raw_value,
         dynamic_symbol_index,
@@ -3570,7 +3564,7 @@ fn create_resolution(
     } else if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
         resolution.got_address = Some(allocate_got(2, memory_offsets));
     }
-    Ok(resolution)
+    resolution
 }
 
 fn allocate_got(num_entries: u64, memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
@@ -3713,7 +3707,7 @@ fn layout_section_parts(
             let seg_id = output_sections.loadable_segment_id_for(section_id);
             if current_seg_id != seg_id {
                 current_seg_id = seg_id;
-                let segment_alignment = seg_id.map(|s| s.alignment()).unwrap_or(alignment::MIN);
+                let segment_alignment = seg_id.map_or(alignment::MIN, |s| s.alignment());
                 mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
             }
             let file_size = if output_sections.has_data_in_file(section_id) {
@@ -3769,15 +3763,6 @@ impl<'data> DynamicLayoutState<'data> {
         );
         common.allocate(part_id::DYNSTR, self.lib_name.len() as u64 + 1);
         self.request_all_undefined_symbols(common, resources, queue)
-    }
-
-    fn export_copy_relocation(
-        &mut self,
-        common: &mut CommonGroupState<'data>,
-        symbol_id: SymbolId,
-        graph_resources: &GraphResources<'data, '_>,
-    ) -> Result {
-        export_dynamic(common, symbol_id, graph_resources)
     }
 
     fn request_all_undefined_symbols(
@@ -3929,7 +3914,7 @@ impl<'data> DynamicLayoutState<'data> {
                 dynamic_symbol_index,
                 ValueFlags::DYNAMIC,
                 memory_offsets,
-            )?;
+            );
             resolutions_out.write(Some(resolution))?;
         }
 
@@ -4086,7 +4071,7 @@ fn print_symbol_info(symbol_db: &SymbolDb, name: &str) {
                             );
                         }
                         Err(e) => {
-                            println!("  Corrupted input (file_id #{file_id}) {}: {e}", o.input)
+                            println!("  Corrupted input (file_id #{file_id}) {}: {e}", o.input);
                         }
                     }
                 }
@@ -4100,8 +4085,10 @@ fn section_debug(object: &crate::elf::File, section_index: object::SectionIndex)
     let name = object
         .section(section_index)
         .and_then(|section| object.section_name(section))
-        .map(|name| String::from_utf8_lossy(name).into_owned())
-        .unwrap_or_else(|_| "??".to_owned());
+        .map_or_else(
+            |_| "??".to_owned(),
+            |name| String::from_utf8_lossy(name).into_owned(),
+        );
     SectionDebug { name }
 }
 
@@ -4187,14 +4174,14 @@ fn test_no_disallowed_overlaps() {
     };
 
     let mut section_index = 0;
-    for section in output_sections.section_infos.iter() {
+    for section in &output_sections.section_infos {
         if section.section_flags.contains(shf::ALLOC) {
             output_sections
                 .output_section_indexes
                 .push(Some(section_index));
             section_index += 1;
         } else {
-            output_sections.output_section_indexes.push(None)
+            output_sections.output_section_indexes.push(None);
         }
     }
 
@@ -4204,7 +4191,7 @@ fn test_no_disallowed_overlaps() {
     // Make sure loadable segments don't overlap in memory or in the file.
     let mut last_file = 0;
     let mut last_mem = 0;
-    for seg_layout in segment_layouts.segments.iter() {
+    for seg_layout in &segment_layouts.segments {
         let seg_id = seg_layout.id;
         if seg_id.segment_type() != object::elf::PT_LOAD {
             continue;
@@ -4288,12 +4275,12 @@ fn test_resolution_allocation_consistency() -> Result {
                     dynamic_symbol_index,
                     value_flags,
                     &mut memory_offsets,
-                )?;
+                );
 
                 crate::elf_writer::verify_resolution_allocation(
                     &output_sections,
                     output_kind,
-                    mem_sizes,
+                    &mem_sizes,
                     &resolution,
                 )
                 .with_context(|| {

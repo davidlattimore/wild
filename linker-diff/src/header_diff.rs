@@ -11,6 +11,7 @@ use anyhow::Context as _;
 use itertools::Itertools;
 use linker_utils::elf::shf;
 use linker_utils::elf::SectionFlags;
+#[allow(clippy::wildcard_imports)]
 use object::elf::*;
 use object::read::elf::Dyn;
 use object::read::elf::ElfSection64;
@@ -23,6 +24,7 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
+#[derive(Clone, Copy)]
 pub(crate) enum Converter {
     None,
     SectionAddress,
@@ -33,12 +35,12 @@ pub(crate) enum Converter {
 }
 
 impl Converter {
-    fn convert(&self, value: u64, obj: &Object) -> String {
+    fn convert(self, value: u64, obj: &Object) -> String {
         self.try_convert(value, obj)
             .unwrap_or_else(|e| e.to_string())
     }
 
-    fn try_convert(&self, value: u64, obj: &Object) -> Result<String> {
+    fn try_convert(self, value: u64, obj: &Object) -> Result<String> {
         match self {
             Converter::None => Ok(format!("0x{value:x}")),
             Converter::SectionAddress => {
@@ -51,7 +53,7 @@ impl Converter {
                     };
                     let section_flags = SectionFlags::from(sh_flags);
                     if section.address() == value && section_flags.contains(shf::ALLOC) {
-                        if section.data().map(|d| d.len()).unwrap_or(0) == 0 {
+                        if section.data().map(<[u8]>::len).unwrap_or(0) == 0 {
                             empty_section_name = Some(section.name()?.to_owned());
                         } else {
                             return Ok(section.name()?.to_owned());
@@ -120,7 +122,7 @@ pub(crate) fn check_file_headers(report: &mut Report, objects: &[crate::Object])
         read_file_header_fields,
         "file-header",
         DiffMode::IgnoreIfAllErrors,
-    ))
+    ));
 }
 
 pub(crate) fn check_dynamic_headers(report: &mut Report, objects: &[crate::Object]) {
@@ -225,7 +227,7 @@ pub(crate) fn diff_fields(
     diff_mode: DiffMode,
 ) -> Vec<Diff> {
     let field_values = objects.iter().map(get_fields_fn).collect_vec();
-    if diff_mode == DiffMode::IgnoreIfAllErrors && field_values.iter().all(|d| d.is_err()) {
+    if diff_mode == DiffMode::IgnoreIfAllErrors && field_values.iter().all(Result::is_err) {
         return vec![];
     }
     let mut ok = Vec::new();
@@ -235,7 +237,7 @@ pub(crate) fn diff_fields(
         match d {
             Ok(o) => {
                 ok.push(o);
-                errors.push("OK".to_owned())
+                errors.push("OK".to_owned());
             }
             Err(e) => {
                 errors.push(e.to_string());
@@ -302,6 +304,7 @@ impl FieldValues {
     }
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn read_file_header_fields(obj: &Object) -> Result<FieldValues> {
     let mut values = FieldValues::default();
     let header = obj.elf_file.elf_header();

@@ -1,4 +1,4 @@
-//! If the environment variable WILD_REFERENCE_LINKER is set, then once we've finished linking,
+//! If the environment variable `WILD_REFERENCE_LINKER` is set, then once we've finished linking,
 //! we'll link again using the linker specified in the environment variable. The output from the
 //! reference linker will be the same, but with '.ref-linker' appended. We'll then diff the two
 //! outputs and report any unexpected differences found. Setting the environment variable will also

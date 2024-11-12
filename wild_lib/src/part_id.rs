@@ -245,7 +245,7 @@ impl PartId {
         self.output_section_id().built_in_details()
     }
 
-    pub(crate) fn offset(&self, offset: usize) -> PartId {
+    pub(crate) fn offset(self, offset: usize) -> PartId {
         PartId(self.0 + offset as u32)
     }
 
@@ -253,7 +253,7 @@ impl PartId {
         PartId(value)
     }
 
-    pub(crate) fn alignment(&self) -> Alignment {
+    pub(crate) fn alignment(self) -> Alignment {
         if let Some(offset) = self.0.checked_sub(REGULAR_PART_BASE) {
             Alignment {
                 exponent: NUM_ALIGNMENTS as u8 - 1 - (offset % NUM_ALIGNMENTS as u32) as u8,
@@ -270,7 +270,7 @@ impl PartId {
     /// function and `crtn.o` contains the end of that function. If `.init` has say alignment = 4
     /// and we add padding after it to bring it up to a multiple of 4 bytes, then we'll break the
     /// function, since the padding bytes won't be valid instructions.
-    pub(crate) fn should_pack(&self) -> bool {
+    pub(crate) fn should_pack(self) -> bool {
         let section_id = self.output_section_id();
         section_id == INIT || section_id == FINI
     }

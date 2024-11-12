@@ -106,7 +106,7 @@ impl SaveDir {
             }
             is_output_file = arg == "-o";
             let maybe_path = if let Some(eq_index) = arg.find('=') {
-                out.write_all(&arg.as_bytes()[..eq_index + 1])?;
+                out.write_all(&arg.as_bytes()[..=eq_index])?;
                 &arg[eq_index + 1..]
             } else {
                 arg.as_str()

@@ -11,6 +11,7 @@ macro_rules! const_name_by_value {
     };
 }
 
+#[must_use]
 pub fn rel_type_to_string(r_type: u32) -> Cow<'static, str> {
     if let Some(name) = const_name_by_value![
         r_type,
@@ -124,18 +125,22 @@ pub mod sht {
 pub struct SectionFlags(u32);
 
 impl SectionFlags {
+    #[must_use]
     pub const fn empty() -> Self {
         Self(0)
     }
 
+    #[must_use]
     pub fn from_header(header: &object::elf::SectionHeader64<LittleEndian>) -> Self {
         Self(header.sh_flags(LittleEndian) as u32)
     }
 
+    #[must_use]
     pub fn contains(self, flag: SectionFlags) -> bool {
         self.0 & flag.0 != 0
     }
 
+    #[must_use]
     pub const fn from_u32(raw: u32) -> SectionFlags {
         SectionFlags(raw)
     }
@@ -152,10 +157,12 @@ impl SectionFlags {
         SectionFlags(self.0 & !flags.0)
     }
 
+    #[must_use]
     pub const fn raw(self) -> u64 {
         self.0 as u64
     }
 
+    #[must_use]
     pub fn should_retain(&self) -> bool {
         self.contains(shf::GNU_RETAIN)
     }
@@ -222,14 +229,17 @@ impl std::ops::BitOrAssign for SectionFlags {
 pub struct SectionType(u32);
 
 impl SectionType {
+    #[must_use]
     pub fn raw(self) -> u32 {
         self.0
     }
 
+    #[must_use]
     pub fn from_header(header: &object::elf::SectionHeader64<LittleEndian>) -> Self {
         Self(header.sh_type(LittleEndian))
     }
 
+    #[must_use]
     pub fn from_u32(raw: u32) -> Self {
         Self(raw)
     }

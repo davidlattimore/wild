@@ -155,7 +155,7 @@ impl<'data> ParsedInput<'data> {
             FileKind::ElfObject | FileKind::Archive => {
                 Self::Object(ParsedInputObject::new(input, false)?)
             }
-            FileKind::Prelude => Self::Prelude(Prelude::new(args)?),
+            FileKind::Prelude => Self::Prelude(Prelude::new(args)),
             FileKind::ElfDynamic => Self::Object(ParsedInputObject::new(input, true)?),
             FileKind::Text => unreachable!("Should have been handled earlier"),
             FileKind::Epilogue => Self::Epilogue(Epilogue::new()),
@@ -215,7 +215,7 @@ impl<'data> ParsedInput<'data> {
     pub(crate) fn set_file_id(&mut self, file_id: FileId) {
         match self {
             ParsedInput::Prelude(_) => {
-                assert_eq!(file_id, PRELUDE_FILE_ID)
+                assert_eq!(file_id, PRELUDE_FILE_ID);
             }
             ParsedInput::Object(s) => s.file_id = file_id,
             ParsedInput::Epilogue(s) => s.file_id = file_id,
@@ -224,7 +224,7 @@ impl<'data> ParsedInput<'data> {
 }
 
 impl Prelude {
-    fn new(args: &Args) -> Result<Self> {
+    fn new(args: &Args) -> Self {
         // The undefined symbol must always be symbol 0.
         let mut symbol_definitions = vec![InternalSymDefInfo::Undefined];
         for section_id in output_section_id::built_in_section_ids() {
@@ -249,7 +249,7 @@ impl Prelude {
                 symbol_definitions.push(InternalSymDefInfo::SectionEnd(section_id));
             }
         }
-        Ok(Self { symbol_definitions })
+        Self { symbol_definitions }
     }
 
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> SymbolName<'static> {
