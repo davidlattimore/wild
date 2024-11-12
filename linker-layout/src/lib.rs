@@ -57,6 +57,7 @@ impl Layout {
     }
 }
 
+#[must_use]
 pub fn layout_path(base_path: &Path) -> PathBuf {
     // We always want to append, not use with_extension, since we don't want to remove any existing
     // extension, otherwise we'd likely get collisions.

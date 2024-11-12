@@ -54,10 +54,9 @@ pub(crate) fn group_files<'data>(files: Vec<ParsedInput<'data>>, args: &Args) ->
 
 /// Decides after many symbols, we should start a new group.
 fn determine_symbols_per_group(files: &[ParsedInput], args: &Args) -> usize {
-    let num_symbols = files
-        .last()
-        .map(|f| f.symbol_id_range().start().as_usize() + f.symbol_id_range().len())
-        .unwrap_or(0);
+    let num_symbols = files.last().map_or(0, |f| {
+        f.symbol_id_range().start().as_usize() + f.symbol_id_range().len()
+    });
 
     let num_threads = args.num_threads.get();
 

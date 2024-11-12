@@ -51,7 +51,7 @@ impl Alignment {
         if 1_u64.checked_shl(exponent) != Some(raw) {
             bail!("Invalid alignment 0x{raw:x}");
         }
-        if exponent > MAX.exponent as u32 {
+        if exponent > u32::from(MAX.exponent) {
             bail!("Unsupported alignment 0x{raw:x}");
         }
         Ok(Alignment {
@@ -63,7 +63,7 @@ impl Alignment {
         1 << self.exponent
     }
 
-    pub(crate) fn align_up(&self, value: u64) -> u64 {
+    pub(crate) fn align_up(self, value: u64) -> u64 {
         let base = value & (u64::MAX << self.exponent);
         if value == base {
             // Already aligned
@@ -73,7 +73,7 @@ impl Alignment {
         }
     }
 
-    pub(crate) fn align_up_usize(&self, value: usize) -> usize {
+    pub(crate) fn align_up_usize(self, value: usize) -> usize {
         let base = value & (usize::MAX << self.exponent);
         if value == base {
             // Already aligned
@@ -85,7 +85,7 @@ impl Alignment {
 
     /// Returns `mem_offset`, possibly adjusted up so that it is >= `align_up(mem_offset)` and has
     /// the same modulo as `file_offset`
-    pub(crate) fn align_modulo(&self, file_offset: u64, mut mem_offset: u64) -> u64 {
+    pub(crate) fn align_modulo(self, file_offset: u64, mut mem_offset: u64) -> u64 {
         let mask = self.value() - 1;
         mem_offset = self.align_up(mem_offset);
         if mem_offset & mask == file_offset & mask {

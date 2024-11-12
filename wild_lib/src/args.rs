@@ -551,11 +551,11 @@ impl Default for Modifiers {
 }
 
 impl OutputKind {
-    pub(crate) fn is_executable(&self) -> bool {
+    pub(crate) fn is_executable(self) -> bool {
         !matches!(self, OutputKind::SharedObject)
     }
 
-    pub(crate) fn is_static_executable(&self) -> bool {
+    pub(crate) fn is_static_executable(self) -> bool {
         matches!(self, OutputKind::StaticExecutable(_))
     }
 
@@ -568,7 +568,7 @@ impl OutputKind {
         )
     }
 
-    pub(crate) fn needs_dynsym(&self) -> bool {
+    pub(crate) fn needs_dynsym(self) -> bool {
         matches!(
             self,
             OutputKind::DynamicExecutable(_)
@@ -579,8 +579,8 @@ impl OutputKind {
         )
     }
 
-    fn needs_dynamic(&self) -> bool {
-        *self != OutputKind::StaticExecutable(RelocationModel::NonRelocatable)
+    fn needs_dynamic(self) -> bool {
+        self != OutputKind::StaticExecutable(RelocationModel::NonRelocatable)
     }
 }
 
@@ -614,16 +614,16 @@ fn arguments_from_string(input: &str) -> Result<Vec<String>> {
 
         if QUOTES.contains(&ch) {
             if let Some(qchr) = quote {
-                if qchr != ch {
-                    // accept the other quoting character as normal char
-                    heap.get_or_insert(String::new()).push(ch);
-                } else {
+                if qchr == ch {
                     // close the argument
                     if let Some(arg) = heap.take() {
                         out.push(arg);
                     }
                     quote = None;
                     expect_whitespace = true;
+                } else {
+                    // accept the other quoting character as normal char
+                    heap.get_or_insert(String::new()).push(ch);
                 }
             } else {
                 // beginning of a new argument
@@ -775,7 +775,7 @@ mod tests {
         assert_contains(&args.lib_search_path, "/usr/lib");
         assert!(!args.inputs.iter().any(|i| match &i.spec {
             InputSpec::File(f) => f.as_ref() == Path::new("/usr/bin/ld"),
-            _ => false,
+            InputSpec::Lib(_) => false,
         }));
         assert_eq!(
             args.version_script_path,

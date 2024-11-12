@@ -71,7 +71,7 @@ impl ProgramSegmentId {
         PROGRAM_SEGMENT_DEFS[self.as_usize()].segment_type
     }
 
-    pub(crate) fn segment_flags(&self) -> u32 {
+    pub(crate) fn segment_flags(self) -> u32 {
         PROGRAM_SEGMENT_DEFS[self.as_usize()].segment_flags
     }
 
@@ -83,7 +83,7 @@ impl ProgramSegmentId {
         )
     }
 
-    pub(crate) fn alignment(&self) -> crate::alignment::Alignment {
+    pub(crate) fn alignment(self) -> crate::alignment::Alignment {
         if self.segment_type() == object::elf::PT_LOAD {
             crate::alignment::PAGE
         } else {
@@ -117,11 +117,9 @@ fn test_all_alloc_sections_in_a_loadable_segment() {
                     .iter()
                     .any(|seg_id| seg_id.segment_type() == object::elf::PT_LOAD);
                 let is_alloc = section_flags.contains(shf::ALLOC);
-                if output_sections.has_data_in_file(section_id) && is_alloc && !has_load_segment {
-                    panic!(
+                assert!(!(output_sections.has_data_in_file(section_id) && is_alloc && !has_load_segment),
                     "alloc section {section_id:?} is not NOBITS, but isn't allocated to a LOAD segment"
                 );
-                }
             }
         }
     }

@@ -178,8 +178,8 @@ impl<'data> FunctionVersions<'data> {
         }
         let mut original_decoder = self.original.as_ref().and_then(OriginalDecoder::new);
         loop {
-            let instructions = disassemblers.iter_mut().map(|d| d.next()).collect_vec();
-            if instructions.iter().all(|i| i.is_none()) {
+            let instructions = disassemblers.iter_mut().map(AsmDecoder::next).collect_vec();
+            if instructions.iter().all(Option::is_none) {
                 return true;
             }
             let instructions = instructions.into_iter().flatten().collect_vec();
@@ -232,7 +232,9 @@ impl<'data> FunctionVersions<'data> {
             obj.input_file_in_range(addresses.clone()).ok_or_else(|| {
                 anyhow!(
                     "No layout information in range {addresses:x?} (has {:x?})",
-                    obj.indexed_layout.as_ref().and_then(|l| l.address_range())
+                    obj.indexed_layout
+                        .as_ref()
+                        .and_then(super::section_map::IndexedLayout::address_range)
                 )
             })
         } else {
@@ -265,9 +267,9 @@ impl<'data, 'file> OriginalDecoder<'data, 'file> {
         );
         let relocations = section.relocations().peekable();
         Some(Self {
-            elf_file,
             decoder,
             relocations,
+            elf_file,
         })
     }
 
@@ -295,7 +297,7 @@ impl<'data, 'file> OriginalDecoder<'data, 'file> {
     /// Synchronises our position in the function with the supplied instructions, which should all
     /// be at the same address as each other.
     fn sync_position(&mut self, instructions: &[Instruction]) -> Result {
-        let offset = instructions.first().map(|i| i.offset).unwrap_or(0);
+        let offset = instructions.first().map_or(0, |i| i.offset);
         if instructions.iter().any(|i| i.offset != offset) {
             bail!(
                 "Instruction offsets don't match {:?}",
@@ -492,8 +494,11 @@ impl Display for FunctionVersions<'_> {
         let mut original_decoder = self.original.as_ref().and_then(OriginalDecoder::new);
 
         loop {
-            let values = iterators.iter_mut().map(|i| i.next()).collect_vec();
-            if values.iter().all(|v| v.is_none()) {
+            let values = iterators
+                .iter_mut()
+                .map(SymbolResolutionIter::next)
+                .collect_vec();
+            if values.iter().all(Option::is_none) {
                 // All functions ended concurrently.
                 return Ok(());
             }
@@ -624,14 +629,13 @@ fn take_instructions_until_sync<'data, 'file>(
 ) -> Vec<Vec<Instruction<'data>>> {
     let mut max_next_offset = instructions
         .iter()
-        .map(|i| i.next_instruction_offset())
+        .map(Instruction::next_instruction_offset)
         .max()
         .unwrap_or(0)
         .max(
             originals
                 .first()
-                .map(|o| o.instruction.next_instruction_offset())
-                .unwrap_or(0),
+                .map_or(0, |o| o.instruction.next_instruction_offset()),
         );
     let mut instructions_per_object = instructions.into_iter().map(|i| vec![i]).collect_vec();
     let mut done = false;
@@ -651,7 +655,7 @@ fn take_instructions_until_sync<'data, 'file>(
         if let Some(orig) = originals.last() {
             let offset = orig.instruction.next_instruction_offset();
             if offset < max_next_offset {
-                if let Some(next) = original_decoder.as_mut().and_then(|o| o.next()) {
+                if let Some(next) = original_decoder.as_mut().and_then(OriginalDecoder::next) {
                     max_next_offset =
                         max_next_offset.max(next.instruction.next_instruction_offset());
                     done = false;
@@ -708,9 +712,9 @@ impl Display for RelocationDisplay<'_, '_> {
         match self.rel.target() {
             RelocationTarget::Symbol(symbol_index) => {
                 if let Err(error) = self.write_symbol_or_section_name(f, symbol_index) {
-                    write!(f, "<{error}>")?
+                    write!(f, "<{error}>")?;
                 } else {
-                    write!(f, " {:+}", self.rel.addend())?
+                    write!(f, " {:+}", self.rel.addend())?;
                 }
             }
             RelocationTarget::Absolute => write!(f, "0x{:x}", self.rel.addend())?,
@@ -857,7 +861,7 @@ impl PltIndex<'_> {
         if (offset % self.entry_length) != 0 {
             return None;
         }
-        self.resolutions.get(index as usize).cloned()
+        self.resolutions.get(index as usize).copied()
     }
 }
 
@@ -902,7 +906,7 @@ impl<'data> AddressIndex<'data> {
     fn build_indexes(&mut self, object: &ElfFile64<'data>) -> Result {
         // Note, `index_dynamic` needs to be called first, since it sets `load_offset` to 0 for
         // non-relocatable binaries.
-        self.index_dynamic(object)?;
+        self.index_dynamic(object);
         self.index_headers(object);
         self.address_resolutions
             .insert(0, vec![AddressResolution::Null]);
@@ -911,7 +915,7 @@ impl<'data> AddressIndex<'data> {
         self.index_dynamic_symbols(object)?;
         self.index_dynamic_relocations(object);
         self.index_got_tables(object).unwrap();
-        self.index_ifuncs(object)?;
+        self.index_ifuncs(object);
         self.index_plt_sections(object)?;
         self.index_undefined_tls(object);
         Ok(())
@@ -1009,7 +1013,7 @@ impl<'data> AddressIndex<'data> {
                     let resolutions = self
                         .address_resolutions
                         .get(&(sym_address + self.load_offset))
-                        .map(|r| r.as_slice())
+                        .map(Vec::as_slice)
                         .unwrap_or_default();
                     let matches_debug_sym = resolutions.iter().any(|res| {
                         if let AddressResolution::Basic(BasicResolution::Symbol(debug_symbol)) = res
@@ -1023,7 +1027,7 @@ impl<'data> AddressIndex<'data> {
                         bail!(
                         "Dynamic symbol `{}` points to 0x{sym_address:x}, but that address resolves to: {}",
                         String::from_utf8_lossy(name_bytes),
-                        resolutions.iter().map(|r| r.to_string()).collect_vec().join(", ")
+                        resolutions.iter().map(ToString::to_string).collect_vec().join(", ")
                     );
                     }
                 }
@@ -1188,7 +1192,7 @@ impl<'data> AddressIndex<'data> {
         for chunk in bytes.chunks(entry_length) {
             let mut new_resolutions = Vec::new();
             if let Some(got_address) = PltEntry::decode(chunk, plt_base, plt_offset)
-                .map(|entry| self.got_address(entry))
+                .map(|entry| self.got_address(&entry))
                 .transpose()?
             {
                 for res in self.resolve(got_address) {
@@ -1225,7 +1229,7 @@ impl<'data> AddressIndex<'data> {
             plt_resolutions.push(
                 new_resolutions
                     .first()
-                    .cloned()
+                    .copied()
                     .unwrap_or(AddressResolution::UnrecognisedPlt),
             );
             for res in new_resolutions {
@@ -1245,12 +1249,12 @@ impl<'data> AddressIndex<'data> {
         Ok(())
     }
 
-    fn got_address(&self, plt_entry: PltEntry) -> Result<u64> {
+    fn got_address(&self, plt_entry: &PltEntry) -> Result<u64> {
         match plt_entry {
             PltEntry::DerefJmp(address) => Ok(address + self.load_offset),
             PltEntry::JumpSlot(index) => self
                 .jmprel_got_addresses
-                .get(index as usize)
+                .get(*index as usize)
                 .copied()
                 .with_context(|| {
                     format!(
@@ -1268,9 +1272,9 @@ impl<'data> AddressIndex<'data> {
             .unwrap_or_default()
     }
 
-    fn index_ifuncs(&mut self, elf_file: &ElfFile64) -> Result {
-        let Some(iplt_bytes) = self.iplt_bytes(elf_file)? else {
-            return Ok(());
+    fn index_ifuncs(&mut self, elf_file: &ElfFile64) {
+        let Some(iplt_bytes) = self.iplt_bytes(elf_file) else {
+            return;
         };
         let iplt: &[Rela64] = slice_from_all_bytes(iplt_bytes);
         let e = LittleEndian;
@@ -1296,23 +1300,22 @@ impl<'data> AddressIndex<'data> {
                 self.add_resolution(address, res);
             }
         }
-        Ok(())
     }
 
-    fn iplt_bytes(&self, elf_file: &ElfFile64<'data>) -> Result<Option<&'data [u8]>> {
+    fn iplt_bytes(&self, elf_file: &ElfFile64<'data>) -> Option<&'data [u8]> {
         // Non-relocatable static binaries use symbols to determine the location of the IPLT
         // relocations.
         if let (Ok(start), Ok(end)) = (
             self.symbol_address("__rela_iplt_start"),
             self.symbol_address("__rela_iplt_end"),
         ) {
-            return Ok(read_bytes(elf_file, self, start, end - start));
+            return read_bytes(elf_file, self, start, end - start);
         }
         // Everything else uses entries in the DYNAMIC segment.
         if let (Some(start), Some(len)) = (self.jmprel_address, self.jmprel_size) {
-            return Ok(read_bytes(elf_file, self, start + self.load_offset, len));
+            return read_bytes(elf_file, self, start + self.load_offset, len);
         }
-        Ok(None)
+        None
     }
 
     /// Returns memory address of the symbol with the specified name.
@@ -1343,7 +1346,7 @@ impl<'data> AddressIndex<'data> {
             }
             if file_range.contains(&phoff) {
                 let mem_start = phoff - file_offset + seg_address;
-                let byte_len = phnum as u64
+                let byte_len = u64::from(phnum)
                     * core::mem::size_of::<object::elf::ProgramHeader64<LittleEndian>>() as u64;
                 self.program_header_addresses = mem_start..(mem_start + byte_len);
             }
@@ -1402,7 +1405,7 @@ impl<'data> AddressIndex<'data> {
         self.add_resolution(undefined_tls, AddressResolution::UndefinedTls);
     }
 
-    fn index_dynamic(&mut self, object: &ElfFile64) -> Result {
+    fn index_dynamic(&mut self, object: &ElfFile64) {
         let e = LittleEndian;
         let dynamic_segment = object
             .elf_program_headers()
@@ -1437,7 +1440,6 @@ impl<'data> AddressIndex<'data> {
                 }
                 _ => {}
             });
-        Ok(())
     }
 
     fn index_got_entry(&mut self, res: &AddressResolution<'data>, address: u64) {
@@ -1967,7 +1969,7 @@ impl<'data> UnifiedInstruction<'data> {
             resolved_out.extend(resolutions.into_iter().map(|res| UnifiedInstruction {
                 instruction: updated_instruction,
                 relocation: UnifiedRelocation::Legacy(res),
-            }))
+            }));
         }
         resolved_out
     }
@@ -2122,8 +2124,13 @@ impl ResolutionMode {
 fn extract_undefined_behaviour<'data>(
     unified: &mut Vec<UnifiedInstruction<'data>>,
 ) -> Option<UnifiedInstruction<'data>> {
-    if unified.iter().any(|ins| ins.is_undefined_behaviour()) {
-        return unified.drain(..).find(|ins| ins.is_undefined_behaviour());
+    if unified
+        .iter()
+        .any(UnifiedInstruction::is_undefined_behaviour)
+    {
+        return unified
+            .drain(..)
+            .find(UnifiedInstruction::is_undefined_behaviour);
     }
     None
 }
@@ -2131,8 +2138,8 @@ fn extract_undefined_behaviour<'data>(
 fn extract_unresolved<'data>(
     unified: &mut Vec<UnifiedInstruction<'data>>,
 ) -> Option<UnifiedInstruction<'data>> {
-    if unified.iter().any(|ins| ins.is_unresolved()) {
-        return unified.drain(..).find(|ins| ins.is_unresolved());
+    if unified.iter().any(UnifiedInstruction::is_unresolved) {
+        return unified.drain(..).find(UnifiedInstruction::is_unresolved);
     }
     None
 }
@@ -2178,7 +2185,7 @@ fn split_value(object: &Object, instruction: &Instruction) -> Vec<(iced_x86::Ins
             )),
             OpKind::Immediate32 => out.push((
                 clear_immediate(instruction.raw_instruction),
-                instruction.raw_instruction.immediate32() as u64,
+                u64::from(instruction.raw_instruction.immediate32()),
             )),
             OpKind::Memory | OpKind::NearBranch64 => {
                 let displacement = sign_extended_memory_displacement(&instruction.raw_instruction);
@@ -2246,11 +2253,11 @@ fn sign_extended_memory_displacement(instruction: &iced_x86::Instruction) -> u64
         }
         2 => {
             // 16 bit
-            value as i16 as i64 as u64
+            i64::from(value as i16) as u64
         }
         4 => {
             // 32 bit
-            value as i32 as i64 as u64
+            i64::from(value as i32) as u64
         }
         8 => {
             // 64 bit

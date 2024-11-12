@@ -503,6 +503,7 @@ impl UnloadedSection {
 #[derive(Clone, Copy)]
 pub(crate) struct FrameIndex(NonZeroU32);
 
+#[derive(Clone, Copy)]
 pub(crate) struct ResolvedPrelude<'data> {
     pub(crate) symbol_definitions: &'data [InternalSymDefInfo],
 }
@@ -525,6 +526,7 @@ pub(crate) struct NonDynamicResolved<'data> {
     custom_sections: Vec<CustomSectionDetails<'data>>,
 }
 
+#[derive(Clone, Copy)]
 pub(crate) struct ResolvedEpilogue {
     pub(crate) file_id: FileId,
     pub(crate) start_symbol_id: SymbolId,
@@ -736,7 +738,7 @@ fn resolve_sections_for_object<'data>(
                         });
                     }
                     TemporaryPartId::BuiltIn(p) => part_id = p,
-                    _ => (),
+                    TemporaryPartId::EhFrameData => (),
                 }
                 let slot = if unloaded.is_string_merge {
                     let section_data =
@@ -1025,7 +1027,7 @@ impl FrameIndex {
         Self(NonZeroU32::new(raw as u32 + 1).unwrap())
     }
 
-    pub(crate) fn as_usize(&self) -> usize {
+    pub(crate) fn as_usize(self) -> usize {
         self.0.get() as usize - 1
     }
 }

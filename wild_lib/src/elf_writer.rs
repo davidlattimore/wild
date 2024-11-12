@@ -307,7 +307,7 @@ impl SizedOutput {
 
                 for file in &group.files {
                     file.write(&mut buffers, &mut table_writer, layout)
-                        .with_context(|| format!("Failed copying from {file} to output file"))?
+                        .with_context(|| format!("Failed copying from {file} to output file"))?;
                 }
                 table_writer
                     .validate_empty(&group.mem_sizes)
@@ -353,7 +353,7 @@ fn split_output_into_sections<'out>(
             id,
             offset: s.file_offset,
             size: s.file_size,
-        })
+        });
     });
     section_allocations.sort_by_key(|s| (s.offset, s.offset + s.size));
 
@@ -400,7 +400,7 @@ fn split_buffers_by_alignment<'out>(
 }
 
 fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: &Layout) -> Result {
-    for segment_layout in layout.segment_layouts.segments.iter() {
+    for segment_layout in &layout.segment_layouts.segments {
         let segment_sizes = &segment_layout.sizes;
         let segment_id = segment_layout.id;
         let segment_header = program_headers_out.take_header()?;
@@ -452,7 +452,7 @@ fn populate_file_header(
     header.e_ident.padding = Default::default();
     header.e_type.set(e, ty);
     header.e_machine.set(e, object::elf::EM_X86_64);
-    header.e_version.set(e, object::elf::EV_CURRENT as u32);
+    header.e_version.set(e, u32::from(object::elf::EV_CURRENT));
     header.e_entry.set(e, layout.entry_symbol_address()?);
     header.e_phoff.set(e, elf::PHEADER_OFFSET);
     header.e_shoff.set(
@@ -727,7 +727,7 @@ impl<'data, 'out> TableWriter<'data, 'out> {
         if self.output_kind.is_executable() {
             *got_entry = elf::CURRENT_EXE_TLS_MOD;
         } else {
-            let dynamic_symbol_index = res.dynamic_symbol_index.map(|i| i.get()).unwrap_or(0);
+            let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
             debug_assert_bail!(
                 *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
                 "Tried to write dtpmod with no allocation. {}",
@@ -822,7 +822,8 @@ impl<'data, 'out> TableWriter<'data, 'out> {
             .context("Missing GOT entry for ifunc")?
             .get();
         out.r_offset.set(e, got_address);
-        out.r_info.set(e, object::elf::R_X86_64_IRELATIVE as u64);
+        out.r_info
+            .set(e, u64::from(object::elf::R_X86_64_IRELATIVE));
         Ok(())
     }
 
@@ -1123,7 +1124,7 @@ impl<'out> ObjectLayout<'out> {
         for sec in &self.sections {
             match sec {
                 SectionSlot::Loaded(sec) => {
-                    self.write_section(layout, sec, buffers, table_writer)?
+                    self.write_section(layout, sec, buffers, table_writer)?;
                 }
                 SectionSlot::LoadedDebugInfo(sec) => {
                     self.write_debug_section(layout, sec, buffers)?;
@@ -1590,6 +1591,7 @@ impl Display for DisplayRelocation<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
 struct SectionInfo {
     section_address: u64,
     is_writable: bool,
@@ -1893,7 +1895,7 @@ impl PreludeLayout {
                 for bucket in &merged.buckets {
                     for string in &bucket.strings {
                         let dest = crate::slice::slice_take_prefix_mut(buffer, string.len());
-                        dest.copy_from_slice(string)
+                        dest.copy_from_slice(string);
                     }
                 }
             }
@@ -2057,10 +2059,9 @@ fn write_gnu_hash_tables(
             buckets[bucket as usize] = (i as u32) + gnu_hash_layout.symbol_base;
             start_of_chain = false;
         }
-        let last_in_chain = sym_defs
-            .peek()
-            .map(|next| gnu_hash_layout.bucket_for_hash(next.hash) != bucket)
-            .unwrap_or(true);
+        let last_in_chain = sym_defs.peek().map_or(true, |next| {
+            gnu_hash_layout.bucket_for_hash(next.hash) != bucket
+        });
         if last_in_chain {
             *chain_out |= 1;
             start_of_chain = true;
@@ -2480,7 +2481,7 @@ impl DynamicEntriesWriter<'_> {
         let entry = crate::slice::take_first_mut(&mut self.out)
             .ok_or_else(|| anyhow!("Insufficient dynamic table entries"))?;
         let e = LittleEndian;
-        entry.d_tag.set(e, tag as u64);
+        entry.d_tag.set(e, u64::from(tag));
         entry.d_val.set(e, value);
         Ok(())
     }
@@ -2514,9 +2515,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
             size = section_layout.mem_size;
             alignment = section_layout.alignment.value();
         };
-        let link = layout
-            .output_sections
-            .link_ids(section_id)
+        let link = output_section_id::link_ids(section_id)
             .iter()
             .find_map(|link_id| output_sections.output_index_of_section(*link_id))
             .unwrap_or(0);
@@ -2728,17 +2727,17 @@ fn write_symbol_version(
 ) -> Result {
     let version_out =
         crate::slice::take_first_mut(versym_out).context("Insufficient .gnu.version allocation")?;
-    let output_version = versym_in
-        .get(local_symbol_index)
-        .map(|versym| {
-            let input_version = versym.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
-            if input_version <= object::elf::VER_NDX_GLOBAL {
-                input_version
-            } else {
-                version_mapping[usize::from(input_version) - 1]
-            }
-        })
-        .unwrap_or(object::elf::VER_NDX_GLOBAL);
+    let output_version =
+        versym_in
+            .get(local_symbol_index)
+            .map_or(object::elf::VER_NDX_GLOBAL, |versym| {
+                let input_version = versym.0.get(LittleEndian) & object::elf::VERSYM_VERSION;
+                if input_version <= object::elf::VER_NDX_GLOBAL {
+                    input_version
+                } else {
+                    version_mapping[usize::from(input_version) - 1]
+                }
+            });
     version_out.0.set(LittleEndian, output_version);
     Ok(())
 }
@@ -2790,7 +2789,7 @@ impl Display for ResFlagsDisplay<'_> {
 pub(crate) fn verify_resolution_allocation(
     output_sections: &OutputSections,
     output_kind: OutputKind,
-    mem_sizes: OutputSectionPartMap<u64>,
+    mem_sizes: &OutputSectionPartMap<u64>,
     resolution: &Resolution,
 ) -> Result {
     // Allocate however much space was requested.
@@ -2820,5 +2819,5 @@ pub(crate) fn verify_resolution_allocation(
         0,
     );
     table_writer.process_resolution(resolution)?;
-    table_writer.validate_empty(&mem_sizes)
+    table_writer.validate_empty(mem_sizes)
 }

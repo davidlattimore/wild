@@ -23,3 +23,89 @@ too_many_arguments = "allow"
 
 # I might add additional fields later, so why make me remove ..Default::default()?
 needless_update = "allow"
+
+# Depending on circumstances, it's often clearer to use an if-else.
+bool_to_int_with_if = "allow"
+
+# Possibly at some point we should look into these, but we have quite a lot.
+cast_possible_truncation = "allow"
+
+# Might revisit this later.
+cast_possible_wrap = "allow"
+
+# Often we do this in conjunction with a call to wrapping_add, so it's fine.
+cast_sign_loss = "allow"
+
+# I like initialising things as `Default::default`, since if I change the type of the field, often I
+# don't need to change the initialisation.
+default_trait_access = "allow"
+
+# If we were writing a library that we expected to get a lot of use and which needed high quality
+# docs, this might be important.
+doc_markdown = "allow"
+
+# This doesn't seem like a problem to me.
+explicit_deref_methods = "allow"
+
+# This just doesn't seem all that important.
+ignored_unit_patterns = "allow"
+
+# Doesn't seem like a big issue to me.
+items_after_statements = "allow"
+
+# We sometimes have iterators that don't implement the Iterator trait, but instead just have an
+# inherent implementation of `next`. This makes navigating the code easier, since all uses of that
+# `next` method can easily be found.
+iter_not_returning_iterator = "allow"
+
+# Indexing into a vec may panic. That's true, and if it does, that's a bug. The fact that we're
+# matching on the element of the vec is irrelvant.
+match_on_vec_items = "allow"
+
+# Sometimes you have a comment on one arm that doesn't apply to the other arms. Clippy isn't smart
+# enough to see that the comment is what is different.
+match_same_arms = "allow"
+
+# Documenting all functions that return results seems like a lot of work and there are probably
+# other docs that would be higher value to write instead.
+missing_errors_doc = "allow"
+
+# Should probably fix this, but not now.
+mut_mut = "allow"
+
+# Have observed some false positives with this. Also not 100% sure that it's always more readable.
+redundant_closure_for_method_calls = "allow"
+
+# The proposed alternative of using an enum doesn't always apply.
+struct_excessive_bools = "allow"
+
+# Could revisit this in future. For now, it doesn't seem at all important.
+struct_field_names = "allow"
+
+# It'd probably be good to fix some of these. Although for some it may not necessarily help
+# readability.
+too_many_lines = "allow"
+
+# Some of our tests do this and there doesn't seem to be much value in changing them.
+unreadable_literal = "allow"
+
+trivially_copy_pass_by_ref = "deny"
+uninlined_format_args = "deny"
+unnecessary_wraps = "deny"
+unused_self = "deny"
+wildcard_imports = "deny"
+manual_assert = "deny"
+explicit_iter_loop = "deny"
+if_not_else = "deny"
+implicit_clone = "deny"
+inconsistent_struct_constructor = "deny"
+map_unwrap_or = "deny"
+match_wildcard_for_single_variants = "deny"
+needless_pass_by_value = "deny"
+redundant_else = "deny"
+semicolon_if_nothing_returned = "deny"
+range_plus_one = "deny"
+must_use_candidate = "deny"
+case_sensitive_file_extension_comparisons = "deny"
+cloned_instead_of_copied = "deny"
+cast_lossless = "deny"

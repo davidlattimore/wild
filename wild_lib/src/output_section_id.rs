@@ -510,7 +510,7 @@ impl OutputSectionId {
         Self(value as u32)
     }
 
-    pub(crate) fn num_parts(&self) -> usize {
+    pub(crate) fn num_parts(self) -> usize {
         if self.0 < part_id::NUM_SINGLE_PART_SECTIONS {
             1
         } else if self.0 < NUM_NON_REGULAR_SECTIONS {
@@ -532,16 +532,15 @@ impl OutputSectionId {
         OrderEvent::Section(self)
     }
 
-    pub(crate) fn min_alignment(&self) -> Alignment {
+    pub(crate) fn min_alignment(self) -> Alignment {
         SECTION_DEFINITIONS
             .get(self.as_usize())
-            .map(|d| d.min_alignment)
-            .unwrap_or(alignment::MIN)
+            .map_or(alignment::MIN, |d| d.min_alignment)
     }
 
     /// Returns the part ID in this section that has the specified alignment. Can only be called for
     /// regular sections.
-    pub(crate) const fn part_id_with_alignment(&self, alignment: Alignment) -> PartId {
+    pub(crate) const fn part_id_with_alignment(self, alignment: Alignment) -> PartId {
         let Some(regular_offset) = self.0.checked_sub(NUM_NON_REGULAR_SECTIONS) else {
             panic!("part_id_with_alignment can only be called for regular sections");
         };
@@ -555,7 +554,7 @@ impl OutputSectionId {
     }
 
     /// Returns the first part ID for this section.
-    pub(crate) fn base_part_id(&self) -> PartId {
+    pub(crate) fn base_part_id(self) -> PartId {
         if self.0 < NUM_SINGLE_PART_SECTIONS {
             PartId::from_u32(self.0)
         } else if let Some(offset) = self.0.checked_sub(NUM_NON_REGULAR_SECTIONS) {
@@ -568,17 +567,14 @@ impl OutputSectionId {
         }
     }
 
-    pub(crate) fn info(&self, layout: &Layout) -> u32 {
+    pub(crate) fn info(self, layout: &Layout) -> u32 {
         self.opt_built_in_details()
             .and_then(|d| d.info_fn)
-            .map(|info_fn| (info_fn)(layout))
-            .unwrap_or(0)
+            .map_or(0, |info_fn| (info_fn)(layout))
     }
 
-    pub(crate) fn element_size(&self) -> u64 {
-        self.opt_built_in_details()
-            .map(|d| d.element_size)
-            .unwrap_or(0)
+    pub(crate) fn element_size(self) -> u64 {
+        self.opt_built_in_details().map_or(0, |d| d.element_size)
     }
 }
 
@@ -627,10 +623,10 @@ impl<'data> OutputSectionsBuilder<'data> {
             if info.section_flags.contains(shf::EXECINSTR) {
                 custom.exec.push(id);
             } else if !info.section_flags.contains(shf::WRITE) {
-                if !info.section_flags.contains(shf::ALLOC) {
-                    custom.nonalloc.push(id);
-                } else {
+                if info.section_flags.contains(shf::ALLOC) {
                     custom.ro.push(id);
+                } else {
+                    custom.nonalloc.push(id);
                 }
             } else if info.ty == sht::NOBITS {
                 custom.bss.push(id);
@@ -823,13 +819,6 @@ impl<'data> OutputSections<'data> {
         self.output_info(id).loadable_segment_id
     }
 
-    pub(crate) fn link_ids(&self, section_id: OutputSectionId) -> &[OutputSectionId] {
-        SECTION_DEFINITIONS
-            .get(section_id.as_usize())
-            .map(|def| def.link)
-            .unwrap_or_default()
-    }
-
     pub(crate) fn name(&self, section_id: OutputSectionId) -> SectionName<'data> {
         self.output_info(section_id).name
     }
@@ -839,7 +828,7 @@ impl<'data> OutputSections<'data> {
     }
 
     pub(crate) fn custom_name_to_id(&self, name: SectionName) -> Option<OutputSectionId> {
-        self.custom_by_name.get(&name).cloned()
+        self.custom_by_name.get(&name).copied()
     }
 
     #[cfg(test)]
@@ -851,6 +840,13 @@ impl<'data> OutputSections<'data> {
         builder.add_section(SectionName(b"bss"), shf::WRITE, sht::NOBITS);
         builder.build().unwrap()
     }
+}
+
+pub(crate) fn link_ids(section_id: OutputSectionId) -> &'static [OutputSectionId] {
+    SECTION_DEFINITIONS
+        .get(section_id.as_usize())
+        .map(|def| def.link)
+        .unwrap_or_default()
 }
 
 impl Display for SectionName<'_> {

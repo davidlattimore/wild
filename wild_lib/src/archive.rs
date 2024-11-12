@@ -211,7 +211,7 @@ mod tests {
             summary.entries.push(bytes);
             summary
                 .identifiers
-                .push(entry.header().identifier().to_owned())
+                .push(entry.header().identifier().to_owned());
         }
         {
             let mut archive = ar::Archive::new(std::fs::File::open(path)?);

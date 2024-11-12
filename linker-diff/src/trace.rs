@@ -36,7 +36,7 @@ impl Trace {
             if !range.contains(&t.address) {
                 break;
             }
-            messages.extend(t.messages.iter().map(|m| m.as_str()));
+            messages.extend(t.messages.iter().map(String::as_str));
             i += 1;
         }
         messages

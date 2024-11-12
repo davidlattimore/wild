@@ -460,16 +460,16 @@ fn load_symbols_from_file<'data>(
                     &s.object,
                     symbols_out,
                     outputs,
-                )?
+                )?;
             } else {
                 RegularObjectSymbolLoader {
                     args,
                     version_script,
                 }
-                .load_symbols(s.file_id, &s.object, symbols_out, outputs)?
+                .load_symbols(s.file_id, &s.object, symbols_out, outputs)?;
             }
         }
-        ParsedInput::Prelude(s) => s.load_symbols(symbols_out, outputs)?,
+        ParsedInput::Prelude(s) => s.load_symbols(symbols_out, outputs),
         ParsedInput::Epilogue(_) => {
             // Custom section start/stop symbols are generated after archive handling.
         }
@@ -573,7 +573,7 @@ trait SymbolLoader {
                 // If we're downgrading to a local, then we're writing a shared object. Shared
                 // objects should never bypass the GOT for TLS variables.
                 if symbol.st_type() != object::elf::STT_TLS {
-                    value_flags |= ValueFlags::CAN_BYPASS_GOT
+                    value_flags |= ValueFlags::CAN_BYPASS_GOT;
                 }
             }
             let pending = PendingSymbol::from_prehashed(symbol_id, name);
@@ -664,7 +664,7 @@ impl std::fmt::Display for SymbolDebug<'_, '_> {
                         })
                         .map(|section_index| o.object.section_display_name(section_index))
                     {
-                        write!(f, "section `{}`", section_name)?;
+                        write!(f, "section `{section_name}`")?;
                     } else {
                         write!(f, "<unnamed symbol>")?;
                     }
@@ -716,7 +716,7 @@ impl SymbolId {
         range.id_to_input(self)
     }
 
-    pub(crate) fn is_undefined(&self) -> bool {
+    pub(crate) fn is_undefined(self) -> bool {
         self.0 == 0
     }
 
@@ -734,11 +734,7 @@ impl TryFrom<usize> for SymbolId {
 }
 
 impl Prelude {
-    fn load_symbols(
-        &self,
-        symbols_out: &mut SymbolInfoWriter,
-        outputs: &mut SymbolLoadOutputs,
-    ) -> Result {
+    fn load_symbols(&self, symbols_out: &mut SymbolInfoWriter, outputs: &mut SymbolLoadOutputs) {
         outputs
             .pending_symbols
             .reserve(self.symbol_definitions.len());
@@ -765,7 +761,6 @@ impl Prelude {
             };
             symbols_out.set_next(value_flags, symbol_id, PRELUDE_FILE_ID);
         }
-        Ok(())
     }
 }
 

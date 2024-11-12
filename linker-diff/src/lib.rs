@@ -30,6 +30,7 @@ use section_map::LayoutAndFiles;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::ops::Range;
+use std::path::Path;
 use std::path::PathBuf;
 
 mod asm_diff;
@@ -101,6 +102,7 @@ struct NameIndex<'data> {
 }
 
 impl Config {
+    #[must_use]
     pub fn from_env() -> Self {
         Self::parse()
     }
@@ -150,7 +152,7 @@ impl Config {
                 "section.eh_frame.flags",
             ]
             .into_iter()
-            .map(|s| s.to_owned()),
+            .map(ToOwned::to_owned),
         );
         self.equiv.push((".got".to_owned(), ".got.plt".to_owned()));
         // We don't currently define .plt.got and .plt.sec, we just put everything into .plt.
@@ -158,6 +160,7 @@ impl Config {
         self.equiv.push((".plt".to_owned(), ".plt.sec".to_owned()));
     }
 
+    #[must_use]
     pub fn to_arg_string(&self) -> String {
         let mut out = String::new();
         if self.wild_defaults {
@@ -222,7 +225,7 @@ impl<'data> Object<'data> {
             })
             .collect::<Result<HashMap<&[u8], SectionInfo>>>()?;
         Ok(Self {
-            name: name.to_owned(),
+            name,
             elf_file,
             path,
             address_index,
@@ -315,7 +318,7 @@ fn validate_objects(
     report.add_diff(Diff {
         key: validation_name.to_owned(),
         values: DiffValues::PerObject(values),
-    })
+    });
 }
 
 pub struct Report {
@@ -397,10 +400,11 @@ impl Report {
 
     fn add_diffs(&mut self, new_diffs: Vec<Diff>) {
         for diff in new_diffs {
-            self.add_diff(diff)
+            self.add_diff(diff);
         }
     }
 
+    #[must_use]
     pub fn has_problems(&self) -> bool {
         !self.diffs.is_empty()
     }
@@ -582,7 +586,11 @@ fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect_vec();
-    if names.iter().all(|name| name.ends_with(".so")) {
+    if names.iter().all(|name| {
+        Path::new(name)
+            .extension()
+            .map_or(false, |ext| ext.eq_ignore_ascii_case("so"))
+    }) {
         names = names
             .into_iter()
             .map(|n| n.strip_suffix(".so").unwrap().to_owned())
@@ -594,7 +602,7 @@ fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
         // But this is a dev tool, so we'll punt on that for now.
         let mut iterators = names.iter().map(|n| n.bytes()).collect_vec();
         let mut n = 0;
-        while first_equals_all(iterators.iter_mut().map(|i| i.next())) {
+        while first_equals_all(iterators.iter_mut().map(Iterator::next)) {
             n += 1;
         }
         names = names

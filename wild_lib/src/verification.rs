@@ -96,7 +96,7 @@ fn offsets_by_key(
 ) -> Vec<(PartId, u64)> {
     let mut offsets_by_key = Vec::new();
     memory_offsets.output_order_map(output_sections, |part_id, _alignment, offset| {
-        offsets_by_key.push((part_id, *offset))
+        offsets_by_key.push((part_id, *offset));
     });
     offsets_by_key
 }

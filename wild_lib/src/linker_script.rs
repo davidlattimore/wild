@@ -78,7 +78,7 @@ impl<'data> MatchRules<'data> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum SymbolMatcher<'data> {
     All,
     Prefix(&'data str),
@@ -144,10 +144,10 @@ impl<'data> Version<'data> {
             } else if let Some(pattern) = line.strip_suffix(';') {
                 match section {
                     Some(VersionRuleSection::Global) => {
-                        version.globals.push(SymbolMatcher::from_pattern(pattern)?)
+                        version.globals.push(SymbolMatcher::from_pattern(pattern)?);
                     }
                     Some(VersionRuleSection::Local) => {
-                        version.locals.push(SymbolMatcher::from_pattern(pattern)?)
+                        version.locals.push(SymbolMatcher::from_pattern(pattern)?);
                     }
                     None => bail!("Expected global/local, found `{line}`"),
                 }
@@ -271,9 +271,8 @@ fn parse_commands_up_to<'a>(
     }
     if let Some(expected) = end {
         bail!("Got end of script, expected '{expected}'");
-    } else {
-        Ok(out)
     }
+    Ok(out)
 }
 
 fn parse_command<'a>(tokens: &mut Tokeniser<'a>, token: &str) -> Result<Command<'a>> {
@@ -324,7 +323,7 @@ fn collect_inputs(commands: &[Command], inputs: &mut Vec<Input>, modifiers: Modi
                     as_needed: true,
                     ..modifiers
                 };
-                collect_inputs(subs, inputs, sub_modifiers)
+                collect_inputs(subs, inputs, sub_modifiers);
             }
             Command::Ignored => {}
         }
@@ -417,7 +416,7 @@ mod tests {
                 ))),
                 InputSpec::File(Box::from(Path::new("/lib64/ld-linux-x86-64.so.2"))),
             ],
-        )
+        );
     }
 
     #[test]
