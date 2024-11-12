@@ -27,3 +27,6 @@ bytemuck = { version = "1.19.0", features = ["derive"] }
 itertools = "0.13.0"
 gimli = "0.31.1"
 fallible-iterator = "0.3.0"
+
+[lints]
+workspace = true
