@@ -589,7 +589,7 @@ fn short_file_display_names(config: &Config) -> Result<Vec<String>> {
     if names.iter().all(|name| {
         Path::new(name)
             .extension()
-            .map_or(false, |ext| ext.eq_ignore_ascii_case("so"))
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("so"))
     }) {
         names = names
             .into_iter()
