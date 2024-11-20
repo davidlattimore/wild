@@ -4,12 +4,14 @@ use crate::error::Result;
 use crate::layout::Layout;
 use crate::layout::ResolutionFlags;
 use crate::resolution::ValueFlags;
+use crate::storage::StorageModel;
+use crate::storage::SymbolNameMap;
 use anyhow::bail;
 use anyhow::Context;
 use object::read::elf::SectionHeader as _;
 use object::LittleEndian;
 
-pub(crate) fn validate_bytes(layout: &Layout, file_bytes: &[u8]) -> Result {
+pub(crate) fn validate_bytes<S: StorageModel>(layout: &Layout<S>, file_bytes: &[u8]) -> Result {
     let object =
         crate::elf::File::parse(file_bytes, true).context("Failed to parse our output file")?;
     validate_object(&object, layout).context("Output validation failed")
@@ -17,7 +19,7 @@ pub(crate) fn validate_bytes(layout: &Layout, file_bytes: &[u8]) -> Result {
 
 /// Checks that what we actually wrote to our output file matches what we intended to write in
 /// `layout`.
-fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
+fn validate_object<S: StorageModel>(object: &crate::elf::File, layout: &Layout<S>) -> Result {
     if layout.args().is_relocatable() {
         // For now, we don't do any validation of relocatable outputs. The only thing we're
         // currently validating is GOT entries and they'll all have dynamic relocations.
@@ -29,7 +31,7 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
 
     let got_data = got.data(LittleEndian, object.data)?;
 
-    for (symbol_name, symbol_id) in &layout.symbol_db.global_names {
+    for (symbol_name, symbol_id) in layout.symbol_db.global_names.all_symbols() {
         match layout.local_symbol_resolution(*symbol_id) {
             None => {}
             Some(resolution) => {
