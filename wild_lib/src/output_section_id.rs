@@ -869,7 +869,7 @@ fn version_r_info(layout: &Layout) -> u32 {
 }
 
 fn dynsym_info(_layout: &Layout) -> u32 {
-    // For now, we're not putting anything in dynstr, so the only "local" is the null symbol.
+    // The only local we ever write to .dynsym is the null symbol, so this is unconditionally 1.
     1
 }
 
