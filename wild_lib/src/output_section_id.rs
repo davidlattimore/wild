@@ -22,7 +22,8 @@ use crate::elf;
 use crate::elf::DynamicEntry;
 use crate::elf::Versym;
 use crate::error::Result;
-use crate::layout::Layout;
+use crate::layout::NonAddressableCounts;
+use crate::layout::OutputRecordLayout;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
@@ -219,7 +220,7 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) start_symbol_name: Option<&'static str>,
     pub(crate) end_symbol_name: Option<&'static str>,
     pub(crate) min_alignment: Alignment,
-    info_fn: Option<fn(&Layout) -> u32>,
+    info_fn: Option<fn(&InfoInputs) -> u32>,
     pub(crate) keep_if_empty: bool,
     pub(crate) element_size: u64,
     pub(crate) ty: SectionType,
@@ -567,15 +568,21 @@ impl OutputSectionId {
         }
     }
 
-    pub(crate) fn info(self, layout: &Layout) -> u32 {
+    pub(crate) fn info(self, inputs: &InfoInputs) -> u32 {
         self.opt_built_in_details()
             .and_then(|d| d.info_fn)
-            .map_or(0, |info_fn| (info_fn)(layout))
+            .map_or(0, |info_fn| (info_fn)(inputs))
     }
 
     pub(crate) fn element_size(self) -> u64 {
         self.opt_built_in_details().map_or(0, |d| d.element_size)
     }
+}
+
+/// The bits of `Layout` that are needed for computing info fields.
+pub(crate) struct InfoInputs<'layout> {
+    pub(crate) section_part_layouts: &'layout OutputSectionPartMap<OutputRecordLayout>,
+    pub(crate) non_addressable_counts: &'layout NonAddressableCounts,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -855,20 +862,20 @@ impl Display for SectionName<'_> {
     }
 }
 
-fn symtab_info(layout: &Layout) -> u32 {
+fn symtab_info(info: &InfoInputs) -> u32 {
     // For SYMTAB, the info field holds the index of the first non-local symbol.
-    (layout
+    (info
         .section_part_layouts
         .get(part_id::SYMTAB_LOCAL)
         .file_size
         / size_of::<elf::SymtabEntry>()) as u32
 }
 
-fn version_r_info(layout: &Layout) -> u32 {
-    layout.non_addressable_counts.verneed_count as u32
+fn version_r_info(info: &InfoInputs) -> u32 {
+    info.non_addressable_counts.verneed_count as u32
 }
 
-fn dynsym_info(_layout: &Layout) -> u32 {
+fn dynsym_info(_info: &InfoInputs) -> u32 {
     // The only local we ever write to .dynsym is the null symbol, so this is unconditionally 1.
     1
 }

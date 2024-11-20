@@ -59,7 +59,7 @@ items_after_statements = "allow"
 iter_not_returning_iterator = "allow"
 
 # Indexing into a vec may panic. That's true, and if it does, that's a bug. The fact that we're
-# matching on the element of the vec is irrelvant.
+# matching on the element of the vec is irrelevant.
 match_on_vec_items = "allow"
 
 # Sometimes you have a comment on one arm that doesn't apply to the other arms. Clippy isn't smart

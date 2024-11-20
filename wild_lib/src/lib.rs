@@ -35,6 +35,7 @@ pub(crate) mod save_dir;
 pub(crate) mod sharding;
 pub(crate) mod shutdown;
 pub(crate) mod slice;
+pub(crate) mod storage;
 pub(crate) mod string_merging;
 pub(crate) mod symbol;
 pub(crate) mod symbol_db;
@@ -74,7 +75,7 @@ impl Linker {
                         .with(EnvFilter::from_default_env())
                         .init();
                 }
-                link(args)
+                link::<storage::InMemory>(args)
             }
             args::Action::Version => {
                 println!(
@@ -88,16 +89,16 @@ impl Linker {
 }
 
 #[tracing::instrument(skip_all, name = "Link")]
-fn link(args: &Args) -> crate::error::Result {
+fn link<S: storage::StorageModel>(args: &Args) -> crate::error::Result {
     args.setup_thread_pool()?;
     let mut output = elf_writer::Output::new(args);
     let input_data = input_data::InputData::from_args(args)?;
     let inputs = archive_splitter::split_archives(&input_data)?;
     let files = parsing::parse_input_files(&inputs, args)?;
     let groups = grouping::group_files(files, args);
-    let mut symbol_db =
-        symbol_db::SymbolDb::build(&groups, input_data.version_script_data.as_ref(), args)?;
     let herd = bumpalo_herd::Herd::new();
+    let mut symbol_db =
+        symbol_db::SymbolDb::<S>::build(&groups, input_data.version_script_data.as_ref(), args)?;
     let resolved = resolution::resolve_symbols_and_sections(&groups, &mut symbol_db, &herd)?;
     let layout = layout::compute(&symbol_db, resolved, &mut output)?;
     let output_file = output.write(&layout)?;

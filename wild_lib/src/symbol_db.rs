@@ -5,7 +5,6 @@ use crate::args::Args;
 use crate::args::OutputKind;
 use crate::error::Result;
 use crate::grouping::Group;
-use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::input_data::FileId;
 use crate::input_data::VersionScriptData;
@@ -18,6 +17,8 @@ use crate::parsing::ParsedInput;
 use crate::parsing::Prelude;
 use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
+use crate::storage::StorageModel;
+use crate::storage::SymbolNameMap;
 use crate::symbol::SymbolName;
 use crate::threading::prelude::*;
 use anyhow::Context;
@@ -26,7 +27,7 @@ use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::collections::hash_map;
 
-pub struct SymbolDb<'data> {
+pub struct SymbolDb<'data, S: StorageModel> {
     pub(crate) args: &'data Args,
 
     pub(crate) groups: &'data [Group<'data>],
@@ -35,7 +36,7 @@ pub struct SymbolDb<'data> {
     /// globals with the same name, then this will point to the one we encountered first, which may
     /// not be the selected definition. In order to find the selected definition, you still need to
     /// look a `symbol_definitions`.
-    pub(crate) global_names: PassThroughHashMap<SymbolName<'data>, SymbolId>,
+    pub(crate) global_names: S::SymbolNameMap<'data>,
 
     /// Which file each symbol ID belongs to. Indexes past the end are assumed to be for custom
     /// section start/stop symbols.
@@ -202,7 +203,7 @@ struct SymbolLoadOutputs<'data> {
     pending_symbols: Vec<PendingSymbol<'data>>,
 }
 
-impl<'data> SymbolDb<'data> {
+impl<'data, S: StorageModel> SymbolDb<'data, S> {
     #[tracing::instrument(skip_all, name = "Build symbol DB")]
     pub fn build(
         groups: &'data [Group],
@@ -255,7 +256,7 @@ impl<'data> SymbolDb<'data> {
         let epilogue_file_id = groups.last().unwrap().files.last().unwrap().file_id();
         let mut index = SymbolDb {
             args,
-            global_names: Default::default(),
+            global_names: S::SymbolNameMap::empty(),
             alternative_definitions: vec![SymbolId::undefined(); num_symbols],
             symbols_with_alternatives: Vec::new(),
             epilogue_file_id,
@@ -335,7 +336,7 @@ impl<'data> SymbolDb<'data> {
     }
 
     /// Returns a struct that can be used to print debug information about the specified symbol.
-    pub(crate) fn symbol_debug(&self, symbol_id: SymbolId) -> SymbolDebug {
+    pub(crate) fn symbol_debug(&self, symbol_id: SymbolId) -> SymbolDebug<'_, 'data, S> {
         SymbolDebug {
             db: self,
             symbol_id,
@@ -631,12 +632,12 @@ impl SymbolLoader for DynamicObjectSymbolLoader {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct SymbolDebug<'db, 'data> {
-    db: &'db SymbolDb<'data>,
+pub(crate) struct SymbolDebug<'db, 'data, S: StorageModel> {
+    db: &'db SymbolDb<'data, S>,
     symbol_id: SymbolId,
 }
 
-impl std::fmt::Display for SymbolDebug<'_, '_> {
+impl<'data, S: StorageModel> std::fmt::Display for SymbolDebug<'_, 'data, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let symbol_id = self.symbol_id;
         let symbol_name = self

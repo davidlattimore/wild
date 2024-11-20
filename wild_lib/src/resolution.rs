@@ -28,6 +28,8 @@ use crate::part_id::PartId;
 use crate::part_id::TemporaryPartId;
 use crate::part_id::UnresolvedSection;
 use crate::sharding::ShardKey;
+use crate::storage::StorageModel;
+use crate::storage::SymbolNameMap as _;
 use crate::string_merging::MergeStringsFileSection;
 use crate::string_merging::MergeStringsSection;
 use crate::string_merging::UnresolvedMergeStringsFileSection;
@@ -62,9 +64,9 @@ pub(crate) struct ResolutionOutputs<'data> {
 }
 
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
-pub fn resolve_symbols_and_sections<'data>(
+pub fn resolve_symbols_and_sections<'data, S: StorageModel>(
     groups: &'data [Group<'data>],
-    symbol_db: &mut SymbolDb<'data>,
+    symbol_db: &mut SymbolDb<'data, S>,
     herd: &'data bumpalo_herd::Herd,
 ) -> Result<ResolutionOutputs<'data>> {
     let (mut groups, undefined_symbols, internal) = resolve_symbols_in_files(groups, symbol_db)?;
@@ -97,9 +99,9 @@ pub fn resolve_symbols_and_sections<'data>(
 type DefinitionsCell<'definitions> = AtomicCell<Option<Box<&'definitions mut [SymbolId]>>>;
 
 #[tracing::instrument(skip_all, name = "Resolve symbols")]
-pub(crate) fn resolve_symbols_in_files<'data>(
+pub(crate) fn resolve_symbols_in_files<'data, S: StorageModel>(
     groups: &'data [Group<'data>],
-    symbol_db: &mut SymbolDb<'data>,
+    symbol_db: &mut SymbolDb<'data, S>,
 ) -> Result<(
     Vec<ResolvedGroup<'data>>,
     SegQueue<UndefinedSymbol<'data>>,
@@ -310,16 +312,16 @@ impl LoadedMetrics {
     }
 }
 
-struct ResolutionResources<'data, 'definitions, 'outer_scope> {
+struct ResolutionResources<'data, 'definitions, 'outer_scope, S: StorageModel> {
     groups: &'data [Group<'data>],
     definitions_per_file: &'outer_scope Vec<Vec<DefinitionsCell<'definitions>>>,
     idle_threads: Option<ArrayQueue<Thread>>,
-    symbol_db: &'outer_scope SymbolDb<'data>,
+    symbol_db: &'outer_scope SymbolDb<'data, S>,
     outputs: &'outer_scope Outputs<'data>,
     work_queue: SegQueue<WorkItem<'definitions>>,
 }
 
-impl ResolutionResources<'_, '_, '_> {
+impl<'data, S: StorageModel> ResolutionResources<'data, '_, '_, S> {
     fn request_file_id(&self, file_id: FileId) {
         if let Some(definitions) = self.definitions_per_file[file_id.group()][file_id.file()].take()
         {
@@ -345,8 +347,8 @@ impl ResolutionResources<'_, '_, '_> {
 /// object, or if there are no strong definitions, then the first definition in a loaded object. If
 /// a symbol definition is a common symbol, then the largest definition will be used.
 #[tracing::instrument(skip_all, name = "Resolve alternative symbol definitions")]
-fn resolve_alternative_symbol_definitions<'data>(
-    symbol_db: &mut SymbolDb<'data>,
+fn resolve_alternative_symbol_definitions<'data, S: StorageModel>(
+    symbol_db: &mut SymbolDb<'data, S>,
     resolved: &[ResolvedGroup],
 ) -> Result {
     // For now, we do this from a single thread since we don't expect a lot of symbols will have
@@ -375,8 +377,8 @@ fn resolve_alternative_symbol_definitions<'data>(
 }
 
 /// Selects which version of the symbol to use.
-fn select_symbol(
-    symbol_db: &SymbolDb,
+fn select_symbol<S: StorageModel>(
+    symbol_db: &SymbolDb<S>,
     symbol_id: SymbolId,
     alternatives: &[SymbolId],
     resolved: &[ResolvedGroup],
@@ -573,10 +575,10 @@ impl Outputs<'_> {
     }
 }
 
-fn process_object<'scope, 'data: 'scope, 'definitions>(
+fn process_object<'scope, 'data: 'scope, 'definitions, S: StorageModel>(
     file_id: FileId,
     definitions_out: &mut [SymbolId],
-    resources: &'scope ResolutionResources<'data, 'definitions, 'scope>,
+    resources: &'scope ResolutionResources<'data, 'definitions, 'scope, S>,
 ) -> Result {
     if let ParsedInput::Object(obj) = &resources.groups[file_id.group()].files[file_id.file()] {
         let input = obj.input.clone();
@@ -601,11 +603,11 @@ struct UndefinedSymbol<'data> {
 }
 
 #[tracing::instrument(skip_all, name = "Canonicalise undefined symbols")]
-fn canonicalise_undefined_symbols<'data>(
+fn canonicalise_undefined_symbols<'data, S: StorageModel>(
     undefined_symbols: SegQueue<UndefinedSymbol<'data>>,
     output_sections: &OutputSections,
     groups: &[ResolvedGroup],
-    symbol_db: &mut SymbolDb<'data>,
+    symbol_db: &mut SymbolDb<'data, S>,
 ) -> Result<Vec<InternalSymDefInfo>> {
     let mut custom_start_stop_defs = Vec::new();
     let mut name_to_id: PassThroughHashMap<SymbolName<'data>, SymbolId> = Default::default();
@@ -648,9 +650,9 @@ fn canonicalise_undefined_symbols<'data>(
     Ok(custom_start_stop_defs)
 }
 
-fn allocate_start_stop_symbol_id<'data>(
+fn allocate_start_stop_symbol_id<'data, S: StorageModel>(
     name: PreHashed<SymbolName<'data>>,
-    symbol_db: &mut SymbolDb<'data>,
+    symbol_db: &mut SymbolDb<'data, S>,
     custom_start_stop_defs: &mut Vec<InternalSymDefInfo>,
     output_sections: &OutputSections,
 ) -> Option<SymbolId> {
@@ -675,9 +677,9 @@ fn allocate_start_stop_symbol_id<'data>(
 }
 
 impl<'data> ResolvedObject<'data> {
-    fn new(
+    fn new<S: StorageModel>(
         obj: &'data ParsedInputObject<'data>,
-        resources: &ResolutionResources<'data, '_, '_>,
+        resources: &ResolutionResources<'data, '_, '_, S>,
         definitions_out: &mut [SymbolId],
         undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     ) -> Result<Self> {
@@ -799,9 +801,9 @@ fn resolve_sections_for_object<'data>(
     Ok(sections)
 }
 
-fn resolve_symbols<'data>(
+fn resolve_symbols<'data, S: StorageModel>(
     obj: &ParsedInputObject<'data>,
-    resources: &ResolutionResources<'data, '_, '_>,
+    resources: &ResolutionResources<'data, '_, '_, S>,
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     definitions_out: &mut [SymbolId],
 ) -> Result {
@@ -824,9 +826,9 @@ fn resolve_symbols<'data>(
     Ok(())
 }
 
-fn resolve_dynamic_symbols<'data>(
+fn resolve_dynamic_symbols<'data, S: StorageModel>(
     obj: &ParsedInputObject<'data>,
-    resources: &ResolutionResources<'data, '_, '_>,
+    resources: &ResolutionResources<'data, '_, '_, S>,
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     definitions_out: &mut [SymbolId],
 ) -> Result {
@@ -849,11 +851,11 @@ fn resolve_dynamic_symbols<'data>(
     Ok(())
 }
 
-fn resolve_symbol<'data>(
+fn resolve_symbol<'data, S: StorageModel>(
     local_symbol_index: object::SymbolIndex,
     local_symbol: &crate::elf::SymtabEntry,
     definition_out: &mut SymbolId,
-    resources: &ResolutionResources<'data, '_, '_>,
+    resources: &ResolutionResources<'data, '_, '_, S>,
     obj: &ParsedInputObject<'data>,
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
 ) -> Result {
@@ -871,7 +873,7 @@ fn resolve_symbol<'data>(
     assert!(!local_symbol.is_definition(LittleEndian));
     let prehashed_name = SymbolName::prehashed(name_bytes);
     match resources.symbol_db.global_names.get(&prehashed_name) {
-        Some(&symbol_id) => {
+        Some(symbol_id) => {
             *definition_out = symbol_id;
             let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
             if symbol_file_id != obj.file_id && !local_symbol.is_weak() {
@@ -999,7 +1001,7 @@ impl std::fmt::Display for ValueFlags {
     }
 }
 
-impl SymbolDb<'_> {
+impl<'data, S: StorageModel> SymbolDb<'data, S> {
     fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
         if let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] {
