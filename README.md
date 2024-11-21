@@ -77,18 +77,18 @@ repository](https://github.com/davidlattimore/warm-build-benchmark), which build
 statically linked binary with symbol tables, eh-frames and no debug info. On my laptop, I get the
 following times:
 
-| Linker   | Time (ms) | ± Standard deviation (ms) | CPU time (ms) | File size (MiB)
-|----------|-----------|---------------------------|---------------|----------------
-| GNU ld   | 12300     | 150                       | 12299         | 80.3
-| gold     | 3365      | 30                        | 3362          | 83.3
-| lld      | 905       | 5.6                       | 1222          | 84.8
-| mold     | 457       | 7.2                       | 2834          | 81.1
-| wild     | 363       | 6.6                       | 1585          | 80.9
+| Linker | Time (ms) | ± Standard deviation (ms) | CPU time (ms) | File size (MiB) |
+|--------|-----------|---------------------------|---------------|-----------------|
+| GNU ld | 12300     | 150                       | 12299         | 80.3            |
+| gold   | 3365      | 30                        | 3362          | 83.3            |
+| lld    | 905       | 5.6                       | 1222          | 84.8            |
+| mold   | 457       | 7.2                       | 2834          | 81.1            |
+| wild   | 363       | 6.6                       | 1585          | 80.9            |
 
 Notes about these results:
 * CPU time is user + system CPU time as reported by hyperfine.
 * Mold by default forks, which lets the user not wait for the mold process that does the work to
-  shutdown. This is a neat optimisation. In the above benchmarks, the time column is with this
+  shut down. This is a neat optimisation. In the above benchmarks, the time column is with this
   optimisation enabled. The CPU time however is with this optimisation disabled (--no-fork), since
   when forking is enabled, we can't easily measure the CPU time.
 
@@ -132,11 +132,10 @@ If you'd like to help out, I'd love to hear from you. It's a good idea to reach 
 duplication of effort. Also, it'll make it possible for me to provide hints that might make what
 you're trying to do easier. Options for communicating:
 
-* I like, where possible, to talk to people video video chat. You can book a time in my
-  [calendar](https://calendar.app.google/MBYQeATMNBvuK8AZ6). If time zones make this hard, let me
-  know via some other means and I'll see if we can find a time that works (I'm in Sydney,
-  Australia).
-* Open an issue or a discussion here on github.
+* I like, where possible, to talk to people via video chat. You can book a time in my
+  [calendar](https://calendar.app.google/MBYQeATMNBvuK8AZ6). If time zones make this hard, let me know via some other means, and I'll see if 
+  we can find a time that works (I'm in Sydney, Australia).
+* Open an issue or a discussion here on GitHub.
 * Message me on the [rust-lang Zulip](https://rust-lang.zulipchat.com/)
 * Email me at dvdlttmr@gmail.com
 
