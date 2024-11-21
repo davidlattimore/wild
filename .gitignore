@@ -9,3 +9,4 @@ perf.data*
 dhat.out.*
 heaptrack*.zst
 .vscode/launch.json
+.idea
