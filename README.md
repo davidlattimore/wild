@@ -139,6 +139,17 @@ you're trying to do easier. Options for communicating:
 * Message me on the [rust-lang Zulip](https://rust-lang.zulipchat.com/)
 * Email me at dvdlttmr@gmail.com
 
+### Running tests
+
+To run tests (and have them pass) there are a number of pre-requisites to have installed on Linux:
+
+* `clang` 'C' compiler
+* `lld` linker
+* `nightly-x86_64-unknown-linux-gnu` toolchain (add with `rustup install nightly-x86_64-unknown-linux-gnu`)
+* `x86_64-unknown-linux-musl` target for the nightly toolchain (add
+  with `rustup target add --toolchain nightly x86_64-unknown-linux-musl`)
+* cranelift backend (add with `rustup component add rustc-codegen-cranelift-preview --toolchain nightly`)
+
 ## Sponsorship
 
 If you'd like to [sponsor this work](https://github.com/sponsors/davidlattimore), that would be very
