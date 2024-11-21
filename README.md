@@ -150,6 +150,8 @@ To run tests (and have them pass) there are a number of pre-requisites to have i
   with `rustup target add --toolchain nightly x86_64-unknown-linux-musl`)
 * cranelift backend (add with `rustup component add rustc-codegen-cranelift-preview --toolchain nightly`)
 
+then use `cargo test` as usual.
+
 ## Sponsorship
 
 If you'd like to [sponsor this work](https://github.com/sponsors/davidlattimore), that would be very
