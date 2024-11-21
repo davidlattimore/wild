@@ -68,7 +68,7 @@ It's somewhat of a tradition for linkers to end with the letters "ld". e.g. "GNU
 "mold". Since the end-goal is for the linker to be incremental, an "I" is added. Let's say the "W"
 stands for "Wild", since recursive acronyms are popular in open-source projects.
 
-### Benchmarks
+## Benchmarks
 
 There are lots of features that Wild doesn't yet support, so I'm not sure benchmarking is super
 useful at this stage. That said, I have done some very preliminary comparisons. I've tried linking
@@ -126,7 +126,7 @@ installed, since GCC doesn't allow using an arbitrary linker.
 RUSTFLAGS="-Clinker=clang -Clink-args=--ld-path=wild" cargo test
 ```
 
-### Contributing
+## Contributing
 
 If you'd like to help out, I'd love to hear from you. It's a good idea to reach out first to avoid
 duplication of effort. Also, it'll make it possible for me to provide hints that might make what
@@ -140,13 +140,13 @@ you're trying to do easier. Options for communicating:
 * Message me on the [rust-lang Zulip](https://rust-lang.zulipchat.com/)
 * Email me at dvdlttmr@gmail.com
 
-### Sponsorship
+## Sponsorship
 
 If you'd like to [sponsor this work](https://github.com/sponsors/davidlattimore), that would be very
 much appreciated. The more sponsorship I get the longer I can continue to work on this project full
 time.
 
-### License
+## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT)
 at your option.
