@@ -10,14 +10,20 @@ use crate::resolution::ValueFlags;
 use linker_utils::elf::shf;
 use linker_utils::elf::SectionFlags;
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Relaxation {
-    pub(crate) kind: RelaxationKind,
-    pub(crate) rel_info: RelocationKindInfo,
+pub(crate) struct X86_64;
+
+impl crate::arch::Arch for X86_64 {
+    type Relaxation = Relaxation;
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum RelaxationKind {
+pub(crate) struct Relaxation {
+    kind: RelaxationKind,
+    rel_info: RelocationKindInfo,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RelaxationKind {
     /// Transforms a mov instruction that would have loaded an address to not use the GOT. The
     /// transformation will look like `mov *x(%rip), reg` -> `lea x(%rip), reg`.
     MovIndirectToLea,
@@ -55,10 +61,8 @@ pub(crate) enum RelaxationKind {
     TlsGdToInitialExec,
 }
 
-impl Relaxation {
-    /// Tries to create a relaxation for the relocation of the specified kind, to be applied at the
-    /// specified offset in the supplied section.
-    pub(crate) fn new(
+impl crate::arch::Relaxation for Relaxation {
+    fn new(
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
@@ -231,7 +235,7 @@ impl Relaxation {
         None
     }
 
-    pub(crate) fn apply(
+    fn apply(
         &self,
         section_bytes: &mut [u8],
         offset_in_section: &mut u64,
@@ -330,6 +334,14 @@ impl Relaxation {
             RelaxationKind::NoOp => {}
         }
     }
+
+    fn rel_info(&self) -> crate::elf::RelocationKindInfo {
+        self.rel_info
+    }
+
+    fn debug_kind(&self) -> impl std::fmt::Debug {
+        &self.kind
+    }
 }
 
 enum TlsGdForm {
@@ -356,6 +368,7 @@ impl TlsGdForm {
 
 #[test]
 fn test_relaxation() {
+    use crate::arch::Relaxation as _;
     use crate::args::RelocationModel;
 
     #[track_caller]

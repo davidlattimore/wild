@@ -5,6 +5,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 pub(crate) mod alignment;
+pub(crate) mod arch;
 pub(crate) mod archive;
 pub(crate) mod archive_splitter;
 pub mod args;
@@ -76,7 +77,7 @@ impl Linker {
                         .with(EnvFilter::from_default_env())
                         .init();
                 }
-                link::<storage::InMemory>(args)
+                link::<storage::InMemory, x86_64::X86_64>(args)
             }
             args::Action::Version => {
                 println!(
@@ -90,7 +91,7 @@ impl Linker {
 }
 
 #[tracing::instrument(skip_all, name = "Link")]
-fn link<S: storage::StorageModel>(args: &Args) -> crate::error::Result {
+fn link<S: storage::StorageModel, A: arch::Arch>(args: &Args) -> crate::error::Result {
     args.setup_thread_pool()?;
     let mut output = elf_writer::Output::new(args);
     let input_data = input_data::InputData::from_args(args)?;
@@ -101,8 +102,8 @@ fn link<S: storage::StorageModel>(args: &Args) -> crate::error::Result {
     let mut symbol_db =
         symbol_db::SymbolDb::<S>::build(&groups, input_data.version_script_data.as_ref(), args)?;
     let resolved = resolution::resolve_symbols_and_sections(&groups, &mut symbol_db, &herd)?;
-    let layout = layout::compute(&symbol_db, resolved, &mut output)?;
-    let output_file = output.write(&layout)?;
+    let layout = layout::compute::<S, A>(&symbol_db, resolved, &mut output)?;
+    let output_file = output.write::<S, A>(&layout)?;
     diff::maybe_diff()?;
 
     let scope = tracing::info_span!("Shutdown");

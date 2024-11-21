@@ -5,6 +5,8 @@
 use self::output_section_id::InfoInputs;
 use crate::alignment;
 use crate::alignment::Alignment;
+use crate::arch::Arch;
+use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::OutputKind;
 use crate::debug_assert_bail;
@@ -55,7 +57,6 @@ use crate::symbol_db::SymbolDebug;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::threading::prelude::*;
-use crate::x86_64::Relaxation;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::ensure;
@@ -86,7 +87,7 @@ use std::sync::atomic::AtomicU8;
 use std::sync::Mutex;
 
 #[tracing::instrument(skip_all, name = "Layout")]
-pub fn compute<'data, 'symbol_db, S: StorageModel>(
+pub fn compute<'data, 'symbol_db, S: StorageModel, A: Arch>(
     symbol_db: &'symbol_db SymbolDb<'data, S>,
     resolved: ResolutionOutputs<'data>,
     output: &mut elf_writer::Output,
@@ -102,7 +103,7 @@ pub fn compute<'data, 'symbol_db, S: StorageModel>(
         print_symbol_info(symbol_db, sym_info);
     }
     let symbol_resolution_flags = vec![AtomicResolutionFlags::empty(); symbol_db.num_symbols()];
-    let gc_outputs = find_required_sections(
+    let gc_outputs = find_required_sections::<S, A>(
         groups,
         symbol_db,
         &output_sections,
@@ -526,7 +527,7 @@ trait SymbolRequestHandler<'data, S: StorageModel>: std::fmt::Display + HandlerD
         Ok(())
     }
 
-    fn load_symbol<'scope>(
+    fn load_symbol<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
@@ -649,7 +650,7 @@ impl<'data> HandlerData for ObjectLayoutState<'data> {
 }
 
 impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for ObjectLayoutState<'data> {
-    fn load_symbol<'scope>(
+    fn load_symbol<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
@@ -668,7 +669,7 @@ impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for ObjectLayoutStat
             .symbol_section(local_symbol, object_symbol_index)?
         {
             self.sections_required.push(SectionRequest::new(section_id));
-            self.load_sections(common, resources, queue)?;
+            self.load_sections::<S, A>(common, resources, queue)?;
         } else if local_symbol.is_common(LittleEndian) {
             let common_symbol = CommonSymbol::new(local_symbol)?;
             common.allocate(
@@ -691,7 +692,7 @@ impl<'data> HandlerData for DynamicLayoutState<'data> {
 }
 
 impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for DynamicLayoutState<'data> {
-    fn load_symbol<'scope>(
+    fn load_symbol<'scope, A: Arch>(
         &mut self,
         _common: &mut CommonGroupState,
         symbol_id: SymbolId,
@@ -758,7 +759,7 @@ impl HandlerData for PreludeLayoutState {
 }
 
 impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for PreludeLayoutState {
-    fn load_symbol<'scope>(
+    fn load_symbol<'scope, A: Arch>(
         &mut self,
         _common: &mut CommonGroupState,
         _symbol_id: SymbolId,
@@ -780,7 +781,7 @@ impl<'data> HandlerData for EpilogueLayoutState<'data> {
 }
 
 impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for EpilogueLayoutState<'data> {
-    fn load_symbol<'scope>(
+    fn load_symbol<'scope, A: Arch>(
         &mut self,
         _common: &mut CommonGroupState,
         _symbol_id: SymbolId,
@@ -1591,7 +1592,7 @@ struct GcOutputs<'data> {
 }
 
 #[tracing::instrument(skip_all, name = "Find required sections")]
-fn find_required_sections<'data, S: StorageModel>(
+fn find_required_sections<'data, S: StorageModel, A: Arch>(
     groups_in: Vec<resolution::ResolvedGroup<'data>>,
     symbol_db: &SymbolDb<'data, S>,
     output_sections: &OutputSections<'data>,
@@ -1632,7 +1633,7 @@ fn find_required_sections<'data, S: StorageModel>(
         .try_for_each(|(i, mut group)| -> Result {
             let _span = tracing::debug_span!("find_required_sections", gid = i).entered();
             for file in &mut group.files {
-                activate(&mut group.common, file, &mut group.queue, resources_ref)
+                activate::<S, A>(&mut group.common, file, &mut group.queue, resources_ref)
                     .with_context(|| format!("Failed to activate {file}"))?;
             }
             let _ = resources_ref.waiting_workers.push(group);
@@ -1646,7 +1647,7 @@ fn find_required_sections<'data, S: StorageModel>(
                     let mut idle = false;
                     while !resources.done.load(atomic::Ordering::SeqCst) {
                         while let Some(worker) = resources.waiting_workers.pop() {
-                            worker.do_pending_work(resources_ref);
+                            worker.do_pending_work::<S, A>(resources_ref);
                         }
                         if idle {
                             // Wait until there's more work to do or until we shut down.
@@ -1740,7 +1741,7 @@ fn unwrap_worker_states<'data>(
 impl<'data> GroupState<'data> {
     /// Does work until there's nothing left in the queue, then returns our worker to its slot and
     /// shuts down.
-    fn do_pending_work<'scope, S: StorageModel>(
+    fn do_pending_work<'scope, S: StorageModel, A: Arch>(
         mut self,
         resources: &GraphResources<'data, 'scope, S>,
     ) {
@@ -1749,7 +1750,7 @@ impl<'data> GroupState<'data> {
                 let file_id = work_item.file_id(resources.symbol_db);
                 let file = &mut self.files[file_id.file()];
                 if let Err(error) =
-                    file.do_work(&mut self.common, work_item, resources, &mut self.queue)
+                    file.do_work::<S, A>(&mut self.common, work_item, resources, &mut self.queue)
                 {
                     resources.report_error(error);
                     return;
@@ -1847,14 +1848,14 @@ fn set_last_verneed<S: StorageModel>(
     }
 }
 
-fn activate<'data, S: StorageModel>(
+fn activate<'data, S: StorageModel, A: Arch>(
     common: &mut CommonGroupState<'data>,
     file: &mut FileLayoutState<'data>,
     queue: &mut LocalWorkQueue,
     resources: &GraphResources<'data, '_, S>,
 ) -> Result {
     match file {
-        FileLayoutState::Object(s) => s.activate(common, resources, queue),
+        FileLayoutState::Object(s) => s.activate::<S, A>(common, resources, queue),
         FileLayoutState::Prelude(s) => s.activate(common, resources, queue),
         FileLayoutState::Dynamic(s) => s.activate(common, resources, queue),
         FileLayoutState::NotLoaded(_) => Ok(()),
@@ -1982,7 +1983,7 @@ impl<'data> FileLayoutState<'data> {
         Ok(())
     }
 
-    fn do_work<'scope, S: StorageModel>(
+    fn do_work<'scope, S: StorageModel, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         work_item: WorkItem,
@@ -1991,7 +1992,7 @@ impl<'data> FileLayoutState<'data> {
     ) -> Result {
         match work_item {
             WorkItem::LoadGlobalSymbol(symbol_id) => self
-                .handle_symbol_request(common, symbol_id, resources, queue)
+                .handle_symbol_request::<S, A>(common, symbol_id, resources, queue)
                 .with_context(|| {
                     format!(
                         "Failed to load {} from {self}",
@@ -2010,7 +2011,7 @@ impl<'data> FileLayoutState<'data> {
         }
     }
 
-    fn handle_symbol_request<'scope, S: StorageModel>(
+    fn handle_symbol_request<'scope, S: StorageModel, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
@@ -2019,17 +2020,17 @@ impl<'data> FileLayoutState<'data> {
     ) -> Result {
         match self {
             FileLayoutState::Object(state) => {
-                state.load_symbol(common, symbol_id, resources, queue)?;
+                state.load_symbol::<A>(common, symbol_id, resources, queue)?;
             }
             FileLayoutState::Prelude(state) => {
-                state.load_symbol(common, symbol_id, resources, queue)?;
+                state.load_symbol::<A>(common, symbol_id, resources, queue)?;
             }
             FileLayoutState::Dynamic(state) => {
-                state.load_symbol(common, symbol_id, resources, queue)?;
+                state.load_symbol::<A>(common, symbol_id, resources, queue)?;
             }
             FileLayoutState::NotLoaded(_) => {}
             FileLayoutState::Epilogue(state) => {
-                state.load_symbol(common, symbol_id, resources, queue)?;
+                state.load_symbol::<A>(common, symbol_id, resources, queue)?;
             }
         }
         Ok(())
@@ -2246,7 +2247,7 @@ impl Section {
     }
 }
 
-fn process_relocation<S: StorageModel>(
+fn process_relocation<S: StorageModel, A: Arch>(
     object: &mut ObjectLayoutState,
     common: &mut CommonGroupState,
     rel: &Rela64<LittleEndian>,
@@ -2263,7 +2264,7 @@ fn process_relocation<S: StorageModel>(
         let rel_offset = rel.r_offset.get(LittleEndian);
         let r_type = rel.r_type(LittleEndian, false);
 
-        let rel_info = if let Some(relaxation) = Relaxation::new(
+        let rel_info = if let Some(relaxation) = A::Relaxation::new(
             r_type,
             object.object.raw_section_data(section)?,
             rel_offset,
@@ -2271,7 +2272,7 @@ fn process_relocation<S: StorageModel>(
             args.output_kind,
             SectionFlags::from_header(section),
         ) {
-            relaxation.rel_info
+            relaxation.rel_info()
         } else {
             RelocationKindInfo::from_raw(r_type)?
         };
@@ -2892,7 +2893,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
 }
 
 impl<'data> ObjectLayoutState<'data> {
-    fn activate<'scope, S: StorageModel>(
+    fn activate<'scope, S: StorageModel, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         resources: &GraphResources<'data, 'scope, S>,
@@ -2917,7 +2918,7 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
         if let Some(eh_frame_section_index) = eh_frame_section {
-            process_eh_frame_data(
+            process_eh_frame_data::<S, A>(
                 self,
                 common,
                 self.symbol_id_range(),
@@ -2929,13 +2930,13 @@ impl<'data> ObjectLayoutState<'data> {
             self.eh_frame_section = Some(eh_frame_section);
         }
         if resources.symbol_db.args.output_kind == OutputKind::SharedObject {
-            self.load_non_hidden_symbols(common, resources, queue)?;
+            self.load_non_hidden_symbols::<S, A>(common, resources, queue)?;
         }
-        self.load_sections(common, resources, queue)
+        self.load_sections::<S, A>(common, resources, queue)
     }
 
     /// Loads sections in `sections_required` (which may be empty).
-    fn load_sections<'scope, S: StorageModel>(
+    fn load_sections<'scope, S: StorageModel, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         resources: &GraphResources<'data, 'scope, S>,
@@ -2947,7 +2948,7 @@ impl<'data> ObjectLayoutState<'data> {
             let section_id = section_request.id;
             match &self.sections[section_id.0] {
                 SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => {
-                    self.load_section(common, queue, *unloaded, section_id, resources)?;
+                    self.load_section::<S, A>(common, queue, *unloaded, section_id, resources)?;
                 }
                 SectionSlot::UnloadedDebugInfo(part_id) => {
                     self.load_debug_section(common, *part_id, section_id)?;
@@ -2970,7 +2971,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_section<'scope, S: StorageModel>(
+    fn load_section<'scope, S: StorageModel, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
@@ -2981,7 +2982,7 @@ impl<'data> ObjectLayoutState<'data> {
         let part_id = unloaded.part_id;
         let section = Section::create(self, section_id, part_id)?;
         for rel in self.object.relocations(section.index)? {
-            process_relocation(
+            process_relocation::<S, A>(
                 self,
                 common,
                 rel,
@@ -2998,7 +2999,12 @@ impl<'data> ObjectLayoutState<'data> {
             .get(part_id.output_section_id())
             .fetch_or(true, atomic::Ordering::Relaxed);
 
-        self.process_section_exception_frames(unloaded.last_frame_index, common, resources, queue)?;
+        self.process_section_exception_frames::<S, A>(
+            unloaded.last_frame_index,
+            common,
+            resources,
+            queue,
+        )?;
 
         self.sections[section_id.0] = SectionSlot::Loaded(section);
 
@@ -3006,7 +3012,7 @@ impl<'data> ObjectLayoutState<'data> {
     }
 
     /// Processes the exception frames for a section that we're loading.
-    fn process_section_exception_frames<S: StorageModel>(
+    fn process_section_exception_frames<S: StorageModel, A: Arch>(
         &mut self,
         frame_index: Option<FrameIndex>,
         common: &mut CommonGroupState<'data>,
@@ -3029,7 +3035,14 @@ impl<'data> ObjectLayoutState<'data> {
             // section.
             if let Some(eh_frame_section) = self.eh_frame_section {
                 for rel in frame_data_relocations {
-                    process_relocation(self, common, rel, eh_frame_section, resources, queue)?;
+                    process_relocation::<S, A>(
+                        self,
+                        common,
+                        rel,
+                        eh_frame_section,
+                        resources,
+                        queue,
+                    )?;
                 }
             }
         }
@@ -3279,7 +3292,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_non_hidden_symbols<'scope, S: StorageModel>(
+    fn load_non_hidden_symbols<'scope, S: StorageModel, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         resources: &GraphResources<'data, 'scope, S>,
@@ -3295,7 +3308,7 @@ impl<'data> ObjectLayoutState<'data> {
                 let old_flags = resources.symbol_resolution_flags[symbol_id.as_usize()]
                     .fetch_or(ResolutionFlags::EXPORT_DYNAMIC);
                 if old_flags.is_empty() {
-                    self.load_symbol(common, symbol_id, resources, queue)?;
+                    self.load_symbol::<A>(common, symbol_id, resources, queue)?;
                 }
                 if !old_flags.contains(ResolutionFlags::EXPORT_DYNAMIC) {
                     export_dynamic(common, symbol_id, resources)?;
@@ -3355,7 +3368,7 @@ pub(crate) fn can_export_symbol(sym: &crate::elf::SymtabEntry) -> bool {
         && (visibility == object::elf::STV_DEFAULT || visibility == object::elf::STV_PROTECTED)
 }
 
-fn process_eh_frame_data<S: StorageModel>(
+fn process_eh_frame_data<S: StorageModel, A: Arch>(
     object: &mut ObjectLayoutState,
     common: &mut CommonGroupState,
     file_symbol_id_range: SymbolIdRange,
@@ -3398,7 +3411,14 @@ fn process_eh_frame_data<S: StorageModel>(
                 }
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                process_relocation(object, common, rel, eh_frame_section, resources, queue)?;
+                process_relocation::<S, A>(
+                    object,
+                    common,
+                    rel,
+                    eh_frame_section,
+                    resources,
+                    queue,
+                )?;
                 if let Some(local_sym_index) = rel.symbol(e, false) {
                     let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);
                     let definition = resources.symbol_db.definition(local_symbol_id);
