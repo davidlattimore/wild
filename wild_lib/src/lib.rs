@@ -1,3 +1,4 @@
+use crate::args::parse;
 use args::Args;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
@@ -52,17 +53,17 @@ pub(crate) mod verification;
 pub(crate) mod x86_64;
 
 pub struct Linker {
-    action: crate::args::Action,
+    action: args::Action,
 }
 
 impl Linker {
-    pub fn from_env() -> crate::error::Result<Self> {
+    pub fn from_args<S: AsRef<str>, I: Iterator<Item = S>>(args: I) -> error::Result<Self> {
         Ok(Linker {
-            action: crate::args::from_env()?,
+            action: parse(args)?,
         })
     }
 
-    pub fn run(&self) -> crate::error::Result {
+    pub fn run(&self, done_closure: Option<Box<dyn FnOnce(i32)>>) -> error::Result {
         match &self.action {
             args::Action::Link(args) => {
                 if args.time_phases {
@@ -77,7 +78,7 @@ impl Linker {
                         .with(EnvFilter::from_default_env())
                         .init();
                 }
-                link::<storage::InMemory, x86_64::X86_64>(args)
+                link::<storage::InMemory, x86_64::X86_64>(args, done_closure)
             }
             args::Action::Version => {
                 println!(
@@ -91,7 +92,10 @@ impl Linker {
 }
 
 #[tracing::instrument(skip_all, name = "Link")]
-fn link<S: storage::StorageModel, A: arch::Arch>(args: &Args) -> crate::error::Result {
+fn link<S: storage::StorageModel, A: arch::Arch>(
+    args: &Args,
+    done_closure: Option<Box<dyn FnOnce(i32)>>,
+) -> error::Result {
     args.setup_thread_pool()?;
     let mut output = elf_writer::Output::new(args);
     let input_data = input_data::InputData::from_args(args)?;
@@ -109,6 +113,10 @@ fn link<S: storage::StorageModel, A: arch::Arch>(args: &Args) -> crate::error::R
     let scope = tracing::info_span!("Shutdown");
     let _scope = scope.enter();
     shutdown::free_output(output_file);
+    // If there is a parent process waiting on this, inform it that linking is done and output ready
+    if let Some(done_callback) = done_closure {
+        done_callback(0);
+    }
     shutdown::free_layout(layout);
     shutdown::free_symbol_db(symbol_db);
     shutdown::free_input_data(input_data);
