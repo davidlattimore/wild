@@ -685,7 +685,7 @@ mod tests {
     use std::path::PathBuf;
     use std::str::FromStr;
 
-    const INPUT1: &[&str] = &[
+    const INPUT1: Vec<&str> = vec![
         "-pie",
         "-z",
         "relro",
@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let Action::Link(args) = super::parse(INPUT1.iter()).unwrap() else {
+        let Action::Link(args) = super::parse(INPUT1).unwrap() else {
             panic!("Unexpected action");
         };
         assert!(args.is_relocatable());
