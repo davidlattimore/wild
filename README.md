@@ -86,6 +86,7 @@ following times:
 | wild   | 363       | 6.6                       | 1585          | 80.9            |
 
 Notes about these results:
+
 * CPU time is user + system CPU time as reported by hyperfine.
 * Mold by default forks, which lets the user not wait for the mold process that does the work to
   shut down. This is a neat optimisation. In the above benchmarks, the time column is with this
@@ -128,30 +129,7 @@ RUSTFLAGS="-Clinker=clang -Clink-args=--ld-path=wild" cargo test
 
 ## Contributing
 
-If you'd like to help out, I'd love to hear from you. It's a good idea to reach out first to avoid
-duplication of effort. Also, it'll make it possible for me to provide hints that might make what
-you're trying to do easier. Options for communicating:
-
-* I like, where possible, to talk to people via video chat. You can book a time in my
-  [calendar](https://calendar.app.google/MBYQeATMNBvuK8AZ6). If time zones make this hard, let me
-  know via some other means, and I'll see if we can find a time that works (I'm in Sydney,
-  Australia).
-* Open an issue or a discussion here on GitHub.
-* Message me on the [rust-lang Zulip](https://rust-lang.zulipchat.com/)
-* Email me at dvdlttmr@gmail.com
-
-### Running tests
-
-To run tests (and have them pass) there are a number of pre-requisites to have installed on Linux:
-
-* `clang` 'C' compiler
-* `lld` linker
-* `nightly-x86_64-unknown-linux-gnu` toolchain (add with `rustup install nightly-x86_64-unknown-linux-gnu`)
-* `x86_64-unknown-linux-musl` target for the nightly toolchain (add
-  with `rustup target add --toolchain nightly x86_64-unknown-linux-musl`)
-* cranelift backend (add with `rustup component add rustc-codegen-cranelift-preview --toolchain nightly`)
-
-then use `cargo test` as usual.
+For more information on contributing to `wild` see [CONTRIBUTING.md](CONTIBUTING.md)
 
 ## Sponsorship
 
