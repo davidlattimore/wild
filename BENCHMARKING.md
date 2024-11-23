@@ -121,6 +121,13 @@ cache_misses        14.2M ± 171K        13.9M … 14.5M 0 ( 0%)       ⚡- 62.9
 branch_misses       3.42M ± 11.0K       3.40M … 3.45M 0 ( 0%)       ⚡- 63.1% ± 0.1%
 ```
 
+NOTE: `poop` uses the first command as the reference the others are compared against, so if focusing on wild, you might
+want to re-order the commands and invoke `poop` thus:
+
+```text
+poop '/tmp/wild/ripgrep/6/run-with wild' '/tmp/wild/ripgrep/6/run-with mold' '/tmp/wild/ripgrep/6/run-with ld'
+```
+
 ### Comparisons
 
 Using this method, you can benchmark:
