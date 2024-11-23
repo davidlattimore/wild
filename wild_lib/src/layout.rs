@@ -639,7 +639,7 @@ fn allocate_resolution(
     }
 }
 
-impl<'data> HandlerData for ObjectLayoutState<'data> {
+impl HandlerData for ObjectLayoutState<'_> {
     fn file_id(&self) -> FileId {
         self.file_id
     }
@@ -681,7 +681,7 @@ impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for ObjectLayoutStat
     }
 }
 
-impl<'data> HandlerData for DynamicLayoutState<'data> {
+impl HandlerData for DynamicLayoutState<'_> {
     fn symbol_id_range(&self) -> SymbolIdRange {
         self.symbol_id_range
     }
@@ -770,7 +770,7 @@ impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for PreludeLayoutSta
     }
 }
 
-impl<'data> HandlerData for EpilogueLayoutState<'data> {
+impl HandlerData for EpilogueLayoutState<'_> {
     fn file_id(&self) -> FileId {
         self.file_id
     }
@@ -1131,7 +1131,7 @@ impl WorkItem {
     }
 }
 
-impl<'data, 'symbol_db, S: StorageModel> Layout<'data, 'symbol_db, S> {
+impl<'data, S: StorageModel> Layout<'data, '_, S> {
     pub(crate) fn prelude(&self) -> &PreludeLayout {
         let Some(FileLayout::Prelude(i)) = self.group_layouts.first().and_then(|g| g.files.first())
         else {
@@ -1913,7 +1913,7 @@ impl LocalWorkQueue {
     }
 }
 
-impl<'data, S: StorageModel> GraphResources<'data, '_, S> {
+impl<S: StorageModel> GraphResources<'_, '_, S> {
     fn report_error(&self, error: Error) {
         self.errors.lock().unwrap().push(error);
     }
@@ -4044,7 +4044,7 @@ fn take_dynsym_index(
     Ok(index)
 }
 
-impl<'data, 'symbol_db, S: StorageModel> Layout<'data, 'symbol_db, S> {
+impl<S: StorageModel> Layout<'_, '_, S> {
     pub(crate) fn mem_address_of_built_in(&self, section_id: OutputSectionId) -> u64 {
         self.section_layouts.get(section_id).mem_offset
     }

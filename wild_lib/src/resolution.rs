@@ -321,7 +321,7 @@ struct ResolutionResources<'data, 'definitions, 'outer_scope, S: StorageModel> {
     work_queue: SegQueue<WorkItem<'definitions>>,
 }
 
-impl<'data, S: StorageModel> ResolutionResources<'data, '_, '_, S> {
+impl<S: StorageModel> ResolutionResources<'_, '_, '_, S> {
     fn request_file_id(&self, file_id: FileId) {
         if let Some(definitions) = self.definitions_per_file[file_id.group()][file_id.file()].take()
         {
@@ -1001,7 +1001,7 @@ impl std::fmt::Display for ValueFlags {
     }
 }
 
-impl<'data, S: StorageModel> SymbolDb<'data, S> {
+impl<S: StorageModel> SymbolDb<'_, S> {
     fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
         if let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] {
