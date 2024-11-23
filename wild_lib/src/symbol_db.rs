@@ -637,7 +637,7 @@ pub(crate) struct SymbolDebug<'db, 'data, S: StorageModel> {
     symbol_id: SymbolId,
 }
 
-impl<'data, S: StorageModel> std::fmt::Display for SymbolDebug<'_, 'data, S> {
+impl<S: StorageModel> std::fmt::Display for SymbolDebug<'_, '_, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let symbol_id = self.symbol_id;
         let symbol_name = self

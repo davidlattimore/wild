@@ -1590,7 +1590,7 @@ struct DisplayRelocation<'a, 'data, S: StorageModel> {
     object: &'a ObjectLayout<'a>,
 }
 
-impl<'a, 'data, S: StorageModel> Display for DisplayRelocation<'a, 'data, S> {
+impl<S: StorageModel> Display for DisplayRelocation<'_, '_, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let e = LittleEndian;
         write!(
@@ -2481,7 +2481,7 @@ struct DynamicEntryInputs<'layout> {
     non_addressable_counts: NonAddressableCounts,
 }
 
-impl<'data> DynamicEntryInputs<'data> {
+impl DynamicEntryInputs<'_> {
     fn dt_flags(&self) -> u64 {
         let mut flags = 0;
         flags |= object::elf::DF_BIND_NOW;
