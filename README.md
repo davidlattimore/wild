@@ -72,8 +72,8 @@ stands for "Wild", since recursive acronyms are popular in open-source projects.
 
 There are lots of features that Wild doesn't yet support, so I'm not sure benchmarking is super
 useful at this stage. That said, I have done some very preliminary comparisons. I've tried linking
-the binary in my [warm build benchmark
-repository](https://github.com/davidlattimore/warm-build-benchmark), which builds an ~80MB, non-PIE,
+the binary in my [warm build benchmark repository](https://github.com/davidlattimore/warm-build-benchmark), which builds
+an ~80MB, non-PIE,
 statically linked binary with symbol tables, eh-frames and no debug info. On my laptop, I get the
 following times:
 
@@ -93,28 +93,13 @@ Notes about these results:
   optimisation enabled. The CPU time however is with this optimisation disabled (--no-fork), since
   when forking is enabled, we can't easily measure the CPU time.
 
-I want to stress that this is only one benchmark. Many unknowns remain:
-
-* Will the results be significantly different for other benchmarks?
-* How will Wild scale up when linking much larger binaries and/or on systems with many CPU cores?
-* Will implementing the missing features require changes to Wild's design that might slow it down?
-
 All we can really conclude from this benchmark is that Wild is currently reasonably efficient at
 non-incremental linking and reasonable at taking advantage of a few threads. I don't think that
 adding the missing features should change this benchmark significantly. i.e. adding support for
 debug info really shouldn't change our speed when linking with no debug info. I can't be sure
 however until I implement these missing features.
 
-If you decide to benchmark Wild against other linkers, in order to make it a fair comparison, you
-should ensure that the other linkers aren't doing work on something that Wild doesn't support. In
-particular:
-
-* Wild defaults to `--gc-sections`, so for a fair comparison, that should be passed to all the
-  linkers.
-* Wild defaults to `-z now`, so best to pass that to all linkers.
-
-There might be other flags that speed up the other linkers by letting them avoid some work that
-they're currently doing. If you know of such flags, please let me know.
+See [BENCHMARKING.md](BENCHMARKING.md) for more details on benchmarking.
 
 ## Linking Rust code
 
