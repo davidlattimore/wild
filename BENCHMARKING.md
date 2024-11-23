@@ -47,8 +47,8 @@ rustflags = [
 * In the case of ripgrep it is '6'
 * You can then run `/tmp/wild/ripgrep/6/run-with wild` and that will rerun the link with wild
 * To benchmark, you can then run something
-  like `hyperfine --warmup 2 '/tmp/wild/ripgrep/6/run-with ld' '/tmp/wild/ripgrep/6/run-with mold' '
-  /tmp/wild/ripgrep/6/run-with wild'`
+  like "`hyperfine --warmup 2 '/tmp/wild/ripgrep/6/run-with ld' '/tmp/wild/ripgrep/6/run-with mold'
+  '/tmp/wild/ripgrep/6/run-with wild'`"
     * This will benchmark the linking stage between `ld`, `mold` and `wild`, discarding the first two runs of each to
       reduce the effects of cache warmup
 
