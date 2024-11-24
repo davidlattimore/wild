@@ -35,7 +35,6 @@ use crate::program_segments::ProgramSegmentId;
 use crate::resolution::SectionSlot;
 use ahash::AHashMap;
 use anyhow::anyhow;
-use core::mem::size_of;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::elf::SectionFlags;
@@ -318,7 +317,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         name: SectionName(b".dynamic"),
         ty: sht::DYNAMIC,
         section_flags: shf::ALLOC.with(shf::WRITE),
-        element_size: core::mem::size_of::<DynamicEntry>() as u64,
+        element_size: size_of::<DynamicEntry>() as u64,
         link: &[DYNSTR],
         min_alignment: alignment::USIZE,
         start_symbol_name: Some("_DYNAMIC"),
@@ -359,7 +358,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         name: SectionName(b".gnu.version"),
         ty: sht::GNU_VERSYM,
         section_flags: shf::ALLOC,
-        element_size: core::mem::size_of::<Versym>() as u64,
+        element_size: size_of::<Versym>() as u64,
         min_alignment: alignment::VERSYM,
         link: &[DYNSYM],
         ..DEFAULT_DEFS
@@ -403,7 +402,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         name: SectionName(b".init_array"),
         ty: sht::INIT_ARRAY,
         section_flags: shf::ALLOC.with(shf::WRITE).with(shf::GNU_RETAIN),
-        element_size: core::mem::size_of::<u64>() as u64,
+        element_size: size_of::<u64>() as u64,
         start_symbol_name: Some("__init_array_start"),
         end_symbol_name: Some("__init_array_end"),
         ..DEFAULT_DEFS
@@ -412,7 +411,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         name: SectionName(b".fini_array"),
         ty: sht::FINI_ARRAY,
         section_flags: shf::ALLOC.with(shf::WRITE).with(shf::GNU_RETAIN),
-        element_size: core::mem::size_of::<u64>() as u64,
+        element_size: size_of::<u64>() as u64,
         start_symbol_name: Some("__fini_array_start"),
         end_symbol_name: Some("__fini_array_end"),
         ..DEFAULT_DEFS

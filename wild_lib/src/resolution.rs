@@ -50,6 +50,7 @@ use object::read::elf::Sym as _;
 use object::LittleEndian;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
+use std::mem::take;
 use std::num::NonZeroU32;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -354,8 +355,8 @@ fn resolve_alternative_symbol_definitions<'data, S: StorageModel>(
     // For now, we do this from a single thread since we don't expect a lot of symbols will have
     // multiple definitions. If it turns out that there are cases where it's actually taking
     // significant time, then we could parallelise this without too much work.
-    let previous_definitions = core::mem::take(&mut symbol_db.alternative_definitions);
-    let symbols_with_alternatives = core::mem::take(&mut symbol_db.symbols_with_alternatives);
+    let previous_definitions = take(&mut symbol_db.alternative_definitions);
+    let symbols_with_alternatives = take(&mut symbol_db.symbols_with_alternatives);
     let mut alternatives = Vec::new();
     for first in symbols_with_alternatives {
         alternatives.clear();
