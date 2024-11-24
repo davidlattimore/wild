@@ -77,7 +77,10 @@ use object::SectionIndex;
 use smallvec::SmallVec;
 use std::ffi::CString;
 use std::fmt::Display;
+use std::mem::replace;
 use std::mem::size_of;
+use std::mem::swap;
+use std::mem::take;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
 use std::sync::atomic;
@@ -814,8 +817,7 @@ impl CommonGroupState<'_> {
         if *self.mem_sizes.get(part_id::GNU_VERSION) > 0 {
             let num_dynamic_symbols =
                 self.mem_sizes.get(part_id::DYNSYM) / crate::elf::SYMTAB_ENTRY_SIZE;
-            let num_versym =
-                self.mem_sizes.get(part_id::GNU_VERSION) / core::mem::size_of::<Versym>() as u64;
+            let num_versym = self.mem_sizes.get(part_id::GNU_VERSION) / size_of::<Versym>() as u64;
             if num_versym != num_dynamic_symbols {
                 bail!(
                     "Object has {num_dynamic_symbols} dynamic symbols, but \
@@ -1683,7 +1685,7 @@ fn find_required_sections<'data, S: StorageModel, A: Arch>(
             });
         }
     });
-    let mut errors: Vec<Error> = core::mem::take(resources.errors.lock().unwrap().as_mut());
+    let mut errors: Vec<Error> = take(resources.errors.lock().unwrap().as_mut());
     // TODO: Figure out good way to report more than one error.
     if let Some(error) = errors.pop() {
         return Err(error);
@@ -1762,7 +1764,7 @@ impl<'data> GroupState<'data> {
                     slot.worker = Some(self);
                     return;
                 }
-                core::mem::swap(&mut slot.work, &mut self.queue.local_work);
+                swap(&mut slot.work, &mut self.queue.local_work);
             };
         }
     }
@@ -2463,10 +2465,7 @@ impl PreludeLayoutState {
         }
 
         if symbol_db.args.should_write_eh_frame_hdr {
-            common.allocate(
-                part_id::EH_FRAME_HDR,
-                core::mem::size_of::<elf::EhFrameHdr>() as u64,
-            );
+            common.allocate(part_id::EH_FRAME_HDR, size_of::<elf::EhFrameHdr>() as u64);
         }
 
         Ok(())
@@ -2741,7 +2740,7 @@ impl<'data> EpilogueLayoutState<'data> {
         }
 
         if symbol_db.args.needs_dynamic() {
-            let dynamic_entry_size = core::mem::size_of::<crate::elf::DynamicEntry>();
+            let dynamic_entry_size = size_of::<crate::elf::DynamicEntry>();
             common.allocate(
                 part_id::DYNAMIC,
                 (elf_writer::NUM_EPILOGUE_DYNAMIC_ENTRIES * dynamic_entry_size) as u64,
@@ -2794,10 +2793,10 @@ impl<'data> EpilogueLayoutState<'data> {
         let num_blume = 1;
         common.allocate(
             part_id::GNU_HASH,
-            (core::mem::size_of::<elf::GnuHashHeader>()
-                + core::mem::size_of::<u64>() * num_blume
-                + core::mem::size_of::<u32>() * gnu_hash_layout.bucket_count as usize
-                + core::mem::size_of::<u32>() * num_defs) as u64,
+            (size_of::<elf::GnuHashHeader>()
+                + size_of::<u64>() * num_blume
+                + size_of::<u32>() * gnu_hash_layout.bucket_count as usize
+                + size_of::<u32>() * num_defs) as u64,
         );
         self.gnu_hash_layout = Some(gnu_hash_layout);
     }
@@ -3050,7 +3049,7 @@ impl<'data> ObjectLayoutState<'data> {
         if resources.symbol_db.args.should_write_eh_frame_hdr {
             common.allocate(
                 part_id::EH_FRAME_HDR,
-                core::mem::size_of::<EhFrameHdrEntry>() as u64 * num_frames,
+                size_of::<EhFrameHdrEntry>() as u64 * num_frames,
             );
         }
 
@@ -3378,7 +3377,7 @@ fn process_eh_frame_data<S: StorageModel, A: Arch>(
 ) -> Result {
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
     let data = object.object.raw_section_data(eh_frame_section)?;
-    const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
+    const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
     let e = LittleEndian;
     let relocations = object.object.relocations(eh_frame_section_index)?;
     let mut rel_iter = relocations.iter().enumerate().peekable();
@@ -3391,7 +3390,7 @@ fn process_eh_frame_data<S: StorageModel, A: Arch>(
         // See https://www.airs.com/blog/archives/170
         let prefix: elf::EhFrameEntryPrefix =
             bytemuck::pod_read_unaligned(&data[offset..offset + PREFIX_LEN]);
-        let size = core::mem::size_of_val(&prefix.length) + prefix.length as usize;
+        let size = size_of_val(&prefix.length) + prefix.length as usize;
         let next_offset = offset + size;
         if next_offset > data.len() {
             bail!("Invalid .eh_frame data");
@@ -3467,7 +3466,7 @@ fn process_eh_frame_data<S: StorageModel, A: Arch>(
                     // Update our unloaded section to point to our new frame. Our frame will then in
                     // turn point to whatever the section pointed to before.
                     let previous_frame_for_section =
-                        core::mem::replace(&mut unloaded.last_frame_index, Some(frame_index));
+                        replace(&mut unloaded.last_frame_index, Some(frame_index));
 
                     object.exception_frames.push(ExceptionFrame {
                         relocations: &relocations[rel_start_index..rel_end_index],
@@ -3616,9 +3615,9 @@ impl<'data> resolution::ResolvedFile<'data> {
                 FileLayoutState::Prelude(PreludeLayoutState::new(s))
             }
             resolution::ResolvedFile::NotLoaded(s) => FileLayoutState::NotLoaded(s),
-            resolution::ResolvedFile::Epilogue(s) => FileLayoutState::Epilogue(
-                EpilogueLayoutState::new(s, core::mem::take(custom_start_stop_defs)),
-            ),
+            resolution::ResolvedFile::Epilogue(s) => {
+                FileLayoutState::Epilogue(EpilogueLayoutState::new(s, take(custom_start_stop_defs)))
+            }
         }
     }
 }
@@ -3785,7 +3784,7 @@ impl<'data> DynamicLayoutState<'data> {
         }
         common.allocate(
             part_id::DYNAMIC,
-            core::mem::size_of::<crate::elf::DynamicEntry>() as u64,
+            size_of::<crate::elf::DynamicEntry>() as u64,
         );
         common.allocate(part_id::DYNSTR, self.lib_name.len() as u64 + 1);
         self.request_all_undefined_symbols(common, resources, queue)
@@ -3863,9 +3862,8 @@ impl<'data> DynamicLayoutState<'data> {
                 common.allocate(part_id::DYNSTR, base_size);
                 common.allocate(
                     part_id::GNU_VERSION_R,
-                    core::mem::size_of::<crate::elf::Verneed>() as u64
-                        + u64::from(version_count)
-                            * core::mem::size_of::<crate::elf::Vernaux>() as u64,
+                    size_of::<crate::elf::Verneed>() as u64
+                        + u64::from(version_count) * size_of::<crate::elf::Vernaux>() as u64,
                 );
 
                 self.verdef_info = Some(VerdefInfo {
@@ -3947,9 +3945,8 @@ impl<'data> DynamicLayoutState<'data> {
         if let Some(v) = self.verdef_info.as_ref() {
             memory_offsets.increment(
                 part_id::GNU_VERSION_R,
-                core::mem::size_of::<crate::elf::Verneed>() as u64
-                    + u64::from(v.version_count)
-                        * core::mem::size_of::<crate::elf::Vernaux>() as u64,
+                size_of::<crate::elf::Verneed>() as u64
+                    + u64::from(v.version_count) * size_of::<crate::elf::Vernaux>() as u64,
             );
         }
 

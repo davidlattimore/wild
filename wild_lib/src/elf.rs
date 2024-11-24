@@ -221,7 +221,7 @@ impl<'data> File<'data> {
                 return get_entries(
                     self.data,
                     header.p_offset(e) as usize,
-                    header.p_filesz(e) as usize / core::mem::size_of::<DynamicEntry>(),
+                    header.p_filesz(e) as usize / size_of::<DynamicEntry>(),
                 )
                 .context("Failed to read dynamic table");
             }
@@ -261,7 +261,7 @@ pub(crate) fn get_entries<T: object::Pod>(
     offset: usize,
     entry_count: usize,
 ) -> Result<&[T]> {
-    debug_assert_eq!(core::mem::align_of::<T>(), 1);
+    debug_assert_eq!(align_of::<T>(), 1);
     if offset >= data.len() {
         bail!("Invalid offset 0x{offset}");
     }
@@ -270,7 +270,7 @@ pub(crate) fn get_entries<T: object::Pod>(
             anyhow!(
                 "Tried to extract 0x{:x} entries of size 0x{:x} from 0x{:x}",
                 entry_count,
-                core::mem::size_of::<T>(),
+                size_of::<T>(),
                 data.len(),
             )
         })?
@@ -351,14 +351,14 @@ pub(crate) const FILE_HEADER_SIZE: u16 = 0x40;
 pub(crate) const PROGRAM_HEADER_SIZE: u16 = 0x38;
 pub(crate) const SECTION_HEADER_SIZE: u16 = 0x40;
 pub(crate) const COMPRESSION_HEADER_SIZE: usize =
-    core::mem::size_of::<object::elf::CompressionHeader64<LittleEndian>>();
+    size_of::<object::elf::CompressionHeader64<LittleEndian>>();
 
 pub(crate) const GOT_ENTRY_SIZE: u64 = 0x8;
 pub(crate) const PLT_ENTRY_SIZE: u64 = PLT_ENTRY_TEMPLATE.len() as u64;
 pub(crate) const RELA_ENTRY_SIZE: u64 = 0x18;
 
-pub(crate) const SYMTAB_ENTRY_SIZE: u64 = core::mem::size_of::<SymtabEntry>() as u64;
-pub(crate) const GNU_VERSION_ENTRY_SIZE: u64 = core::mem::size_of::<Versym>() as u64;
+pub(crate) const SYMTAB_ENTRY_SIZE: u64 = size_of::<SymtabEntry>() as u64;
+pub(crate) const GNU_VERSION_ENTRY_SIZE: u64 = size_of::<Versym>() as u64;
 
 pub(crate) const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0xf3, 0x0f, 0x1e, 0xfa, // endbr64
@@ -367,9 +367,9 @@ pub(crate) const PLT_ENTRY_TEMPLATE: &[u8] = &[
 ];
 
 const _ASSERTS: () = {
-    assert!(FILE_HEADER_SIZE as usize == std::mem::size_of::<FileHeader>());
-    assert!(PROGRAM_HEADER_SIZE as usize == std::mem::size_of::<ProgramHeader>());
-    assert!(SECTION_HEADER_SIZE as usize == std::mem::size_of::<SectionHeader>());
+    assert!(FILE_HEADER_SIZE as usize == size_of::<FileHeader>());
+    assert!(PROGRAM_HEADER_SIZE as usize == size_of::<ProgramHeader>());
+    assert!(SECTION_HEADER_SIZE as usize == size_of::<SectionHeader>());
 };
 
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -
@@ -473,7 +473,7 @@ impl RelocationKindInfo {
 }
 
 pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut [T] {
-    object::slice_from_bytes_mut(data, data.len() / core::mem::size_of::<T>())
+    object::slice_from_bytes_mut(data, data.len() / size_of::<T>())
         .unwrap()
         .0
 }

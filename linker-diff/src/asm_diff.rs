@@ -1331,8 +1331,7 @@ impl<'data> AddressIndex<'data> {
         let e = LittleEndian;
         let phoff = header.e_phoff.get(e);
         let phnum = header.e_phnum.get(e);
-        let file_header_size =
-            core::mem::size_of::<object::elf::FileHeader64<LittleEndian>>() as u64;
+        let file_header_size = size_of::<object::elf::FileHeader64<LittleEndian>>() as u64;
         for raw_seg in elf_file.elf_program_headers() {
             if raw_seg.p_type(e) != object::elf::PT_LOAD {
                 continue;
@@ -1347,7 +1346,7 @@ impl<'data> AddressIndex<'data> {
             if file_range.contains(&phoff) {
                 let mem_start = phoff - file_offset + seg_address;
                 let byte_len = u64::from(phnum)
-                    * core::mem::size_of::<object::elf::ProgramHeader64<LittleEndian>>() as u64;
+                    * size_of::<object::elf::ProgramHeader64<LittleEndian>>() as u64;
                 self.program_header_addresses = mem_start..(mem_start + byte_len);
             }
         }
@@ -1364,7 +1363,7 @@ impl<'data> AddressIndex<'data> {
             return Ok(());
         };
         let data = got.data()?;
-        let entry_size = core::mem::size_of::<u64>();
+        let entry_size = size_of::<u64>();
         let entries: &[u64] = object::slice_from_bytes(data, data.len() / entry_size)
             .unwrap()
             .0;

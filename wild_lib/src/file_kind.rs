@@ -21,7 +21,7 @@ impl FileKind {
         if bytes.starts_with(b"!<arch>") {
             Ok(FileKind::Archive)
         } else if bytes.starts_with(&object::elf::ELFMAG) {
-            const HEADER_LEN: usize = std::mem::size_of::<elf::FileHeader>();
+            const HEADER_LEN: usize = size_of::<elf::FileHeader>();
             if bytes.len() < HEADER_LEN {
                 bail!("Invalid ELF file");
             }

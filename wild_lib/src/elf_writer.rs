@@ -389,7 +389,7 @@ fn split_output_into_sections<'out, S: StorageModel>(
 
 #[tracing::instrument(skip_all, name = "Sort .eh_frame_hdr")]
 fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {
-    let entry_bytes = &mut eh_frame_hdr[core::mem::size_of::<elf::EhFrameHdr>()..];
+    let entry_bytes = &mut eh_frame_hdr[size_of::<elf::EhFrameHdr>()..];
     let entries: &mut [elf::EhFrameHdrEntry] = bytemuck::cast_slice_mut(entry_bytes);
     entries.sort_by_key(|e| e.frame_ptr);
 }
@@ -535,15 +535,14 @@ impl<'out> VersionWriter<'out> {
     }
 
     fn take_verneed(&mut self) -> Result<&'out mut Verneed> {
-        let bytes = self.take_bytes(core::mem::size_of::<Verneed>())?;
+        let bytes = self.take_bytes(size_of::<Verneed>())?;
         Ok(object::from_bytes_mut(bytes)
             .map_err(|_| anyhow!("Incorrect .gnu.version_r alignment"))?
             .0)
     }
 
     fn take_auxes(&mut self, version_count: u16) -> Result<&'out mut [Vernaux]> {
-        let bytes =
-            self.take_bytes(core::mem::size_of::<Vernaux>() * usize::from(version_count))?;
+        let bytes = self.take_bytes(size_of::<Vernaux>() * usize::from(version_count))?;
         object::slice_from_all_bytes_mut::<Vernaux>(bytes)
             .map_err(|_| anyhow!("Invalid .gnu.version_r allocation"))
     }
@@ -936,10 +935,8 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
     }
 
     fn take_eh_frame_hdr(&mut self) -> &'out mut EhFrameHdr {
-        let entry_bytes = crate::slice::slice_take_prefix_mut(
-            &mut self.eh_frame_hdr,
-            core::mem::size_of::<EhFrameHdr>(),
-        );
+        let entry_bytes =
+            crate::slice::slice_take_prefix_mut(&mut self.eh_frame_hdr, size_of::<EhFrameHdr>());
         bytemuck::from_bytes_mut(entry_bytes)
     }
 
@@ -949,7 +946,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         }
         let entry_bytes = crate::slice::slice_take_prefix_mut(
             &mut self.eh_frame_hdr,
-            core::mem::size_of::<EhFrameHdrEntry>(),
+            size_of::<EhFrameHdrEntry>(),
         );
         Some(bytemuck::from_bytes_mut(entry_bytes))
     }
@@ -1420,7 +1417,7 @@ impl<'data> ObjectLayout<'data> {
     ) -> Result {
         let eh_frame_section = self.object.section(eh_frame_section_index)?;
         let data = self.object.raw_section_data(eh_frame_section)?;
-        const PREFIX_LEN: usize = core::mem::size_of::<elf::EhFrameEntryPrefix>();
+        const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
         let e = LittleEndian;
         let section_flags = SectionFlags::from_header(eh_frame_section);
         let mut relocations = self
@@ -1439,7 +1436,7 @@ impl<'data> ObjectLayout<'data> {
         while input_pos + PREFIX_LEN <= data.len() {
             let prefix: elf::EhFrameEntryPrefix =
                 bytemuck::pod_read_unaligned(&data[input_pos..input_pos + PREFIX_LEN]);
-            let size = core::mem::size_of_val(&prefix.length) + prefix.length as usize;
+            let size = size_of_val(&prefix.length) + prefix.length as usize;
             let next_input_pos = input_pos + size;
             let next_output_pos = output_pos + size;
             if next_input_pos > data.len() {
@@ -2075,7 +2072,7 @@ fn write_gnu_hash_tables(
 
     let mut sym_defs = epilogue.dynamic_symbol_definitions.iter().peekable();
 
-    let elf_class_bits = core::mem::size_of::<u64>() as u32 * 8;
+    let elf_class_bits = size_of::<u64>() as u32 * 8;
 
     let mut start_of_chain = true;
     for (i, chain_out) in chains.iter_mut().enumerate() {
@@ -2309,8 +2306,8 @@ fn write_eh_frame_hdr<S: StorageModel>(
 fn eh_frame_hdr_entry_count<S: StorageModel>(layout: &Layout<S>) -> Result<u32> {
     let hdr_sec = layout.section_layouts.get(output_section_id::EH_FRAME_HDR);
     u32::try_from(
-        (hdr_sec.mem_size - core::mem::size_of::<elf::EhFrameHdr>() as u64)
-            / core::mem::size_of::<elf::EhFrameHdrEntry>() as u64,
+        (hdr_sec.mem_size - size_of::<elf::EhFrameHdr>() as u64)
+            / size_of::<elf::EhFrameHdrEntry>() as u64,
     )
     .context(".eh_frame_hdr entries overflowed 32 bits")
 }
@@ -2371,7 +2368,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         inputs.vma_of_section(output_section_id::DYNSYM)
     }),
     DynamicEntryWriter::new(object::elf::DT_SYMENT, |_inputs| {
-        core::mem::size_of::<elf::SymtabEntry>() as u64
+        size_of::<elf::SymtabEntry>() as u64
     }),
     DynamicEntryWriter::optional(
         object::elf::DT_VERNEED,
@@ -2449,7 +2446,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
             .section_part_layouts
             .get(part_id::RELA_DYN_RELATIVE)
             .mem_size
-            / core::mem::size_of::<elf::Rela>() as u64
+            / size_of::<elf::Rela>() as u64
     }),
     DynamicEntryWriter::new(object::elf::DT_GNU_HASH, |inputs| {
         inputs.vma_of_section(output_section_id::GNU_HASH)
@@ -2731,15 +2728,12 @@ impl<'data> DynamicLayout<'data> {
             let next_verneed_offset = if self.is_last_verneed {
                 0
             } else {
-                (core::mem::size_of::<Verneed>()
-                    + core::mem::size_of::<Vernaux>() * verdef_info.version_count as usize)
+                (size_of::<Verneed>() + size_of::<Vernaux>() * verdef_info.version_count as usize)
                     as u32
             };
             ver_need.vn_version.set(e, 1);
             ver_need.vn_cnt.set(e, verdef_info.version_count);
-            ver_need
-                .vn_aux
-                .set(e, core::mem::size_of::<Verneed>() as u32);
+            ver_need.vn_aux.set(e, size_of::<Verneed>() as u32);
             ver_need.vn_next.set(e, next_verneed_offset);
 
             let auxes = table_writer
@@ -2778,7 +2772,7 @@ impl<'data> DynamicLayout<'data> {
                     let vna_next = if is_last_aux {
                         0
                     } else {
-                        core::mem::size_of::<Vernaux>() as u32
+                        size_of::<Vernaux>() as u32
                     };
                     aux_out.vna_next.set(e, vna_next);
                     aux_out.vna_other.set(e, output_version);
@@ -2884,7 +2878,7 @@ pub(crate) fn verify_resolution_allocation(
         total_bytes_allocated = alignment.align_up(total_bytes_allocated) + size;
     });
     total_bytes_allocated = crate::alignment::USIZE.align_up(total_bytes_allocated);
-    let mut all_mem = vec![0_u64; total_bytes_allocated as usize / core::mem::size_of::<u64>()];
+    let mut all_mem = vec![0_u64; total_bytes_allocated as usize / size_of::<u64>()];
     let mut all_mem: &mut [u8] = bytemuck::cast_slice_mut(all_mem.as_mut_slice());
     let mut offset = 0;
     let mut buffers = mem_sizes.output_order_map(output_sections, |_part_id, alignment, &size| {

@@ -662,7 +662,7 @@ impl<'data> NameIndex<'data> {
 }
 
 fn slice_from_all_bytes<T: object::Pod>(data: &[u8]) -> &[T] {
-    object::slice_from_bytes(data, data.len() / core::mem::size_of::<T>())
+    object::slice_from_bytes(data, data.len() / size_of::<T>())
         .unwrap()
         .0
 }

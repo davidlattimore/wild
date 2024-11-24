@@ -69,10 +69,10 @@ struct EntryHeader {
 }
 
 const _ASSERTS: () = {
-    assert!(core::mem::size_of::<EntryHeader>() == 60);
+    assert!(size_of::<EntryHeader>() == 60);
 };
 
-const HEADER_SIZE: usize = core::mem::size_of::<EntryHeader>();
+const HEADER_SIZE: usize = size_of::<EntryHeader>();
 
 impl<'data> ArchiveIterator<'data> {
     /// Create an iterator from the bytes of the whole archive. The supplied bytes should start with

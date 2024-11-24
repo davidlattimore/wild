@@ -123,7 +123,7 @@ fn lookup_symbol(
     let e = LittleEndian;
     let symbol_base = header.symbol_base.get(e) as usize;
     let hash = object::elf::gnu_hash(sym_name);
-    let elf_class_bits = core::mem::size_of::<u64>() as u32 * 8;
+    let elf_class_bits = size_of::<u64>() as u32 * 8;
     let bloom_shift = header.bloom_shift.get(e);
     let bloom_count = bloom_values.len() as u32;
     let bucket_count = buckets.len() as u32;

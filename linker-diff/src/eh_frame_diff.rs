@@ -15,6 +15,7 @@ use object::ObjectSymbol;
 use object::SymbolKind;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::mem::offset_of;
 
 pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Object]) {
     report.add_diffs(crate::header_diff::diff_fields(
@@ -45,9 +46,8 @@ fn read_eh_frame_hdr_fields(object: &crate::Object) -> Result<FieldValues> {
     }
 
     let data = section.data()?;
-    let header: &EhFrameHdr = bytemuck::from_bytes(&data[..core::mem::size_of::<EhFrameHdr>()]);
-    let header_entries: &[EhFrameHdrEntry] =
-        bytemuck::cast_slice(&data[core::mem::size_of::<EhFrameHdr>()..]);
+    let header: &EhFrameHdr = bytemuck::from_bytes(&data[..size_of::<EhFrameHdr>()]);
+    let header_entries: &[EhFrameHdrEntry] = bytemuck::cast_slice(&data[size_of::<EhFrameHdr>()..]);
 
     values.insert("version", header.version, Converter::None, object);
     values.insert(
@@ -71,7 +71,7 @@ fn read_eh_frame_hdr_fields(object: &crate::Object) -> Result<FieldValues> {
     values.insert(
         "frame_pointer",
         (address1 as i64 + i64::from(header.frame_pointer)) as u64
-            + core::mem::offset_of!(EhFrameHdr, frame_pointer) as u64,
+            + offset_of!(EhFrameHdr, frame_pointer) as u64,
         Converter::SectionAddress,
         object,
     );
@@ -117,7 +117,7 @@ fn verify_frames(
     let eh_frame_base = eh_frame_section.address();
     let eh_frame_data = eh_frame_section.data()?;
     let mut offset = 0;
-    const PREFIX_LEN: usize = core::mem::size_of::<EhFrameEntryPrefix>();
+    const PREFIX_LEN: usize = size_of::<EhFrameEntryPrefix>();
     while offset + PREFIX_LEN <= eh_frame_data.len() {
         let prefix: EhFrameEntryPrefix =
             bytemuck::pod_read_unaligned(&eh_frame_data[offset..offset + PREFIX_LEN]);
@@ -139,7 +139,7 @@ fn verify_frames(
                 );
             }
         }
-        offset += core::mem::size_of_val(&prefix.length) + prefix.length as usize;
+        offset += size_of_val(&prefix.length) + prefix.length as usize;
     }
 
     // TODO: Enable this or clean it it up.
