@@ -140,7 +140,6 @@ pub(crate) fn from_env() -> Result<Action> {
 }
 
 // Parse the supplied input arguments, which should not include the program name.
-#[allow(clippy::if_same_then_else)]
 pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Result<Action> {
     let mut lib_search_path = Vec::new();
     let mut inputs = Vec::new();

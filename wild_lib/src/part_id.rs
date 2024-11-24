@@ -86,7 +86,6 @@ pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_GENERATED_PARTS
 pub(crate) const CUSTOM_PLACEHOLDER: PartId = PartId(u32::MAX);
 
 impl<'data> UnresolvedSection<'data> {
-    #[allow(clippy::if_same_then_else)]
     pub(crate) fn from_section(
         object: &crate::elf::File<'data>,
         section: &SectionHeader,
