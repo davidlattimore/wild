@@ -14,6 +14,8 @@ they're currently doing. If you know of such flags, please let me know.
 
 ## How to benchmark
 
+### Preparing the "run-with" files
+
 For benchmarking the linker, it's preferable to run just the linker, not the whole build process.
 
 The way to do that is by capturing the linker invocation so that it can be rerun. Wild has a built-in way to do that.
@@ -41,10 +43,12 @@ rustflags = [
 ```
 
 * Make sure that you have a version of wild in your `$PATH` so that it will be used (try `which wild` to check)
-* Run `WILD_SAVE_BASE=/tmp/wild/ripgrep cargo build` in the crate's root directory (include `RUST_FLAGS` as above
+* Run `WILD_SAVE_BASE=/tmp/wild/ripgrep cargo build` in the crate's root directory (include `RUSTFLAGS` as above
   if you have chosen that method)
-* You will get a few numbered subdirectories in `/tmp/wild/ripgrep`
-* The last numbered subdirectory will be the final link stage of the binary (TODO clarify that)
+* You will get a few numbered subdirectories in `/tmp/wild/ripgrep` for different binaries being linked in the build
+  process (such as build scripts and multiple binaries in a crate)
+* Usually the last numbered subdirectory will be the final link stage of the binary (TODO clarify that)
+* You can check what each file is linking using `tail -n 1 /tmp/wild/ripgrep/*/run-with`
 * In the case of ripgrep it is '6'
 * You can then run `/tmp/wild/ripgrep/6/run-with wild` and that will rerun the link with wild
 
