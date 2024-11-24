@@ -4,6 +4,7 @@
 
 use self::elf::NoteHeader;
 use self::elf::GNU_NOTE_NAME;
+use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use self::output_section_id::InfoInputs;
 use crate::alignment;
 use crate::alignment::Alignment;
@@ -304,63 +305,63 @@ fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
         })
         .collect_vec();
 
-    // First of all, merge (OR) all property values that belong to a property type.
     let mut type_index = 0usize;
-    // TODO: simplify
     let mut property_map = HashMap::new();
     for file_props in &properties_per_file {
         for prop in *file_props {
+            let property_class = get_property_class(prop.ptype).ok_or(anyhow::anyhow!(format!(
+                "unclassified property type {}",
+                prop.ptype
+            )))?;
             property_map
-                .entry(prop.r#type)
-                .and_modify(|e: &mut (usize, u32)| e.1 |= prop.data)
+                .entry(prop.ptype)
+                .and_modify(|e: &mut (usize, u32)| {
+                    if matches!(property_class, PropertyClass::And) {
+                        e.1 &= prop.data;
+                    } else {
+                        e.1 |= prop.data;
+                    }
+                })
                 .or_insert_with(|| {
                     type_index += 1;
-                    (type_index, prop.data)
+                    (
+                        type_index,
+                        if matches!(property_class, PropertyClass::And) {
+                            u32::MAX
+                        } else {
+                            0
+                        },
+                    )
                 });
         }
     }
 
-    let mut output_properties = Vec::new();
-    for (property_type, (_, property_value)) in property_map.into_iter().sorted_by_key(|x| x.1 .0) {
-        let property_class = get_property_class(property_type).ok_or(anyhow::anyhow!(format!(
-            "unclassified property type {property_type}"
-        )))?;
-        let mut output_value = 0;
-
-        // Merge bits for a particular property type.
-        for bit in 0..u32::BITS {
-            let mask = 1 << bit;
-            if property_value & mask != 0
-                && match property_class {
-                    PropertyClass::And => properties_per_file.iter().all(|props_per_file| {
-                        props_per_file
-                            .iter()
-                            .any(|prop| prop.r#type == property_type && prop.data & mask != 0)
-                    }),
-                    PropertyClass::Or | PropertyClass::AndOr => true,
-                }
-            {
-                output_value |= mask;
-            }
-        }
-
-        let type_present_in_all = properties_per_file.iter().all(|props_per_file| {
-            props_per_file
-                .iter()
-                .any(|prop| prop.r#type == property_type)
-        });
-        if (output_value != 0 && matches!(property_class, PropertyClass::Or | PropertyClass::And))
-            || (matches!(property_class, PropertyClass::AndOr) && type_present_in_all)
-        {
-            output_properties.push(GnuProperty {
-                r#type: property_type,
-                data: output_value,
+    let output_properties = property_map
+        .into_iter()
+        .sorted_by_key(|x| x.1 .0)
+        .filter_map(|(property_type, (_, property_value))| {
+            let property_class = get_property_class(property_type).unwrap();
+            let type_present_in_all = properties_per_file.iter().all(|props_per_file| {
+                props_per_file
+                    .iter()
+                    .any(|prop| prop.ptype == property_type)
             });
-        }
-    }
+            if match property_class {
+                PropertyClass::Or | PropertyClass::And => property_value != 0,
+                PropertyClass::AndOr => type_present_in_all,
+            } {
+                Some(GnuProperty {
+                    ptype: property_type,
+                    data: property_value,
+                })
+            } else {
+                None
+            }
+        })
+        .collect_vec();
 
     let epilogue = get_epilogue_mut(group_states);
-    epilogue.gnu_property_notes = dbg!(output_properties);
+    epilogue.gnu_property_notes = output_properties;
     Ok(())
 }
 
@@ -1027,7 +1028,7 @@ struct ExceptionFrame<'data> {
 
 #[derive(Debug)]
 pub(crate) struct GnuProperty {
-    pub(crate) r#type: u32,
+    pub(crate) ptype: u32,
     pub(crate) data: u32,
 }
 
@@ -2902,11 +2903,10 @@ impl<'data> EpilogueLayoutState<'data> {
         if !self.gnu_property_notes.is_empty() {
             common.allocate(
                 part_id::NOTE_GNU_PROPERTY,
-                (dbg!(
-                    size_of::<NoteHeader>()
-                        + GNU_NOTE_NAME.len()
-                        + self.gnu_property_notes.len() * 16
-                ) as u64),
+                (size_of::<NoteHeader>()
+                    + GNU_NOTE_NAME.len()
+                    + self.gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE)
+                    as u64,
             );
         }
 
@@ -3655,8 +3655,16 @@ fn process_gnu_property_note(
             .ok_or(anyhow!("Invalid type of .note.gnu.property"))?
         {
             let gnu_property = gnu_property?;
+
+            // Right now, skip all properties other than the with size equal to 4.
+            // There are existing properties, but unused right now:
+            // GNU_PROPERTY_STACK_SIZE, GNU_PROPERTY_NO_COPY_ON_PROTECTED
+            // TODO: support in the future
+            if gnu_property.pr_data().len() != 4 {
+                continue;
+            }
             object.gnu_property_notes.push(GnuProperty {
-                r#type: gnu_property.pr_type(),
+                ptype: gnu_property.pr_type(),
                 data: gnu_property.data_u32(e)?,
             });
         }

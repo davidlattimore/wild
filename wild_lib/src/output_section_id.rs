@@ -378,6 +378,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         name: SectionName(b".note.gnu.property"),
         ty: sht::NOTE,
         section_flags: shf::ALLOC,
+        min_alignment: alignment::NOTE_GNU_PROPERTY,
         ..DEFAULT_DEFS
     },
     // Multi-part generated sections

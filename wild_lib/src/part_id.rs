@@ -142,19 +142,6 @@ impl<'data> UnresolvedSection<'data> {
         } else if args.strip_debug && section_name.starts_with(b".debug_") {
             // Drop soon string merge debug info section.
             None
-            /*
-            } else if section_name == b".note.gnu.property" {
-                dbg!("sec: {}", String::from_utf8_lossy(section_name));
-                if let Ok(Some(notes)) = section.notes(LittleEndian, object.data) {
-                    for note in notes {
-                        dbg!(&note);
-                        for gnu_property in note.unwrap().gnu_properties(LittleEndian).unwrap() {
-                            dbg!(gnu_property);
-                        }
-                    }
-                };
-                None
-                */
         } else {
             let sh_type = SectionType::from_header(section);
             if !section_name.is_empty() {

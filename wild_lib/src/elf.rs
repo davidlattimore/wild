@@ -374,6 +374,7 @@ const _ASSERTS: () = {
 };
 
 pub(crate) const GNU_NOTE_NAME: &[u8] = b"GNU\0";
+pub(crate) const GNU_NOTE_PROPERTY_ENTRY_SIZE: usize = 16;
 
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -
 /// https://uclibc.org/docs/elf-64-gen.pdf. For information on the TLS related relocations, see "ELF
