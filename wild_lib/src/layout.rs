@@ -305,6 +305,8 @@ fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
         })
         .collect_vec();
 
+    // Merge bits of each property type based on type: OR or AND operation. When a property type
+    // is newly added to the map, we start either with zero or all bits-set (PropertyClass::And).
     let mut type_index = 0usize;
     let mut property_map = HashMap::new();
     for file_props in &properties_per_file {
