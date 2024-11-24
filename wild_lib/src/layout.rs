@@ -2,6 +2,8 @@
 //! referenced. Determines which sections need to be linked, sums their sizes decides what goes
 //! where in the output file then allocates addresses for each symbol.
 
+use self::elf::NoteHeader;
+use self::elf::GNU_NOTE_NAME;
 use self::output_section_id::InfoInputs;
 use crate::alignment;
 use crate::alignment::Alignment;
@@ -68,13 +70,21 @@ use linker_utils::elf::shf;
 use linker_utils::elf::SectionFlags;
 use object::elf::gnu_hash;
 use object::elf::Rela64;
+use object::elf::GNU_PROPERTY_X86_UINT32_AND_HI;
+use object::elf::GNU_PROPERTY_X86_UINT32_AND_LO;
+use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_HI;
+use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_LO;
+use object::elf::GNU_PROPERTY_X86_UINT32_OR_HI;
+use object::elf::GNU_PROPERTY_X86_UINT32_OR_LO;
 use object::read::elf::Dyn as _;
 use object::read::elf::Rela as _;
+use object::read::elf::SectionHeader;
 use object::read::elf::Sym as _;
 use object::read::elf::VerdefIterator;
 use object::LittleEndian;
 use object::SectionIndex;
 use smallvec::SmallVec;
+use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt::Display;
 use std::mem::replace;
@@ -117,6 +127,7 @@ pub fn compute<'data, 'symbol_db, S: StorageModel, A: Arch>(
     let mut group_states = gc_outputs.group_states;
 
     merge_dynamic_symbol_definitions(&mut group_states)?;
+    merge_gnu_property_notes(&mut group_states)?;
     finalise_all_sizes(
         symbol_db,
         &output_sections,
@@ -230,18 +241,126 @@ fn finalise_all_sizes<'data, S: StorageModel>(
     })
 }
 
+fn get_epilogue_mut<'a, 'data>(
+    group_states: &'a mut [GroupState<'data>],
+) -> &'a mut EpilogueLayoutState<'data> {
+    let Some(FileLayoutState::Epilogue(epilogue)) =
+        group_states.last_mut().and_then(|g| g.files.last_mut())
+    else {
+        panic!("Internal error, epilogue must be last");
+    };
+    epilogue
+}
+
 #[tracing::instrument(skip_all, name = "Merge dynamic symbol definitions")]
 fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) -> Result {
     let mut dynamic_symbol_definitions = Vec::new();
     for group in group_states.iter() {
         dynamic_symbol_definitions.extend(group.common.dynamic_symbol_definitions.iter().copied());
     }
-    let Some(FileLayoutState::Epilogue(epilogue)) =
-        group_states.last_mut().and_then(|g| g.files.last_mut())
-    else {
-        panic!("Internal error, epilogue must be last");
-    };
+
+    let epilogue = get_epilogue_mut(group_states);
     epilogue.dynamic_symbol_definitions = dynamic_symbol_definitions;
+    Ok(())
+}
+
+enum PropertyClass {
+    // A bit in the output pr_data is set if it is set in any relocatable input.
+    // If all bits in the the output pr_data field are zero, this property should be removed from output.
+    Or,
+    // A bit in the output pr_data field is set only if it is set in all relocatable input pr_data fields.
+    // If all bits in the the output pr_data field are zero, this property should be removed from output.
+    And,
+    // A bit in the output pr_data field is set if it is set in any relocatable input pr_data fields
+    // and this property is present in all relocatable input files. When all bits in the the output pr_data
+    // field are zero, this property should not be removed from output to indicate it has
+    // zero in all bits.
+    AndOr,
+}
+
+fn get_property_class(property_type: u32) -> Option<PropertyClass> {
+    match property_type {
+        GNU_PROPERTY_X86_UINT32_AND_LO..=GNU_PROPERTY_X86_UINT32_AND_HI => Some(PropertyClass::And),
+        GNU_PROPERTY_X86_UINT32_OR_LO..=GNU_PROPERTY_X86_UINT32_OR_HI => Some(PropertyClass::Or),
+        GNU_PROPERTY_X86_UINT32_OR_AND_LO..=GNU_PROPERTY_X86_UINT32_OR_AND_HI => {
+            Some(PropertyClass::AndOr)
+        }
+        _ => None,
+    }
+}
+
+#[tracing::instrument(skip_all, name = "Merge GNU property notes")]
+fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
+    let properties_per_file = group_states
+        .iter()
+        .flat_map(|group| {
+            group.files.iter().filter_map(|file| {
+                if let FileLayoutState::Object(object) = file {
+                    Some(&object.gnu_property_notes)
+                } else {
+                    None
+                }
+            })
+        })
+        .collect_vec();
+
+    // First of all, merge (OR) all property values that belong to a property type.
+    let mut type_index = 0usize;
+    // TODO: simplify
+    let mut property_map = HashMap::new();
+    for file_props in &properties_per_file {
+        for prop in *file_props {
+            property_map
+                .entry(prop.r#type)
+                .and_modify(|e: &mut (usize, u32)| e.1 |= prop.data)
+                .or_insert_with(|| {
+                    type_index += 1;
+                    (type_index, prop.data)
+                });
+        }
+    }
+
+    let mut output_properties = Vec::new();
+    for (property_type, (_, property_value)) in property_map.into_iter().sorted_by_key(|x| x.1 .0) {
+        let property_class = get_property_class(property_type).ok_or(anyhow::anyhow!(format!(
+            "unclassified property type {property_type}"
+        )))?;
+        let mut output_value = 0;
+
+        // Merge bits for a particular property type.
+        for bit in 0..u32::BITS {
+            let mask = 1 << bit;
+            if property_value & mask != 0
+                && match property_class {
+                    PropertyClass::And => properties_per_file.iter().all(|props_per_file| {
+                        props_per_file
+                            .iter()
+                            .any(|prop| prop.r#type == property_type && prop.data & mask != 0)
+                    }),
+                    PropertyClass::Or | PropertyClass::AndOr => true,
+                }
+            {
+                output_value |= mask;
+            }
+        }
+
+        let type_present_in_all = properties_per_file.iter().all(|props_per_file| {
+            props_per_file
+                .iter()
+                .any(|prop| prop.r#type == property_type)
+        });
+        if (output_value != 0 && matches!(property_class, PropertyClass::Or | PropertyClass::And))
+            || (matches!(property_class, PropertyClass::AndOr) && type_present_in_all)
+        {
+            output_properties.push(GnuProperty {
+                r#type: property_type,
+                data: output_value,
+            });
+        }
+    }
+
+    let epilogue = get_epilogue_mut(group_states);
+    epilogue.gnu_property_notes = dbg!(output_properties);
     Ok(())
 }
 
@@ -385,6 +504,7 @@ pub(crate) struct EpilogueLayoutState<'data> {
 
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     gnu_hash_layout: Option<GnuHashLayout>,
+    gnu_property_notes: Vec<GnuProperty>,
 }
 
 #[derive(Default, Debug)]
@@ -400,6 +520,7 @@ pub(crate) struct EpilogueLayout<'data> {
     pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     dynsym_start_index: u32,
+    pub(crate) gnu_property_notes: Vec<GnuProperty>,
 }
 
 pub(crate) struct ObjectLayout<'data> {
@@ -888,6 +1009,8 @@ struct ObjectLayoutState<'data> {
 
     eh_frame_section: Option<&'data object::elf::SectionHeader64<LittleEndian>>,
     eh_frame_size: u64,
+
+    gnu_property_notes: Vec<GnuProperty>,
 }
 
 #[derive(Default)]
@@ -900,6 +1023,12 @@ struct ExceptionFrame<'data> {
 
     /// The index of the previous frame that is for the same section.
     previous_frame_for_section: Option<FrameIndex>,
+}
+
+#[derive(Debug)]
+pub(crate) struct GnuProperty {
+    pub(crate) r#type: u32,
+    pub(crate) data: u32,
 }
 
 #[derive(Default)]
@@ -2722,6 +2851,7 @@ impl<'data> EpilogueLayoutState<'data> {
             },
             dynamic_symbol_definitions: Default::default(),
             gnu_hash_layout: None,
+            gnu_property_notes: Default::default(),
         }
     }
 
@@ -2766,6 +2896,17 @@ impl<'data> EpilogueLayoutState<'data> {
             common.allocate(
                 part_id::DYNSYM,
                 (self.dynamic_symbol_definitions.len() * size_of::<elf::SymtabEntry>()) as u64,
+            );
+        }
+
+        if !self.gnu_property_notes.is_empty() {
+            common.allocate(
+                part_id::NOTE_GNU_PROPERTY,
+                (dbg!(
+                    size_of::<NoteHeader>()
+                        + GNU_NOTE_NAME.len()
+                        + self.gnu_property_notes.len() * 16
+                ) as u64),
             );
         }
 
@@ -2833,6 +2974,7 @@ impl<'data> EpilogueLayoutState<'data> {
             gnu_hash_layout: self.gnu_hash_layout,
             dynamic_symbol_definitions: self.dynamic_symbol_definitions,
             dynsym_start_index,
+            gnu_property_notes: self.gnu_property_notes,
         })
     }
 }
@@ -2871,6 +3013,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             sections: non_dynamic.sections,
             sections_required: Default::default(),
             cies: Default::default(),
+            gnu_property_notes: Default::default(),
         })
     } else {
         FileLayoutState::Dynamic(DynamicLayoutState {
@@ -2899,6 +3042,8 @@ impl<'data> ObjectLayoutState<'data> {
         queue: &mut LocalWorkQueue,
     ) -> Result {
         let mut eh_frame_section = None;
+        let mut note_gnu_property_section = None;
+
         let no_gc = !resources.symbol_db.args.gc_sections;
         for (i, section) in self.sections.iter().enumerate() {
             match section {
@@ -2912,6 +3057,9 @@ impl<'data> ObjectLayoutState<'data> {
                 }
                 SectionSlot::EhFrameData(index) => {
                     eh_frame_section = Some(*index);
+                }
+                SectionSlot::NoteGnuProperty(index) => {
+                    note_gnu_property_section = Some(*index);
                 }
                 _ => (),
             }
@@ -2928,6 +3076,10 @@ impl<'data> ObjectLayoutState<'data> {
             let eh_frame_section = self.object.section(eh_frame_section_index)?;
             self.eh_frame_section = Some(eh_frame_section);
         }
+        if let Some(note_gnu_property_index) = note_gnu_property_section {
+            process_gnu_property_note(self, note_gnu_property_index)?;
+        }
+
         if resources.symbol_db.args.output_kind == OutputKind::SharedObject {
             self.load_non_hidden_symbols::<S, A>(common, resources, queue)?;
         }
@@ -2960,7 +3112,8 @@ impl<'data> ObjectLayoutState<'data> {
                 }
                 SectionSlot::Loaded(_)
                 | SectionSlot::EhFrameData(..)
-                | SectionSlot::LoadedDebugInfo(..) => {}
+                | SectionSlot::LoadedDebugInfo(..)
+                | SectionSlot::NoteGnuProperty(..) => {}
                 SectionSlot::MergeStrings(_) => {
                     // We currently always load everything in merge-string sections. i.e. we don't
                     // GC unreferenced data. So there's nothing to do here.
@@ -3482,6 +3635,33 @@ fn process_eh_frame_data<S: StorageModel, A: Arch>(
     // Allocate space for any remaining bytes in .eh_frame that aren't large enough to constitute an
     // actual entry. crtend.o has a single u32 equal to 0 as an end marker.
     object.eh_frame_size += (data.len() - offset) as u64;
+    Ok(())
+}
+
+fn process_gnu_property_note(
+    object: &mut ObjectLayoutState,
+    note_section_index: object::SectionIndex,
+) -> Result {
+    let section = object.object.section(note_section_index)?;
+    let e = LittleEndian;
+
+    let Some(notes) = section.notes(e, object.object.data)? else {
+        return Ok(());
+    };
+
+    for note in notes {
+        for gnu_property in note?
+            .gnu_properties(e)
+            .ok_or(anyhow!("Invalid type of .note.gnu.property"))?
+        {
+            let gnu_property = gnu_property?;
+            object.gnu_property_notes.push(GnuProperty {
+                r#type: gnu_property.pr_type(),
+                data: gnu_property.data_u32(e)?,
+            });
+        }
+    }
+
     Ok(())
 }
 

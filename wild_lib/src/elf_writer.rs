@@ -1,3 +1,4 @@
+use self::elf::NoteHeader;
 use crate::alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
@@ -19,6 +20,7 @@ use crate::elf::SymtabEntry;
 use crate::elf::Vernaux;
 use crate::elf::Verneed;
 use crate::elf::Versym;
+use crate::elf::GNU_NOTE_NAME;
 use crate::error::Result;
 use crate::layout::compute_allocations;
 use crate::layout::DynamicLayout;
@@ -62,9 +64,12 @@ use anyhow::Context;
 use linker_utils::elf::rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
+use linker_utils::elf::sht::NOTE;
 use linker_utils::elf::SectionFlags;
 use memmap2::MmapOptions;
+use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::from_bytes_mut;
+use object::read::elf::GnuProperty;
 use object::read::elf::Rela;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
@@ -2037,8 +2042,43 @@ impl EpilogueLayout<'_> {
 
         write_dynamic_symbol_definitions(self, table_writer, layout)?;
 
+        if !dbg!(&self.gnu_property_notes).is_empty() {
+            write_gnu_property_notes(self, buffers)?;
+        }
+
         Ok(())
     }
+}
+
+fn write_gnu_property_notes(
+    epilogue: &EpilogueLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+) -> Result {
+    dbg!("called");
+    let e = LittleEndian;
+    let (note_header, mut rest) =
+        from_bytes_mut::<NoteHeader>(buffers.get_mut(part_id::NOTE_GNU_PROPERTY))
+            .map_err(|_| anyhow!("Insufficient .note.gnu.property allocation"))?;
+    dbg!(&note_header);
+    dbg!(&rest.len());
+    note_header.n_namesz.set(e, GNU_NOTE_NAME.len() as u32);
+    note_header
+        .n_descsz
+        .set(e, (epilogue.gnu_property_notes.len() * 16) as u32);
+    note_header.n_type.set(e, NT_GNU_PROPERTY_TYPE_0);
+
+    let name_out = crate::slice::slice_take_prefix_mut(&mut rest, GNU_NOTE_NAME.len());
+    name_out.copy_from_slice(GNU_NOTE_NAME);
+
+    for note in &epilogue.gnu_property_notes {
+        let note_out = crate::slice::slice_take_prefix_mut(&mut rest, 16);
+        note_out[..4].copy_from_slice(&note.r#type.to_le_bytes());
+        note_out[4..8].copy_from_slice(&4u32.to_le_bytes());
+        note_out[8..12].copy_from_slice(&note.data.to_le_bytes());
+        note_out[12..].copy_from_slice(&0u32.to_le_bytes());
+    }
+
+    Ok(())
 }
 
 fn write_gnu_hash_tables(

@@ -36,6 +36,7 @@ pub(crate) type Verneed = object::elf::Verneed<LittleEndian>;
 pub(crate) type Vernaux = object::elf::Vernaux<LittleEndian>;
 pub(crate) type Versym = object::elf::Versym<LittleEndian>;
 pub(crate) type VerdefIterator<'data> = object::read::elf::VerdefIterator<'data, FileHeader>;
+pub(crate) type NoteHeader = object::elf::NoteHeader64<LittleEndian>;
 
 type SectionTable<'data> = object::read::elf::SectionTable<'data, FileHeader>;
 type SymbolTable<'data> = object::read::elf::SymbolTable<'data, FileHeader>;
@@ -371,6 +372,8 @@ const _ASSERTS: () = {
     assert!(PROGRAM_HEADER_SIZE as usize == size_of::<ProgramHeader>());
     assert!(SECTION_HEADER_SIZE as usize == size_of::<SectionHeader>());
 };
+
+pub(crate) const GNU_NOTE_NAME: &[u8] = b"GNU\0";
 
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -
 /// https://uclibc.org/docs/elf-64-gen.pdf. For information on the TLS related relocations, see "ELF

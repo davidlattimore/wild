@@ -58,8 +58,9 @@ pub(crate) const DYNSTR: PartId = PartId(13);
 pub(crate) const INTERP: PartId = PartId(14);
 pub(crate) const GNU_VERSION: PartId = PartId(15);
 pub(crate) const GNU_VERSION_R: PartId = PartId(16);
+pub(crate) const NOTE_GNU_PROPERTY: PartId = PartId(17);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 17;
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 18;
 
 // Generated sections that have more than one part. Fortunately they all have exactly 2 parts.
 pub(crate) const SYMTAB_LOCAL: PartId = PartId::multi(0);
@@ -141,6 +142,19 @@ impl<'data> UnresolvedSection<'data> {
         } else if args.strip_debug && section_name.starts_with(b".debug_") {
             // Drop soon string merge debug info section.
             None
+            /*
+            } else if section_name == b".note.gnu.property" {
+                dbg!("sec: {}", String::from_utf8_lossy(section_name));
+                if let Ok(Some(notes)) = section.notes(LittleEndian, object.data) {
+                    for note in notes {
+                        dbg!(&note);
+                        for gnu_property in note.unwrap().gnu_properties(LittleEndian).unwrap() {
+                            dbg!(gnu_property);
+                        }
+                    }
+                };
+                None
+                */
         } else {
             let sh_type = SectionType::from_header(section);
             if !section_name.is_empty() {
