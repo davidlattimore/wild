@@ -326,14 +326,7 @@ fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
                 })
                 .or_insert_with(|| {
                     type_index += 1;
-                    (
-                        type_index,
-                        if matches!(property_class, PropertyClass::And) {
-                            u32::MAX
-                        } else {
-                            0
-                        },
-                    )
+                    (type_index, prop.data)
                 });
         }
     }
@@ -349,7 +342,8 @@ fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
                     .any(|prop| prop.ptype == property_type)
             });
             if match property_class {
-                PropertyClass::Or | PropertyClass::And => property_value != 0,
+                PropertyClass::Or => property_value != 0,
+                PropertyClass::And => type_present_in_all && property_value != 0,
                 PropertyClass::AndOr => type_present_in_all,
             } {
                 Some(GnuProperty {
