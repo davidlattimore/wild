@@ -7,7 +7,7 @@ edition = "2021"
 ahash = { version = "0.8.11", default-features = false, features = ["std"] }
 anyhow = "1.0.93"
 bitflags = "2.6.0"
-bytemuck = { version = "1.19.0", features = ["derive"] }
+bytemuck = { version = "1.20.0", features = ["derive"] }
 crossbeam-queue = "0.3.11"
 crossbeam-utils = "0.8.20"
 linker-layout = { path = "../linker-layout" }
