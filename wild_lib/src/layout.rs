@@ -2852,6 +2852,16 @@ impl<'data> EpilogueLayoutState<'data> {
         }
     }
 
+    fn gnu_property_notes_section_size(&self) -> u64 {
+        if self.gnu_property_notes.is_empty() {
+            0
+        } else {
+            (size_of::<NoteHeader>()
+                + GNU_NOTE_NAME.len()
+                + self.gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE) as u64
+        }
+    }
+
     fn finalise_sizes<S: StorageModel>(
         &mut self,
         common: &mut CommonGroupState,
@@ -2896,15 +2906,10 @@ impl<'data> EpilogueLayoutState<'data> {
             );
         }
 
-        if !self.gnu_property_notes.is_empty() {
-            common.allocate(
-                part_id::NOTE_GNU_PROPERTY,
-                (size_of::<NoteHeader>()
-                    + GNU_NOTE_NAME.len()
-                    + self.gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE)
-                    as u64,
-            );
-        }
+        common.allocate(
+            part_id::NOTE_GNU_PROPERTY,
+            self.gnu_property_notes_section_size(),
+        );
 
         Ok(())
     }
@@ -2963,6 +2968,11 @@ impl<'data> EpilogueLayoutState<'data> {
         memory_offsets.increment(
             part_id::DYNSYM,
             self.dynamic_symbol_definitions.len() as u64 * elf::SYMTAB_ENTRY_SIZE,
+        );
+
+        memory_offsets.increment(
+            part_id::NOTE_GNU_PROPERTY,
+            self.gnu_property_notes_section_size(),
         );
 
         Ok(EpilogueLayout {
