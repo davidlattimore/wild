@@ -311,10 +311,9 @@ fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
     let mut property_map = HashMap::new();
     for file_props in &properties_per_file {
         for prop in *file_props {
-            let property_class = get_property_class(prop.ptype).ok_or(anyhow::anyhow!(format!(
-                "unclassified property type {}",
-                prop.ptype
-            )))?;
+            let property_class = get_property_class(prop.ptype).ok_or_else(|| {
+                anyhow::anyhow!(format!("unclassified property type {}", prop.ptype))
+            })?;
             property_map
                 .entry(prop.ptype)
                 .and_modify(|e: &mut (usize, u32)| {

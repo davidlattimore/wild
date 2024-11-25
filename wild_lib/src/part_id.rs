@@ -20,6 +20,7 @@ pub(crate) enum TemporaryPartId<'data> {
     BuiltIn(PartId),
     Custom(CustomSectionId<'data>, Alignment),
     EhFrameData,
+    NoteGnuProperty,
 }
 
 /// An ID for a part of an output section. Parts IDs are ordered with generated
@@ -142,6 +143,11 @@ impl<'data> UnresolvedSection<'data> {
         } else if args.strip_debug && section_name.starts_with(b".debug_") {
             // Drop soon string merge debug info section.
             None
+        } else if section_name == b".note.gnu.property" {
+            return Ok(Some(UnresolvedSection {
+                part_id: TemporaryPartId::NoteGnuProperty,
+                is_string_merge: false,
+            }));
         } else {
             let sh_type = SectionType::from_header(section);
             if !section_name.is_empty() {
@@ -282,6 +288,7 @@ impl<'data> TemporaryPartId<'data> {
             TemporaryPartId::BuiltIn(id) => id.built_in_details().name,
             TemporaryPartId::Custom(id, _) => id.name,
             TemporaryPartId::EhFrameData => EH_FRAME.built_in_details().name,
+            TemporaryPartId::NoteGnuProperty => NOTE_GNU_PROPERTY.built_in_details().name,
         }
     }
 }
@@ -313,6 +320,7 @@ impl std::fmt::Display for TemporaryPartId<'_> {
                 write!(f, "custom section `{}`", custom.name)
             }
             TemporaryPartId::EhFrameData => write!(f, "eh_frame data"),
+            TemporaryPartId::NoteGnuProperty => write!(f, "GNU note"),
         }
     }
 }

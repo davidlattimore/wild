@@ -744,7 +744,7 @@ fn resolve_sections_for_object<'data>(
                         });
                     }
                     TemporaryPartId::BuiltIn(p) => part_id = p,
-                    TemporaryPartId::EhFrameData => (),
+                    TemporaryPartId::EhFrameData | TemporaryPartId::NoteGnuProperty => (),
                 }
                 let slot = if unloaded.is_string_merge {
                     let section_data =
@@ -774,9 +774,7 @@ fn resolve_sections_for_object<'data>(
                         }
                         TemporaryPartId::Custom(custom_section_id, _alignment) => {
                             let section_name = custom_section_id.name.bytes();
-                            if section_name == b".note.gnu.property" {
-                                SectionSlot::NoteGnuProperty(input_section_index)
-                            } else if section_name.starts_with(b".debug_") {
+                            if section_name.starts_with(b".debug_") {
                                 if args.strip_debug {
                                     custom_section = None;
                                     SectionSlot::Discard
@@ -795,6 +793,9 @@ fn resolve_sections_for_object<'data>(
                         }
                         TemporaryPartId::EhFrameData => {
                             SectionSlot::EhFrameData(input_section_index)
+                        }
+                        TemporaryPartId::NoteGnuProperty => {
+                            SectionSlot::NoteGnuProperty(input_section_index)
                         }
                     }
                 };
