@@ -307,7 +307,6 @@ fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
 
     // Merge bits of each property type based on type: OR or AND operation. When a property type
     // is newly added to the map, we start either with zero or all bits-set (PropertyClass::And).
-    let mut type_index = 0usize;
     let mut property_map = HashMap::new();
     for file_props in &properties_per_file {
         for prop in *file_props {
@@ -316,24 +315,22 @@ fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
             })?;
             property_map
                 .entry(prop.ptype)
-                .and_modify(|e: &mut (usize, u32)| {
+                .and_modify(|e| {
                     if matches!(property_class, PropertyClass::And) {
-                        e.1 &= prop.data;
+                        *e &= prop.data;
                     } else {
-                        e.1 |= prop.data;
+                        *e |= prop.data;
                     }
                 })
-                .or_insert_with(|| {
-                    type_index += 1;
-                    (type_index, prop.data)
-                });
+                .or_insert_with(|| prop.data);
         }
     }
 
+    // Iterate the properties sorted by property_type so that we have a stable output!
     let output_properties = property_map
         .into_iter()
-        .sorted_by_key(|x| x.1 .0)
-        .filter_map(|(property_type, (_, property_value))| {
+        .sorted_by_key(|x| x.0)
+        .filter_map(|(property_type, property_value)| {
             let property_class = get_property_class(property_type).unwrap();
             let type_present_in_all = properties_per_file.iter().all(|props_per_file| {
                 props_per_file
