@@ -376,6 +376,28 @@ const _ASSERTS: () = {
 pub(crate) const GNU_NOTE_NAME: &[u8] = b"GNU\0";
 pub(crate) const GNU_NOTE_PROPERTY_ENTRY_SIZE: usize = 16;
 
+/// For additional information on Elf_Prop, see
+/// Linux Extensions to gABI at https://gitlab.com/x86-psABIs/Linux-ABI.
+///
+/// Right now, all properties that pr_datasz equal to 4 and so the pr_padding is always
+/// 4 bytes!
+///
+/// typedef struct {
+/// Elf_Word pr_type;
+/// Elf_Word pr_datasz;
+/// unsigned char pr_data[PR_DATASZ];
+/// unsigned char pr_padding[PR_PADDING];
+/// } Elf_Prop;
+
+#[derive(Zeroable, Pod, Clone, Copy)]
+#[repr(C)]
+pub(crate) struct NoteProperty {
+    pub(crate) pr_type: u32,
+    pub(crate) pr_datasz: u32,
+    pub(crate) pr_data: u32,
+    pub(crate) pr_padding: u32,
+}
+
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -
 /// https://uclibc.org/docs/elf-64-gen.pdf. For information on the TLS related relocations, see "ELF
 /// Handling For Thread-Local Storage" - https://www.uclibc.org/docs/tls.pdf.

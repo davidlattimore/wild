@@ -1,4 +1,5 @@
 use self::elf::NoteHeader;
+use self::elf::NoteProperty;
 use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use crate::alignment;
 use crate::arch::Arch;
@@ -2068,12 +2069,12 @@ fn write_gnu_property_notes(
     name_out.copy_from_slice(GNU_NOTE_NAME);
 
     for note in &epilogue.gnu_property_notes {
-        // TODO: serialize using a repr(C) structure
-        let note_out = crate::slice::slice_take_prefix_mut(&mut rest, GNU_NOTE_PROPERTY_ENTRY_SIZE);
-        note_out[..4].copy_from_slice(&note.ptype.to_le_bytes());
-        note_out[4..8].copy_from_slice(&4u32.to_le_bytes());
-        note_out[8..12].copy_from_slice(&note.data.to_le_bytes());
-        note_out[12..].copy_from_slice(&0u32.to_le_bytes());
+        let entry_bytes = crate::slice::slice_take_prefix_mut(&mut rest, size_of::<NoteProperty>());
+        let property: &mut NoteProperty = bytemuck::from_bytes_mut(entry_bytes);
+        property.pr_type = note.ptype;
+        property.pr_datasz = size_of_val(&property.pr_data) as u32;
+        property.pr_data = note.data;
+        property.pr_padding = 0;
     }
 
     Ok(())
