@@ -69,6 +69,8 @@ fn inform_parent_done(fds: &[c_int], exit_status: i32) {
         let bytes: [u8; 4] = exit_status.to_ne_bytes();
         libc::fwrite(bytes.as_ptr() as *const c_void, 4, 1, stream);
         libc::fclose(stream);
+        libc::close(libc::STDOUT_FILENO);
+        libc::close(libc::STDERR_FILENO);
     }
 }
 
