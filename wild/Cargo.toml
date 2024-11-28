@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 wild_lib = { version = "0.2.0", path = "../wild_lib" }
+anyhow = "1.0.93"
+libc = "0.2"
 
 [dev-dependencies]
 anyhow = "1.0.93"

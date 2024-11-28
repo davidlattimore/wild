@@ -1,7 +1,7 @@
-//! A hand-written parser for our arguments.
+//! A handwritten parser for our arguments.
 //!
 //! We don't currently use a 3rd party library because
-//! order is important for some arguments and it's not clear how easy it would be to get that
+//! order is important for some arguments, and it's not clear how easy it would be to get that
 //! correct with something like clap.
 
 use crate::error::Result;
@@ -45,7 +45,7 @@ pub(crate) struct Args {
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
 
-    /// If set and we're writing GC stats, then ignore any input files that contain any of the
+    /// If set, and we're writing GC stats, then ignore any input files that contain any of the
     /// specified substrings.
     pub(crate) gc_stats_ignore: Vec<String>,
 
@@ -133,11 +133,6 @@ const IGNORED_FLAGS: &[&str] = &[
     "relax",
     "no-relax",
 ];
-
-pub(crate) fn from_env() -> Result<Action> {
-    // Skip program name here
-    parse(std::env::args().skip(1))
-}
 
 // Parse the supplied input arguments, which should not include the program name.
 pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Result<Action> {
@@ -756,7 +751,7 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let Action::Link(args) = super::parse(INPUT1.iter()).unwrap() else {
+        let Action::Link(args) = super::parse(INPUT1.into_iter()).unwrap() else {
             panic!("Unexpected action");
         };
         assert!(args.is_relocatable());
