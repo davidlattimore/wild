@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use anyhow::Context;
 use libc::fork;
+use libc::pid_t;
 use std::env::args;
 use std::ffi::c_int;
 use std::ffi::c_void;
@@ -53,9 +54,9 @@ fn main() -> wild_lib::error::Result {
             // Err(anyhow!("Failed to fork"))
             wild_lib::Linker::from_args(args.into_iter())?.run(None)
         }
-        _ => {
+        pid => {
             // Fork success in the parent - wait for the child to "signal" us it's done
-            let exit_status = wait_for_child_done(&fds);
+            let exit_status = wait_for_child_done(&fds, pid);
             process::exit(exit_status);
         }
     }
@@ -74,9 +75,12 @@ fn inform_parent_done(fds: &[c_int], exit_status: i32) {
     }
 }
 
-/// Wait for the child process to signal it is done, by returning an exit code on the pipe
-/// or for its unexpected death by closure of the pipe before receiving anything back
-fn wait_for_child_done(fds: &[c_int]) -> i32 {
+/// Wait for the child process to signal it is done, by returning an exit code on the pipe.
+/// In the case the child crashes, or exits via some path that doesn't explicitly return (early)
+/// an exit status, then the pipe will be closed and `freed` will return -1.
+/// In that case, we get the child exit status by waiting for (or ensuring) it's death, and we
+/// return the child's exit status from `waitpid`
+fn wait_for_child_done(fds: &[c_int], child_pid: pid_t) -> i32 {
     unsafe {
         // close our sending end of the pipe
         libc::close(fds[1]);
@@ -93,7 +97,7 @@ fn wait_for_child_done(fds: &[c_int]) -> i32 {
             _ => {
                 // Child closed pipe without sending an exit status - get the process exit_status
                 let mut child_exit_status = -1i32;
-                libc::wait(&mut child_exit_status as *mut c_int);
+                libc::waitpid(child_pid, &mut child_exit_status as *mut c_int, 0);
                 child_exit_status
             }
         }
