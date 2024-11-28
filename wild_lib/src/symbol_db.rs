@@ -26,6 +26,8 @@ use itertools::Itertools;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::collections::hash_map;
+use std::mem::replace;
+use std::mem::take;
 
 pub struct SymbolDb<'data, S: StorageModel> {
     pub(crate) args: &'data Args,
@@ -299,7 +301,7 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
                 let first_symbol_id = *entry.get();
                 // Update the entry at `first_symbol_id` to point to the new last symbol (the
                 // pending symbol).
-                let previous_last = core::mem::replace(
+                let previous_last = replace(
                     &mut self.alternative_definitions[first_symbol_id.as_usize()],
                     pending.symbol_id,
                 );
@@ -380,7 +382,7 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
     /// restored later by calling `restore_definitions`. While the definitions are taken, any method
     /// that requires definitions will fail.
     pub(crate) fn take_definitions(&mut self) -> Vec<SymbolId> {
-        core::mem::take(&mut self.symbol_definitions)
+        take(&mut self.symbol_definitions)
     }
 
     pub(crate) fn restore_definitions(&mut self, definitions: Vec<SymbolId>) {
@@ -637,7 +639,7 @@ pub(crate) struct SymbolDebug<'db, 'data, S: StorageModel> {
     symbol_id: SymbolId,
 }
 
-impl<'data, S: StorageModel> std::fmt::Display for SymbolDebug<'_, 'data, S> {
+impl<S: StorageModel> std::fmt::Display for SymbolDebug<'_, '_, S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let symbol_id = self.symbol_id;
         let symbol_name = self

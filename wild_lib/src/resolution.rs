@@ -50,6 +50,7 @@ use object::read::elf::Sym as _;
 use object::LittleEndian;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
+use std::mem::take;
 use std::num::NonZeroU32;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -321,7 +322,7 @@ struct ResolutionResources<'data, 'definitions, 'outer_scope, S: StorageModel> {
     work_queue: SegQueue<WorkItem<'definitions>>,
 }
 
-impl<'data, S: StorageModel> ResolutionResources<'data, '_, '_, S> {
+impl<S: StorageModel> ResolutionResources<'_, '_, '_, S> {
     fn request_file_id(&self, file_id: FileId) {
         if let Some(definitions) = self.definitions_per_file[file_id.group()][file_id.file()].take()
         {
@@ -354,8 +355,8 @@ fn resolve_alternative_symbol_definitions<'data, S: StorageModel>(
     // For now, we do this from a single thread since we don't expect a lot of symbols will have
     // multiple definitions. If it turns out that there are cases where it's actually taking
     // significant time, then we could parallelise this without too much work.
-    let previous_definitions = core::mem::take(&mut symbol_db.alternative_definitions);
-    let symbols_with_alternatives = core::mem::take(&mut symbol_db.symbols_with_alternatives);
+    let previous_definitions = take(&mut symbol_db.alternative_definitions);
+    let symbols_with_alternatives = take(&mut symbol_db.symbols_with_alternatives);
     let mut alternatives = Vec::new();
     for first in symbols_with_alternatives {
         alternatives.clear();
@@ -1001,7 +1002,7 @@ impl std::fmt::Display for ValueFlags {
     }
 }
 
-impl<'data, S: StorageModel> SymbolDb<'data, S> {
+impl<S: StorageModel> SymbolDb<'_, S> {
     fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
         if let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] {

@@ -5,6 +5,7 @@ use crate::args::Args;
 use crate::error::Result;
 use linker_trace::AddressTrace;
 use std::fmt::Write as _;
+use std::mem::take;
 use std::ops::DerefMut;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -69,7 +70,7 @@ where
         let Some(address) = data.address else { return };
         let trace = AddressTrace {
             address,
-            messages: core::mem::take(data.messages.lock().unwrap().deref_mut()),
+            messages: take(data.messages.lock().unwrap().deref_mut()),
         };
         self.data.lock().unwrap().traces.push(trace);
     }
@@ -123,7 +124,7 @@ impl tracing::field::Visit for MessageFormatter {
 impl OutputTraceLayer {
     fn flush(&self) -> Result {
         let mut file = std::io::BufWriter::new(std::fs::File::create(&self.trace_path)?);
-        let data = core::mem::take(self.data.lock().unwrap().deref_mut());
+        let data = take(self.data.lock().unwrap().deref_mut());
         data.write(&mut file)?;
         Ok(())
     }

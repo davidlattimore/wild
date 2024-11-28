@@ -3,6 +3,7 @@ use crate::input_data::FileId;
 use crate::parsing::ParsedInput;
 use crate::sharding::ShardKey as _;
 use crate::symbol_db::SymbolId;
+use std::mem::replace;
 
 pub(crate) struct Group<'data> {
     pub(crate) files: Vec<ParsedInput<'data>>,
@@ -39,7 +40,7 @@ pub(crate) fn group_files<'data>(files: Vec<ParsedInput<'data>>, args: &Args) ->
             || (!group.files.is_empty() && num_symbols_with_file > symbols_per_group)
         {
             // Start a new group.
-            groups.push(core::mem::replace(&mut group, Group::empty()));
+            groups.push(replace(&mut group, Group::empty()));
             num_symbols_with_file = file.symbol_id_range().len();
         }
         num_symbols = num_symbols_with_file;

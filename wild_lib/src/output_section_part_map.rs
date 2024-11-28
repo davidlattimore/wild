@@ -5,6 +5,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::part_id::PartId;
+use std::mem::take;
 use std::ops::AddAssign;
 
 /// A map from each part of each output section to some value. Different sections are split into
@@ -44,7 +45,7 @@ impl<T> OutputSectionPartMap<T> {
 
 impl<T: Default> OutputSectionPartMap<T> {
     pub(crate) fn take(&mut self, part_id: PartId) -> T {
-        core::mem::take(self.get_mut(part_id))
+        take(self.get_mut(part_id))
     }
 }
 

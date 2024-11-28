@@ -23,7 +23,7 @@ symbolic-demangle = "12.12.1"
 anyhow = "1.0.93"
 clap = { version = "4.5.21", features = ["derive"] }
 rayon = "1.10.0"
-bytemuck = { version = "1.19.0", features = ["derive"] }
+bytemuck = { version = "1.20.0", features = ["derive"] }
 itertools = "0.13.0"
 gimli = "0.31.1"
 fallible-iterator = "0.3.0"

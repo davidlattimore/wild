@@ -82,7 +82,7 @@ fn validate_resolution(
     };
     if let Some(got_address) = resolution.got_address {
         let start_offset = (got_address.get() - got.sh_addr(LittleEndian)) as usize;
-        let end_offset = start_offset + core::mem::size_of::<u64>();
+        let end_offset = start_offset + size_of::<u64>();
         if end_offset > got_data.len() {
             bail!("GOT offset beyond end of GOT 0x{end_offset}");
         }
