@@ -86,8 +86,16 @@ fn wait_for_child_done(fds: &[c_int]) -> i32 {
         // Wait for child to send exit_status or pipe to be closed
         let mut response: [u8; 4] = [0u8; 4];
         match libc::fread(response.as_mut_ptr() as *mut c_void, 1, 4, stream) {
-            4 => i32::from_ne_bytes(response),
-            _ => -1,
+            4 => {
+                // Child sent an exit status early - to allow us to exit before it performs shutdown
+                i32::from_ne_bytes(response)
+            }
+            _ => {
+                // Child closed pipe without sending an exit status - get the process exit_status
+                let mut child_exit_status = -1i32;
+                libc::wait(&mut child_exit_status as *mut c_int);
+                child_exit_status
+            }
         }
     }
 }
