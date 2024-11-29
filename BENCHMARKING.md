@@ -45,11 +45,11 @@ rustflags = [
 * Make sure that you have a version of wild in your `$PATH` so that it will be used (try `which wild` to check)
 * Run `WILD_SAVE_BASE=/tmp/wild/ripgrep cargo build` in the crate's root directory (include `RUSTFLAGS` as above
   if you have chosen that method)
-* You will get a few numbered subdirectories in `/tmp/wild/ripgrep` for different binaries being linked in the build
-  process (such as build scripts and multiple binaries in a crate)
-* Usually the last numbered subdirectory will be the final link stage of the binary (TODO clarify that)
-* You can check what each file is linking using `tail -n 1 /tmp/wild/ripgrep/*/run-with`
-* In the case of ripgrep it is '6'
+* You will get a few numbered subdirectories in `/tmp/wild/ripgrep` as part of the build process.
+    * Directories will be created for builds of build scripts, proc macros and crate binaries built
+    * Usually the last numbered subdirectory will be the build of crate's binary (if a single binary is built)
+    * You can check what each file is linking using `tail -n 1 /tmp/wild/ripgrep/*/run-with`
+    * In the case of ripgrep it is '6'
 * You can then run `/tmp/wild/ripgrep/6/run-with wild` and that will rerun the link with wild
 
 ### Run benchmark with hyperfine
