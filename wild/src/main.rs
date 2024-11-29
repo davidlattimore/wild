@@ -31,7 +31,7 @@ fn main() -> wild_lib::error::Result {
     match unsafe { fork() } {
         0 => {
             // Fork success in child - Run linker in this process.
-            let done_closure = move |exit_status: i32| inform_parent_done(&fds, exit_status);
+            let done_closure = move || inform_parent_done(&fds);
             linker.run(Some(Box::new(done_closure)))
         }
         -1 => {
@@ -46,24 +46,22 @@ fn main() -> wild_lib::error::Result {
     }
 }
 
-/// Inform the parent process that work of linker is done, sending the exit status over the pipe
-fn inform_parent_done(fds: &[c_int], exit_status: i32) {
+/// Inform the parent process that work of linker is done and that it succeeded.
+fn inform_parent_done(fds: &[c_int]) {
     unsafe {
         libc::close(fds[0]);
         let stream = libc::fdopen(fds[1], "w".as_ptr() as *const i8);
-        let bytes: [u8; 4] = exit_status.to_ne_bytes();
-        libc::fwrite(bytes.as_ptr() as *const c_void, 4, 1, stream);
+        let bytes: [u8; 1] = [b'X'];
+        libc::fwrite(bytes.as_ptr() as *const c_void, 1, 1, stream);
         libc::fclose(stream);
         libc::close(libc::STDOUT_FILENO);
         libc::close(libc::STDERR_FILENO);
     }
 }
 
-/// Wait for the child process to signal it is done, by returning an exit code on the pipe.
-/// In the case the child crashes, or exits via some path that doesn't explicitly return (early)
-/// an exit status, then the pipe will be closed and `freed` will return -1.
-/// In that case, we get the child exit status by waiting for (or ensuring) it's death, and we
-/// return the child's exit status from `waitpid`
+/// Wait for the child process to signal it is done, by sending a byte on the pipe. In the case the
+/// child crashes, or exits via some path that doesn't send a byte, then the pipe will be closed and
+/// we'll then wait for the subprocess to exit, returning its exit code.
 fn wait_for_child_done(fds: &[c_int], child_pid: pid_t) -> i32 {
     unsafe {
         // close our sending end of the pipe
@@ -71,15 +69,16 @@ fn wait_for_child_done(fds: &[c_int], child_pid: pid_t) -> i32 {
         // open the other end of the pipe for reading
         let stream = libc::fdopen(fds[0], "r".as_ptr() as *const i8);
 
-        // Wait for child to send exit_status or pipe to be closed
-        let mut response: [u8; 4] = [0u8; 4];
-        match libc::fread(response.as_mut_ptr() as *mut c_void, 1, 4, stream) {
-            4 => {
-                // Child sent an exit status early - to allow us to exit before it performs shutdown
-                i32::from_ne_bytes(response)
+        // Wait for child to send a byte via the pipe or for the pipe to be closed.
+        let mut response: [u8; 1] = [0u8; 1];
+        match libc::fread(response.as_mut_ptr() as *mut c_void, 1, 1, stream) {
+            1 => {
+                // Child sent a byte, which indicates that it succeeded and is now shutting done in
+                // the background.
+                0
             }
             _ => {
-                // Child closed pipe without sending an exit status - get the process exit_status
+                // Child closed pipe without sending a byte - get the process exit_status
                 let mut child_exit_status = -1i32;
                 libc::waitpid(child_pid, &mut child_exit_status as *mut c_int, 0);
                 child_exit_status
