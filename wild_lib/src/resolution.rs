@@ -2,6 +2,7 @@
 //! entries are needed. We also resolve which output section, if any, each input section should be
 //! assigned to.
 
+use self::part_id::NOTE_GNU_PROPERTY;
 use crate::args::Args;
 use crate::debug_assert_bail;
 use crate::elf::File;
@@ -483,6 +484,9 @@ pub(crate) enum SectionSlot<'data> {
 
     // Loaded section with debug info content.
     LoadedDebugInfo(crate::layout::Section),
+
+    // GNU property section (.note.gnu.property)
+    NoteGnuProperty(object::SectionIndex),
 }
 
 #[derive(Clone, Copy)]
@@ -757,6 +761,9 @@ fn resolve_sections_for_object<'data>(
                     })
                 } else {
                     match unloaded.part_id {
+                        TemporaryPartId::BuiltIn(id) if id == NOTE_GNU_PROPERTY => {
+                            SectionSlot::NoteGnuProperty(input_section_index)
+                        }
                         TemporaryPartId::BuiltIn(id)
                             if id
                                 .output_section_id()
@@ -770,7 +777,8 @@ fn resolve_sections_for_object<'data>(
                             SectionSlot::Unloaded(UnloadedSection::new(id))
                         }
                         TemporaryPartId::Custom(custom_section_id, _alignment) => {
-                            if custom_section_id.name.bytes().starts_with(b".debug_") {
+                            let section_name = custom_section_id.name.bytes();
+                            if section_name.starts_with(b".debug_") {
                                 if args.strip_debug {
                                     custom_section = None;
                                     SectionSlot::Discard
@@ -936,6 +944,7 @@ impl SectionSlot<'_> {
             SectionSlot::MergeStrings(section) => section.part_id = part_id,
             SectionSlot::UnloadedDebugInfo(out) => *out = part_id,
             SectionSlot::LoadedDebugInfo(section) => section.part_id = part_id,
+            SectionSlot::NoteGnuProperty(_) => {}
         }
     }
 
