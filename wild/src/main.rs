@@ -8,6 +8,10 @@ use std::ffi::c_void;
 use std::io::Error;
 use std::process;
 
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static MIMALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Run the linker with the supplied arguments.
 ///
 /// This implements an optimization to remove the time taken for some shutdown tasks from the time
