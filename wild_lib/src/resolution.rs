@@ -2,6 +2,7 @@
 //! entries are needed. We also resolve which output section, if any, each input section should be
 //! assigned to.
 
+use self::part_id::NOTE_GNU_PROPERTY;
 use crate::args::Args;
 use crate::debug_assert_bail;
 use crate::elf::File;
@@ -744,7 +745,7 @@ fn resolve_sections_for_object<'data>(
                         });
                     }
                     TemporaryPartId::BuiltIn(p) => part_id = p,
-                    TemporaryPartId::EhFrameData | TemporaryPartId::NoteGnuProperty => (),
+                    TemporaryPartId::EhFrameData => (),
                 }
                 let slot = if unloaded.is_string_merge {
                     let section_data =
@@ -760,6 +761,9 @@ fn resolve_sections_for_object<'data>(
                     })
                 } else {
                     match unloaded.part_id {
+                        TemporaryPartId::BuiltIn(id) if id == NOTE_GNU_PROPERTY => {
+                            SectionSlot::NoteGnuProperty(input_section_index)
+                        }
                         TemporaryPartId::BuiltIn(id)
                             if id
                                 .output_section_id()
@@ -793,9 +797,6 @@ fn resolve_sections_for_object<'data>(
                         }
                         TemporaryPartId::EhFrameData => {
                             SectionSlot::EhFrameData(input_section_index)
-                        }
-                        TemporaryPartId::NoteGnuProperty => {
-                            SectionSlot::NoteGnuProperty(input_section_index)
                         }
                     }
                 };
