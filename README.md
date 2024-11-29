@@ -72,8 +72,8 @@ stands for "Wild", since recursive acronyms are popular in open-source projects.
 
 There are lots of features that Wild doesn't yet support, so I'm not sure benchmarking is super
 useful at this stage. That said, I have done some very preliminary comparisons. I've tried linking
-the binary in my [warm build benchmark
-repository](https://github.com/davidlattimore/warm-build-benchmark), which builds an ~80MB, non-PIE,
+the binary in my [warm build benchmark repository](https://github.com/davidlattimore/warm-build-benchmark), which builds
+an ~80MB, non-PIE,
 statically linked binary with symbol tables, eh-frames and no debug info. On my laptop, I get the
 following times:
 
@@ -86,17 +86,12 @@ following times:
 | wild   | 363       | 6.6                       | 1585          | 80.9            |
 
 Notes about these results:
+
 * CPU time is user + system CPU time as reported by hyperfine.
 * Mold by default forks, which lets the user not wait for the mold process that does the work to
   shut down. This is a neat optimisation. In the above benchmarks, the time column is with this
   optimisation enabled. The CPU time however is with this optimisation disabled (--no-fork), since
   when forking is enabled, we can't easily measure the CPU time.
-
-I want to stress that this is only one benchmark. Many unknowns remain:
-
-* Will the results be significantly different for other benchmarks?
-* How will Wild scale up when linking much larger binaries and/or on systems with many CPU cores?
-* Will implementing the missing features require changes to Wild's design that might slow it down?
 
 All we can really conclude from this benchmark is that Wild is currently reasonably efficient at
 non-incremental linking and reasonable at taking advantage of a few threads. I don't think that
@@ -104,16 +99,7 @@ adding the missing features should change this benchmark significantly. i.e. add
 debug info really shouldn't change our speed when linking with no debug info. I can't be sure
 however until I implement these missing features.
 
-If you decide to benchmark Wild against other linkers, in order to make it a fair comparison, you
-should ensure that the other linkers aren't doing work on something that Wild doesn't support. In
-particular:
-
-* Wild defaults to `--gc-sections`, so for a fair comparison, that should be passed to all the
-  linkers.
-* Wild defaults to `-z now`, so best to pass that to all linkers.
-
-There might be other flags that speed up the other linkers by letting them avoid some work that
-they're currently doing. If you know of such flags, please let me know.
+See [BENCHMARKING.md](BENCHMARKING.md) for more details on benchmarking.
 
 ## Linking Rust code
 
@@ -128,30 +114,7 @@ RUSTFLAGS="-Clinker=clang -Clink-args=--ld-path=wild" cargo test
 
 ## Contributing
 
-If you'd like to help out, I'd love to hear from you. It's a good idea to reach out first to avoid
-duplication of effort. Also, it'll make it possible for me to provide hints that might make what
-you're trying to do easier. Options for communicating:
-
-* I like, where possible, to talk to people via video chat. You can book a time in my
-  [calendar](https://calendar.app.google/MBYQeATMNBvuK8AZ6). If time zones make this hard, let me
-  know via some other means, and I'll see if we can find a time that works (I'm in Sydney,
-  Australia).
-* Open an issue or a discussion here on GitHub.
-* Message me on the [rust-lang Zulip](https://rust-lang.zulipchat.com/)
-* Email me at dvdlttmr@gmail.com
-
-### Running tests
-
-To run tests (and have them pass) there are a number of pre-requisites to have installed on Linux:
-
-* `clang` 'C' compiler
-* `lld` linker
-* `nightly-x86_64-unknown-linux-gnu` toolchain (add with `rustup install nightly-x86_64-unknown-linux-gnu`)
-* `x86_64-unknown-linux-musl` target for the nightly toolchain (add
-  with `rustup target add --toolchain nightly x86_64-unknown-linux-musl`)
-* cranelift backend (add with `rustup component add rustc-codegen-cranelift-preview --toolchain nightly`)
-
-then use `cargo test` as usual.
+For more information on contributing to `wild` see [CONTRIBUTING.md](CONTIBUTING.md)
 
 ## Sponsorship
 

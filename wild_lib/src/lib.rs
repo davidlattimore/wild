@@ -63,7 +63,7 @@ impl Linker {
         })
     }
 
-    pub fn run(&self, done_closure: Option<Box<dyn FnOnce(i32)>>) -> error::Result {
+    pub fn run(&self, done_closure: Option<Box<dyn FnOnce()>>) -> error::Result {
         match &self.action {
             args::Action::Link(args) => {
                 if args.time_phases {
@@ -89,12 +89,19 @@ impl Linker {
             }
         }
     }
+
+    pub fn should_fork(&self) -> bool {
+        match &self.action {
+            args::Action::Link(args) => args.should_fork(),
+            args::Action::Version => false,
+        }
+    }
 }
 
 #[tracing::instrument(skip_all, name = "Link")]
 fn link<S: storage::StorageModel, A: arch::Arch>(
     args: &Args,
-    done_closure: Option<Box<dyn FnOnce(i32)>>,
+    done_closure: Option<Box<dyn FnOnce()>>,
 ) -> error::Result {
     args.setup_thread_pool()?;
     let mut output = elf_writer::Output::new(args);
@@ -115,7 +122,7 @@ fn link<S: storage::StorageModel, A: arch::Arch>(
     shutdown::free_output(output_file);
     // If there is a parent process waiting on this, inform it that linking is done and output ready
     if let Some(done_callback) = done_closure {
-        done_callback(0);
+        done_callback();
     }
     shutdown::free_layout(layout);
     shutdown::free_symbol_db(symbol_db);
