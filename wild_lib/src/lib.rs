@@ -89,6 +89,13 @@ impl Linker {
             }
         }
     }
+
+    pub fn should_fork(&self) -> bool {
+        match &self.action {
+            args::Action::Link(args) => args.should_fork(),
+            args::Action::Version => false,
+        }
+    }
 }
 
 #[tracing::instrument(skip_all, name = "Link")]

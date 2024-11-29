@@ -17,26 +17,11 @@ use std::process;
 /// back from the sub-process (via a pipe) when the main link task is done (the output file has
 /// been written, but some shutdown tasks remain).
 fn main() -> wild_lib::error::Result {
-    // skip the program name
-    let mut args: Vec<String> = args().skip(1).collect();
+    let linker = wild_lib::Linker::from_args(args().skip(1))?;
 
-    // The default is to fork a sub-process to do the actual linking
-    let mut fork_subprocess = true;
-
-    // But it can be de-activated using the "--no-fork" option. This option is acted upon here
-    // in main, but is removed and not passed onto the linker for parsing
-    args.retain(|a| {
-        if a == "--no-fork" {
-            fork_subprocess = false;
-            false
-        } else {
-            true
-        }
-    });
-
-    if !fork_subprocess {
-        // Create a linker with remaining args and run it in this process
-        return wild_lib::Linker::from_args(args.into_iter())?.run(None);
+    if !linker.should_fork() {
+        // Run the linker in this process without forking.
+        return linker.run(None);
     }
 
     let mut fds: [c_int; 2] = [0; 2];
@@ -45,14 +30,13 @@ fn main() -> wild_lib::error::Result {
 
     match unsafe { fork() } {
         0 => {
-            // Fork success in child - Run linker in this process with remaining args
+            // Fork success in child - Run linker in this process.
             let done_closure = move |exit_status: i32| inform_parent_done(&fds, exit_status);
-            wild_lib::Linker::from_args(args.into_iter())?.run(Some(Box::new(done_closure)))
+            linker.run(Some(Box::new(done_closure)))
         }
         -1 => {
             // Fork failure in the parent - Fallback to running linker in this process
-            // Err(anyhow!("Failed to fork"))
-            wild_lib::Linker::from_args(args.into_iter())?.run(None)
+            linker.run(None)
         }
         pid => {
             // Fork success in the parent - wait for the child to "signal" us it's done

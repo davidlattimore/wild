@@ -41,6 +41,7 @@ pub(crate) struct Args {
     pub(crate) soname: Option<String>,
     pub(crate) files_per_group: Option<u32>,
     pub(crate) gc_sections: bool,
+    pub(crate) should_fork: bool,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -173,6 +174,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut rpaths = Vec::new();
     let mut soname = None;
     let mut execstack = false;
+    let mut should_fork = true;
     let max_files_per_group = std::env::var(FILES_PER_GROUP_ENV)
         .ok()
         .map(|s| s.parse())
@@ -271,6 +273,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             gc_sections = true;
         } else if long_arg_eq("no-gc-sections") {
             gc_sections = false;
+        } else if long_arg_eq("no-fork") {
+            should_fork = false;
         } else if arg == "-m" {
             // TODO: Handle these flags
             input.next();
@@ -432,6 +436,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             .map(FileId::from_encoded),
         files_per_group: max_files_per_group,
         execstack,
+        should_fork,
     }))
 }
 
@@ -524,6 +529,10 @@ impl Args {
     ) -> Option<tracing::span::EnteredSpan> {
         let should_trace = self.print_allocations == Some(file_id);
         should_trace.then(|| tracing::trace_span!(crate::debug_trace::TRACE_SPAN_NAME).entered())
+    }
+
+    pub(crate) fn should_fork(&self) -> bool {
+        self.should_fork
     }
 }
 
@@ -751,7 +760,7 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let Action::Link(args) = super::parse(INPUT1.into_iter()).unwrap() else {
+        let Action::Link(args) = super::parse(INPUT1.iter()).unwrap() else {
             panic!("Unexpected action");
         };
         assert!(args.is_relocatable());
