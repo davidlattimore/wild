@@ -2,6 +2,7 @@
 name = "linker-utils"
 version = "0.1.0"
 edition = "2021"
+repository.workspace = true
 
 [dependencies]
 object = { version = "0.36.5", default-features = false, features = [

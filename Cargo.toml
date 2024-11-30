@@ -1,11 +1,18 @@
 [workspace]
 members = ["linker-diff", "linker-layout", "linker-trace", "linker-utils", "wild", "wild_lib"]
-
 resolver = "2"
+
+[workspace.package]
+repository = "https://github.com/davidlattimore/wild"
 
 [profile.opt-debug]
 inherits = "release"
 debug = true
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
 
 [workspace.lints.clippy]
 # It's not always desirable to use if-let instead of a match, especially if you might later end up

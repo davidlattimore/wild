@@ -2,6 +2,7 @@
 name = "wild_lib"
 version = "0.2.0"
 edition = "2021"
+repository.workspace = true
 
 [dependencies]
 ahash = { version = "0.8.11", default-features = false, features = ["std"] }
