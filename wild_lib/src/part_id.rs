@@ -59,8 +59,9 @@ pub(crate) const INTERP: PartId = PartId(14);
 pub(crate) const GNU_VERSION: PartId = PartId(15);
 pub(crate) const GNU_VERSION_R: PartId = PartId(16);
 pub(crate) const NOTE_GNU_PROPERTY: PartId = PartId(17);
+pub(crate) const NOTE_GNU_BUILD_ID: PartId = PartId(18);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 18;
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 19;
 
 // Generated sections that have more than one part. Fortunately they all have exactly 2 parts.
 pub(crate) const SYMTAB_LOCAL: PartId = PartId::multi(0);
@@ -130,6 +131,8 @@ impl<'data> UnresolvedSection<'data> {
             Some(output_section_id::GCC_EXCEPT_TABLE)
         } else if section_name == b".note.ABI-tag" {
             Some(output_section_id::NOTE_ABI_TAG)
+        } else if section_name == b".note.gnu.build-id" {
+            Some(output_section_id::NOTE_GNU_BUILD_ID)
         } else if section_name.starts_with(b".rela")
             || b".strtab" == section_name
             || b".symtab" == section_name

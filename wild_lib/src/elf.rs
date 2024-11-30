@@ -398,6 +398,19 @@ pub(crate) struct NoteProperty {
     pub(crate) pr_padding: u32,
 }
 
+#[derive(Zeroable, Pod, Clone, Copy, Default)]
+#[repr(C)]
+pub(crate) struct GnuBuildId([u8; 32]);
+
+impl GnuBuildId {
+    pub(crate) fn new(id: [u8; 32]) -> Self {    
+        Self(id)
+    }
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+}
+
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -
 /// https://uclibc.org/docs/elf-64-gen.pdf. For information on the TLS related relocations, see "ELF
 /// Handling For Thread-Local Storage" - https://www.uclibc.org/docs/tls.pdf.

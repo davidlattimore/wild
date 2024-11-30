@@ -45,6 +45,7 @@ pub(crate) const USIZE: Alignment = Alignment { exponent: 3 };
 
 pub(crate) const EH_FRAME_HDR: Alignment = Alignment { exponent: 2 };
 pub(crate) const NOTE_GNU_PROPERTY: Alignment = Alignment { exponent: 3 };
+pub(crate) const NOTE_GNU_BUILD_ID: Alignment = Alignment { exponent: 2 };
 
 impl Alignment {
     pub(crate) fn new(raw: u64) -> Result<Self> {
