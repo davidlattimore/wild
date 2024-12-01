@@ -85,7 +85,8 @@ pub(crate) const GNU_VERSION_R: OutputSectionId = part_id::GNU_VERSION_R.output_
 pub(crate) const PLT_GOT: OutputSectionId = part_id::PLT_GOT.output_section_id();
 pub(crate) const NOTE_GNU_PROPERTY: OutputSectionId =
     part_id::NOTE_GNU_PROPERTY.output_section_id();
-pub(crate) const NOTE_GNU_BUILD_ID: OutputSectionId = part_id::NOTE_GNU_BUILD_ID.output_section_id();
+pub(crate) const NOTE_GNU_BUILD_ID: OutputSectionId =
+    part_id::NOTE_GNU_BUILD_ID.output_section_id();
 
 // These two are multi-part sections, but we can pick any part we wish in order to get the section
 // ID.
