@@ -946,8 +946,6 @@ fn test_constant_ids() {
         (NOTE_GNU_BUILD_ID, ".note.gnu.build-id"),
     ];
     for (id, name) in check {
-        dbg!(std::str::from_utf8(id.built_in_details().name.bytes()).unwrap());
-        dbg!(*name);
         assert_eq!(
             std::str::from_utf8(id.built_in_details().name.bytes()).unwrap(),
             *name
