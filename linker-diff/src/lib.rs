@@ -18,6 +18,8 @@ use anyhow::Context as _;
 use asm_diff::AddressIndex;
 use clap::Parser;
 use itertools::Itertools;
+#[allow(clippy::wildcard_imports)]
+use linker_utils::elf::secnames::*;
 use object::read::elf::ElfSection64;
 use object::read::elf::ProgramHeader as _;
 use object::LittleEndian;
@@ -137,7 +139,7 @@ impl Config {
                 ".dynamic.DT_PLTREL",
                 // We currently produce a .got.plt whenever we produce .plt, but GNU ld doesn't
                 "section.got.plt",
-                ".got.plt",
+                GOT_PLT_SECTION_NAME_STR,
                 // We don't currently produce a separate .plt.sec section.
                 "section.plt.sec",
                 // We don't yet write this.
@@ -154,10 +156,19 @@ impl Config {
             .into_iter()
             .map(ToOwned::to_owned),
         );
-        self.equiv.push((".got".to_owned(), ".got.plt".to_owned()));
+        self.equiv.push((
+            GOT_SECTION_NAME_STR.to_owned(),
+            GOT_PLT_SECTION_NAME_STR.to_owned(),
+        ));
         // We don't currently define .plt.got and .plt.sec, we just put everything into .plt.
-        self.equiv.push((".plt".to_owned(), ".plt.got".to_owned()));
-        self.equiv.push((".plt".to_owned(), ".plt.sec".to_owned()));
+        self.equiv.push((
+            PLT_SECTION_NAME_STR.to_owned(),
+            PLT_GOT_SECTION_NAME_STR.to_owned(),
+        ));
+        self.equiv.push((
+            PLT_SECTION_NAME_STR.to_owned(),
+            PLT_SEC_SECTION_NAME_STR.to_owned(),
+        ));
     }
 
     #[must_use]
@@ -378,11 +389,31 @@ impl Report {
     }
 
     fn run_on_objects(&mut self, objects: &[Object]) {
-        validate_objects(self, objects, ".gnu.hash", gnu_hash::check_object);
+        validate_objects(
+            self,
+            objects,
+            GNU_HASH_SECTION_NAME_STR,
+            gnu_hash::check_object,
+        );
         validate_objects(self, objects, "index", asm_diff::validate_indexes);
-        validate_objects(self, objects, ".got.plt", asm_diff::validate_got_plt);
-        validate_objects(self, objects, ".symtab", symtab::validate_debug);
-        validate_objects(self, objects, ".dynsym", symtab::validate_dynamic);
+        validate_objects(
+            self,
+            objects,
+            GOT_PLT_SECTION_NAME_STR,
+            asm_diff::validate_got_plt,
+        );
+        validate_objects(
+            self,
+            objects,
+            SYMTAB_SECTION_NAME_STR,
+            symtab::validate_debug,
+        );
+        validate_objects(
+            self,
+            objects,
+            DYNSYM_SECTION_NAME_STR,
+            symtab::validate_dynamic,
+        );
         header_diff::check_dynamic_headers(self, objects);
         header_diff::check_file_headers(self, objects);
         asm_diff::report_function_diffs(self, objects);

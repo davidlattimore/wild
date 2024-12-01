@@ -6,6 +6,8 @@ use anyhow::bail;
 use anyhow::Context;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
+use linker_utils::elf::secnames::EH_FRAME_HDR_SECTION_NAME_STR;
+use linker_utils::elf::secnames::EH_FRAME_SECTION_NAME_STR;
 use object::elf::ProgramHeader64;
 use object::read::elf::ProgramHeader;
 use object::LittleEndian;
@@ -34,8 +36,11 @@ fn read_eh_frame_hdr_fields(object: &crate::Object) -> Result<FieldValues> {
         return Ok(values);
     };
 
-    let Some(section) = object.section_by_name(".eh_frame_hdr") else {
-        values.insert_string_owned(".eh_frame_hdr".to_owned(), "Missing".to_owned());
+    let Some(section) = object.section_by_name(EH_FRAME_HDR_SECTION_NAME_STR) else {
+        values.insert_string_owned(
+            EH_FRAME_HDR_SECTION_NAME_STR.to_owned(),
+            "Missing".to_owned(),
+        );
         return Ok(values);
     };
 
@@ -112,7 +117,7 @@ fn verify_frames(
     let mut frame_to_info = HashMap::new();
 
     let eh_frame_section = object
-        .section_by_name(".eh_frame")
+        .section_by_name(EH_FRAME_SECTION_NAME_STR)
         .context("Missing .eh_frame section")?;
     let eh_frame_base = eh_frame_section.address();
     let eh_frame_data = eh_frame_section.data()?;

@@ -9,6 +9,8 @@ use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context as _;
 use itertools::Itertools;
+#[allow(clippy::wildcard_imports)]
+use linker_utils::elf::secnames::*;
 use linker_utils::elf::shf;
 use linker_utils::elf::SectionFlags;
 #[allow(clippy::wildcard_imports)]
@@ -68,7 +70,7 @@ impl Converter {
             Converter::DynStrOffset => {
                 let dynstr = obj
                     .elf_file
-                    .section_by_name(".dynstr")
+                    .section_by_name(DYNSTR_SECTION_NAME_STR)
                     .context("Missing .dynstr")?;
                 let data = dynstr.data()?;
                 let start = value as usize;
@@ -129,7 +131,7 @@ pub(crate) fn check_dynamic_headers(report: &mut Report, objects: &[crate::Objec
     report.add_diffs(diff_fields(
         objects,
         read_dynamic_fields,
-        ".dynamic",
+        DYNAMIC_SECTION_NAME_STR,
         DiffMode::IgnoreIfAllErrors,
     ));
 }
@@ -335,7 +337,7 @@ fn read_file_header_fields(obj: &Object) -> Result<FieldValues> {
 
 fn read_dynamic_fields(obj: &Object) -> Result<FieldValues> {
     let dynamic = obj
-        .section_by_name(".dynamic")
+        .section_by_name(DYNAMIC_SECTION_NAME_STR)
         .with_context(|| format!("`{obj}` is missing .dynamic"))?;
 
     let mut values: HashMap<Cow<'static, str>, Vec<String>> = HashMap::new();

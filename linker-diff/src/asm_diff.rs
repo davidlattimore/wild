@@ -18,6 +18,8 @@ use iced_x86::OpKind;
 use iced_x86::Register;
 use itertools::Itertools;
 use linker_utils::elf::rel_type_to_string;
+#[allow(clippy::wildcard_imports)]
+use linker_utils::elf::secnames::*;
 use object::read::elf::FileHeader;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::Rela;
@@ -100,7 +102,7 @@ pub(crate) fn validate_got_plt(object: &Object) -> Result {
         return Ok(());
     };
     let got_plt_sec = object
-        .section_by_name(".got.plt")
+        .section_by_name(GOT_PLT_SECTION_NAME_STR)
         .context(".got.plt missing")?;
     let got_plt: &[u64] = object::slice_from_all_bytes(got_plt_sec.data()?)
         .map_err(|_| anyhow!("Invalid .got.plt"))?;
@@ -1082,7 +1084,10 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn index_dynamic_relocations(&mut self, elf_file: &ElfFile64<'data>) {
-        let Some(dynsym_index) = elf_file.section_by_name(".dynsym").map(|sec| sec.index()) else {
+        let Some(dynsym_index) = elf_file
+            .section_by_name(DYNSYM_SECTION_NAME_STR)
+            .map(|sec| sec.index())
+        else {
             return;
         };
 
@@ -1165,9 +1170,9 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn index_plt_sections(&mut self, elf_file: &ElfFile64<'data>) -> Result {
-        self.index_plt_named(elf_file, ".plt")?;
-        self.index_plt_named(elf_file, ".plt.sec")?;
-        self.index_plt_named(elf_file, ".plt.got")?;
+        self.index_plt_named(elf_file, PLT_SECTION_NAME_STR)?;
+        self.index_plt_named(elf_file, PLT_SEC_SECTION_NAME_STR)?;
+        self.index_plt_named(elf_file, PLT_GOT_SECTION_NAME_STR)?;
         Ok(())
     }
 
@@ -1353,8 +1358,8 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn index_got_tables(&mut self, elf_file: &ElfFile64) -> Result {
-        self.index_got_table(elf_file, ".got.plt")?;
-        self.index_got_table(elf_file, ".got")?;
+        self.index_got_table(elf_file, GOT_PLT_SECTION_NAME_STR)?;
+        self.index_got_table(elf_file, GOT_SECTION_NAME_STR)?;
         Ok(())
     }
 
