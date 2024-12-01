@@ -30,3 +30,22 @@ To run tests (and have them pass) there are a number of pre-requisites to have i
 * cranelift backend (add with `rustup component add rustc-codegen-cranelift-preview --toolchain nightly`)
 
 then use `cargo test` as usual.
+
+## Building wild with wild
+
+You can add or modify a `.cargo/config.toml` file to change the linked used to build `wild` to be `wild`!
+
+The below example has entries for `musl` and `gnu` ABI targets:
+
+```toml
+[target.x86_64-unknown-linux-musl]
+linker = "/usr/bin/clang"
+rustflags = ["-C", "relocation-model=static", "-C", "link-arg=--ld-path=wild"]
+
+[target.x86_64-unknown-linux-gnu]
+linker = "/usr/bin/clang"
+rustflags = ["-C", "link-arg=--ld-path=wild"]
+```
+
+The `.cargo/config.toml` file can be added in the root folder of the project, or somewhere else according to the
+[Hierarchical structure](https://doc.rust-lang.org/cargo/reference/config.html) that `cargo` uses to determine config

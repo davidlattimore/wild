@@ -10,3 +10,4 @@ dhat.out.*
 heaptrack*.zst
 .vscode/launch.json
 .idea
+.cargo/config.toml
