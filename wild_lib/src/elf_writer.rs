@@ -2133,9 +2133,9 @@ fn write_gnu_hash_tables(
             buckets[bucket as usize] = (i as u32) + gnu_hash_layout.symbol_base;
             start_of_chain = false;
         }
-        let last_in_chain = sym_defs.peek().map_or(true, |next| {
-            gnu_hash_layout.bucket_for_hash(next.hash) != bucket
-        });
+        let last_in_chain = sym_defs
+            .peek()
+            .is_none_or(|next| gnu_hash_layout.bucket_for_hash(next.hash) != bucket);
         if last_in_chain {
             *chain_out |= 1;
             start_of_chain = true;

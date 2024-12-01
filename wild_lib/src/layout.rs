@@ -1778,13 +1778,9 @@ fn find_required_sections<'data, S: StorageModel, A: Arch>(
                             std::thread::park();
                             idle = false;
                         } else {
-                            if resources
-                                .idle_threads
-                                .as_ref()
-                                .map_or(true, |idle_threads| {
-                                    idle_threads.push(std::thread::current()).is_err()
-                                })
-                            {
+                            if resources.idle_threads.as_ref().is_none_or(|idle_threads| {
+                                idle_threads.push(std::thread::current()).is_err()
+                            }) {
                                 // We're the only thread running. Either because there is only one
                                 // thread (resources.idle_threads is None) or because all other threads
                                 // are sleeping (resources.idle_threads is full). We're idle and all the
