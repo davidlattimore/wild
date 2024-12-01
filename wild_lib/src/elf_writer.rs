@@ -65,6 +65,9 @@ use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
 use linker_utils::elf::rel_type_to_string;
+use linker_utils::elf::secnames::DEBUG_LOC_SECTION_NAME;
+use linker_utils::elf::secnames::DEBUG_RANGES_SECTION_NAME;
+use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::elf::SectionFlags;
@@ -1146,7 +1149,7 @@ impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
                 format!(
                     "Insufficient {} entries allocated for symbol `{}`",
                     if self.is_dynamic {
-                        ".dynsym"
+                        DYNSYM_SECTION_NAME_STR
                     } else {
                         ".symtab global"
                     },
@@ -1449,7 +1452,7 @@ impl<'data> ObjectLayout<'data> {
             // the new tombstone values.
             //
             // Link: https://dwarfstd.org/issues/200609.1.html
-            if section_name == b".debug_loc" || section_name == b".debug_ranges" {
+            if section_name == DEBUG_LOC_SECTION_NAME || section_name == DEBUG_RANGES_SECTION_NAME {
                 // These sections use zero as a list terminator.
                 1
             } else {

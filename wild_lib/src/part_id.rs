@@ -9,6 +9,8 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionName;
 use crate::output_section_id::FINI;
 use crate::output_section_id::INIT;
+#[allow(clippy::wildcard_imports)]
+use linker_utils::elf::secnames::*;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::elf::SectionFlags;
@@ -98,46 +100,50 @@ impl<'data> UnresolvedSection<'data> {
         let section_name = object.section_name(section).unwrap_or_default();
         let section_flags = SectionFlags::from_header(section);
         let alignment = Alignment::new(object.section_alignment(section)?.max(1))?;
-        let built_in_section_id = if section_name.starts_with(b".rodata") {
+        let built_in_section_id = if section_name.starts_with(RODATA_SECTION_NAME) {
             Some(output_section_id::RODATA)
-        } else if section_name.starts_with(b".text") {
+        } else if section_name.starts_with(TEXT_SECTION_NAME) {
             Some(output_section_id::TEXT)
-        } else if section_name.starts_with(b".data") {
+        } else if section_name.starts_with(DATA_SECTION_NAME) {
             Some(output_section_id::DATA)
-        } else if section_name.starts_with(b".bss") {
+        } else if section_name.starts_with(BSS_SECTION_NAME) {
             Some(output_section_id::BSS)
-        } else if section_name.starts_with(b".init_array") || section_name.starts_with(b".ctors.") {
+        } else if section_name.starts_with(INIT_ARRAY_SECTION_NAME)
+            || section_name.starts_with(b".ctors.")
+        {
             Some(output_section_id::INIT_ARRAY)
-        } else if section_name.starts_with(b".fini_array") || section_name.starts_with(b".dtors.") {
+        } else if section_name.starts_with(FINI_ARRAY_SECTION_NAME)
+            || section_name.starts_with(b".dtors.")
+        {
             Some(output_section_id::FINI_ARRAY)
-        } else if section_name == b".init" {
+        } else if section_name == INIT_SECTION_NAME {
             Some(output_section_id::INIT)
-        } else if section_name == b".fini" {
+        } else if section_name == FINI_SECTION_NAME {
             Some(output_section_id::FINI)
-        } else if section_name == b".preinit_array" {
+        } else if section_name == PREINIT_ARRAY_SECTION_NAME {
             Some(output_section_id::PREINIT_ARRAY)
-        } else if section_name.starts_with(b".tdata") {
+        } else if section_name.starts_with(TDATA_SECTION_NAME) {
             Some(output_section_id::TDATA)
-        } else if section_name.starts_with(b".tbss") {
+        } else if section_name.starts_with(TBSS_SECTION_NAME) {
             Some(output_section_id::TBSS)
-        } else if section_name == b".comment" {
+        } else if section_name == COMMENT_SECTION_NAME {
             Some(output_section_id::COMMENT)
-        } else if section_name == b".eh_frame" {
+        } else if section_name == EH_FRAME_SECTION_NAME {
             return Ok(Some(UnresolvedSection {
                 part_id: TemporaryPartId::EhFrameData,
                 is_string_merge: false,
             }));
-        } else if section_name.starts_with(b".gcc_except_table") {
+        } else if section_name.starts_with(GCC_EXCEPT_TABLE_SECTION_NAME) {
             Some(output_section_id::GCC_EXCEPT_TABLE)
-        } else if section_name == b".note.ABI-tag" {
+        } else if section_name == NOTE_ABI_TAG_SECTION_NAME {
             Some(output_section_id::NOTE_ABI_TAG)
-        } else if section_name == b".note.gnu.build-id" {
+        } else if section_name == NOTE_GNU_BUILD_ID_SECTION_NAME {
             Some(output_section_id::NOTE_GNU_BUILD_ID)
         } else if section_name.starts_with(b".rela")
-            || b".strtab" == section_name
-            || b".symtab" == section_name
-            || b".shstrtab" == section_name
-            || b".group" == section_name
+            || STRTAB_SECTION_NAME == section_name
+            || SYMTAB_SECTION_NAME == section_name
+            || SHSTRTAB_SECTION_NAME == section_name
+            || GROUP_SECTION_NAME == section_name
         {
             // We don't currently allow references to these sections, discard them so that we avoid
             // allocating output section IDs.
@@ -145,7 +151,7 @@ impl<'data> UnresolvedSection<'data> {
         } else if args.strip_debug && section_name.starts_with(b".debug_") {
             // Drop soon string merge debug info section.
             None
-        } else if section_name == b".note.gnu.property" {
+        } else if section_name == NOTE_GNU_PROPERTY_SECTION_NAME {
             return Ok(Some(UnresolvedSection {
                 part_id: TemporaryPartId::BuiltIn(NOTE_GNU_PROPERTY),
                 is_string_merge: false,
