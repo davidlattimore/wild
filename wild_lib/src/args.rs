@@ -174,7 +174,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut soname = None;
     let mut execstack = false;
     let mut should_fork = true;
-    let mut build_id = true;
+    let mut build_id = false;
     let max_files_per_group = std::env::var(FILES_PER_GROUP_ENV)
         .ok()
         .map(|s| s.parse())
