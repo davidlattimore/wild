@@ -315,19 +315,12 @@ impl SizedOutput {
     #[instrument(skip_all, name = "Compute build ID")]
     fn compute_gnu_build_id_note(&self) -> GnuBuildId {
         let output_buffer = self.out.deref();
-        fn par_hash(buffer: &[u8]) -> blake3::Hash {
-            if buffer.len() > bytesize::mib(16u64) as usize {
-                let (l, r) = buffer.split_at(buffer.len() / 2);
-                let (l_hash, r_hash) = rayon::join(|| par_hash(l), || par_hash(r));
-                let mut hasher = blake3::Hasher::new();
-                hasher.update(l_hash.as_bytes());
-                hasher.update(r_hash.as_bytes());
-                hasher.finalize()
-            } else {
-                blake3::hash(buffer)
-            }
-        }
-        GnuBuildId::new(par_hash(output_buffer).into())
+        let hashes: Vec<_> = output_buffer.par_chunks(bytesize::mib(16u64) as usize).map(blake3::hash).collect();
+        let blake3_hash = hashes.into_iter().fold(blake3::Hasher::new(), |mut hasher, hash| {
+            hasher.update(hash.as_bytes());
+            hasher
+        }).finalize();
+        GnuBuildId::new(blake3_hash.into())
     }
 
     fn flush(&mut self) -> Result {
