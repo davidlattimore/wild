@@ -11,6 +11,7 @@ use crate::alignment::Alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
 use crate::args::Args;
+use crate::args::BuildIdOption;
 use crate::args::OutputKind;
 use crate::debug_assert_bail;
 use crate::elf;
@@ -498,7 +499,7 @@ pub(crate) struct EpilogueLayoutState<'data> {
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     gnu_hash_layout: Option<GnuHashLayout>,
     gnu_property_notes: Vec<GnuProperty>,
-    generate_build_id: bool,
+    build_id_size: Option<usize>,
 }
 
 #[derive(Default, Debug)]
@@ -515,7 +516,7 @@ pub(crate) struct EpilogueLayout<'data> {
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     dynsym_start_index: u32,
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
-    pub(crate) _generate_build_id: bool,
+    pub(crate) _build_id_size: Option<usize>,
 }
 
 pub(crate) struct ObjectLayout<'data> {
@@ -2836,7 +2837,12 @@ impl<'data> EpilogueLayoutState<'data> {
         resources: &GraphResources<S>,
         _queue: &mut LocalWorkQueue,
     ) -> Result {
-        self.generate_build_id = resources.symbol_db.args.build_id;
+        self.build_id_size = match &resources.symbol_db.args.build_id {
+            BuildIdOption::None => None,
+            BuildIdOption::Fast => Some(size_of::<blake3::Hash>()),
+            BuildIdOption::Hex(hex) => Some(hex.len()),
+            BuildIdOption::Uuid => Some(size_of::<uuid::Uuid>()),
+        };
         Ok(())
     }
     fn new(
@@ -2856,7 +2862,7 @@ impl<'data> EpilogueLayoutState<'data> {
             dynamic_symbol_definitions: Default::default(),
             gnu_hash_layout: None,
             gnu_property_notes: Default::default(),
-            generate_build_id: Default::default(),
+            build_id_size: Default::default(),
         }
     }
 
@@ -2870,8 +2876,8 @@ impl<'data> EpilogueLayoutState<'data> {
         }
     }
 
-    fn gnu_build_id_note_section_size(&self) -> u64 {
-        (size_of::<NoteHeader>() + GNU_NOTE_NAME.len() + size_of::<elf::GnuBuildId>()) as u64
+    fn gnu_build_id_note_section_size(&self) -> Option<u64> {
+        Some((size_of::<NoteHeader>() + GNU_NOTE_NAME.len() + self.build_id_size?) as u64)
     }
 
     fn finalise_sizes<S: StorageModel>(
@@ -2923,11 +2929,8 @@ impl<'data> EpilogueLayoutState<'data> {
             self.gnu_property_notes_section_size(),
         );
 
-        if self.generate_build_id {
-            common.allocate(
-                part_id::NOTE_GNU_BUILD_ID,
-                self.gnu_build_id_note_section_size(),
-            );
+        if let Some(build_id_sec_size) = self.gnu_build_id_note_section_size() {
+            common.allocate(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
         Ok(())
@@ -2994,11 +2997,8 @@ impl<'data> EpilogueLayoutState<'data> {
             self.gnu_property_notes_section_size(),
         );
 
-        if self.generate_build_id {
-            memory_offsets.increment(
-                part_id::NOTE_GNU_BUILD_ID,
-                self.gnu_build_id_note_section_size(),
-            );
+        if let Some(build_id_sec_size) = self.gnu_build_id_note_section_size() {
+            memory_offsets.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
         Ok(EpilogueLayout {
@@ -3007,7 +3007,7 @@ impl<'data> EpilogueLayoutState<'data> {
             dynamic_symbol_definitions: self.dynamic_symbol_definitions,
             dynsym_start_index,
             gnu_property_notes: self.gnu_property_notes,
-            _generate_build_id: self.generate_build_id,
+            _build_id_size: self.build_id_size,
         })
     }
 }
