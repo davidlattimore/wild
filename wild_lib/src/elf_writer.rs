@@ -75,8 +75,6 @@ use object::from_bytes_mut;
 use object::read::elf::Rela;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
-use sha2::Sha256;
-use sha2::Digest;
 use std::fmt::Display;
 use std::io::Write;
 use std::ops::Deref;
@@ -316,12 +314,20 @@ impl SizedOutput {
 
     #[instrument(skip_all, name = "Compute build ID")]
     fn compute_gnu_build_id_note(&self) -> GnuBuildId {
-        let output_buffer = match &self.out {
-            OutputBuffer::Mmap(mmap) => mmap.deref(),
-            OutputBuffer::InMemory(vec) => vec.deref(),
-        };
-
-        GnuBuildId::new(Sha256::digest(output_buffer).into())
+        let output_buffer = self.out.deref();
+        fn par_hash(buffer: &[u8]) -> blake3::Hash {
+            if buffer.len() > bytesize::mib(16u64) as usize {
+                let (l, r) = buffer.split_at(buffer.len() / 2);
+                let (l_hash, r_hash) = rayon::join(|| par_hash(l), || par_hash(r));
+                let mut hasher = blake3::Hasher::new();
+                hasher.update(l_hash.as_bytes());
+                hasher.update(r_hash.as_bytes());
+                hasher.finalize()
+            } else {
+                blake3::hash(buffer)
+            }
+        }
+        GnuBuildId::new(par_hash(output_buffer).into())
     }
 
     fn flush(&mut self) -> Result {
