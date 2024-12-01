@@ -70,34 +70,56 @@ stands for "Wild", since recursive acronyms are popular in open-source projects.
 
 ## Benchmarks
 
-There are lots of features that Wild doesn't yet support, so I'm not sure benchmarking is super
-useful at this stage. That said, I have done some very preliminary comparisons. I've tried linking
-the binary in my [warm build benchmark repository](https://github.com/davidlattimore/warm-build-benchmark), which builds
-an ~80MB, non-PIE,
-statically linked binary with symbol tables, eh-frames and no debug info. On my laptop, I get the
-following times:
+The goal of Wild is to eventually be very fast via incremental linking. However, we also want to be
+as fast as we can be for non-incremental linking and for the initial link when incremental linking
+is enabled.
 
-| Linker | Time (ms) | ± Standard deviation (ms) | CPU time (ms) | File size (MiB) |
-|--------|-----------|---------------------------|---------------|-----------------|
-| GNU ld | 12300     | 150                       | 12299         | 80.3            |
-| gold   | 3365      | 30                        | 3362          | 83.3            |
-| lld    | 905       | 5.6                       | 1222          | 84.8            |
-| mold   | 457       | 7.2                       | 2834          | 81.1            |
-| wild   | 363       | 6.6                       | 1585          | 80.9            |
+These benchmark were run on David Lattimore's laptop (2020 model System76 Lemur pro), which has 4
+cores (8 threads) and 42 GB of RAM.
 
-Notes about these results:
+The following times are for linking rustc-driver, which is a shared object that contains most of the
+code of the Rust compiler. Linking was done with with `--strip-debug` and `--build-id=none`.
 
-* CPU time is user + system CPU time as reported by hyperfine.
-* Mold by default forks, which lets the user not wait for the mold process that does the work to
-  shut down. This is a neat optimisation. In the above benchmarks, the time column is with this
-  optimisation enabled. The CPU time however is with this optimisation disabled (--no-fork), since
-  when forking is enabled, we can't easily measure the CPU time.
+| Linker            | Time (ms) | ± Standard deviation (ms) |
+|-------------------|-----------|---------------------------|
+| GNU ld (2.38)     | 20774     | 855                       |
+| gold (2.38)       | 6796      | 58                        |
+| lld (18.1.8)      | 1601      | 24                        |
+| mold (2.34.1)     | 946       | 17                        |
+| wild (2024-11-30) | 486       | 19                        |
 
-All we can really conclude from this benchmark is that Wild is currently reasonably efficient at
-non-incremental linking and reasonable at taking advantage of a few threads. I don't think that
-adding the missing features should change this benchmark significantly. i.e. adding support for
-debug info really shouldn't change our speed when linking with no debug info. I can't be sure
-however until I implement these missing features.
+The following times are for linking the C compiler, clang without debug info.
+
+| Linker            | Time (ms) | ± Standard deviation (ms) |
+|-------------------|-----------|---------------------------|
+| GNU ld (2.38)     | 8784      | 42                        |
+| gold (2.38)       | 2528      | 37                        |
+| lld (18.1.8)      | 1679      | 23                        |
+| mold (2.34.1)     | 429       | 2                         |
+| wild (2024-11-30) | 244       | 6                         |
+
+Next, let's add debug info (remove `--strip-debug`). First rustc-driver:
+
+| Linker            | Time (ms) | ± Standard deviation (ms) |
+|-------------------|-----------|---------------------------|
+| GNU ld (2.38)     | 23224     | 1030                      |
+| gold (2.38)       | 8840      | 879                       |
+| lld (18.1.8)      | 2741      | 1403                      |
+| mold (2.34.1)     | 3514      | 2102                      |
+| wild (2024-11-30) | 3158      | 1616                      |
+
+Now clang with debug info:
+
+| Linker            | Time (ms) | ± Standard deviation (ms) |
+|-------------------|-----------|---------------------------|
+| GNU ld (2.38)     | 139985    | 9871                      |
+| gold (2.38)       | 92147     | 7287                      |
+| lld (18.1.8)      | 30549     | 9819                      |
+| mold (2.34.1)     | 16933     | 5359                      |
+| wild (2024-11-30) | 31540     | 7133                      |
+
+So Wild performs pretty well without debug info, but with debug info, it's performing less well at
+the moment.
 
 See [BENCHMARKING.md](BENCHMARKING.md) for more details on benchmarking.
 

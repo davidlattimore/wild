@@ -8,9 +8,7 @@ particular:
 
 * Wild defaults to `--gc-sections`, so for a fair comparison, that should be passed to all the linkers.
 * Wild defaults to `-z now`, so best to pass that to all linkers.
-
-There might be other flags that speed up the other linkers by letting them avoid some work that
-they're currently doing. If you know of such flags, please let me know.
+* Wild doesn't yet support build-ids, so either don't pass `--build-id` or pass `--build-id=none`.
 
 ## How to benchmark
 
@@ -18,15 +16,16 @@ they're currently doing. If you know of such flags, please let me know.
 
 For benchmarking the linker, it's preferable to run just the linker, not the whole build process.
 
-The way to do that is by capturing the linker invocation so that it can be rerun. Wild has a built-in way to do that.
+The way to do that is by capturing the linker invocation so that it can be rerun. Wild has a
+built-in way to do that.
 
-You can benchmark linking of either a debug or a release build of a crate, this depends on what comparisons you wish to
-make, or what change in wild you want to quantify.
+You can benchmark linking of either a debug or a release build of a crate, this depends on what
+comparisons you wish to make, or what change in wild you want to quantify.
 
 Follow-these steps:
 
-* Chose the crate that you wish to use in your benchmark, clone it, `cd` into it's root directory and make sure it
-  builds with `cargo build` (for a rust project)
+* Chose the crate that you wish to use in your benchmark, clone it, `cd` into it's root directory
+  and make sure it builds with `cargo build` (for a rust project)
     * Examples: [`ripgrep`](https://github.com/BurntSushi/ripgrep.git)
 * Clean the build using `cargo clean`
 * To force the build of your chosen crate to link using wild, we have a couple of options:
@@ -42,20 +41,22 @@ rustflags = [
 ]
 ```
 
-* Make sure that you have a version of wild in your `$PATH` so that it will be used (try `which wild` to check)
-* Run `WILD_SAVE_BASE=/tmp/wild/ripgrep cargo build` in the crate's root directory (include `RUSTFLAGS` as above
-  if you have chosen that method)
+* Make sure that you have a version of wild in your `$PATH` so that it will be used (try `which
+  wild` to check)
+* Run `WILD_SAVE_BASE=/tmp/wild/ripgrep cargo build` in the crate's root directory (include
+  `RUSTFLAGS` as above if you have chosen that method)
 * You will get a few numbered subdirectories in `/tmp/wild/ripgrep` as part of the build process.
     * Directories will be created for builds of build scripts, proc macros and crate binaries built
-    * Usually the last numbered subdirectory will be the build of crate's binary (if a single binary is built)
+    * Usually the last numbered subdirectory will be the build of crate's binary (if a single binary
+      is built)
     * You can check what each file is linking using `tail -n 1 /tmp/wild/ripgrep/*/run-with`
     * In the case of ripgrep it is '6'
 * You can then run `/tmp/wild/ripgrep/6/run-with wild` and that will rerun the link with wild
 
 ### Run benchmark with hyperfine
 
-Let's benchmark the linking stage between `ld`, `mold` and `wild`, discarding the first two runs of each to reduce the
-effects of cache warmup
+Let's benchmark the linking stage between `ld`, `mold` and `wild`, discarding the first two runs of
+each to reduce the effects of cache warmup
 
 ```shell
 hyperfine --warmup 2 '/tmp/wild/ripgrep/6/run-with ld' '/tmp/wild/ripgrep/6/run-with mold' '/tmp/wild/ripgrep/6/run-with wild'
@@ -126,11 +127,12 @@ Benchmark 3 (56 runs): /tmp/wild/ripgrep/6/run-with wild
   branch_misses      3.49M  ± 7.86K     3.47M  … 3.51M           0 ( 0%)        ⚡- 64.2% ±  0.6%
 ```
 
-NOTE: Both `mold` and `wild` fork a child process and perform linking in it. Thus, the values for `peak_rss`, `User`
-and `System`  corresponds to the parent process only, and hence are not representative of real use by the linker.
+NOTE: Both `mold` and `wild` fork a child process and perform linking in it. Thus, the values for
+`peak_rss`, `User` and `System`  corresponds to the parent process only, and hence are not
+representative of real use by the linker.
 
-NOTE: `poop` uses the first command as the reference the others are compared against, so if focusing on wild, you might
-want to re-order the commands and invoke `poop` thus:
+NOTE: `poop` uses the first command as the reference the others are compared against, so if focusing
+on wild, you might want to re-order the commands and invoke `poop` thus:
 
 ```text
 poop '/tmp/wild/ripgrep/6/run-with wild' '/tmp/wild/ripgrep/6/run-with mold' '/tmp/wild/ripgrep/6/run-with ld'
@@ -166,16 +168,69 @@ linker.
 
 * [poop](https://github.com/andrewrk/poop) - gives a lot of measurements other than just time
 
-## Unknowns and future work
-
-Many unknowns remain and I want to improve the benchmarking of wild over time, to reduce them, or
-to quantify them as feature set grows and wild (and other linkers) evolve over time
-
-* Will the results be significantly different between linkers depending on the packages being linked?
-* How will Wild perform when linking much larger binaries.
-* How will Wild scale when running on systems with many CPU cores?
-* Will implementing the missing features require changes to Wild's design slow it down?
-
 ## Profiling
 
-We will add documentation on how to gather profile information when running Wild, whether in a benchmark or manually.
+### --time
+
+To figure out where wild is spending time, the first option is to run with `--time`. It's
+recommended to combine this with `--no-fork`. For example:
+
+```
+~/tmp/rustc-link/0/run-with target/release/wild --strip-debug --time --no-fork
+┌───    3.84 Open input files
+├───    7.45 Split archives
+├───    9.59 Parse input files
+│ ┌───    2.91 Parse version script
+│ ├───   16.67 Read symbols
+│ ├───   15.21 Populate symbol map
+├─┴─   37.68 Build symbol DB
+│ ┌───   29.02 Resolve symbols
+│ ├───   33.59 Resolve sections
+│ ├───    2.20 Assign section IDs
+│ ├───   15.39 Merge strings
+│ ├───    0.04 Canonicalise undefined symbols
+│ ├───    4.63 Resolve alternative symbol definitions
+├─┴─   84.97 Symbol resolution
+│ ┌───   76.63 Find required sections
+│ ├───    0.16 Merge dynamic symbol definitions
+│ ├───   18.74 Finalise per-object sizes
+│ ├───    0.12 Apply non-addressable indexes
+│ ├───    0.06 Compute total section sizes
+│ ├───    0.01 Compute segment layouts
+│ ├───    0.00 Compute per-alignment offsets
+│ ├───    0.14 Compute per-group start offsets
+│ ├───    0.00 Compute merged string section start addresses
+│ ├───   18.10 Assign symbol addresses
+│ ├───    0.30 Update dynamic symbol resolutions
+├─┴─  114.85 Layout
+│ ┌───    0.00 Wait for output file creation
+│ │ ┌───    0.63 Split output buffers by group
+│ ├─┴─  157.42 Write data to file
+│ ├───   15.05 Sort .eh_frame_hdr
+├─┴─  172.71 Write output file
+│ ┌───   14.45 Unmap output file
+│ ├───    7.27 Drop layout
+│ ├───    0.01 Drop symbol DB
+│ ├───   23.35 Drop input data
+├─┴─   45.15 Shutdown
+└─  481.09 Link
+```
+
+### Samply
+
+To look for hot functions and to check how the work distribution looks between threads, you can use
+[samply](https://github.com/mstange/samply).
+
+For this to be useful, you likely want optimisations and debug info. We have an `opt-debug` profile
+set up for this purpose.
+
+```sh
+cargo build --profile opt-debug
+```
+
+```sh
+~/tmp/rustc-link/0/run-with samply record target/opt-debug/wild --strip-debug
+```
+
+The result will look something [like this](https://share.firefox.dev/4eORM7r). This is using the
+Firefox profiler, so you'll need to open that link in Firefox.

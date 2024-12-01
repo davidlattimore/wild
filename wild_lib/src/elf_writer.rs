@@ -1,3 +1,6 @@
+use self::elf::NoteHeader;
+use self::elf::NoteProperty;
+use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use crate::alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
@@ -19,6 +22,7 @@ use crate::elf::SymtabEntry;
 use crate::elf::Vernaux;
 use crate::elf::Verneed;
 use crate::elf::Versym;
+use crate::elf::GNU_NOTE_NAME;
 use crate::error::Result;
 use crate::layout::compute_allocations;
 use crate::layout::DynamicLayout;
@@ -64,6 +68,7 @@ use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::elf::SectionFlags;
 use memmap2::MmapOptions;
+use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::from_bytes_mut;
 use object::read::elf::Rela;
 use object::read::elf::Sym as _;
@@ -2037,8 +2042,42 @@ impl EpilogueLayout<'_> {
 
         write_dynamic_symbol_definitions(self, table_writer, layout)?;
 
+        if !&self.gnu_property_notes.is_empty() {
+            write_gnu_property_notes(self, buffers)?;
+        }
+
         Ok(())
     }
+}
+
+fn write_gnu_property_notes(
+    epilogue: &EpilogueLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+) -> Result {
+    let e = LittleEndian;
+    let (note_header, mut rest) =
+        from_bytes_mut::<NoteHeader>(buffers.get_mut(part_id::NOTE_GNU_PROPERTY))
+            .map_err(|_| anyhow!("Insufficient .note.gnu.property allocation"))?;
+    note_header.n_namesz.set(e, GNU_NOTE_NAME.len() as u32);
+    note_header.n_descsz.set(
+        e,
+        (epilogue.gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE) as u32,
+    );
+    note_header.n_type.set(e, NT_GNU_PROPERTY_TYPE_0);
+
+    let name_out = crate::slice::slice_take_prefix_mut(&mut rest, GNU_NOTE_NAME.len());
+    name_out.copy_from_slice(GNU_NOTE_NAME);
+
+    for note in &epilogue.gnu_property_notes {
+        let entry_bytes = crate::slice::slice_take_prefix_mut(&mut rest, size_of::<NoteProperty>());
+        let property: &mut NoteProperty = bytemuck::from_bytes_mut(entry_bytes);
+        property.pr_type = note.ptype;
+        property.pr_datasz = size_of_val(&property.pr_data) as u32;
+        property.pr_data = note.data;
+        property.pr_padding = 0;
+    }
+
+    Ok(())
 }
 
 fn write_gnu_hash_tables(
