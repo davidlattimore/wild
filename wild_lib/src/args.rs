@@ -268,7 +268,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 "fast" | "md5"| "sha1" => BuildIdOption::Fast,
                 "uuid" => BuildIdOption::Uuid,
                 s if s.starts_with("0x") || s.starts_with("0X")=> {
-                    let hex_string = s.strip_prefix("0x").unwrap_or_else(|| s.strip_prefix("0X").unwrap());
+                    let hex_string = &s[2..];
                     let decoded_bytes = hex::decode(hex_string).with_context(|| format!("Invalid Hex Build Id `0x{hex_string}`"))?;
                     BuildIdOption::Hex(decoded_bytes)
                 }
