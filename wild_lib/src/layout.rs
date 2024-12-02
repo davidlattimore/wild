@@ -1978,12 +1978,13 @@ fn activate<'data, S: StorageModel, A: Arch>(
     resources: &GraphResources<'data, '_, S>,
 ) -> Result {
     match file {
-        FileLayoutState::Object(s) => s.activate::<S, A>(common, resources, queue),
-        FileLayoutState::Prelude(s) => s.activate(common, resources, queue),
-        FileLayoutState::Dynamic(s) => s.activate(common, resources, queue),
-        FileLayoutState::NotLoaded(_) => Ok(()),
+        FileLayoutState::Object(s) => s.activate::<S, A>(common, resources, queue)?,
+        FileLayoutState::Prelude(s) => s.activate(common, resources, queue)?,
+        FileLayoutState::Dynamic(s) => s.activate(common, resources, queue)?,
+        FileLayoutState::NotLoaded(_) => {}
         FileLayoutState::Epilogue(s) => s.activate(common, resources, queue),
     }
+    Ok(())
 }
 
 impl LocalWorkQueue {
@@ -2832,15 +2833,15 @@ impl<'data> EpilogueLayoutState<'data> {
         _common: &mut CommonGroupState,
         resources: &GraphResources<S>,
         _queue: &mut LocalWorkQueue,
-    ) -> Result {
+    ) {
         self.build_id_size = match &resources.symbol_db.args.build_id {
             BuildIdOption::None => None,
             BuildIdOption::Fast => Some(size_of::<blake3::Hash>()),
             BuildIdOption::Hex(hex) => Some(hex.len()),
             BuildIdOption::Uuid => Some(size_of::<uuid::Uuid>()),
         };
-        Ok(())
     }
+
     fn new(
         input_state: ResolvedEpilogue,
         custom_start_stop_defs: Vec<InternalSymDefInfo>,
