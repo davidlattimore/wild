@@ -6,8 +6,6 @@ repository.workspace = true
 
 [dependencies]
 wild_lib = { version = "0.2.0", path = "../wild_lib" }
-anyhow = "1.0.93"
-libc = "0.2"
 
 # This is off by default, since it doesn't appear to help. However, if you're linking against musl
 # libc, which has a comparatively slow allocator, then enabling this does help. To enable this,

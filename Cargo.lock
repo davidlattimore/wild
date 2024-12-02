@@ -1183,7 +1183,6 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "itertools",
- "libc",
  "linker-diff",
  "mimalloc",
  "object",
@@ -1210,6 +1209,7 @@ dependencies = [
  "flate2",
  "hex",
  "itertools",
+ "libc",
  "linker-layout",
  "linker-trace",
  "linker-utils",
