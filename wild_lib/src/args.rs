@@ -11,7 +11,6 @@ use crate::warning;
 use anyhow::bail;
 use anyhow::ensure;
 use anyhow::Context as _;
-use itertools::Itertools;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -268,20 +267,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 "none" =>  BuildIdOption::None,
                 "fast" | "md5"| "sha1" => BuildIdOption::Fast,
                 "uuid" => BuildIdOption::Uuid,
-                s if s.starts_with("0x") => {
-                    let hex_string = s.strip_prefix("0x").unwrap();
-                    if hex_string.len() %2 != 0 {
-                        bail!("Invalid Hex Build Id `0x{hex_string}`");
-                    }
-                    let mut split_pred = true;
-                    let bytes: Vec<_> = hex_string.split_inclusive(|_| {
-                        split_pred = !split_pred;
-                        split_pred
-                    })
-                    .map(|s| u8::from_str_radix(s, 16))
-                    .try_collect()
-                    .with_context(|| format!("Invalid Hex Build ID `0x{hex_string}`"))?;
-                    BuildIdOption::Hex(bytes)
+                s if s.starts_with("0x") || s.starts_with("0X")=> {
+                    let hex_string = s.strip_prefix("0x").unwrap_or_else(|| s.strip_prefix("0X").unwrap());
+                    let decoded_bytes = hex::decode(hex_string).with_context(|| format!("Invalid Hex Build Id `0x{hex_string}`"))?;
+                    BuildIdOption::Hex(decoded_bytes)
                 }
                 s => bail!("Invalid build-id value `{s}` valid values are `none`, `fast`, `md5`, `sha1` and `uuid`"),
             };
