@@ -39,6 +39,10 @@ pub(crate) mod shutdown;
 pub(crate) mod slice;
 pub(crate) mod storage;
 pub(crate) mod string_merging;
+#[cfg(feature = "fork")]
+pub(crate) mod subprocess;
+#[cfg(not(feature = "fork"))]
+#[path = "subprocess_unsupported.rs"]
 pub(crate) mod subprocess;
 pub(crate) mod symbol;
 pub(crate) mod symbol_db;
@@ -72,7 +76,10 @@ impl Linker {
 
     /// Runs the linker, calling `done_closure` when linking is complete, but before cleanup is
     /// performed.
-    pub(crate) fn run_with_callback(&self, done_closure: Option<Box<dyn FnOnce()>>) -> error::Result {
+    pub(crate) fn run_with_callback(
+        &self,
+        done_closure: Option<Box<dyn FnOnce()>>,
+    ) -> error::Result {
         match &self.action {
             args::Action::Link(args) => {
                 if args.time_phases {
