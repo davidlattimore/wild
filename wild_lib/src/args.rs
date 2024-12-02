@@ -42,6 +42,7 @@ pub(crate) struct Args {
     pub(crate) files_per_group: Option<u32>,
     pub(crate) gc_sections: bool,
     pub(crate) should_fork: bool,
+    pub(crate) build_id: BuildIdOption,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -54,6 +55,14 @@ pub(crate) struct Args {
 
     pub(crate) print_allocations: Option<FileId>,
     pub(crate) execstack: bool,
+}
+
+#[derive(Debug)]
+pub(crate) enum BuildIdOption {
+    None,
+    Fast,
+    Hex(Vec<u8>),
+    Uuid,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -113,8 +122,6 @@ pub(crate) const FILES_PER_GROUP_ENV: &str = "WILD_FILES_PER_GROUP";
 // other linkers. On the other, we should perhaps somehow let the user know that we don't support a
 // feature.
 const IGNORED_FLAGS: &[&str] = &[
-    // TODO: Support build-ids
-    "build-id",
     // TODO: Think about if anything is needed here. We don't need groups in order resolve cycles,
     // so perhaps ignoring these is the right thing to do.
     "start-group",
@@ -175,6 +182,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut soname = None;
     let mut execstack = false;
     let mut should_fork = true;
+    let mut build_id = BuildIdOption::None;
     let max_files_per_group = std::env::var(FILES_PER_GROUP_ENV)
         .ok()
         .map(|s| s.parse())
@@ -252,7 +260,20 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 bail!("Unsupported hash-style `{style}`");
             }
             // Since we currently only support GNU hash, there's no state to update.
-        } else if long_arg_split_prefix("build-id=").is_some() {
+        } else if long_arg_eq("build-id") {
+            build_id = BuildIdOption::Fast;
+        } else if let Some(build_id_value) = long_arg_split_prefix("build-id=") {
+            build_id = match build_id_value {
+                "none" =>  BuildIdOption::None,
+                "fast" | "md5"| "sha1" => BuildIdOption::Fast,
+                "uuid" => BuildIdOption::Uuid,
+                s if s.starts_with("0x") || s.starts_with("0X")=> {
+                    let hex_string = &s[2..];
+                    let decoded_bytes = hex::decode(hex_string).with_context(|| format!("Invalid Hex Build Id `0x{hex_string}`"))?;
+                    BuildIdOption::Hex(decoded_bytes)
+                }
+                s => bail!("Invalid build-id value `{s}` valid values are `none`, `fast`, `md5`, `sha1` and `uuid`"),
+            };
         } else if long_arg_eq("time") {
             time_phases = true;
         } else if let Some(rest) = long_arg_split_prefix("threads=") {
@@ -437,6 +458,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         files_per_group: max_files_per_group,
         execstack,
         should_fork,
+        build_id,
     }))
 }
 

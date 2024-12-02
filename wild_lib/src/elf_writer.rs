@@ -5,6 +5,7 @@ use crate::alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
 use crate::args::Args;
+use crate::args::BuildIdOption;
 use crate::args::OutputKind;
 use crate::debug_assert_bail;
 use crate::elf;
@@ -68,6 +69,7 @@ use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::elf::SectionFlags;
 use memmap2::MmapOptions;
+use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::from_bytes_mut;
 use object::read::elf::Rela;
@@ -85,6 +87,8 @@ use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use tracing::debug_span;
+use tracing::instrument;
+use uuid::Uuid;
 
 pub struct Output {
     path: Arc<Path>,
@@ -282,7 +286,63 @@ impl SizedOutput {
             let mut section_buffers = split_output_into_sections(layout, &mut self.out);
             sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
         }
+
+        self.write_gnu_build_id_note(&layout.args().build_id, layout)?;
         Ok(())
+    }
+
+    fn write_gnu_build_id_note<S: StorageModel>(
+        &mut self,
+        build_id_option: &BuildIdOption,
+        layout: &Layout<S>,
+    ) -> Result {
+        let hash_placeholder;
+        let uuid_placeholder;
+        let build_id = match build_id_option {
+            BuildIdOption::Fast => {
+                hash_placeholder = self.compute_hash();
+                hash_placeholder.as_bytes()
+            }
+            BuildIdOption::Hex(hex) => hex.as_slice(),
+            BuildIdOption::Uuid => {
+                uuid_placeholder = Uuid::new_v4();
+                uuid_placeholder.as_bytes()
+            }
+            BuildIdOption::None => return Ok(()),
+        };
+
+        let mut buffers = split_output_into_sections(layout, &mut self.out);
+        let e = LittleEndian;
+        let (note_header, mut rest) =
+            from_bytes_mut::<NoteHeader>(buffers.get_mut(output_section_id::NOTE_GNU_BUILD_ID))
+                .map_err(|_| anyhow!("Insufficient .note.gnu.build-id allocation"))?;
+        note_header.n_namesz.set(e, GNU_NOTE_NAME.len() as u32);
+        note_header.n_descsz.set(e, build_id.len() as u32);
+        note_header.n_type.set(e, NT_GNU_BUILD_ID);
+
+        let name_out = crate::slice::slice_take_prefix_mut(&mut rest, GNU_NOTE_NAME.len());
+        name_out.copy_from_slice(GNU_NOTE_NAME);
+
+        rest.copy_from_slice(build_id);
+
+        Ok(())
+    }
+
+    #[instrument(skip_all, name = "Compute build ID")]
+    fn compute_hash(&self) -> blake3::Hash {
+        let output_buffer = self.out.deref();
+        let hashes: Vec<_> = output_buffer
+            .par_chunks(bytesize::mib(16u64) as usize)
+            .map(blake3::hash)
+            .collect();
+        let blake3_hash = hashes
+            .into_iter()
+            .fold(blake3::Hasher::new(), |mut hasher, hash| {
+                hasher.update(hash.as_bytes());
+                hasher
+            })
+            .finalize();
+        blake3_hash
     }
 
     fn flush(&mut self) -> Result {
