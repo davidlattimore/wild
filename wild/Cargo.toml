@@ -24,3 +24,10 @@ object = { version = "0.36.5", default-features = false, features = [
 linker-diff = { path = "../linker-diff" }
 which = "7.0.0"
 rstest = "0.23.0"
+
+[features]
+default = [
+    "fork",
+]
+
+fork = ["wild_lib/fork"]

@@ -45,6 +45,9 @@ hex = "0.4.3"
 ar = "0.9.0"
 
 [features]
+# Support for running the linker as a subprocess.
+fork = []
+
 # Don't use multiple threads. This makes CPU profiles easier to read.
 single-threaded = []
 
