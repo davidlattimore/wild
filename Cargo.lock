@@ -615,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "linker-diff"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -634,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "linker-layout"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "postcard",
@@ -643,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "linker-trace"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "postcard",
@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "linker-utils"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "object",
 ]
@@ -1179,7 +1179,7 @@ dependencies = [
 
 [[package]]
 name = "wild"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "itertools",
@@ -1194,7 +1194,7 @@ dependencies = [
 
 [[package]]
 name = "wild_lib"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ahash",
  "anyhow",
