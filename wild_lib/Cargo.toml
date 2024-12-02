@@ -1,7 +1,8 @@
 [package]
 name = "wild_lib"
-version = "0.2.0"
+version.workspace = true
 edition = "2021"
+repository.workspace = true
 
 [dependencies]
 ahash = { version = "0.8.11", default-features = false, features = ["std"] }
@@ -35,7 +36,6 @@ bytesize = "1.3.0"
 flate2 = "1.0.35"
 bumpalo-herd = "0.1.2"
 zstd = "0.13.2"
-fxhash = "0.2.1"
 blake3 = "1.5.5"
 uuid = { version = "1.11.0", features = ["v4"] }
 hex = "0.4.3"

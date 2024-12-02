@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let Action::Link(args) = super::parse(INPUT1.iter()).unwrap() else {
+        let Action::Link(args) = super::parse(INPUT1.into_iter()).unwrap() else {
             panic!("Unexpected action");
         };
         assert!(args.is_relocatable());
