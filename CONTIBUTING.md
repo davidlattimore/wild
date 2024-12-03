@@ -87,3 +87,22 @@ pretty messed up.
 So in summary, if you think something shouldn't happen, it's fine to panic. Calling `unwrap` is
 fine. But if you're less sure that it can't happen, or you've observed it happen and need to debug
 why it happened, then switching to returning an error is recommended.
+
+## Building wild with wild
+
+You can add or modify a `.cargo/config.toml` file to change the linked used to build `wild` to be `wild`!
+
+The below example has entries for `musl` and `gnu` ABI targets:
+
+```toml
+[target.x86_64-unknown-linux-musl]
+linker = "/usr/bin/clang"
+rustflags = ["-C", "relocation-model=static", "-C", "link-arg=--ld-path=wild"]
+
+[target.x86_64-unknown-linux-gnu]
+linker = "/usr/bin/clang"
+rustflags = ["-C", "link-arg=--ld-path=wild"]
+```
+
+The `.cargo/config.toml` file can be added in the root folder of the project, or somewhere else according to the
+[Hierarchical structure](https://doc.rust-lang.org/cargo/reference/config.html) that `cargo` uses to determine config.
