@@ -39,6 +39,11 @@ pub(crate) mod shutdown;
 pub(crate) mod slice;
 pub(crate) mod storage;
 pub(crate) mod string_merging;
+#[cfg(feature = "fork")]
+pub(crate) mod subprocess;
+#[cfg(not(feature = "fork"))]
+#[path = "subprocess_unsupported.rs"]
+pub(crate) mod subprocess;
 pub(crate) mod symbol;
 pub(crate) mod symbol_db;
 #[cfg(not(feature = "single-threaded"))]
@@ -52,6 +57,8 @@ pub(crate) mod validation;
 pub(crate) mod verification;
 pub(crate) mod x86_64;
 
+pub use subprocess::run_in_subprocess;
+
 pub struct Linker {
     action: args::Action,
 }
@@ -63,7 +70,16 @@ impl Linker {
         })
     }
 
-    pub fn run(&self, done_closure: Option<Box<dyn FnOnce()>>) -> error::Result {
+    pub fn run(&self) -> error::Result {
+        self.run_with_callback(None)
+    }
+
+    /// Runs the linker, calling `done_closure` when linking is complete, but before cleanup is
+    /// performed.
+    pub(crate) fn run_with_callback(
+        &self,
+        done_closure: Option<Box<dyn FnOnce()>>,
+    ) -> error::Result {
         match &self.action {
             args::Action::Link(args) => {
                 if args.time_phases {

@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 repository = "https://github.com/davidlattimore/wild"
-version = "0.2.0"
+version = "0.3.0"
 readme = "README.md"
 
 [profile.opt-debug]

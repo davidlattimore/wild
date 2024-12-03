@@ -8,6 +8,7 @@ use crate::storage::StorageModel;
 use crate::storage::SymbolNameMap;
 use anyhow::bail;
 use anyhow::Context;
+use linker_utils::elf::secnames::GOT_SECTION_NAME_STR;
 use object::read::elf::SectionHeader as _;
 use object::LittleEndian;
 
@@ -25,7 +26,7 @@ fn validate_object<S: StorageModel>(object: &crate::elf::File, layout: &Layout<S
         // currently validating is GOT entries and they'll all have dynamic relocations.
         return Ok(());
     }
-    let Some((_, got)) = object.section_by_name(".got") else {
+    let Some((_, got)) = object.section_by_name(GOT_SECTION_NAME_STR) else {
         return Ok(());
     };
 

@@ -1,4 +1,0 @@
-[target.x86_64-unknown-linux-musl]
-linker = "/usr/bin/clang-15"
-rustflags = [ "-C", "relocation-model=static", "-C", "link-arg=--ld-path=wild" ]
-

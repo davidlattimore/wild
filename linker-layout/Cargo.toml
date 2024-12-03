@@ -6,7 +6,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow = "1.0.93"
-postcard = { version = "1.0.10", features = ["use-std"] }
+postcard = { version = "1.1.1", features = ["use-std"] }
 serde = { version = "1.0.215", features = ["derive"] }
 
 [lints]

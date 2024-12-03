@@ -3,6 +3,7 @@ use crate::Result;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
+use linker_utils::elf::secnames::GNU_HASH_SECTION_NAME_STR;
 use object::elf::FileHeader64;
 use object::read::elf::ElfSymbolTable;
 use object::LittleEndian;
@@ -27,7 +28,7 @@ pub(crate) fn check_object(obj: &Object) -> Result {
     }
     let gnu_hash = obj
         .elf_file
-        .section_by_name(".gnu.hash")
+        .section_by_name(GNU_HASH_SECTION_NAME_STR)
         .context("Missing .gnu.hash")?;
 
     if gnu_hash.align() != 8 {

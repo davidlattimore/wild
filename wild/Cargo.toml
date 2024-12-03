@@ -5,9 +5,7 @@ edition = "2021"
 repository.workspace = true
 
 [dependencies]
-wild_lib = { version = "0.2.0", path = "../wild_lib" }
-anyhow = "1.0.93"
-libc = "0.2"
+wild_lib = { path = "../wild_lib" }
 
 # This is off by default, since it doesn't appear to help. However, if you're linking against musl
 # libc, which has a comparatively slow allocator, then enabling this does help. To enable this,
@@ -27,3 +25,10 @@ object = { version = "0.36.5", default-features = false, features = [
 linker-diff = { path = "../linker-diff" }
 which = "7.0.0"
 rstest = "0.23.0"
+
+[features]
+default = [
+    "fork",
+]
+
+fork = ["wild_lib/fork"]
