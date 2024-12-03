@@ -1,7 +1,0 @@
-[target.x86_64-unknown-linux-musl]
-linker = "/usr/bin/clang"
-rustflags = ["-C", "relocation-model=static", "-C", "link-arg=--ld-path=wild"]
-
-[target.x86_64-unknown-linux-gnu]
-linker = "/usr/bin/clang"
-rustflags = ["-C", "link-arg=--ld-path=wild"]
