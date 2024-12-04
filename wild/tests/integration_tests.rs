@@ -651,7 +651,7 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
     // If multiple threads try to create a file at the same time, only one should do so and the
     // others should wait.
     let mutex = mutex_for_path(&output_path);
-    let _guard = mutex.lock()?;
+    let _guard = mutex.lock().unwrap();
 
     if is_newer(&output_path, &src_path) {
         return Ok(output_path);
