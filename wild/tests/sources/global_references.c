@@ -3,8 +3,7 @@
 
 #include <stddef.h>
 
-// Returns the passed value, but don't let the compiler make any assumptions about the returned
-// value.
+// Returns the passed value, but don't let the compiler make any assumptions about the returned value.
 int black_box(int input) {
     register int rdi __asm__ ("rdi") = input;
     __asm__ __volatile__ (
