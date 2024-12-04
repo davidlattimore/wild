@@ -1318,6 +1318,7 @@ fn integration_test(
             path: find_bin(&["ld"])?,
             enabled_by_default: true,
         }),
+        #[cfg(not(target_os="macos"))]
         Linker::ThirdParty(ThirdPartyLinker {
             name: "lld",
             gcc_name: "lld",
