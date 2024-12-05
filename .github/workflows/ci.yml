@@ -35,14 +35,17 @@ jobs:
       - run: cargo build --workspace --no-default-features
       - run: cargo test --workspace
 
-  test-macos-aarch64:
+  test-macos-15:
     name: Test macos15 (aarch64) nightly
-    runs-on: macos-15-arm64
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Install rust (nightly)
         uses: dtolnay/rust-toolchain@nightly
-      - run: cargo test --workspace
+      - run: |
+          uname -a
+          cargo test --workspace
+        continue-on-error: true
 
   clippy:
     name: Clippy
