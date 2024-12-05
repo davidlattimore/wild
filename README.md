@@ -2,8 +2,37 @@
 
 Wild is a linker with the goal of being very fast for iterative development.
 
-It's still very much a work-in-progress and definitely shouldn't be used for linking any production
-binaries.
+The plan is to eventually make it incremental, however that isn't yet implemented. It is however
+already pretty fast even without incremental linking.
+
+For production builds, its recommended to use a more mature linker like GNU ld or LLD.
+
+During development, if you'd like faster warm build times, then you could give Wild a try. It's at
+the point now where it should be usable for development purposes provided you're developing on
+x86-64 Linux. If you hit any issues, please file a bug report.
+
+## Installation
+
+To install a pre-built binary, you can copy and paste the command from the [releases
+page](https://github.com/davidlattimore/wild/releases). Alternatively, you can download the tarball
+and manually copy the `wild` binary somewhere on your path.
+
+To build and install, you can run:
+
+```sh
+cargo install --locked --bin wild --git https://github.com/davidlattimore/wild.git wild
+```
+
+## Using as your default linker
+
+If you'd like to use Wild as your default linker for building Rust code, you can put the following
+in `~/.cargo/config.toml`.
+
+```toml
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=--ld-path=wild"]
+```
 
 ## Q&A
 
@@ -59,7 +88,7 @@ Linker: Wild version 0.1.0
 Or if you don't want to install readelf, you can probably get away with:
 
 ```sh
-strings my-executable | grep Linker
+strings my-executable | grep 'Linker:'
 ```
 
 ### Where did the name come from?
