@@ -33,7 +33,6 @@ use crate::storage::StorageModel;
 use crate::storage::SymbolNameMap as _;
 use crate::string_merging::MergeStringsFileSection;
 use crate::string_merging::MergeStringsSection;
-use crate::string_merging::UnresolvedMergeStringsFileSection;
 use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
@@ -276,7 +275,7 @@ fn resolve_sections<'data>(
                 non_dynamic.sections = resolve_sections_for_object(
                     obj,
                     &mut non_dynamic.custom_sections,
-                    &mut non_dynamic.merge_strings_sections,
+                    &mut non_dynamic.merge_strings_section_indexes,
                     args,
                     allocator,
                     &loaded_metrics,
@@ -527,7 +526,7 @@ pub(crate) struct ResolvedObject<'data> {
 /// Parts of a resolved object that are only applicable to non-dynamic objects.
 pub(crate) struct NonDynamicResolved<'data> {
     pub(crate) sections: Vec<SectionSlot<'data>>,
-    pub(crate) merge_strings_sections: Vec<UnresolvedMergeStringsFileSection<'data>>,
+    pub(crate) merge_strings_section_indexes: Vec<object::SectionIndex>,
 
     /// Details about each custom section that is defined in this object.
     custom_sections: Vec<CustomSectionDetails<'data>>,
@@ -700,7 +699,7 @@ impl<'data> ResolvedObject<'data> {
             // We'll fill this in during section resolution.
             non_dynamic = Some(NonDynamicResolved {
                 sections: Default::default(),
-                merge_strings_sections: Default::default(),
+                merge_strings_section_indexes: Default::default(),
                 custom_sections: Default::default(),
             });
         }
@@ -718,7 +717,7 @@ impl<'data> ResolvedObject<'data> {
 fn resolve_sections_for_object<'data>(
     obj: &ResolvedObject<'data>,
     custom_sections: &mut Vec<CustomSectionDetails<'data>>,
-    merge_strings_out: &mut Vec<UnresolvedMergeStringsFileSection<'data>>,
+    string_merge_section_indexes: &mut Vec<object::SectionIndex>,
     args: &Args,
     allocator: &bumpalo_herd::Member<'data>,
     loaded_metrics: &LoadedMetrics,
@@ -751,10 +750,7 @@ fn resolve_sections_for_object<'data>(
                     let section_data =
                         obj.object
                             .section_data(input_section, allocator, loaded_metrics)?;
-                    merge_strings_out.push(UnresolvedMergeStringsFileSection::new(
-                        section_data,
-                        input_section_index,
-                    )?);
+                    string_merge_section_indexes.push(input_section_index);
                     SectionSlot::MergeStrings(MergeStringsFileSection {
                         part_id,
                         section_data,
