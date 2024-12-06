@@ -2,7 +2,14 @@
 #[global_allocator]
 static MIMALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[cfg(feature = "dhat")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 fn main() -> wild_lib::error::Result {
+    #[cfg(feature = "dhat")]
+    let _profiler = dhat::Profiler::new_heap();
+
     let linker = wild_lib::Linker::from_args(std::env::args().skip(1))?;
 
     if linker.should_fork() {
