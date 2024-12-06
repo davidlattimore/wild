@@ -14,17 +14,11 @@ use anyhow::bail;
 use anyhow::Context;
 use object::read::elf::Sym as _;
 use object::LittleEndian;
-use rayon::iter::ParallelBridge;
+use rayon::iter::IndexedParallelIterator as _;
+use rayon::iter::IntoParallelRefMutIterator as _;
 use rayon::iter::ParallelIterator;
-use std::collections::HashMap;
 
 const MERGE_STRING_BUCKETS: usize = 32;
-
-/// Information about a string-merge section prior to merging.
-pub(crate) struct UnresolvedMergeStringsFileSection<'data> {
-    section_index: object::SectionIndex,
-    buckets: [Vec<PreHashed<StringToMerge<'data>>>; MERGE_STRING_BUCKETS],
-}
 
 #[derive(Clone, Copy)]
 pub(crate) struct MergeStringsFileSection<'data> {
@@ -77,74 +71,127 @@ pub(crate) fn merge_strings<'data>(
     resolved: &mut [ResolvedGroup<'data>],
     output_sections: &OutputSections,
 ) -> Result<OutputSectionMap<MergeStringsSection<'data>>> {
-    let mut worklist_per_section: HashMap<OutputSectionId, [Vec<_>; MERGE_STRING_BUCKETS]> =
-        HashMap::new();
-
-    for group in resolved {
-        for file in &mut group.files {
-            let ResolvedFile::Object(obj) = file else {
-                continue;
-            };
-            let Some(non_dynamic) = obj.non_dynamic.as_mut() else {
-                continue;
-            };
-            for merge_info in &non_dynamic.merge_strings_sections {
-                let SectionSlot::MergeStrings(sec) =
-                    non_dynamic.sections[merge_info.section_index.0]
-                else {
-                    bail!("Internal error: expected SectionSlot::MergeStrings");
-                };
-
-                let id = sec.part_id.output_section_id();
-                worklist_per_section.entry(id).or_default();
-                for (i, bucket) in worklist_per_section
-                    .get_mut(&id)
-                    .unwrap()
-                    .iter_mut()
-                    .enumerate()
-                {
-                    bucket.push(&merge_info.buckets[i]);
-                }
-            }
-        }
-    }
+    let input_sections = group_merge_string_sections_by_output(resolved, output_sections)?;
 
     let mut strings_by_section = output_sections.new_section_map::<MergeStringsSection>();
 
-    for (section_id, buckets) in &worklist_per_section {
-        let merged_strings = strings_by_section.get_mut(*section_id);
+    // The number of workers we create is a trade off. A higher number will mean more input sections
+    // get processed in each cycle, which will likely mean less cycles and thus less total time
+    // spent waiting for the last work item in each batch to finish. However, it will mean more heap
+    // allocations. Processing more input sections in each batch may also reduce the chances of
+    // having stuff still in cache.
+    let num_workers = 64;
+    let mut workers = vec![StringMergeWorker::default(); num_workers];
 
-        buckets
-            .iter()
-            .zip(merged_strings.buckets.iter_mut())
-            .par_bridge()
-            .for_each(|(string_lists, merged_strings)| {
-                for strings in string_lists {
-                    for string in *strings {
-                        merged_strings.add_string(*string);
-                    }
-                }
-            });
-
-        for i in 1..MERGE_STRING_BUCKETS {
-            merged_strings.bucket_offsets[i] =
-                merged_strings.bucket_offsets[i - 1] + merged_strings.buckets[i - 1].len();
-        }
-    }
+    input_sections.try_for_each(|section_id, input_sections| {
+        let output_section = strings_by_section.get_mut(section_id);
+        output_section.add_input_sections(input_sections, &mut workers)
+    })?;
 
     strings_by_section.for_each(|section_id, sec| {
         if sec.len() > 0 {
-            let input_sections = worklist_per_section.get(&section_id).unwrap()[0].len();
             tracing::debug!(target: "metrics", section = ?output_sections.name(section_id), size = sec.len(),
                 totally_added = sec.totally_added(), strings = sec.string_count(), totally_added_strings = sec.totally_added_strings(),
-                input_sections, "merge_strings");
+                "merge_strings");
         }
     });
 
     Ok(strings_by_section)
 }
 
+// Gather up all the string-merge sections, grouping them by their output section ID. We return a
+// reference to the `MergeStringsFileSection` rather than copying it because it appears to be
+// faster.
+fn group_merge_string_sections_by_output<'data, 'a>(
+    resolved: &'a [ResolvedGroup<'data>],
+    output_sections: &OutputSections,
+) -> Result<OutputSectionMap<Vec<&'a MergeStringsFileSection<'data>>>> {
+    let mut input_sections = output_sections.new_section_map::<Vec<&MergeStringsFileSection>>();
+
+    for group in resolved {
+        for file in &group.files {
+            let ResolvedFile::Object(obj) = file else {
+                continue;
+            };
+            let Some(non_dynamic) = obj.non_dynamic.as_ref() else {
+                continue;
+            };
+            for &section_index in &non_dynamic.merge_strings_section_indexes {
+                let SectionSlot::MergeStrings(sec) = &non_dynamic.sections[section_index.0] else {
+                    bail!("Internal error: expected SectionSlot::MergeStrings");
+                };
+                input_sections
+                    .get_mut(sec.part_id.output_section_id())
+                    .push(sec);
+            }
+        }
+    }
+
+    Ok(input_sections)
+}
+
+#[derive(Default, Clone)]
+struct StringMergeWorker<'data> {
+    buckets: [Vec<PreHashed<StringToMerge<'data>>>; MERGE_STRING_BUCKETS],
+}
+
+impl StringMergeWorker<'_> {
+    fn clear(&mut self) {
+        for b in &mut self.buckets {
+            b.clear();
+        }
+    }
+}
+
 impl<'data> MergeStringsSection<'data> {
+    fn add_input_sections(
+        &mut self,
+        input_sections: &[&MergeStringsFileSection<'data>],
+        workers: &mut [StringMergeWorker<'data>],
+    ) -> Result {
+        for chunk_sections in input_sections.chunks(workers.len()) {
+            let active_work_items = &mut workers[..chunk_sections.len()];
+
+            // Split our sections into strings and hash those strings, collecting the results into
+            // buckets based on the string hashes.
+            active_work_items
+                .par_iter_mut()
+                .zip(chunk_sections)
+                .try_for_each(|(work_item, input_section)| -> Result {
+                    work_item.clear();
+                    let mut remaining = input_section.section_data;
+                    while !remaining.is_empty() {
+                        let string = StringToMerge::take_hashed(&mut remaining)?;
+                        work_item.buckets[(string.hash() as usize) % MERGE_STRING_BUCKETS]
+                            .push(string);
+                    }
+                    Ok(())
+                })?;
+
+            let active_work_items = &active_work_items[..];
+
+            // Process each bucket in parallel, taking all the per-bucket outputs from the previous
+            // step and merging them.
+            self.buckets
+                .par_iter_mut()
+                .enumerate()
+                .for_each(|(bucket_index, bucket_out)| {
+                    for work_item in active_work_items {
+                        for string in &work_item.buckets[bucket_index] {
+                            bucket_out.add_string(*string);
+                        }
+                    }
+                });
+        }
+
+        // Compute the starting offset of each bucket.
+        for i in 1..MERGE_STRING_BUCKETS {
+            self.bucket_offsets[i] = self.bucket_offsets[i - 1] + self.buckets[i - 1].len();
+        }
+
+        Ok(())
+    }
+
     pub(crate) fn get(&self, string: &PreHashed<StringToMerge<'data>>) -> Option<u64> {
         let bucket_index = (string.hash() as usize) % MERGE_STRING_BUCKETS;
         self.buckets[bucket_index]
@@ -190,24 +237,6 @@ impl<'data> MergeStringsSectionBucket<'data> {
 
     pub(crate) fn len(&self) -> u64 {
         self.next_offset
-    }
-}
-
-impl<'data> UnresolvedMergeStringsFileSection<'data> {
-    pub(crate) fn new(
-        section_data: &'data [u8],
-        section_index: object::SectionIndex,
-    ) -> Result<UnresolvedMergeStringsFileSection<'data>> {
-        let mut remaining = section_data;
-        let mut buckets: [Vec<PreHashed<StringToMerge>>; MERGE_STRING_BUCKETS] = Default::default();
-        while !remaining.is_empty() {
-            let string = StringToMerge::take_hashed(&mut remaining)?;
-            buckets[(string.hash() as usize) % MERGE_STRING_BUCKETS].push(string);
-        }
-        Ok(UnresolvedMergeStringsFileSection {
-            section_index,
-            buckets,
-        })
     }
 }
 

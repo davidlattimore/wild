@@ -1,3 +1,4 @@
+use crate::error::Result;
 use crate::output_section_id::OutputSectionId;
 
 /// A map from output section IDs to something.
@@ -37,6 +38,13 @@ impl<T> OutputSectionMap<T> {
             .iter()
             .enumerate()
             .for_each(|(k, v)| cb(OutputSectionId::from_usize(k), v));
+    }
+
+    pub(crate) fn try_for_each(&self, mut cb: impl FnMut(OutputSectionId, &T) -> Result) -> Result {
+        self.values
+            .iter()
+            .enumerate()
+            .try_for_each(|(k, v)| cb(OutputSectionId::from_usize(k), v))
     }
 
     pub(crate) fn len(&self) -> usize {
