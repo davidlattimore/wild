@@ -106,3 +106,45 @@ rustflags = ["-C", "link-arg=--ld-path=wild"]
 
 The `.cargo/config.toml` file can be added in the root folder of the project, or somewhere else according to the
 [Hierarchical structure](https://doc.rust-lang.org/cargo/reference/config.html) that `cargo` uses to determine config.
+
+## Reading
+
+Linkers are complex bits of software. Here are some resources that are good for learning what
+linkers need to do.
+
+* [Ian Lance Taylor's blog post series](https://lwn.net/Articles/276782/). Ian wrote the GNU Gold
+  linker. This series is a bit old now, so doesn't have some more recent stuff, but is nonetheless a
+  great introduction.
+* [Maskray's blog](https://maskray.me/blog/). Maskray maintains the LLD linker and has many awesome
+  blog posts about various linker-related topics. A few posts in particular:
+  * [All about thread-local storage](https://maskray.me/blog/2021-02-14-all-about-thread-local-storage)
+  * [All about Global Offset Table](https://maskray.me/blog/2021-08-29-all-about-global-offset-table)
+  * [Copy relocations, canonical PLT entries and protected
+    visibility](https://maskray.me/blog/2021-01-09-copy-relocations-canonical-plt-entries-and-protected)
+  * [All about COMMON symbols](https://maskray.me/blog/2022-02-06-all-about-common-symbols). Despite
+    their name, common symbols aren't commonly used. They are however used in libc, so are necessary
+    if you want to be able to link pretty much anything.
+  * Everything else with the [linker tag](https://maskray.me/blog/tags/linker/)
+* For Wild specific content, there's [David Lattimore's](https://davidlattimore.github.io/) blog.
+* There are also various specification documents. These may not be the best to read start-to-finish,
+  but can be good when you need some specific details on something.
+  * [ELF-64 Object File Format](https://uclibc.org/docs/elf-64-gen.pdf)
+  * [ELF x86-64-ABI psABI](https://gitlab.com/x86-psABIs/x86-64-ABI)
+  * [ELF Handling For Thread-Local Storage](https://www.uclibc.org/docs/tls.pdf)
+* [A Deep dive into (implicit) Thread Local Storage](https://chao-tic.github.io/blog/2018/12/25/tls)
+
+## Finding an issue to work on
+
+* Whatever issue you work on, please comment on the issue to let us know you're working on it,
+  otherwise two people might end up working on the same issue and that could be disappointing if
+  someone then felt like they'd wasted their time. It's perfectly OK to say that you're going to
+  work on something, then later realise that it's not for you.
+* If you'd like to work on something that someone said they're working on, but they haven't provided
+  an update in a while, feel free to politely ask if they're still working on it and mention that if
+  they're not, you'd like to have a go.
+* You can find issues that have been tagged with [detailed
+  instructions](https://github.com/davidlattimore/wild/issues?q=is%3Aissue+is%3Aopen+label%3A%22detailed+instructions%22).
+* We may on occasion tag issues as [good first
+  issue](https://github.com/davidlattimore/wild/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).
+  One person's good first issue might be too hard or too easy for another person, so this is a
+  somewhat hard judgement to make.
