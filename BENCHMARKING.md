@@ -234,3 +234,31 @@ cargo build --profile opt-debug
 
 The result will look something [like this](https://share.firefox.dev/4eORM7r). This is using the
 Firefox profiler, so you'll need to open that link in Firefox.
+
+### Heap profiling with dhat
+
+Build with profiling enabled:
+
+```sh
+cargo build --profile opt-debug --features dhat
+```
+
+Then run the linker on some input. e.g:
+
+```sh
+~/tmp/rustc-link/0/run-with target/opt-debug/wild --no-fork
+```
+
+This should print some stats on exit. e.g.:
+
+```
+dhat: Total:     250,699,127 bytes in 130,224 blocks
+dhat: At t-gmax: 111,265,627 bytes in 14,117 blocks
+dhat: At t-end:  96,320 bytes in 109 blocks
+dhat: The data has been saved to dhat-heap.json, and is viewable with dhat/dh_view.html
+```
+
+You can then upload `dhat-heap.json` to the [online dhat
+viewer](https://nnethercote.github.io/dh_view/dh_view.html).
+
+For more details, see the [dhat docs](https://docs.rs/dhat/latest/dhat/).

@@ -12,6 +12,8 @@ wild_lib = { path = "../wild_lib" }
 # build with `--features mimalloc`.
 mimalloc = { version = "0.1", default-features = false, optional = true }
 
+dhat = { version = "0.3.3", optional = true }
+
 [dev-dependencies]
 anyhow = "1.0.93"
 wait-timeout = "0.2.0"
