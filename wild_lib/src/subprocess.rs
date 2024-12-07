@@ -2,6 +2,7 @@ use crate::error::Result;
 use crate::Linker;
 use anyhow::anyhow;
 use anyhow::Context as _;
+use libc::c_char;
 use libc::fork;
 use libc::pid_t;
 use std::ffi::c_int;
@@ -60,7 +61,7 @@ fn subprocess_result(linker: &Linker) -> Result<i32> {
 fn inform_parent_done(fds: &[c_int]) {
     unsafe {
         libc::close(fds[0]);
-        let stream = libc::fdopen(fds[1], "w".as_ptr() as *const i8);
+        let stream = libc::fdopen(fds[1], "w".as_ptr() as *const c_char);
         let bytes: [u8; 1] = [b'X'];
         libc::fwrite(bytes.as_ptr() as *const c_void, 1, 1, stream);
         libc::fclose(stream);
@@ -77,7 +78,7 @@ fn wait_for_child_done(fds: &[c_int], child_pid: pid_t) -> i32 {
         // close our sending end of the pipe
         libc::close(fds[1]);
         // open the other end of the pipe for reading
-        let stream = libc::fdopen(fds[0], "r".as_ptr() as *const i8);
+        let stream = libc::fdopen(fds[0], "r".as_ptr() as *const c_char);
 
         // Wait for child to send a byte via the pipe or for the pipe to be closed.
         let mut response: [u8; 1] = [0u8; 1];
