@@ -93,7 +93,7 @@ impl Linker {
             config,
         );
         if self.is_wild() || !is_newer(so_path, obj_path) || !command.can_skip {
-            command.run()?;
+            command.run(config)?;
             write_cmd_file(so_path, &command.to_string())?;
         }
         Ok(LinkerInput::with_command(so_path.to_owned(), command))
@@ -171,6 +171,7 @@ struct Config {
     compiler: String,
     should_diff: bool,
     should_run: bool,
+    expect_error: Option<String>,
 }
 impl Config {
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
@@ -276,6 +277,7 @@ impl Default for Config {
             compiler: "gcc".to_owned(),
             should_diff: true,
             should_run: true,
+            expect_error: None,
         }
     }
 }
@@ -373,6 +375,9 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                 }
                 "EnableLinker" => {
                     config.enabled_linkers.insert(arg.trim().to_owned());
+                }
+                "ExpectError" => {
+                    config.expect_error = Some(arg.trim().to_owned());
                 }
                 "SecEquiv" => config.section_equiv.push(
                     arg.trim()
@@ -588,6 +593,7 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
         "c" => (tool_paths.cc, CompilerKind::C),
         "s" => (tool_paths.cc, CompilerKind::C),
         "rs" => ("rustc", CompilerKind::Rust),
+        "o" => return Ok(src_path),
         _ => bail!("Don't know how to compile {extension} files"),
     };
     // For Rust programs, we don't have an easy way to separate compilation from linking, so we
@@ -767,7 +773,7 @@ impl Linker {
         }
         let mut command = LinkCommand::new(self, inputs, &output_path, &linker_args, config);
         if !command.can_skip {
-            command.run()?;
+            command.run(config)?;
             write_cmd_file(&output_path, &command.to_string())?;
         }
         Ok(LinkOutput {
@@ -904,11 +910,38 @@ impl LinkCommand {
         link_command
     }
 
-    fn run(&mut self) -> Result {
+    fn run(&mut self, config: &Config) -> Result {
+        if let Some(expected_error) = config.expect_error.as_ref() {
+            let output = self
+                .command
+                .output()
+                .with_context(|| format!("Failed to run command: {:?}", self.command))?;
+
+            if output.status.success() {
+                bail!("Linker returned exit status of 0, when an error was expected");
+            }
+
+            if !output
+                .stderr
+                .windows(expected_error.len())
+                .any(|s| s == expected_error.as_bytes())
+            {
+                eprintln!(
+                    "-- stdout --\n{}\n-- stderr --\n{}\n-- end --",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr),
+                );
+                bail!("Linker expected to report error `{expected_error}` on stderr, but didn't");
+            }
+
+            return Ok(());
+        }
+
         let status = self
             .command
             .status()
             .with_context(|| format!("Failed to run command: {:?}", self.command))?;
+
         if !status.success() {
             bail!("Linker failed. Relink with:\n{self}");
         }
@@ -1376,6 +1409,11 @@ fn integration_test(
                 result
             })
             .collect::<Result<Vec<_>>>()?;
+
+        // If we expected an error, then don't try to diff or run the output.
+        if config.expect_error.is_some() {
+            continue;
+        }
 
         let start = Instant::now();
         diff_shared_objects(&config, &programs)?;
