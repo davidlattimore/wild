@@ -21,7 +21,7 @@ pub unsafe fn run_in_subprocess(linker: &Linker) -> ! {
     let exit_code = match subprocess_result(linker) {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("{error}");
+            eprintln!("Error: {error:?}");
             -1
         }
     };
