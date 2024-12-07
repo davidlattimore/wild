@@ -1337,7 +1337,8 @@ fn integration_test(
         "rust-integration.rs",
         "rust-integration-dynamic.rs",
         "cpp-integration.cc",
-        "rust-tls.rs"
+        "rust-tls.rs",
+        "input_does_not_exist.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),

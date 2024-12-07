@@ -89,9 +89,9 @@ fn wait_for_child_done(fds: &[c_int], child_pid: pid_t) -> i32 {
             }
             _ => {
                 // Child closed pipe without sending a byte - get the process exit_status
-                let mut child_exit_status = -1i32;
-                libc::waitpid(child_pid, &mut child_exit_status as *mut c_int, 0);
-                child_exit_status
+                let mut status: libc::c_int = -1i32;
+                libc::waitpid(child_pid, &mut status, 0);
+                libc::WEXITSTATUS(status)
             }
         }
     }
