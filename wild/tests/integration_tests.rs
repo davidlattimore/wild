@@ -690,7 +690,7 @@ fn mutex_for_path(path: &Path) -> Arc<Mutex<()>> {
 /// use the value from DT_SONAME to populate DT_NEEDED entries in the executable. If the filename of
 /// the .so file doesn't match the DT_SONAME and thus doesn't match the DT_NEEDED in the executable,
 /// then the dynamic linker will fail to find the .so file at runtime. None of this is a problem if
-/// the DT_SONAME matches the filename. However we put stuff like the name of the linker used into
+/// the DT_SONAME matches the filename. However, we put stuff like the name of the linker used into
 /// the output filename. So it doesn't really work for us to make them match. Instead, we remove the
 /// -soname flag from the run-with script. Without the DT_SONAME, the linker will fall back to using
 /// the actual name of the .so file, which is what we want.
@@ -1194,7 +1194,7 @@ impl Clone for LinkCommand {
 }
 
 fn diff_shared_objects(instructions: &Config, programs: &[Program]) -> Result {
-    // All our programs should have the same number of shared objects and they should be in the same
+    // All our programs should have the same number of shared objects, and they should be in the same
     // order. We use this to group shared objects at the corresponding index so that we can then
     // diff them.
     let mut so_groups = Vec::new();
@@ -1352,6 +1352,7 @@ fn integration_test(
             path: find_bin(&["ld"])?,
             enabled_by_default: true,
         }),
+        #[cfg(not(target_os = "macos"))]
         Linker::ThirdParty(ThirdPartyLinker {
             name: "lld",
             gcc_name: "lld",
