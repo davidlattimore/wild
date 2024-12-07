@@ -1950,7 +1950,7 @@ impl<'data> GroupState<'data> {
 fn set_last_verneed<S: StorageModel>(
     common: &CommonGroupState,
     resources: &FinaliseLayoutResources<S>,
-    memory_offsets: &mut OutputSectionPartMap<u64>,
+    memory_offsets: &OutputSectionPartMap<u64>,
     files: &mut [FileLayout],
 ) {
     let gnu_version_r_layout = resources
@@ -2573,7 +2573,7 @@ impl PreludeLayoutState {
     }
 
     fn finalise_sizes<S: StorageModel>(
-        &mut self,
+        &self,
         common: &mut CommonGroupState,
         symbol_db: &SymbolDb<'_, S>,
         symbol_resolution_flags: &[AtomicResolutionFlags],
@@ -2757,7 +2757,7 @@ impl PreludeLayoutState {
 
 impl InternalSymbols {
     fn allocate_symbol_table_sizes<S: StorageModel>(
-        &mut self,
+        &self,
         common: &mut CommonGroupState,
         symbol_db: &SymbolDb<'_, S>,
         symbol_resolution_flags: &[AtomicResolutionFlags],
@@ -2790,7 +2790,7 @@ impl InternalSymbols {
         resources: &FinaliseLayoutResources<S>,
     ) -> Result {
         // Define symbols that are optionally put at the start/end of some sections.
-        let mut emitter = create_global_address_emitter(resources.symbol_resolution_flags);
+        let emitter = create_global_address_emitter(resources.symbol_resolution_flags);
         for (local_index, def_info) in self.symbol_definitions.iter().enumerate() {
             let symbol_id = self.start_symbol_id.add_usize(local_index);
             if !resources.symbol_db.is_canonical(symbol_id) {
@@ -3284,7 +3284,7 @@ impl<'data> ObjectLayoutState<'data> {
     }
 
     fn allocate_symtab_space<S: StorageModel>(
-        &mut self,
+        &self,
         common: &mut CommonGroupState,
         symbol_db: &SymbolDb<'data, S>,
         symbol_resolution_flags: &[AtomicResolutionFlags],
@@ -3336,7 +3336,7 @@ impl<'data> ObjectLayoutState<'data> {
         let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
 
-        let mut emitter = create_global_address_emitter(resources.symbol_resolution_flags);
+        let emitter = create_global_address_emitter(resources.symbol_resolution_flags);
 
         let mut section_resolutions = Vec::with_capacity(self.sections.len());
         for slot in &mut self.sections {
@@ -3379,7 +3379,7 @@ impl<'data> ObjectLayoutState<'data> {
                 local_symbol_index,
                 &section_resolutions,
                 memory_offsets,
-                &mut emitter,
+                &emitter,
                 resolutions_out,
             )?;
         }
@@ -3404,7 +3404,7 @@ impl<'data> ObjectLayoutState<'data> {
         local_symbol_index: object::SymbolIndex,
         section_resolutions: &[SectionResolution],
         memory_offsets: &mut OutputSectionPartMap<u64>,
-        emitter: &mut GlobalAddressEmitter<'scope>,
+        emitter: &GlobalAddressEmitter<'scope>,
         resolutions_out: &mut ResolutionWriter,
     ) -> Result {
         let symbol_id_range = self.symbol_id_range();
@@ -3754,7 +3754,7 @@ impl ResolutionWriter<'_, '_> {
 
 impl GlobalAddressEmitter<'_> {
     fn emit_resolution(
-        &mut self,
+        &self,
         symbol_id: SymbolId,
         raw_value: u64,
         dynamic_symbol_index: Option<NonZeroU32>,
@@ -4009,7 +4009,7 @@ impl<'data> DynamicLayoutState<'data> {
     }
 
     fn request_all_undefined_symbols<S: StorageModel>(
-        &mut self,
+        &self,
         common: &mut CommonGroupState<'data>,
         resources: &GraphResources<'data, '_, S>,
         queue: &mut LocalWorkQueue,
