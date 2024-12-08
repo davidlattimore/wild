@@ -8,7 +8,8 @@ particular:
 
 * Wild defaults to `--gc-sections`, so for a fair comparison, that should be passed to all the linkers.
 * Wild defaults to `-z now`, so best to pass that to all linkers.
-* Wild doesn't yet support build-ids, so either don't pass `--build-id` or pass `--build-id=none`.
+* Wild doesn't support linker plugins and various other flags. Generally use of these flags will
+  result in a warning.
 
 ## How to benchmark
 
@@ -52,6 +53,11 @@ rustflags = [
     * You can check what each file is linking using `tail -n 1 /tmp/wild/ripgrep/*/run-with`
     * In the case of ripgrep it is '6'
 * You can then run `/tmp/wild/ripgrep/6/run-with wild` and that will rerun the link with wild
+
+When you run `run-with wild`, the linker may print warnings for unsupported flags. It's a good idea
+to edit the `run-with` script to change / delete these flags. This will make comparison with other
+linkers more fair, since some of these unsupported flags may involve other linkers doing significant
+amounts of extra work.
 
 ### Run benchmark with hyperfine
 
@@ -157,16 +163,108 @@ linker incurs the penalty of reading those files into cache the first time they 
 To reduce the effect this has on benchmarked time we run hyperfine with the `--warmup 2` option, and the results
 of the first two runs are not used in the calculations.
 
+### Disk write bottlenecks
+
+When benchmarking, if the output file is being written to persistent storage (hard disk or SSD), the
+writes can build up and cause the linkers to block. Worse, writes from a previous linker invocation
+might contribute to this backlog. Whether this happens depends on how much RAM you have free and
+also your kernel settings. For example, if you run `cat /proc/sys/vm/dirty_ratio` that will show the
+percentage of reclaimable memory that is allowed to be dirty (needing writing) before further writes
+will block. If that shows zero, then `cat /proc/sys/vm/dirty_bytes` will show the same, but as an
+absolute number of bytes. On some systems, the the absolute dirty byte limit might be set as low as
+256MiB, meaning that if we're writing a large output file, we can easily hit this limit. You could
+increase this limit, or switch to using `dirty_ratio` of say 20% instead, but it might be better to
+just take the filesystem out of the equation and write the output to a tmpfs instead. See next
+section.
+
+### Tmpfs
+
+As discussed in the last section, writing to a physical disk can cause inconsistent benchmark
+results. It can also contribute wearing out your SSD. For these reasons, it's recommended to
+benchmark with the output file on tmpfs.
+
+If you don't already have a suitable tmpfs to use, you can create one something like the following:
+
+```sh
+sudo mkdir /benchmark
+sudo mount -t tmpfs none /benchmark
+```
+
+Then when running the benchmark, set the output file to be on this filesystem. e.g.:
+
+```sh
+OUT=/benchmark/out hyperfine --warmup 2 '/tmp/wild/ripgrep/6/run-with ld' '/tmp/wild/ripgrep/6/run-with mold' '/tmp/wild/ripgrep/6/run-with wild'
+```
+
+### Watch out for thermal throttling
+
+If your CPUs get hot while running the benchmark, this can cause inconsistent results. You can check
+for throttle events by looking for increases in
+`/sys/devices/system/cpu/cpu*/thermal_throttle/package_throttle_count` and
+`/sys/devices/system/cpu/cpu*/thermal_throttle/core_throttle_count` between when you start the
+benchmark and when you finish. Ideally, these should be unchanged.
+
+One thing that can help is if you have a way to turn your fans to maximum before you start the
+benchmark run.
+
+Another possibility is to give the CPUs a chance to cool down between each run, e.g. by sleeping.
+With `hyperfine`, you can do this by adding an argument like `--prepare "sleep 2"`. You might need
+to experiment with the duration of the sleep.
+
 ## What to benchmark
 
-### rustc - TODO document this
+### rustc
 
-Build rustc as per the instructions on the rustc-dev-guide, but with a hack to make it use wild instead of another
-linker.
+When building rustc, most of the rustc code goes into a shared object called rustc-driver. This
+shared object is about 230 MiB without debug info and 462 MiB with debug info. While not as large as
+some binaries, this is still a pretty reasonable size, making it good for benchmarking. It's also an
+interesting benchmark because it's a shared object rather than an executable.
+
+Build rustc as per the [instructions on the
+rustc-dev-guide](https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html). Before
+building, edit or create `config.toml` in your `rust` directory to contain:
+
+```toml
+[rust]
+use-lld = "self-contained"
+```
+
+Once you've successfully built rustc, build it again, but using wild as the linker. In the following
+command, replace `$HOME/work/wild` with the path to the directory containing the wild repo. You'll
+need to have already built wild with `cargo build --release`.
+
+```sh
+touch compiler/rustc_driver/src/lib.rs
+WILD_SAVE_BASE=$HOME/tmp/rustc-link PATH=$HOME/work/wild/fakes:$PATH ./x build --keep-stage 1
+```
+
+You should now have a few subdirectories under `$HOME/tmp/rustc-link`. You can identify which one is
+`rustc_driver` by looking at the last line of the `run-with` script in each directory.
+
+If the directory `$HOME/tmp/rustc-link` didn't get created, then most likely wild wasn't used to
+link. You can check what linker was used with `readelf`. e.g.:
+
+```sh
+readelf -p .comment build/x86_64-unknown-linux-gnu/stage1/bin/rustc
+
+String dump of section '.comment':
+  [     0]  GCC: (Ubuntu 12.3.0-1ubuntu1~22.04) 12.3.0
+  [    2c]  rustc version 1.83.0-beta.1 (0125edf41 2024-10-14)
+  [    5f]  Linker: Wild version 0.3.0
+```
+
+You can also verify the `PATH` setting, by running something like the following:
+
+```sh
+PATH=$HOME/work/wild/fakes:$PATH ld.lld --version
+Wild version 0.3.0 (compatible with GNU linkers)
+```
 
 ### Other tools
 
-* [poop](https://github.com/andrewrk/poop) - gives a lot of measurements other than just time
+* [poop](https://github.com/andrewrk/poop) - gives a lot of measurements other than just time. Note
+  that the `peak_rss` measurement won't be accurate for wild and mold unless you include the
+  `--no-fork` argument to the linker.
 
 ## Profiling
 
@@ -234,6 +332,14 @@ cargo build --profile opt-debug
 
 The result will look something [like this](https://share.firefox.dev/4eORM7r). This is using the
 Firefox profiler, so you'll need to open that link in Firefox.
+
+One thing you'll likely notice when looking at the flamegraph is that there's lots of rayon stuff
+and that makes it hard to see what's going on. The issue is that rayon uses recursion and the exact
+sequence of calls it goes through before it gets to our code varies. The trick to seeing through
+this is to collapse that recursion. For example, find
+`rayon::iter::plumbing::bridge_producer_consumer::helper`, right click and select `Collapse
+recursion` (or 'r'). If there's any extra rayon stack frames that you'd like to ignore, you can
+select them and press 'm' to merge them.
 
 ### Heap profiling with dhat
 
