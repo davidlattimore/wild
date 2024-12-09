@@ -6,7 +6,7 @@ repository.workspace = true
 
 [dependencies]
 ahash = { version = "0.8.11", default-features = false, features = ["std"] }
-anyhow = "1.0.93"
+anyhow = "1.0.94"
 bitflags = "2.6.0"
 bytemuck = { version = "1.20.0", features = ["derive"] }
 crossbeam-queue = "0.3.11"

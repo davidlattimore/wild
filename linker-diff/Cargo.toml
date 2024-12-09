@@ -21,8 +21,8 @@ iced-x86 = { version = "1.21.0", default-features = false, features = [
     "gas",
 ] }
 symbolic-demangle = "12.12.3"
-anyhow = "1.0.93"
-clap = { version = "4.5.21", features = ["derive"] }
+anyhow = "1.0.94"
+clap = { version = "4.5.23", features = ["derive"] }
 rayon = "1.10.0"
 bytemuck = { version = "1.20.0", features = ["derive"] }
 itertools = "0.13.0"
