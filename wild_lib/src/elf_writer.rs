@@ -333,19 +333,7 @@ impl SizedOutput {
 
     #[instrument(skip_all, name = "Compute build ID")]
     fn compute_hash(&self) -> blake3::Hash {
-        let output_buffer = self.out.deref();
-        let hashes: Vec<_> = output_buffer
-            .par_chunks(bytesize::mib(16u64) as usize)
-            .map(blake3::hash)
-            .collect();
-        let blake3_hash = hashes
-            .into_iter()
-            .fold(blake3::Hasher::new(), |mut hasher, hash| {
-                hasher.update(hash.as_bytes());
-                hasher
-            })
-            .finalize();
-        blake3_hash
+        blake3::Hasher::new().update_rayon(&self.out).finalize()
     }
 
     fn flush(&mut self) -> Result {
