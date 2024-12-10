@@ -7,7 +7,6 @@
 use crate::error::Result;
 use crate::input_data::FileId;
 use crate::save_dir::SaveDir;
-use crate::warning;
 use anyhow::bail;
 use anyhow::ensure;
 use anyhow::Context as _;
@@ -111,6 +110,7 @@ pub(crate) enum InputSpec {
     Lib(Box<str>),
 }
 
+pub const WILD_UNSUPPORTED_ENV: &str = "WILD_UNSUPPORTED";
 pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
 pub const WRITE_LAYOUT_ENV: &str = "WILD_WRITE_LAYOUT";
 pub const WRITE_TRACE_ENV: &str = "WILD_WRITE_TRACE";
@@ -121,7 +121,7 @@ pub(crate) const FILES_PER_GROUP_ENV: &str = "WILD_FILES_PER_GROUP";
 // these are given. This is tricky though. On the one hand we want to be a drop-in replacement for
 // other linkers. On the other, we should perhaps somehow let the user know that we don't support a
 // feature.
-const IGNORED_FLAGS: &[&str] = &[
+const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     // TODO: Think about if anything is needed here. We don't need groups in order resolve cycles,
     // so perhaps ignoring these is the right thing to do.
     "start-group",
@@ -136,11 +136,10 @@ const IGNORED_FLAGS: &[&str] = &[
     "color-diagnostics",
     "undefined-version",
     "no-call-graph-profile-sort",
-    "gdb-index",
-    "disable-new-dtags",
     "relax",
-    "no-relax",
 ];
+
+const IGNORED_FLAGS: &[&str] = &["gdb-index", "no-relax", "disable-new-dtags"];
 
 // Parse the supplied input arguments, which should not include the program name.
 pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Result<Action> {
@@ -211,18 +210,20 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             assert!(option.ends_with('='));
             strip_option(arg).and_then(|stripped_arg| stripped_arg.strip_prefix(option))
         };
-        let mut handle_z_option = |arg: &str| {
+        let mut handle_z_option = |arg: &str| -> Result {
             match arg {
                 "now" => {}
-                "lazy" => {
-                    warning!("wild doesn't support -z lazy");
-                }
+                "origin" => {}
+                "norelro" => {}
+                "notext" => {}
                 "execstack" => execstack = true,
                 "noexecstack" => execstack = false,
                 _ => {
+                    warn_unsupported(&format!("-z {arg}"))?;
                     // TODO: Handle these
                 }
             }
+            Ok(())
         };
 
         if let Some(rest) = arg.strip_prefix("-L") {
@@ -274,6 +275,11 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 }
                 s => bail!("Invalid build-id value `{s}` valid values are `none`, `fast`, `md5`, `sha1` and `uuid`"),
             };
+        } else if let Some(value) = long_arg_split_prefix("icf=") {
+            match value {
+                "none" => {}
+                other => warn_unsupported(&format!("--icf={other}"))?,
+            }
         } else if long_arg_eq("time") {
             time_phases = true;
         } else if let Some(rest) = long_arg_split_prefix("threads=") {
@@ -297,12 +303,16 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if long_arg_eq("no-fork") {
             should_fork = false;
         } else if arg == "-m" {
-            // TODO: Handle these flags
-            input.next();
+            match input.next().context("Missing argument to -m")?.as_ref() {
+                "elf_x86_64" => {}
+                other => {
+                    bail!("-m {other} is not yet supported");
+                }
+            }
         } else if arg == "-z" {
-            handle_z_option(input.next().context("Missing argument to -z")?.as_ref());
+            handle_z_option(input.next().context("Missing argument to -z")?.as_ref())?;
         } else if let Some(arg) = arg.strip_prefix("-z") {
-            handle_z_option(arg);
+            handle_z_option(arg)?;
         } else if let Some(_rest) = arg.strip_prefix("-O") {
             // We don't use opt-level for now.
         } else if long_arg_eq("prepopulate-maps") {
@@ -364,7 +374,12 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if long_arg_split_prefix("plugin-opt=").is_some() {
             // TODO: Implement support for linker plugins.
         } else if long_arg_eq("plugin") {
-            input.next();
+            let other = input
+                .next()
+                .context("Missing argument to --plugin")?
+                .as_ref()
+                .to_owned();
+            warn_unsupported(&format!("--plugin {other}"))?;
         } else if long_arg_eq("rpath-link") {
             // TODO
             input.next();
@@ -398,6 +413,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             bail!("Sorry, help isn't implemented yet");
         } else if strip_option(arg)
             .is_some_and(|stripped_arg| IGNORED_FLAGS.contains(&stripped_arg))
+        {
+            warn_unsupported(arg)?;
+        } else if strip_option(arg)
+            .is_some_and(|stripped_arg| SILENTLY_IGNORED_FLAGS.contains(&stripped_arg))
         {
         } else if arg.starts_with('-') {
             unrecognised.push(format!("`{arg}`"));
@@ -674,9 +693,22 @@ fn arguments_from_string(input: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 
+fn warn_unsupported(opt: &str) -> Result {
+    match std::env::var(WILD_UNSUPPORTED_ENV)
+        .unwrap_or_default()
+        .as_str()
+    {
+        "warn" | "" => crate::error::warning(&format!("{opt} is not yet supported")),
+        "ignore" => {}
+        "error" => bail!("{opt} is not yet supported"),
+        other => bail!("Unsupported value for {WILD_UNSUPPORTED_ENV}={other}"),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::IGNORED_FLAGS;
+    use super::SILENTLY_IGNORED_FLAGS;
     use crate::args::Action;
     use crate::args::InputSpec;
     use itertools::Itertools;
@@ -851,7 +883,7 @@ mod tests {
 
     #[test]
     fn test_ignored_flags() {
-        for flag in IGNORED_FLAGS {
+        for flag in SILENTLY_IGNORED_FLAGS {
             assert!(!flag.starts_with('-'));
         }
     }
