@@ -920,6 +920,9 @@ struct CommonGroupState<'data> {
     /// is stored is non-deterministic and is whichever object first requested export of that
     /// symbol. That's OK though because the epilogue will sort all dynamic symbols.
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
+
+    /// Indexed by `FrameIndex`.
+    exception_frames: Vec<ExceptionFrame<'data>>,
 }
 
 impl CommonGroupState<'_> {
@@ -927,6 +930,7 @@ impl CommonGroupState<'_> {
         Self {
             mem_sizes: output_sections.new_part_map(),
             dynamic_symbol_definitions: Default::default(),
+            exception_frames: Default::default(),
         }
     }
 
@@ -999,9 +1003,6 @@ struct ObjectLayoutState<'data> {
     sections_required: Vec<SectionRequest>,
 
     cies: SmallVec<[CieAtOffset<'data>; 2]>,
-
-    /// Indexed by `FrameIndex`.
-    exception_frames: Vec<ExceptionFrame<'data>>,
 
     eh_frame_section: Option<&'data object::elf::SectionHeader64<LittleEndian>>,
     eh_frame_size: u64,
@@ -3037,7 +3038,6 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             symbol_id_range: input_state.symbol_id_range,
             input: input_state.input,
             object: input_state.object,
-            exception_frames: Default::default(),
             eh_frame_section: None,
             eh_frame_size: 0,
             sections: non_dynamic.sections,
@@ -3204,7 +3204,7 @@ impl<'data> ObjectLayoutState<'data> {
         let mut num_frames = 0;
         let mut next_frame_index = frame_index;
         while let Some(frame_index) = next_frame_index {
-            let frame_data = &self.exception_frames[frame_index.as_usize()];
+            let frame_data = &common.exception_frames[frame_index.as_usize()];
             next_frame_index = frame_data.previous_frame_for_section;
 
             self.eh_frame_size += u64::from(frame_data.frame_size);
@@ -3550,9 +3550,9 @@ pub(crate) fn can_export_symbol(sym: &crate::elf::SymtabEntry) -> bool {
         && (visibility == object::elf::STV_DEFAULT || visibility == object::elf::STV_PROTECTED)
 }
 
-fn process_eh_frame_data<S: StorageModel, A: Arch>(
-    object: &mut ObjectLayoutState,
-    common: &mut CommonGroupState,
+fn process_eh_frame_data<'data, S: StorageModel, A: Arch>(
+    object: &mut ObjectLayoutState<'data>,
+    common: &mut CommonGroupState<'data>,
     file_symbol_id_range: SymbolIdRange,
     eh_frame_section_index: object::SectionIndex,
     resources: &GraphResources<S>,
@@ -3644,14 +3644,14 @@ fn process_eh_frame_data<S: StorageModel, A: Arch>(
 
             if let Some(section_index) = section_index {
                 if let Some(unloaded) = object.sections[section_index.0].unloaded_mut() {
-                    let frame_index = FrameIndex::from_usize(object.exception_frames.len());
+                    let frame_index = FrameIndex::from_usize(common.exception_frames.len());
 
                     // Update our unloaded section to point to our new frame. Our frame will then in
                     // turn point to whatever the section pointed to before.
                     let previous_frame_for_section =
                         replace(&mut unloaded.last_frame_index, Some(frame_index));
 
-                    object.exception_frames.push(ExceptionFrame {
+                    common.exception_frames.push(ExceptionFrame {
                         relocations: &relocations[rel_start_index..rel_end_index],
                         frame_size: size as u32,
                         previous_frame_for_section,
