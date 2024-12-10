@@ -37,7 +37,7 @@ bytesize = "1.3.0"
 flate2 = "1.0.35"
 bumpalo-herd = "0.1.2"
 zstd = "0.13.2"
-blake3 = "1.5.5"
+blake3 = { version = "1.5.5", features = ["rayon"] }
 uuid = { version = "1.11.0", features = ["v4"] }
 hex = "0.4.3"
 
