@@ -1,8 +1,9 @@
 [package]
 name = "wild"
 version.workspace = true
-edition = "2021"
+license.workspace = true
 repository.workspace = true
+edition = "2021"
 
 [dependencies]
 wild_lib = { path = "../wild_lib" }

@@ -1,8 +1,9 @@
 [package]
 name = "linker-trace"
 version.workspace = true
-edition = "2021"
+license.workspace = true
 repository.workspace = true
+edition = "2021"
 
 [dependencies]
 anyhow = "1.0.94"
