@@ -16,6 +16,14 @@ debug = true
 inherits = "release"
 lto = "thin"
 
+# In CI, we disable debug info. This gives us faster builds. It also reduces the size of the target
+# directory, allowing us to fit more into cache. The only resulting loss is line numbers in
+# backtraces. If we really wanted those, we could set `debug = "line-tables-only"`, however it seems
+# unlikely that we'd need line numbers in backtraces all that often, so we don't for now.
+[profile.ci]
+inherits = "dev"
+debug = 0
+
 [workspace.lints.clippy]
 # It's not always desirable to use if-let instead of a match, especially if you might later end up
 # adding more branches to the match.

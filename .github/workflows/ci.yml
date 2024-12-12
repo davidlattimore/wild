@@ -32,8 +32,8 @@ jobs:
             target/
           key: ${{ runner.os }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
       - run: sudo apt install bubblewrap lld
-      - run: cargo build --workspace --no-default-features
-      - run: cargo test --workspace
+      - run: cargo build --profile ci --workspace --no-default-features
+      - run: cargo test --profile ci --workspace
 
   clippy:
     name: Clippy
