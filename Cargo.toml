@@ -4,6 +4,7 @@ resolver = "2"
 
 [workspace.package]
 repository = "https://github.com/davidlattimore/wild"
+license = "MIT OR Apache-2.0"
 version = "0.3.0"
 readme = "README.md"
 
