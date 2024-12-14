@@ -454,6 +454,7 @@ pub(crate) enum RelocationKind {
 #[derive(Clone, Debug)]
 pub(crate) enum RelocationSize {
     ByteSize(usize),
+    #[allow(dead_code)]
     BitRange(Range<usize>),
 }
 
