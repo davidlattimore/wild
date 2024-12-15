@@ -95,7 +95,14 @@ impl Linker {
                         .with(EnvFilter::from_default_env())
                         .init();
                 }
-                link::<storage::InMemory, x86_64::X86_64>(args, done_closure)
+                match args.arch {
+                    arch::Architecture::X86_64 => {
+                        link::<storage::InMemory, x86_64::X86_64>(args, done_closure)
+                    }
+                    arch::Architecture::AArch64 => {
+                        link::<storage::InMemory, aarch64::AArch64>(args, done_closure)
+                    }
+                }
             }
             args::Action::Version => {
                 println!(
