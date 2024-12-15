@@ -17,9 +17,9 @@ use iced_x86::Mnemonic;
 use iced_x86::OpKind;
 use iced_x86::Register;
 use itertools::Itertools;
-use linker_utils::elf::rel_type_to_string;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
+use linker_utils::elf::x86_64_rel_type_to_string;
 use object::read::elf::FileHeader;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::Rela;
@@ -709,7 +709,7 @@ impl Display for RelocationDisplay<'_, '_> {
         let object::RelocationFlags::Elf { r_type } = self.rel.flags() else {
             unreachable!();
         };
-        rel_type_to_string(r_type).fmt(f)?;
+        x86_64_rel_type_to_string(r_type).fmt(f)?;
         " -> ".fmt(f)?;
         match self.rel.target() {
             RelocationTarget::Symbol(symbol_index) => {
@@ -2415,7 +2415,7 @@ impl Display for Relocation<'_> {
         write!(
             f,
             "{} at 0x{:x} for `{}` {:+}",
-            rel_type_to_string(self.r_type),
+            x86_64_rel_type_to_string(self.r_type),
             self.offset_in_instruction,
             String::from_utf8_lossy(self.symbol_name),
             self.addend,

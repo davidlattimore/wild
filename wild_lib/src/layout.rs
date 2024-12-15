@@ -19,7 +19,6 @@ use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
 use crate::elf::FileHeader;
 use crate::elf::RelocationKind;
-use crate::elf::RelocationKindInfo;
 use crate::elf::Versym;
 use crate::elf_writer;
 use crate::error::Error;
@@ -2399,7 +2398,7 @@ fn process_relocation<S: StorageModel, A: Arch>(
         ) {
             relaxation.rel_info()
         } else {
-            RelocationKindInfo::from_raw(r_type)?
+            A::relocation_from_raw(r_type)?
         };
         if does_relocation_require_static_tls(r_type) {
             resources

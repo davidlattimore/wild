@@ -6,7 +6,6 @@ use anyhow::ensure;
 use anyhow::Context;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
-use linker_utils::elf::rel_type_to_string;
 use linker_utils::elf::sht;
 use linker_utils::elf::SectionType;
 use object::read::elf::CompressionHeader;
@@ -557,49 +556,6 @@ mod tests {
 pub(crate) struct RelocationKindInfo {
     pub(crate) kind: RelocationKind,
     pub(crate) size: RelocationSize,
-}
-
-impl RelocationKindInfo {
-    pub(crate) fn from_raw(r_type: u32) -> Result<Self> {
-        let (kind, size) = match r_type {
-            object::elf::R_X86_64_64 => (RelocationKind::Absolute, 8),
-            object::elf::R_X86_64_PC32 => (RelocationKind::Relative, 4),
-            object::elf::R_X86_64_PC64 => (RelocationKind::Relative, 8),
-            object::elf::R_X86_64_GOT32 => (RelocationKind::GotRelGotBase, 4),
-            object::elf::R_X86_64_GOT64 => (RelocationKind::GotRelGotBase, 8),
-            object::elf::R_X86_64_GOTOFF64 => (RelocationKind::SymRelGotBase, 8),
-            object::elf::R_X86_64_PLT32 => (RelocationKind::PltRelative, 4),
-            object::elf::R_X86_64_PLTOFF64 => (RelocationKind::PltRelGotBase, 8),
-            object::elf::R_X86_64_GOTPCREL => (RelocationKind::GotRelative, 4),
-
-            // For now, we rely on GOTPC64 and GOTPC32 always referencing the symbol
-            // _GLOBAL_OFFSET_TABLE_, which means that we can just treat these a normal relative
-            // relocations and avoid any special processing when writing.
-            object::elf::R_X86_64_GOTPC64 => (RelocationKind::Relative, 8),
-            object::elf::R_X86_64_GOTPC32 => (RelocationKind::Relative, 4),
-
-            object::elf::R_X86_64_32 | object::elf::R_X86_64_32S => (RelocationKind::Absolute, 4),
-            object::elf::R_X86_64_16 => (RelocationKind::Absolute, 2),
-            object::elf::R_X86_64_PC16 => (RelocationKind::Relative, 2),
-            object::elf::R_X86_64_8 => (RelocationKind::Absolute, 1),
-            object::elf::R_X86_64_PC8 => (RelocationKind::Relative, 1),
-            object::elf::R_X86_64_TLSGD => (RelocationKind::TlsGd, 4),
-            object::elf::R_X86_64_TLSLD => (RelocationKind::TlsLd, 4),
-            object::elf::R_X86_64_DTPOFF32 => (RelocationKind::DtpOff, 4),
-            object::elf::R_X86_64_DTPOFF64 => (RelocationKind::DtpOff, 8),
-            object::elf::R_X86_64_GOTTPOFF => (RelocationKind::GotTpOff, 4),
-            object::elf::R_X86_64_GOTPCRELX | object::elf::R_X86_64_REX_GOTPCRELX => {
-                (RelocationKind::GotRelative, 4)
-            }
-            object::elf::R_X86_64_TPOFF32 => (RelocationKind::TpOff, 4),
-            object::elf::R_X86_64_NONE => (RelocationKind::None, 0),
-            _ => bail!("Unsupported relocation type {}", rel_type_to_string(r_type)),
-        };
-        Ok(Self {
-            kind,
-            size: RelocationSize::ByteSize(size),
-        })
-    }
 }
 
 pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut [T] {

@@ -5,6 +5,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
+pub(crate) mod aarch64;
 pub(crate) mod alignment;
 pub(crate) mod arch;
 pub(crate) mod archive;

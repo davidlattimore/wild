@@ -3,17 +3,71 @@
 //! work unless they're performed. e.g. it uses GOT relocations in _start, which cannot work in a
 //! static-PIE binary because dynamic relocations haven't yet been applied to the GOT yet.
 
+use crate::arch::Arch;
 use crate::args::OutputKind;
+use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
+use crate::elf::RelocationSize;
 use crate::relaxation::RelocationModifier;
 use crate::resolution::ValueFlags;
+use anyhow::bail;
+use anyhow::Result;
 use linker_utils::elf::shf;
+use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::elf::SectionFlags;
 
 pub(crate) struct X86_64;
 
 impl crate::arch::Arch for X86_64 {
     type Relaxation = Relaxation;
+
+    fn elf_header_arch_magic() -> u16 {
+        object::elf::EM_X86_64
+    }
+
+    fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
+        let (kind, size) = match r_type {
+            object::elf::R_X86_64_64 => (RelocationKind::Absolute, 8),
+            object::elf::R_X86_64_PC32 => (RelocationKind::Relative, 4),
+            object::elf::R_X86_64_PC64 => (RelocationKind::Relative, 8),
+            object::elf::R_X86_64_GOT32 => (RelocationKind::GotRelGotBase, 4),
+            object::elf::R_X86_64_GOT64 => (RelocationKind::GotRelGotBase, 8),
+            object::elf::R_X86_64_GOTOFF64 => (RelocationKind::SymRelGotBase, 8),
+            object::elf::R_X86_64_PLT32 => (RelocationKind::PltRelative, 4),
+            object::elf::R_X86_64_PLTOFF64 => (RelocationKind::PltRelGotBase, 8),
+            object::elf::R_X86_64_GOTPCREL => (RelocationKind::GotRelative, 4),
+
+            // For now, we rely on GOTPC64 and GOTPC32 always referencing the symbol
+            // _GLOBAL_OFFSET_TABLE_, which means that we can just treat these a normal relative
+            // relocations and avoid any special processing when writing.
+            object::elf::R_X86_64_GOTPC64 => (RelocationKind::Relative, 8),
+            object::elf::R_X86_64_GOTPC32 => (RelocationKind::Relative, 4),
+
+            object::elf::R_X86_64_32 | object::elf::R_X86_64_32S => (RelocationKind::Absolute, 4),
+            object::elf::R_X86_64_16 => (RelocationKind::Absolute, 2),
+            object::elf::R_X86_64_PC16 => (RelocationKind::Relative, 2),
+            object::elf::R_X86_64_8 => (RelocationKind::Absolute, 1),
+            object::elf::R_X86_64_PC8 => (RelocationKind::Relative, 1),
+            object::elf::R_X86_64_TLSGD => (RelocationKind::TlsGd, 4),
+            object::elf::R_X86_64_TLSLD => (RelocationKind::TlsLd, 4),
+            object::elf::R_X86_64_DTPOFF32 => (RelocationKind::DtpOff, 4),
+            object::elf::R_X86_64_DTPOFF64 => (RelocationKind::DtpOff, 8),
+            object::elf::R_X86_64_GOTTPOFF => (RelocationKind::GotTpOff, 4),
+            object::elf::R_X86_64_GOTPCRELX | object::elf::R_X86_64_REX_GOTPCRELX => {
+                (RelocationKind::GotRelative, 4)
+            }
+            object::elf::R_X86_64_TPOFF32 => (RelocationKind::TpOff, 4),
+            object::elf::R_X86_64_NONE => (RelocationKind::None, 0),
+            _ => bail!(
+                "Unsupported relocation type {}",
+                x86_64_rel_type_to_string(r_type)
+            ),
+        };
+        Ok(RelocationKindInfo {
+            kind,
+            size: RelocationSize::ByteSize(size),
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -76,7 +130,7 @@ impl crate::arch::Relaxation for Relaxation {
         fn create(kind: RelaxationKind, new_r_type: u32) -> Option<Relaxation> {
             // This only fails for relocation types that we don't support and if we relax to a type
             // we don't support, then that's a bug.
-            let rel_info = RelocationKindInfo::from_raw(new_r_type).unwrap();
+            let rel_info = X86_64::relocation_from_raw(new_r_type).unwrap();
             Some(Relaxation { kind, rel_info })
         }
 

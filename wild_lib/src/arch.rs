@@ -1,12 +1,18 @@
 //! Abstraction over different CPU architectures.
 
 use crate::args::OutputKind;
+use crate::elf::RelocationKindInfo;
 use crate::relaxation::RelocationModifier;
 use crate::resolution::ValueFlags;
+use anyhow::Result;
 use linker_utils::elf::SectionFlags;
 
 pub(crate) trait Arch {
     type Relaxation: Relaxation;
+
+    fn elf_header_arch_magic() -> u16;
+
+    fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo>;
 }
 
 pub(crate) trait Relaxation {

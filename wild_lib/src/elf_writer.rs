@@ -17,7 +17,6 @@ use crate::elf::FileHeader;
 use crate::elf::GnuHashHeader;
 use crate::elf::ProgramHeader;
 use crate::elf::RelocationKind;
-use crate::elf::RelocationKindInfo;
 use crate::elf::SectionHeader;
 use crate::elf::SymtabEntry;
 use crate::elf::Vernaux;
@@ -64,12 +63,12 @@ use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
-use linker_utils::elf::rel_type_to_string;
 use linker_utils::elf::secnames::DEBUG_LOC_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_RANGES_SECTION_NAME;
 use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
+use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::elf::SectionFlags;
 use memmap2::MmapOptions;
 use object::elf::NT_GNU_BUILD_ID;
@@ -501,7 +500,7 @@ fn write_program_headers<S: StorageModel>(
     Ok(())
 }
 
-fn populate_file_header<S: StorageModel>(
+fn populate_file_header<S: StorageModel, A: Arch>(
     layout: &Layout<S>,
     header_info: &HeaderInfo,
     header: &mut FileHeader,
@@ -521,7 +520,7 @@ fn populate_file_header<S: StorageModel>(
     header.e_ident.abi_version = 0;
     header.e_ident.padding = Default::default();
     header.e_type.set(e, ty);
-    header.e_machine.set(e, object::elf::EM_X86_64);
+    header.e_machine.set(e, A::elf_header_arch_magic());
     header.e_version.set(e, u32::from(object::elf::EV_CURRENT));
     header.e_entry.set(e, layout.entry_symbol_address()?);
     header.e_phoff.set(e, elf::PHEADER_OFFSET);
@@ -558,7 +557,7 @@ impl<'data> FileLayout<'data> {
     ) -> Result {
         match self {
             FileLayout::Object(s) => s.write_file::<S, A>(buffers, table_writer, layout)?,
-            FileLayout::Prelude(s) => s.write_file(buffers, table_writer, layout)?,
+            FileLayout::Prelude(s) => s.write_file::<S, A>(buffers, table_writer, layout)?,
             FileLayout::Epilogue(s) => s.write_file(buffers, table_writer, layout)?,
             FileLayout::NotLoaded => {}
             FileLayout::Dynamic(s) => s.write_file(table_writer, layout)?,
@@ -1194,7 +1193,7 @@ impl<'data> ObjectLayout<'data> {
                     self.write_section::<S, A>(layout, sec, buffers, table_writer)?;
                 }
                 SectionSlot::LoadedDebugInfo(sec) => {
-                    self.write_debug_section(layout, sec, buffers)?;
+                    self.write_debug_section::<S, A>(layout, sec, buffers)?;
                 }
                 SectionSlot::EhFrameData(section_index) => {
                     self.write_eh_frame_data::<S, A>(*section_index, layout, table_writer)?;
@@ -1262,14 +1261,14 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn write_debug_section<'symbol_db, S: StorageModel>(
+    fn write_debug_section<'symbol_db, S: StorageModel, A: Arch>(
         &self,
         layout: &Layout<'data, 'symbol_db, S>,
         sec: &Section,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
     ) -> Result {
         let out = self.write_section_raw(layout, sec, buffers)?;
-        self.apply_debug_relocations(out, sec, layout)
+        self.apply_debug_relocations::<S, A>(out, sec, layout)
             .with_context(|| {
                 format!(
                     "Failed to apply relocations in section `{}` of {}",
@@ -1426,7 +1425,7 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn apply_debug_relocations<'symbol_db, S: StorageModel>(
+    fn apply_debug_relocations<'symbol_db, S: StorageModel, A: Arch>(
         &self,
         out: &mut [u8],
         section: &Section,
@@ -1454,13 +1453,20 @@ impl<'data> ObjectLayout<'data> {
             .fetch_add(relocations.len() as u64, Relaxed);
         for rel in relocations {
             let offset_in_section = rel.r_offset.get(LittleEndian);
-            apply_debug_relocation(self, offset_in_section, rel, layout, tombstone_value, out)
-                .with_context(|| {
-                    format!(
-                        "Failed to apply {} at offset 0x{offset_in_section:x}",
-                        self.display_relocation(rel, layout)
-                    )
-                })?;
+            apply_debug_relocation::<S, A>(
+                self,
+                offset_in_section,
+                rel,
+                layout,
+                tombstone_value,
+                out,
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to apply {} at offset 0x{offset_in_section:x}",
+                    self.display_relocation(rel, layout)
+                )
+            })?;
         }
         Ok(())
     }
@@ -1649,7 +1655,7 @@ impl<S: StorageModel> Display for DisplayRelocation<'_, '_, S> {
         write!(
             f,
             "relocation of type {} to ",
-            rel_type_to_string(self.rel.r_type(e, false))
+            x86_64_rel_type_to_string(self.rel.r_type(e, false))
         )?;
         match self.rel.symbol(e, false) {
             None => write!(f, "absolute")?,
@@ -1719,7 +1725,7 @@ fn apply_relocation<S: StorageModel, A: Arch>(
         relaxation.apply(out, &mut offset_in_section, &mut addend, &mut next_modifier);
     } else {
         tracing::trace!(%value_flags, %resolution_flags);
-        rel_info = RelocationKindInfo::from_raw(r_type)?;
+        rel_info = A::relocation_from_raw(r_type)?;
     }
     let value = match rel_info.kind {
         RelocationKind::Absolute => write_absolute_relocation(
@@ -1791,7 +1797,7 @@ fn apply_relocation<S: StorageModel, A: Arch>(
     Ok(next_modifier)
 }
 
-fn apply_debug_relocation<S: StorageModel>(
+fn apply_debug_relocation<S: StorageModel, A: Arch>(
     object_layout: &ObjectLayout,
     offset_in_section: u64,
     rel: &elf::Rela,
@@ -1808,7 +1814,7 @@ fn apply_debug_relocation<S: StorageModel>(
 
     let addend = rel.r_addend.get(e) as u64;
     let r_type = rel.r_type(e, false);
-    let rel_info = RelocationKindInfo::from_raw(r_type)?;
+    let rel_info = A::relocation_from_raw(r_type)?;
 
     let resolution = layout
         .merged_symbol_resolution(object_layout.symbol_id_range.input_to_id(symbol_index))
@@ -1893,7 +1899,7 @@ fn write_absolute_relocation<S: StorageModel>(
 }
 
 impl PreludeLayout {
-    fn write_file<S: StorageModel>(
+    fn write_file<S: StorageModel, A: Arch>(
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
@@ -1902,7 +1908,7 @@ impl PreludeLayout {
         let header: &mut FileHeader = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
             .map_err(|_| anyhow!("Invalid file header allocation"))?
             .0;
-        populate_file_header(layout, &self.header_info, header)?;
+        populate_file_header::<S, A>(layout, &self.header_info, header)?;
 
         let mut program_headers =
             ProgramHeaderWriter::new(buffers.get_mut(part_id::PROGRAM_HEADERS));

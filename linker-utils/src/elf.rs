@@ -12,7 +12,7 @@ macro_rules! const_name_by_value {
 }
 
 #[must_use]
-pub fn rel_type_to_string(r_type: u32) -> Cow<'static, str> {
+pub fn x86_64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
     if let Some(name) = const_name_by_value![
         r_type,
         R_X86_64_NONE,
@@ -59,7 +59,7 @@ pub fn rel_type_to_string(r_type: u32) -> Cow<'static, str> {
     ] {
         Cow::Borrowed(name)
     } else {
-        Cow::Owned(format!("Unknown relocation type 0x{r_type:x}"))
+        Cow::Owned(format!("Unknown x86_64 relocation type 0x{r_type:x}"))
     }
 }
 
@@ -252,12 +252,18 @@ mod tests {
 
     #[test]
     fn test_rel_type_to_string() {
-        assert_eq!(&rel_type_to_string(R_X86_64_32), stringify!(R_X86_64_32));
         assert_eq!(
-            &rel_type_to_string(R_X86_64_GOTPC32_TLSDESC),
+            &x86_64_rel_type_to_string(R_X86_64_32),
+            stringify!(R_X86_64_32)
+        );
+        assert_eq!(
+            &x86_64_rel_type_to_string(R_X86_64_GOTPC32_TLSDESC),
             stringify!(R_X86_64_GOTPC32_TLSDESC)
         );
-        assert_eq!(&rel_type_to_string(64), "Unknown relocation type 0x40");
+        assert_eq!(
+            &x86_64_rel_type_to_string(64),
+            "Unknown relocation type 0x40"
+        );
     }
 }
 
