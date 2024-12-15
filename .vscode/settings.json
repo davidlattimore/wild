@@ -1,9 +1,5 @@
 {
     "rust-analyzer.linkedProjects": [
         "Cargo.toml",
-    ],
-    "files.associations": {
-        "*.dbclient-js": "javascript",
-        "*.tcc": "c"
-    }
+    ]
 }
