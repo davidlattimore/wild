@@ -1734,14 +1734,13 @@ fn apply_relocation<S: StorageModel, A: Arch>(
         )?,
         RelocationKind::Relative => resolution
             .value_with_addend(
-                addend.wrapping_add(rel_info.byte_size as u64),
+                addend,
                 symbol_index,
                 object_layout,
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
             )?
-            .wrapping_sub(place)
-            .wrapping_sub(rel_info.byte_size as u64),
+            .wrapping_sub(place),
         RelocationKind::GotRelative => resolution
             .got_address()?
             .wrapping_add(addend)
