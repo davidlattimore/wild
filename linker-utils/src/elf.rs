@@ -262,7 +262,7 @@ mod tests {
         );
         assert_eq!(
             &x86_64_rel_type_to_string(64),
-            "Unknown relocation type 0x40"
+            "Unknown x86_64 relocation type 0x40"
         );
     }
 }
