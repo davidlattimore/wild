@@ -16,7 +16,6 @@ use object::read::elf::SectionHeader as _;
 use object::LittleEndian;
 use std::borrow::Cow;
 use std::io::Read as _;
-use std::ops::Range;
 use std::sync::atomic::Ordering;
 
 /// Our starting address in memory when linking non-relocatable executables. We can start memory
@@ -450,11 +449,11 @@ pub(crate) enum RelocationKind {
     None,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Copy)]
 pub(crate) enum RelocationSize {
     ByteSize(usize),
-    #[allow(dead_code)]
-    BitRange(Range<usize>),
+    // Half-opened range bounded inclusively below and exclusively above: [start, end)
+    BitRange { start: u32, end: u32 },
 }
 
 impl RelocationSize {
@@ -466,22 +465,21 @@ impl RelocationSize {
             RelocationSize::ByteSize(s) => {
                 byte_size = s;
             }
-            RelocationSize::BitRange(bit_range) => {
+            RelocationSize::BitRange { start, end } => {
                 // Drop the upper bits first
-                const U64_BITS: usize = u64::BITS as usize;
-                debug_assert!(bit_range.end <= U64_BITS);
-                let mask = if bit_range.end == U64_BITS {
+                debug_assert!(end <= u64::BITS);
+                let mask = if end == u64::BITS {
                     u64::MAX
                 } else {
-                    (1 << bit_range.end) - 1
+                    (1 << end) - 1
                 };
                 value &= mask;
-                value >>= bit_range.start;
+                value >>= start;
 
-                let bit_count = bit_range.end - bit_range.start;
-                byte_size = bit_count / 8;
+                let bit_count = end - start;
+                byte_size = (bit_count / u8::BITS) as usize;
                 // And extra partial byte needs to be added (ORed) to the output buffer!
-                if bit_count % 8 != 0 {
+                if bit_count % u8::BITS != 0 {
                     partial_byte_offset = Some(byte_size);
                 }
             }
@@ -524,35 +522,35 @@ mod tests {
         );
         assert!(buffer[8..].iter().all(|&x| x == 0));
         let mut buffer2 = [0u8; 128];
-        RelocationSize::BitRange(0..64)
+        RelocationSize::BitRange { start: 0, end: 64 }
             .write_to_buffer(v, &mut buffer2)
             .unwrap();
         assert_eq!(buffer, buffer2);
 
         // 2 bits (0b11) are added to the second byte of the buffer
         let mut buffer = [0, 0b1010_0000];
-        RelocationSize::BitRange(0..10)
+        RelocationSize::BitRange { start: 0, end: 10 }
             .write_to_buffer(0xffff, &mut buffer)
             .unwrap();
         assert_eq!(&buffer, &[0b1111_1111, 0b1010_0011]);
 
         // 2 bits (0b11 as the first bit is skipped) are added to the second byte of the buffer
         let mut buffer = dbg!([0, 0b1010_0000]);
-        RelocationSize::BitRange(1..11)
+        RelocationSize::BitRange { start: 1, end: 11 }
             .write_to_buffer(0xfffe, &mut buffer)
             .unwrap();
         assert_eq!(&buffer, &[0b1111_1111, 0b1010_0011]);
 
         // upper 4 bits of the value are added to buffer
         let mut buffer = dbg!([0b1010_0000]);
-        RelocationSize::BitRange(4..8)
+        RelocationSize::BitRange { start: 4, end: 8 }
             .write_to_buffer(0b1000_1111, &mut buffer)
             .unwrap();
         assert_eq!(&buffer, &[0b1010_1000]);
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Copy)]
 pub(crate) struct RelocationKindInfo {
     pub(crate) kind: RelocationKind,
     pub(crate) size: RelocationSize,

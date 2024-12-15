@@ -15,9 +15,10 @@ impl crate::arch::Arch for AArch64 {
 
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
         let (kind, size) = match r_type {
-            object::elf::R_AARCH64_CALL26 => {
-                (RelocationKind::Relative, RelocationSize::BitRange(2..28))
-            }
+            object::elf::R_AARCH64_CALL26 => (
+                RelocationKind::Relative,
+                RelocationSize::BitRange { start: 2, end: 28 },
+            ),
             object::elf::R_AARCH64_PREL32 => {
                 (RelocationKind::Relative, RelocationSize::ByteSize(4))
             }

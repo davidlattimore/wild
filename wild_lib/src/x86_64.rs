@@ -390,7 +390,7 @@ impl crate::arch::Relaxation for Relaxation {
     }
 
     fn rel_info(&self) -> crate::elf::RelocationKindInfo {
-        self.rel_info.clone()
+        self.rel_info
     }
 
     fn debug_kind(&self) -> impl std::fmt::Debug {
