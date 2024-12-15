@@ -13,6 +13,8 @@ impl crate::arch::Arch for AArch64 {
         object::elf::EM_AARCH64
     }
 
+    // The table of the relocations is documented here:
+    // https://github.com/ARM-software/abi-aa/blob/main/aaelf64/aaelf64.rst.
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
         let (kind, size) = match r_type {
             object::elf::R_AARCH64_CALL26 => (
