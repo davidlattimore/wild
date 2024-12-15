@@ -135,11 +135,20 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "fatal-warnings",
     "color-diagnostics",
     "undefined-version",
-    "no-call-graph-profile-sort",
-    "relax",
 ];
 
 const IGNORED_FLAGS: &[&str] = &["gdb-index", "no-relax", "disable-new-dtags"];
+
+// These flags map to the default behavior of the linker.
+const DEFAULT_FLAGS: &[&str] = &[
+    "no-call-graph-profile-sort",
+    "relax",
+    "no-copy-dt-needed-entries",
+    "no-add-needed",
+    "discard-locals",
+    "X",  // alias for --discard-locals
+    "EL", // little endian
+];
 
 // Parse the supplied input arguments, which should not include the program name.
 pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Result<Action> {
@@ -411,6 +420,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             return parse_from_argument_file(Path::new(path));
         } else if long_arg_eq("help") {
             bail!("Sorry, help isn't implemented yet");
+        } else if strip_option(arg)
+            .is_some_and(|stripped_arg| DEFAULT_FLAGS.contains(&stripped_arg))
+        { // These flags are mapped to the default behavior of the linker.
         } else if strip_option(arg)
             .is_some_and(|stripped_arg| IGNORED_FLAGS.contains(&stripped_arg))
         {
@@ -805,6 +817,11 @@ mod tests {
         "--version-script",
         "a.ver",
         "--no-threads",
+        "--no-add-needed",
+        "--no-copy-dt-needed-entries",
+        "--discard-locals",
+        "-X",
+        "-EL",
     ];
 
     #[track_caller]
