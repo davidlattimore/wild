@@ -12,8 +12,10 @@ use std::str::FromStr;
 pub(crate) trait Arch {
     type Relaxation: Relaxation;
 
+    // Get ELF header magic for the architecture.
     fn elf_header_arch_magic() -> u16;
 
+    // Make architecture-specific parsing of the relocation types.
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo>;
 }
 
