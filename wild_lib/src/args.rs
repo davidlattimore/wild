@@ -145,6 +145,9 @@ const DEFAULT_FLAGS: &[&str] = &[
     "relax",
     "no-copy-dt-needed-entries",
     "no-add-needed",
+    "discard-locals",
+    "X",  // alias for --discard-locals
+    "EL", // little endian
 ];
 
 // Parse the supplied input arguments, which should not include the program name.
@@ -816,6 +819,9 @@ mod tests {
         "--no-threads",
         "--no-add-needed",
         "--no-copy-dt-needed-entries",
+        "--discard-locals",
+        "-X",
+        "-EL",
     ];
 
     #[track_caller]
