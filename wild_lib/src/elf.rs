@@ -2,6 +2,7 @@ use crate::error::Result;
 use crate::resolution::LoadedMetrics;
 use anyhow::anyhow;
 use anyhow::bail;
+use anyhow::ensure;
 use anyhow::Context;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
@@ -16,6 +17,7 @@ use object::read::elf::SectionHeader as _;
 use object::LittleEndian;
 use std::borrow::Cow;
 use std::io::Read as _;
+use std::ops::Range;
 use std::sync::atomic::Ordering;
 
 /// Our starting address in memory when linking non-relocatable executables. We can start memory
@@ -449,10 +451,111 @@ pub(crate) enum RelocationKind {
     None,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
+pub(crate) enum RelocationSize {
+    ByteSize(usize),
+    BitRange(Range<usize>),
+}
+
+impl RelocationSize {
+    pub(crate) fn write_to_buffer(self, mut value: u64, output: &mut [u8]) -> Result<()> {
+        let byte_size;
+        let mut partial_byte_offset = None;
+
+        match self {
+            RelocationSize::ByteSize(s) => {
+                byte_size = s;
+            }
+            RelocationSize::BitRange(bit_range) => {
+                // Drop the upper bits first
+                const U64_BITS: usize = u64::BITS as usize;
+                debug_assert!(bit_range.end <= U64_BITS);
+                let mask = if bit_range.end == U64_BITS {
+                    u64::MAX
+                } else {
+                    (1 << bit_range.end) - 1
+                };
+                value &= mask;
+                value >>= bit_range.start;
+
+                let bit_count = bit_range.end - bit_range.start;
+                byte_size = bit_count / 8;
+                // And extra partial byte needs to be added (ORed) to the output buffer!
+                if bit_count % 8 != 0 {
+                    partial_byte_offset = Some(byte_size);
+                }
+            }
+        }
+
+        ensure!(
+            byte_size <= output.len(),
+            "Relocation outside of bounds of section"
+        );
+        let value_bytes = value.to_le_bytes();
+        output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
+        if let Some(offset) = partial_byte_offset {
+            output[offset] |= value_bytes[offset];
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_relocation_write() {
+        let mut buffer = [0xffu8; 4];
+        RelocationSize::ByteSize(2)
+            .write_to_buffer(0x0201, &mut buffer)
+            .unwrap();
+        assert_eq!(buffer, [0x01, 0x02, 0xff, 0xff]);
+
+        let v = 0x0807060504030201;
+        let mut buffer = [0u8; 128];
+        RelocationSize::ByteSize(8)
+            .write_to_buffer(v, &mut buffer)
+            .unwrap();
+        assert_eq!(
+            &buffer[..8],
+            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        );
+        assert!(buffer[8..].iter().all(|&x| x == 0));
+        let mut buffer2 = [0u8; 128];
+        RelocationSize::BitRange(0..64)
+            .write_to_buffer(v, &mut buffer2)
+            .unwrap();
+        assert_eq!(buffer, buffer2);
+
+        // 2 bits (0b11) are added to the second byte of the buffer
+        let mut buffer = [0, 0b1010_0000];
+        RelocationSize::BitRange(0..10)
+            .write_to_buffer(0xffff, &mut buffer)
+            .unwrap();
+        assert_eq!(&buffer, &[0b1111_1111, 0b1010_0011]);
+
+        // 2 bits (0b11 as the first bit is skipped) are added to the second byte of the buffer
+        let mut buffer = dbg!([0, 0b1010_0000]);
+        RelocationSize::BitRange(1..11)
+            .write_to_buffer(0xfffe, &mut buffer)
+            .unwrap();
+        assert_eq!(&buffer, &[0b1111_1111, 0b1010_0011]);
+
+        // upper 4 bits of the value are added to buffer
+        let mut buffer = dbg!([0b1010_0000]);
+        RelocationSize::BitRange(4..8)
+            .write_to_buffer(0b1000_1111, &mut buffer)
+            .unwrap();
+        assert_eq!(&buffer, &[0b1010_1000]);
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct RelocationKindInfo {
     pub(crate) kind: RelocationKind,
-    pub(crate) byte_size: usize,
+    pub(crate) size: RelocationSize,
 }
 
 impl RelocationKindInfo {
@@ -493,7 +596,7 @@ impl RelocationKindInfo {
         };
         Ok(Self {
             kind,
-            byte_size: size,
+            size: RelocationSize::ByteSize(size),
         })
     }
 }

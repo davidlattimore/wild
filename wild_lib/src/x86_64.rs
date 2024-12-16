@@ -16,7 +16,7 @@ impl crate::arch::Arch for X86_64 {
     type Relaxation = Relaxation;
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct Relaxation {
     kind: RelaxationKind,
     rel_info: RelocationKindInfo,
@@ -336,7 +336,7 @@ impl crate::arch::Relaxation for Relaxation {
     }
 
     fn rel_info(&self) -> crate::elf::RelocationKindInfo {
-        self.rel_info
+        self.rel_info.clone()
     }
 
     fn debug_kind(&self) -> impl std::fmt::Debug {

@@ -1784,12 +1784,10 @@ fn apply_relocation<S: StorageModel, A: Arch>(
             .wrapping_add(addend),
         RelocationKind::None => 0,
     };
-    let value_bytes = value.to_le_bytes();
-    let end = offset_in_section as usize + rel_info.byte_size;
-    if out.len() < end {
-        bail!("Relocation outside of bounds of section");
-    }
-    out[offset_in_section as usize..end].copy_from_slice(&value_bytes[..rel_info.byte_size]);
+    rel_info
+        .size
+        .write_to_buffer(value, &mut out[offset_in_section as usize..])?;
+
     Ok(next_modifier)
 }
 
@@ -1854,12 +1852,9 @@ fn apply_debug_relocation<S: StorageModel>(
         bail!("Could not find a relocation resolution for a debug info section");
     };
 
-    let value_bytes = value.to_le_bytes();
-    let end = offset_in_section as usize + rel_info.byte_size;
-    if out.len() < end {
-        bail!("Relocation outside of bounds of section");
-    }
-    out[offset_in_section as usize..end].copy_from_slice(&value_bytes[..rel_info.byte_size]);
+    rel_info
+        .size
+        .write_to_buffer(value, &mut out[offset_in_section as usize..])?;
     Ok(())
 }
 
