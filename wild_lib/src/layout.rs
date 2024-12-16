@@ -52,8 +52,8 @@ use crate::sharding::ShardKey;
 use crate::storage::StorageModel;
 use crate::storage::SymbolNameMap as _;
 use crate::string_merging::get_merged_string_output_address;
-use crate::string_merging::MergeStringsSection;
 use crate::string_merging::MergedStringStartAddresses;
+use crate::string_merging::MergedStringsSection;
 use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolDebug;
@@ -161,8 +161,11 @@ pub fn compute<'data, 'symbol_db, S: StorageModel, A: Arch>(
 
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(&section_part_layouts);
     let starting_mem_offsets_by_group = compute_start_offsets_by_group(&group_states, mem_offsets);
-    let merged_string_start_addresses =
-        MergedStringStartAddresses::compute(&output_sections, &starting_mem_offsets_by_group);
+    let merged_string_start_addresses = MergedStringStartAddresses::compute(
+        &output_sections,
+        &starting_mem_offsets_by_group,
+        &merged_strings,
+    );
     let mut symbol_resolutions = SymbolResolutions {
         resolutions: Vec::with_capacity(symbol_db.num_symbols()),
     };
@@ -377,7 +380,7 @@ pub struct Layout<'data, 'symbol_db, S: StorageModel> {
     pub(crate) output_sections: OutputSections<'data>,
     pub(crate) non_addressable_counts: NonAddressableCounts,
     pub(crate) symbol_resolution_flags: Vec<ResolutionFlags>,
-    pub(crate) merged_strings: OutputSectionMap<MergeStringsSection<'data>>,
+    pub(crate) merged_strings: OutputSectionMap<MergedStringsSection<'data>>,
     pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
     pub(crate) relocation_statistics: OutputSectionMap<AtomicU64>,
     pub(crate) has_static_tls: bool,
@@ -524,7 +527,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) file_id: FileId,
     pub(crate) object: &'data File<'data>,
-    pub(crate) sections: Vec<SectionSlot<'data>>,
+    pub(crate) sections: Vec<SectionSlot>,
     pub(crate) section_resolutions: Vec<SectionResolution>,
     pub(crate) symbol_id_range: SymbolIdRange,
 }
@@ -998,7 +1001,7 @@ struct ObjectLayoutState<'data> {
 
     /// Info about each of our sections. Empty until this object has been activated. Indexed the
     /// same as the sections in the input object.
-    sections: Vec<SectionSlot<'data>>,
+    sections: Vec<SectionSlot>,
 
     /// A queue of sections that we need to load.
     sections_required: Vec<SectionRequest>,
@@ -1221,7 +1224,7 @@ struct GraphResources<'data, 'scope, S: StorageModel> {
     /// something to refer to in the symtab.
     sections_with_content: OutputSectionMap<AtomicBool>,
 
-    merged_strings: &'scope OutputSectionMap<MergeStringsSection<'data>>,
+    merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
 
     has_static_tls: AtomicBool,
 }
@@ -1232,7 +1235,7 @@ struct FinaliseLayoutResources<'scope, 'data, S: StorageModel> {
     output_sections: &'scope OutputSections<'data>,
     section_layouts: &'scope OutputSectionMap<OutputRecordLayout>,
     merged_string_start_addresses: &'scope MergedStringStartAddresses,
-    merged_strings: &'scope OutputSectionMap<MergeStringsSection<'data>>,
+    merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1726,7 +1729,7 @@ fn find_required_sections<'data, S: StorageModel, A: Arch>(
     symbol_db: &SymbolDb<'data, S>,
     output_sections: &OutputSections<'data>,
     symbol_resolution_flags: &[AtomicResolutionFlags],
-    merged_strings: &OutputSectionMap<MergeStringsSection<'data>>,
+    merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
     custom_start_stop_defs: Vec<InternalSymDefInfo>,
 ) -> Result<GcOutputs<'data>> {
     let num_workers = groups_in.len();
@@ -3903,7 +3906,7 @@ impl Resolution {
         addend: u64,
         symbol_index: object::SymbolIndex,
         object_layout: &ObjectLayout,
-        merged_strings: &OutputSectionMap<MergeStringsSection>,
+        merged_strings: &OutputSectionMap<MergedStringsSection>,
         merged_string_start_addresses: &MergedStringStartAddresses,
     ) -> Result<u64> {
         // For most symbols, `raw_value` won't be zero, so we can save ourselves from looking up the
