@@ -52,7 +52,7 @@ pub(crate) struct MergeStringsSectionBucket<'data> {
 
     /// The offset within the section of the next string to be added, or if we're done adding
     /// things, then this is the size of the output section.
-    pub(crate) next_offset: u64,
+    pub(crate) next_offset: u32,
 
     /// The total size of all added strings, used for statistics.
     pub(crate) totally_added: usize,
@@ -61,7 +61,7 @@ pub(crate) struct MergeStringsSectionBucket<'data> {
     pub(crate) totally_added_strings: usize,
 
     /// The offsets of each string in the output section keyed by the string contents.
-    pub(crate) string_offsets: PassThroughHashMap<StringToMerge<'data>, u64>,
+    pub(crate) string_offsets: PassThroughHashMap<StringToMerge<'data>, u32>,
 }
 
 /// Merges identical strings from all loaded objects where those strings are from input sections
@@ -196,12 +196,12 @@ impl<'data> MergeStringsSection<'data> {
         let bucket_index = (string.hash() as usize) % MERGE_STRING_BUCKETS;
         self.buckets[bucket_index]
             .get(string)
-            .map(|offset| self.bucket_offsets[bucket_index] + offset)
+            .map(|offset| self.bucket_offsets[bucket_index] + u64::from(offset))
     }
 
     pub(crate) fn len(&self) -> u64 {
         self.bucket_offsets[MERGE_STRING_BUCKETS - 1]
-            + self.buckets[MERGE_STRING_BUCKETS - 1].next_offset
+            + u64::from(self.buckets[MERGE_STRING_BUCKETS - 1].next_offset)
     }
 
     pub(crate) fn totally_added(&self) -> usize {
@@ -225,18 +225,18 @@ impl<'data> MergeStringsSectionBucket<'data> {
         self.totally_added_strings += 1;
         self.string_offsets.entry(string).or_insert_with(|| {
             let offset = self.next_offset;
-            self.next_offset += string.bytes.len() as u64;
+            self.next_offset += string.bytes.len() as u32;
             self.strings.push(string.bytes);
             offset
         });
     }
 
-    pub(crate) fn get(&self, string: &PreHashed<StringToMerge<'data>>) -> Option<u64> {
+    pub(crate) fn get(&self, string: &PreHashed<StringToMerge<'data>>) -> Option<u32> {
         self.string_offsets.get(string).copied()
     }
 
     pub(crate) fn len(&self) -> u64 {
-        self.next_offset
+        u64::from(self.next_offset)
     }
 }
 
