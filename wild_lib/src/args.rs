@@ -331,7 +331,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             architecture = Some(Architecture::from_str(arg_value)?);
         } else if let Some(arg_value) = arg.strip_prefix("-m") {
             architecture = Some(Architecture::from_str(arg_value)?);
-        } else if long_arg_eq("EL") {
         } else if long_arg_eq("EB") {
             bail!("Big-endian target is not supported");
         } else if arg == "-z" {
