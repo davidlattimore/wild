@@ -71,6 +71,7 @@ use linker_utils::elf::shf;
 use linker_utils::elf::SectionFlags;
 use object::elf::gnu_hash;
 use object::elf::Rela64;
+use object::elf::GNU_PROPERTY_AARCH64_FEATURE_1_AND;
 use object::elf::GNU_PROPERTY_X86_UINT32_AND_HI;
 use object::elf::GNU_PROPERTY_X86_UINT32_AND_LO;
 use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_HI;
@@ -282,6 +283,7 @@ enum PropertyClass {
 fn get_property_class(property_type: u32) -> Option<PropertyClass> {
     match property_type {
         GNU_PROPERTY_X86_UINT32_AND_LO..=GNU_PROPERTY_X86_UINT32_AND_HI => Some(PropertyClass::And),
+        GNU_PROPERTY_AARCH64_FEATURE_1_AND => Some(PropertyClass::And),
         GNU_PROPERTY_X86_UINT32_OR_LO..=GNU_PROPERTY_X86_UINT32_OR_HI => Some(PropertyClass::Or),
         GNU_PROPERTY_X86_UINT32_OR_AND_LO..=GNU_PROPERTY_X86_UINT32_OR_AND_HI => {
             Some(PropertyClass::AndOr)
