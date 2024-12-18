@@ -398,6 +398,56 @@ pub(crate) struct NoteProperty {
     pub(crate) pr_padding: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PageMask {
+    SymbolPlusAddendAndPosition,
+    GotEntryAndPosition,
+    GotBase,
+}
+
+pub(crate) struct PageMaskValue {
+    pub(crate) symbol_plus_addend: u64,
+    pub(crate) got_entry: u64,
+    pub(crate) place: u64,
+    pub(crate) got: u64,
+}
+
+impl Default for PageMaskValue {
+    fn default() -> Self {
+        Self {
+            symbol_plus_addend: u64::MAX,
+            got_entry: u64::MAX,
+            place: u64::MAX,
+            got: u64::MAX,
+        }
+    }
+}
+
+const DEFAULT_AARCH64_MASK: u64 = 0xfff;
+
+pub(crate) fn get_page_mask(mask: Option<PageMask>) -> PageMaskValue {
+    let Some(mask) = mask else {
+        return PageMaskValue::default();
+    };
+
+    match mask {
+        PageMask::SymbolPlusAddendAndPosition => PageMaskValue {
+            symbol_plus_addend: DEFAULT_AARCH64_MASK,
+            place: DEFAULT_AARCH64_MASK,
+            ..Default::default()
+        },
+        PageMask::GotEntryAndPosition => PageMaskValue {
+            got_entry: DEFAULT_AARCH64_MASK,
+            place: DEFAULT_AARCH64_MASK,
+            ..Default::default()
+        },
+        PageMask::GotBase => PageMaskValue {
+            got: DEFAULT_AARCH64_MASK,
+            ..Default::default()
+        },
+    }
+}
+
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -
 /// https://uclibc.org/docs/elf-64-gen.pdf. For information on the TLS related relocations, see "ELF
 /// Handling For Thread-Local Storage" - https://www.uclibc.org/docs/tls.pdf.
@@ -554,6 +604,7 @@ mod tests {
 pub(crate) struct RelocationKindInfo {
     pub(crate) kind: RelocationKind,
     pub(crate) size: RelocationSize,
+    pub(crate) mask: Option<PageMask>,
 }
 
 pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut [T] {

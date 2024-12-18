@@ -1,3 +1,4 @@
+use self::elf::get_page_mask;
 use self::elf::NoteHeader;
 use self::elf::NoteProperty;
 use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
@@ -79,6 +80,7 @@ use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::fmt::Display;
 use std::io::Write;
+use std::ops::BitAnd;
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::ops::Range;
@@ -1727,17 +1729,21 @@ fn apply_relocation<S: StorageModel, A: Arch>(
         tracing::trace!(%value_flags, %resolution_flags);
         rel_info = A::relocation_from_raw(r_type)?;
     }
+    let mask = get_page_mask(rel_info.mask);
     let value = match rel_info.kind {
-        RelocationKind::Absolute => write_absolute_relocation(
-            table_writer,
-            resolution,
-            place,
-            addend,
-            section_info,
-            symbol_index,
-            object_layout,
-            layout,
-        )?,
+        RelocationKind::Absolute => {
+            assert!(rel_info.mask.is_none());
+            write_absolute_relocation(
+                table_writer,
+                resolution,
+                place,
+                addend,
+                section_info,
+                symbol_index,
+                object_layout,
+                layout,
+            )?
+        }
         RelocationKind::Relative => resolution
             .value_with_addend(
                 addend,
@@ -1746,21 +1752,30 @@ fn apply_relocation<S: StorageModel, A: Arch>(
                 &layout.merged_strings,
                 &layout.merged_string_start_addresses,
             )?
-            .wrapping_sub(place),
+            .bitand(mask.symbol_plus_addend)
+            .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::GotRelative => resolution
             .got_address()?
+            .bitand(mask.got_entry)
             .wrapping_add(addend)
-            .wrapping_sub(place),
+            .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::GotRelGotBase => resolution
             .got_address()?
-            .wrapping_sub(layout.got_base())
+            .bitand(mask.got_entry)
+            .wrapping_sub(layout.got_base().bitand(mask.got))
             .wrapping_add(addend),
-        RelocationKind::SymRelGotBase => resolution.value().wrapping_sub(layout.got_base()),
-        RelocationKind::PltRelGotBase => resolution.plt_address()?.wrapping_sub(layout.got_base()),
+        RelocationKind::SymRelGotBase => resolution
+            .value()
+            .bitand(mask.symbol_plus_addend)
+            .wrapping_sub(layout.got_base().bitand(mask.got)),
+        RelocationKind::PltRelGotBase => resolution
+            .plt_address()?
+            .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::PltRelative => resolution
             .plt_address()?
             .wrapping_add(addend)
-            .wrapping_sub(place),
+            .wrapping_sub(place.bitand(mask.place)),
+        // TLS-related relocations
         RelocationKind::TlsGd => resolution
             .tlsgd_got_address()?
             .wrapping_add(addend)

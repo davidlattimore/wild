@@ -66,6 +66,7 @@ impl crate::arch::Arch for X86_64 {
         Ok(RelocationKindInfo {
             kind,
             size: RelocationSize::ByteSize(size),
+            mask: None,
         })
     }
 }
