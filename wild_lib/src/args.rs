@@ -4,6 +4,7 @@
 //! order is important for some arguments, and it's not clear how easy it would be to get that
 //! correct with something like clap.
 
+use crate::arch::Architecture;
 use crate::error::Result;
 use crate::input_data::FileId;
 use crate::save_dir::SaveDir;
@@ -13,10 +14,12 @@ use anyhow::Context as _;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
 
 pub(crate) struct Args {
+    pub(crate) arch: Architecture,
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) inputs: Vec<Input>,
     pub(crate) output: Arc<Path>,
@@ -152,6 +155,17 @@ const DEFAULT_FLAGS: &[&str] = &[
 
 // Parse the supplied input arguments, which should not include the program name.
 pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Result<Action> {
+    #[allow(unused_assignments)]
+    let mut architecture = None;
+    #[cfg(target_arch = "x86_64")]
+    {
+        architecture = Some(Architecture::X86_64);
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        architecture = Some(Architecture::AArch64);
+    }
+
     let mut lib_search_path = Vec::new();
     let mut inputs = Vec::new();
     let mut output = None;
@@ -312,12 +326,13 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if long_arg_eq("no-fork") {
             should_fork = false;
         } else if arg == "-m" {
-            match input.next().context("Missing argument to -m")?.as_ref() {
-                "elf_x86_64" => {}
-                other => {
-                    bail!("-m {other} is not yet supported");
-                }
-            }
+            let arg_value = input.next().context("Missing argument to -m")?;
+            let arg_value = arg_value.as_ref();
+            architecture = Some(Architecture::from_str(arg_value)?);
+        } else if let Some(arg_value) = arg.strip_prefix("-m") {
+            architecture = Some(Architecture::from_str(arg_value)?);
+        } else if long_arg_eq("EB") {
+            bail!("Big-endian target is not supported");
         } else if arg == "-z" {
             handle_z_option(input.next().context("Missing argument to -z")?.as_ref())?;
         } else if let Some(arg) = arg.strip_prefix("-z") {
@@ -444,6 +459,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     if !unrecognised.is_empty() {
         bail!("Unrecognised argument(s): {}", unrecognised.join(" "));
     }
+    let Some(arch) = architecture else {
+        bail!("Missing -m arch option");
+    };
     let num_threads = num_threads.unwrap_or_else(crate::threading::available_parallelism);
     let output_kind = output_kind.unwrap_or({
         if is_dynamic_executable {
@@ -457,6 +475,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         return Ok(a);
     }
     Ok(Action::Link(Args {
+        arch,
         lib_search_path,
         inputs,
         output: output.unwrap_or_else(|| Arc::from(Path::new("a.out"))),

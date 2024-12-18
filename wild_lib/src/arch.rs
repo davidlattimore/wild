@@ -1,12 +1,39 @@
 //! Abstraction over different CPU architectures.
 
 use crate::args::OutputKind;
+use crate::elf::RelocationKindInfo;
 use crate::relaxation::RelocationModifier;
 use crate::resolution::ValueFlags;
+use anyhow::bail;
+use anyhow::Result;
 use linker_utils::elf::SectionFlags;
+use std::str::FromStr;
 
 pub(crate) trait Arch {
     type Relaxation: Relaxation;
+
+    // Get ELF header magic for the architecture.
+    fn elf_header_arch_magic() -> u16;
+
+    // Make architecture-specific parsing of the relocation types.
+    fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo>;
+}
+
+pub(crate) enum Architecture {
+    X86_64,
+    AArch64,
+}
+
+impl FromStr for Architecture {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "elf_x86_64" => Ok(Architecture::X86_64),
+            "aarch64elf" | "aarch64linux" => Ok(Architecture::AArch64),
+            _ => bail!("-m {s} is not yet supported"),
+        }
+    }
 }
 
 pub(crate) trait Relaxation {

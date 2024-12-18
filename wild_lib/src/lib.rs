@@ -5,6 +5,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
+pub(crate) mod aarch64;
 pub(crate) mod alignment;
 pub(crate) mod arch;
 pub(crate) mod archive;
@@ -94,7 +95,14 @@ impl Linker {
                         .with(EnvFilter::from_default_env())
                         .init();
                 }
-                link::<storage::InMemory, x86_64::X86_64>(args, done_closure)
+                match args.arch {
+                    arch::Architecture::X86_64 => {
+                        link::<storage::InMemory, x86_64::X86_64>(args, done_closure)
+                    }
+                    arch::Architecture::AArch64 => {
+                        link::<storage::InMemory, aarch64::AArch64>(args, done_closure)
+                    }
+                }
             }
             args::Action::Version => {
                 println!(

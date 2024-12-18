@@ -2,10 +2,10 @@ use crate::error::Result;
 use crate::resolution::LoadedMetrics;
 use anyhow::anyhow;
 use anyhow::bail;
+use anyhow::ensure;
 use anyhow::Context;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
-use linker_utils::elf::rel_type_to_string;
 use linker_utils::elf::sht;
 use linker_utils::elf::SectionType;
 use object::read::elf::CompressionHeader;
@@ -398,6 +398,56 @@ pub(crate) struct NoteProperty {
     pub(crate) pr_padding: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PageMask {
+    SymbolPlusAddendAndPosition,
+    GotEntryAndPosition,
+    GotBase,
+}
+
+pub(crate) struct PageMaskValue {
+    pub(crate) symbol_plus_addend: u64,
+    pub(crate) got_entry: u64,
+    pub(crate) place: u64,
+    pub(crate) got: u64,
+}
+
+impl Default for PageMaskValue {
+    fn default() -> Self {
+        Self {
+            symbol_plus_addend: u64::MAX,
+            got_entry: u64::MAX,
+            place: u64::MAX,
+            got: u64::MAX,
+        }
+    }
+}
+
+const DEFAULT_AARCH64_MASK: u64 = !0xfff;
+
+pub(crate) fn get_page_mask(mask: Option<PageMask>) -> PageMaskValue {
+    let Some(mask) = mask else {
+        return PageMaskValue::default();
+    };
+
+    match mask {
+        PageMask::SymbolPlusAddendAndPosition => PageMaskValue {
+            symbol_plus_addend: DEFAULT_AARCH64_MASK,
+            place: DEFAULT_AARCH64_MASK,
+            ..Default::default()
+        },
+        PageMask::GotEntryAndPosition => PageMaskValue {
+            got_entry: DEFAULT_AARCH64_MASK,
+            place: DEFAULT_AARCH64_MASK,
+            ..Default::default()
+        },
+        PageMask::GotBase => PageMaskValue {
+            got: DEFAULT_AARCH64_MASK,
+            ..Default::default()
+        },
+    }
+}
+
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -
 /// https://uclibc.org/docs/elf-64-gen.pdf. For information on the TLS related relocations, see "ELF
 /// Handling For Thread-Local Storage" - https://www.uclibc.org/docs/tls.pdf.
@@ -414,6 +464,9 @@ pub(crate) enum RelocationKind {
 
     /// The offset of the symbol's GOT entry, relative to the start of the GOT.
     GotRelGotBase,
+
+    /// The address of the symbol's GOT entry.
+    Got,
 
     /// The address of the symbol's PLT entry, relative to the base address of the GOT.
     PltRelGotBase,
@@ -449,53 +502,112 @@ pub(crate) enum RelocationKind {
     None,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RelocationKindInfo {
-    pub(crate) kind: RelocationKind,
-    pub(crate) byte_size: usize,
+#[derive(Clone, Debug, Copy)]
+pub(crate) enum RelocationSize {
+    ByteSize(usize),
+    // Half-opened range bounded inclusively below and exclusively above: [start, end)
+    BitRange { start: u32, end: u32 },
 }
 
-impl RelocationKindInfo {
-    pub(crate) fn from_raw(r_type: u32) -> Result<Self> {
-        let (kind, size) = match r_type {
-            object::elf::R_X86_64_64 => (RelocationKind::Absolute, 8),
-            object::elf::R_X86_64_PC32 => (RelocationKind::Relative, 4),
-            object::elf::R_X86_64_PC64 => (RelocationKind::Relative, 8),
-            object::elf::R_X86_64_GOT32 => (RelocationKind::GotRelGotBase, 4),
-            object::elf::R_X86_64_GOT64 => (RelocationKind::GotRelGotBase, 8),
-            object::elf::R_X86_64_GOTOFF64 => (RelocationKind::SymRelGotBase, 8),
-            object::elf::R_X86_64_PLT32 => (RelocationKind::PltRelative, 4),
-            object::elf::R_X86_64_PLTOFF64 => (RelocationKind::PltRelGotBase, 8),
-            object::elf::R_X86_64_GOTPCREL => (RelocationKind::GotRelative, 4),
+impl RelocationSize {
+    pub(crate) fn write_to_buffer(self, mut value: u64, output: &mut [u8]) -> Result<()> {
+        let byte_size;
+        let mut partial_byte_offset = None;
 
-            // For now, we rely on GOTPC64 and GOTPC32 always referencing the symbol
-            // _GLOBAL_OFFSET_TABLE_, which means that we can just treat these a normal relative
-            // relocations and avoid any special processing when writing.
-            object::elf::R_X86_64_GOTPC64 => (RelocationKind::Relative, 8),
-            object::elf::R_X86_64_GOTPC32 => (RelocationKind::Relative, 4),
-
-            object::elf::R_X86_64_32 | object::elf::R_X86_64_32S => (RelocationKind::Absolute, 4),
-            object::elf::R_X86_64_16 => (RelocationKind::Absolute, 2),
-            object::elf::R_X86_64_PC16 => (RelocationKind::Relative, 2),
-            object::elf::R_X86_64_8 => (RelocationKind::Absolute, 1),
-            object::elf::R_X86_64_PC8 => (RelocationKind::Relative, 1),
-            object::elf::R_X86_64_TLSGD => (RelocationKind::TlsGd, 4),
-            object::elf::R_X86_64_TLSLD => (RelocationKind::TlsLd, 4),
-            object::elf::R_X86_64_DTPOFF32 => (RelocationKind::DtpOff, 4),
-            object::elf::R_X86_64_DTPOFF64 => (RelocationKind::DtpOff, 8),
-            object::elf::R_X86_64_GOTTPOFF => (RelocationKind::GotTpOff, 4),
-            object::elf::R_X86_64_GOTPCRELX | object::elf::R_X86_64_REX_GOTPCRELX => {
-                (RelocationKind::GotRelative, 4)
+        match self {
+            RelocationSize::ByteSize(s) => {
+                byte_size = s;
             }
-            object::elf::R_X86_64_TPOFF32 => (RelocationKind::TpOff, 4),
-            object::elf::R_X86_64_NONE => (RelocationKind::None, 0),
-            _ => bail!("Unsupported relocation type {}", rel_type_to_string(r_type)),
-        };
-        Ok(Self {
-            kind,
-            byte_size: size,
-        })
+            RelocationSize::BitRange { start, end } => {
+                // Drop the upper bits first
+                debug_assert!(end <= u64::BITS);
+                let mask = if end == u64::BITS {
+                    u64::MAX
+                } else {
+                    (1 << end) - 1
+                };
+                value &= mask;
+                value >>= start;
+
+                let bit_count = end - start;
+                byte_size = (bit_count / u8::BITS) as usize;
+                // And extra partial byte needs to be added (ORed) to the output buffer!
+                if bit_count % u8::BITS != 0 {
+                    partial_byte_offset = Some(byte_size);
+                }
+            }
+        }
+
+        ensure!(
+            byte_size <= output.len(),
+            "Relocation outside of bounds of section"
+        );
+        let value_bytes = value.to_le_bytes();
+        output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
+        if let Some(offset) = partial_byte_offset {
+            output[offset] |= value_bytes[offset];
+        }
+
+        Ok(())
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_relocation_write() {
+        let mut buffer = [0xffu8; 4];
+        RelocationSize::ByteSize(2)
+            .write_to_buffer(0x0201, &mut buffer)
+            .unwrap();
+        assert_eq!(buffer, [0x01, 0x02, 0xff, 0xff]);
+
+        let v = 0x0807060504030201;
+        let mut buffer = [0u8; 128];
+        RelocationSize::ByteSize(8)
+            .write_to_buffer(v, &mut buffer)
+            .unwrap();
+        assert_eq!(
+            &buffer[..8],
+            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
+        );
+        assert!(buffer[8..].iter().all(|&x| x == 0));
+        let mut buffer2 = [0u8; 128];
+        RelocationSize::BitRange { start: 0, end: 64 }
+            .write_to_buffer(v, &mut buffer2)
+            .unwrap();
+        assert_eq!(buffer, buffer2);
+
+        // 2 bits (0b11) are added to the second byte of the buffer
+        let mut buffer = [0, 0b1010_0000];
+        RelocationSize::BitRange { start: 0, end: 10 }
+            .write_to_buffer(0xffff, &mut buffer)
+            .unwrap();
+        assert_eq!(&buffer, &[0b1111_1111, 0b1010_0011]);
+
+        // 2 bits (0b11 as the first bit is skipped) are added to the second byte of the buffer
+        let mut buffer = dbg!([0, 0b1010_0000]);
+        RelocationSize::BitRange { start: 1, end: 11 }
+            .write_to_buffer(0xfffe, &mut buffer)
+            .unwrap();
+        assert_eq!(&buffer, &[0b1111_1111, 0b1010_0011]);
+
+        // upper 4 bits of the value are added to buffer
+        let mut buffer = dbg!([0b1010_0000]);
+        RelocationSize::BitRange { start: 4, end: 8 }
+            .write_to_buffer(0b1000_1111, &mut buffer)
+            .unwrap();
+        assert_eq!(&buffer, &[0b1010_1000]);
+    }
+}
+
+#[derive(Clone, Debug, Copy)]
+pub(crate) struct RelocationKindInfo {
+    pub(crate) kind: RelocationKind,
+    pub(crate) size: RelocationSize,
+    pub(crate) mask: Option<PageMask>,
 }
 
 pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut [T] {
