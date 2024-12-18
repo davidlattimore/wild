@@ -229,7 +229,11 @@ impl crate::arch::Arch for AArch64 {
                 Some(PageMask::GotEntryAndPosition),
             ),
             // TODO: missing: G(GDAT(S))
-            //object::elf::R_AARCH64_LD64_GOT_LO12_NC
+            object::elf::R_AARCH64_LD64_GOT_LO12_NC => (
+                RelocationKind::Got,
+                RelocationSize::BitRange { start: 3, end: 12 },
+                None,
+            ),
             object::elf::R_AARCH64_LD64_GOTPAGE_LO15 => (
                 RelocationKind::GotRelGotBase,
                 RelocationSize::BitRange { start: 3, end: 15 },

@@ -465,6 +465,9 @@ pub(crate) enum RelocationKind {
     /// The offset of the symbol's GOT entry, relative to the start of the GOT.
     GotRelGotBase,
 
+    /// The address of the symbol's GOT entry.
+    Got,
+
     /// The address of the symbol's PLT entry, relative to the base address of the GOT.
     PltRelGotBase,
 

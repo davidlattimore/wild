@@ -1764,6 +1764,10 @@ fn apply_relocation<S: StorageModel, A: Arch>(
             .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got))
             .wrapping_add(addend),
+        RelocationKind::Got => resolution
+            .got_address()?
+            .bitand(mask.got_entry)
+            .wrapping_add(addend),
         RelocationKind::SymRelGotBase => resolution
             .value()
             .bitand(mask.symbol_plus_addend)
