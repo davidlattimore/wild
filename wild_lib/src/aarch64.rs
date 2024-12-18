@@ -224,7 +224,7 @@ impl crate::arch::Arch for AArch64 {
                 None,
             ),
             object::elf::R_AARCH64_ADR_GOT_PAGE => (
-                RelocationKind::GotRelGotBase,
+                RelocationKind::GotRelative,
                 RelocationSize::BitRange { start: 12, end: 33 },
                 Some(PageMask::GotEntryAndPosition),
             ),
