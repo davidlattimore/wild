@@ -49,6 +49,7 @@ const RESOLVE_SECTION_NAMES: bool = false;
 /// or more instructions equivalent.
 const PLACEHOLDER: u64 = 0xaaa;
 
+#[allow(dead_code)]
 pub(crate) fn report_function_diffs(report: &mut Report, objects: &[Object]) {
     let mut all_symbols = BTreeSet::new();
     for o in objects {
