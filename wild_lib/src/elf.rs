@@ -423,7 +423,7 @@ impl Default for PageMaskValue {
     }
 }
 
-const DEFAULT_AARCH64_MASK: u64 = 0xfff;
+const DEFAULT_AARCH64_MASK: u64 = !0xfff;
 
 pub(crate) fn get_page_mask(mask: Option<PageMask>) -> PageMaskValue {
     let Some(mask) = mask else {
