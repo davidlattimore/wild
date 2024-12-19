@@ -1,3 +1,4 @@
+use crate::elf::DynamicRelocationKind;
 use crate::elf::PageMask;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
@@ -241,6 +242,19 @@ impl crate::arch::Arch for AArch64 {
             _ => bail!("Unsupported relocation type {}", r_type),
         };
         Ok(RelocationKindInfo { kind, size, mask })
+    }
+
+    fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
+        match relocation {
+            DynamicRelocationKind::Copy => object::elf::R_AARCH64_COPY,
+            DynamicRelocationKind::Irelative => object::elf::R_AARCH64_IRELATIVE,
+            DynamicRelocationKind::DtpMod => object::elf::R_AARCH64_TLS_DTPMOD,
+            // TODO
+            DynamicRelocationKind::DtpOff => object::elf::R_AARCH64_NONE,
+            DynamicRelocationKind::TpOff => object::elf::R_AARCH64_NONE,
+            DynamicRelocationKind::Relative => object::elf::R_AARCH64_RELATIVE,
+            DynamicRelocationKind::DynamicSymbol => object::elf::R_AARCH64_GLOB_DAT,
+        }
     }
 }
 

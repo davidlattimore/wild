@@ -1,6 +1,7 @@
 //! Abstraction over different CPU architectures.
 
 use crate::args::OutputKind;
+use crate::elf::DynamicRelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::relaxation::RelocationModifier;
 use crate::resolution::ValueFlags;
@@ -14,6 +15,9 @@ pub(crate) trait Arch {
 
     // Get ELF header magic for the architecture.
     fn elf_header_arch_magic() -> u16;
+
+    // Get dynamic relocation value specific for the architecture.
+    fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32;
 
     // Make architecture-specific parsing of the relocation types.
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo>;
