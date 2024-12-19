@@ -615,3 +615,13 @@ pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut 
         .unwrap()
         .0
 }
+
+pub(crate) enum DynamicRelocationKind {
+    Copy,
+    Irelative,
+    DtpMod,
+    DtpOff,
+    TpOff,
+    Relative,
+    DynamicSymbol,
+}

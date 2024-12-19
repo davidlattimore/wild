@@ -5,6 +5,7 @@
 
 use crate::arch::Arch;
 use crate::args::OutputKind;
+use crate::elf::DynamicRelocationKind;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
@@ -68,6 +69,18 @@ impl crate::arch::Arch for X86_64 {
             size: RelocationSize::ByteSize(size),
             mask: None,
         })
+    }
+
+    fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
+        match relocation {
+            DynamicRelocationKind::Copy => object::elf::R_X86_64_COPY,
+            DynamicRelocationKind::Irelative => object::elf::R_X86_64_IRELATIVE,
+            DynamicRelocationKind::DtpMod => object::elf::R_X86_64_DTPMOD64,
+            DynamicRelocationKind::DtpOff => object::elf::R_X86_64_DTPOFF64,
+            DynamicRelocationKind::TpOff => object::elf::R_X86_64_TPOFF64,
+            DynamicRelocationKind::Relative => object::elf::R_X86_64_RELATIVE,
+            DynamicRelocationKind::DynamicSymbol => object::elf::R_X86_64_GLOB_DAT,
+        }
     }
 }
 
