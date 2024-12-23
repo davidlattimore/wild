@@ -6,7 +6,7 @@ repository.workspace = true
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.94"
+anyhow = "1.0.95"
 postcard = { version = "1.1.1", features = ["use-std"] }
 serde = { version = "1.0.216", features = ["derive"] }
 
