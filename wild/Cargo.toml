@@ -16,17 +16,17 @@ mimalloc = { version = "0.1", default-features = false, optional = true }
 dhat = { version = "0.3.3", optional = true }
 
 [dev-dependencies]
-anyhow = "1.0.94"
+anyhow = "1.0.95"
 wait-timeout = "0.2.0"
 itertools = "0.13.0"
-object = { version = "0.36.5", default-features = false, features = [
+object = { version = "0.36.7", default-features = false, features = [
     "elf",
     "read_core",
     "std",
     "unaligned",
 ] }
 linker-diff = { path = "../linker-diff" }
-which = "7.0.0"
+which = "7.0.1"
 rstest = "0.23.0"
 
 [features]
