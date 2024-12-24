@@ -200,6 +200,12 @@ impl OutputSections<'_> {
         OutputSectionMap::with_size(self.num_sections())
     }
 
+    pub(crate) fn new_section_map_with<T>(&self, new: impl FnMut() -> T) -> OutputSectionMap<T> {
+        let mut values = Vec::new();
+        values.resize_with(self.num_sections(), new);
+        OutputSectionMap::from_values(values)
+    }
+
     pub(crate) fn section_type(&self, section_id: OutputSectionId) -> SectionType {
         self.output_info(section_id).ty
     }
@@ -558,6 +564,10 @@ impl OutputSectionId {
             .map_or(alignment::MIN, |d| d.min_alignment)
     }
 
+    pub(crate) fn is_regular(self) -> bool {
+        self.0 >= NUM_NON_REGULAR_SECTIONS
+    }
+
     /// Returns the part ID in this section that has the specified alignment. Can only be called for
     /// regular sections.
     pub(crate) const fn part_id_with_alignment(self, alignment: Alignment) -> PartId {
@@ -821,6 +831,7 @@ impl<'data> OutputSections<'data> {
         self.section_infos.len()
     }
 
+    #[allow(dead_code)]
     #[must_use]
     pub(crate) fn num_regular_sections(&self) -> usize {
         self.section_infos.len() - NUM_NON_REGULAR_SECTIONS as usize

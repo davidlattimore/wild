@@ -1064,6 +1064,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sharded-offset-map"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c92c4f1c760f58ce29dfcc5eccf6e31f427bdb08313b3b3ce7b707cf703a043"
+dependencies = [
+ "sharded-vec-writer",
+]
+
+[[package]]
 name = "sharded-slab"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1074,9 +1083,9 @@ dependencies = [
 
 [[package]]
 name = "sharded-vec-writer"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1cd18dbaa674afcbf5c11de60d6d36f54ca0cad92d8d161164859d49f29ceeaf"
+checksum = "fa30d139ce17f555778e4686d94f02cb2d745693d2b72d87946b14157ba74bfb"
 
 [[package]]
 name = "shlex"
@@ -1330,6 +1339,7 @@ dependencies = [
  "memmap2",
  "object",
  "rayon",
+ "sharded-offset-map",
  "sharded-vec-writer",
  "smallvec",
  "tracing",
