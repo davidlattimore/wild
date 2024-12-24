@@ -97,8 +97,12 @@ impl<'data> ArchiveIterator<'data> {
         }
         let (header, rest) = self.data.split_at(HEADER_SIZE);
         let header: &EntryHeader = bytemuck::from_bytes(header);
-        let bytes: &[u8] = &header.size;
-        let size: usize = parse_decimal_int(bytes);
+        let bytes = {
+            let mut bytes = [0xFF; 16];
+            bytes[..10].copy_from_slice(&header.size);
+            bytes
+        };
+        let size: usize = parse_decimal_int_16(&bytes);
         self.data = rest;
         self.offset += HEADER_SIZE;
         if self.data.len() < size {
@@ -126,18 +130,37 @@ impl<'data> ArchiveIterator<'data> {
     }
 }
 
-fn parse_decimal_int(bytes: &[u8]) -> usize {
+#[inline]
+fn parse_decimal_int_16(bytes: &[u8; 16]) -> usize {
     // Note, this function shows up in profiles as using a significant amount of time. It's likely
     // that the time is actually just because it's the first time we're reading this bit of memory
     // and the time is actually being spent by the kernel setting up page mappings.
-    let mut value = 0;
-    for &byte in bytes {
-        if !byte.is_ascii_digit() {
-            break;
-        }
-        value = value * 10 + ((byte - b'0') as usize);
+    let num = u128::from_le_bytes(*bytes);
+    #[inline(always)]
+    fn check_len_16(val: u128) -> usize {
+        ((((val & 0xF0F0_F0F0_F0F0_F0F0_F0F0_F0F0_F0F0_F0F0)
+            | (((val.wrapping_add(0x0606_0606_0606_0606_0606_0606_0606_0606))
+                & 0xF0F0_F0F0_F0F0_F0F0_F0F0_F0F0_F0F0_F0F0)
+                >> 4))
+            ^ 0x3333_3333_3333_3333_3333_3333_3333_3333)
+            .trailing_zeros()
+            >> 3) as usize // same as divide by 8 (drops extra bits from right)
     }
-    value
+    #[inline(always)]
+    fn process_16(mut val: u128, len: usize) -> u64 {
+        val <<= 128_usize.saturating_sub(len << 3); // << 3 - same as mult by 8
+        val = (val & 0x0F0F_0F0F_0F0F_0F0F_0F0F_0F0F_0F0F_0F0F).wrapping_mul(((1 << 8) * 10) + 1)
+            >> 8;
+        val = (val & 0x00FF_00FF_00FF_00FF_00FF_00FF_00FF_00FF).wrapping_mul(((1 << 16) * 100) + 1)
+            >> 16;
+        val = (val & 0x0000_FFFF_0000_FFFF_0000_FFFF_0000_FFFF)
+            .wrapping_mul(((1 << 32) * 10_000) + 1)
+            >> 32;
+        ((val & 0x0000_0000_FFFF_FFFF_0000_0000_FFFF_FFFF)
+            .wrapping_mul(((1 << 64) * 100_000_000) + 1)
+            >> 64) as u64
+    }
+    process_16(num, check_len_16(num)) as usize
 }
 
 impl<'data> ArchiveContent<'data> {
@@ -300,7 +323,7 @@ mod tests {
 
     #[test]
     fn test_parse_decimal_int() {
-        assert_eq!(parse_decimal_int(b"123   "), 123);
-        assert_eq!(parse_decimal_int(b"0   "), 0);
+        assert_eq!(parse_decimal_int_16(b"123             "), 123);
+        assert_eq!(parse_decimal_int_16(b"0               "), 0);
     }
 }
