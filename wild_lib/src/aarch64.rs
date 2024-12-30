@@ -503,7 +503,7 @@ impl RelocationInsn {
         // Read the original value and combine it with the prepared mask.
         let mask_bytes = &mask.to_le_bytes();
         for (i, v) in mask_bytes.iter().enumerate() {
-            dest[i] = *v;
+            dest[i] |= *v;
         }
     }
 }
