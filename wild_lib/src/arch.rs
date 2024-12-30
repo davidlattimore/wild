@@ -8,6 +8,7 @@ use crate::resolution::ValueFlags;
 use anyhow::bail;
 use anyhow::Result;
 use linker_utils::elf::SectionFlags;
+use std::borrow::Cow;
 use std::str::FromStr;
 
 pub(crate) trait Arch {
@@ -21,6 +22,9 @@ pub(crate) trait Arch {
 
     // Make architecture-specific parsing of the relocation types.
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo>;
+
+    // Get string representation of a relocation specific for the architecture.
+    fn rel_type_to_string(r_type: u32) -> Cow<'static, str>;
 }
 
 pub(crate) enum Architecture {

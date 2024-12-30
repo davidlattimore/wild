@@ -8,6 +8,7 @@ use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
 use anyhow::bail;
 use anyhow::Result;
+use linker_utils::elf::aarch64_rel_type_to_string;
 
 pub(crate) struct AArch64;
 
@@ -388,7 +389,10 @@ impl crate::arch::Arch for AArch64 {
                 },
                 Some(PageMask::GotBase),
             ),
-            _ => bail!("Unsupported relocation type {}", r_type),
+            _ => bail!(
+                "Unsupported relocation type {}",
+                Self::rel_type_to_string(r_type)
+            ),
         };
         Ok(RelocationKindInfo { kind, size, mask })
     }
@@ -404,6 +408,10 @@ impl crate::arch::Arch for AArch64 {
             DynamicRelocationKind::Relative => object::elf::R_AARCH64_RELATIVE,
             DynamicRelocationKind::DynamicSymbol => object::elf::R_AARCH64_GLOB_DAT,
         }
+    }
+
+    fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
+        aarch64_rel_type_to_string(r_type)
     }
 }
 

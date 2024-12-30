@@ -61,7 +61,7 @@ impl crate::arch::Arch for X86_64 {
             object::elf::R_X86_64_NONE => (RelocationKind::None, 0),
             _ => bail!(
                 "Unsupported relocation type {}",
-                x86_64_rel_type_to_string(r_type)
+                Self::rel_type_to_string(r_type)
             ),
         };
         Ok(RelocationKindInfo {
@@ -81,6 +81,10 @@ impl crate::arch::Arch for X86_64 {
             DynamicRelocationKind::Relative => object::elf::R_X86_64_RELATIVE,
             DynamicRelocationKind::DynamicSymbol => object::elf::R_X86_64_GLOB_DAT,
         }
+    }
+
+    fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
+        x86_64_rel_type_to_string(r_type)
     }
 }
 
