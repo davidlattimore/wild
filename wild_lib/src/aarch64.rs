@@ -743,9 +743,8 @@ impl crate::arch::Arch for AArch64 {
             DynamicRelocationKind::Copy => object::elf::R_AARCH64_COPY,
             DynamicRelocationKind::Irelative => object::elf::R_AARCH64_IRELATIVE,
             DynamicRelocationKind::DtpMod => object::elf::R_AARCH64_TLS_DTPMOD,
-            // TODO
-            DynamicRelocationKind::DtpOff => object::elf::R_AARCH64_NONE,
-            DynamicRelocationKind::TpOff => object::elf::R_AARCH64_NONE,
+            DynamicRelocationKind::DtpOff => object::elf::R_AARCH64_TLS_DTPREL,
+            DynamicRelocationKind::TpOff => object::elf::R_AARCH64_TLS_TPREL,
             DynamicRelocationKind::Relative => object::elf::R_AARCH64_RELATIVE,
             DynamicRelocationKind::DynamicSymbol => object::elf::R_AARCH64_GLOB_DAT,
         }
