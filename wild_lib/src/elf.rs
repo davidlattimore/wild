@@ -540,7 +540,7 @@ pub(crate) struct BitRange {
 }
 
 #[derive(Clone, Debug, Copy)]
-pub(crate) enum RelocationInsn {
+pub(crate) enum RelocationInstruction {
     Adr,
     Movkz,
     Movnz,
@@ -557,7 +557,7 @@ pub(crate) enum RelocationSize {
     ByteSize(usize),
     BitMasking {
         range: BitRange,
-        insn: RelocationInsn,
+        insn: RelocationInstruction,
     },
 }
 

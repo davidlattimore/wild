@@ -2,7 +2,7 @@ use crate::elf::extract_bits;
 use crate::elf::BitRange;
 use crate::elf::DynamicRelocationKind;
 use crate::elf::PageMask;
-use crate::elf::RelocationInsn;
+use crate::elf::RelocationInstruction;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
@@ -57,7 +57,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Absolute,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 16 },
-                    insn: RelocationInsn::Movkz,
+                    insn: RelocationInstruction::Movkz,
                 },
                 None,
             ),
@@ -65,7 +65,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Absolute,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 16, end: 32 },
-                    insn: RelocationInsn::Movkz,
+                    insn: RelocationInstruction::Movkz,
                 },
                 None,
             ),
@@ -73,7 +73,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Absolute,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 32, end: 48 },
-                    insn: RelocationInsn::Movkz,
+                    insn: RelocationInstruction::Movkz,
                 },
                 None,
             ),
@@ -81,7 +81,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Absolute,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 48, end: 64 },
-                    insn: RelocationInsn::Movkz,
+                    insn: RelocationInstruction::Movkz,
                 },
                 None,
             ),
@@ -90,7 +90,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Absolute,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 16 },
-                    insn: RelocationInsn::Movnz,
+                    insn: RelocationInstruction::Movnz,
                 },
                 None,
             ),
@@ -98,7 +98,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Absolute,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 16, end: 32 },
-                    insn: RelocationInsn::Movnz,
+                    insn: RelocationInstruction::Movnz,
                 },
                 None,
             ),
@@ -106,7 +106,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Absolute,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 32, end: 48 },
-                    insn: RelocationInsn::Movnz,
+                    insn: RelocationInstruction::Movnz,
                 },
                 None,
             ),
@@ -115,7 +115,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Relative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 2, end: 21 },
-                    insn: RelocationInsn::Ldr,
+                    insn: RelocationInstruction::Ldr,
                 },
                 None,
             ),
@@ -123,7 +123,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Relative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 21 },
-                    insn: RelocationInsn::Adr,
+                    insn: RelocationInstruction::Adr,
                 },
                 None,
             ),
@@ -132,7 +132,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Relative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 12, end: 33 },
-                    insn: RelocationInsn::Adr,
+                    insn: RelocationInstruction::Adr,
                 },
                 Some(PageMask::SymbolPlusAddendAndPosition),
             ),
@@ -140,7 +140,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Absolute,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 12 },
-                    insn: RelocationInsn::Add,
+                    insn: RelocationInstruction::Add,
                 },
                 None,
             ),
@@ -148,7 +148,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Absolute,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 12 },
-                    insn: RelocationInsn::LdSt,
+                    insn: RelocationInstruction::LdSt,
                 },
                 None,
             ),
@@ -156,7 +156,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Absolute,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 1, end: 12 },
-                    insn: RelocationInsn::LdSt,
+                    insn: RelocationInstruction::LdSt,
                 },
                 None,
             ),
@@ -164,7 +164,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Absolute,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 2, end: 12 },
-                    insn: RelocationInsn::LdSt,
+                    insn: RelocationInstruction::LdSt,
                 },
                 None,
             ),
@@ -172,7 +172,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Absolute,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 3, end: 12 },
-                    insn: RelocationInsn::LdSt,
+                    insn: RelocationInstruction::LdSt,
                 },
                 None,
             ),
@@ -180,7 +180,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Absolute,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 4, end: 12 },
-                    insn: RelocationInsn::LdSt,
+                    insn: RelocationInstruction::LdSt,
                 },
                 None,
             ),
@@ -190,7 +190,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Relative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 2, end: 16 },
-                    insn: RelocationInsn::TstBr,
+                    insn: RelocationInstruction::TstBr,
                 },
                 None,
             ),
@@ -198,7 +198,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Relative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 2, end: 21 },
-                    insn: RelocationInsn::Bcond,
+                    insn: RelocationInstruction::Bcond,
                 },
                 None,
             ),
@@ -206,7 +206,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Relative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 2, end: 28 },
-                    insn: RelocationInsn::JumpCall,
+                    insn: RelocationInstruction::JumpCall,
                 },
                 None,
             ),
@@ -214,7 +214,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Relative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 2, end: 28 },
-                    insn: RelocationInsn::JumpCall,
+                    insn: RelocationInstruction::JumpCall,
                 },
                 None,
             ),
@@ -224,7 +224,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Relative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 16 },
-                    insn: RelocationInsn::Movnz,
+                    insn: RelocationInstruction::Movnz,
                 },
                 None,
             ),
@@ -232,7 +232,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Relative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 16 },
-                    insn: RelocationInsn::Movkz,
+                    insn: RelocationInstruction::Movkz,
                 },
                 None,
             ),
@@ -240,7 +240,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Relative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 16, end: 32 },
-                    insn: RelocationInsn::Movnz,
+                    insn: RelocationInstruction::Movnz,
                 },
                 None,
             ),
@@ -248,7 +248,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Relative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 16, end: 32 },
-                    insn: RelocationInsn::Movkz,
+                    insn: RelocationInstruction::Movkz,
                 },
                 None,
             ),
@@ -256,7 +256,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Relative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 32, end: 48 },
-                    insn: RelocationInsn::Movnz,
+                    insn: RelocationInstruction::Movnz,
                 },
                 None,
             ),
@@ -264,7 +264,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Relative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 32, end: 48 },
-                    insn: RelocationInsn::Movkz,
+                    insn: RelocationInstruction::Movkz,
                 },
                 None,
             ),
@@ -272,7 +272,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Relative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 48, end: 64 },
-                    insn: RelocationInsn::Movnz,
+                    insn: RelocationInstruction::Movnz,
                 },
                 None,
             ),
@@ -282,7 +282,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::GotRelGotBase,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 16 },
-                    insn: RelocationInsn::Movnz,
+                    insn: RelocationInstruction::Movnz,
                 },
                 None,
             ),
@@ -290,7 +290,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::GotRelGotBase,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 16 },
-                    insn: RelocationInsn::Movkz,
+                    insn: RelocationInstruction::Movkz,
                 },
                 None,
             ),
@@ -298,7 +298,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::GotRelGotBase,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 16, end: 32 },
-                    insn: RelocationInsn::Movnz,
+                    insn: RelocationInstruction::Movnz,
                 },
                 None,
             ),
@@ -306,7 +306,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::GotRelGotBase,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 16, end: 32 },
-                    insn: RelocationInsn::Movkz,
+                    insn: RelocationInstruction::Movkz,
                 },
                 None,
             ),
@@ -314,7 +314,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::GotRelGotBase,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 32, end: 48 },
-                    insn: RelocationInsn::Movnz,
+                    insn: RelocationInstruction::Movnz,
                 },
                 None,
             ),
@@ -322,7 +322,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::GotRelGotBase,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 32, end: 48 },
-                    insn: RelocationInsn::Movkz,
+                    insn: RelocationInstruction::Movkz,
                 },
                 None,
             ),
@@ -330,7 +330,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::GotRelGotBase,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 48, end: 64 },
-                    insn: RelocationInsn::Movnz,
+                    insn: RelocationInstruction::Movnz,
                 },
                 None,
             ),
@@ -352,7 +352,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::GotRelative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 2, end: 21 },
-                    insn: RelocationInsn::LdSt,
+                    insn: RelocationInstruction::LdSt,
                 },
                 None,
             ),
@@ -360,7 +360,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::GotRelGotBase,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 3, end: 15 },
-                    insn: RelocationInsn::LdSt,
+                    insn: RelocationInstruction::LdSt,
                 },
                 None,
             ),
@@ -368,7 +368,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::GotRelative,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 12, end: 33 },
-                    insn: RelocationInsn::Adr,
+                    insn: RelocationInstruction::Adr,
                 },
                 Some(PageMask::GotEntryAndPosition),
             ),
@@ -376,7 +376,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::Got,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 3, end: 12 },
-                    insn: RelocationInsn::LdSt,
+                    insn: RelocationInstruction::LdSt,
                 },
                 None,
             ),
@@ -384,7 +384,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::GotRelGotBase,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 3, end: 15 },
-                    insn: RelocationInsn::LdSt,
+                    insn: RelocationInstruction::LdSt,
                 },
                 Some(PageMask::GotBase),
             ),
@@ -446,7 +446,7 @@ impl crate::arch::Relaxation for () {
     }
 }
 
-impl RelocationInsn {
+impl RelocationInstruction {
     // Encode computed relocation value and store it based on the encoding of an instruction.
     // Each instruction links to a chapter in the Arm Architecture Reference Manual for A-profile architecture
     // manual: https://developer.arm.com/documentation/ddi0487/latest/
@@ -454,16 +454,16 @@ impl RelocationInsn {
         let mut mask;
         match self {
             // C6.2.13
-            RelocationInsn::Adr => {
+            RelocationInstruction::Adr => {
                 mask = ((extract_bits(extracted_value, 0, 2) as u32) << 29)
                     | ((extract_bits(extracted_value, 2, 32) as u32) << 5);
             }
             // C6.2.252, C6.2.254
-            RelocationInsn::Movkz => {
+            RelocationInstruction::Movkz => {
                 mask = (extracted_value as u32) << 5;
             }
             // C6.2.253, C6.2.254
-            RelocationInsn::Movnz => {
+            RelocationInstruction::Movnz => {
                 let negative = (original_value as i64) < 0;
                 let mut value = extracted_value as i64;
                 mask = 0u32;
@@ -476,27 +476,27 @@ impl RelocationInsn {
                 mask |= extract_bits(value as u64, 0, 16) as u32;
             }
             // C6.2.192
-            RelocationInsn::Ldr => {
+            RelocationInstruction::Ldr => {
                 mask = (extracted_value as u32) << 5;
             }
             // C6.2.5
-            RelocationInsn::Add => {
+            RelocationInstruction::Add => {
                 mask = (extracted_value as u32) << 10;
             }
             // C7.2.208, C6.2.383
-            RelocationInsn::LdSt => {
+            RelocationInstruction::LdSt => {
                 mask = (extracted_value as u32) << 10;
             }
             // C6.2.438
-            RelocationInsn::TstBr => {
+            RelocationInstruction::TstBr => {
                 mask = (extracted_value as u32) << 5;
             }
             // C6.2.34
-            RelocationInsn::Bcond => {
+            RelocationInstruction::Bcond => {
                 mask = (extracted_value as u32) << 5;
             }
             // C6.2.33
-            RelocationInsn::JumpCall => {
+            RelocationInstruction::JumpCall => {
                 mask = extracted_value as u32;
             }
         }
