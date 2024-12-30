@@ -502,104 +502,83 @@ pub(crate) enum RelocationKind {
     None,
 }
 
-#[derive(Clone, Debug, Copy)]
-pub(crate) enum RelocationSize {
-    ByteSize(usize),
-    // Half-opened range bounded inclusively below and exclusively above: [start, end)
-    BitRange { start: u32, end: u32 },
-}
-
-impl RelocationSize {
-    pub(crate) fn write_to_buffer(self, mut value: u64, output: &mut [u8]) -> Result<()> {
-        let byte_size;
-        let mut partial_byte_offset = None;
-
-        match self {
-            RelocationSize::ByteSize(s) => {
-                byte_size = s;
-            }
-            RelocationSize::BitRange { start, end } => {
-                // Drop the upper bits first
-                debug_assert!(end <= u64::BITS);
-                let mask = if end == u64::BITS {
-                    u64::MAX
-                } else {
-                    (1 << end) - 1
-                };
-                value &= mask;
-                value >>= start;
-
-                let bit_count = end - start;
-                byte_size = (bit_count / u8::BITS) as usize;
-                // And extra partial byte needs to be added (ORed) to the output buffer!
-                if bit_count % u8::BITS != 0 {
-                    partial_byte_offset = Some(byte_size);
-                }
-            }
-        }
-
-        ensure!(
-            byte_size <= output.len(),
-            "Relocation outside of bounds of section"
-        );
-        let value_bytes = value.to_le_bytes();
-        output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
-        if let Some(offset) = partial_byte_offset {
-            output[offset] |= value_bytes[offset];
-        }
-
-        Ok(())
-    }
+/// Extract range-specified ([`start`..`end`]) bits from the provided `value`.
+pub fn extract_bits(value: u64, start: u32, end: u32) -> u64 {
+    debug_assert!(start < end);
+    (value >> (start)) & ((1 << (end - start)) - 1)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::extract_bits;
 
     #[test]
-    fn verify_relocation_write() {
-        let mut buffer = [0xffu8; 4];
-        RelocationSize::ByteSize(2)
-            .write_to_buffer(0x0201, &mut buffer)
-            .unwrap();
-        assert_eq!(buffer, [0x01, 0x02, 0xff, 0xff]);
+    fn test_bit_operations() {
+        assert_eq!(0b11000, extract_bits(0b1100_0000, 3, 8));
+        assert_eq!(0b1010_1010_0000, extract_bits(0b10101010_00001111, 4, 16));
+        assert_eq!(u32::MAX, extract_bits(u64::MAX, 0, 32) as u32);
+    }
 
-        let v = 0x0807060504030201;
-        let mut buffer = [0u8; 128];
-        RelocationSize::ByteSize(8)
-            .write_to_buffer(v, &mut buffer)
-            .unwrap();
-        assert_eq!(
-            &buffer[..8],
-            &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]
-        );
-        assert!(buffer[8..].iter().all(|&x| x == 0));
-        let mut buffer2 = [0u8; 128];
-        RelocationSize::BitRange { start: 0, end: 64 }
-            .write_to_buffer(v, &mut buffer2)
-            .unwrap();
-        assert_eq!(buffer, buffer2);
+    #[test]
+    #[should_panic]
+    fn test_extract_bits_wrong_range() {
+        extract_bits(0, 2, 1);
+    }
 
-        // 2 bits (0b11) are added to the second byte of the buffer
-        let mut buffer = [0, 0b1010_0000];
-        RelocationSize::BitRange { start: 0, end: 10 }
-            .write_to_buffer(0xffff, &mut buffer)
-            .unwrap();
-        assert_eq!(&buffer, &[0b1111_1111, 0b1010_0011]);
+    #[test]
+    #[should_panic]
+    fn test_extract_bits_too_large() {
+        extract_bits(0, 0, 100);
+    }
+}
 
-        // 2 bits (0b11 as the first bit is skipped) are added to the second byte of the buffer
-        let mut buffer = dbg!([0, 0b1010_0000]);
-        RelocationSize::BitRange { start: 1, end: 11 }
-            .write_to_buffer(0xfffe, &mut buffer)
-            .unwrap();
-        assert_eq!(&buffer, &[0b1111_1111, 0b1010_0011]);
+// Half-opened range bounded inclusively below and exclusively above: [`start``, `end`)
+#[derive(Clone, Debug, Copy)]
+pub(crate) struct BitRange {
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
 
-        // upper 4 bits of the value are added to buffer
-        let mut buffer = dbg!([0b1010_0000]);
-        RelocationSize::BitRange { start: 4, end: 8 }
-            .write_to_buffer(0b1000_1111, &mut buffer)
-            .unwrap();
-        assert_eq!(&buffer, &[0b1010_1000]);
+#[derive(Clone, Debug, Copy)]
+pub(crate) enum RelocationInstruction {
+    Adr,
+    Movkz,
+    Movnz,
+    Ldr,
+    Add,
+    LdSt,
+    TstBr,
+    Bcond,
+    JumpCall,
+}
+
+#[derive(Clone, Debug, Copy)]
+pub(crate) enum RelocationSize {
+    ByteSize(usize),
+    BitMasking {
+        range: BitRange,
+        insn: RelocationInstruction,
+    },
+}
+
+impl RelocationSize {
+    pub(crate) fn write_to_buffer(self, value: u64, output: &mut [u8]) -> Result<()> {
+        match self {
+            RelocationSize::ByteSize(byte_size) => {
+                ensure!(
+                    byte_size <= output.len(),
+                    "Relocation outside of bounds of section"
+                );
+                let value_bytes = value.to_le_bytes();
+                output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
+            }
+            RelocationSize::BitMasking { range, insn } => {
+                let extracted_value = extract_bits(value, range.start, range.end);
+                insn.write_to_value(extracted_value, value, &mut output[..4]);
+            }
+        }
+
+        Ok(())
     }
 }
 
