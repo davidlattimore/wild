@@ -747,7 +747,7 @@ impl BucketOffset {
             bail!("Merge-string bucket too large");
         }
         Ok(BucketOffset(
-            (bucket as u32) << (32 - MERGE_STRING_BUCKET_BITS) | offset,
+            ((bucket as u32) << (32 - MERGE_STRING_BUCKET_BITS)) | offset,
         ))
     }
 
