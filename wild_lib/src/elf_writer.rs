@@ -1800,15 +1800,41 @@ fn apply_relocation<S: StorageModel, A: Arch>(
         // TLS-related relocations
         RelocationKind::TlsGd => resolution
             .tlsgd_got_address()?
+            .bitand(mask.got_entry)
             .wrapping_add(addend)
-            .wrapping_sub(place),
+            .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::TlsGdGot => resolution
+            .tlsgd_got_address()?
+            .bitand(mask.got_entry)
+            .wrapping_add(addend),
+        RelocationKind::TlsGdGotBase => resolution
+            .tlsgd_got_address()?
+            .bitand(mask.got_entry)
+            .wrapping_add(addend)
+            .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::TlsLd => layout
             .prelude()
             .tlsld_got_entry
             .unwrap()
             .get()
+            .bitand(mask.got_entry)
             .wrapping_add(addend)
-            .wrapping_sub(place),
+            .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::TlsLdGot => layout
+            .prelude()
+            .tlsld_got_entry
+            .unwrap()
+            .get()
+            .bitand(mask.got_entry)
+            .wrapping_add(addend),
+        RelocationKind::TlsLdGotBase => layout
+            .prelude()
+            .tlsld_got_entry
+            .unwrap()
+            .get()
+            .bitand(mask.got_entry)
+            .wrapping_add(addend)
+            .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::DtpOff if output_kind == OutputKind::SharedObject => resolution
             .value()
             .sub(layout.tls_start_address())
@@ -1819,8 +1845,18 @@ fn apply_relocation<S: StorageModel, A: Arch>(
             .wrapping_add(addend),
         RelocationKind::GotTpOff => resolution
             .got_address()?
+            .bitand(mask.got_entry)
             .wrapping_add(addend)
-            .wrapping_sub(place),
+            .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::GotTpOffGot => resolution
+            .got_address()?
+            .bitand(mask.got_entry)
+            .wrapping_add(addend),
+        RelocationKind::GotTpOffGotBase => resolution
+            .got_address()?
+            .bitand(mask.got_entry)
+            .wrapping_add(addend)
+            .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::TpOff => resolution
             .value()
             .wrapping_sub(layout.tls_end_address())

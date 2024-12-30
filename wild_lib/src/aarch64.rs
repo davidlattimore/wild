@@ -389,6 +389,347 @@ impl crate::arch::Arch for AArch64 {
                 },
                 Some(PageMask::GotBase),
             ),
+
+            // 5.7.11.1   General Dynamic thread-local storage model
+            object::elf::R_AARCH64_TLSGD_ADR_PREL21 => (
+                RelocationKind::TlsGd,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 21 },
+                    insn: RelocationInstruction::Adr,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSGD_ADR_PAGE21 => (
+                RelocationKind::TlsGd,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 12, end: 33 },
+                    insn: RelocationInstruction::Adr,
+                },
+                Some(PageMask::GotEntryAndPosition),
+            ),
+            object::elf::R_AARCH64_TLSGD_ADD_LO12_NC => (
+                RelocationKind::TlsGdGot,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 12 },
+                    insn: RelocationInstruction::Add,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSGD_MOVW_G1 => (
+                RelocationKind::TlsGdGotBase,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 16, end: 33 },
+                    insn: RelocationInstruction::Movnz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSGD_MOVW_G0_NC => (
+                RelocationKind::TlsGdGotBase,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 16 },
+                    insn: RelocationInstruction::Movkz,
+                },
+                None,
+            ),
+
+            // 5.7.11.2   Local Dynamic thread-local storage model
+            object::elf::R_AARCH64_TLSLD_ADR_PREL21 => (
+                RelocationKind::TlsLd,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 21 },
+                    insn: RelocationInstruction::Adr,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_ADR_PAGE21 => (
+                RelocationKind::TlsLd,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 12, end: 33 },
+                    insn: RelocationInstruction::Adr,
+                },
+                Some(PageMask::GotEntryAndPosition),
+            ),
+            object::elf::R_AARCH64_TLSLD_ADD_LO12_NC => (
+                RelocationKind::TlsLdGot,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 12 },
+                    insn: RelocationInstruction::Add,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_MOVW_G1 => (
+                RelocationKind::TlsLdGotBase,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 16, end: 32 },
+                    insn: RelocationInstruction::Movnz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_MOVW_G0_NC => (
+                RelocationKind::TlsLdGotBase,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 16 },
+                    insn: RelocationInstruction::Movkz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_LD_PREL19 => (
+                RelocationKind::TlsLd,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 21 },
+                    insn: RelocationInstruction::Ldr,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_MOVW_DTPREL_G2 => (
+                RelocationKind::DtpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 32, end: 48 },
+                    insn: RelocationInstruction::Movnz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_MOVW_DTPREL_G1 => (
+                RelocationKind::DtpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 16, end: 32 },
+                    insn: RelocationInstruction::Movnz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_MOVW_DTPREL_G1_NC => (
+                RelocationKind::DtpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 16, end: 32 },
+                    insn: RelocationInstruction::Movkz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_MOVW_DTPREL_G0 => (
+                RelocationKind::DtpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 16 },
+                    insn: RelocationInstruction::Movnz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_MOVW_DTPREL_G0_NC => (
+                RelocationKind::DtpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 16 },
+                    insn: RelocationInstruction::Movkz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_ADD_DTPREL_HI12 => (
+                RelocationKind::DtpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 12, end: 24 },
+                    insn: RelocationInstruction::Add,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_ADD_DTPREL_LO12
+            | object::elf::R_AARCH64_TLSLD_ADD_DTPREL_LO12_NC => (
+                RelocationKind::DtpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 12 },
+                    insn: RelocationInstruction::Add,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_LDST8_DTPREL_LO12
+            | object::elf::R_AARCH64_TLSLD_LDST8_DTPREL_LO12_NC => (
+                RelocationKind::DtpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 12 },
+                    insn: RelocationInstruction::LdSt,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_LDST16_DTPREL_LO12
+            | object::elf::R_AARCH64_TLSLD_LDST16_DTPREL_LO12_NC => (
+                RelocationKind::DtpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 1, end: 12 },
+                    insn: RelocationInstruction::LdSt,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_LDST32_DTPREL_LO12
+            | object::elf::R_AARCH64_TLSLD_LDST32_DTPREL_LO12_NC => (
+                RelocationKind::DtpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 2, end: 12 },
+                    insn: RelocationInstruction::LdSt,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_LDST64_DTPREL_LO12
+            | object::elf::R_AARCH64_TLSLD_LDST64_DTPREL_LO12_NC => (
+                RelocationKind::DtpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 3, end: 12 },
+                    insn: RelocationInstruction::LdSt,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLD_LDST128_DTPREL_LO12
+            | object::elf::R_AARCH64_TLSLD_LDST128_DTPREL_LO12_NC => (
+                RelocationKind::DtpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 4, end: 12 },
+                    insn: RelocationInstruction::LdSt,
+                },
+                None,
+            ),
+
+            // 5.7.11.3   Initial Exec thread-local storage model
+            object::elf::R_AARCH64_TLSIE_MOVW_GOTTPREL_G1 => (
+                RelocationKind::GotTpOffGotBase,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 16, end: 32 },
+                    insn: RelocationInstruction::Movnz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSIE_MOVW_GOTTPREL_G0_NC => (
+                RelocationKind::GotTpOffGotBase,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 16 },
+                    insn: RelocationInstruction::Movkz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 => (
+                RelocationKind::GotTpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 12, end: 33 },
+                    insn: RelocationInstruction::Adr,
+                },
+                Some(PageMask::GotEntryAndPosition),
+            ),
+            object::elf::R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC => (
+                RelocationKind::GotTpOffGot,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 3, end: 12 },
+                    insn: RelocationInstruction::Ldr,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSIE_LD_GOTTPREL_PREL19 => (
+                RelocationKind::GotTpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 2, end: 21 },
+                    insn: RelocationInstruction::Ldr,
+                },
+                None,
+            ),
+
+            // 5.7.11.4   Local Exec thread-local storage model
+            object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G2 => (
+                RelocationKind::TpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 32, end: 48 },
+                    insn: RelocationInstruction::Movnz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1 => (
+                RelocationKind::TpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 16, end: 32 },
+                    insn: RelocationInstruction::Movnz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1_NC => (
+                RelocationKind::TpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 16, end: 32 },
+                    insn: RelocationInstruction::Movkz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G0 => (
+                RelocationKind::TpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 16 },
+                    insn: RelocationInstruction::Movnz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G0_NC => (
+                RelocationKind::TpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 16 },
+                    insn: RelocationInstruction::Movkz,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLE_ADD_TPREL_HI12 => (
+                RelocationKind::TpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 12, end: 24 },
+                    insn: RelocationInstruction::Add,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLE_ADD_TPREL_LO12
+            | object::elf::R_AARCH64_TLSLE_ADD_TPREL_LO12_NC => (
+                RelocationKind::TpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 12 },
+                    insn: RelocationInstruction::Add,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLE_LDST8_TPREL_LO12
+            | object::elf::R_AARCH64_TLSLE_LDST8_TPREL_LO12_NC => (
+                RelocationKind::TpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 0, end: 12 },
+                    insn: RelocationInstruction::LdSt,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLE_LDST16_TPREL_LO12
+            | object::elf::R_AARCH64_TLSLE_LDST16_TPREL_LO12_NC => (
+                RelocationKind::TpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 1, end: 12 },
+                    insn: RelocationInstruction::LdSt,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLE_LDST32_TPREL_LO12
+            | object::elf::R_AARCH64_TLSLE_LDST32_TPREL_LO12_NC => (
+                RelocationKind::TpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 2, end: 12 },
+                    insn: RelocationInstruction::LdSt,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLE_LDST64_TPREL_LO12
+            | object::elf::R_AARCH64_TLSLE_LDST64_TPREL_LO12_NC => (
+                RelocationKind::TpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 3, end: 12 },
+                    insn: RelocationInstruction::LdSt,
+                },
+                None,
+            ),
+            object::elf::R_AARCH64_TLSLE_LDST128_TPREL_LO12
+            | object::elf::R_AARCH64_TLSLE_LDST128_TPREL_LO12_NC => (
+                RelocationKind::TpOff,
+                RelocationSize::BitMasking {
+                    range: BitRange { start: 4, end: 12 },
+                    insn: RelocationInstruction::LdSt,
+                },
+                None,
+            ),
+
             _ => bail!(
                 "Unsupported relocation type {}",
                 Self::rel_type_to_string(r_type)
