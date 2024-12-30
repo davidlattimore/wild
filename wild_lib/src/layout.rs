@@ -2462,9 +2462,15 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
             ResolutionFlags::PLT | ResolutionFlags::GOT
         }
         RelocationKind::GotRelGotBase | RelocationKind::GotRelative => ResolutionFlags::GOT,
-        RelocationKind::GotTpOff => ResolutionFlags::GOT_TLS_OFFSET,
-        RelocationKind::TlsGd => ResolutionFlags::GOT_TLS_MODULE,
-        RelocationKind::TlsLd => ResolutionFlags::empty(),
+        RelocationKind::GotTpOff
+        | RelocationKind::GotTpOffGot
+        | RelocationKind::GotTpOffGotBase => ResolutionFlags::GOT_TLS_OFFSET,
+        RelocationKind::TlsGd | RelocationKind::TlsGdGot | RelocationKind::TlsGdGotBase => {
+            ResolutionFlags::GOT_TLS_MODULE
+        }
+        RelocationKind::TlsLd | RelocationKind::TlsLdGot | RelocationKind::TlsLdGotBase => {
+            ResolutionFlags::empty()
+        }
         RelocationKind::Absolute
         | RelocationKind::Relative
         | RelocationKind::DtpOff

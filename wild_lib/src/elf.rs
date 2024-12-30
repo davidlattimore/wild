@@ -482,10 +482,23 @@ pub(crate) enum RelocationKind {
     /// and the offset within that modules TLS storage.
     TlsGd,
 
+    /// The address of the symbol's TLSGD GOT entry.
+    TlsGdGot,
+
+    /// The address of the symbol's TLSGD GOT entry, relative to the start of the GOT.
+    TlsGdGotBase,
+
     /// The address of the TLS module ID for the shared object that we're writing, relative to the
     /// place of the relocation. This is used when a TLS variable is defined and used within the
     /// same shared object.
     TlsLd,
+
+    /// The address of the TLS module ID for the shared object that we're writing.
+    TlsLdGot,
+
+    /// The address of the TLS module ID for the shared object that we're writing,
+    /// relative to the start of the GOT.
+    TlsLdGotBase,
 
     /// The offset of a thread-local within the TLS storage of DSO that defines that thread-local.
     DtpOff,
@@ -493,6 +506,14 @@ pub(crate) enum RelocationKind {
     /// The address of a GOT entry containing the offset of a TLS variable within the executable's
     /// TLS storage, relative to the place of the relocation.
     GotTpOff,
+
+    /// The address of a GOT entry containing the offset of a TLS variable within the executable's
+    /// TLS storage.
+    GotTpOffGot,
+
+    /// The address of a GOT entry containing the offset of a TLS variable within the executable's
+    /// TLS storage, relative to the start of the GOT.
+    GotTpOffGotBase,
 
     /// The offset of a TLS variable within the executable's TLS storage.
     TpOff,
