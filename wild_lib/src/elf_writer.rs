@@ -70,7 +70,6 @@ use linker_utils::elf::secnames::DEBUG_RANGES_SECTION_NAME;
 use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
-use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::elf::SectionFlags;
 use memmap2::MmapOptions;
 use object::elf::NT_GNU_BUILD_ID;
@@ -81,6 +80,7 @@ use object::read::elf::Sym as _;
 use object::LittleEndian;
 use std::fmt::Display;
 use std::io::Write;
+use std::marker::PhantomData;
 use std::ops::BitAnd;
 use std::ops::Deref;
 use std::ops::DerefMut;
@@ -1436,7 +1436,7 @@ impl<'data> ObjectLayout<'data> {
             .with_context(|| {
                 format!(
                     "Failed to apply {} at offset 0x{offset_in_section:x}",
-                    self.display_relocation(rel, layout)
+                    self.display_relocation::<S, A>(rel, layout)
                 )
             })?;
         }
@@ -1482,7 +1482,7 @@ impl<'data> ObjectLayout<'data> {
             .with_context(|| {
                 format!(
                     "Failed to apply {} at offset 0x{offset_in_section:x}",
-                    self.display_relocation(rel, layout)
+                    self.display_relocation::<S, A>(rel, layout)
                 )
             })?;
         }
@@ -1613,7 +1613,7 @@ impl<'data> ObjectLayout<'data> {
                     .with_context(|| {
                         format!(
                             "Failed to apply eh_frame {}",
-                            self.display_relocation(rel, layout)
+                            self.display_relocation::<S, A>(rel, layout)
                         )
                     })?;
                     relocations.next();
@@ -1648,32 +1648,34 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn display_relocation<'a, 'symbol_db, S: StorageModel>(
+    fn display_relocation<'a, 'symbol_db, S: StorageModel, A: Arch>(
         &'a self,
         rel: &'a elf::Rela,
         layout: &'a Layout<'data, 'symbol_db, S>,
-    ) -> DisplayRelocation<'a, 'data, S> {
-        DisplayRelocation {
+    ) -> DisplayRelocation<'a, 'data, S, A> {
+        DisplayRelocation::<'a, 'data, S, A> {
             rel,
             symbol_db: layout.symbol_db,
             object: self,
+            phantom: PhantomData,
         }
     }
 }
 
-struct DisplayRelocation<'a, 'data, S: StorageModel> {
+struct DisplayRelocation<'a, 'data, S: StorageModel, A: Arch> {
     rel: &'a elf::Rela,
     symbol_db: &'a SymbolDb<'data, S>,
     object: &'a ObjectLayout<'a>,
+    phantom: PhantomData<A>,
 }
 
-impl<S: StorageModel> Display for DisplayRelocation<'_, '_, S> {
+impl<S: StorageModel, A: Arch> Display for DisplayRelocation<'_, '_, S, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let e = LittleEndian;
         write!(
             f,
             "relocation of type {} to ",
-            x86_64_rel_type_to_string(self.rel.r_type(e, false))
+            A::rel_type_to_string(self.rel.r_type(e, false))
         )?;
         match self.rel.symbol(e, false) {
             None => write!(f, "absolute")?,
