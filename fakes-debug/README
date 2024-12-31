@@ -1,0 +1,4 @@
+The symlinks in this directory exist make it easier to pretend to be a
+different linker. For example, see the section about building rustc with wild
+in BENCHMARKING.md.
+
