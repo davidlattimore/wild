@@ -3,7 +3,8 @@ name = "linker-trace"
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-edition = "2021"
+rust-version.workspace = true
+edition.workspace = true
 
 [dependencies]
 anyhow = "1.0.95"
