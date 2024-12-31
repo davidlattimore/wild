@@ -3,7 +3,7 @@
 # docker build --progress=plain -t wild-dev-ubuntu . -f docker/ubuntu.Dockerfile
 # docker run -it wild-dev-ubuntu
 
-FROM rust:1.79 AS chef
+FROM rust:1.83 AS chef
 RUN apt-get update && \
     apt-get install -y clang lld-16 less && \
     rm -rf /var/lib/apt/lists/*
