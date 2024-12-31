@@ -1,10 +1,11 @@
 [package]
 name = "linker-diff"
+description = "Diffs and validates ELF binaries"
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Diffs and validates ELF binaries"
-edition = "2021"
+rust-version.workspace = true
+edition.workspace = true
 
 [dependencies]
 linker-layout = { path = "../linker-layout" }

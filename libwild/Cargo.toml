@@ -3,7 +3,8 @@ name = "libwild"
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-edition = "2021"
+rust-version.workspace = true
+edition.workspace = true
 
 [dependencies]
 ahash = { version = "0.8.11", default-features = false, features = ["std"] }
