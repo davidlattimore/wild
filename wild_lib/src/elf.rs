@@ -541,12 +541,14 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic]
     fn test_extract_bits_wrong_range() {
         extract_bits(0, 2, 1);
     }
 
     #[test]
+    #[cfg(debug_assertions)]
     #[should_panic]
     fn test_extract_bits_too_large() {
         extract_bits(0, 0, 100);
