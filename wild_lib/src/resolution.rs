@@ -40,10 +40,10 @@ use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use anyhow::bail;
 use anyhow::Context;
+use atomic_take::AtomicTake;
 use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
-use crossbeam_utils::atomic::AtomicCell;
 use itertools::Itertools;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
@@ -97,12 +97,6 @@ pub fn resolve_symbols_and_sections<'data, S: StorageModel>(
     })
 }
 
-/// A cell that holds mutable reference to the symbol definitions for one of our input objects. We
-/// unfortunately need to box these mutable slices, otherwise the cell isn't lock-free.
-type DefinitionsCell<'definitions> = AtomicCell<Option<Box<&'definitions mut [SymbolId]>>>;
-
-const _: () = assert!(DefinitionsCell::is_lock_free());
-
 #[tracing::instrument(skip_all, name = "Resolve symbols")]
 pub(crate) fn resolve_symbols_in_files<'data, S: StorageModel>(
     groups: &'data [Group<'data>],
@@ -117,17 +111,17 @@ pub(crate) fn resolve_symbols_in_files<'data, S: StorageModel>(
 
     let mut symbol_definitions = symbol_db.take_definitions();
     let mut symbol_definitions_slice = symbol_definitions.as_mut();
-    let mut definitions_per_group_and_file: Vec<Vec<DefinitionsCell>> = groups
+    let mut definitions_per_group_and_file = groups
         .iter()
         .map(|group| {
             group
                 .files
                 .iter()
                 .map(|file| {
-                    DefinitionsCell::new(Some(Box::new(crate::slice::slice_take_prefix_mut(
+                    AtomicTake::new(crate::slice::slice_take_prefix_mut(
                         &mut symbol_definitions_slice,
                         file.num_symbols(),
-                    ))))
+                    ))
                 })
                 .collect_vec()
         })
@@ -156,7 +150,7 @@ pub(crate) fn resolve_symbols_in_files<'data, S: StorageModel>(
                         if !s.is_optional() {
                             objects.push(WorkItem {
                                 file_id: s.file_id,
-                                definitions: *definitions.take().unwrap(),
+                                definitions: definitions.take().unwrap(),
                             });
                         }
                         num_objects += 1;
@@ -318,7 +312,7 @@ impl LoadedMetrics {
 
 struct ResolutionResources<'data, 'definitions, 'outer_scope, S: StorageModel> {
     groups: &'data [Group<'data>],
-    definitions_per_file: &'outer_scope Vec<Vec<DefinitionsCell<'definitions>>>,
+    definitions_per_file: &'outer_scope Vec<Vec<AtomicTake<&'definitions mut [SymbolId]>>>,
     idle_threads: Option<ArrayQueue<Thread>>,
     symbol_db: &'outer_scope SymbolDb<'data, S>,
     outputs: &'outer_scope Outputs<'data>,
@@ -330,8 +324,8 @@ impl<S: StorageModel> ResolutionResources<'_, '_, '_, S> {
         if let Some(definitions) = self.definitions_per_file[file_id.group()][file_id.file()].take()
         {
             self.work_queue.push(WorkItem {
-                definitions: *definitions,
                 file_id,
+                definitions,
             });
             // If there is a thread sleeping, wake it.
             if let Some(thread) = self
