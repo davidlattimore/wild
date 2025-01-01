@@ -433,7 +433,7 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
 
 /// Returns whether the supplied symbol name is for a [mapping
 /// symbol](https://github.com/ARM-software/abi-aa/blob/main/aaelf64/aaelf64.rst#mapping-symbols).
-fn is_mapping_symbol_name(name: &[u8]) -> bool {
+pub(crate) fn is_mapping_symbol_name(name: &[u8]) -> bool {
     name.starts_with(b"$x") || name.starts_with(b"$d")
 }
 

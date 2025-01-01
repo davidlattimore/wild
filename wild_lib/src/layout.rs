@@ -55,6 +55,7 @@ use crate::string_merging::get_merged_string_output_address;
 use crate::string_merging::MergedStringStartAddresses;
 use crate::string_merging::MergedStringsSection;
 use crate::symbol::SymbolName;
+use crate::symbol_db::is_mapping_symbol_name;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolDebug;
 use crate::symbol_db::SymbolId;
@@ -3541,22 +3542,29 @@ impl<'data> SymbolCopyInfo<'data> {
         if !symbol_db.is_canonical(symbol_id) || sym.is_undefined(e) {
             return None;
         }
+
         if let Ok(Some(section)) = object.symbol_section(sym, sym_index) {
             if !sections[section.0].is_loaded() {
                 // Symbol is in discarded section.
                 return None;
             }
         }
+
         if sym.is_common(e) && symbol_state.is_empty() {
             return None;
         }
+
         // Reading the symbol name is slightly expensive, so we want to do that after all the other
         // checks. That's also the reason why we return the symbol name, so that the caller, if it
         // needs the name, doesn't have a go and read it again.
         let name = object.symbol_name(sym).ok()?;
-        if name.is_empty() || (sym.is_local() && name.starts_with(b".L")) {
+        if name.is_empty()
+            || (sym.is_local() && name.starts_with(b".L"))
+            || is_mapping_symbol_name(name)
+        {
             return None;
         }
+
         Some(SymbolCopyInfo { name })
     }
 }
