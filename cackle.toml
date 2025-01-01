@@ -141,7 +141,7 @@ allow_unsafe = true
 [pkg.tracing-subscriber]
 allow_unsafe = true
 
-[pkg.wild_lib]
+[pkg.libwild]
 allow_unsafe = true
 test.allow_unsafe = true
 allow_apis = [
@@ -424,5 +424,5 @@ no_auto_detect = [
 ]
 include = [
     "rustix::fs",
-    "wild_lib::fs",
+    "libwild::fs",
 ]

@@ -1,5 +1,5 @@
 [workspace]
-members = ["linker-diff", "linker-layout", "linker-trace", "linker-utils", "wild", "wild_lib"]
+members = ["linker-diff", "linker-layout", "linker-trace", "linker-utils", "wild", "libwild"]
 resolver = "2"
 
 [workspace.package]

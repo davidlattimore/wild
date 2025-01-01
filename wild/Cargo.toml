@@ -6,7 +6,7 @@ repository.workspace = true
 edition = "2021"
 
 [dependencies]
-wild_lib = { path = "../wild_lib" }
+libwild = { path = "../libwild" }
 
 # This is off by default, since it doesn't appear to help. However, if you're linking against musl
 # libc, which has a comparatively slow allocator, then enabling this does help. To enable this,
@@ -34,4 +34,4 @@ default = [
     "fork",
 ]
 
-fork = ["wild_lib/fork"]
+fork = ["libwild/fork"]

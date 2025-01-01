@@ -6,15 +6,15 @@ static MIMALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-fn main() -> wild_lib::error::Result {
+fn main() -> libwild::error::Result {
     #[cfg(feature = "dhat")]
     let _profiler = dhat::Profiler::new_heap();
 
-    let linker = wild_lib::Linker::from_args(std::env::args().skip(1))?;
+    let linker = libwild::Linker::from_args(std::env::args().skip(1))?;
 
     if linker.should_fork() {
         // Safety: We haven't spawned any threads yet.
-        unsafe { wild_lib::run_in_subprocess(&linker) };
+        unsafe { libwild::run_in_subprocess(&linker) };
     } else {
         // Run the linker in this process without forking.
         linker.run()

@@ -879,11 +879,11 @@ impl LinkCommand {
                 command.arg(&input.path);
             }
         }
-        command.env(wild_lib::args::WILD_UNSUPPORTED_ENV, "ignore");
-        command.env(wild_lib::args::VALIDATE_ENV, "1");
+        command.env(libwild::args::WILD_UNSUPPORTED_ENV, "ignore");
+        command.env(libwild::args::VALIDATE_ENV, "1");
         if config.should_diff {
-            command.env(wild_lib::args::WRITE_LAYOUT_ENV, "1");
-            command.env(wild_lib::args::WRITE_TRACE_ENV, "1");
+            command.env(libwild::args::WRITE_LAYOUT_ENV, "1");
+            command.env(libwild::args::WRITE_TRACE_ENV, "1");
         }
 
         let mut link_command = LinkCommand {
