@@ -1,5 +1,5 @@
 [package]
-name = "wild_lib"
+name = "libwild"
 version.workspace = true
 license.workspace = true
 repository.workspace = true

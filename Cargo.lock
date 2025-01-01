@@ -664,6 +664,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "libwild"
+version = "0.3.0"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "ar",
+ "atomic-take",
+ "bitflags",
+ "blake3",
+ "bumpalo-herd",
+ "bytemuck",
+ "bytesize",
+ "crossbeam-queue",
+ "crossbeam-utils",
+ "flate2",
+ "hex",
+ "itertools",
+ "libc",
+ "linker-layout",
+ "linker-trace",
+ "linker-utils",
+ "memchr",
+ "memmap2",
+ "object",
+ "rayon",
+ "sharded-offset-map",
+ "sharded-vec-writer",
+ "smallvec",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
 name = "linker-diff"
 version = "0.3.0"
 dependencies = [
@@ -1311,48 +1346,13 @@ dependencies = [
  "anyhow",
  "dhat",
  "itertools",
+ "libwild",
  "linker-diff",
  "mimalloc",
  "object",
  "rstest",
  "wait-timeout",
  "which",
- "wild_lib",
-]
-
-[[package]]
-name = "wild_lib"
-version = "0.3.0"
-dependencies = [
- "ahash",
- "anyhow",
- "ar",
- "atomic-take",
- "bitflags",
- "blake3",
- "bumpalo-herd",
- "bytemuck",
- "bytesize",
- "crossbeam-queue",
- "crossbeam-utils",
- "flate2",
- "hex",
- "itertools",
- "libc",
- "linker-layout",
- "linker-trace",
- "linker-utils",
- "memchr",
- "memmap2",
- "object",
- "rayon",
- "sharded-offset-map",
- "sharded-vec-writer",
- "smallvec",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "zstd",
 ]
 
 [[package]]
