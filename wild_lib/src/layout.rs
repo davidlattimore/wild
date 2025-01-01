@@ -193,7 +193,9 @@ pub fn compute<'data, 'symbol_db, S: StorageModel, A: Arch>(
         &resources,
     )?;
     for shard in per_group_res_writers {
-        res_writer.try_return_shard(shard)?;
+        res_writer
+            .try_return_shard(shard)
+            .context("Group resolutions not filled")?;
     }
     update_dynamic_symbol_resolutions(&group_layouts, &mut symbol_resolutions.resolutions);
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, symbol_db.args)?;
@@ -2804,40 +2806,57 @@ impl InternalSymbols {
     ) -> Result {
         // Define symbols that are optionally put at the start/end of some sections.
         let emitter = create_global_address_emitter(resources.symbol_resolution_flags);
-        for (local_index, def_info) in self.symbol_definitions.iter().enumerate() {
+        for (local_index, &def_info) in self.symbol_definitions.iter().enumerate() {
             let symbol_id = self.start_symbol_id.add_usize(local_index);
-            if !resources.symbol_db.is_canonical(symbol_id) {
-                resolutions_out.write(None)?;
-                continue;
-            }
-            // We don't put internal symbols in the symbol table if they aren't referenced.
-            if resources.symbol_resolution_flags[symbol_id.as_usize()].is_empty() {
-                resolutions_out.write(None)?;
-                continue;
-            }
 
-            let (raw_value, value_flags) = match def_info {
-                InternalSymDefInfo::Undefined => (0, ValueFlags::ABSOLUTE),
-                InternalSymDefInfo::SectionStart(section_id) => (
-                    resources.section_layouts.get(*section_id).mem_offset,
-                    ValueFlags::ADDRESS,
-                ),
-                InternalSymDefInfo::SectionEnd(section_id) => {
-                    let sec = resources.section_layouts.get(*section_id);
-                    (sec.mem_offset + sec.mem_size, ValueFlags::ADDRESS)
-                }
-            };
-            emitter.emit_resolution(
-                symbol_id,
-                raw_value,
-                None,
-                value_flags,
-                resolutions_out,
+            let resolution = create_start_end_symbol_resolution(
                 memory_offsets,
-            )?;
+                resources,
+                &emitter,
+                def_info,
+                symbol_id,
+            );
+
+            resolutions_out.write(resolution)?;
         }
         Ok(())
     }
+}
+
+fn create_start_end_symbol_resolution<S: StorageModel>(
+    memory_offsets: &mut OutputSectionPartMap<u64>,
+    resources: &FinaliseLayoutResources<'_, '_, S>,
+    emitter: &GlobalAddressEmitter<'_>,
+    def_info: InternalSymDefInfo,
+    symbol_id: SymbolId,
+) -> Option<Resolution> {
+    if !resources.symbol_db.is_canonical(symbol_id) {
+        return None;
+    }
+    // We don't put internal symbols in the symbol table if they aren't referenced.
+    if resources.symbol_resolution_flags[symbol_id.as_usize()].is_empty() {
+        return None;
+    }
+
+    let (raw_value, value_flags) = match def_info {
+        InternalSymDefInfo::Undefined => (0, ValueFlags::ABSOLUTE),
+        InternalSymDefInfo::SectionStart(section_id) => (
+            resources.section_layouts.get(section_id).mem_offset,
+            ValueFlags::ADDRESS,
+        ),
+        InternalSymDefInfo::SectionEnd(section_id) => {
+            let sec = resources.section_layouts.get(section_id);
+            (sec.mem_offset + sec.mem_size, ValueFlags::ADDRESS)
+        }
+    };
+
+    Some(create_resolution(
+        emitter.symbol_resolution_flags[symbol_id.as_usize()],
+        raw_value,
+        None,
+        value_flags,
+        memory_offsets,
+    ))
 }
 
 impl<'data> EpilogueLayoutState<'data> {
@@ -3419,18 +3438,39 @@ impl<'data> ObjectLayoutState<'data> {
         emitter: &GlobalAddressEmitter<'scope>,
         resolutions_out: &mut ResolutionWriter,
     ) -> Result {
+        let resolution = self.create_symbol_resolution(
+            resources,
+            resolution_flags,
+            local_symbol,
+            local_symbol_index,
+            section_resolutions,
+            memory_offsets,
+            emitter,
+        )?;
+
+        resolutions_out.write(resolution)
+    }
+
+    fn create_symbol_resolution<'scope, S: StorageModel>(
+        &self,
+        resources: &FinaliseLayoutResources<'scope, 'data, S>,
+        resolution_flags: ResolutionFlags,
+        local_symbol: &object::elf::Sym64<LittleEndian>,
+        local_symbol_index: object::SymbolIndex,
+        section_resolutions: &[SectionResolution],
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        emitter: &GlobalAddressEmitter<'scope>,
+    ) -> Result<Option<Resolution>> {
         let symbol_id_range = self.symbol_id_range();
         let symbol_id = symbol_id_range.input_to_id(local_symbol_index);
-        if resolution_flags.is_empty() {
-            resolutions_out.write(None)?;
-            return Ok(());
+
+        if resolution_flags.is_empty() || !resources.symbol_db.is_canonical(symbol_id) {
+            return Ok(None);
         }
-        if !resources.symbol_db.is_canonical(symbol_id) {
-            resolutions_out.write(None)?;
-            return Ok(());
-        }
+
         let e = LittleEndian;
         let value_flags = resources.symbol_db.local_symbol_value_flags(symbol_id);
+
         let raw_value = if let Some(section_index) = self
             .object
             .symbol_section(local_symbol, local_symbol_index)?
@@ -3452,8 +3492,7 @@ impl<'data> ObjectLayoutState<'data> {
                         // Don't error for mapping symbols. They cannot have relocations refer to
                         // them, so we don't need to produce a resolution.
                         if resources.symbol_db.is_mapping_symbol(symbol_id) {
-                            resolutions_out.write(None)?;
-                            return Ok(());
+                            return Ok(None);
                         }
                         bail!(
                             "Symbol is in a section that we didn't load. Symbol: {} Section: {}",
@@ -3473,6 +3512,7 @@ impl<'data> ObjectLayoutState<'data> {
         } else {
             local_symbol.st_value(e)
         };
+
         let mut dynamic_symbol_index = None;
         if value_flags.contains(ValueFlags::DYNAMIC) {
             // This is an undefined weak symbol. Emit it as a dynamic symbol so that it can be
@@ -3483,15 +3523,14 @@ impl<'data> ObjectLayoutState<'data> {
                     .context("Attempted to create dynamic symbol index 0")?,
             );
         }
-        emitter.emit_resolution(
-            symbol_id,
+
+        Ok(Some(create_resolution(
+            emitter.symbol_resolution_flags[symbol_id.as_usize()],
             raw_value,
             dynamic_symbol_index,
             value_flags,
-            resolutions_out,
             memory_offsets,
-        )?;
-        Ok(())
+        )))
     }
 
     fn load_non_hidden_symbols<'scope, S: StorageModel, A: Arch>(
@@ -3775,28 +3814,6 @@ struct ResolutionWriter<'writer, 'out> {
 impl ResolutionWriter<'_, '_> {
     fn write(&mut self, res: Option<Resolution>) -> Result {
         self.resolutions_out.try_push(res)?;
-        Ok(())
-    }
-}
-
-impl GlobalAddressEmitter<'_> {
-    fn emit_resolution(
-        &self,
-        symbol_id: SymbolId,
-        raw_value: u64,
-        dynamic_symbol_index: Option<NonZeroU32>,
-        value_flags: ValueFlags,
-        resolutions_out: &mut ResolutionWriter,
-        memory_offsets: &mut OutputSectionPartMap<u64>,
-    ) -> Result {
-        let resolution = create_resolution(
-            self.symbol_resolution_flags[symbol_id.as_usize()],
-            raw_value,
-            dynamic_symbol_index,
-            value_flags,
-            memory_offsets,
-        );
-        resolutions_out.write(Some(resolution))?;
         Ok(())
     }
 }
