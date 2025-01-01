@@ -420,6 +420,21 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
     pub(crate) fn file(&self, file_id: FileId) -> &ParsedInput<'data> {
         &self.groups[file_id.group()].files[file_id.file()]
     }
+
+    pub(crate) fn is_mapping_symbol(&self, symbol_id: SymbolId) -> bool {
+        let Ok(name) = self.symbol_name(symbol_id) else {
+            // We don't want to bother the caller with an error here. If there's a problem getting
+            // the name, it will be reported elsewhere.
+            return false;
+        };
+        is_mapping_symbol_name(name.bytes())
+    }
+}
+
+/// Returns whether the supplied symbol name is for a [mapping
+/// symbol](https://github.com/ARM-software/abi-aa/blob/main/aaelf64/aaelf64.rst#mapping-symbols).
+fn is_mapping_symbol_name(name: &[u8]) -> bool {
+    name.starts_with(b"$x") || name.starts_with(b"$d")
 }
 
 #[tracing::instrument(skip_all, name = "Read symbols")]

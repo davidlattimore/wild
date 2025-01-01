@@ -3437,7 +3437,7 @@ impl<'data> ObjectLayoutState<'data> {
             if let Some(section_address) = section_resolutions[section_index.0].address() {
                 local_symbol.st_value(e) + section_address
             } else {
-                get_merged_string_output_address(
+                match get_merged_string_output_address(
                     local_symbol_index,
                     0,
                     self.object,
@@ -3445,14 +3445,22 @@ impl<'data> ObjectLayoutState<'data> {
                     resources.merged_strings,
                     resources.merged_string_start_addresses,
                     true,
-                )?
-                .ok_or_else(|| {
-                    anyhow!(
-                        "Symbol is in a section that we didn't load. Symbol: {} Section: {}",
-                        resources.symbol_db.symbol_debug(symbol_id),
-                        section_debug(self.object, section_index),
-                    )
-                })?
+                )? {
+                    Some(x) => x,
+                    None => {
+                        // Don't error for mapping symbols. They cannot have relocations refer to
+                        // them, so we don't need to produce a resolution.
+                        if resources.symbol_db.is_mapping_symbol(symbol_id) {
+                            resolutions_out.write(None)?;
+                            return Ok(());
+                        }
+                        bail!(
+                            "Symbol is in a section that we didn't load. Symbol: {} Section: {}",
+                            resources.symbol_db.symbol_debug(symbol_id),
+                            section_debug(self.object, section_index),
+                        );
+                    }
+                }
             }
         } else if local_symbol.is_common(e) {
             let common = CommonSymbol::new(local_symbol)?;
