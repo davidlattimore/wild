@@ -416,11 +416,7 @@ impl Report {
         );
         header_diff::check_dynamic_headers(self, objects);
         header_diff::check_file_headers(self, objects);
-        // TODO: add support for aarch64 target
-        #[cfg(target_arch = "x86_64")]
-        {
-            asm_diff::report_function_diffs(self, objects);
-        }
+        asm_diff::report_function_diffs(self, objects);
         header_diff::report_section_diffs(self, objects);
         eh_frame_diff::report_diffs(self, objects);
         debug_info_diff::check_debug_info(self, objects);

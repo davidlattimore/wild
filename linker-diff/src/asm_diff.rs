@@ -49,8 +49,11 @@ const RESOLVE_SECTION_NAMES: bool = false;
 /// or more instructions equivalent.
 const PLACEHOLDER: u64 = 0xaaa;
 
-#[allow(dead_code)]
 pub(crate) fn report_function_diffs(report: &mut Report, objects: &[Object]) {
+    if !is_supported_arch(&objects[0]) {
+        return;
+    }
+
     let mut all_symbols = BTreeSet::new();
     for o in objects {
         for sym in o.elf_file.symbols() {
@@ -85,6 +88,11 @@ pub(crate) fn report_function_diffs(report: &mut Report, objects: &[Object]) {
             .flat_map(|symbol_name| diff_symbol(symbol_name, objects))
             .collect(),
     );
+}
+
+fn is_supported_arch(object: &Object) -> bool {
+    // TODO: add support for aarch64 target
+    object.elf_file.elf_header().e_machine(LittleEndian) == object::elf::EM_X86_64
 }
 
 fn diff_key_for_symbol(symbol_name: &[u8]) -> String {
