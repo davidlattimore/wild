@@ -8,6 +8,7 @@ use crate::arch::Arch;
 use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::BuildIdOption;
+use crate::args::FileWriteMode;
 use crate::args::OutputKind;
 use crate::debug_assert_bail;
 use crate::elf;
@@ -98,6 +99,7 @@ use uuid::Uuid;
 pub struct Output {
     path: Arc<Path>,
     creator: FileCreator,
+    file_write_mode: FileWriteMode,
 }
 
 enum FileCreator {
@@ -171,11 +173,13 @@ impl Output {
                     sized_output_sender: Some(sized_output_sender),
                     sized_output_recv,
                 },
+                file_write_mode: args.file_write_mode,
             }
         } else {
             Output {
                 path: args.output.clone(),
                 creator: FileCreator::Regular { file_size: None },
+                file_write_mode: args.file_write_mode,
             }
         }
     }
@@ -191,31 +195,36 @@ impl Output {
                     .expect("set_size must only be called once");
                 let path = self.path.clone();
 
+                let write_mode = self.file_write_mode;
+
                 crate::threading::spawn(move || {
-                    // Rename the old output file so that we can create a new file in its place.
-                    // Reusing the existing file would also be an option, but that wouldn't error if
-                    // the file is currently being executed.
-                    let renamed_old_file = path.with_extension("delete");
-                    let rename_status = std::fs::rename(&path, &renamed_old_file);
+                    if write_mode == FileWriteMode::UnlinkAndReplace {
+                        // Rename the old output file so that we can create a new file in its place.
+                        // Reusing the existing file would also be an option, but that wouldn't
+                        // error if the file is currently being executed.
+                        let renamed_old_file = path.with_extension("delete");
+                        let rename_status = std::fs::rename(&path, &renamed_old_file);
+
+                        // If there was an old output file that we renamed, then delete it. We do so
+                        // from a separate task so that it can run in the background while other
+                        // threads continue working. Deleting can take a while for large files.
+                        if rename_status.is_ok() {
+                            crate::threading::spawn(move || {
+                                let _ = std::fs::remove_file(renamed_old_file);
+                                // Note, we don't currently signal when we've finished deleting the
+                                // file. Based on experiments run on Linux 6.9.3, if we exit while
+                                // an unlink syscall is in progress on a separate thread, Linux will
+                                // wait for the unlink syscall to complete before terminating the
+                                // process.
+                            });
+                        }
+                    }
 
                     // Create the output file.
-                    let sized_output = SizedOutput::new(path, size);
+                    let sized_output = SizedOutput::new(path, size, write_mode);
 
                     // Pass it to the main thread, so that it can start writing it once layout finishes.
                     let _ = sender.send(sized_output);
-
-                    // If there was an old output file that we renamed, then delete it. We do so
-                    // from a separate task so that it can run in the background while other threads
-                    // continue working. Deleting can take a while for large files.
-                    if rename_status.is_ok() {
-                        crate::threading::spawn(move || {
-                            let _ = std::fs::remove_file(renamed_old_file);
-                            // Note, we don't currently signal when we've finished deleting the
-                            // file. Based on experiments run on Linux 6.9.3, if we exit while an
-                            // unlink syscall is in progress on a separate thread, Linux will wait
-                            // for the unlink syscall to complete before terminating the process.
-                        });
-                    }
                 });
             }
             FileCreator::Regular { file_size } => *file_size = Some(size),
@@ -253,7 +262,7 @@ impl Output {
 
     #[tracing::instrument(skip_all, name = "Create output file")]
     fn create_file_non_lazily(&mut self, file_size: u64) -> Result<SizedOutput> {
-        SizedOutput::new(self.path.clone(), file_size)
+        SizedOutput::new(self.path.clone(), file_size, self.file_write_mode)
     }
 }
 
@@ -269,12 +278,20 @@ fn wait_for_sized_output(sized_output_recv: &Receiver<Result<SizedOutput>>) -> R
 }
 
 impl SizedOutput {
-    fn new(path: Arc<Path>, file_size: u64) -> Result<SizedOutput> {
-        let file = std::fs::OpenOptions::new()
+    fn new(path: Arc<Path>, file_size: u64, write_mode: FileWriteMode) -> Result<SizedOutput> {
+        let mut open_options = std::fs::OpenOptions::new();
+        match write_mode {
+            FileWriteMode::UnlinkAndReplace => {
+                open_options.truncate(true);
+            }
+            FileWriteMode::UpdateInPlace => {
+                open_options.truncate(false);
+            }
+        }
+        let file = open_options
             .read(true)
             .write(true)
             .create(true)
-            .truncate(true)
             .open(&path)
             .with_context(|| format!("Failed to open `{}`", path.display()))?;
         let out = OutputBuffer::new(&file, file_size);

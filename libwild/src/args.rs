@@ -45,6 +45,7 @@ pub(crate) struct Args {
     pub(crate) gc_sections: bool,
     pub(crate) should_fork: bool,
     pub(crate) build_id: BuildIdOption,
+    pub(crate) file_write_mode: FileWriteMode,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -87,6 +88,18 @@ pub(crate) enum OutputKind {
 pub(crate) enum RelocationModel {
     NonRelocatable,
     Relocatable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileWriteMode {
+    /// The existing output file, if any, will be unlinked (deleted) and a new file with the same
+    /// name put in its place. Any hard links to the file will not be affected.
+    UnlinkAndReplace,
+
+    /// The existing output file, if any, will be edited in-place. Any hard links to the file will
+    /// update accordingly. If the file is locked due to currently being executed, then our write
+    /// will fail.
+    UpdateInPlace,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -204,6 +217,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut soname = None;
     let mut execstack = false;
     let mut should_fork = true;
+    let mut file_write_mode = FileWriteMode::UnlinkAndReplace;
     let mut build_id = BuildIdOption::None;
     let max_files_per_group = std::env::var(FILES_PER_GROUP_ENV)
         .ok()
@@ -325,6 +339,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             gc_sections = false;
         } else if long_arg_eq("no-fork") {
             should_fork = false;
+        } else if long_arg_eq("update-in-place") {
+            file_write_mode = FileWriteMode::UpdateInPlace;
         } else if arg == "-m" {
             let arg_value = input.next().context("Missing argument to -m")?;
             let arg_value = arg_value.as_ref();
@@ -437,7 +453,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             bail!("Sorry, help isn't implemented yet");
         } else if strip_option(arg)
             .is_some_and(|stripped_arg| DEFAULT_FLAGS.contains(&stripped_arg))
-        { // These flags are mapped to the default behavior of the linker.
+        { // These flags are mapped to the default behaviour of the linker.
         } else if strip_option(arg)
             .is_some_and(|stripped_arg| IGNORED_FLAGS.contains(&stripped_arg))
         {
@@ -509,6 +525,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         execstack,
         should_fork,
         build_id,
+        file_write_mode,
     }))
 }
 

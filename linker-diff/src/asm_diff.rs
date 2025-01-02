@@ -74,6 +74,7 @@ pub(crate) fn report_function_diffs(report: &mut Report, objects: &[Object]) {
             }
         }
     }
+
     // If we got an error building our index, then don't try to diff functions. We'd just get heaps
     // of diffs due to an incomplete index.
     if objects
@@ -82,6 +83,7 @@ pub(crate) fn report_function_diffs(report: &mut Report, objects: &[Object]) {
     {
         return;
     }
+
     report.add_diffs(
         all_symbols
             .into_par_iter()
