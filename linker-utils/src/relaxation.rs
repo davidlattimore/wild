@@ -1,5 +1,5 @@
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RelocationModifier {
+pub enum RelocationModifier {
     Normal,
     SkipNextRelocation,
 }

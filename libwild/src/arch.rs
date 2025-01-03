@@ -4,10 +4,10 @@ use crate::args::OutputKind;
 use crate::elf::DynamicRelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::error::Result;
-use crate::relaxation::RelocationModifier;
 use crate::resolution::ValueFlags;
 use anyhow::bail;
 use linker_utils::elf::SectionFlags;
+use linker_utils::relaxation::RelocationModifier;
 use std::borrow::Cow;
 use std::str::FromStr;
 

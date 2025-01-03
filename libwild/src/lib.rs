@@ -32,7 +32,6 @@ pub(crate) mod output_trace;
 pub(crate) mod parsing;
 pub(crate) mod part_id;
 pub(crate) mod program_segments;
-pub(crate) mod relaxation;
 pub(crate) mod resolution;
 pub(crate) mod save_dir;
 pub(crate) mod sharding;

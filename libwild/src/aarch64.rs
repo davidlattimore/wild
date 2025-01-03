@@ -13,6 +13,7 @@ use crate::elf::PLT_ENTRY_SIZE;
 use anyhow::bail;
 use anyhow::Result;
 use linker_utils::elf::aarch64_rel_type_to_string;
+use linker_utils::relaxation::RelocationModifier;
 
 pub(crate) struct AArch64;
 
@@ -820,7 +821,7 @@ impl crate::arch::Relaxation for () {
         section_bytes: &mut [u8],
         offset_in_section: &mut u64,
         addend: &mut u64,
-        next_modifier: &mut crate::relaxation::RelocationModifier,
+        next_modifier: &mut RelocationModifier,
     ) {
     }
 
