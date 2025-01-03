@@ -6,11 +6,26 @@ use crate::elf::RelocationInstruction;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
+use crate::elf::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
+use crate::elf::DEFAULT_AARCH64_PAGE_MASK;
+use crate::elf::DEFAULT_AARCH64_PAGE_SIZE;
+use crate::elf::PLT_ENTRY_SIZE;
 use anyhow::bail;
 use anyhow::Result;
 use linker_utils::elf::aarch64_rel_type_to_string;
 
 pub(crate) struct AArch64;
+
+const PLT_ENTRY_TEMPLATE: &[u8] = &[
+    0x10, 0x00, 0x00, 0x90, // adrp x16, page(&(.got.plt[n]))
+    0x11, 0x02, 0x40, 0xf9, // ldr x17, [x16, offset(&(.got.plt[n]))]
+    0x20, 0x02, 0x1f, 0xd6, // br x17
+    0x1f, 0x20, 0x03, 0xd5, // nop
+];
+
+const _ASSERTS: () = {
+    assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
+};
 
 impl crate::arch::Arch for AArch64 {
     type Relaxation = ();
@@ -753,6 +768,33 @@ impl crate::arch::Arch for AArch64 {
     fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
         aarch64_rel_type_to_string(r_type)
     }
+
+    fn write_plt_entry(
+        plt_entry: &mut [u8],
+        got_address: u64,
+        plt_address: u64,
+    ) -> crate::error::Result {
+        plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
+        let plt_page_address = plt_address & DEFAULT_AARCH64_PAGE_IGNORED_MASK;
+        let offset = got_address.wrapping_sub(plt_page_address) as i64;
+        anyhow::ensure!(
+            ((-1 << 32)..=1 << 32).contains(&offset),
+            "PLT is more than 4GiB away from GOT"
+        );
+        RelocationInstruction::Adr.write_to_value(
+            // The immediation value represents a distance in pages.
+            offset as u64 / DEFAULT_AARCH64_PAGE_SIZE,
+            false,
+            &mut plt_entry[0..4],
+        );
+        RelocationInstruction::LdrRegister.write_to_value(
+            // The immediate offset is scaled by 8 as we are loading 8 bytes.
+            (offset as u64 & DEFAULT_AARCH64_PAGE_MASK) / 8,
+            false,
+            &mut plt_entry[4..8],
+        );
+        Ok(())
+    }
 }
 
 impl crate::arch::Relaxation for () {
@@ -798,7 +840,7 @@ impl RelocationInstruction {
     // Encode computed relocation value and store it based on the encoding of an instruction.
     // Each instruction links to a chapter in the Arm Architecture Reference Manual for A-profile architecture
     // manual: https://developer.arm.com/documentation/ddi0487/latest/
-    pub(crate) fn write_to_value(self, extracted_value: u64, original_value: u64, dest: &mut [u8]) {
+    pub(crate) fn write_to_value(self, extracted_value: u64, negative: bool, dest: &mut [u8]) {
         let mut mask;
         match self {
             // C6.2.13
@@ -812,7 +854,6 @@ impl RelocationInstruction {
             }
             // C6.2.253, C6.2.254
             RelocationInstruction::Movnz => {
-                let negative = (original_value as i64) < 0;
                 let mut value = extracted_value as i64;
                 mask = 0u32;
                 if negative {
@@ -826,6 +867,9 @@ impl RelocationInstruction {
             // C6.2.192
             RelocationInstruction::Ldr => {
                 mask = (extracted_value as u32) << 5;
+            }
+            RelocationInstruction::LdrRegister => {
+                mask = (extracted_value as u32) << 10;
             }
             // C6.2.5
             RelocationInstruction::Add => {
