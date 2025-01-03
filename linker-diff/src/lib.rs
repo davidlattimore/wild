@@ -130,6 +130,8 @@ impl Config {
                 "section.plt.got.entsize",
                 // GNU ld sometimes sets this differently that we do.
                 "section.plt.alignment",
+                "section.gnu.build.attributes",
+                "section.annobin.notes.entsize",
                 // We currently output version info when linking against the interpreter
                 // (ld-linux-x86-64.so.2). GNU ld doesn't.
                 ".dynamic.DT_VERNEEDNUM",
