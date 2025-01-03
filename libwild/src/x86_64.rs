@@ -9,8 +9,10 @@ use crate::elf::DynamicRelocationKind;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
+use crate::elf::PLT_ENTRY_SIZE;
 use crate::relaxation::RelocationModifier;
 use crate::resolution::ValueFlags;
+use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Result;
 use linker_utils::elf::shf;
@@ -18,6 +20,16 @@ use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::elf::SectionFlags;
 
 pub(crate) struct X86_64;
+
+const PLT_ENTRY_TEMPLATE: &[u8] = &[
+    0xf3, 0x0f, 0x1e, 0xfa, // endbr64
+    0xf2, 0xff, 0x25, 0x0, 0x0, 0x0, 0x0, // bnd jmp *{relative GOT address}(%rip)
+    0x0f, 0x1f, 0x44, 0x0, 0x0, // nopl   0x0(%rax,%rax,1)
+];
+
+const _ASSERTS: () = {
+    assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
+};
 
 impl crate::arch::Arch for X86_64 {
     type Relaxation = Relaxation;
@@ -81,6 +93,19 @@ impl crate::arch::Arch for X86_64 {
             DynamicRelocationKind::Relative => object::elf::R_X86_64_RELATIVE,
             DynamicRelocationKind::DynamicSymbol => object::elf::R_X86_64_GLOB_DAT,
         }
+    }
+
+    fn write_plt_entry(
+        plt_entry: &mut [u8],
+        got_address: u64,
+        plt_address: u64,
+    ) -> crate::error::Result {
+        plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
+        let offset: i32 = ((got_address.wrapping_sub(plt_address + 0xb)) as i64)
+            .try_into()
+            .map_err(|_| anyhow!("PLT is more than 2GiB away from GOT"))?;
+        plt_entry[7..11].copy_from_slice(&offset.to_le_bytes());
+        Ok(())
     }
 
     fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
