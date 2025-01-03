@@ -500,3 +500,78 @@ pub mod secnames {
     pub const GROUP_SECTION_NAME_STR: &str = ".group";
     pub const GROUP_SECTION_NAME: &[u8] = GROUP_SECTION_NAME_STR.as_bytes();
 }
+
+/// For additional information on ELF relocation types, see "ELF-64 Object File Format" -
+/// https://uclibc.org/docs/elf-64-gen.pdf. For information on the TLS related relocations, see "ELF
+/// Handling For Thread-Local Storage" - https://www.uclibc.org/docs/tls.pdf.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RelocationKind {
+    /// The absolute address of a symbol or section.
+    Absolute,
+
+    /// The address of the symbol, relative to the place of the relocation.
+    Relative,
+
+    /// The address of the symbol, relative to the base address of the GOT.
+    SymRelGotBase,
+
+    /// The offset of the symbol's GOT entry, relative to the start of the GOT.
+    GotRelGotBase,
+
+    /// The address of the symbol's GOT entry.
+    Got,
+
+    /// The address of the symbol's PLT entry, relative to the base address of the GOT.
+    PltRelGotBase,
+
+    /// The address of the symbol's PLT entry, relative to the place of relocation.
+    PltRelative,
+
+    /// The address of the symbol's GOT entry, relative to the place of the relocation.
+    GotRelative,
+
+    /// The address of a TLSGD structure, relative to the place of the relocation. A TLSGD
+    /// (thread-local storage general dynamic) structure is a pair of values containing a module ID
+    /// and the offset within that modules TLS storage.
+    TlsGd,
+
+    /// The address of the symbol's TLSGD GOT entry.
+    TlsGdGot,
+
+    /// The address of the symbol's TLSGD GOT entry, relative to the start of the GOT.
+    TlsGdGotBase,
+
+    /// The address of the TLS module ID for the shared object that we're writing, relative to the
+    /// place of the relocation. This is used when a TLS variable is defined and used within the
+    /// same shared object.
+    TlsLd,
+
+    /// The address of the TLS module ID for the shared object that we're writing.
+    TlsLdGot,
+
+    /// The address of the TLS module ID for the shared object that we're writing,
+    /// relative to the start of the GOT.
+    TlsLdGotBase,
+
+    /// The offset of a thread-local within the TLS storage of DSO that defines that thread-local.
+    DtpOff,
+
+    /// The address of a GOT entry containing the offset of a TLS variable within the executable's
+    /// TLS storage, relative to the place of the relocation.
+    GotTpOff,
+
+    /// The address of a GOT entry containing the offset of a TLS variable within the executable's
+    /// TLS storage.
+    GotTpOffGot,
+
+    /// The address of a GOT entry containing the offset of a TLS variable within the executable's
+    /// TLS storage, relative to the start of the GOT.
+    GotTpOffGotBase,
+
+    /// The offset of a TLS variable within the executable's TLS storage.
+    TpOff,
+
+    /// No relocation needs to be applied. Produced when we eliminate a relocation due to an
+    /// optimisation.
+    None,
+}

@@ -3,7 +3,6 @@ use crate::elf::BitRange;
 use crate::elf::DynamicRelocationKind;
 use crate::elf::PageMask;
 use crate::elf::RelocationInstruction;
-use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
 use crate::elf::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
@@ -13,6 +12,7 @@ use crate::elf::PLT_ENTRY_SIZE;
 use anyhow::bail;
 use anyhow::Result;
 use linker_utils::elf::aarch64_rel_type_to_string;
+use linker_utils::elf::RelocationKind;
 use linker_utils::relaxation::RelocationModifier;
 
 pub(crate) struct AArch64;
