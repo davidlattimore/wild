@@ -254,6 +254,14 @@ impl crate::arch::Relaxation for Relaxation {
             }
             object::elf::R_X86_64_TLSLD if output_kind.is_executable() => {
                 if section_bytes.get(offset - 3..offset)? == [0x48, 0x8d, 0x3d] {
+                    if section_bytes.get(offset + 4..offset + 6) == Some(&[0x48, 0xb8]) {
+                        // The previous instruction was 64 bit, so we use a slightly different
+                        // relaxation with extra padding.
+                        return create(
+                            RelaxationKind::TlsLdToLocalExec64,
+                            object::elf::R_X86_64_NONE,
+                        );
+                    }
                     return create(RelaxationKind::TlsLdToLocalExec, object::elf::R_X86_64_NONE);
                 }
             }
