@@ -774,22 +774,23 @@ impl crate::arch::Arch for AArch64 {
         got_address: u64,
         plt_address: u64,
     ) -> crate::error::Result {
+        // TODO: For simplicity, we assume now the PLT entry precedes the GOT entry, so we can
+        // make the offset calculation in the unsigned type.
+        debug_assert!(plt_address < got_address);
+
         plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
         let plt_page_address = plt_address & DEFAULT_AARCH64_PAGE_IGNORED_MASK;
-        let offset = got_address.wrapping_sub(plt_page_address) as i64;
-        anyhow::ensure!(
-            ((-1 << 32)..=1 << 32).contains(&offset),
-            "PLT is more than 4GiB away from GOT"
-        );
+        let offset = got_address.wrapping_sub(plt_page_address);
+        anyhow::ensure!(offset < (1 << 32), "PLT is more than 4GiB away from GOT");
         RelocationInstruction::Adr.write_to_value(
             // The immediation value represents a distance in pages.
-            offset as u64 / DEFAULT_AARCH64_PAGE_SIZE,
+            offset / DEFAULT_AARCH64_PAGE_SIZE,
             false,
             &mut plt_entry[0..4],
         );
         RelocationInstruction::LdrRegister.write_to_value(
             // The immediate offset is scaled by 8 as we are loading 8 bytes.
-            (offset as u64 & DEFAULT_AARCH64_PAGE_MASK) / 8,
+            (offset & DEFAULT_AARCH64_PAGE_MASK) / 8,
             false,
             &mut plt_entry[4..8],
         );
