@@ -49,10 +49,10 @@ pub(crate) const NOTE_GNU_BUILD_ID: Alignment = Alignment { exponent: 2 };
 
 impl Alignment {
     pub(crate) fn new(raw: u64) -> Result<Self> {
-        let exponent = raw.trailing_zeros();
-        if 1_u64.checked_shl(exponent) != Some(raw) {
+        if !raw.is_power_of_two() {
             bail!("Invalid alignment 0x{raw:x}");
         }
+        let exponent = raw.trailing_zeros();
         if exponent > u32::from(MAX.exponent) {
             bail!("Unsupported alignment 0x{raw:x}");
         }
@@ -66,23 +66,11 @@ impl Alignment {
     }
 
     pub(crate) fn align_up(self, value: u64) -> u64 {
-        let base = value & (u64::MAX << self.exponent);
-        if value == base {
-            // Already aligned
-            value
-        } else {
-            base + (1 << self.exponent)
-        }
+        value.next_multiple_of(self.value())
     }
 
     pub(crate) fn align_up_usize(self, value: usize) -> usize {
-        let base = value & (usize::MAX << self.exponent);
-        if value == base {
-            // Already aligned
-            value
-        } else {
-            base + (1 << self.exponent)
-        }
+        value.next_multiple_of(self.value() as usize)
     }
 
     /// Returns `mem_offset`, possibly adjusted up so that it is >= `align_up(mem_offset)` and has
