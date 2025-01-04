@@ -36,6 +36,10 @@ pub enum RelaxationKind {
     /// Transform local dynamic (LD) into local exec.
     TlsLdToLocalExec,
 
+    /// Transform local dynamic (LD) into local exec with extra padding because the previous
+    /// instruction was 64 bit.
+    TlsLdToLocalExec64,
+
     /// Transform general dynamic (GD) into initial exec
     TlsGdToInitialExec,
 }
@@ -119,22 +123,19 @@ impl RelaxationKind {
                 *next_modifier = RelocationModifier::SkipNextRelocation;
             }
             RelaxationKind::TlsLdToLocalExec => {
-                // Transforms to: `mov %fs:0x0,%rax` with some amount of padding depending on
-                // whether the subsequent instruction is 64 bit (first) or 32 bit (second).
-                if section_bytes.get(offset + 4..offset + 6) == Some(&[0x48, 0xb8]) {
-                    section_bytes[offset - 3..offset + 19].copy_from_slice(&[
-                        // nopw (%rax,%rax)
-                        0x66, 0x66, 0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0, 0, 0, 0, 0,
-                        // mov %fs:0,%rax
-                        0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0,
-                    ]);
-                    *offset_in_section += 15;
-                } else {
-                    section_bytes[offset - 3..offset + 9].copy_from_slice(&[
-                        0x66, 0x66, 0x66, 0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0,
-                    ]);
-                    *offset_in_section += 5;
-                }
+                section_bytes[offset - 3..offset + 9]
+                    .copy_from_slice(&[0x66, 0x66, 0x66, 0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0]);
+                *offset_in_section += 5;
+                *next_modifier = RelocationModifier::SkipNextRelocation;
+            }
+            RelaxationKind::TlsLdToLocalExec64 => {
+                section_bytes[offset - 3..offset + 19].copy_from_slice(&[
+                    // nopw (%rax,%rax)
+                    0x66, 0x66, 0x66, 0x66, 0x2e, 0x0f, 0x1f, 0x84, 0, 0, 0, 0, 0,
+                    // mov %fs:0,%rax
+                    0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0,
+                ]);
+                *offset_in_section += 15;
                 *next_modifier = RelocationModifier::SkipNextRelocation;
             }
             RelaxationKind::NoOp => {}
