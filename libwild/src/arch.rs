@@ -3,10 +3,10 @@
 use crate::args::OutputKind;
 use crate::elf::DynamicRelocationKind;
 use crate::elf::RelocationKindInfo;
+use crate::error::Result;
 use crate::relaxation::RelocationModifier;
 use crate::resolution::ValueFlags;
 use anyhow::bail;
-use anyhow::Result;
 use linker_utils::elf::SectionFlags;
 use std::borrow::Cow;
 use std::str::FromStr;
@@ -19,6 +19,9 @@ pub(crate) trait Arch {
 
     // Get dynamic relocation value specific for the architecture.
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32;
+
+    // Write PLT entry for the architecture.
+    fn write_plt_entry(plt_entry: &mut [u8], got_address: u64, plt_address: u64) -> Result;
 
     // Make architecture-specific parsing of the relocation types.
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo>;

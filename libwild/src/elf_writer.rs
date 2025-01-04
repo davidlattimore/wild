@@ -773,7 +773,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
             }
         }
         if let Some(plt_address) = res.plt_address {
-            self.write_plt_entry(got_address, plt_address.get())?;
+            self.write_plt_entry::<A>(got_address, plt_address.get())?;
         }
         Ok(())
     }
@@ -839,15 +839,9 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         Ok(())
     }
 
-    fn write_plt_entry(&mut self, got_address: u64, plt_address: u64) -> Result {
+    fn write_plt_entry<A: Arch>(&mut self, got_address: u64, plt_address: u64) -> Result {
         let plt_entry = self.take_plt_got_entry()?;
-
-        plt_entry.copy_from_slice(elf::PLT_ENTRY_TEMPLATE);
-        let offset: i32 = ((got_address.wrapping_sub(plt_address + 0xb)) as i64)
-            .try_into()
-            .map_err(|_| anyhow!("PLT is more than 2GB away from GOT"))?;
-        plt_entry[7..11].copy_from_slice(&offset.to_le_bytes());
-        Ok(())
+        A::write_plt_entry(plt_entry, got_address, plt_address)
     }
 
     fn take_plt_got_entry(&mut self) -> Result<&'out mut [u8]> {

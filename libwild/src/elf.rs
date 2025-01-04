@@ -355,17 +355,13 @@ pub(crate) const COMPRESSION_HEADER_SIZE: usize =
     size_of::<object::elf::CompressionHeader64<LittleEndian>>();
 
 pub(crate) const GOT_ENTRY_SIZE: u64 = 0x8;
-pub(crate) const PLT_ENTRY_SIZE: u64 = PLT_ENTRY_TEMPLATE.len() as u64;
+// TODO: Right now, both x86_64 and AArch64 have 16 byte long entires, but
+// the size should be generic over A: Arch.
+pub(crate) const PLT_ENTRY_SIZE: u64 = 0x10;
 pub(crate) const RELA_ENTRY_SIZE: u64 = 0x18;
 
 pub(crate) const SYMTAB_ENTRY_SIZE: u64 = size_of::<SymtabEntry>() as u64;
 pub(crate) const GNU_VERSION_ENTRY_SIZE: u64 = size_of::<Versym>() as u64;
-
-pub(crate) const PLT_ENTRY_TEMPLATE: &[u8] = &[
-    0xf3, 0x0f, 0x1e, 0xfa, // endbr64
-    0xf2, 0xff, 0x25, 0x0, 0x0, 0x0, 0x0, // bnd jmp *{relative GOT address}(%rip)
-    0x0f, 0x1f, 0x44, 0x0, 0x0, // nopl   0x0(%rax,%rax,1)
-];
 
 const _ASSERTS: () = {
     assert!(FILE_HEADER_SIZE as usize == size_of::<FileHeader>());
@@ -423,7 +419,9 @@ impl Default for PageMaskValue {
     }
 }
 
-const DEFAULT_AARCH64_MASK: u64 = !0xfff;
+pub(crate) const DEFAULT_AARCH64_PAGE_SIZE: u64 = 0x1000; // 4096
+pub(crate) const DEFAULT_AARCH64_PAGE_MASK: u64 = DEFAULT_AARCH64_PAGE_SIZE - 1;
+pub(crate) const DEFAULT_AARCH64_PAGE_IGNORED_MASK: u64 = !DEFAULT_AARCH64_PAGE_MASK;
 
 pub(crate) fn get_page_mask(mask: Option<PageMask>) -> PageMaskValue {
     let Some(mask) = mask else {
@@ -432,17 +430,17 @@ pub(crate) fn get_page_mask(mask: Option<PageMask>) -> PageMaskValue {
 
     match mask {
         PageMask::SymbolPlusAddendAndPosition => PageMaskValue {
-            symbol_plus_addend: DEFAULT_AARCH64_MASK,
-            place: DEFAULT_AARCH64_MASK,
+            symbol_plus_addend: DEFAULT_AARCH64_PAGE_IGNORED_MASK,
+            place: DEFAULT_AARCH64_PAGE_IGNORED_MASK,
             ..Default::default()
         },
         PageMask::GotEntryAndPosition => PageMaskValue {
-            got_entry: DEFAULT_AARCH64_MASK,
-            place: DEFAULT_AARCH64_MASK,
+            got_entry: DEFAULT_AARCH64_PAGE_IGNORED_MASK,
+            place: DEFAULT_AARCH64_PAGE_IGNORED_MASK,
             ..Default::default()
         },
         PageMask::GotBase => PageMaskValue {
-            got: DEFAULT_AARCH64_MASK,
+            got: DEFAULT_AARCH64_PAGE_IGNORED_MASK,
             ..Default::default()
         },
     }
@@ -568,6 +566,7 @@ pub(crate) enum RelocationInstruction {
     Movkz,
     Movnz,
     Ldr,
+    LdrRegister,
     Add,
     LdSt,
     TstBr,
@@ -597,7 +596,8 @@ impl RelocationSize {
             }
             RelocationSize::BitMasking { range, insn } => {
                 let extracted_value = extract_bits(value, range.start, range.end);
-                insn.write_to_value(extracted_value, value, &mut output[..4]);
+                let negative = (value as i64) < 0;
+                insn.write_to_value(extracted_value, negative, &mut output[..4]);
             }
         }
 
