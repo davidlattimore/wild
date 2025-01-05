@@ -2,6 +2,7 @@
 //#Object:tls1.c
 //#Object:init_tls.c
 //#Object:exit.c
+//#Arch: x86_64
 
 //#Config:global-dynamic-0:default
 //#CompArgs:-ftls-model=global-dynamic

@@ -152,6 +152,25 @@ enum LinkerInvocationMode {
     Script,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostArchitecture {
+    X86_64,
+    AArch64,
+}
+
+#[allow(unreachable_code)]
+fn get_host_architecture() -> HostArchitecture {
+    #[cfg(target_arch = "x86_64")]
+    {
+        return HostArchitecture::X86_64;
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        return HostArchitecture::AArch64;
+    }
+    todo!("Unsupported architecture")
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct Config {
     name: String,
@@ -172,6 +191,7 @@ struct Config {
     should_diff: bool,
     should_run: bool,
     expect_error: Option<String>,
+    support_architectures: Vec<HostArchitecture>,
 }
 impl Config {
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
@@ -278,6 +298,7 @@ impl Default for Config {
             should_diff: true,
             should_run: true,
             expect_error: None,
+            support_architectures: vec![HostArchitecture::X86_64, HostArchitecture::AArch64],
         }
     }
 }
@@ -398,6 +419,20 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                     input_type: InputType::SharedObject,
                 }),
                 "Compiler" => config.compiler = arg.trim().to_owned(),
+                "Arch" => {
+                    config.support_architectures = arg
+                        .trim()
+                        .split(",")
+                        .map(|arch| {
+                            let arch = arch.trim().to_lowercase();
+                            match arch.as_str() {
+                                "x86_64" => Ok(HostArchitecture::X86_64),
+                                "aarch64" => Ok(HostArchitecture::AArch64),
+                                _ => Err(anyhow!(format!("Unsupported architecture: `{}`", arch))),
+                            }
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                }
                 other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
             }
         }
@@ -587,7 +622,7 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
         .context("Extension isn't valid UTF-8")?;
 
     let tool_paths = ToolPaths::get(&config.compiler)
-        .ok_or(anyhow::anyhow!("Unknown compiler `{}`", config.compiler))?;
+        .ok_or(anyhow!("Unknown compiler `{}`", config.compiler))?;
     let (compiler, compiler_kind) = match extension {
         "cc" => (tool_paths.cpp, CompilerKind::C),
         "c" => (tool_paths.cc, CompilerKind::C),
@@ -1388,6 +1423,13 @@ fn integration_test(
     let configs = parse_configs(&src_path(filename))
         .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
     for config in configs {
+        if !config
+            .support_architectures
+            .contains(&get_host_architecture())
+        {
+            eprintln!("Skipping config: {}", config.name);
+            continue;
+        }
         let programs = linkers
             .iter()
             .filter(|linker| config.is_linker_enabled(linker))

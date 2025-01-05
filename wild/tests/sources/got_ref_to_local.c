@@ -4,6 +4,7 @@
 //#Object:got_ref_to_local-1.s
 //#LinkArgs:-z noexecstack
 //#Object:exit.c
+//#Arch: x86_64
 
 #include "exit.h"
 

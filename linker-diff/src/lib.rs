@@ -158,6 +158,20 @@ impl Config {
             .into_iter()
             .map(ToOwned::to_owned),
         );
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            self.ignore.extend(
+                [
+                    // Other linkers have a bigger initial PLT entry, thus the entsize is set to zero:
+                    // https://sourceware.org/bugzilla/show_bug.cgi?id=26312
+                    "section.plt.entsize",
+                ]
+                .into_iter()
+                .map(ToOwned::to_owned),
+            )
+        }
+
         self.equiv.push((
             GOT_SECTION_NAME_STR.to_owned(),
             GOT_PLT_SECTION_NAME_STR.to_owned(),
