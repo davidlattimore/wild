@@ -1966,10 +1966,14 @@ fn write_absolute_relocation<S: StorageModel, A: Arch>(
         )?;
         Ok(0)
     } else if table_writer.output_kind.is_relocatable() && !resolution.is_absolute() {
-        table_writer.write_address_relocation::<A>(
-            place,
-            resolution.raw_value.wrapping_add(addend) as i64,
+        let address = resolution.value_with_addend(
+            addend,
+            symbol_index,
+            object_layout,
+            &layout.merged_strings,
+            &layout.merged_string_start_addresses,
         )?;
+        table_writer.write_address_relocation::<A>(place, address as i64)?;
         Ok(0)
     } else if resolution.value_flags.contains(ValueFlags::IFUNC) {
         Ok(resolution.plt_address()?.wrapping_add(addend))
