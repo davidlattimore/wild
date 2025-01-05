@@ -97,6 +97,8 @@ int __attribute__ ((weak)) sometimes_weak_fn(void) {
 
 extern int value42;
 
+const char* str1 = "This is str1";
+
 void set_tvar_local(int v);
 int get_tvar_local(void);
 void set_tvar_local2(int v);
@@ -236,6 +238,9 @@ int main() {
     }
     if (get_42() != 42) {
         return 121;
+    }
+    if (strcmp(str1, "This is str1") != 0) {
+        return 122;
     }
 
     return 42;
