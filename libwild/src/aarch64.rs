@@ -644,7 +644,7 @@ impl crate::arch::Arch for AArch64 {
 
             // 5.7.11.4   Local Exec thread-local storage model
             object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G2 => (
-                RelocationKind::TpOff,
+                RelocationKind::TpOffAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 32, end: 48 },
                     insn: RelocationInstruction::Movnz,
@@ -652,7 +652,7 @@ impl crate::arch::Arch for AArch64 {
                 None,
             ),
             object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1 => (
-                RelocationKind::TpOff,
+                RelocationKind::TpOffAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 16, end: 32 },
                     insn: RelocationInstruction::Movnz,
@@ -660,7 +660,7 @@ impl crate::arch::Arch for AArch64 {
                 None,
             ),
             object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1_NC => (
-                RelocationKind::TpOff,
+                RelocationKind::TpOffAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 16, end: 32 },
                     insn: RelocationInstruction::Movkz,
@@ -668,7 +668,7 @@ impl crate::arch::Arch for AArch64 {
                 None,
             ),
             object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G0 => (
-                RelocationKind::TpOff,
+                RelocationKind::TpOffAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 16 },
                     insn: RelocationInstruction::Movnz,
@@ -676,7 +676,7 @@ impl crate::arch::Arch for AArch64 {
                 None,
             ),
             object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G0_NC => (
-                RelocationKind::TpOff,
+                RelocationKind::TpOffAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 16 },
                     insn: RelocationInstruction::Movkz,
@@ -684,7 +684,7 @@ impl crate::arch::Arch for AArch64 {
                 None,
             ),
             object::elf::R_AARCH64_TLSLE_ADD_TPREL_HI12 => (
-                RelocationKind::TpOff,
+                RelocationKind::TpOffAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 12, end: 24 },
                     insn: RelocationInstruction::Add,
@@ -693,7 +693,7 @@ impl crate::arch::Arch for AArch64 {
             ),
             object::elf::R_AARCH64_TLSLE_ADD_TPREL_LO12
             | object::elf::R_AARCH64_TLSLE_ADD_TPREL_LO12_NC => (
-                RelocationKind::TpOff,
+                RelocationKind::TpOffAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 12 },
                     insn: RelocationInstruction::Add,
@@ -702,7 +702,7 @@ impl crate::arch::Arch for AArch64 {
             ),
             object::elf::R_AARCH64_TLSLE_LDST8_TPREL_LO12
             | object::elf::R_AARCH64_TLSLE_LDST8_TPREL_LO12_NC => (
-                RelocationKind::TpOff,
+                RelocationKind::TpOffAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 12 },
                     insn: RelocationInstruction::LdSt,
@@ -711,7 +711,7 @@ impl crate::arch::Arch for AArch64 {
             ),
             object::elf::R_AARCH64_TLSLE_LDST16_TPREL_LO12
             | object::elf::R_AARCH64_TLSLE_LDST16_TPREL_LO12_NC => (
-                RelocationKind::TpOff,
+                RelocationKind::TpOffAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 1, end: 12 },
                     insn: RelocationInstruction::LdSt,
@@ -720,7 +720,7 @@ impl crate::arch::Arch for AArch64 {
             ),
             object::elf::R_AARCH64_TLSLE_LDST32_TPREL_LO12
             | object::elf::R_AARCH64_TLSLE_LDST32_TPREL_LO12_NC => (
-                RelocationKind::TpOff,
+                RelocationKind::TpOffAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 2, end: 12 },
                     insn: RelocationInstruction::LdSt,
@@ -729,7 +729,7 @@ impl crate::arch::Arch for AArch64 {
             ),
             object::elf::R_AARCH64_TLSLE_LDST64_TPREL_LO12
             | object::elf::R_AARCH64_TLSLE_LDST64_TPREL_LO12_NC => (
-                RelocationKind::TpOff,
+                RelocationKind::TpOffAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 3, end: 12 },
                     insn: RelocationInstruction::LdSt,
@@ -738,7 +738,7 @@ impl crate::arch::Arch for AArch64 {
             ),
             object::elf::R_AARCH64_TLSLE_LDST128_TPREL_LO12
             | object::elf::R_AARCH64_TLSLE_LDST128_TPREL_LO12_NC => (
-                RelocationKind::TpOff,
+                RelocationKind::TpOffAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 4, end: 12 },
                     insn: RelocationInstruction::LdSt,

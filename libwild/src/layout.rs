@@ -1346,6 +1346,14 @@ impl<'data, S: StorageModel> Layout<'data, '_, S> {
         alignment.align_up(tls_end)
     }
 
+    /// Returns the memory address of the start of the TLS segment used by the AArch64.
+    pub(crate) fn tls_start_address_aarch64(&self) -> u64 {
+        let tdata = self.section_layouts.get(output_section_id::TDATA);
+        // Two words at TP are reserved by the arch.
+        let tls_start = tdata.mem_offset - 2 * 8;
+        tdata.alignment.align_down(tls_start)
+    }
+
     pub(crate) fn layout_data(&self) -> linker_layout::Layout {
         let files = self
             .group_layouts
@@ -2478,6 +2486,7 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
         | RelocationKind::Relative
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
+        | RelocationKind::TpOffAArch64
         | RelocationKind::SymRelGotBase
         | RelocationKind::Got
         | RelocationKind::None => ResolutionFlags::DIRECT,

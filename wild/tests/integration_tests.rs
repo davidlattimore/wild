@@ -1340,7 +1340,8 @@ fn integration_test(
         "cpp-integration.cc",
         "rust-tls.rs",
         "input_does_not_exist.c",
-        "ifunc2.c"
+        "ifunc2.c",
+        "tls-local-exec.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
