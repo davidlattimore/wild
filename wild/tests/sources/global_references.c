@@ -5,6 +5,7 @@
 
 // Returns the passed value, but don't let the compiler make any assumptions about the returned
 // value.
+#if defined(__x86_64__)
 int black_box(int input) {
     register int rdi __asm__ ("rdi") = input;
     __asm__ __volatile__ (
@@ -13,6 +14,16 @@ int black_box(int input) {
     );
     return rdi;
 }
+#elif defined(__aarch64__)
+int black_box(int input) {
+    register int w0 __asm__ ("w0") = input;
+    __asm__ __volatile__ (
+        "nop"
+        : "+r" (w0)
+    );
+    return w0;
+}
+#endif
 
 void _start() {
     if (global_value != 38) {

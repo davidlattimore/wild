@@ -2,6 +2,7 @@
 
 //#LinkArgs:-z noexecstack
 //#Object:exit.c
+//#Arch: x86_64
 
 .section .nonloadable, "R", @progbits
     .asciz "Hello, World!"

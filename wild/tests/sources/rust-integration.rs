@@ -6,9 +6,19 @@
 
 //#Config:llvm-static:default
 //#CompArgs:--target x86_64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2
+//#Arch: x86_64
+
+//#Config:llvm-static-aarch64:default
+//#CompArgs:--target aarch64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2
+//#Arch: aarch64
 
 //#Config:cranelift-static:default
 //#CompArgs:-Zcodegen-backend=cranelift --target x86_64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2 --cfg cranelift
+//#Arch: x86_64
+
+//#Config:cranelift-static-aarch64:default
+//#CompArgs:-Zcodegen-backend=cranelift --target aarch64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2 --cfg cranelift
+//#Arch: aarch64
 
 //#Config:llvm-dynamic:default
 //#CompArgs:-C debuginfo=2

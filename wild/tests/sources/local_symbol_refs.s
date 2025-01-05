@@ -7,6 +7,7 @@
 //#Object:exit.c
 //#LinkArgs:-z noexecstack
 //#EnableLinker:lld
+//#Arch: x86_64
 
 .section        .rodata.x,"aM",@progbits,16
 .p2align        4, 0x0

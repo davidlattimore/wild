@@ -4,6 +4,7 @@
 //#Object:exit.c
 //#LinkArgs:-z noexecstack
 //#EnableLinker:lld
+//#Arch: x86_64
 
 .globl _start
 _start:

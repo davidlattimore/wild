@@ -6,6 +6,7 @@
 //#Object:string_merging1.s
 //#Object:string_merging2.s
 //#Object:exit.c
+//#Arch: x86_64
 
 #include "exit.h"
 
