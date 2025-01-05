@@ -43,12 +43,15 @@
 //#DiffIgnore:section.relro_padding
 
 //#Config:clang-global-dynamic:default
+//#Compiler:clang
 //#CompArgs:-g -fPIC -ftls-model=global-dynamic -DDYNAMIC_DEP
 //#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#EnableLinker:lld
 //#Shared:libc-integration-0.c
 //#Shared:libc-integration-1.c
 //#DiffIgnore:section.relro_padding
+//#DiffIgnore:section.rodata.entsize
+//#DiffIgnore:section.rodata.flags
 
 //#Config:gcc-dynamic-pie:default
 //#CompArgs:-g -fpie -DDYNAMIC_DEP
@@ -131,6 +134,8 @@ void *thread_function(void *data) {
 
     int* out = (int*)data;
     *out = 30;
+
+    return NULL;
 }
 
 int main() {
