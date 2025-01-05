@@ -571,6 +571,9 @@ pub enum RelocationKind {
     /// The offset of a TLS variable within the executable's TLS storage.
     TpOff,
 
+    /// The offset of a TLS variable within the executable's TLS storage, AArch64 TLS block layout.
+    TpOffAArch64,
+
     /// No relocation needs to be applied. Produced when we eliminate a relocation due to an
     /// optimisation.
     None,

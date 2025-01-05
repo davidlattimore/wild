@@ -65,6 +65,10 @@ impl Alignment {
         1 << self.exponent
     }
 
+    pub(crate) fn mask(self) -> u64 {
+        self.value() - 1
+    }
+
     pub(crate) fn align_up(self, value: u64) -> u64 {
         value.next_multiple_of(self.value())
     }
@@ -73,10 +77,14 @@ impl Alignment {
         value.next_multiple_of(self.value() as usize)
     }
 
+    pub(crate) fn align_down(self, value: u64) -> u64 {
+        value & !self.mask()
+    }
+
     /// Returns `mem_offset`, possibly adjusted up so that it is >= `align_up(mem_offset)` and has
     /// the same modulo as `file_offset`
     pub(crate) fn align_modulo(self, file_offset: u64, mut mem_offset: u64) -> u64 {
-        let mask = self.value() - 1;
+        let mask = self.mask();
         mem_offset = self.align_up(mem_offset);
         if mem_offset & mask == file_offset & mask {
             return mem_offset;
@@ -112,4 +120,13 @@ fn test_align_modulo() {
     assert_eq!(PAGE.align_modulo(0x123456, 0x987001), 0x988456);
     assert_eq!(PAGE.align_modulo(0x123456, 0x987000), 0x987456);
     assert_eq!(PAGE.align_modulo(0x2afce, 0x42af7e), 0x42bfce);
+}
+
+#[test]
+fn test_align_down() {
+    assert_eq!(Alignment::new(16).unwrap().align_down(16), 16);
+    assert_eq!(Alignment::new(16).unwrap().align_down(17), 16);
+    assert_eq!(Alignment::new(16).unwrap().align_down(32), 32);
+    assert_eq!(Alignment::new(16).unwrap().align_down(0), 0);
+    assert_eq!(Alignment::new(16).unwrap().align_down(1), 0);
 }

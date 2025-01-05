@@ -1872,6 +1872,10 @@ fn apply_relocation<S: StorageModel, A: Arch>(
             .value()
             .wrapping_sub(layout.tls_end_address())
             .wrapping_add(addend),
+        RelocationKind::TpOffAArch64 => resolution
+            .value()
+            .wrapping_sub(layout.tls_start_address_aarch64())
+            .wrapping_add(addend),
         RelocationKind::None => 0,
     };
     rel_info
