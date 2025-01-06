@@ -139,8 +139,7 @@ pub(crate) const FILES_PER_GROUP_ENV: &str = "WILD_FILES_PER_GROUP";
 // other linkers. On the other, we should perhaps somehow let the user know that we don't support a
 // feature.
 const SILENTLY_IGNORED_FLAGS: &[&str] = &[
-    // TODO: Think about if anything is needed here. We don't need groups in order resolve cycles,
-    // so perhaps ignoring these is the right thing to do.
+    // Just like other modern linkers, we don't need groups in order resolve cycles.
     "start-group",
     "end-group",
     // TODO: This is supposed to suppress built-in search paths, but I don't think we have any
