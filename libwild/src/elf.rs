@@ -17,6 +17,7 @@ use object::read::elf::SectionHeader as _;
 use object::LittleEndian;
 use std::borrow::Cow;
 use std::io::Read as _;
+use std::mem::offset_of;
 use std::sync::atomic::Ordering;
 
 /// Our starting address in memory when linking non-relocatable executables. We can start memory
@@ -296,8 +297,7 @@ pub(crate) struct EhFrameHdr {
     pub(crate) entry_count: u32,
 }
 
-// TODO: Use offset-of once it's stable.
-pub(crate) const FRAME_POINTER_FIELD_OFFSET: usize = 4;
+pub(crate) const FRAME_POINTER_FIELD_OFFSET: usize = offset_of!(EhFrameHdr, frame_pointer);
 
 /// The offset of the offset within the structure passed to __tls_get_addr.
 pub(crate) const TLS_OFFSET_OFFSET: u64 = 8;
