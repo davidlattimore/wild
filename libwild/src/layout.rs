@@ -2404,14 +2404,20 @@ fn process_relocation<S: StorageModel, A: Arch>(
         let rel_offset = rel.r_offset.get(LittleEndian);
         let r_type = rel.r_type(LittleEndian, false);
 
-        let rel_info = if let Some(relaxation) = A::Relaxation::new(
-            r_type,
-            object.object.raw_section_data(section)?,
-            rel_offset,
-            symbol_value_flags,
-            args.output_kind,
-            SectionFlags::from_header(section),
-        ) {
+        let rel_info = if let Some(relaxation) = {
+            if args.relax {
+                A::Relaxation::new(
+                    r_type,
+                    object.object.raw_section_data(section)?,
+                    rel_offset,
+                    symbol_value_flags,
+                    args.output_kind,
+                    SectionFlags::from_header(section),
+                )
+            } else {
+                None
+            }
+        } {
             relaxation.rel_info()
         } else {
             A::relocation_from_raw(r_type)?
