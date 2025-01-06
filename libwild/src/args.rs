@@ -150,6 +150,8 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     // Just like other modern linkers, we don't need groups in order resolve cycles.
     "start-group",
     "end-group",
+    "(",
+    ")",
     // TODO: This is supposed to suppress built-in search paths, but I don't think we have any
     // built-in search paths. Perhaps we should?
     "nostdlib",
@@ -339,10 +341,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
         } else if long_arg_eq("no-threads") {
             num_threads = Some(NonZeroUsize::new(1).unwrap());
-        } else if long_arg_eq("strip-all") {
+        } else if long_arg_eq("strip-all") || arg == "-s" {
             strip_all = true;
             strip_debug = true;
-        } else if long_arg_eq("strip-debug") {
+        } else if long_arg_eq("strip-debug") || arg == "-S" {
             strip_debug = true;
         } else if long_arg_eq("gc-sections") {
             gc_sections = true;
