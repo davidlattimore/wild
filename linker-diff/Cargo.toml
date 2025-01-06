@@ -26,7 +26,7 @@ anyhow = "1.0.95"
 clap = { version = "4.5.23", features = ["derive"] }
 rayon = "1.10.0"
 bytemuck = { version = "1.21.0", features = ["derive"] }
-itertools = "0.13.0"
+itertools = "0.14.0"
 gimli = "0.31.1"
 fallible-iterator = "0.3.0"
 
