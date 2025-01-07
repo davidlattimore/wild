@@ -59,6 +59,7 @@ pub(crate) struct Args {
     pub(crate) print_allocations: Option<FileId>,
     pub(crate) execstack: bool,
     pub(crate) relax: bool,
+    pub(crate) verify_allocation_consistency: bool,
 }
 
 #[derive(Debug)]
@@ -134,6 +135,13 @@ pub const WRITE_TRACE_ENV: &str = "WILD_WRITE_TRACE";
 pub const REFERENCE_LINKER_ENV: &str = "WILD_REFERENCE_LINKER";
 pub(crate) const FILES_PER_GROUP_ENV: &str = "WILD_FILES_PER_GROUP";
 
+/// Set this environment variable if you get a failure during writing due to too much or too little
+/// space being allocated to some section. When set, each time we allocate during layout, we'll
+/// check that what we're doing is consistent with writing and fail in a more easy to debug way. i.e
+/// we'll report the particular combination of value flags, resolution flags etc that triggered the
+/// inconsistency.
+pub(crate) const WRITE_VERIFY_ALLOCATIONS_ENV: &str = "WILD_VERIFY_ALLOCATIONS";
+
 // These flags don't currently affect our behaviour. TODO: Assess whether we should error or warn if
 // these are given. This is tricky though. On the one hand we want to be a drop-in replacement for
 // other linkers. On the other, we should perhaps somehow let the user know that we don't support a
@@ -203,6 +211,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     let mut validate_output = std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1");
     let mut write_layout = std::env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1");
     let mut write_trace = std::env::var(WRITE_TRACE_ENV).is_ok_and(|v| v == "1");
+    let verify_allocation_consistency =
+        std::env::var(WRITE_VERIFY_ALLOCATIONS_ENV).is_ok_and(|v| v == "1");
     let mut relocation_model = RelocationModel::NonRelocatable;
     let mut modifier_stack = vec![Modifiers::default()];
     let mut version_script_path = None;
@@ -517,6 +527,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         debug_address,
         write_layout,
         write_trace,
+        verify_allocation_consistency,
         should_write_eh_frame_hdr: eh_frame_hdr,
         write_gc_stats,
         gc_stats_ignore,

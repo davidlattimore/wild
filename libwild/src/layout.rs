@@ -633,6 +633,14 @@ trait SymbolRequestHandler<'data, S: StorageModel>: std::fmt::Display + HandlerD
                 );
             }
 
+            if symbol_db.args.verify_allocation_consistency {
+                verify_consistent_allocation_handling(
+                    value_flags,
+                    resolution_flags.get(),
+                    symbol_db.args.output_kind,
+                )?;
+            }
+
             allocate_symbol_resolution(
                 value_flags,
                 resolution_flags,
@@ -4539,7 +4547,6 @@ fn test_resolution_allocation_consistency() -> Result {
         OutputKind::DynamicExecutable(RelocationModel::Relocatable),
         OutputKind::SharedObject,
     ];
-    let output_sections = OutputSections::for_testing();
     for &value_flags in &value_flag_sets {
         for &resolution_flags in &resolution_flag_sets {
             for &output_kind in output_kinds {
@@ -4548,52 +4555,58 @@ fn test_resolution_allocation_consistency() -> Result {
                     continue;
                 }
 
-                let mut mem_sizes = output_sections.new_part_map();
-                let resolution_flags = AtomicResolutionFlags::new(resolution_flags);
-                allocate_symbol_resolution(
-                    value_flags,
-                    &resolution_flags,
-                    &mut mem_sizes,
-                    output_kind,
-                );
-                let resolution_flags = resolution_flags.get();
-
-                let mut memory_offsets =
-                    OutputSectionPartMap::with_size(part_id::NUM_BUILT_IN_PARTS);
-                // We use NonZero to represent offsets for these sections, so set them all to
-                // non-zero values.
-                *memory_offsets.get_mut(part_id::GOT) = 0x10;
-                *memory_offsets.get_mut(part_id::PLT_GOT) = 0x10;
-
-                let has_dynamic_symbol = value_flags.contains(ValueFlags::DYNAMIC)
-                    || (resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
-                        && !value_flags.contains(ValueFlags::CAN_BYPASS_GOT));
-                let dynamic_symbol_index = has_dynamic_symbol.then(|| NonZeroU32::new(1).unwrap());
-                let resolution = create_resolution(
-                    resolution_flags,
-                    0,
-                    dynamic_symbol_index,
-                    value_flags,
-                    &mut memory_offsets,
-                );
-
-                crate::elf_writer::verify_resolution_allocation(
-                    &output_sections,
-                    output_kind,
-                    &mem_sizes,
-                    &resolution,
-                )
-                .with_context(|| {
-                    format!(
-                        "Failed. output_kind={output_kind:?} \
-                         value_flags={value_flags} \
-                         resolution_flags={resolution_flags} \
-                         has_dynamic_symbol={has_dynamic_symbol:?}"
-                    )
-                })?;
+                verify_consistent_allocation_handling(value_flags, resolution_flags, output_kind)?;
             }
         }
     }
+    Ok(())
+}
+
+/// Verifies that we allocate and use consistent amounts of various output sections for the supplied
+/// combination of flags and output kind. If this function returns an error, then we would have
+/// failed during writing anyway. By failing now, we can report the particular combination of inputs
+/// that caused the failure.
+fn verify_consistent_allocation_handling(
+    value_flags: ValueFlags,
+    resolution_flags: ResolutionFlags,
+    output_kind: OutputKind,
+) -> Result {
+    let output_sections = output_section_id::OutputSectionsBuilder::with_base_address(0)
+        .build()
+        .unwrap();
+    let mut mem_sizes = output_sections.new_part_map();
+    let resolution_flags = AtomicResolutionFlags::new(resolution_flags);
+    allocate_symbol_resolution(value_flags, &resolution_flags, &mut mem_sizes, output_kind);
+    let resolution_flags = resolution_flags.get();
+    let mut memory_offsets = output_sections.new_part_map();
+    *memory_offsets.get_mut(part_id::GOT) = 0x10;
+    *memory_offsets.get_mut(part_id::PLT_GOT) = 0x10;
+    let has_dynamic_symbol = value_flags.contains(ValueFlags::DYNAMIC)
+        || (resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
+            && !value_flags.contains(ValueFlags::CAN_BYPASS_GOT));
+    let dynamic_symbol_index = has_dynamic_symbol.then(|| NonZeroU32::new(1).unwrap());
+    let resolution = create_resolution(
+        resolution_flags,
+        0,
+        dynamic_symbol_index,
+        value_flags,
+        &mut memory_offsets,
+    );
+    elf_writer::verify_resolution_allocation(
+        &output_sections,
+        output_kind,
+        &mem_sizes,
+        &resolution,
+    )
+    .with_context(|| {
+        format!(
+            "Inconsistent allocation detected. \
+             output_kind={output_kind:?} \
+             value_flags={value_flags} \
+             resolution_flags={resolution_flags} \
+             has_dynamic_symbol={has_dynamic_symbol:?}"
+        )
+    })?;
     Ok(())
 }
 

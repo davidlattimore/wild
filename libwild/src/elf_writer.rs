@@ -10,6 +10,7 @@ use crate::args::Args;
 use crate::args::BuildIdOption;
 use crate::args::FileWriteMode;
 use crate::args::OutputKind;
+use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
 use crate::debug_assert_bail;
 use crate::elf;
 use crate::elf::slice_from_all_bytes_mut;
@@ -337,7 +338,7 @@ impl SizedOutput {
         let e = LittleEndian;
         let (note_header, mut rest) =
             from_bytes_mut::<NoteHeader>(buffers.get_mut(output_section_id::NOTE_GNU_BUILD_ID))
-                .map_err(|_| anyhow!("Insufficient .note.gnu.build-id allocation"))?;
+                .map_err(|_| insufficient_allocation(".note.gnu.build-id"))?;
         note_header.n_namesz.set(e, GNU_NOTE_NAME.len() as u32);
         note_header.n_descsz.set(e, build_id.len() as u32);
         note_header.n_type.set(e, NT_GNU_BUILD_ID);
@@ -411,6 +412,30 @@ impl SizedOutput {
             }
         }
         Ok(())
+    }
+}
+
+fn insufficient_allocation(section_name: &str) -> crate::error::Error {
+    anyhow!(
+        "Insufficient {section_name} allocation. {}",
+        verify_allocations_message()
+    )
+}
+
+fn excessive_allocation(section_name: &str, remaining: u64, allocated: u64) -> crate::error::Error {
+    anyhow!(
+        "Allocated too much space in {section_name}. {remaining} of {allocated} bytes remain. {}",
+        verify_allocations_message()
+    )
+}
+
+/// Returns a message suggesting to set an environment variable to help debug a failure, but only if
+/// it's not already set, since that would be confusing.
+fn verify_allocations_message() -> String {
+    if std::env::var(WRITE_VERIFY_ALLOCATIONS_ENV).is_ok_and(|v| v == "1") {
+        String::new()
+    } else {
+        format!("Setting {WRITE_VERIFY_ALLOCATIONS_ENV}=1 might give more info")
     }
 }
 
@@ -599,14 +624,14 @@ impl<'out> VersionWriter<'out> {
 
     fn set_next_symbol_version(&mut self, index: u16) -> Result {
         let versym = crate::slice::take_first_mut(&mut self.versym)
-            .context("Insufficient .gnu.version allocation")?;
+            .ok_or_else(|| insufficient_allocation(".gnu.version"))?;
         versym.0.set(LittleEndian, index);
         Ok(())
     }
 
     fn take_bytes(&mut self, size: usize) -> Result<&'out mut [u8]> {
         crate::slice::try_slice_take_prefix_mut(&mut self.version_r, size)
-            .context("Insufficient .gnu.version_r allocation")
+            .ok_or_else(|| insufficient_allocation(".gnu.version_r"))
     }
 
     fn take_verneed(&mut self) -> Result<&'out mut Verneed> {
@@ -624,11 +649,11 @@ impl<'out> VersionWriter<'out> {
 
     fn check_exhausted(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
         if !self.versym.is_empty() {
-            bail!(
-                "Allocated too much space in .gnu.version. {} of {} entries remain",
-                self.versym.len(),
-                mem_sizes.get(part_id::GNU_VERSION) / elf::GNU_VERSION_ENTRY_SIZE
-            );
+            return Err(excessive_allocation(
+                ".gnu.version",
+                self.versym.len() as u64 * elf::GNU_VERSION_ENTRY_SIZE,
+                *mem_sizes.get(part_id::GNU_VERSION),
+            ));
         }
         if !self.version_r.is_empty() {
             bail!(
@@ -855,41 +880,41 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
     }
 
     fn take_next_got_entry(&mut self) -> Result<&'out mut u64> {
-        crate::slice::take_first_mut(&mut self.got).context("Insufficient GOT allocation")
+        crate::slice::take_first_mut(&mut self.got).ok_or_else(|| insufficient_allocation(".got"))
     }
 
     /// Checks that we used all of the entries that we requested during layout.
     fn validate_empty(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
         if !self.rela_dyn_relative.is_empty() {
-            bail!(
-                "Allocated too much relative space in .rela.dyn. {} of {} entries remain unused.",
-                self.rela_dyn_relative.len(),
-                mem_sizes.get(part_id::RELA_DYN_RELATIVE) / elf::RELA_ENTRY_SIZE,
-            );
+            return Err(excessive_allocation(
+                ".rela.dyn (relative)",
+                self.rela_dyn_relative.len() as u64 * elf::RELA_ENTRY_SIZE,
+                *mem_sizes.get(part_id::RELA_DYN_RELATIVE),
+            ));
         }
         if !self.rela_dyn_general.is_empty() {
-            bail!(
-                "Allocated too much general space in .rela.dyn. {} of {} entries remain unused.",
-                self.rela_dyn_general.len(),
-                mem_sizes.get(part_id::RELA_DYN_GENERAL) / elf::RELA_ENTRY_SIZE,
-            );
+            return Err(excessive_allocation(
+                ".rela.dyn (general)",
+                self.rela_dyn_general.len() as u64 * elf::RELA_ENTRY_SIZE,
+                *mem_sizes.get(part_id::RELA_DYN_GENERAL),
+            ));
         }
         self.dynsym_writer.check_exhausted()?;
         self.debug_symbol_writer.check_exhausted()?;
         self.version_writer.check_exhausted(mem_sizes)?;
         if !self.eh_frame.is_empty() {
-            bail!(
-                "Allocated too much space in .eh_frame. {} of {} bytes remain",
-                self.eh_frame.len(),
-                mem_sizes.get(part_id::EH_FRAME)
-            );
+            return Err(excessive_allocation(
+                ".eh_frame",
+                self.eh_frame.len() as u64,
+                *mem_sizes.get(part_id::EH_FRAME),
+            ));
         }
         if !self.eh_frame_hdr.is_empty() {
-            bail!(
-                "Allocated too much space in .eh_frame_hdr. {} of {} bytes remain",
-                self.eh_frame_hdr.len(),
-                mem_sizes.get(part_id::EH_FRAME_HDR)
-            );
+            return Err(excessive_allocation(
+                ".eh_frame_hdr",
+                self.eh_frame_hdr.len() as u64,
+                *mem_sizes.get(part_id::EH_FRAME_HDR),
+            ));
         }
         Ok(())
     }
@@ -960,7 +985,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         );
         let e = LittleEndian;
         let rela = crate::slice::take_first_mut(&mut self.rela_dyn_relative)
-            .context("insufficient allocation to .rela.dyn (relative)")?;
+            .ok_or_else(|| insufficient_allocation(".rela.dyn (relative)"))?;
         rela.r_offset.set(e, place);
         rela.r_addend.set(e, relative_address);
         rela.r_info.set(
@@ -1015,7 +1040,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
     fn take_rela_dyn(&mut self) -> Result<&mut object::elf::Rela64<LittleEndian>> {
         tracing::trace!("Consume .rela.dyn general");
         crate::slice::take_first_mut(&mut self.rela_dyn_general)
-            .context("insufficient allocation to .rela.dyn (non-relative)")
+            .ok_or_else(|| insufficient_allocation(".rela.dyn (non-relative)"))
     }
 
     fn take_eh_frame_hdr(&mut self) -> &'out mut EhFrameHdr {
@@ -1037,7 +1062,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
 
     fn take_eh_frame_data(&mut self, size: usize) -> Result<&'out mut [u8]> {
         if size > self.eh_frame.len() {
-            bail!("Insufficient allocation to .eh_frame section");
+            return Err(insufficient_allocation(".eh_frame"));
         }
         Ok(crate::slice::slice_take_prefix_mut(
             &mut self.eh_frame,
@@ -2758,7 +2783,7 @@ impl DynamicEntriesWriter<'_> {
 
     fn write(&mut self, tag: u32, value: u64) -> Result {
         let entry = crate::slice::take_first_mut(&mut self.out)
-            .ok_or_else(|| anyhow!("Insufficient dynamic table entries"))?;
+            .ok_or_else(|| insufficient_allocation(".dynamic"))?;
         let e = LittleEndian;
         entry.d_tag.set(e, u64::from(tag));
         entry.d_val.set(e, value);
@@ -3066,7 +3091,6 @@ impl Display for ResFlagsDisplay<'_> {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn verify_resolution_allocation(
     output_sections: &OutputSections,
     output_kind: OutputKind,
