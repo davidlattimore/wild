@@ -618,21 +618,6 @@ trait SymbolRequestHandler<'data, S: StorageModel>: std::fmt::Display + HandlerD
                 }
             }
 
-            // Once we're relatively confident that we're no longer seeing cases where we allocate
-            // too much or too little space, we can probably remove this.
-            if !are_flags_valid(value_flags, current_res_flags, symbol_db.args.output_kind) {
-                bail!(
-                    "{self}: Unexpected flag combination for symbol `{}` ({}): \
-                     value_flags={value_flags}, \
-                     resolution_flags={}, \
-                     output_kind={:?}",
-                    symbol_db.symbol_name(symbol_id)?,
-                    symbol_id,
-                    current_res_flags,
-                    symbol_db.args.output_kind
-                );
-            }
-
             if symbol_db.args.verify_allocation_consistency {
                 verify_consistent_allocation_handling(
                     value_flags,
@@ -4527,41 +4512,6 @@ impl Display for ResolutionFlags {
     }
 }
 
-/// Verifies that the code that allocates space for resolutions is consistent with the code that
-/// writes those resolutions. e.g. we don't allocate too little or too much space.
-#[test]
-fn test_resolution_allocation_consistency() -> Result {
-    use crate::args::RelocationModel;
-    use std::collections::HashSet;
-
-    let value_flag_sets = (0..=255)
-        .map(ValueFlags::from_bits_truncate)
-        .collect::<HashSet<_>>();
-    let resolution_flag_sets = (0..=255)
-        .map(ResolutionFlags::from_bits_truncate)
-        .collect::<HashSet<_>>();
-    let output_kinds = &[
-        OutputKind::StaticExecutable(RelocationModel::NonRelocatable),
-        OutputKind::StaticExecutable(RelocationModel::Relocatable),
-        OutputKind::DynamicExecutable(RelocationModel::NonRelocatable),
-        OutputKind::DynamicExecutable(RelocationModel::Relocatable),
-        OutputKind::SharedObject,
-    ];
-    for &value_flags in &value_flag_sets {
-        for &resolution_flags in &resolution_flag_sets {
-            for &output_kind in output_kinds {
-                // Skip invalid combinations.
-                if !are_flags_valid(value_flags, resolution_flags, output_kind) {
-                    continue;
-                }
-
-                verify_consistent_allocation_handling(value_flags, resolution_flags, output_kind)?;
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Verifies that we allocate and use consistent amounts of various output sections for the supplied
 /// combination of flags and output kind. If this function returns an error, then we would have
 /// failed during writing anyway. By failing now, we can report the particular combination of inputs
@@ -4608,100 +4558,4 @@ fn verify_consistent_allocation_handling(
         )
     })?;
     Ok(())
-}
-
-/// Returns whether a particular combination of flags is one that we consider valid and supported.
-/// Certain combinations don't make sense and this function should return false for those
-/// combinations. This lets us test that our allocation and writing are consistent for all supported
-/// combinations without getting test failures for unsupported combinations. It also lets us report
-/// unsupported combinations at runtime.
-fn are_flags_valid(
-    value_flags: ValueFlags,
-    resolution_flags: ResolutionFlags,
-    output_kind: OutputKind,
-) -> bool {
-    // This could just be one expression, but it'd make it harder to see what each invalid
-    // combination represented.
-    if !value_flags.contains(ValueFlags::ADDRESS)
-        && !value_flags.contains(ValueFlags::ABSOLUTE)
-        && !value_flags.contains(ValueFlags::DYNAMIC)
-        && !value_flags.contains(ValueFlags::IFUNC)
-    {
-        return false;
-    }
-    if value_flags.contains(ValueFlags::DYNAMIC) && value_flags.contains(ValueFlags::IFUNC) {
-        return false;
-    }
-    if value_flags.contains(ValueFlags::DYNAMIC) && value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
-    {
-        return false;
-    }
-    if (resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
-        || resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET))
-        && ((value_flags.contains(ValueFlags::ABSOLUTE)
-            && !value_flags.contains(ValueFlags::DYNAMIC))
-            || value_flags.contains(ValueFlags::IFUNC)
-            || resolution_flags.contains(ResolutionFlags::PLT))
-    {
-        return false;
-    }
-    if resolution_flags.contains(ResolutionFlags::GOT)
-        && (resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
-            || resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET))
-    {
-        return false;
-    }
-    if output_kind.is_static_executable()
-        && (value_flags.contains(ValueFlags::DYNAMIC)
-            || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC))
-    {
-        return false;
-    }
-    if output_kind.is_executable()
-        && value_flags.contains(ValueFlags::ADDRESS)
-        && !value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
-    {
-        return false;
-    }
-    if output_kind == OutputKind::SharedObject
-        && value_flags.contains(ValueFlags::CAN_BYPASS_GOT)
-        && (resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
-            || resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET))
-    {
-        return false;
-    }
-    if value_flags.contains(ValueFlags::ADDRESS) && value_flags.contains(ValueFlags::DYNAMIC) {
-        return false;
-    }
-    if value_flags.contains(ValueFlags::DYNAMIC)
-        && value_flags.contains(ValueFlags::DOWNGRADE_TO_LOCAL)
-    {
-        return false;
-    }
-    if value_flags.contains(ValueFlags::DYNAMIC)
-        && resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
-        && !value_flags.contains(ValueFlags::ABSOLUTE)
-    {
-        return false;
-    }
-    if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION)
-        && (!resolution_flags.contains(ResolutionFlags::DIRECT)
-            || !value_flags.contains(ValueFlags::DYNAMIC)
-            || value_flags.contains(ValueFlags::FUNCTION)
-            || resolution_flags.contains(ResolutionFlags::PLT))
-    {
-        return false;
-    }
-    if value_flags.contains(ValueFlags::ABSOLUTE)
-        && value_flags.contains(ValueFlags::DYNAMIC)
-        && resolution_flags.contains(ResolutionFlags::COPY_RELOCATION)
-    {
-        return false;
-    }
-    if resolution_flags.contains(ResolutionFlags::PLT)
-        && !resolution_flags.contains(ResolutionFlags::GOT)
-    {
-        return false;
-    }
-    true
 }
