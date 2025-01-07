@@ -814,6 +814,11 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
             return self.write_tpoff_relocation::<A>(got_address, res.dynamic_symbol_index()?, 0);
         }
         let address = res.raw_value;
+        if address == 0 {
+            // Resolution is undefined.
+            *got_entry = 0;
+            return Ok(());
+        }
         if !self.tls.contains(&address) {
             bail!(
                 "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
