@@ -4337,18 +4337,7 @@ impl std::fmt::Debug for FileLayoutState<'_> {
 }
 
 fn print_symbol_info<S: StorageModel>(symbol_db: &SymbolDb<S>, name: &str) {
-    if let Some(symbol_id) = symbol_db
-        .global_names
-        .get(&SymbolName::prehashed(name.as_bytes()))
-    {
-        println!(
-            "Global definition:\n   {}",
-            symbol_db.symbol_debug(symbol_id)
-        );
-    } else {
-        println!("No global symbol `{name}` defined by any input files");
-    }
-    println!("Definitions / references for `{name}`:");
+    println!("Definitions / references with name `{name}`:");
     for i in 0..symbol_db.num_symbols() {
         let symbol_id = SymbolId::from_usize(i);
         if symbol_db
@@ -4362,12 +4351,13 @@ fn print_symbol_info<S: StorageModel>(symbol_db: &SymbolDb<S>, name: &str) {
                     let local_index = symbol_id.to_input(o.symbol_id_range);
                     match o.object.symbol(local_index) {
                         Ok(sym) => {
+                            let canonical = symbol_db.definition(symbol_id);
                             println!(
-                                "  {}: symbol_id={symbol_id} Local #{local_index} \
-                                in File #{file_id} {} ({})",
+                                "  {}: symbol_id={symbol_id} -> {canonical} {} \n    \
+                                #{local_index} in File #{file_id} {}",
                                 crate::symbol::SymDebug(sym),
-                                o.input,
                                 symbol_db.local_symbol_value_flags(symbol_id),
+                                o.input,
                             );
                         }
                         Err(e) => {
