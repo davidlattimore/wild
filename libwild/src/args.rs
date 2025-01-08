@@ -154,6 +154,7 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "fatal-warnings",
     "color-diagnostics",
     "undefined-version",
+    "sort-common",
 ];
 
 const IGNORED_FLAGS: &[&str] = &["gdb-index", "disable-new-dtags"];
