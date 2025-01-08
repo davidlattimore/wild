@@ -686,12 +686,13 @@ fn allocate_symbol_resolution(
     mem_sizes: &mut OutputSectionPartMap<u64>,
     output_kind: OutputKind,
 ) {
-    if value_flags.contains(ValueFlags::IFUNC) {
+    let mut r = resolution_flags.get();
+    if !r.is_empty() && value_flags.contains(ValueFlags::IFUNC) {
         resolution_flags.fetch_or(ResolutionFlags::GOT | ResolutionFlags::PLT);
+        r |= ResolutionFlags::GOT | ResolutionFlags::PLT;
     }
-    let resolution_flags = resolution_flags.get();
 
-    allocate_resolution(value_flags, resolution_flags, mem_sizes, output_kind);
+    allocate_resolution(value_flags, r, mem_sizes, output_kind);
 }
 
 /// Computes how much to allocation for a particular resolution. This is intended for debug
@@ -3503,7 +3504,8 @@ impl<'data> ObjectLayoutState<'data> {
                             return Ok(None);
                         }
                         bail!(
-                            "Symbol is in a section that we didn't load. Symbol: {} Section: {}",
+                            "Symbol is in a section that we didn't load. \
+                             Symbol: {} Section: {} Res: {resolution_flags}",
                             resources.symbol_db.symbol_debug(symbol_id),
                             section_debug(self.object, section_index),
                         );

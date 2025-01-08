@@ -6,7 +6,7 @@
 //#DiffIgnore:section.rela.plt.link
 
 //#Config:pie:default
-//#CompArgs:-fpie
+//#CompArgs:-fpie -ffunction-sections
 
 //#Config:no-pie:default
 //#CompArgs:-fno-pie
