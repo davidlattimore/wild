@@ -52,6 +52,8 @@ impl FileKind {
             Ok(FileKind::Text)
         } else if bytes.starts_with(b"BC") {
             bail!("LLVM IR (LTO mode) is not supported yet");
+        } else if bytes.starts_with(b"!<thin>") {
+            bail!("ThinLTO archives are not supported yet");
         } else {
             bail!("Couldn't identify file type");
         }
