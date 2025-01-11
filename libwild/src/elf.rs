@@ -356,7 +356,7 @@ pub(crate) const COMPRESSION_HEADER_SIZE: usize =
     size_of::<object::elf::CompressionHeader64<LittleEndian>>();
 
 pub(crate) const GOT_ENTRY_SIZE: u64 = 0x8;
-// TODO: Right now, both x86_64 and AArch64 have 16 byte long entires, but
+// TODO: Right now, both x86_64 and AArch64 have 16 byte long entries, but
 // the size should be generic over A: Arch.
 pub(crate) const PLT_ENTRY_SIZE: u64 = 0x10;
 pub(crate) const RELA_ENTRY_SIZE: u64 = 0x18;
