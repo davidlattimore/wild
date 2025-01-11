@@ -165,7 +165,7 @@ RUSTFLAGS="-Clinker=clang -Clink-args=--ld-path=wild" cargo test
 
 ## Contributing
 
-For more information on contributing to `wild` see [CONTRIBUTING.md](CONTIBUTING.md)
+For more information on contributing to `wild` see [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Sponsorship
 
