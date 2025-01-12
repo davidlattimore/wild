@@ -78,6 +78,7 @@ fn validate_resolution(
     if value_flags.contains(ValueFlags::IFUNC)
         || res_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
         || res_flags.contains(ResolutionFlags::GOT_TLS_OFFSET)
+        || res_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR)
     {
         return Ok(());
     };
