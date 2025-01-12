@@ -523,7 +523,6 @@ pub(crate) struct EpilogueLayout<'data> {
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     dynsym_start_index: u32,
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
-    pub(crate) _build_id_size: Option<usize>,
 }
 
 pub(crate) struct ObjectLayout<'data> {
@@ -1326,7 +1325,7 @@ impl<'data, S: StorageModel> Layout<'data, '_, S> {
     }
 
     pub(crate) fn tls_start_address(&self) -> u64 {
-        let tdata = &self.section_layouts.get(output_section_id::TDATA);
+        let tdata = self.section_layouts.get(output_section_id::TDATA);
         tdata.mem_offset
     }
 
@@ -3045,7 +3044,6 @@ impl<'data> EpilogueLayoutState<'data> {
             dynamic_symbol_definitions: self.dynamic_symbol_definitions,
             dynsym_start_index,
             gnu_property_notes: self.gnu_property_notes,
-            _build_id_size: self.build_id_size,
         })
     }
 }
