@@ -15,6 +15,7 @@
 //! related to `part_id.rs` and insert later in `SECTION_DEFINITIONS` (probably at the end). Also,
 //! update `NUM_BUILT_IN_REGULAR_SECTIONS`.
 
+use self::elf::TLS_MODULE_BASE_SYMBOL_NAME;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
@@ -478,6 +479,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         name: SectionName(TDATA_SECTION_NAME),
         ty: sht::PROGBITS,
         section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
+        start_symbol_name: Some(TLS_MODULE_BASE_SYMBOL_NAME),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {

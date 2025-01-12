@@ -3,6 +3,7 @@ use self::elf::DynamicRelocationKind;
 use self::elf::NoteHeader;
 use self::elf::NoteProperty;
 use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
+use self::elf::TLS_MODULE_BASE_SYMBOL_NAME;
 use crate::alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
@@ -1248,7 +1249,6 @@ impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
         let e = LittleEndian;
         let string_offset = self.strtab_writer.write_str(name);
         entry.st_name.set(e, string_offset);
-        entry.st_info = 0;
         entry.st_other = 0;
         entry.st_shndx.set(e, shndx);
         entry.st_value.set(e, value);
@@ -2546,7 +2546,12 @@ fn write_internal_symbols<S: StorageModel>(
         let entry = symbol_writer
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
-        entry.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
+
+        let mut st_info = object::elf::STT_NOTYPE;
+        if symbol_name.bytes() == TLS_MODULE_BASE_SYMBOL_NAME.as_bytes() {
+            st_info |= object::elf::STT_TLS;
+        }
+        entry.set_st_info(object::elf::STB_GLOBAL, st_info);
     }
     Ok(())
 }
