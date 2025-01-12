@@ -549,6 +549,7 @@ pub(crate) enum DynamicRelocationKind {
     Irelative,
     DtpMod,
     DtpOff,
+    TlsDesc,
     TpOff,
     Relative,
     DynamicSymbol,
