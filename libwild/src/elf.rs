@@ -26,6 +26,8 @@ use std::sync::atomic::Ordering;
 /// up file and memory offsets.
 pub const NON_PIE_START_MEM_ADDRESS: u64 = 0x400_000;
 
+pub(crate) const TLS_MODULE_BASE_SYMBOL_NAME: &str = "_TLS_MODULE_BASE_";
+
 pub(crate) type FileHeader = object::elf::FileHeader64<LittleEndian>;
 pub(crate) type ProgramHeader = object::elf::ProgramHeader64<LittleEndian>;
 pub(crate) type SectionHeader = object::elf::SectionHeader64<LittleEndian>;
