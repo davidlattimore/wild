@@ -886,7 +886,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
             "Tried to write TLS descriptor with no allocation. {}",
             ResFlagsDisplay(res)
         );
-        let addend = if self.output_kind.is_executable() {
+        let addend = if res.dynamic_symbol_index.is_none() {
             res.raw_value.sub(self.tls.start) as i64
         } else {
             0
@@ -2547,11 +2547,12 @@ fn write_internal_symbols<S: StorageModel>(
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
 
-        let mut st_info = object::elf::STT_NOTYPE;
-        if symbol_name.bytes() == TLS_MODULE_BASE_SYMBOL_NAME.as_bytes() {
-            st_info |= object::elf::STT_TLS;
-        }
-        entry.set_st_info(object::elf::STB_GLOBAL, st_info);
+        let st_type = if symbol_name.bytes() == TLS_MODULE_BASE_SYMBOL_NAME.as_bytes() {
+            object::elf::STT_TLS
+        } else {
+            object::elf::STT_NOTYPE
+        };
+        entry.set_st_info(object::elf::STB_GLOBAL, st_type);
     }
     Ok(())
 }
