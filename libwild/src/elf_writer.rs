@@ -77,7 +77,6 @@ use linker_utils::relaxation::RelocationModifier;
 use memmap2::MmapOptions;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
-use object::elf::STT_TLS;
 use object::from_bytes_mut;
 use object::read::elf::Rela;
 use object::read::elf::Sym as _;
@@ -887,7 +886,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
             "Tried to write TLS descriptor with no allocation. {}",
             ResFlagsDisplay(res)
         );
-        let addend = if self.output_kind.is_executable() {
+        let addend = if res.dynamic_symbol_index.is_none() {
             res.raw_value.sub(self.tls.start) as i64
         } else {
             0
@@ -2556,10 +2555,13 @@ fn write_internal_symbols<S: StorageModel>(
         let entry = symbol_writer
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
-        entry.st_info = object::elf::STB_GLOBAL << 4;
-        if symbol_name.bytes() == TLS_MODULE_BASE_SYMBOL_NAME.as_bytes() {
-            entry.st_info |= STT_TLS;
-        }
+
+        let st_type = if symbol_name.bytes() == TLS_MODULE_BASE_SYMBOL_NAME.as_bytes() {
+            object::elf::STT_TLS
+        } else {
+            object::elf::STT_NOTYPE
+        };
+        entry.set_st_info(object::elf::STB_GLOBAL, st_type);
     }
     Ok(())
 }
