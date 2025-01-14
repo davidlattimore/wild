@@ -3,6 +3,7 @@ use self::elf::DynamicRelocationKind;
 use self::elf::NoteHeader;
 use self::elf::NoteProperty;
 use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
+use self::elf::TLS_MODULE_BASE_SYMBOL_NAME;
 use crate::alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
@@ -773,6 +774,9 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
             return Ok(());
         }
+        if resolution_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
+            return self.process_got_tls_descriptor::<A>(res, got_address);
+        }
 
         let got_entry = self.take_next_got_entry()?;
 
@@ -869,6 +873,31 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         Ok(())
     }
 
+    fn process_got_tls_descriptor<A: Arch>(
+        &mut self,
+        res: &Resolution,
+        got_address: u64,
+    ) -> Result {
+        self.take_next_got_entry()?;
+
+        let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
+        debug_assert_bail!(
+            *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
+            "Tried to write TLS descriptor with no allocation. {}",
+            ResFlagsDisplay(res)
+        );
+        let addend = if res.dynamic_symbol_index.is_none() {
+            res.raw_value.sub(self.tls.start) as i64
+        } else {
+            0
+        };
+        self.write_tls_descriptor_relocation::<A>(got_address, dynamic_symbol_index, addend)?;
+
+        // TLS descriptor occupies 2 entries
+        self.take_next_got_entry()?;
+        Ok(())
+    }
+
     fn write_plt_entry<A: Arch>(&mut self, got_address: u64, plt_address: u64) -> Result {
         let plt_entry = self.take_plt_got_entry()?;
         A::write_plt_entry(plt_entry, got_address, plt_address)
@@ -953,6 +982,20 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
             dynamic_symbol_index,
             A::get_dynamic_relocation_type(DynamicRelocationKind::DtpMod),
             0,
+        )
+    }
+
+    fn write_tls_descriptor_relocation<A: Arch>(
+        &mut self,
+        place: u64,
+        dynamic_symbol_index: u32,
+        addend: i64,
+    ) -> Result {
+        self.write_rela_dyn_general(
+            place,
+            dynamic_symbol_index,
+            A::get_dynamic_relocation_type(DynamicRelocationKind::TlsDesc),
+            addend,
         )
     }
 
@@ -1206,7 +1249,6 @@ impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
         let e = LittleEndian;
         let string_offset = self.strtab_writer.write_str(name);
         entry.st_name.set(e, string_offset);
-        entry.st_info = 0;
         entry.st_other = 0;
         entry.st_shndx.set(e, shndx);
         entry.st_value.set(e, value);
@@ -1906,6 +1948,11 @@ fn apply_relocation<S: StorageModel, A: Arch>(
             .value()
             .wrapping_sub(layout.tls_start_address_aarch64())
             .wrapping_add(addend),
+        RelocationKind::TlsDesc => resolution
+            .tls_descriptor_got_address()?
+            .bitand(mask.got_entry)
+            .wrapping_add(addend)
+            .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::None => 0,
     };
     rel_info
@@ -2499,7 +2546,13 @@ fn write_internal_symbols<S: StorageModel>(
         let entry = symbol_writer
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
-        entry.st_info = object::elf::STB_GLOBAL << 4;
+
+        let st_type = if symbol_name.bytes() == TLS_MODULE_BASE_SYMBOL_NAME.as_bytes() {
+            object::elf::STT_TLS
+        } else {
+            object::elf::STT_NOTYPE
+        };
+        entry.set_st_info(object::elf::STB_GLOBAL, st_type);
     }
     Ok(())
 }
