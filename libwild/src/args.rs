@@ -161,9 +161,10 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "color-diagnostics",
     "undefined-version",
     "sort-common",
+    "no-relax",
 ];
 
-const IGNORED_FLAGS: &[&str] = &["gdb-index", "no-relax", "disable-new-dtags"];
+const IGNORED_FLAGS: &[&str] = &["gdb-index", "disable-new-dtags"];
 
 // These flags map to the default behavior of the linker.
 const DEFAULT_FLAGS: &[&str] = &[
