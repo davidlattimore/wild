@@ -2542,21 +2542,16 @@ fn write_internal_symbols<S: StorageModel>(
             shndx = 1;
         }
 
-        let mut address = resolution.address()?;
-        let st_type = if symbol_name.bytes() == TLS_MODULE_BASE_SYMBOL_NAME.as_bytes() {
-            // TODO: handle properly the symbol address
-            if layout.args().output_kind != OutputKind::SharedObject {
-                address = layout.tls_end_address();
-            }
-            object::elf::STT_TLS
-        } else {
-            object::elf::STT_NOTYPE
-        };
-
+        let address = resolution.address()?;
         let entry = symbol_writer
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
 
+        let st_type = if symbol_name.bytes() == TLS_MODULE_BASE_SYMBOL_NAME.as_bytes() {
+            object::elf::STT_TLS
+        } else {
+            object::elf::STT_NOTYPE
+        };
         entry.set_st_info(object::elf::STB_GLOBAL, st_type);
     }
     Ok(())
