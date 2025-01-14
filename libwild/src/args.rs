@@ -58,7 +58,6 @@ pub(crate) struct Args {
 
     pub(crate) print_allocations: Option<FileId>,
     pub(crate) execstack: bool,
-    pub(crate) relax: bool,
     pub(crate) verify_allocation_consistency: bool,
 }
 
@@ -164,11 +163,12 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "sort-common",
 ];
 
-const IGNORED_FLAGS: &[&str] = &["gdb-index", "disable-new-dtags"];
+const IGNORED_FLAGS: &[&str] = &["gdb-index", "no-relax", "disable-new-dtags"];
 
 // These flags map to the default behavior of the linker.
 const DEFAULT_FLAGS: &[&str] = &[
     "no-call-graph-profile-sort",
+    "relax",
     "no-copy-dt-needed-entries",
     "no-add-needed",
     "discard-locals",
@@ -240,8 +240,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         write_trace = true;
     }
     let mut arg_num = 0;
-    let mut relax = true;
-
     while let Some(arg) = input.next() {
         arg_num += 1;
         let arg = arg.as_ref();
@@ -458,10 +456,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             // Using debug fuel with more than one thread would likely give non-deterministic
             // results.
             num_threads = Some(NonZeroUsize::new(1).unwrap());
-        } else if long_arg_eq("no-relax") {
-            relax = false;
-        } else if long_arg_eq("relax") {
-            relax = true;
         } else if let Some(path) = arg.strip_prefix('@') {
             if input.next().is_some() || arg_num > 1 {
                 bail!("Mixing of @{{filename}} and regular arguments isn't supported");
@@ -545,7 +539,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         should_fork,
         build_id,
         file_write_mode,
-        relax,
     }))
 }
 
@@ -878,8 +871,6 @@ mod tests {
         "--discard-locals",
         "-X",
         "-EL",
-        "--no-relax",
-        "-relax",
     ];
 
     #[track_caller]
@@ -915,7 +906,6 @@ mod tests {
         );
         assert_eq!(args.soname, Some("bar".to_owned()));
         assert_eq!(args.num_threads, NonZeroUsize::new(1).unwrap());
-        assert!(args.relax);
     }
 
     #[test]

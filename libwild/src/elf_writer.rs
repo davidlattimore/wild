@@ -1473,7 +1473,6 @@ impl<'data> ObjectLayout<'data> {
                 layout,
                 out,
                 table_writer,
-                layout.args().relax,
             )
             .with_context(|| {
                 format!(
@@ -1651,7 +1650,6 @@ impl<'data> ObjectLayout<'data> {
                         layout,
                         entry_out,
                         table_writer,
-                        layout.args().relax,
                     )
                     .with_context(|| {
                         format!(
@@ -1749,7 +1747,6 @@ fn apply_relocation<S: StorageModel, A: Arch>(
     layout: &Layout<S>,
     out: &mut [u8],
     table_writer: &mut TableWriter,
-    relax: bool,
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
     let place = section_address + offset_in_section;
@@ -1776,20 +1773,14 @@ fn apply_relocation<S: StorageModel, A: Arch>(
     let r_type = rel.r_type(e, false);
     let rel_info;
     let output_kind = layout.args().output_kind;
-    if let Some(relaxation) = {
-        if relax {
-            Relaxation::new(
-                r_type,
-                out,
-                offset_in_section,
-                value_flags,
-                output_kind,
-                section_info.section_flags,
-            )
-        } else {
-            None
-        }
-    } {
+    if let Some(relaxation) = Relaxation::new(
+        r_type,
+        out,
+        offset_in_section,
+        value_flags,
+        output_kind,
+        section_info.section_flags,
+    ) {
         tracing::trace!(kind = ?relaxation.debug_kind(), %value_flags, %resolution_flags);
         rel_info = relaxation.rel_info();
         relaxation.apply(out, &mut offset_in_section, &mut addend, &mut next_modifier);
