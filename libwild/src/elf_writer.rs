@@ -2508,7 +2508,7 @@ fn write_internal_symbols<S: StorageModel>(
         let entry = symbol_writer
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
-        entry.st_info = object::elf::STB_GLOBAL << 4;
+        entry.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
     }
     Ok(())
 }
