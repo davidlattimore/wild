@@ -499,13 +499,13 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFl
     let is_undefined = sym.is_undefined(LittleEndian);
     let mut can_bypass_got = sym.st_visibility() != object::elf::STV_DEFAULT
         || sym.is_local()
-        || args.output_kind.is_static_executable()
+        || args.output_kind().is_static_executable()
         // Symbols defined in an executable cannot be interposed since the executable is always the
         // first place checked for a symbol by the dynamic loader.
-        || (args.output_kind.is_executable() && !is_undefined);
+        || (args.output_kind().is_executable() && !is_undefined);
     // When writing a shared object, TLS variables should never bypass the GOT, even if they're
     // local variables.
-    if args.output_kind == OutputKind::SharedObject && sym.st_type() == object::elf::STT_TLS {
+    if args.output_kind() == OutputKind::SharedObject && sym.st_type() == object::elf::STT_TLS {
         can_bypass_got = false;
     }
     let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {

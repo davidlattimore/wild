@@ -552,7 +552,7 @@ fn populate_file_header<S: StorageModel, A: Arch>(
     header: &mut FileHeader,
 ) -> Result {
     let args = layout.args();
-    let ty = if args.output_kind.is_relocatable() {
+    let ty = if args.output_kind().is_relocatable() {
         object::elf::ET_DYN
     } else {
         object::elf::ET_EXEC
@@ -702,7 +702,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
             SymbolTableWriter::new(strtab_start_offset, buffers, &layout.output_sections);
 
         Self::new(
-            layout.args().output_kind,
+            layout.args().output_kind(),
             layout.tls_start_address()..layout.tls_end_address(),
             buffers,
             dynsym_writer,
@@ -1818,7 +1818,7 @@ fn apply_relocation<S: StorageModel, A: Arch>(
     let mut next_modifier = RelocationModifier::Normal;
     let r_type = rel.r_type(e, false);
     let rel_info;
-    let output_kind = layout.args().output_kind;
+    let output_kind = layout.args().output_kind();
     if let Some(relaxation) = Relaxation::new(
         r_type,
         out,
@@ -2165,7 +2165,7 @@ impl PreludeLayout {
     ) -> Result {
         // Write a pair of GOT entries for use by any TLSLD or TLSGD relocations.
         if let Some(got_address) = self.tlsld_got_entry {
-            if layout.args().output_kind.is_executable() {
+            if layout.args().output_kind().is_executable() {
                 table_writer.process_resolution::<A>(&Resolution {
                     raw_value: crate::elf::CURRENT_EXE_TLS_MOD,
                     dynamic_symbol_index: None,
@@ -2687,7 +2687,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |inputs| {
             // Not sure why, but GNU ld seems to emit this for executables but not for shared
             // objects.
-            inputs.args.output_kind != OutputKind::SharedObject
+            inputs.args.output_kind() != OutputKind::SharedObject
         },
         |_inputs| 0,
     ),
@@ -2761,7 +2761,7 @@ impl DynamicEntryInputs<'_> {
     fn dt_flags(&self) -> u64 {
         let mut flags = 0;
         flags |= object::elf::DF_BIND_NOW;
-        if !self.args.output_kind.is_executable() && self.has_static_tls {
+        if !self.args.output_kind().is_executable() && self.has_static_tls {
             flags |= object::elf::DF_STATIC_TLS;
         }
         u64::from(flags)
@@ -2770,7 +2770,7 @@ impl DynamicEntryInputs<'_> {
     fn dt_flags_1(&self) -> u64 {
         let mut flags = 0;
         flags |= object::elf::DF_1_NOW;
-        if self.args.output_kind.is_executable() && self.args.is_relocatable() {
+        if self.args.output_kind().is_executable() && self.args.is_relocatable() {
             flags |= object::elf::DF_1_PIE;
         }
         u64::from(flags)

@@ -622,7 +622,7 @@ trait SymbolRequestHandler<'data, S: StorageModel>: std::fmt::Display + HandlerD
                 verify_consistent_allocation_handling(
                     value_flags,
                     resolution_flags.get(),
-                    symbol_db.args.output_kind,
+                    symbol_db.args.output_kind(),
                 )?;
             }
 
@@ -630,7 +630,7 @@ trait SymbolRequestHandler<'data, S: StorageModel>: std::fmt::Display + HandlerD
                 value_flags,
                 resolution_flags,
                 &mut common.mem_sizes,
-                symbol_db.args.output_kind,
+                symbol_db.args.output_kind(),
             );
         }
         if symbol_db.args.should_output_symbol_versions() {
@@ -847,7 +847,7 @@ impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for DynamicLayoutSta
         symbol_db: &SymbolDb<'data, S>,
         symbol_id: SymbolId,
     ) -> Result {
-        if symbol_db.args.output_kind == OutputKind::SharedObject {
+        if symbol_db.args.output_kind() == OutputKind::SharedObject {
             bail!("Cannot directly access dynamic symbol when building a shared object",);
         }
         let symbol = self
@@ -1311,7 +1311,7 @@ impl<'data, S: StorageModel> Layout<'data, '_, S> {
     }
 
     pub(crate) fn entry_symbol_address(&self) -> Result<u64> {
-        if self.args().output_kind == OutputKind::SharedObject {
+        if self.args().output_kind() == OutputKind::SharedObject {
             // Shared objects don't have an entry point.
             return Ok(0);
         }
@@ -2412,7 +2412,7 @@ fn process_relocation<S: StorageModel, A: Arch>(
             object.object.raw_section_data(section)?,
             rel_offset,
             symbol_value_flags,
-            args.output_kind,
+            args.output_kind(),
             SectionFlags::from_header(section),
         ) {
             relaxation.rel_info()
@@ -2545,7 +2545,7 @@ impl PreludeLayoutState {
             common.allocate(part_id::STRTAB, 1);
         }
 
-        if resources.symbol_db.args.output_kind.is_executable() {
+        if resources.symbol_db.args.output_kind().is_executable() {
             self.load_entry_point(resources, queue)?;
         }
         if resources.symbol_db.args.tls_mode() == TlsMode::Preserve {
@@ -2554,7 +2554,7 @@ impl PreludeLayoutState {
             self.needs_tlsld_got_entry = true;
             // For shared objects, we'll need to use a DTPMOD relocation to fill in the TLS module
             // number.
-            if !resources.symbol_db.args.output_kind.is_executable() {
+            if !resources.symbol_db.args.output_kind().is_executable() {
                 common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
             }
         }
@@ -3155,7 +3155,7 @@ impl<'data> ObjectLayoutState<'data> {
             process_gnu_property_note(self, note_gnu_property_index)?;
         }
 
-        if resources.symbol_db.args.output_kind == OutputKind::SharedObject {
+        if resources.symbol_db.args.output_kind() == OutputKind::SharedObject {
             self.load_non_hidden_symbols::<S, A>(common, resources, queue)?;
         }
         self.load_sections::<S, A>(common, resources, queue)
@@ -3309,7 +3309,7 @@ impl<'data> ObjectLayoutState<'data> {
         if !symbol_db.args.strip_all {
             self.allocate_symtab_space(common, symbol_db, symbol_resolution_flags);
         }
-        let output_kind = symbol_db.args.output_kind;
+        let output_kind = symbol_db.args.output_kind();
         for slot in &mut self.sections {
             if let SectionSlot::Loaded(section) = slot {
                 allocate_resolution(
