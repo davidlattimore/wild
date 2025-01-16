@@ -23,6 +23,7 @@
 //#LinkArgs:--cc=clang -static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
+//#EnableLinker:lld
 
 //#Config:gcc-static:default
 //#LinkArgs:--cc=gcc -static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
@@ -30,10 +31,11 @@
 //#Object:libc-integration-1.c
 
 //#Config:gcc-static-pie:default
-//#CompArgs:-fPIE -DVERIFY_CTORS
+//#CompArgs:-fPIE
 //#LinkArgs:--cc=gcc -static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
+//#EnableLinker:lld
 
 //#Config:clang-initial-exec:default
 //#CompArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP

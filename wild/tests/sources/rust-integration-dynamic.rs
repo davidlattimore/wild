@@ -1,4 +1,3 @@
-//#DiffIgnore:asm.__udivti3
 //#DiffIgnore:.dynamic.*
 // It looks like GNU ld sets .tdata's alignment to match .tbss's alignment
 //#DiffIgnore:section.tdata.alignment

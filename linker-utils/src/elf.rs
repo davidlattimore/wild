@@ -595,7 +595,7 @@ pub enum RelocationKind {
     None,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DynamicRelocationKind {
     Copy,
     Irelative,
@@ -605,6 +605,7 @@ pub enum DynamicRelocationKind {
     TpOff,
     Relative,
     DynamicSymbol,
+    JumpSlot,
 }
 
 impl DynamicRelocationKind {
@@ -619,6 +620,7 @@ impl DynamicRelocationKind {
             object::elf::R_X86_64_RELATIVE => DynamicRelocationKind::Relative,
             object::elf::R_X86_64_GLOB_DAT => DynamicRelocationKind::DynamicSymbol,
             object::elf::R_X86_64_TLSDESC => DynamicRelocationKind::TlsDesc,
+            object::elf::R_X86_64_JUMP_SLOT => DynamicRelocationKind::JumpSlot,
             _ => return None,
         };
 
@@ -636,6 +638,7 @@ impl DynamicRelocationKind {
             DynamicRelocationKind::Relative => object::elf::R_X86_64_RELATIVE,
             DynamicRelocationKind::DynamicSymbol => object::elf::R_X86_64_GLOB_DAT,
             DynamicRelocationKind::TlsDesc => object::elf::R_X86_64_TLSDESC,
+            DynamicRelocationKind::JumpSlot => object::elf::R_X86_64_JUMP_SLOT,
         }
     }
 }

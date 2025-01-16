@@ -1,7 +1,7 @@
 use crate::header_diff::DiffMode;
+use crate::Binary;
 use crate::Diff;
 use crate::DiffValues;
-use crate::Object;
 use crate::Report;
 use anyhow::Result;
 use fallible_iterator::FallibleIterator;
@@ -78,7 +78,7 @@ fn parse_unit_info(
     ))
 }
 
-fn read_file_debug_info(obj: &Object) -> Result<DebugInfo> {
+fn read_file_debug_info(obj: &Binary) -> Result<DebugInfo> {
     let load_section = |id: gimli::SectionId| -> Result<Cow<[u8]>> {
         Ok(match obj.section_by_name(id.name()) {
             Some(section) => section.uncompressed_data()?,
@@ -99,8 +99,8 @@ fn read_file_debug_info(obj: &Object) -> Result<DebugInfo> {
 }
 
 fn diff_debug_info(
-    objects: &[Object<'_>],
-    get_fields_fn: impl Fn(&Object<'_>) -> Result<DebugInfo>,
+    objects: &[Binary<'_>],
+    get_fields_fn: impl Fn(&Binary<'_>) -> Result<DebugInfo>,
     diff_mode: DiffMode,
 ) -> Vec<Diff> {
     let debug_infos = objects.iter().map(get_fields_fn).collect_vec();
@@ -162,7 +162,7 @@ fn diff_debug_info(
     mismatches
 }
 
-pub(crate) fn check_debug_info(report: &mut Report, objects: &[crate::Object]) {
+pub(crate) fn check_debug_info(report: &mut Report, objects: &[crate::Binary]) {
     report.add_diffs(diff_debug_info(
         objects,
         read_file_debug_info,

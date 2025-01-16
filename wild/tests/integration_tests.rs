@@ -1309,6 +1309,7 @@ fn diff_files(instructions: &Config, files: Vec<PathBuf>, display: &dyn Display)
     }
 
     let mut config = linker_diff::Config::default();
+    config.colour = linker_diff::Colour::Always;
     config.wild_defaults = true;
     config
         .ignore
