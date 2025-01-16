@@ -832,6 +832,7 @@ impl crate::arch::Arch for AArch64 {
             DynamicRelocationKind::Relative => object::elf::R_AARCH64_RELATIVE,
             DynamicRelocationKind::DynamicSymbol => object::elf::R_AARCH64_GLOB_DAT,
             DynamicRelocationKind::TlsDesc => object::elf::R_AARCH64_TLSDESC,
+            DynamicRelocationKind::JumpSlot => object::elf::R_AARCH64_JUMP_SLOT,
         }
     }
 
@@ -853,7 +854,7 @@ impl crate::arch::Arch for AArch64 {
         let offset = got_address.wrapping_sub(plt_page_address);
         anyhow::ensure!(offset < (1 << 32), "PLT is more than 4GiB away from GOT");
         RelocationInstruction::Adr.write_to_value(
-            // The immediation value represents a distance in pages.
+            // The immediate value represents a distance in pages.
             offset / DEFAULT_AARCH64_PAGE_SIZE,
             false,
             &mut plt_entry[0..4],

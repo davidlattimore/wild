@@ -1,4 +1,4 @@
-use crate::Object;
+use crate::Binary;
 use crate::Result;
 use anyhow::bail;
 use linker_utils::elf::sht;
@@ -9,15 +9,15 @@ use object::Object as _;
 use object::ObjectSymbol;
 use std::ops::Not;
 
-pub(crate) fn validate_debug(object: &Object) -> Result {
+pub(crate) fn validate_debug(object: &Binary) -> Result {
     validate(object, false)
 }
 
-pub(crate) fn validate_dynamic(object: &Object) -> Result {
+pub(crate) fn validate_dynamic(object: &Binary) -> Result {
     validate(object, true)
 }
 
-fn validate(object: &Object, dynamic: bool) -> Result {
+fn validate(object: &Binary, dynamic: bool) -> Result {
     let mut symtab_info = 0;
     let (symtab_section_type, mut symbols) = if dynamic {
         (sht::DYNSYM, object.elf_file.dynamic_symbols())

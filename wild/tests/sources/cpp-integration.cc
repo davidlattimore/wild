@@ -9,14 +9,17 @@
 //#Config:pie:default
 //#CompArgs:-fpie -fmerge-constants
 //#LinkArgs:--cc=g++ -pie -Wl,-z,now
+//#EnableLinker:lld
 
 //#Config:no-pie:default
 //#CompArgs:-fno-pie -fmerge-constants
 //#LinkArgs:--cc=g++ -no-pie -Wl,-z,now
+//#EnableLinker:lld
 
 //#Config:model-large:default
 //#CompArgs:-mcmodel=large
 //#LinkArgs:--cc=g++ -Wl,-z,now
+//#EnableLinker:lld
 
 #include <iostream>
 #include <string>

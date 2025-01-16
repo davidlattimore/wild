@@ -1,7 +1,7 @@
 use crate::elf::RelocationKind;
 use crate::relaxation::RelocationModifier;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelaxationKind {
     /// Transforms a mov instruction that would have loaded an address to not use the GOT. The
     /// transformation will look like `mov *x(%rip), reg` -> `lea x(%rip), reg`.
@@ -45,6 +45,9 @@ pub enum RelaxationKind {
 
     // Transform TLSDESC to local exec for a statically linked executables.
     TlsDescToLocalExec,
+
+    /// Convert a TLSDESC_CALL to a no-op.
+    SkipTlsDescCall,
 }
 
 impl RelaxationKind {
@@ -138,6 +141,12 @@ impl RelaxationKind {
                 section_bytes[offset - 3..offset + 6].copy_from_slice(&[
                     // mov {offset},%rax
                     0x48, 0xc7, 0xc0, 0, 0, 0, 0, // xchg   %ax,%ax
+                    0x66, 0x90,
+                ]);
+            }
+            RelaxationKind::SkipTlsDescCall => {
+                section_bytes[offset..offset + 2].copy_from_slice(&[
+                    // xchg %ax,%ax
                     0x66, 0x90,
                 ]);
             }

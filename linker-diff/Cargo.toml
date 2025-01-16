@@ -30,6 +30,9 @@ bytemuck = { version = "1.21.0", features = ["derive"] }
 itertools = "0.14.0"
 gimli = "0.31.1"
 fallible-iterator = "0.3.0"
+colored = "3.0.0"
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
 
 [lints]
 workspace = true

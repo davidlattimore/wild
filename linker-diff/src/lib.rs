@@ -17,37 +17,39 @@ use anyhow::bail;
 use anyhow::Context as _;
 use asm_diff::AddressIndex;
 use clap::Parser;
-use itertools::Itertools;
+use clap::ValueEnum;
+use itertools::Itertools as _;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use object::read::elf::ElfSection64;
-use object::read::elf::ProgramHeader as _;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection;
 use object::ObjectSymbol as _;
-use object::RelocationFlags;
 use section_map::IndexedLayout;
 use section_map::LayoutAndFiles;
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::ops::Range;
 use std::path::Path;
 use std::path::PathBuf;
 
+mod arch;
 mod asm_diff;
 mod debug_info_diff;
+mod diagnostics;
 mod eh_frame_diff;
 mod gnu_hash;
 mod header_diff;
 pub(crate) mod section_map;
 mod symtab;
 mod trace;
+mod x86_64;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
 type ElfSymbol64<'data, 'file> = object::read::elf::ElfSymbol64<'data, 'file, LittleEndian>;
-type Rela64 = object::elf::Rela64<LittleEndian>;
+
+pub use diagnostics::enable_diagnostics;
 
 #[non_exhaustive]
 #[derive(Parser, Default, Clone)]
@@ -77,11 +79,23 @@ pub struct Config {
     #[arg(long = "ref", value_name = "FILE")]
     pub references: Vec<PathBuf>,
 
+    #[arg(long, alias = "color", default_value = "auto")]
+    pub colour: Colour,
+
     /// Primary file that we're validating against the reference file(s)
     pub file: PathBuf,
 }
 
-pub struct Object<'data> {
+#[derive(ValueEnum, Copy, Clone, Default)]
+pub enum Colour {
+    #[default]
+    Auto,
+    Never,
+    Always,
+}
+
+/// An output binary such as an executable or shared object.
+pub struct Binary<'data> {
     name: String,
     path: PathBuf,
     elf_file: &'data ElfFile64<'data>,
@@ -156,6 +170,11 @@ impl Config {
                 "section.eh_frame.flags",
                 // A package note section used by Ubuntu: https://systemd.io/ELF_PACKAGE_METADATA/
                 "section.note.package",
+                // TLSDESC relaxations aren't yet implemented.
+                "rel.match_failed.R_X86_64_GOTPC32_TLSDESC",
+                "rel.R_X86_64_TLSDESC_CALL.R_X86_64_NONE",
+                // We don't yet support emitting warnings.
+                "section.gnu.warning",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
@@ -231,7 +250,7 @@ impl Config {
     }
 }
 
-impl<'data> Object<'data> {
+impl<'data> Binary<'data> {
     pub(crate) fn new(
         elf_file: &'data ElfFile64<'data>,
         name: String,
@@ -241,6 +260,7 @@ impl<'data> Object<'data> {
         let address_index = AddressIndex::new(elf_file);
         let indexed_layout = layout_and_files.map(IndexedLayout::new).transpose()?;
         let trace = trace::Trace::for_path(&path)?;
+
         let sections_by_name = elf_file
             .sections()
             .map(|section| {
@@ -253,6 +273,7 @@ impl<'data> Object<'data> {
                 ))
             })
             .collect::<Result<HashMap<&[u8], SectionInfo>>>()?;
+
         Ok(Self {
             name,
             elf_file,
@@ -266,7 +287,7 @@ impl<'data> Object<'data> {
     }
 
     /// Looks up a symbol, first trying to get a global, or failing that a local.
-    fn symbol_by_name(&self, name: &[u8]) -> NameLookupResult {
+    pub(crate) fn symbol_by_name(&self, name: &[u8]) -> NameLookupResult {
         match self.global_by_name(name) {
             NameLookupResult::Undefined => self.local_by_name(name),
             other => other,
@@ -288,7 +309,7 @@ impl<'data> Object<'data> {
     ) -> NameLookupResult {
         let indexes = symbol_map.get(name).map(Vec::as_slice).unwrap_or_default();
         if indexes.len() >= 2 {
-            return NameLookupResult::Duplicate(indexes.len());
+            return NameLookupResult::Duplicate;
         }
         if let Some(sym) = indexes
             .first()
@@ -304,14 +325,6 @@ impl<'data> Object<'data> {
         !self.name_index.globals_by_name.is_empty()
     }
 
-    fn resolve_input(&self, address: u64) -> Option<section_map::InputResolution> {
-        self.indexed_layout.as_ref()?.resolve_address(address)
-    }
-
-    fn input_file_in_range(&self, addresses: Range<u64>) -> Option<&section_map::InputFile> {
-        self.indexed_layout.as_ref()?.file_in_range(addresses)
-    }
-
     fn section_by_name(&self, name: &str) -> Option<ElfSection64<LittleEndian>> {
         self.section_by_name_bytes(name.as_bytes())
     }
@@ -320,19 +333,29 @@ impl<'data> Object<'data> {
         let index = self.sections_by_name.get(name)?.index;
         self.elf_file.section_by_index(index).ok()
     }
+
+    /// Returns the name of the section that contains the supplied address. Does a linear scan, so
+    /// should only be used for error reporting.
+    fn section_containing_address(&self, address: u64) -> Option<&str> {
+        self.elf_file
+            .sections()
+            .find(|sec| (sec.address()..sec.address() + sec.size()).contains(&address))
+            .and_then(|sec| sec.name().ok())
+    }
 }
 
+#[derive(Debug)]
 enum NameLookupResult<'data, 'file> {
     Undefined,
-    Duplicate(usize),
+    Duplicate,
     Defined(ElfSymbol64<'data, 'file>),
 }
 
 fn validate_objects(
     report: &mut Report,
-    objects: &[Object],
+    objects: &[Binary],
     validation_name: &str,
-    validation_fn: impl Fn(&Object) -> Result,
+    validation_fn: impl Fn(&Binary) -> Result,
 ) {
     let values = objects
         .iter()
@@ -359,6 +382,16 @@ pub struct Report {
 
 impl Report {
     pub fn from_config(mut config: Config) -> Result<Report> {
+        // This changes mutable global state, which isn't an ideal thing to be doing from a library.
+        // It's expedient though, and we don't really expect linker-diff to get used as a library
+        // anywhere except the linker-diff binary and wild's integration tests, so this probably
+        // isn't a big deal.
+        match config.colour {
+            Colour::Auto => colored::control::unset_override(),
+            Colour::Never => colored::control::set_override(false),
+            Colour::Always => colored::control::set_override(true),
+        }
+
         if config.wild_defaults {
             config.apply_wild_defaults();
         }
@@ -367,11 +400,8 @@ impl Report {
         let file_bytes = config
             .filenames()
             .map(|filename| -> Result<Vec<u8>> {
-                let mut bytes = std::fs::read(filename)
+                let bytes = std::fs::read(filename)
                     .with_context(|| format!("Failed to read `{}`", filename.display()))?;
-                apply_relocations(&mut bytes).with_context(|| {
-                    format!("Failed to apply relocations to `{}`", filename.display())
-                })?;
                 Ok(bytes)
             })
             .collect::<Result<Vec<Vec<u8>>>>()?;
@@ -391,8 +421,8 @@ impl Report {
             .zip(display_names)
             .zip(config.filenames())
             .zip(&layouts)
-            .map(|(((elf_file, name), path), layout)| -> Result<Object> {
-                Object::new(elf_file, name, path.clone(), layout.as_ref())
+            .map(|(((elf_file, name), path), layout)| -> Result<Binary> {
+                Binary::new(elf_file, name, path.clone(), layout.as_ref())
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -406,7 +436,7 @@ impl Report {
         Ok(report)
     }
 
-    fn run_on_objects(&mut self, objects: &[Object]) {
+    fn run_on_objects(&mut self, objects: &[Binary]) {
         validate_objects(
             self,
             objects,
@@ -434,7 +464,7 @@ impl Report {
         );
         header_diff::check_dynamic_headers(self, objects);
         header_diff::check_file_headers(self, objects);
-        asm_diff::report_function_diffs(self, objects);
+        asm_diff::report_section_diffs(self, objects);
         header_diff::report_section_diffs(self, objects);
         eh_frame_diff::report_diffs(self, objects);
         debug_info_diff::check_debug_info(self, objects);
@@ -476,102 +506,12 @@ impl Report {
             }
         })
     }
-}
 
-#[derive(Clone, Copy, Debug)]
-struct RelativeRelocation {
-    file_offset: usize,
-    value: u64,
-}
-
-fn apply_relocations(file_bytes: &mut [u8]) -> Result {
-    let relocations = file_relative_relocations(file_bytes)?;
-    for rel in relocations {
-        if rel.file_offset + 8 >= file_bytes.len() {
-            bail!(
-                "Relocation at offset 0x{:x} outside of file bounds ..0x{:x}",
-                rel.file_offset,
-                file_bytes.len()
-            );
-        }
-        file_bytes[rel.file_offset..rel.file_offset + 8].copy_from_slice(&rel.value.to_le_bytes());
-    }
-    Ok(())
-}
-
-fn file_relative_relocations(file_bytes: &[u8]) -> Result<Vec<RelativeRelocation>> {
-    let file = ElfFile64::parse(file_bytes)?;
-    let load_segments = LoadSegments::new(&file);
-    let Some(relocations) = file.dynamic_relocations() else {
-        return Ok(Vec::new());
-    };
-    Ok(relocations
-        .filter_map(|(offset, rel)| {
-            let RelocationFlags::Elf { r_type } = rel.flags() else {
-                unreachable!()
-            };
-            if r_type != object::elf::R_X86_64_RELATIVE {
-                return None;
-            }
-            load_segments
-                .file_offset_from_address(offset)
-                .map(|file_offset| RelativeRelocation {
-                    file_offset,
-                    // We unconditionally apply the default load offset because the only
-                    // circumstance in which the load offset isn't the default is if the file isn't
-                    // relocatable, in which case we shouldn't have any dynamic relocations.
-                    value: rel.addend() as u64 + asm_diff::DEFAULT_LOAD_OFFSET,
-                })
-        })
-        .collect())
-}
-
-struct LoadSegment {
-    mem_range: Range<u64>,
-    file_range: Range<usize>,
-}
-
-struct LoadSegments {
-    segments: Vec<LoadSegment>,
-}
-
-impl LoadSegments {
-    fn new(elf_file: &ElfFile64) -> Self {
-        let segments = elf_file
-            .elf_program_headers()
-            .iter()
-            .filter_map(|raw_seg| {
-                let e = LittleEndian;
-                if raw_seg.p_type(e) != object::elf::PT_LOAD {
-                    return None;
-                }
-                let seg_address = raw_seg.p_paddr(e);
-                let seg_len = raw_seg.p_memsz(e);
-                let seg_end = seg_address + seg_len;
-                let file_start = raw_seg.p_offset(e) as usize;
-                let file_size = raw_seg.p_filesz(e) as usize;
-                let file_end = file_start + file_size;
-                let mem_range = seg_address..seg_end;
-                let file_range = file_start..file_end;
-                Some(LoadSegment {
-                    mem_range,
-                    file_range,
-                })
-            })
-            .collect();
-        LoadSegments { segments }
-    }
-
-    fn file_offset_from_address(&self, address: u64) -> Option<usize> {
-        for seg in &self.segments {
-            if seg.mem_range.contains(&address) {
-                let file_offset = (address - seg.mem_range.start) as usize + seg.file_range.start;
-                if seg.file_range.contains(&file_offset) {
-                    return Some(file_offset);
-                }
-            }
-        }
-        None
+    fn add_error(&mut self, error: impl Into<String>) {
+        self.diffs.push(Diff {
+            key: "error".to_owned(),
+            values: DiffValues::PreFormatted(error.into()),
+        });
     }
 }
 
@@ -610,7 +550,7 @@ impl Display for Report {
     }
 }
 
-impl Display for Object<'_> {
+impl Display for Binary<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.name.fmt(f)
     }
@@ -692,10 +632,30 @@ impl<'data> NameIndex<'data> {
         let mut globals_by_name: HashMap<&[u8], Vec<object::SymbolIndex>> = HashMap::new();
         let mut locals_by_name: HashMap<&[u8], Vec<object::SymbolIndex>> = HashMap::new();
         for sym in elf_file.symbols() {
-            if !sym.is_definition() {
+            // We only index symbols that have a section. Note this is different than the object
+            // crate's `is_defined`, which imposes additional requirements that we don't want.
+            if sym.section_index().is_none() {
                 continue;
             }
-            if let Ok(name) = sym.name_bytes() {
+
+            if let Ok(mut name) = sym.name_bytes() {
+                // Wild doesn't emit local symbols that start with ".L". The other linkers mostly do
+                // the same. However, GNU ld and lld, if they encounter a GOT-forming relocation to
+                // such a symbol, even if they then optimise away the GOT-forming relocation, will
+                // emit the symbol. This behaviour seems weird and not worth replicating, so we just
+                // ignore all just symbols.
+                if name.starts_with(b".L") {
+                    continue;
+                }
+
+                // GNU ld sometimes emits symbols that contain the symbol version. This causes
+                // problems when we go to look those symbols up, since they no longer match the name
+                // of the symbol in the original input file. So for now at least, we get rid of the
+                // version.
+                if let Some(at_pos) = name.iter().position(|b| *b == b'@') {
+                    name = &name[..at_pos];
+                }
+
                 if sym.is_global() {
                     globals_by_name.entry(name).or_default().push(sym.index());
                 } else {

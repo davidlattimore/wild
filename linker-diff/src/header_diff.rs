@@ -1,8 +1,8 @@
 use crate::slice_from_all_bytes;
+use crate::Binary;
 use crate::Config;
 use crate::Diff;
 use crate::DiffValues;
-use crate::Object;
 use crate::Report;
 use crate::Result;
 use anyhow::anyhow;
@@ -37,12 +37,12 @@ pub(crate) enum Converter {
 }
 
 impl Converter {
-    fn convert(self, value: u64, obj: &Object) -> String {
+    fn convert(self, value: u64, obj: &Binary) -> String {
         self.try_convert(value, obj)
             .unwrap_or_else(|e| e.to_string())
     }
 
-    fn try_convert(self, value: u64, obj: &Object) -> Result<String> {
+    fn try_convert(self, value: u64, obj: &Binary) -> Result<String> {
         match self {
             Converter::None => Ok(format!("0x{value:x}")),
             Converter::SectionAddress => {
@@ -98,7 +98,7 @@ impl Converter {
     }
 }
 
-fn symbol_with_address(obj: &Object, address: u64, allow_empty: bool) -> Option<String> {
+fn symbol_with_address(obj: &Binary, address: u64, allow_empty: bool) -> Option<String> {
     if address == 0 {
         return None;
     }
@@ -118,7 +118,7 @@ fn symbol_with_address(obj: &Object, address: u64, allow_empty: bool) -> Option<
     None
 }
 
-pub(crate) fn check_file_headers(report: &mut Report, objects: &[crate::Object]) {
+pub(crate) fn check_file_headers(report: &mut Report, objects: &[crate::Binary]) {
     report.add_diffs(diff_fields(
         objects,
         read_file_header_fields,
@@ -127,7 +127,7 @@ pub(crate) fn check_file_headers(report: &mut Report, objects: &[crate::Object])
     ));
 }
 
-pub(crate) fn check_dynamic_headers(report: &mut Report, objects: &[crate::Object]) {
+pub(crate) fn check_dynamic_headers(report: &mut Report, objects: &[crate::Binary]) {
     report.add_diffs(diff_fields(
         objects,
         read_dynamic_fields,
@@ -136,18 +136,26 @@ pub(crate) fn check_dynamic_headers(report: &mut Report, objects: &[crate::Objec
     ));
 }
 
-pub(crate) fn report_section_diffs(report: &mut Report, objects: &[Object]) {
-    // Collect up the names of all sections in all objects. We ignore empty sections though, since
-    // Wild will output empty sections if they have start/stop symbols that are referenced.
-    let mut all_names: HashSet<&[u8]> = HashSet::new();
-    for obj in objects {
-        all_names.extend(
+pub(crate) fn report_section_diffs(report: &mut Report, objects: &[Binary]) {
+    // Find section names defined by our first reference object. We ignore empty sections though,
+    // since Wild will output empty sections if they have start/stop symbols that are referenced.
+    let mut common_names: HashSet<&[u8]> = objects[1]
+        .sections_by_name
+        .iter()
+        .filter_map(|(name, info)| (info.size > 0).then_some(*name))
+        .collect();
+
+    // Remove any section names that aren't also defined by our other reference objects. i.e. if any
+    // of our reference objects don't define a section, then we won't compare that section.
+    for obj in &objects[2..] {
+        common_names.retain(|name| {
             obj.sections_by_name
-                .iter()
-                .filter_map(|(name, info)| (info.size > 0).then_some(name)),
-        );
+                .get(*name)
+                .is_some_and(|info| info.size > 0)
+        });
     }
-    for name in all_names {
+
+    for name in common_names {
         let table_name = format!(
             "section{}{}",
             if name.starts_with(b".") { "" } else { "." },
@@ -194,7 +202,7 @@ pub(crate) fn report_section_diffs(report: &mut Report, objects: &[Object]) {
 }
 
 fn section_or_equiv<'data, 'file: 'data>(
-    object: &'file Object<'data>,
+    object: &'file Binary<'data>,
     name: &[u8],
     config: &Config,
 ) -> Option<ElfSection64<'data, 'file, LittleEndian>> {
@@ -223,8 +231,8 @@ pub(crate) enum DiffMode {
 }
 
 pub(crate) fn diff_fields(
-    objects: &[Object<'_>],
-    get_fields_fn: impl Fn(&Object<'_>) -> Result<FieldValues>,
+    objects: &[Binary<'_>],
+    get_fields_fn: impl Fn(&Binary<'_>) -> Result<FieldValues>,
     table_name: &str,
     diff_mode: DiffMode,
 ) -> Vec<Diff> {
@@ -285,7 +293,7 @@ impl FieldValues {
         key: &'static str,
         value: impl Into<u64>,
         converter: Converter,
-        obj: &Object,
+        obj: &Binary,
     ) {
         let value = value.into();
         self.values
@@ -307,7 +315,7 @@ impl FieldValues {
 }
 
 #[allow(clippy::unnecessary_wraps)]
-fn read_file_header_fields(obj: &Object) -> Result<FieldValues> {
+fn read_file_header_fields(obj: &Binary) -> Result<FieldValues> {
     let mut values = FieldValues::default();
     let header = obj.elf_file.elf_header();
     let e = LittleEndian;
@@ -335,7 +343,7 @@ fn read_file_header_fields(obj: &Object) -> Result<FieldValues> {
     Ok(values)
 }
 
-fn read_dynamic_fields(obj: &Object) -> Result<FieldValues> {
+fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
     let dynamic = obj
         .section_by_name(DYNAMIC_SECTION_NAME_STR)
         .with_context(|| format!("`{obj}` is missing .dynamic"))?;

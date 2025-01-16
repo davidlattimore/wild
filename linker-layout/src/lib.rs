@@ -17,7 +17,7 @@ pub struct Layout {
 
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug)]
 pub struct InputFile {
-    /// Path to the input file on disk. In the of archives, multiple inputs may have the same path.
+    /// Path to the input file on disk. In case of archives, multiple inputs may have the same path.
     pub path: PathBuf,
 
     /// If the input is an archive, then contains information about where in the archive the file

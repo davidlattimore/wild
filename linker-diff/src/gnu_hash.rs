@@ -1,4 +1,4 @@
-use crate::Object;
+use crate::Binary;
 use crate::Result;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -15,7 +15,7 @@ use object::SymbolIndex;
 
 type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
 
-pub(crate) fn check_object(obj: &Object) -> Result {
+pub(crate) fn check_object(obj: &Binary) -> Result {
     let num_symbols = obj
         .elf_file
         .dynamic_symbols()

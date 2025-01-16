@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::mem::offset_of;
 
-pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Object]) {
+pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]) {
     report.add_diffs(crate::header_diff::diff_fields(
         objects,
         read_eh_frame_hdr_fields,
@@ -28,7 +28,7 @@ pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Object]
     ));
 }
 
-fn read_eh_frame_hdr_fields(object: &crate::Object) -> Result<FieldValues> {
+fn read_eh_frame_hdr_fields(object: &crate::Binary) -> Result<FieldValues> {
     let mut values = FieldValues::default();
 
     let Some(segment_hdr) = eh_frame_segment(object) else {
@@ -102,7 +102,7 @@ fn read_eh_frame_hdr_fields(object: &crate::Object) -> Result<FieldValues> {
 const EH_FRAME_PC_BEGIN_OFFSET: usize = 8;
 
 fn verify_frames(
-    object: &crate::Object,
+    object: &crate::Binary,
     values: &mut FieldValues,
     header_entries: &[EhFrameHdrEntry],
     header_base: u64,
@@ -211,7 +211,7 @@ fn read_eh_frame_pc_begin(
     )
 }
 
-fn eh_frame_segment(object: &crate::Object) -> Option<ProgramHeader64<LittleEndian>> {
+fn eh_frame_segment(object: &crate::Binary) -> Option<ProgramHeader64<LittleEndian>> {
     for hdr in object.elf_file.elf_program_headers() {
         if hdr.p_type.get(LittleEndian) == object::elf::PT_GNU_EH_FRAME {
             return Some(*hdr);
