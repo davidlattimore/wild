@@ -1,8 +1,16 @@
 //! A handwritten parser for our arguments.
 //!
-//! We don't currently use a 3rd party library because
-//! order is important for some arguments, and it's not clear how easy it would be to get that
-//! correct with something like clap.
+//! We don't currently use a 3rd party library like clap for a few reasons. Firstly, we need to
+//! support flags like `--push-state` and `--pop-state`. These need to push and pop a state stack
+//! when they're parsed. Some of the other flags then need to manipulate the state of the top of the
+//! stack. Positional arguments like input files and libraries to link, then need to have the
+//! current state of the stack attached to that file.
+//!
+//! Secondly, long arguments need to also be accepted with a single '-' in addition to the more
+//! common double-dash.
+//!
+//! Basically, we need to be able to parse arguments in the same way as the other linkers on the
+//! platform that we're targeting.
 
 use crate::arch::Architecture;
 use crate::error::Result;
@@ -24,7 +32,6 @@ pub(crate) struct Args {
     pub(crate) inputs: Vec<Input>,
     pub(crate) output: Arc<Path>,
     pub(crate) dynamic_linker: Option<Box<Path>>,
-    pub(crate) output_kind: OutputKind,
     pub(crate) num_threads: NonZeroUsize,
     pub(crate) strip_all: bool,
     pub(crate) strip_debug: bool,
@@ -59,6 +66,10 @@ pub(crate) struct Args {
     pub(crate) print_allocations: Option<FileId>,
     pub(crate) execstack: bool,
     pub(crate) verify_allocation_consistency: bool,
+
+    output_kind: Option<OutputKind>,
+    is_dynamic_executable: bool,
+    relocation_model: RelocationModel,
 }
 
 #[derive(Debug)]
@@ -179,66 +190,68 @@ const DEFAULT_FLAGS: &[&str] = &[
 
 // Parse the supplied input arguments, which should not include the program name.
 pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Result<Action> {
-    #[allow(unused_assignments)]
-    let mut architecture = None;
-    #[cfg(target_arch = "x86_64")]
-    {
-        architecture = Some(Architecture::X86_64);
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        architecture = Some(Architecture::AArch64);
-    }
+    let mut args = Args {
+        arch: default_target_arch(),
 
-    let mut lib_search_path = Vec::new();
-    let mut inputs = Vec::new();
-    let mut output = None;
-    let mut is_dynamic_executable = false;
-    let mut dynamic_linker = None;
-    let mut output_kind = None;
-    let mut time_phases = false;
-    let mut num_threads = None;
-    let mut strip_all = false;
-    let mut strip_debug = false;
-    // For now, we default to --gc-sections. This is different to other linkers, but other than
-    // being different, there doesn't seem to be any downside to doing this. We don't currently do
-    // any less work if we're not GCing sections, but do end up writing more, so --no-gc-sections
-    // will almost always be as slow or slower than --gc-sections. For that reason, the latter is
-    // probably a good default.
-    let mut gc_sections = true;
-    let mut prepopulate_maps = false;
-    let mut save_dir = SaveDir::new()?;
-    let mut sym_info = None;
-    let mut merge_strings = true;
-    let mut debug_fuel = None;
-    let mut validate_output = std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1");
-    let mut write_layout = std::env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1");
-    let mut write_trace = std::env::var(WRITE_TRACE_ENV).is_ok_and(|v| v == "1");
-    let verify_allocation_consistency =
-        std::env::var(WRITE_VERIFY_ALLOCATIONS_ENV).is_ok_and(|v| v == "1");
-    let mut relocation_model = RelocationModel::NonRelocatable;
-    let mut modifier_stack = vec![Modifiers::default()];
-    let mut version_script_path = None;
-    let mut debug_address = None;
-    let mut eh_frame_hdr = false;
-    let mut write_gc_stats = None;
-    let mut gc_stats_ignore = Vec::new();
-    let mut verbose_gc_stats = false;
+        lib_search_path: Vec::new(),
+        inputs: Vec::new(),
+        output: Arc::from(Path::new("a.out")),
+        is_dynamic_executable: false,
+        dynamic_linker: None,
+        output_kind: None,
+        time_phases: false,
+        num_threads: crate::threading::available_parallelism(),
+        strip_all: false,
+        strip_debug: false,
+        // For now, we default to --gc-sections. This is different to other linkers, but other than
+        // being different, there doesn't seem to be any downside to doing this. We don't currently do
+        // any less work if we're not GCing sections, but do end up writing more, so --no-gc-sections
+        // will almost always be as slow or slower than --gc-sections. For that reason, the latter is
+        // probably a good default.
+        gc_sections: true,
+        prepopulate_maps: false,
+        sym_info: None,
+        merge_strings: true,
+        debug_fuel: None,
+        validate_output: std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1"),
+        write_layout: std::env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1"),
+        write_trace: std::env::var(WRITE_TRACE_ENV).is_ok_and(|v| v == "1"),
+        verify_allocation_consistency: std::env::var(WRITE_VERIFY_ALLOCATIONS_ENV)
+            .is_ok_and(|v| v == "1"),
+        print_allocations: std::env::var("WILD_PRINT_ALLOCATIONS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .map(FileId::from_encoded),
+        relocation_model: RelocationModel::NonRelocatable,
+        version_script_path: None,
+        debug_address: None,
+        should_write_eh_frame_hdr: false,
+        write_gc_stats: None,
+        gc_stats_ignore: Vec::new(),
+        verbose_gc_stats: false,
+        rpaths: Vec::new(),
+        soname: None,
+        execstack: false,
+        should_fork: true,
+        file_write_mode: FileWriteMode::UnlinkAndReplace,
+        build_id: BuildIdOption::None,
+        files_per_group: std::env::var(FILES_PER_GROUP_ENV)
+            .ok()
+            .map(|s| s.parse())
+            .transpose()?,
+    };
+
     let mut action = None;
+
     let mut unrecognised = Vec::new();
-    let mut rpaths = Vec::new();
-    let mut soname = None;
-    let mut execstack = false;
-    let mut should_fork = true;
-    let mut file_write_mode = FileWriteMode::UnlinkAndReplace;
-    let mut build_id = BuildIdOption::None;
-    let max_files_per_group = std::env::var(FILES_PER_GROUP_ENV)
-        .ok()
-        .map(|s| s.parse())
-        .transpose()?;
+
+    let mut save_dir = SaveDir::new()?;
+
+    let mut modifier_stack = vec![Modifiers::default()];
+
     if std::env::var(REFERENCE_LINKER_ENV).is_ok() {
-        write_layout = true;
-        write_trace = true;
+        args.write_layout = true;
+        args.write_trace = true;
     }
     let mut arg_num = 0;
     while let Some(arg) = input.next() {
@@ -266,8 +279,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 "origin" => {}
                 "norelro" => {}
                 "notext" => {}
-                "execstack" => execstack = true,
-                "noexecstack" => execstack = false,
+                "execstack" => args.execstack = true,
+                "noexecstack" => args.execstack = false,
                 _ => {
                     warn_unsupported(&format!("-z {arg}"))?;
                     // TODO: Handle these
@@ -279,13 +292,14 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         if let Some(rest) = arg.strip_prefix("-L") {
             if rest.is_empty() {
                 if let Some(next) = input.next() {
-                    lib_search_path.push(Box::from(Path::new(next.as_ref())));
+                    args.lib_search_path
+                        .push(Box::from(Path::new(next.as_ref())));
                 }
             } else {
-                lib_search_path.push(Box::from(Path::new(rest)));
+                args.lib_search_path.push(Box::from(Path::new(rest)));
             }
         } else if let Some(rest) = arg.strip_prefix("-l") {
-            inputs.push(Input {
+            args.inputs.push(Input {
                 spec: InputSpec::Lib(Box::from(rest)),
                 search_first: None,
                 modifiers: *modifier_stack.last().unwrap(),
@@ -295,15 +309,18 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if long_arg_eq("Bdynamic") {
             modifier_stack.last_mut().unwrap().allow_shared = true;
         } else if arg == "-o" {
-            output = input.next().map(|a| Arc::from(Path::new(a.as_ref())));
+            args.output = input
+                .next()
+                .map(|a| Arc::from(Path::new(a.as_ref())))
+                .context("Missing argument to -o")?;
         } else if long_arg_eq("dynamic-linker") {
-            is_dynamic_executable = true;
-            dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
+            args.is_dynamic_executable = true;
+            args.dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
         } else if let Some(rest) = long_arg_split_prefix("dynamic-linker=") {
-            is_dynamic_executable = true;
-            dynamic_linker = Some(Box::from(Path::new(rest)));
+            args.is_dynamic_executable = true;
+            args.dynamic_linker = Some(Box::from(Path::new(rest)));
         } else if long_arg_eq("no-dynamic-linker") {
-            dynamic_linker = None;
+            args.dynamic_linker = None;
         } else if let Some(style) = long_arg_split_prefix("hash-style=") {
             // We don't technically support both hash styles, but if requested to do both, we just
             // do GNU, which we do support.
@@ -312,9 +329,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             }
             // Since we currently only support GNU hash, there's no state to update.
         } else if long_arg_eq("build-id") {
-            build_id = BuildIdOption::Fast;
+            args.build_id = BuildIdOption::Fast;
         } else if let Some(build_id_value) = long_arg_split_prefix("build-id=") {
-            build_id = match build_id_value {
+            args.build_id = match build_id_value {
                 "none" =>  BuildIdOption::None,
                 "fast" | "md5"| "sha1" => BuildIdOption::Fast,
                 "uuid" => BuildIdOption::Uuid,
@@ -331,35 +348,35 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 other => warn_unsupported(&format!("--icf={other}"))?,
             }
         } else if long_arg_eq("time") {
-            time_phases = true;
+            args.time_phases = true;
         } else if let Some(rest) = long_arg_split_prefix("threads=") {
-            num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
+            args.num_threads = NonZeroUsize::try_from(rest.parse::<usize>()?)?;
         } else if long_arg_eq("threads") {
             // Default behaviour (multiple threads)
-            num_threads = None;
+            args.num_threads = crate::threading::available_parallelism();
         } else if let Some(rest) = long_arg_split_prefix("thread-count=") {
-            num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
+            args.num_threads = NonZeroUsize::try_from(rest.parse::<usize>()?)?;
         } else if long_arg_eq("no-threads") {
-            num_threads = Some(NonZeroUsize::new(1).unwrap());
+            args.num_threads = NonZeroUsize::new(1).unwrap();
         } else if long_arg_eq("strip-all") || arg == "-s" {
-            strip_all = true;
-            strip_debug = true;
+            args.strip_all = true;
+            args.strip_debug = true;
         } else if long_arg_eq("strip-debug") || arg == "-S" {
-            strip_debug = true;
+            args.strip_debug = true;
         } else if long_arg_eq("gc-sections") {
-            gc_sections = true;
+            args.gc_sections = true;
         } else if long_arg_eq("no-gc-sections") {
-            gc_sections = false;
+            args.gc_sections = false;
         } else if long_arg_eq("no-fork") {
-            should_fork = false;
+            args.should_fork = false;
         } else if long_arg_eq("update-in-place") {
-            file_write_mode = FileWriteMode::UpdateInPlace;
+            args.file_write_mode = FileWriteMode::UpdateInPlace;
         } else if arg == "-m" {
             let arg_value = input.next().context("Missing argument to -m")?;
             let arg_value = arg_value.as_ref();
-            architecture = Some(Architecture::from_str(arg_value)?);
+            args.arch = Architecture::from_str(arg_value)?;
         } else if let Some(arg_value) = arg.strip_prefix("-m") {
-            architecture = Some(Architecture::from_str(arg_value)?);
+            args.arch = Architecture::from_str(arg_value)?;
         } else if long_arg_eq("EB") {
             bail!("Big-endian target is not supported");
         } else if arg == "-z" {
@@ -369,9 +386,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if let Some(_rest) = arg.strip_prefix("-O") {
             // We don't use opt-level for now.
         } else if long_arg_eq("prepopulate-maps") {
-            prepopulate_maps = true;
+            args.prepopulate_maps = true;
         } else if long_arg_eq("sym-info") {
-            sym_info = input.next().map(|a| a.as_ref().to_owned());
+            args.sym_info = input.next().map(|a| a.as_ref().to_owned());
         } else if long_arg_eq("as-needed") {
             modifier_stack.last_mut().unwrap().as_needed = true;
         } else if long_arg_eq("no-as-needed") {
@@ -392,12 +409,12 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 .as_ref()
                 .to_owned();
             save_dir.handle_file(&script)?;
-            version_script_path = Some(PathBuf::from(script));
+            args.version_script_path = Some(PathBuf::from(script));
         } else if let Some(script) = long_arg_split_prefix("version-script=") {
             save_dir.handle_file(script)?;
-            version_script_path = Some(PathBuf::from(script));
+            args.version_script_path = Some(PathBuf::from(script));
         } else if long_arg_eq("rpath") {
-            rpaths.push(
+            args.rpaths.push(
                 input
                     .next()
                     .context("Missing argument to -rpath")?
@@ -405,19 +422,19 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                     .to_owned(),
             );
         } else if let Some(rest) = long_arg_split_prefix("rpath=") {
-            rpaths.push(rest.to_owned());
+            args.rpaths.push(rest.to_owned());
         } else if long_arg_eq("no-string-merge") {
-            merge_strings = false;
+            args.merge_strings = false;
         } else if long_arg_eq("pie") {
-            relocation_model = RelocationModel::Relocatable;
+            args.relocation_model = RelocationModel::Relocatable;
         } else if long_arg_eq("eh-frame-hdr") {
-            eh_frame_hdr = true;
+            args.should_write_eh_frame_hdr = true;
         } else if long_arg_eq("shared") {
-            output_kind = Some(OutputKind::SharedObject);
+            args.output_kind = Some(OutputKind::SharedObject);
         } else if let Some(rest) = long_arg_split_prefix("soname=") {
-            soname = Some(rest.to_owned());
+            args.soname = Some(rest.to_owned());
         } else if long_arg_eq("soname") {
-            soname = Some(
+            args.soname = Some(
                 input
                     .next()
                     .context("Missing argument to -soname")?
@@ -437,26 +454,26 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             // TODO
             input.next();
         } else if long_arg_eq("validate-output") {
-            validate_output = true;
+            args.validate_output = true;
         } else if long_arg_eq("write-layout") {
-            write_layout = true;
+            args.write_layout = true;
         } else if long_arg_eq("write-trace") {
-            write_trace = true;
+            args.write_trace = true;
         } else if let Some(rest) = long_arg_split_prefix("write-gc-stats=") {
-            write_gc_stats = Some(PathBuf::from(rest));
+            args.write_gc_stats = Some(PathBuf::from(rest));
         } else if let Some(rest) = long_arg_split_prefix("gc-stats-ignore=") {
-            gc_stats_ignore.push(rest.to_owned());
+            args.gc_stats_ignore.push(rest.to_owned());
         } else if long_arg_eq("version") || arg == "-v" {
             action = Some(Action::Version);
         } else if long_arg_eq("verbose-gc-stats") {
-            verbose_gc_stats = true;
+            args.verbose_gc_stats = true;
         } else if let Some(rest) = long_arg_split_prefix("debug-address=") {
-            debug_address = Some(parse_number(rest).context("Invalid --debug-address")?);
+            args.debug_address = Some(parse_number(rest).context("Invalid --debug-address")?);
         } else if let Some(rest) = long_arg_split_prefix("debug-fuel=") {
-            debug_fuel = Some(AtomicI64::new(rest.parse()?));
+            args.debug_fuel = Some(AtomicI64::new(rest.parse()?));
             // Using debug fuel with more than one thread would likely give non-deterministic
             // results.
-            num_threads = Some(NonZeroUsize::new(1).unwrap());
+            args.num_threads = NonZeroUsize::new(1).unwrap();
         } else if let Some(path) = arg.strip_prefix('@') {
             if input.next().is_some() || arg_num > 1 {
                 bail!("Mixing of @{{filename}} and regular arguments isn't supported");
@@ -478,69 +495,38 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             unrecognised.push(format!("`{arg}`"));
         } else {
             save_dir.handle_file(arg)?;
-            inputs.push(Input {
+            args.inputs.push(Input {
                 spec: InputSpec::File(Box::from(Path::new(arg))),
                 search_first: None,
                 modifiers: *modifier_stack.last().unwrap(),
             });
         }
     }
+
     if !unrecognised.is_empty() {
         bail!("Unrecognised argument(s): {}", unrecognised.join(" "));
     }
-    let Some(arch) = architecture else {
-        bail!("Missing -m arch option");
-    };
-    let num_threads = num_threads.unwrap_or_else(crate::threading::available_parallelism);
-    let output_kind = output_kind.unwrap_or({
-        if is_dynamic_executable {
-            OutputKind::DynamicExecutable(relocation_model)
-        } else {
-            OutputKind::StaticExecutable(relocation_model)
-        }
-    });
+
     save_dir.finish()?;
+
     if let Some(a) = action {
         return Ok(a);
     }
-    Ok(Action::Link(Args {
-        arch,
-        lib_search_path,
-        inputs,
-        output: output.unwrap_or_else(|| Arc::from(Path::new("a.out"))),
-        dynamic_linker,
-        output_kind,
-        time_phases,
-        num_threads,
-        strip_all,
-        strip_debug,
-        gc_sections,
-        prepopulate_maps,
-        sym_info,
-        merge_strings,
-        debug_fuel,
-        validate_output,
-        version_script_path,
-        debug_address,
-        write_layout,
-        write_trace,
-        verify_allocation_consistency,
-        should_write_eh_frame_hdr: eh_frame_hdr,
-        write_gc_stats,
-        gc_stats_ignore,
-        verbose_gc_stats,
-        rpaths,
-        soname,
-        print_allocations: std::env::var("WILD_PRINT_ALLOCATIONS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .map(FileId::from_encoded),
-        files_per_group: max_files_per_group,
-        execstack,
-        should_fork,
-        build_id,
-        file_write_mode,
-    }))
+
+    Ok(Action::Link(args))
+}
+
+const fn default_target_arch() -> Architecture {
+    // We default to targeting the architecture that we're running on. We don't support running on
+    // architectures that we can't target.
+    #[cfg(target_arch = "x86_64")]
+    {
+        Architecture::X86_64
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        Architecture::AArch64
+    }
 }
 
 fn parse_from_argument_file(path: &Path) -> Result<Action> {
@@ -592,7 +578,7 @@ impl Args {
 
     /// Returns how we should handle TLS relocations like TLSLD and TLSGD.
     pub(crate) fn tls_mode(&self) -> crate::layout::TlsMode {
-        match self.output_kind {
+        match self.output_kind() {
             OutputKind::StaticExecutable(_) => crate::layout::TlsMode::LocalExec,
             OutputKind::DynamicExecutable(_) | OutputKind::SharedObject => {
                 crate::layout::TlsMode::Preserve
@@ -601,16 +587,16 @@ impl Args {
     }
 
     pub(crate) fn needs_dynsym(&self) -> bool {
-        self.output_kind.needs_dynsym()
+        self.output_kind().needs_dynsym()
     }
 
     pub(crate) fn is_relocatable(&self) -> bool {
-        self.output_kind.is_relocatable()
+        self.output_kind().is_relocatable()
     }
 
     /// Returns whether we need a dynamic section.
     pub(crate) fn needs_dynamic(&self) -> bool {
-        self.output_kind.needs_dynamic()
+        self.output_kind().needs_dynamic()
     }
 
     #[allow(dead_code)]
@@ -621,7 +607,7 @@ impl Args {
 
     pub(crate) fn should_output_symbol_versions(&self) -> bool {
         matches!(
-            self.output_kind,
+            self.output_kind(),
             OutputKind::DynamicExecutable(_) | OutputKind::SharedObject
         )
     }
@@ -636,6 +622,16 @@ impl Args {
 
     pub(crate) fn should_fork(&self) -> bool {
         self.should_fork
+    }
+
+    pub(crate) fn output_kind(&self) -> OutputKind {
+        self.output_kind.unwrap_or({
+            if self.is_dynamic_executable {
+                OutputKind::DynamicExecutable(self.relocation_model)
+            } else {
+                OutputKind::StaticExecutable(self.relocation_model)
+            }
+        })
     }
 }
 
