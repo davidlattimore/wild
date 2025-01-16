@@ -19,6 +19,7 @@ use self::elf::TLS_MODULE_BASE_SYMBOL_NAME;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
+use crate::args::OutputKind;
 use crate::elf;
 use crate::elf::DynamicEntry;
 use crate::elf::Versym;
@@ -229,13 +230,35 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) section_flags: SectionFlags,
     /// Sections to try to link to. The first section that we're outputting is the one used.
     pub(crate) link: &'static [OutputSectionId],
-    pub(crate) start_symbol_name: Option<&'static str>,
-    pub(crate) end_symbol_name: Option<&'static str>,
+    start_symbol_name: Option<&'static str>,
+    end_symbol_name: Option<&'static str>,
     pub(crate) min_alignment: Alignment,
     info_fn: Option<fn(&InfoInputs) -> u32>,
     pub(crate) keep_if_empty: bool,
     pub(crate) element_size: u64,
     pub(crate) ty: SectionType,
+}
+
+impl BuiltInSectionDetails {
+    pub(crate) fn start_symbol_name(&self, output_kind: OutputKind) -> Option<&'static str> {
+        if self.start_symbol_name == Some(TLS_MODULE_BASE_SYMBOL_NAME)
+            && output_kind != OutputKind::SharedObject
+        {
+            None
+        } else {
+            self.start_symbol_name
+        }
+    }
+
+    pub(crate) fn end_symbol_name(&self, output_kind: OutputKind) -> Option<&'static str> {
+        if self.end_symbol_name == Some(TLS_MODULE_BASE_SYMBOL_NAME)
+            && output_kind == OutputKind::SharedObject
+        {
+            None
+        } else {
+            self.end_symbol_name
+        }
+    }
 }
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
@@ -479,7 +502,9 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         name: SectionName(TDATA_SECTION_NAME),
         ty: sht::PROGBITS,
         section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
+        // The symbol is defined twice, but later on we make a filtering based on the output type!
         start_symbol_name: Some(TLS_MODULE_BASE_SYMBOL_NAME),
+        end_symbol_name: Some(TLS_MODULE_BASE_SYMBOL_NAME),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
