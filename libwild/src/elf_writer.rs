@@ -770,12 +770,11 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         }
         if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
             return self.process_got_tls_mod::<A>(res, got_address);
+        } else if resolution_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
+            return self.process_got_tls_descriptor::<A>(res, got_address);
         }
         if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
             return Ok(());
-        }
-        if resolution_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
-            return self.process_got_tls_descriptor::<A>(res, got_address);
         }
 
         let got_entry = self.take_next_got_entry()?;
