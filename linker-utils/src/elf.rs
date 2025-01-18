@@ -577,6 +577,9 @@ pub enum RelocationKind {
     /// GOT offset for TLS descriptor, relative to the place of the relocation.
     TlsDesc,
 
+    /// Call to the TLS descriptor trampoline. Used only as a placeholder for a linker relaxation opportunity.
+    TlsDescCall,
+
     /// No relocation needs to be applied. Produced when we eliminate a relocation due to an
     /// optimisation.
     None,

@@ -1075,7 +1075,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
     ) -> Result {
         debug_assert_bail!(
             self.output_kind.needs_dynsym(),
-            "write_glob_dat called when output is not dynamic"
+            "write_rela_dyn_general called when output is not dynamic"
         );
         let rela = self.take_rela_dyn()?;
         rela.r_offset.set(LittleEndian, place);
@@ -1952,7 +1952,7 @@ fn apply_relocation<S: StorageModel, A: Arch>(
             .bitand(mask.got_entry)
             .wrapping_add(addend)
             .wrapping_sub(place.bitand(mask.place)),
-        RelocationKind::None => 0,
+        RelocationKind::None | RelocationKind::TlsDescCall => 0,
     };
     rel_info
         .size
