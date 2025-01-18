@@ -19,6 +19,7 @@ use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
 use crate::elf::FileHeader;
 use crate::elf::Versym;
+use crate::elf::GOT_ENTRY_SIZE;
 use crate::elf_writer;
 use crate::error::Error;
 use crate::error::Result;
@@ -3928,7 +3929,16 @@ impl Resolution {
                 .contains(ResolutionFlags::GOT_TLS_DESCRIPTOR),
             "Called tls_descriptor_got_address without GOT_TLS_DESCRIPTOR being set"
         );
-        self.got_address()
+        // We might have both GOT_TLS_OFFSET and GOT_TLS_DESCRIPTOR at the same time
+        // for a single symbol. Then the TLS descriptor comes later and my reflect that in the GOT address.
+        if self
+            .resolution_flags
+            .contains(ResolutionFlags::GOT_TLS_OFFSET)
+        {
+            self.got_address().map(|v| v + GOT_ENTRY_SIZE)
+        } else {
+            self.got_address()
+        }
     }
 
     pub(crate) fn plt_address(&self) -> Result<u64> {
