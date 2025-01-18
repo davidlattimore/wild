@@ -1357,6 +1357,7 @@ fn integration_test(
         "ifunc.c",
         "internal-syms.c",
         "tls.c",
+        "tlsdesc.c",
         "old_init.c",
         "custom_section.c",
         "stack_alignment.s",
