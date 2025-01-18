@@ -504,13 +504,13 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
         // The symbol is defined twice, but later on we make a filtering based on the output type!
         start_symbol_name: Some(TLS_MODULE_BASE_SYMBOL_NAME),
-        end_symbol_name: Some(TLS_MODULE_BASE_SYMBOL_NAME),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(TBSS_SECTION_NAME),
         ty: sht::NOBITS,
         section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
+        end_symbol_name: Some(TLS_MODULE_BASE_SYMBOL_NAME),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
