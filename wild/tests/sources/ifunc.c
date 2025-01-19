@@ -4,6 +4,7 @@
 //#Object:ifunc_init.c
 //#Object:exit.c
 //#DiffIgnore:section.rela.plt.link
+//#RequiresGlibc:true
 
 //#Config:pie:default
 //#CompArgs:-fpie -ffunction-sections
