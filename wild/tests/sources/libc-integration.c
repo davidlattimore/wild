@@ -8,6 +8,7 @@
 //#DiffIgnore:.dynamic.DT_PLTREL
 //#DiffIgnore:section.plt.entsize
 //#DiffIgnore:section.rodata.cst32.entsize
+//#DiffIgnore:section.data.alignment
 // This is only an issue on openSUSE
 //#DiffIgnore:section.rela.plt.link
 //#CompArgs:-g -ftls-model=global-dynamic
@@ -41,7 +42,6 @@
 //#Shared:libc-integration-0.c
 //#Shared:libc-integration-1.c
 //#DiffIgnore:section.relro_padding
-//#DiffIgnore:section.data.alignment
 
 //#Config:clang-global-dynamic:default
 //#Compiler:clang
@@ -67,7 +67,6 @@
 //#LinkArgs:--cc=gcc -dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Shared:libc-integration-0.c
 //#Shared:libc-integration-1.c
-//#DiffIgnore:section.data.align
 
 //#Config:gcc-dynamic-pie-large:default
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -mcmodel=large
