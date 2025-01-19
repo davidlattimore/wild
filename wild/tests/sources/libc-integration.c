@@ -9,6 +9,7 @@
 //#DiffIgnore:section.plt.entsize
 //#DiffIgnore:section.rodata.cst32.entsize
 //#DiffIgnore:section.data
+//#DiffIgnore:section.data.alignment
 // This is only an issue on openSUSE
 //#DiffIgnore:section.rela.plt.link
 //#CompArgs:-g -ftls-model=global-dynamic
