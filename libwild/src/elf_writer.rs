@@ -879,6 +879,11 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
     ) -> Result {
         self.take_next_got_entry()?;
 
+        anyhow::ensure!(
+            !self.output_kind.is_static_executable(),
+            "Cannot create dynamic TLSDESC relocation (function trampoline will be missed) for a static executable"
+        );
+
         let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
         debug_assert_bail!(
             *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
