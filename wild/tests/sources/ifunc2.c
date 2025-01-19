@@ -4,6 +4,7 @@
 //#DiffIgnore:section.data.alignment
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.rodata.alignment
+//#RequiresGlibc:true
 
 //#Config:pie:default
 //#CompArgs:-fpie
