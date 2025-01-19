@@ -66,6 +66,7 @@
 //#LinkArgs:--cc=gcc -dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Shared:libc-integration-0.c
 //#Shared:libc-integration-1.c
+//#DiffIgnore:section.data.align
 
 //#Config:gcc-dynamic-pie-large:default
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -mcmodel=large
