@@ -34,7 +34,7 @@ jobs:
         if: ${{ contains(matrix.container, 'ubuntu') }}
       - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup
         if: ${{ contains(matrix.container, 'opensuse') }}
-      - run: yum install -y gcc gcc-c++ glibc-devel-static clang lld curl rustup util-linux
+      - run: yum install -y gcc gcc-c++ glibc-static clang lld curl rustup util-linux
         if: ${{ contains(matrix.container, 'fedora') }}
       - run: useradd -m -g users user && su user && cd ~
         if: ${{ contains(matrix.container, 'opensuse') || contains(matrix.container, 'fedora') }}
