@@ -46,8 +46,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain
         id: rust-toolchain
-        toolchain: ${{ matrix.toolchain }}
         with:
+          toolchain: ${{ matrix.toolchain }}
           targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl
           components: rustc-codegen-cranelift-preview
       - uses: actions/cache@v4
