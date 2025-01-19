@@ -28,9 +28,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt install bubblewrap lld curl
+      - run: apt install bubblewrap lld curl
         if: ${{ contains(matrix.container, 'ubuntu') }}
-      - run: sudo zypper in -y gcc-c++ clang lld curl
+      - run: zypper in -y gcc-c++ clang lld curl
         if: ${{ contains(matrix.container, 'opensuse') }}
       - uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
