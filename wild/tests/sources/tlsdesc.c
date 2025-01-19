@@ -21,6 +21,7 @@
 //#Config:clang-tls-desc:gcc-tls-desc
 //#CompArgs:-mtls-dialect=gnu2
 //#Compiler:clang
+//#RequiresClangWithTlsDesc:true
 
 //#Config:clang-tls-desc-shared:clang-tls-desc
 //#CompArgs:-mtls-dialect=gnu2 -fPIC
