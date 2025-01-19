@@ -13,7 +13,7 @@ env:
 
 jobs:
   test-nightly:
-    name: Test x86_64-linux nightly
+    name: Test x86_64-linux
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -23,6 +23,9 @@ jobs:
           - 'opensuse/tumbleweed:latest'
         # TODO: resolve linker-diff issues before Fedora can be enabled
         #   - 'fedora:latest'
+        toolchain:
+          - nightly
+          - stable
       fail-fast: false
 
     container:
@@ -41,7 +44,7 @@ jobs:
         if: ${{ contains(matrix.container, 'opensuse') || contains(matrix.container, 'fedora') }}
 
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: dtolnay/rust-toolchain@${{ matrix.toolchain }}
         id: rust-toolchain
         with:
           targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl
