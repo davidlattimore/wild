@@ -455,14 +455,7 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                         .collect::<Result<Vec<_>>>()?;
                 }
                 "RequiresClangWithTlsDesc" => {
-                    config.requires_clang_with_tlsdesc = match arg.to_lowercase().as_str() {
-                        "true" => Ok(true),
-                        "false" => Ok(false),
-                        _ => Err(anyhow!(format!(
-                            "Unsupported RequiresClangWithTlsDesc argument: `{}`",
-                            arg
-                        ))),
-                    }?;
+                    config.requires_clang_with_tlsdesc = arg.to_lowercase().parse()?;
                 }
                 other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
             }
