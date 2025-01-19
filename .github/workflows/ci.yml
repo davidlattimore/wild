@@ -38,11 +38,11 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.container }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
       - run: sudo apt install bubblewrap lld
         if: ${{ contains(matrix.container, 'ubuntu') }}
       - run: sudo zypper in -y gcc-c++ clang lld
-        if: ${{ contains(matrix.container, 'ubuntu') }}
+        if: ${{ contains(matrix.container, 'opensuse') }}
       - run: cargo build --profile ci --workspace --no-default-features
       - run: cargo test --profile ci --workspace
 
