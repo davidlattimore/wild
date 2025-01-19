@@ -44,7 +44,7 @@ jobs:
         if: ${{ contains(matrix.container, 'opensuse') || contains(matrix.container, 'fedora') }}
 
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain
+      - uses: dtolnay/rust-toolchain@stable
         id: rust-toolchain
         with:
           toolchain: ${{ matrix.toolchain }}
