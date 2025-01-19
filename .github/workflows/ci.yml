@@ -31,7 +31,7 @@ jobs:
         if: ${{ contains(matrix.container, 'ubuntu') }}
       - run: su ubuntu && cd ~
         if: ${{ contains(matrix.container, 'ubuntu') }}
-      - run: zypper in -y gcc gcc-c++ clang lld curl
+      - run: zypper in -y gcc gcc-c++ clang lld curl rustup
         if: ${{ contains(matrix.container, 'opensuse') }}
       - run: useradd -m -g users user && su user && cd ~
         if: ${{ contains(matrix.container, 'opensuse') }}
