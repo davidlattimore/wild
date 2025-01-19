@@ -27,13 +27,13 @@ jobs:
       image: ${{ matrix.container }}
 
     steps:
-      - run: apt-get update && apt-get -y install bubblewrap lld curl
+      - run: apt-get update && apt-get -y install gcc gcc-c++ clang lld curl bubblewrap
         if: ${{ contains(matrix.container, 'ubuntu') }}
-      - run: su ubuntu
+      - run: su ubuntu && cd ~
         if: ${{ contains(matrix.container, 'ubuntu') }}
-      - run: zypper in -y gcc-c++ clang lld curl
+      - run: zypper in -y gcc gcc-c++ clang lld curl
         if: ${{ contains(matrix.container, 'opensuse') }}
-      - run: useradd -m -g users user && su user
+      - run: useradd -m -g users user && su user && cd ~
         if: ${{ contains(matrix.container, 'opensuse') }}
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
