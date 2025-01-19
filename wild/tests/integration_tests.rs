@@ -192,6 +192,7 @@ struct Config {
     should_run: bool,
     expect_error: Option<String>,
     support_architectures: Vec<HostArchitecture>,
+    requires_glibc: bool,
 }
 impl Config {
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
@@ -299,6 +300,7 @@ impl Default for Config {
             should_run: true,
             expect_error: None,
             support_architectures: vec![HostArchitecture::X86_64, HostArchitecture::AArch64],
+            requires_glibc: false,
         }
     }
 }
@@ -433,6 +435,7 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                         })
                         .collect::<Result<Vec<_>>>()?;
                 }
+                "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
                 other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
             }
         }
@@ -1427,6 +1430,7 @@ fn integration_test(
         if !config
             .support_architectures
             .contains(&get_host_architecture())
+            || config.requires_glibc && !cfg!(target_env = "gnu")
         {
             eprintln!("Skipping config: {}", config.name);
             continue;
