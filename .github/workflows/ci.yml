@@ -27,7 +27,7 @@ jobs:
       image: ${{ matrix.container }}
 
     steps:
-      - run: apt-get update && apt-get -y install gcc gcc-c++ clang lld curl bubblewrap
+      - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap
         if: ${{ contains(matrix.container, 'ubuntu') }}
       - run: su ubuntu && cd ~
         if: ${{ contains(matrix.container, 'ubuntu') }}
