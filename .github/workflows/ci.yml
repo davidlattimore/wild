@@ -21,6 +21,7 @@ jobs:
           - 'ubuntu:latest'
           - 'ubuntu:rolling'
           - 'opensuse/tumbleweed:latest'
+          - 'fedora:latest'
       fail-fast: false
 
     container:
@@ -33,8 +34,10 @@ jobs:
         if: ${{ contains(matrix.container, 'ubuntu') }}
       - run: zypper in -y gcc gcc-c++ clang lld curl rustup
         if: ${{ contains(matrix.container, 'opensuse') }}
+      - run: yum install -y gcc gcc-c++ clang lld curl rustup
+        if: ${{ contains(matrix.container, 'fedora') }}
       - run: useradd -m -g users user && su user && cd ~
-        if: ${{ contains(matrix.container, 'opensuse') }}
+        if: ${{ contains(matrix.container, 'opensuse') || contains(matrix.container, 'fedora') }}
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
