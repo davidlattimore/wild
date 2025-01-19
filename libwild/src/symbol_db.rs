@@ -354,7 +354,7 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
         let file_id = self.file_id_for_symbol(symbol_id);
         let input_object = self.file(file_id);
         match input_object {
-            ParsedInput::Prelude(o) => Ok(o.symbol_name(symbol_id)),
+            ParsedInput::Prelude(o) => Ok(o.symbol_name(symbol_id, self.args.output_kind)),
             ParsedInput::Object(o) => o.symbol_name(symbol_id),
             ParsedInput::Epilogue(o) => {
                 Ok(self.start_stop_symbol_names[symbol_id.offset_from(o.start_symbol_id)])
@@ -487,7 +487,7 @@ fn load_symbols_from_file<'data>(
                 .load_symbols(s.file_id, &s.object, symbols_out, outputs)?;
             }
         }
-        ParsedInput::Prelude(s) => s.load_symbols(symbols_out, outputs),
+        ParsedInput::Prelude(s) => s.load_symbols(symbols_out, outputs, args.output_kind),
         ParsedInput::Epilogue(_) => {
             // Custom section start/stop symbols are generated after archive handling.
         }
@@ -752,7 +752,12 @@ impl TryFrom<usize> for SymbolId {
 }
 
 impl Prelude {
-    fn load_symbols(&self, symbols_out: &mut SymbolInfoWriter, outputs: &mut SymbolLoadOutputs) {
+    fn load_symbols(
+        &self,
+        symbols_out: &mut SymbolInfoWriter,
+        outputs: &mut SymbolLoadOutputs,
+        output_kind: OutputKind,
+    ) {
         outputs
             .pending_symbols
             .reserve(self.symbol_definitions.len());
@@ -762,7 +767,7 @@ impl Prelude {
                 InternalSymDefInfo::Undefined => ValueFlags::ABSOLUTE,
                 InternalSymDefInfo::SectionStart(section_id) => {
                     let def = section_id.built_in_details();
-                    let name = def.start_symbol_name.unwrap().as_bytes();
+                    let name = def.start_symbol_name(output_kind).unwrap().as_bytes();
                     outputs
                         .pending_symbols
                         .push(PendingSymbol::new(symbol_id, name));
@@ -770,7 +775,7 @@ impl Prelude {
                 }
                 InternalSymDefInfo::SectionEnd(section_id) => {
                     let def = section_id.built_in_details();
-                    let name = def.end_symbol_name.unwrap().as_bytes();
+                    let name = def.end_symbol_name(output_kind).unwrap().as_bytes();
                     outputs
                         .pending_symbols
                         .push(PendingSymbol::new(symbol_id, name));

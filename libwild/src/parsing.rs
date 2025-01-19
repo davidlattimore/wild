@@ -242,25 +242,29 @@ impl Prelude {
             {
                 continue;
             }
-            if def.start_symbol_name.is_some() {
+            if def.start_symbol_name(args.output_kind).is_some() {
                 symbol_definitions.push(InternalSymDefInfo::SectionStart(section_id));
             }
-            if def.end_symbol_name.is_some() {
+            if def.end_symbol_name(args.output_kind).is_some() {
                 symbol_definitions.push(InternalSymDefInfo::SectionEnd(section_id));
             }
         }
         Self { symbol_definitions }
     }
 
-    pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> SymbolName<'static> {
+    pub(crate) fn symbol_name(
+        &self,
+        symbol_id: SymbolId,
+        output_kind: OutputKind,
+    ) -> SymbolName<'static> {
         let def = &self.symbol_definitions[symbol_id.as_usize()];
         let name = match def {
             InternalSymDefInfo::Undefined => Some(""),
             InternalSymDefInfo::SectionStart(section_id) => {
-                section_id.built_in_details().start_symbol_name
+                section_id.built_in_details().start_symbol_name(output_kind)
             }
             InternalSymDefInfo::SectionEnd(section_id) => {
-                section_id.built_in_details().end_symbol_name
+                section_id.built_in_details().end_symbol_name(output_kind)
             }
         }
         .unwrap();
