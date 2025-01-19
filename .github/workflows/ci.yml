@@ -33,6 +33,8 @@ jobs:
         if: ${{ contains(matrix.container, 'ubuntu') }}
       - run: zypper in -y gcc-c++ clang lld curl
         if: ${{ contains(matrix.container, 'opensuse') }}
+      - run: useradd -m -g users user && su user
+        if: ${{ contains(matrix.container, 'opensuse') }}
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
