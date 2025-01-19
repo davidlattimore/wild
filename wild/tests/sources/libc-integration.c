@@ -41,6 +41,7 @@
 //#Shared:libc-integration-0.c
 //#Shared:libc-integration-1.c
 //#DiffIgnore:section.relro_padding
+//#DiffIgnore:section.data.alignment
 
 //#Config:clang-global-dynamic:default
 //#Compiler:clang
