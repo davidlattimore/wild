@@ -173,21 +173,25 @@ fn get_host_architecture() -> HostArchitecture {
 }
 
 fn host_supports_clang_with_tls_desc() -> bool {
-    let mut echo_child = Command::new("echo")
-        .arg("int main() { return 0; }")
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("Failed to start echo process");
-    echo_child.wait().expect("Failed to wait for echo");
-    let echo_out = echo_child.stdout.expect("Failed to open echo stdout");
+    static CLANG_SUPPORTS_TLS_DESC: OnceLock<bool> = OnceLock::new();
 
-    let clang = Command::new("clang")
-        .args(["-mtls-dialect=gnu2", "-x", "c", "-"])
-        .stdin(Stdio::from(echo_out))
-        .output()
-        .expect("Failed to run clang");
+    *CLANG_SUPPORTS_TLS_DESC.get_or_init(|| {
+        let mut echo_child = Command::new("echo")
+            .arg("int main() { return 0; }")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("Failed to start echo process");
+        echo_child.wait().expect("Failed to wait for echo");
+        let echo_out = echo_child.stdout.expect("Failed to open echo stdout");
 
-    clang.status.success()
+        let clang = Command::new("clang")
+            .args(["-mtls-dialect=gnu2", "-x", "c", "-"])
+            .stdin(Stdio::from(echo_out))
+            .output()
+            .expect("Failed to run clang");
+
+        clang.status.success()
+    })
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1449,11 +1453,11 @@ fn integration_test(
     let configs = parse_configs(&src_path(filename))
         .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
 
-    let host_architectures = get_host_architecture();
-    let host_supports_clang_with_tls_desc = host_supports_clang_with_tls_desc();
     for config in configs {
-        if !config.support_architectures.contains(&host_architectures)
-            || (config.requires_clang_with_tlsdesc && !host_supports_clang_with_tls_desc)
+        if !config
+            .support_architectures
+            .contains(&get_host_architecture())
+            || (config.requires_clang_with_tlsdesc && !host_supports_clang_with_tls_desc())
         {
             eprintln!("Skipping config: {}", config.name);
             continue;
