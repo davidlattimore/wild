@@ -44,8 +44,9 @@ jobs:
         if: ${{ contains(matrix.container, 'opensuse') || contains(matrix.container, 'fedora') }}
 
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@${{ matrix.toolchain }}
+      - uses: dtolnay/rust-toolchain
         id: rust-toolchain
+        toolchain: ${{ matrix.toolchain }}
         with:
           targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl
           components: rustc-codegen-cranelift-preview
