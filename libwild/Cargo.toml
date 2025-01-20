@@ -9,7 +9,7 @@ edition.workspace = true
 [dependencies]
 ahash = { version = "0.8.11", default-features = false, features = ["std"] }
 anyhow = "1.0.95"
-bitflags = "2.7.0"
+bitflags = "2.8.0"
 bytemuck = { version = "1.21.0", features = ["derive"] }
 crossbeam-queue = "0.3.12"
 crossbeam-utils = "0.8.21"
@@ -41,7 +41,7 @@ flate2 = "1.0.35"
 bumpalo-herd = "0.1.2"
 zstd = "0.13.2"
 blake3 = { version = "1.5.5", features = ["rayon"] }
-uuid = { version = "1.11.1", features = ["v4"] }
+uuid = { version = "1.12.0", features = ["v4"] }
 hex = "0.4.3"
 atomic-take = "1.1.0"
 
