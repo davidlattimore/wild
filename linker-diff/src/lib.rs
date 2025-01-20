@@ -154,6 +154,8 @@ impl Config {
                 // GNU ld sometimes makes this writable sometimes not. Presumably this depends on
                 // whether there are relocations or some flags.
                 "section.eh_frame.flags",
+                // A package note section used by Ubuntu: https://systemd.io/ELF_PACKAGE_METADATA/
+                "section.note.package",
             ]
             .into_iter()
             .map(ToOwned::to_owned),

@@ -215,6 +215,7 @@ struct Config {
     should_run: bool,
     expect_error: Option<String>,
     support_architectures: Vec<HostArchitecture>,
+    requires_glibc: bool,
     requires_clang_with_tlsdesc: bool,
 }
 impl Config {
@@ -323,6 +324,7 @@ impl Default for Config {
             should_run: true,
             expect_error: None,
             support_architectures: vec![HostArchitecture::X86_64, HostArchitecture::AArch64],
+            requires_glibc: false,
             requires_clang_with_tlsdesc: false,
         }
     }
@@ -458,6 +460,7 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                         })
                         .collect::<Result<Vec<_>>>()?;
                 }
+                "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
                 "RequiresClangWithTlsDesc" => {
                     config.requires_clang_with_tlsdesc = arg.to_lowercase().parse()?;
                 }
@@ -1457,6 +1460,7 @@ fn integration_test(
         if !config
             .support_architectures
             .contains(&get_host_architecture())
+            || config.requires_glibc && !cfg!(target_env = "gnu")
             || (config.requires_clang_with_tlsdesc && !host_supports_clang_with_tls_desc())
         {
             eprintln!("Skipping config: {}", config.name);
