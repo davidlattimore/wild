@@ -242,10 +242,10 @@ impl Prelude {
             {
                 continue;
             }
-            if def.start_symbol_name(args.output_kind).is_some() {
+            if def.start_symbol_name(args.output_kind()).is_some() {
                 symbol_definitions.push(InternalSymDefInfo::SectionStart(section_id));
             }
-            if def.end_symbol_name(args.output_kind).is_some() {
+            if def.end_symbol_name(args.output_kind()).is_some() {
                 symbol_definitions.push(InternalSymDefInfo::SectionEnd(section_id));
             }
         }
