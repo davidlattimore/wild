@@ -3930,7 +3930,7 @@ impl Resolution {
             "Called tls_descriptor_got_address without GOT_TLS_DESCRIPTOR being set"
         );
         // We might have both GOT_TLS_OFFSET and GOT_TLS_DESCRIPTOR at the same time
-        // for a single symbol. Then the TLS descriptor comes later and my reflect that in the GOT address.
+        // for a single symbol. Then the TLS descriptor comes later and we reflect that in the GOT address.
         if self
             .resolution_flags
             .contains(ResolutionFlags::GOT_TLS_OFFSET)

@@ -877,6 +877,8 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         res: &Resolution,
         got_address: u64,
     ) -> Result {
+        // TLS descriptor occupies 2 entries
+        self.take_next_got_entry()?;
         self.take_next_got_entry()?;
 
         anyhow::ensure!(
@@ -897,8 +899,6 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         };
         self.write_tls_descriptor_relocation::<A>(got_address, dynamic_symbol_index, addend)?;
 
-        // TLS descriptor occupies 2 entries
-        self.take_next_got_entry()?;
         Ok(())
     }
 
