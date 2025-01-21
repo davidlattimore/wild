@@ -53,6 +53,7 @@ pub(crate) struct Args {
     pub(crate) should_fork: bool,
     pub(crate) build_id: BuildIdOption,
     pub(crate) file_write_mode: FileWriteMode,
+    pub(crate) no_undefined: bool,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -239,6 +240,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             .ok()
             .map(|s| s.parse())
             .transpose()?,
+        no_undefined: false,
     };
 
     let mut action = None;
@@ -474,6 +476,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             // Using debug fuel with more than one thread would likely give non-deterministic
             // results.
             args.num_threads = NonZeroUsize::new(1).unwrap();
+        } else if long_arg_eq("no-undefined") {
+            args.no_undefined = true;
         } else if let Some(path) = arg.strip_prefix('@') {
             if input.next().is_some() || arg_num > 1 {
                 bail!("Mixing of @{{filename}} and regular arguments isn't supported");

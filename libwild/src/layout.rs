@@ -3,6 +3,7 @@
 //! where in the output file then allocates addresses for each symbol.
 
 use self::elf::NoteHeader;
+use self::elf::Symbol;
 use self::elf::GNU_NOTE_NAME;
 use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use self::output_section_id::InfoInputs;
@@ -2452,6 +2453,20 @@ fn process_relocation<S: StorageModel, A: Arch>(
 
         if previous_flags.is_empty() {
             queue.send_symbol_request(symbol_id, resources);
+            if is_symbol_undefined(
+                object.object.symbol(local_sym_index)?,
+                object.file_id,
+                symbol_db.file_id_for_symbol(symbol_id),
+                symbol_value_flags,
+                args,
+            ) {
+                let symbol_name = symbol_db.symbol_name(symbol_id)?;
+                resources.report_error(anyhow::anyhow!(
+                    "Undefined symbol {}, referenced by {}",
+                    String::from_utf8_lossy(symbol_name.bytes()),
+                    object.input
+                ));
+            }
         }
 
         if resolution_kind.contains(ResolutionFlags::COPY_RELOCATION)
@@ -2872,6 +2887,22 @@ fn create_start_end_symbol_resolution<S: StorageModel>(
         value_flags,
         memory_offsets,
     ))
+}
+
+fn is_symbol_undefined(
+    symbol: &Symbol,
+    sym_file_id: FileId,
+    sym_def_file_id: FileId,
+    symbol_value_flags: ValueFlags,
+    args: &Args,
+) -> bool {
+    if (args.output_kind() == OutputKind::SharedObject && !args.no_undefined) || symbol.is_weak() {
+        return false;
+    }
+
+    sym_file_id == sym_def_file_id
+        && symbol.is_undefined(LittleEndian)
+        && symbol_value_flags.contains(ValueFlags::ABSOLUTE)
 }
 
 impl<'data> EpilogueLayoutState<'data> {
