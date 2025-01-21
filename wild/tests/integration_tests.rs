@@ -29,6 +29,7 @@ use std::hash::Hasher;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Once;
@@ -171,6 +172,28 @@ fn get_host_architecture() -> HostArchitecture {
     todo!("Unsupported architecture")
 }
 
+fn host_supports_clang_with_tls_desc() -> bool {
+    static CLANG_SUPPORTS_TLS_DESC: OnceLock<bool> = OnceLock::new();
+
+    *CLANG_SUPPORTS_TLS_DESC.get_or_init(|| {
+        let mut echo_child = Command::new("echo")
+            .arg("int main() { return 0; }")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("Failed to start echo process");
+        echo_child.wait().expect("Failed to wait for echo");
+        let echo_out = echo_child.stdout.expect("Failed to open echo stdout");
+
+        let clang = Command::new("clang")
+            .args(["-mtls-dialect=gnu2", "-x", "c", "-"])
+            .stdin(Stdio::from(echo_out))
+            .output()
+            .expect("Failed to run clang");
+
+        clang.status.success()
+    })
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct Config {
     name: String,
@@ -193,6 +216,7 @@ struct Config {
     expect_error: Option<String>,
     support_architectures: Vec<HostArchitecture>,
     requires_glibc: bool,
+    requires_clang_with_tlsdesc: bool,
 }
 impl Config {
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
@@ -301,6 +325,7 @@ impl Default for Config {
             expect_error: None,
             support_architectures: vec![HostArchitecture::X86_64, HostArchitecture::AArch64],
             requires_glibc: false,
+            requires_clang_with_tlsdesc: false,
         }
     }
 }
@@ -436,6 +461,9 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                         .collect::<Result<Vec<_>>>()?;
                 }
                 "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
+                "RequiresClangWithTlsDesc" => {
+                    config.requires_clang_with_tlsdesc = arg.to_lowercase().parse()?;
+                }
                 other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
             }
         }
@@ -1360,6 +1388,7 @@ fn integration_test(
         "ifunc.c",
         "internal-syms.c",
         "tls.c",
+        "tlsdesc.c",
         "old_init.c",
         "custom_section.c",
         "stack_alignment.s",
@@ -1426,11 +1455,13 @@ fn integration_test(
     let filename = &program_inputs.source_file;
     let configs = parse_configs(&src_path(filename))
         .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
+
     for config in configs {
         if !config
             .support_architectures
             .contains(&get_host_architecture())
             || config.requires_glibc && !cfg!(target_env = "gnu")
+            || (config.requires_clang_with_tlsdesc && !host_supports_clang_with_tls_desc())
         {
             eprintln!("Skipping config: {}", config.name);
             continue;

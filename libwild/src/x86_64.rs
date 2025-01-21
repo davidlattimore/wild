@@ -61,6 +61,7 @@ impl crate::arch::Arch for X86_64 {
             DynamicRelocationKind::TpOff => object::elf::R_X86_64_TPOFF64,
             DynamicRelocationKind::Relative => object::elf::R_X86_64_RELATIVE,
             DynamicRelocationKind::DynamicSymbol => object::elf::R_X86_64_GLOB_DAT,
+            DynamicRelocationKind::TlsDesc => object::elf::R_X86_64_TLSDESC,
         }
     }
 

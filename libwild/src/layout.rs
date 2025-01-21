@@ -19,6 +19,7 @@ use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
 use crate::elf::FileHeader;
 use crate::elf::Versym;
+use crate::elf::GOT_ENTRY_SIZE;
 use crate::elf_writer;
 use crate::error::Error;
 use crate::error::Result;
@@ -757,6 +758,10 @@ fn allocate_resolution(
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
     }
+    if resolution_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
+        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
+        mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+    }
 }
 
 impl HandlerData for ObjectLayoutState<'_> {
@@ -1059,13 +1064,18 @@ bitflags! {
         /// TLS block.
         const GOT_TLS_OFFSET = 1 << 4;
 
+        /// A double GOT entry is needed in order to store the function pointer and a pointer that
+        /// points to a pair of words (module number and offset within the module).
+        /// Only set for TLS variables.
+        const GOT_TLS_DESCRIPTOR = 1 << 5;
+
         /// The request originated from a dynamic object, so the symbol should be put into the dynamic
         /// symbol table.
-        const EXPORT_DYNAMIC = 1 << 5;
+        const EXPORT_DYNAMIC = 1 << 6;
 
         /// We encountered a direct reference to a symbol from a non-writable section and so we're
         /// going to need to do a copy relocation.
-        const COPY_RELOCATION = 1 << 6;
+        const COPY_RELOCATION = 1 << 7;
     }
 }
 
@@ -2472,6 +2482,9 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
         RelocationKind::TlsGd | RelocationKind::TlsGdGot | RelocationKind::TlsGdGotBase => {
             ResolutionFlags::GOT_TLS_MODULE
         }
+        RelocationKind::TlsDesc | RelocationKind::TlsDescCall => {
+            ResolutionFlags::GOT_TLS_DESCRIPTOR
+        }
         RelocationKind::TlsLd | RelocationKind::TlsLdGot | RelocationKind::TlsLdGotBase => {
             ResolutionFlags::empty()
         }
@@ -3850,7 +3863,9 @@ fn create_resolution(
         } else {
             resolution.got_address = Some(allocate_got(1, memory_offsets));
         }
-    } else if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
+    } else if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE)
+        | res_kind.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR)
+    {
         resolution.got_address = Some(allocate_got(2, memory_offsets));
     }
     resolution
@@ -3906,6 +3921,24 @@ impl Resolution {
             return Ok(got_address + crate::elf::GOT_ENTRY_SIZE);
         }
         Ok(got_address)
+    }
+
+    pub(crate) fn tls_descriptor_got_address(&self) -> Result<u64> {
+        debug_assert_bail!(
+            self.resolution_flags
+                .contains(ResolutionFlags::GOT_TLS_DESCRIPTOR),
+            "Called tls_descriptor_got_address without GOT_TLS_DESCRIPTOR being set"
+        );
+        // We might have both GOT_TLS_OFFSET and GOT_TLS_DESCRIPTOR at the same time
+        // for a single symbol. Then the TLS descriptor comes later and we reflect that in the GOT address.
+        if self
+            .resolution_flags
+            .contains(ResolutionFlags::GOT_TLS_OFFSET)
+        {
+            self.got_address().map(|v| v + GOT_ENTRY_SIZE)
+        } else {
+            self.got_address()
+        }
     }
 
     pub(crate) fn plt_address(&self) -> Result<u64> {

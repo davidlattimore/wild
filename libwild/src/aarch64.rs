@@ -763,6 +763,7 @@ impl crate::arch::Arch for AArch64 {
             DynamicRelocationKind::TpOff => object::elf::R_AARCH64_TLS_TPREL,
             DynamicRelocationKind::Relative => object::elf::R_AARCH64_RELATIVE,
             DynamicRelocationKind::DynamicSymbol => object::elf::R_AARCH64_GLOB_DAT,
+            DynamicRelocationKind::TlsDesc => object::elf::R_AARCH64_TLSDESC,
         }
     }
 

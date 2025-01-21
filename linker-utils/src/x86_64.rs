@@ -178,6 +178,8 @@ pub fn relocation_kind_and_size(r_type: u32) -> Option<(RelocationKind, usize)> 
             (RelocationKind::GotRelative, 4)
         }
         object::elf::R_X86_64_TPOFF32 => (RelocationKind::TpOff, 4),
+        object::elf::R_X86_64_GOTPC32_TLSDESC => (RelocationKind::TlsDesc, 4),
+        object::elf::R_X86_64_TLSDESC_CALL => (RelocationKind::TlsDescCall, 0),
         object::elf::R_X86_64_NONE => (RelocationKind::None, 0),
         _ => return None,
     };
