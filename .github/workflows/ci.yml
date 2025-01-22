@@ -34,7 +34,7 @@ jobs:
 
     steps:
       - run: echo "ARCH=x86_64" >> $GITHUB_ENV
-        if: ${{ runner.arch == 'X86' }}
+        if: ${{ runner.arch == 'X64' }}
       - run: echo "ARCH=aarch64" >> $GITHUB_ENV
         if: ${{ runner.arch == 'ARM64' }}
 
