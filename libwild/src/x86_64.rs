@@ -207,6 +207,13 @@ impl crate::arch::Relaxation for Relaxation {
                                 object::elf::R_X86_64_PC32,
                             )
                         }
+                        // jmp *x(%rip)
+                        [0xff, 0x25] => {
+                            return create(
+                                RelaxationKind::JmpIndirectToRelative,
+                                object::elf::R_X86_64_PC32,
+                            )
+                        }
                         _ => return None,
                     }
                 }

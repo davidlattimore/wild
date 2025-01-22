@@ -24,6 +24,9 @@ pub enum RelaxationKind {
     /// Transform a call instruction like `call *x(%rip)` -> `call x(%rip)`.
     CallIndirectToRelative,
 
+    /// Transform a jump instruction like `jmp *x(%rip)` -> `jmp x(%rip)`.
+    JmpIndirectToRelative,
+
     /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
     NoOp,
 
@@ -95,6 +98,10 @@ impl RelaxationKind {
             }
             RelaxationKind::CallIndirectToRelative => {
                 section_bytes[offset - 2..offset].copy_from_slice(&[0x67, 0xe8]);
+            }
+            RelaxationKind::JmpIndirectToRelative => {
+                section_bytes[offset - 2..offset + 4].copy_from_slice(&[0xe9, 0, 0, 0, 0, 0x90]);
+                *offset_in_section -= 1; // Instruction is 1 byte shorter
             }
             RelaxationKind::TlsGdToLocalExec => {
                 section_bytes[offset - 4..offset + 8].copy_from_slice(&[
