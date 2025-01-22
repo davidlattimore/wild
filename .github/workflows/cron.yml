@@ -1,0 +1,13 @@
+on:
+  schedule:
+    - cron: '35 12 9,22 * *'
+  workflow_dispatch:
+
+name: Cron continuous integration
+
+jobs:
+  markdown-link-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gaurav-nelson/github-action-markdown-link-check@v1
