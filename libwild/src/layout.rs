@@ -2482,9 +2482,10 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
         RelocationKind::TlsGd | RelocationKind::TlsGdGot | RelocationKind::TlsGdGotBase => {
             ResolutionFlags::GOT_TLS_MODULE
         }
-        RelocationKind::TlsDesc | RelocationKind::TlsDescCall => {
-            ResolutionFlags::GOT_TLS_DESCRIPTOR
-        }
+        RelocationKind::TlsDesc
+        | RelocationKind::TlsDescGot
+        | RelocationKind::TlsDescGotBase
+        | RelocationKind::TlsDescCall => ResolutionFlags::GOT_TLS_DESCRIPTOR,
         RelocationKind::TlsLd | RelocationKind::TlsLdGot | RelocationKind::TlsLdGotBase => {
             ResolutionFlags::empty()
         }

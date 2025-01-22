@@ -574,8 +574,14 @@ pub enum RelocationKind {
     /// The offset of a TLS variable within the executable's TLS storage, AArch64 TLS block layout.
     TpOffAArch64,
 
-    /// GOT offset for TLS descriptor, relative to the place of the relocation.
+    /// The address of a TLS descriptor structure, relative to the place of the relocation.
     TlsDesc,
+
+    /// The address of a TLS descriptor structure.
+    TlsDescGot,
+
+    /// The address of a TLS descriptor structure, relative to the start of the GOT.
+    TlsDescGotBase,
 
     /// Call to the TLS descriptor trampoline. Used only as a placeholder for a linker relaxation opportunity.
     TlsDescCall,

@@ -1957,6 +1957,15 @@ fn apply_relocation<S: StorageModel, A: Arch>(
             .bitand(mask.got_entry)
             .wrapping_add(addend)
             .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::TlsDescGot => resolution
+            .tls_descriptor_got_address()?
+            .bitand(mask.got_entry)
+            .wrapping_add(addend),
+        RelocationKind::TlsDescGotBase => resolution
+            .tls_descriptor_got_address()?
+            .bitand(mask.got_entry)
+            .wrapping_add(addend)
+            .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::None | RelocationKind::TlsDescCall => 0,
     };
     rel_info
