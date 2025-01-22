@@ -14,16 +14,18 @@ env:
 jobs:
   test-nightly:
     name: Test x86_64-linux nightly
-    runs-on: ubuntu-latest
+
     strategy:
       matrix:
         container:
           - 'ubuntu:latest'
           - 'ubuntu:rolling'
           - 'opensuse/tumbleweed:latest'
-        # TODO: resolve linker-diff issues before Fedora can be enabled
-        #   - 'fedora:latest'
+        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04-arm
       fail-fast: false
+
+    runs-on: ${{ matrix.runs-on }}
 
     container:
       image: ${{ matrix.container }}
