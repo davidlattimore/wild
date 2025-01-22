@@ -17,26 +17,16 @@ jobs:
 
     strategy:
       matrix:
-        experimental: [false]
         container:
           - 'ubuntu:latest'
           - 'ubuntu:rolling'
           - 'opensuse/tumbleweed:latest'
         runs-on:
           - ubuntu-latest
-        include:
-          - experimental: true
-            container: 'ubuntu:latest'
-            runs-on: ubuntu-24.04-arm
-          - experimental: true
-            container: 'ubuntu:rolling'
-            runs-on: ubuntu-24.04-arm
-          - experimental: true
-            container: 'ubuntu:latest'
-            runs-on: opensuse/tumbleweed:latest
+          - ubuntu-24.04-arm
       fail-fast: false
 
-    continue-on-error: ${{ matrix.experimental }}
+    continue-on-error: ${{ contains(matrix.runs-on, "arm") }}
     runs-on: ${{ matrix.runs-on }}
 
     container:
