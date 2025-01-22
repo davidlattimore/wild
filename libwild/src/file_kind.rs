@@ -18,7 +18,7 @@ pub(crate) enum FileKind {
 
 impl FileKind {
     pub(crate) fn identify_bytes(bytes: &[u8]) -> Result<FileKind> {
-        if bytes.starts_with(b"!<arch>") {
+        if bytes.starts_with(&object::archive::MAGIC) {
             Ok(FileKind::Archive)
         } else if bytes.starts_with(&object::elf::ELFMAG) {
             const HEADER_LEN: usize = size_of::<elf::FileHeader>();
@@ -52,7 +52,7 @@ impl FileKind {
             Ok(FileKind::Text)
         } else if bytes.starts_with(b"BC") {
             bail!("LLVM IR (LTO mode) is not supported yet");
-        } else if bytes.starts_with(b"!<thin>") {
+        } else if bytes.starts_with(&object::archive::THIN_MAGIC) {
             bail!("Thin archives are not supported yet");
         } else {
             bail!("Couldn't identify file type");
