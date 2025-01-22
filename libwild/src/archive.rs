@@ -78,8 +78,8 @@ impl<'data> ArchiveIterator<'data> {
     /// Create an iterator from the bytes of the whole archive. The supplied bytes should start with
     /// an archive entry.
     pub(crate) fn from_archive_bytes(data: &'data [u8]) -> Result<Self> {
-        let magic = b"!<arch>\n";
-        let Some(data) = data.strip_prefix(magic) else {
+        let magic = object::archive::MAGIC;
+        let Some(data) = data.strip_prefix(&magic) else {
             bail!("Missing header");
         };
         Ok(Self {
