@@ -46,15 +46,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
         with:
-          targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl
+          targets: ${{ runner.arch }}-unknown-linux-gnu,${{ runner.arch }}-unknown-linux-musl
           components: rustc-codegen-cranelift-preview
-        if: ${{ !contains(matrix.runs-on, 'arm64') }}
-      - uses: dtolnay/rust-toolchain@nightly
-        id: rust-toolchain
-        with:
-          targets: aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl
-          components: rustc-codegen-cranelift-preview
-        if: ${{ contains(matrix.runs-on, 'arm64') }}
       - uses: actions/cache@v4
         with:
           path: |
