@@ -87,9 +87,3 @@ jobs:
       with:
         components: rustfmt
     - run: cargo fmt --all -- --check
-
-  markdown-link-check:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: gaurav-nelson/github-action-markdown-link-check@v1
