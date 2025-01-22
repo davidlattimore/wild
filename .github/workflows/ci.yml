@@ -23,7 +23,7 @@ jobs:
         container:
           - 'ubuntu:latest'
           - 'ubuntu:rolling'
-          - 'opensuse/tumbleweed:latest'        
+          - 'opensuse/tumbleweed:latest'
       fail-fast: false
 
     runs-on: ${{ matrix.runs-on }}
@@ -36,7 +36,6 @@ jobs:
         if: ${{ runner.arch == 'X64' }}
       - run: echo "ARCH=aarch64" >> $GITHUB_ENV
         if: ${{ runner.arch == 'ARM64' }}
-
       - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap
         if: ${{ contains(matrix.container, 'ubuntu') }}
       - run: su ubuntu && cd ~
@@ -44,8 +43,7 @@ jobs:
       - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
         if: ${{ contains(matrix.container, 'opensuse') }}
       - run: useradd -m -g users user && su user && cd ~
-        if: ${{ contains(matrix.container, 'opensuse') }}    
-
+        if: ${{ contains(matrix.container, 'opensuse') }}
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
@@ -64,7 +62,7 @@ jobs:
       - run: cargo build --profile ci --workspace --no-default-features
       - run: cargo test --profile ci --workspace
         if: ${{ runner.arch == 'X86' }}
-      # TODO: aarch64 test suite is not green yet
+      # TODO: AArch64 test suite is not green yet
       - run: cargo test --profile ci --workspace || true
         if: ${{ runner.arch == 'ARM64' }}
 
@@ -85,7 +83,7 @@ jobs:
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
           target/
-        key: ${{ runner.os }}--clippy-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ runner.os }}-clippy-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
     - run: cargo clippy --workspace --target x86_64-unknown-linux-gnu
 
   rustfmt:
