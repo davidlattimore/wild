@@ -36,6 +36,9 @@ impl Arch for X86_64 {
             Self::RelaxationKind::RexSubIndirectToAbsolute => RelaxationMask::new(3, &[0xff; 3]),
             Self::RelaxationKind::RexCmpIndirectToAbsolute => RelaxationMask::new(3, &[0xff; 3]),
             Self::RelaxationKind::CallIndirectToRelative => RelaxationMask::new(2, &[0xff; 2]),
+            Self::RelaxationKind::JmpIndirectToRelative => {
+                RelaxationMask::new(2, &[0xff, 0, 0, 0, 0, 0xff])
+            }
             Self::RelaxationKind::TlsGdToLocalExec => RelaxationMask::new(4, &[0xff; 12]),
             Self::RelaxationKind::TlsGdToLocalExecLarge => RelaxationMask::new(
                 3,
@@ -100,6 +103,10 @@ impl Arch for X86_64 {
                 );
                 relax(
                     Self::RelaxationKind::MovIndirectToLea,
+                    object::elf::R_X86_64_PC32,
+                );
+                relax(
+                    Self::RelaxationKind::JmpIndirectToRelative,
                     object::elf::R_X86_64_PC32,
                 );
             }
