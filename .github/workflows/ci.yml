@@ -21,8 +21,9 @@ jobs:
           - 'ubuntu:latest'
           - 'ubuntu:rolling'
           - 'opensuse/tumbleweed:latest'
-        runs-on: ubuntu-latest
-        runs-on: ubuntu-24.04-arm
+        runs-on:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
       fail-fast: false
 
     runs-on: ${{ matrix.runs-on }}
