@@ -33,6 +33,11 @@ jobs:
       image: ${{ matrix.container }}
 
     steps:
+      - run: echo "ARCH=x86_64" >> $GITHUB_ENV
+        if: ${{ runner.arch == 'X86' }}
+      - run: echo "ARCH=aarch64" >> $GITHUB_ENV
+        if: ${{ runner.arch == 'ARM64' }}
+
       - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap
         if: ${{ contains(matrix.container, 'ubuntu') }}
       - run: su ubuntu && cd ~
@@ -40,18 +45,13 @@ jobs:
       - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
         if: ${{ contains(matrix.container, 'opensuse') }}
       - run: useradd -m -g users user && su user && cd ~
-        if: ${{ contains(matrix.container, 'opensuse') }}
-
-      - run: echo "ARCH=x86_64" >> $GITHUB_ENV
-        if: ${{ runner.arch == 'X86' }}
-      - run: echo "ARCH=aarch64" >> $GITHUB_ENV
-        if: ${{ runner.arch == 'ARM64' }}
+        if: ${{ contains(matrix.container, 'opensuse') }}    
 
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
         with:
-          targets: $ARCH-unknown-linux-gnu,$ARCH-unknown-linux-musl
+          targets: ${{ env.ARCH }}-unknown-linux-gnu,${{ env.ARCH }}-unknown-linux-musl
           components: rustc-codegen-cranelift-preview
       - uses: actions/cache@v4
         with:
