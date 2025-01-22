@@ -26,7 +26,7 @@ jobs:
           - ubuntu-24.04-arm
       fail-fast: false
 
-    continue-on-error: ${{ contains(matrix.runs-on, "arm") }}
+    continue-on-error: ${{ contains(matrix.runs-on, 'arm') }}
     runs-on: ${{ matrix.runs-on }}
 
     container:
