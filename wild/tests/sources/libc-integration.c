@@ -30,7 +30,7 @@
 //#Object:libc-integration-1.c
 
 //#Config:gcc-static-pie:default
-//#CompArgs:-fPIE
+//#CompArgs:-fPIE -DVERIFY_CTORS
 //#LinkArgs:--cc=gcc -static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
@@ -55,14 +55,14 @@
 //#DiffIgnore:section.rodata.flags
 
 //#Config:gcc-dynamic-pie:default
-//#CompArgs:-g -fpie -DDYNAMIC_DEP
+//#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Shared:libc-integration-0.c
 //#Shared:libc-integration-1.c
 
 //#Config:gcc-dynamic-no-pie:default
-//#CompArgs:-g -no-pie -DDYNAMIC_DEP
+//#CompArgs:-g -no-pie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkArgs:--cc=gcc -dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Shared:libc-integration-0.c
@@ -100,6 +100,8 @@ extern int value42;
 
 const char* str1 = "This is str1";
 
+static int ctors_init_val = 0;
+
 void set_tvar_local(int v);
 int get_tvar_local(void);
 void set_tvar_local2(int v);
@@ -121,6 +123,27 @@ get_int_fn_t fn_pointers[] = {
     get_weak_var2,
     weak_fn1,
 };
+
+// Initialisation with .ctors currently seems to fail with lld (tested with 18.1.8). For that
+// reason, we only enable this part of the test for selected variants that don't enable lld.
+#ifdef VERIFY_CTORS
+
+void init1() {
+    ctors_init_val += 10;
+}
+__attribute__ ((section (".ctors"), used)) static void* init1_ptr = init1;
+
+void init2() {
+    ctors_init_val += 30;
+}
+__attribute__ ((section (".ctors"), used)) static void* init2_ptr = init2;
+
+void init3() {
+    ctors_init_val += 2;
+}
+__attribute__ ((section (".ctors"), used)) static void* init3_ptr = init3;
+
+#endif
 
 void *thread_function(void *data) {
     if (tvar1 != 0) {
@@ -243,6 +266,11 @@ int main() {
     if (strcmp(str1, "This is str1") != 0) {
         return 122;
     }
+#ifdef VERIFY_CTORS
+    if (ctors_init_val != 42) {
+        return ctors_init_val;
+    }
+#endif
 
     return 42;
 }
