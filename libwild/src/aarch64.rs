@@ -1,3 +1,4 @@
+use crate::arch::RelocationModifier;
 use crate::elf::extract_bits;
 use crate::elf::BitRange;
 use crate::elf::DynamicRelocationKind;
@@ -13,7 +14,6 @@ use anyhow::bail;
 use anyhow::Result;
 use linker_utils::elf::aarch64_rel_type_to_string;
 use linker_utils::elf::RelocationKind;
-use linker_utils::relaxation::RelocationModifier;
 
 pub(crate) struct AArch64;
 
@@ -875,14 +875,7 @@ impl crate::arch::Relaxation for () {
     }
 
     #[allow(unused_variables)]
-    fn apply(
-        &self,
-        section_bytes: &mut [u8],
-        offset_in_section: &mut u64,
-        addend: &mut u64,
-        next_modifier: &mut RelocationModifier,
-    ) {
-    }
+    fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut u64) {}
 
     fn rel_info(&self) -> crate::elf::RelocationKindInfo {
         RelocationKindInfo {
@@ -894,6 +887,10 @@ impl crate::arch::Relaxation for () {
 
     fn debug_kind(&self) -> impl std::fmt::Debug {
         todo!()
+    }
+
+    fn next_modifier(&self) -> RelocationModifier {
+        RelocationModifier::Normal
     }
 }
 

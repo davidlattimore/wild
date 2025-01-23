@@ -7,7 +7,6 @@ use crate::error::Result;
 use crate::resolution::ValueFlags;
 use anyhow::bail;
 use linker_utils::elf::SectionFlags;
-use linker_utils::relaxation::RelocationModifier;
 use std::borrow::Cow;
 use std::str::FromStr;
 
@@ -61,15 +60,17 @@ pub(crate) trait Relaxation {
     where
         Self: std::marker::Sized;
 
-    fn apply(
-        &self,
-        section_bytes: &mut [u8],
-        offset_in_section: &mut u64,
-        addend: &mut u64,
-        next_modifier: &mut RelocationModifier,
-    );
+    fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut u64);
 
     fn rel_info(&self) -> crate::elf::RelocationKindInfo;
 
     fn debug_kind(&self) -> impl std::fmt::Debug;
+
+    fn next_modifier(&self) -> RelocationModifier;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelocationModifier {
+    Normal,
+    SkipNextRelocation,
 }
