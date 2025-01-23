@@ -11,6 +11,7 @@ use crate::alignment;
 use crate::alignment::Alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
+use crate::arch::RelocationModifier;
 use crate::args::Args;
 use crate::args::BuildIdOption;
 use crate::args::OutputKind;
@@ -2398,8 +2399,9 @@ fn process_relocation<S: StorageModel, A: Arch>(
     section: &object::elf::SectionHeader64<LittleEndian>,
     resources: &GraphResources<S>,
     queue: &mut LocalWorkQueue,
-) -> Result {
+) -> Result<RelocationModifier> {
     let args = resources.symbol_db.args;
+    let mut next_modifier = RelocationModifier::Normal;
     if let Some(local_sym_index) = rel.symbol(LittleEndian, false) {
         let symbol_db = resources.symbol_db;
         let symbol_id = symbol_db.definition(object.symbol_id_range.input_to_id(local_sym_index));
@@ -2416,6 +2418,7 @@ fn process_relocation<S: StorageModel, A: Arch>(
             args.output_kind(),
             SectionFlags::from_header(section),
         ) {
+            next_modifier = relaxation.next_modifier();
             relaxation.rel_info()
         } else {
             A::relocation_from_raw(r_type)?
@@ -2475,7 +2478,7 @@ fn process_relocation<S: StorageModel, A: Arch>(
             queue.send_copy_relocation_request(symbol_id, resources);
         }
     }
-    Ok(())
+    Ok(next_modifier)
 }
 
 /// Returns whether the supplied relocation type requires static TLS. If true and we're writing a
@@ -3240,8 +3243,13 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result {
         let part_id = unloaded.part_id;
         let section = Section::create(self, section_id, part_id)?;
+        let mut modifier = RelocationModifier::Normal;
         for rel in self.object.relocations(section.index)? {
-            process_relocation::<S, A>(
+            if modifier == RelocationModifier::SkipNextRelocation {
+                modifier = RelocationModifier::Normal;
+                continue;
+            }
+            modifier = process_relocation::<S, A>(
                 self,
                 common,
                 rel,

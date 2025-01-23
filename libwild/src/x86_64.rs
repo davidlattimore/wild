@@ -4,6 +4,7 @@
 //! static-PIE binary because dynamic relocations haven't yet been applied to the GOT yet.
 
 use crate::arch::Arch;
+use crate::arch::RelocationModifier;
 use crate::args::OutputKind;
 use crate::elf::DynamicRelocationKind;
 use crate::elf::RelocationKindInfo;
@@ -15,7 +16,6 @@ use anyhow::Result;
 use linker_utils::elf::shf;
 use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::elf::SectionFlags;
-use linker_utils::relaxation::RelocationModifier;
 use linker_utils::x86_64::RelaxationKind;
 
 pub(crate) struct X86_64;
@@ -271,15 +271,8 @@ impl crate::arch::Relaxation for Relaxation {
         None
     }
 
-    fn apply(
-        &self,
-        section_bytes: &mut [u8],
-        offset_in_section: &mut u64,
-        addend: &mut u64,
-        next_modifier: &mut RelocationModifier,
-    ) {
-        self.kind
-            .apply(section_bytes, offset_in_section, addend, next_modifier);
+    fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut u64) {
+        self.kind.apply(section_bytes, offset_in_section, addend);
     }
 
     fn rel_info(&self) -> crate::elf::RelocationKindInfo {
@@ -288,6 +281,17 @@ impl crate::arch::Relaxation for Relaxation {
 
     fn debug_kind(&self) -> impl std::fmt::Debug {
         &self.kind
+    }
+
+    fn next_modifier(&self) -> RelocationModifier {
+        match self.kind {
+            RelaxationKind::TlsGdToInitialExec
+            | RelaxationKind::TlsGdToLocalExec
+            | RelaxationKind::TlsGdToLocalExecLarge
+            | RelaxationKind::TlsLdToLocalExec
+            | RelaxationKind::TlsLdToLocalExec64 => RelocationModifier::SkipNextRelocation,
+            _ => RelocationModifier::Normal,
+        }
     }
 }
 
@@ -322,7 +326,6 @@ fn test_relaxation() {
     fn check(relocation_kind: u32, bytes_in: &[u8], address: &[u8], absolute: &[u8]) {
         let mut out = bytes_in.to_owned();
         let mut offset = bytes_in.len() as u64;
-        let mut modifier = RelocationModifier::Normal;
         if let Some(r) = Relaxation::new(
             relocation_kind,
             bytes_in,
@@ -331,7 +334,7 @@ fn test_relaxation() {
             OutputKind::StaticExecutable(RelocationModel::Relocatable),
             shf::EXECINSTR,
         ) {
-            r.apply(&mut out, &mut offset, &mut 0, &mut modifier);
+            r.apply(&mut out, &mut offset, &mut 0);
 
             assert_eq!(
                 out, address,
@@ -347,7 +350,7 @@ fn test_relaxation() {
             shf::EXECINSTR,
         ) {
             out.copy_from_slice(bytes_in);
-            r.apply(&mut out, &mut offset, &mut 0, &mut modifier);
+            r.apply(&mut out, &mut offset, &mut 0);
             assert_eq!(
                 out, absolute,
                 "unresolved: Expected {absolute:x?}, got {out:x?}"

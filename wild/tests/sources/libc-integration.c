@@ -19,7 +19,7 @@
 //#Object:libc-integration-1.c
 
 //#Config:clang-static-pie:default
-//#CompArgs:-fPIE
+//#CompArgs:-fPIE -fPIC
 //#LinkArgs:--cc=clang -static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
