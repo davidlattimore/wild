@@ -109,11 +109,11 @@ impl<'data> UnresolvedSection<'data> {
         } else if section_name.starts_with(BSS_SECTION_NAME) {
             Some(output_section_id::BSS)
         } else if section_name.starts_with(INIT_ARRAY_SECTION_NAME)
-            || section_name.starts_with(b".ctors.")
+            || section_name.starts_with(b".ctors")
         {
             Some(output_section_id::INIT_ARRAY)
         } else if section_name.starts_with(FINI_ARRAY_SECTION_NAME)
-            || section_name.starts_with(b".dtors.")
+            || section_name.starts_with(b".dtors")
         {
             Some(output_section_id::FINI_ARRAY)
         } else if section_name == INIT_SECTION_NAME {
