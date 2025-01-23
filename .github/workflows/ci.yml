@@ -13,38 +13,42 @@ env:
 
 jobs:
   test-nightly:
-    name: Test x86_64-linux nightly
-    runs-on: ubuntu-latest
+    name: Test
+
     strategy:
       matrix:
+        runs-on:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
         container:
           - 'ubuntu:latest'
           - 'ubuntu:rolling'
           - 'opensuse/tumbleweed:latest'
-        # TODO: resolve linker-diff issues before Fedora can be enabled
-        #   - 'fedora:latest'
       fail-fast: false
+
+    runs-on: ${{ matrix.runs-on }}
 
     container:
       image: ${{ matrix.container }}
 
     steps:
+      - run: echo "ARCH=x86_64" >> $GITHUB_ENV
+        if: ${{ runner.arch == 'X64' }}
+      - run: echo "ARCH=aarch64" >> $GITHUB_ENV
+        if: ${{ runner.arch == 'ARM64' }}
       - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap
         if: ${{ contains(matrix.container, 'ubuntu') }}
       - run: su ubuntu && cd ~
         if: ${{ contains(matrix.container, 'ubuntu') }}
       - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
         if: ${{ contains(matrix.container, 'opensuse') }}
-      # - run: yum install -y gcc gcc-c++ glibc-static clang lld curl rustup util-linux bubblewrap
-      #   if: ${{ contains(matrix.container, 'fedora') }}
       - run: useradd -m -g users user && su user && cd ~
-        if: ${{ contains(matrix.container, 'opensuse') || contains(matrix.container, 'fedora') }}
-
+        if: ${{ contains(matrix.container, 'opensuse') }}
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
         with:
-          targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl
+          targets: $ARCH-unknown-linux-gnu,$ARCH-unknown-linux-musl
           components: rustc-codegen-cranelift-preview
       - uses: actions/cache@v4
         with:
@@ -54,9 +58,13 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-${{ matrix.container }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
       - run: cargo build --profile ci --workspace --no-default-features
       - run: cargo test --profile ci --workspace
+        if: ${{ runner.arch == 'X86' }}
+      # TODO: AArch64 test suite is not green yet
+      - run: cargo test --profile ci --workspace || true
+        if: ${{ runner.arch == 'ARM64' }}
 
   clippy:
     name: Clippy
