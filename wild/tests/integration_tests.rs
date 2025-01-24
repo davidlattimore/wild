@@ -185,7 +185,7 @@ fn host_supports_clang_with_tls_desc() -> bool {
         let echo_out = echo_child.stdout.expect("Failed to open echo stdout");
 
         let clang = Command::new("clang")
-            .args(["-mtls-dialect=gnu2", "-x", "c", "-"])
+            .args(["-mtls-dialect=gnu2", "-x", "c", "-", "-o/dev/null"])
             .stdin(Stdio::from(echo_out))
             .output()
             .expect("Failed to run clang");
