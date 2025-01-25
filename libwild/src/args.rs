@@ -176,7 +176,7 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "no-relax",
 ];
 
-const IGNORED_FLAGS: &[&str] = &["gdb-index", "disable-new-dtags"];
+const IGNORED_FLAGS: &[&str] = &["gdb-index", "disable-new-dtags", "fix-cortex-a53-843419"];
 
 // These flags map to the default behavior of the linker.
 const DEFAULT_FLAGS: &[&str] = &[
