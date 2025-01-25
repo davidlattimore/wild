@@ -629,7 +629,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::GotTpOffGot,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 3, end: 12 },
-                    insn: RelocationInstruction::Ldr,
+                    insn: RelocationInstruction::LdrRegister,
                 },
                 None,
             ),
@@ -775,7 +775,7 @@ impl crate::arch::Arch for AArch64 {
                 RelocationKind::TlsDescGot,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 3, end: 12 },
-                    insn: RelocationInstruction::Ldr,
+                    insn: RelocationInstruction::LdrRegister,
                 },
                 None,
             ),

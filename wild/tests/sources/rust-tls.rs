@@ -1,4 +1,5 @@
 //#AbstractConfig:default
+//#DiffIgnore:.dynamic.DT_NEEDED
 
 //#Config:global-dynamic:default
 //#CompArgs:-Ztls-model=global-dynamic
