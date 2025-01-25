@@ -804,6 +804,13 @@ impl crate::arch::Arch for AArch64 {
                 None,
             ),
 
+            // Misc relocations
+            object::elf::R_AARCH64_TLSDESC_CALL => (
+                RelocationKind::TlsDescCall,
+                RelocationSize::ByteSize(0),
+                None,
+            ),
+
             _ => bail!(
                 "Unsupported relocation type {}",
                 Self::rel_type_to_string(r_type)
