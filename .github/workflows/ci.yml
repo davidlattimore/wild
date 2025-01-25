@@ -38,13 +38,10 @@ jobs:
       - run: echo "ARCH=aarch64" >> $GITHUB_ENV
         if: ${{ runner.arch == 'ARM64' }}
       - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap
-        if: ${{ contains(matrix.container, 'ubuntu') }}
-      - run: su ubuntu && cd ~
-        if: ${{ contains(matrix.container, 'ubuntu') }}
+        if: ${{ contains(matrix.container, 'ubuntu') }}      
       - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
         if: ${{ contains(matrix.container, 'opensuse') }}
       - run: useradd -m -g users user && su user && cd ~
-        if: ${{ contains(matrix.container, 'opensuse') }}
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
