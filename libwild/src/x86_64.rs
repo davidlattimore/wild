@@ -145,23 +145,29 @@ impl crate::arch::Relaxation for Relaxation {
                 }
                 let b1 = section_bytes[offset - 2];
                 let rex = section_bytes[offset - 3];
+
+                // REX prefixed instruction with W=1, R=0/1, X=0, B=0
                 if rex != 0x48 && rex != 0x4c {
                     return None;
                 }
+
                 if is_absolute || is_absolute_address {
                     match b1 {
+                        // mov *x(%rip), reg
                         0x8b => {
                             return create(
                                 RelaxationKind::RexMovIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
                             );
                         }
+                        // sub *x(%rip), reg
                         0x2b => {
                             return create(
                                 RelaxationKind::RexSubIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
                             );
                         }
+                        // cmp *x(%rip), reg
                         0x3b => {
                             return create(
                                 RelaxationKind::RexCmpIndirectToAbsolute,
@@ -172,6 +178,7 @@ impl crate::arch::Relaxation for Relaxation {
                     }
                 } else if can_bypass_got {
                     match b1 {
+                        // mov *x(%rip), reg
                         0x8b => {
                             return create(
                                 RelaxationKind::MovIndirectToLea,
@@ -185,6 +192,7 @@ impl crate::arch::Relaxation for Relaxation {
             object::elf::R_X86_64_GOTPCRELX => {
                 if is_absolute || is_absolute_address {
                     match section_bytes.get(offset - 2)? {
+                        // mov *x(%rip), reg
                         0x8b => {
                             return create(
                                 RelaxationKind::MovIndirectToAbsolute,
@@ -196,6 +204,7 @@ impl crate::arch::Relaxation for Relaxation {
                 }
                 if can_bypass_got {
                     match section_bytes.get(offset - 2..offset)? {
+                        // call *x(%rip)
                         [0xff, 0x15] => {
                             return create(
                                 RelaxationKind::CallIndirectToRelative,
@@ -209,6 +218,7 @@ impl crate::arch::Relaxation for Relaxation {
             }
             object::elf::R_X86_64_GOTPCREL if can_bypass_got && offset >= 2 => {
                 match section_bytes.get(offset - 2)? {
+                    // mov *x(%rip), reg
                     0x8b => {
                         return create(
                             RelaxationKind::MovIndirectToLea,
@@ -221,6 +231,7 @@ impl crate::arch::Relaxation for Relaxation {
             }
             object::elf::R_X86_64_GOTTPOFF if can_bypass_got => {
                 match section_bytes.get(offset - 3..offset - 1)? {
+                    // mov *x(%rip), reg
                     [0x48 | 0x4c, 0x8b] => {
                         return create(
                             RelaxationKind::RexMovIndirectToAbsolute,
@@ -254,6 +265,7 @@ impl crate::arch::Relaxation for Relaxation {
                 return create(kind, object::elf::R_X86_64_GOTTPOFF);
             }
             object::elf::R_X86_64_TLSLD if output_kind.is_executable() => {
+                // lea    0x0(%rip),%rdi
                 if section_bytes.get(offset - 3..offset)? == [0x48, 0x8d, 0x3d] {
                     if section_bytes.get(offset + 4..offset + 6) == Some(&[0x48, 0xb8]) {
                         // The previous instruction was 64 bit, so we use a slightly different
@@ -295,18 +307,26 @@ enum TlsGdForm {
 
 impl TlsGdForm {
     fn identify(bytes: &[u8], offset: usize) -> Option<Self> {
+        // data16 lea 0x0(%rip),%rdi
+        // data16 data16 rex.W call {relative function offset}
         if bytes.get(offset - 4..offset) == Some(&[0x66, 0x48, 0x8d, 0x3d])
             && bytes.get(offset + 4..offset + 8) == Some(&[0x66, 0x66, 0x48, 0xe8])
         {
-            Some(Self::Regular)
-        } else if bytes.get(offset - 3..offset) == Some(&[0x48, 0x8d, 0x3d])
+            return Some(Self::Regular);
+        }
+
+        // lea 0x0(%rip),%rdi
+        // movabs $X,%rax
+        // TODO: This branch is not currently exercised by our tests. Add a test and document the
+        // third instruction.
+        if bytes.get(offset - 3..offset) == Some(&[0x48, 0x8d, 0x3d])
             && bytes.get(offset + 4..offset + 6) == Some(&[0x48, 0xb8])
             && bytes.get(offset + 14..offset + 19) == Some(&[0x48, 0x01, 0xd8, 0xff, 0xd0])
         {
-            Some(Self::Large)
-        } else {
-            None
+            return Some(Self::Large);
         }
+
+        None
     }
 }
 

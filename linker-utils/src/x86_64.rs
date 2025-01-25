@@ -108,14 +108,19 @@ impl RelaxationKind {
                 *addend = 0;
             }
             RelaxationKind::TlsGdToInitialExec => {
-                section_bytes[offset - 4..offset + 8]
-                    .copy_from_slice(&[0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, 0x48, 0x03, 0x05]);
+                section_bytes[offset - 4..offset + 8].copy_from_slice(&[
+                    // mov %fs:0,%rax
+                    0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0, // add *x,%rax
+                    0x48, 0x03, 0x05,
+                ]);
                 *offset_in_section += 8;
                 *addend = -12_i64 as u64;
             }
             RelaxationKind::TlsLdToLocalExec => {
-                section_bytes[offset - 3..offset + 9]
-                    .copy_from_slice(&[0x66, 0x66, 0x66, 0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0]);
+                section_bytes[offset - 3..offset + 9].copy_from_slice(&[
+                    // mov %fs:0,%rax
+                    0x66, 0x66, 0x66, 0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0,
+                ]);
                 *offset_in_section += 5;
             }
             RelaxationKind::TlsLdToLocalExec64 => {
