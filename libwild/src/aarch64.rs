@@ -1,4 +1,3 @@
-use crate::arch::RelocationModifier;
 use crate::elf::extract_bits;
 use crate::elf::BitRange;
 use crate::elf::DynamicRelocationKind;
@@ -14,6 +13,7 @@ use anyhow::bail;
 use anyhow::Result;
 use linker_utils::elf::aarch64_rel_type_to_string;
 use linker_utils::elf::RelocationKind;
+use linker_utils::relaxation::RelocationModifier;
 
 pub(crate) struct AArch64;
 

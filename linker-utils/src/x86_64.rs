@@ -1,4 +1,5 @@
 use crate::elf::RelocationKind;
+use crate::relaxation::RelocationModifier;
 
 #[derive(Debug, Clone, Copy)]
 pub enum RelaxationKind {
@@ -127,6 +128,18 @@ impl RelaxationKind {
                 *offset_in_section += 15;
             }
             RelaxationKind::NoOp => {}
+        }
+    }
+
+    #[must_use]
+    pub fn next_modifier(&self) -> RelocationModifier {
+        match self {
+            RelaxationKind::TlsGdToInitialExec
+            | RelaxationKind::TlsGdToLocalExec
+            | RelaxationKind::TlsGdToLocalExecLarge
+            | RelaxationKind::TlsLdToLocalExec
+            | RelaxationKind::TlsLdToLocalExec64 => RelocationModifier::SkipNextRelocation,
+            _ => RelocationModifier::Normal,
         }
     }
 }

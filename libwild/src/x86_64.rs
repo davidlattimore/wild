@@ -4,7 +4,6 @@
 //! static-PIE binary because dynamic relocations haven't yet been applied to the GOT yet.
 
 use crate::arch::Arch;
-use crate::arch::RelocationModifier;
 use crate::args::OutputKind;
 use crate::elf::DynamicRelocationKind;
 use crate::elf::RelocationKindInfo;
@@ -16,6 +15,7 @@ use anyhow::Result;
 use linker_utils::elf::shf;
 use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::elf::SectionFlags;
+use linker_utils::relaxation::RelocationModifier;
 use linker_utils::x86_64::RelaxationKind;
 
 pub(crate) struct X86_64;
@@ -284,14 +284,7 @@ impl crate::arch::Relaxation for Relaxation {
     }
 
     fn next_modifier(&self) -> RelocationModifier {
-        match self.kind {
-            RelaxationKind::TlsGdToInitialExec
-            | RelaxationKind::TlsGdToLocalExec
-            | RelaxationKind::TlsGdToLocalExecLarge
-            | RelaxationKind::TlsLdToLocalExec
-            | RelaxationKind::TlsLdToLocalExec64 => RelocationModifier::SkipNextRelocation,
-            _ => RelocationModifier::Normal,
-        }
+        self.kind.next_modifier()
     }
 }
 
