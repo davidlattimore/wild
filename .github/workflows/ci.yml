@@ -13,7 +13,7 @@ env:
 
 jobs:
   test-nightly:
-    name: Test
+    name: Test (${{ matrix.runs-on }}) XXX
 
     strategy:
       matrix:
@@ -37,7 +37,6 @@ jobs:
         if: ${{ runner.arch == 'X64' }}
       - run: echo "ARCH=aarch64" >> $GITHUB_ENV
         if: ${{ runner.arch == 'ARM64' }}
-      - name: Test ($ARCH, ${{ matrix.container }})
       - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap
         if: ${{ contains(matrix.container, 'ubuntu') }}      
       - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
