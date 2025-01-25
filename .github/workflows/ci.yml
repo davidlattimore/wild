@@ -21,6 +21,7 @@ jobs:
           - ubuntu-latest
           - ubuntu-24.04-arm
         container:
+          - 'ubuntu:22.04'
           - 'ubuntu:latest'
           - 'ubuntu:rolling'
           - 'opensuse/tumbleweed:latest'
