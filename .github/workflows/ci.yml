@@ -13,7 +13,7 @@ env:
 
 jobs:
   test-nightly:
-    name: Test (${{ matrix.runs-on }}) XXX
+    name: Test (${{ contains(matrix.runs-on, 'arm') && 'ARM64' || 'X86_64'}}, ${{ matrix.container }})
 
     strategy:
       matrix:
