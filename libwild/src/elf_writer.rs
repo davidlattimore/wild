@@ -1236,7 +1236,7 @@ impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
             })?
         } else {
             if self.is_dynamic {
-                tracing::trace!("Write .dynsym {}", String::from_utf8_lossy(name));
+                tracing::trace!(name = %String::from_utf8_lossy(name), "Write .dynsym");
             }
             take_first_mut(&mut self.global_entries).with_context(|| {
                 format!(
@@ -1796,7 +1796,12 @@ fn apply_relocation<S: StorageModel, A: Arch>(
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
     let place = section_address + offset_in_section;
-    let _span = tracing::trace_span!("relocation", address = place).entered();
+    let _span = tracing::trace_span!(
+        "relocation",
+        address = place,
+        address_hex = format!("{place:x}")
+    )
+    .entered();
 
     let e = LittleEndian;
     let symbol_index = rel
@@ -1827,12 +1832,12 @@ fn apply_relocation<S: StorageModel, A: Arch>(
         output_kind,
         section_info.section_flags,
     ) {
-        tracing::trace!(kind = ?relaxation.debug_kind(), %value_flags, %resolution_flags);
+        tracing::trace!(kind = ?relaxation.debug_kind(), %value_flags, %resolution_flags, "relaxation applied");
         rel_info = relaxation.rel_info();
         relaxation.apply(out, &mut offset_in_section, &mut addend);
         next_modifier = relaxation.next_modifier();
     } else {
-        tracing::trace!(%value_flags, %resolution_flags);
+        tracing::trace!(%value_flags, %resolution_flags, "relocation applied");
         rel_info = A::relocation_from_raw(r_type)?;
     }
     let mask = get_page_mask(rel_info.mask);
