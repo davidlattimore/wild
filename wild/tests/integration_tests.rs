@@ -288,8 +288,11 @@ impl ArgumentSet {
 
     fn default_for_linking() -> Self {
         Self {
-            // Wild linker uses -znow by default!
-            args: vec!["-z".to_owned(), "now".to_owned()],
+            // Wild linker uses -znow by default and relro is unsupported!
+            args: ["-z", "now", "-z", "norelro"]
+                .into_iter()
+                .map(ToOwned::to_owned)
+                .collect(),
         }
     }
 
