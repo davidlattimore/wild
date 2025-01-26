@@ -1855,6 +1855,15 @@ fn apply_relocation<S: StorageModel, A: Arch>(
                 layout,
             )?
         }
+        RelocationKind::AbsoluteAArch64 => resolution
+            .value_with_addend(
+                addend,
+                symbol_index,
+                object_layout,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+            )?
+            .bitand(mask.symbol_plus_addend),
         RelocationKind::Relative => resolution
             .value_with_addend(
                 addend,

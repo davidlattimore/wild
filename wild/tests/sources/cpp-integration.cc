@@ -3,6 +3,7 @@
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.data
 //#DiffIgnore:section.rodata.alignment
+//#DiffIgnore:section.bss.alignment
 //#Object:cpp-integration-2.cc
 
 //#Config:pie:default

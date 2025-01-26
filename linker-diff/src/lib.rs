@@ -171,7 +171,7 @@ impl Config {
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
-            )
+            );
         }
 
         self.equiv.push((

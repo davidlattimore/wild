@@ -509,6 +509,10 @@ pub enum RelocationKind {
     /// The absolute address of a symbol or section.
     Absolute,
 
+    /// The absolute address of a symbol or section. We are going to extract only the offset
+    /// within a page, so dynamic relocation creation must be skiped.
+    AbsoluteAArch64,
+
     /// The address of the symbol, relative to the place of the relocation.
     Relative,
 

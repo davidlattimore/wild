@@ -2515,6 +2515,7 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
         | RelocationKind::SymRelGotBase
         | RelocationKind::Got
         | RelocationKind::None => ResolutionFlags::DIRECT,
+        RelocationKind::AbsoluteAArch64 => ResolutionFlags::empty(),
     }
 }
 
