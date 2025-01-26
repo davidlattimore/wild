@@ -1823,6 +1823,8 @@ fn apply_relocation<S: StorageModel, A: Arch>(
     let r_type = rel.r_type(e, false);
     let rel_info;
     let output_kind = layout.args().output_kind();
+    let symbol_name = layout.symbol_db.symbol_name(local_symbol_id)?;
+
     if let Some(relaxation) = A::Relaxation::new(
         r_type,
         out,
@@ -1831,13 +1833,13 @@ fn apply_relocation<S: StorageModel, A: Arch>(
         output_kind,
         section_info.section_flags,
     ) {
-        tracing::trace!(kind = ?relaxation.debug_kind(), %value_flags, %resolution_flags, "relaxation applied");
         rel_info = relaxation.rel_info();
+        tracing::trace!(kind = ?relaxation.debug_kind(), %value_flags, %resolution_flags, ?rel_info.kind, %symbol_name, "relaxation applied");
         relaxation.apply(out, &mut offset_in_section, &mut addend);
         next_modifier = relaxation.next_modifier();
     } else {
-        tracing::trace!(%value_flags, %resolution_flags, "relocation applied");
         rel_info = A::relocation_from_raw(r_type)?;
+        tracing::trace!(%value_flags, %resolution_flags, ?rel_info.kind, %symbol_name, "relocation applied");
     }
     let mask = get_page_mask(rel_info.mask);
     let value = match rel_info.kind {
