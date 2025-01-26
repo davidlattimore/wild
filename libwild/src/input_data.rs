@@ -182,7 +182,7 @@ impl Input {
     fn path(&self, args: &Args) -> Result<InputPath> {
         match &self.spec {
             InputSpec::File(p) => {
-                if p.components().count() == 1 {
+                if self.search_first.is_some() {
                     if let Some(absolute) = search_for_file(
                         &args.lib_search_path,
                         self.search_first.as_ref(),
