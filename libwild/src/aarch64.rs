@@ -1,3 +1,4 @@
+use crate::arch::Arch;
 use crate::elf::extract_bits;
 use crate::elf::BitRange;
 use crate::elf::DynamicRelocationKind;
@@ -889,18 +890,14 @@ impl crate::arch::Relaxation for Relaxation {
         // IFuncs cannot be referenced directly, they always need to go via the GOT.
         if value_flags.contains(ValueFlags::IFUNC) {
             return match relocation_kind {
-                object::elf::R_AARCH64_CALL26 => Some(Self {
-                    kind: RelaxationKind::NoOp,
-                    // TODO: reuse
-                    rel_info: RelocationKindInfo {
-                        kind: RelocationKind::PltRelative,
-                        size: RelocationSize::BitMasking {
-                            range: BitRange { start: 2, end: 28 },
-                            insn: RelocationInstruction::JumpCall,
-                        },
-                        mask: None,
-                    },
-                }),
+                rel @ object::elf::R_AARCH64_CALL26 => {
+                    let mut relocation = AArch64::relocation_from_raw(rel).unwrap();
+                    relocation.kind = RelocationKind::PltRelative;
+                    return Some(Relaxation {
+                        kind: RelaxationKind::NoOp,
+                        rel_info: relocation,
+                    });
+                }
                 _ => None,
             };
         }
