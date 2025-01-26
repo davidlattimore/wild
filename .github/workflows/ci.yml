@@ -37,9 +37,9 @@ jobs:
         if: ${{ runner.arch == 'X64' }}
       - run: echo "ARCH=aarch64" >> $GITHUB_ENV
         if: ${{ runner.arch == 'ARM64' }}
-      - run: apt-get update && apt-get -y install gcc g++ clang lld binutils-gold curl bubblewrap
+      - run: apt-get update && apt-get -y install gcc g++ clang lld mold binutils-gold curl bubblewrap
         if: ${{ contains(matrix.container, 'ubuntu') }}      
-      - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld binutils-gold curl rustup bubblewrap
+      - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld mold binutils-gold curl rustup bubblewrap
         if: ${{ contains(matrix.container, 'opensuse') }}
       - run: useradd -m -g users user && su user && cd ~
       - uses: actions/checkout@v4
