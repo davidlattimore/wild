@@ -59,7 +59,7 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
       - run: cargo build --profile ci --workspace --no-default-features
       - run: cargo test --profile ci --workspace
-        if: ${{ runner.arch == 'X86' }}
+        if: ${{ runner.arch == 'X64' }}
       # TODO: AArch64 test suite is not green yet
       - run: cargo test --profile ci --workspace || true
         if: ${{ runner.arch == 'ARM64' }}
