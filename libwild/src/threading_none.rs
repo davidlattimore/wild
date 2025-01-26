@@ -121,6 +121,7 @@ impl ThreadPoolBuilder {
         self
     }
 
+    #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
     pub(crate) fn build_global(self) -> Result<ThreadPool, ThreadPoolBuildError> {
         Ok(ThreadPool {})
     }
