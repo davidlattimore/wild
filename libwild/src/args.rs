@@ -503,6 +503,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if strip_option(arg)
             .is_some_and(|stripped_arg| SILENTLY_IGNORED_FLAGS.contains(&stripped_arg))
         {
+        } else if long_arg_split_prefix("sysroot=").is_some() {
+            warn_unsupported("--sysroot")?;
         } else if arg.starts_with('-') {
             unrecognised.push(format!("`{arg}`"));
         } else {
