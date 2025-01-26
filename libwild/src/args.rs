@@ -181,6 +181,7 @@ const IGNORED_FLAGS: &[&str] = &[
     "disable-new-dtags",
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
+    "no-export-dynamic",
 ];
 
 // These flags map to the default behavior of the linker.
@@ -434,6 +435,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             args.merge_strings = false;
         } else if long_arg_eq("pie") {
             args.relocation_model = RelocationModel::Relocatable;
+        } else if long_arg_eq("no-pie") {
+            args.relocation_model = RelocationModel::NonRelocatable;
         } else if long_arg_eq("eh-frame-hdr") {
             args.should_write_eh_frame_hdr = true;
         } else if long_arg_eq("shared") {
