@@ -154,7 +154,7 @@ impl crate::arch::Arch for AArch64 {
                 Some(PageMask::SymbolPlusAddendAndPosition),
             ),
             object::elf::R_AARCH64_ADD_ABS_LO12_NC => (
-                RelocationKind::Absolute,
+                RelocationKind::AbsoluteAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 12 },
                     insn: RelocationInstruction::Add,
@@ -162,7 +162,7 @@ impl crate::arch::Arch for AArch64 {
                 None,
             ),
             object::elf::R_AARCH64_LDST8_ABS_LO12_NC => (
-                RelocationKind::Absolute,
+                RelocationKind::AbsoluteAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 0, end: 12 },
                     insn: RelocationInstruction::LdSt,
@@ -170,7 +170,7 @@ impl crate::arch::Arch for AArch64 {
                 None,
             ),
             object::elf::R_AARCH64_LDST16_ABS_LO12_NC => (
-                RelocationKind::Absolute,
+                RelocationKind::AbsoluteAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 1, end: 12 },
                     insn: RelocationInstruction::LdSt,
@@ -178,7 +178,7 @@ impl crate::arch::Arch for AArch64 {
                 None,
             ),
             object::elf::R_AARCH64_LDST32_ABS_LO12_NC => (
-                RelocationKind::Absolute,
+                RelocationKind::AbsoluteAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 2, end: 12 },
                     insn: RelocationInstruction::LdSt,
@@ -186,7 +186,7 @@ impl crate::arch::Arch for AArch64 {
                 None,
             ),
             object::elf::R_AARCH64_LDST64_ABS_LO12_NC => (
-                RelocationKind::Absolute,
+                RelocationKind::AbsoluteAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 3, end: 12 },
                     insn: RelocationInstruction::LdSt,
@@ -194,7 +194,7 @@ impl crate::arch::Arch for AArch64 {
                 None,
             ),
             object::elf::R_AARCH64_LDST128_ABS_LO12_NC => (
-                RelocationKind::Absolute,
+                RelocationKind::AbsoluteAArch64,
                 RelocationSize::BitMasking {
                     range: BitRange { start: 4, end: 12 },
                     insn: RelocationInstruction::LdSt,
