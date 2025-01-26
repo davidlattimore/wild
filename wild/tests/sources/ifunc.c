@@ -5,6 +5,7 @@
 //#Object:exit.c
 //#DiffIgnore:section.rela.plt.link
 //#RequiresGlibc:true
+//#Arch: x86_64
 
 //#Config:pie:default
 //#CompArgs:-fpie -ffunction-sections

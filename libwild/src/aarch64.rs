@@ -893,7 +893,7 @@ impl crate::arch::Relaxation for Relaxation {
                     kind: RelaxationKind::NoOp,
                     // TODO: reuse
                     rel_info: RelocationKindInfo {
-                        kind: RelocationKind::GotRelative,
+                        kind: RelocationKind::PltRelative,
                         size: RelocationSize::BitMasking {
                             range: BitRange { start: 2, end: 28 },
                             insn: RelocationInstruction::JumpCall,
