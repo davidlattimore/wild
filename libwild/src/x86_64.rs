@@ -115,7 +115,7 @@ impl crate::arch::Relaxation for Relaxation {
         let is_absolute_address = is_known_address && non_relocatable;
         let can_bypass_got = value_flags.contains(ValueFlags::CAN_BYPASS_GOT);
 
-        // IFuncs cannot be referenced directly. The always need to go via the GOT. So if we've got
+        // IFuncs cannot be referenced directly. They always need to go via the GOT. So if we've got
         // say a PLT32 relocation, we don't want to relax it even if we're in a static executable.
         // Furthermore, if we encounter a relocation like PC32 to an ifunc, then we need to change
         // it so that it goes via the GOT. This is kind of the opposite of relaxation.

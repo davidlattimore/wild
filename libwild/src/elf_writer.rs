@@ -61,7 +61,6 @@ use crate::storage::StorageModel;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::SymbolDb;
 use crate::threading::prelude::*;
-use crate::x86_64::Relaxation;
 use ahash::AHashMap;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -1824,7 +1823,7 @@ fn apply_relocation<S: StorageModel, A: Arch>(
     let r_type = rel.r_type(e, false);
     let rel_info;
     let output_kind = layout.args().output_kind();
-    if let Some(relaxation) = Relaxation::new(
+    if let Some(relaxation) = A::Relaxation::new(
         r_type,
         out,
         offset_in_section,

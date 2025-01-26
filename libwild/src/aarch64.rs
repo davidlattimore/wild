@@ -1,3 +1,4 @@
+use crate::arch::Arch;
 use crate::elf::extract_bits;
 use crate::elf::BitRange;
 use crate::elf::DynamicRelocationKind;
@@ -9,8 +10,10 @@ use crate::elf::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
 use crate::elf::DEFAULT_AARCH64_PAGE_MASK;
 use crate::elf::DEFAULT_AARCH64_PAGE_SIZE;
 use crate::elf::PLT_ENTRY_SIZE;
+use crate::resolution::ValueFlags;
 use anyhow::bail;
 use anyhow::Result;
+use linker_utils::aarch64::RelaxationKind;
 use linker_utils::elf::aarch64_rel_type_to_string;
 use linker_utils::elf::RelocationKind;
 use linker_utils::relaxation::RelocationModifier;
@@ -29,7 +32,7 @@ const _ASSERTS: () = {
 };
 
 impl crate::arch::Arch for AArch64 {
-    type Relaxation = ();
+    type Relaxation = Relaxation;
 
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_AARCH64
@@ -865,7 +868,13 @@ impl crate::arch::Arch for AArch64 {
     }
 }
 
-impl crate::arch::Relaxation for () {
+#[derive(Debug, Clone)]
+pub(crate) struct Relaxation {
+    kind: RelaxationKind,
+    rel_info: RelocationKindInfo,
+}
+
+impl crate::arch::Relaxation for Relaxation {
     #[allow(unused_variables)]
     fn new(
         relocation_kind: u32,
@@ -878,26 +887,38 @@ impl crate::arch::Relaxation for () {
     where
         Self: std::marker::Sized,
     {
+        // IFuncs cannot be referenced directly, they always need to go via the GOT.
+        if value_flags.contains(ValueFlags::IFUNC) {
+            return match relocation_kind {
+                rel @ object::elf::R_AARCH64_CALL26 => {
+                    let mut relocation = AArch64::relocation_from_raw(rel).unwrap();
+                    relocation.kind = RelocationKind::PltRelative;
+                    return Some(Relaxation {
+                        kind: RelaxationKind::NoOp,
+                        rel_info: relocation,
+                    });
+                }
+                _ => None,
+            };
+        }
+
         None
     }
 
-    #[allow(unused_variables)]
-    fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut u64) {}
+    fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut u64) {
+        self.kind.apply(section_bytes, offset_in_section, addend);
+    }
 
     fn rel_info(&self) -> crate::elf::RelocationKindInfo {
-        RelocationKindInfo {
-            kind: RelocationKind::None,
-            size: RelocationSize::ByteSize(0),
-            mask: None,
-        }
+        self.rel_info
     }
 
     fn debug_kind(&self) -> impl std::fmt::Debug {
-        todo!()
+        &self.kind
     }
 
     fn next_modifier(&self) -> RelocationModifier {
-        RelocationModifier::Normal
+        self.kind.next_modifier()
     }
 }
 
