@@ -1156,15 +1156,22 @@ impl Display for LinkCommand {
                 return Ok(());
             }
         }
+
         for sub in &self.input_commands {
             writeln!(f, "{sub}")?;
         }
-        let command_str = self.command.get_program().to_string_lossy();
+
+        let mut command_str = self.command.get_program().to_string_lossy();
+
         let mut args = self
             .command
             .get_args()
             .map(|a| a.to_string_lossy())
             .collect_vec();
+
+        if command_str == "bash" {
+            command_str = args.remove(0);
+        }
 
         match (self.invocation_mode, &self.linker) {
             (LinkerInvocationMode::Cc, Linker::Wild) => {
@@ -1182,8 +1189,10 @@ impl Display for LinkCommand {
                         v.and_then(|v| v.to_str()).unwrap_or_default(),
                     )?;
                 }
+
                 // The first argument is the linker, which we're replacing with `cargo run --`.
                 args.remove(0);
+
                 write!(
                     f,
                     "{} cargo run --bin wild -- {}",
