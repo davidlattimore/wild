@@ -190,17 +190,22 @@ impl crate::arch::Relaxation for Relaxation {
                 }
             }
             object::elf::R_X86_64_GOTPCRELX => {
-                if is_absolute || is_absolute_address {
-                    match section_bytes.get(offset - 2)? {
-                        // mov *x(%rip), reg
-                        0x8b => {
+                match section_bytes.get(offset - 2)? {
+                    // mov *x(%rip), reg
+                    0x8b => {
+                        if is_absolute || is_absolute_address {
                             return create(
                                 RelaxationKind::MovIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
                             );
+                        } else if can_bypass_got {
+                            return create(
+                                RelaxationKind::MovIndirectToLea,
+                                object::elf::R_X86_64_PC32,
+                            );
                         }
-                        _ => {}
                     }
+                    _ => {}
                 }
                 if can_bypass_got {
                     match section_bytes.get(offset - 2..offset)? {
