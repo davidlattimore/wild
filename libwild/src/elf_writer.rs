@@ -2991,14 +2991,22 @@ impl<'data> DynamicLayout<'data> {
             .zip(self.object.symbols.iter())
         {
             if let Some(res) = resolution {
+                let name = self.object.symbol_name(symbol)?;
+
                 if res
                     .resolution_flags
                     .contains(ResolutionFlags::COPY_RELOCATION)
                 {
-                    // Symbol needs a copy relocation, which means that the symbol will be written
-                    // by the epilogue not by us.
+                    // Symbol needs a copy relocation, which means that the dynamic symbol will be
+                    // written by the epilogue not by us. However, we do need to write a regular
+                    // symtab entry.
+                    table_writer.debug_symbol_writer.copy_symbol(
+                        symbol,
+                        name,
+                        output_section_id::BSS,
+                        res.value(),
+                    )?;
                 } else {
-                    let name = self.object.symbol_name(symbol)?;
                     table_writer
                         .dynsym_writer
                         .copy_symbol_shndx(symbol, name, 0, 0)?;
