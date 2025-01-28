@@ -333,6 +333,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         min_alignment: alignment::RELA_ENTRY,
         start_symbol_name: Some("__rela_iplt_start"),
         end_symbol_name: Some("__rela_iplt_end"),
+        info_fn: Some(rela_plt_info),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -639,6 +640,7 @@ impl OutputSectionId {
 pub(crate) struct InfoInputs<'layout> {
     pub(crate) section_part_layouts: &'layout OutputSectionPartMap<OutputRecordLayout>,
     pub(crate) non_addressable_counts: &'layout NonAddressableCounts,
+    pub(crate) output_section_indexes: &'layout [Option<u16>],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -937,6 +939,11 @@ fn version_r_info(info: &InfoInputs) -> u32 {
 fn dynsym_info(_info: &InfoInputs) -> u32 {
     // The only local we ever write to .dynsym is the null symbol, so this is unconditionally 1.
     1
+}
+
+fn rela_plt_info(info: &InfoInputs) -> u32 {
+    // .rela.plt contains relocations for .got, so should link to it.
+    u32::from(info.output_section_indexes[GOT.0 as usize].unwrap_or(0))
 }
 
 impl std::fmt::Display for OutputSectionId {
