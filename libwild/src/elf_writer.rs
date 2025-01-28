@@ -1,5 +1,4 @@
 use self::elf::get_page_mask;
-use self::elf::DynamicRelocationKind;
 use self::elf::NoteHeader;
 use self::elf::NoteProperty;
 use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
@@ -70,6 +69,7 @@ use linker_utils::elf::secnames::DEBUG_RANGES_SECTION_NAME;
 use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
+use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::SectionFlags;
 use linker_utils::relaxation::RelocationModifier;
