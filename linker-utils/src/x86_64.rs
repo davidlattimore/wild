@@ -42,6 +42,9 @@ pub enum RelaxationKind {
 
     /// Transform general dynamic (GD) into initial exec
     TlsGdToInitialExec,
+
+    // Transform TLSDESC to local exec for a statically linked executables.
+    TlsDescToLocalExec,
 }
 
 impl RelaxationKind {
@@ -132,6 +135,13 @@ impl RelaxationKind {
                 ]);
                 *offset_in_section += 15;
             }
+            RelaxationKind::TlsDescToLocalExec => {
+                section_bytes[offset - 3..offset + 6].copy_from_slice(&[
+                    // mov {offset},%rax
+                    0x48, 0xc7, 0xc0, 0, 0, 0, 0, // xchg   %ax,%ax
+                    0x66, 0x90,
+                ]);
+            }
             RelaxationKind::NoOp => {}
         }
     }
@@ -143,7 +153,8 @@ impl RelaxationKind {
             | RelaxationKind::TlsGdToLocalExec
             | RelaxationKind::TlsGdToLocalExecLarge
             | RelaxationKind::TlsLdToLocalExec
-            | RelaxationKind::TlsLdToLocalExec64 => RelocationModifier::SkipNextRelocation,
+            | RelaxationKind::TlsLdToLocalExec64
+            | RelaxationKind::TlsDescToLocalExec => RelocationModifier::SkipNextRelocation,
             _ => RelocationModifier::Normal,
         }
     }

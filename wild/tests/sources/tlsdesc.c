@@ -23,6 +23,12 @@
 //#CompArgs:-mtls-dialect=desc
 //#Arch: aarch64
 
+//#Config:gcc-tls-desc-static:gcc-tls-desc
+//#CompArgs:-mtls-dialect=gnu2 -fPIC -static
+//#Shared:tlsdesc-obj.c
+//#DiffIgnore:asm.get_value
+//#Arch: x86_64
+
 //#Config:gcc-tls-desc-shared:gcc-tls-desc
 //#CompArgs:-mtls-dialect=gnu2 -fPIC
 //#Shared:tlsdesc-obj.c
