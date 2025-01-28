@@ -5,7 +5,6 @@
 
 use crate::arch::Arch;
 use crate::args::OutputKind;
-use crate::elf::DynamicRelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
 use crate::elf::PLT_ENTRY_SIZE;
@@ -14,6 +13,7 @@ use anyhow::anyhow;
 use anyhow::Result;
 use linker_utils::elf::shf;
 use linker_utils::elf::x86_64_rel_type_to_string;
+use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::SectionFlags;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::x86_64::RelaxationKind;
@@ -53,16 +53,7 @@ impl crate::arch::Arch for X86_64 {
     }
 
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
-        match relocation {
-            DynamicRelocationKind::Copy => object::elf::R_X86_64_COPY,
-            DynamicRelocationKind::Irelative => object::elf::R_X86_64_IRELATIVE,
-            DynamicRelocationKind::DtpMod => object::elf::R_X86_64_DTPMOD64,
-            DynamicRelocationKind::DtpOff => object::elf::R_X86_64_DTPOFF64,
-            DynamicRelocationKind::TpOff => object::elf::R_X86_64_TPOFF64,
-            DynamicRelocationKind::Relative => object::elf::R_X86_64_RELATIVE,
-            DynamicRelocationKind::DynamicSymbol => object::elf::R_X86_64_GLOB_DAT,
-            DynamicRelocationKind::TlsDesc => object::elf::R_X86_64_TLSDESC,
-        }
+        relocation.x86_64_r_type()
     }
 
     fn write_plt_entry(

@@ -594,3 +594,48 @@ pub enum RelocationKind {
     /// optimisation.
     None,
 }
+
+#[derive(Copy, Clone, Debug)]
+pub enum DynamicRelocationKind {
+    Copy,
+    Irelative,
+    DtpMod,
+    DtpOff,
+    TlsDesc,
+    TpOff,
+    Relative,
+    DynamicSymbol,
+}
+
+impl DynamicRelocationKind {
+    #[must_use]
+    pub fn from_x86_64_r_type(r_type: u32) -> Option<Self> {
+        let kind = match r_type {
+            object::elf::R_X86_64_COPY => DynamicRelocationKind::Copy,
+            object::elf::R_X86_64_IRELATIVE => DynamicRelocationKind::Irelative,
+            object::elf::R_X86_64_DTPMOD64 => DynamicRelocationKind::DtpMod,
+            object::elf::R_X86_64_DTPOFF64 => DynamicRelocationKind::DtpOff,
+            object::elf::R_X86_64_TPOFF64 => DynamicRelocationKind::TpOff,
+            object::elf::R_X86_64_RELATIVE => DynamicRelocationKind::Relative,
+            object::elf::R_X86_64_GLOB_DAT => DynamicRelocationKind::DynamicSymbol,
+            object::elf::R_X86_64_TLSDESC => DynamicRelocationKind::TlsDesc,
+            _ => return None,
+        };
+
+        Some(kind)
+    }
+
+    #[must_use]
+    pub fn x86_64_r_type(self) -> u32 {
+        match self {
+            DynamicRelocationKind::Copy => object::elf::R_X86_64_COPY,
+            DynamicRelocationKind::Irelative => object::elf::R_X86_64_IRELATIVE,
+            DynamicRelocationKind::DtpMod => object::elf::R_X86_64_DTPMOD64,
+            DynamicRelocationKind::DtpOff => object::elf::R_X86_64_DTPOFF64,
+            DynamicRelocationKind::TpOff => object::elf::R_X86_64_TPOFF64,
+            DynamicRelocationKind::Relative => object::elf::R_X86_64_RELATIVE,
+            DynamicRelocationKind::DynamicSymbol => object::elf::R_X86_64_GLOB_DAT,
+            DynamicRelocationKind::TlsDesc => object::elf::R_X86_64_TLSDESC,
+        }
+    }
+}

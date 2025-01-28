@@ -1,7 +1,6 @@
 use crate::arch::Arch;
 use crate::elf::extract_bits;
 use crate::elf::BitRange;
-use crate::elf::DynamicRelocationKind;
 use crate::elf::PageMask;
 use crate::elf::RelocationInstruction;
 use crate::elf::RelocationKindInfo;
@@ -15,6 +14,7 @@ use anyhow::bail;
 use anyhow::Result;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::elf::aarch64_rel_type_to_string;
+use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKind;
 use linker_utils::relaxation::RelocationModifier;
 

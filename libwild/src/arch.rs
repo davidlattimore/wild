@@ -1,11 +1,11 @@
 //! Abstraction over different CPU architectures.
 
 use crate::args::OutputKind;
-use crate::elf::DynamicRelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::error::Result;
 use crate::resolution::ValueFlags;
 use anyhow::bail;
+use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::SectionFlags;
 use linker_utils::relaxation::RelocationModifier;
 use std::borrow::Cow;
