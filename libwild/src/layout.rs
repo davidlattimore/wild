@@ -1439,6 +1439,7 @@ impl<'data, S: StorageModel> Layout<'data, '_, S> {
         InfoInputs {
             section_part_layouts: &self.section_part_layouts,
             non_addressable_counts: &self.non_addressable_counts,
+            output_section_indexes: &self.output_sections.output_section_indexes,
         }
     }
 }
