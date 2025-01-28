@@ -283,6 +283,17 @@ impl crate::arch::Relaxation for Relaxation {
                     return create(RelaxationKind::TlsLdToLocalExec, object::elf::R_X86_64_NONE);
                 }
             }
+            object::elf::R_X86_64_GOTPC32_TLSDESC
+                if can_bypass_got && output_kind.is_static_executable() =>
+            {
+                // lea    0x0(%rip),%rax
+                if section_bytes.get(offset - 3..offset)? == [0x48, 0x8d, 0x05] {
+                    return create(
+                        RelaxationKind::TlsDescToLocalExec,
+                        object::elf::R_X86_64_TPOFF32,
+                    );
+                }
+            }
             _ => return None,
         };
         None
