@@ -1049,7 +1049,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
     fn write_dynamic_symbol_relocation<A: Arch>(
         &mut self,
         place: u64,
-        addend: u64,
+        addend: i64,
         symbol_index: u32,
     ) -> Result {
         let _span = tracing::trace_span!("write_dynamic_symbol_relocation").entered();
@@ -1060,7 +1060,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         let e = LittleEndian;
         let rela = self.take_rela_dyn()?;
         rela.r_offset.set(e, place);
-        rela.r_addend.set(e, addend as i64);
+        rela.r_addend.set(e, addend);
         rela.set_r_info(
             LittleEndian,
             false,
@@ -1818,7 +1818,7 @@ fn apply_relocation<S: StorageModel, A: Arch>(
 
     let value_flags = resolution.value_flags;
     let resolution_flags = resolution.resolution_flags;
-    let mut addend = rel.r_addend.get(e) as u64;
+    let mut addend = rel.r_addend.get(e);
     let mut next_modifier = RelocationModifier::Normal;
     let r_type = rel.r_type(e, false);
     let rel_info;
@@ -1841,6 +1841,7 @@ fn apply_relocation<S: StorageModel, A: Arch>(
         rel_info = A::relocation_from_raw(r_type)?;
         tracing::trace!(%value_flags, %resolution_flags, ?rel_info.kind, %symbol_name, "relocation applied");
     }
+
     let mask = get_page_mask(rel_info.mask);
     let value = match rel_info.kind {
         RelocationKind::Absolute => {
@@ -1878,17 +1879,17 @@ fn apply_relocation<S: StorageModel, A: Arch>(
         RelocationKind::GotRelative => resolution
             .got_address()?
             .bitand(mask.got_entry)
-            .wrapping_add(addend)
+            .wrapping_add(addend as u64)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::GotRelGotBase => resolution
             .got_address()?
             .bitand(mask.got_entry)
             .wrapping_sub(layout.got_base().bitand(mask.got))
-            .wrapping_add(addend),
+            .wrapping_add(addend as u64),
         RelocationKind::Got => resolution
             .got_address()?
             .bitand(mask.got_entry)
-            .wrapping_add(addend),
+            .wrapping_add(addend as u64),
         RelocationKind::SymRelGotBase => resolution
             .value()
             .bitand(mask.symbol_plus_addend)
@@ -1898,22 +1899,22 @@ fn apply_relocation<S: StorageModel, A: Arch>(
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::PltRelative => resolution
             .plt_address()?
-            .wrapping_add(addend)
+            .wrapping_add(addend as u64)
             .wrapping_sub(place.bitand(mask.place)),
         // TLS-related relocations
         RelocationKind::TlsGd => resolution
             .tlsgd_got_address()?
             .bitand(mask.got_entry)
-            .wrapping_add(addend)
+            .wrapping_add(addend as u64)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::TlsGdGot => resolution
             .tlsgd_got_address()?
             .bitand(mask.got_entry)
-            .wrapping_add(addend),
+            .wrapping_add(addend as u64),
         RelocationKind::TlsGdGotBase => resolution
             .tlsgd_got_address()?
             .bitand(mask.got_entry)
-            .wrapping_add(addend)
+            .wrapping_add(addend as u64)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::TlsLd => layout
             .prelude()
@@ -1921,7 +1922,7 @@ fn apply_relocation<S: StorageModel, A: Arch>(
             .unwrap()
             .get()
             .bitand(mask.got_entry)
-            .wrapping_add(addend)
+            .wrapping_add(addend as u64)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::TlsLdGot => layout
             .prelude()
@@ -1929,58 +1930,58 @@ fn apply_relocation<S: StorageModel, A: Arch>(
             .unwrap()
             .get()
             .bitand(mask.got_entry)
-            .wrapping_add(addend),
+            .wrapping_add(addend as u64),
         RelocationKind::TlsLdGotBase => layout
             .prelude()
             .tlsld_got_entry
             .unwrap()
             .get()
             .bitand(mask.got_entry)
-            .wrapping_add(addend)
+            .wrapping_add(addend as u64)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::DtpOff if output_kind == OutputKind::SharedObject => resolution
             .value()
             .sub(layout.tls_start_address())
-            .wrapping_add(addend),
+            .wrapping_add(addend as u64),
         RelocationKind::DtpOff => resolution
             .value()
             .wrapping_sub(layout.tls_end_address())
-            .wrapping_add(addend),
+            .wrapping_add(addend as u64),
         RelocationKind::GotTpOff => resolution
             .got_address()?
             .bitand(mask.got_entry)
-            .wrapping_add(addend)
+            .wrapping_add(addend as u64)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::GotTpOffGot => resolution
             .got_address()?
             .bitand(mask.got_entry)
-            .wrapping_add(addend),
+            .wrapping_add(addend as u64),
         RelocationKind::GotTpOffGotBase => resolution
             .got_address()?
             .bitand(mask.got_entry)
-            .wrapping_add(addend)
+            .wrapping_add(addend as u64)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::TpOff => resolution
             .value()
             .wrapping_sub(layout.tls_end_address())
-            .wrapping_add(addend),
+            .wrapping_add(addend as u64),
         RelocationKind::TpOffAArch64 => resolution
             .value()
             .wrapping_sub(layout.tls_start_address_aarch64())
-            .wrapping_add(addend),
+            .wrapping_add(addend as u64),
         RelocationKind::TlsDesc => resolution
             .tls_descriptor_got_address()?
             .bitand(mask.got_entry)
-            .wrapping_add(addend)
+            .wrapping_add(addend as u64)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::TlsDescGot => resolution
             .tls_descriptor_got_address()?
             .bitand(mask.got_entry)
-            .wrapping_add(addend),
+            .wrapping_add(addend as u64),
         RelocationKind::TlsDescGotBase => resolution
             .tls_descriptor_got_address()?
             .bitand(mask.got_entry)
-            .wrapping_add(addend)
+            .wrapping_add(addend as u64)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::None | RelocationKind::TlsDescCall => 0,
     };
@@ -2006,7 +2007,7 @@ fn apply_debug_relocation<S: StorageModel, A: Arch>(
     let sym = object_layout.object.symbol(symbol_index)?;
     let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
 
-    let addend = rel.r_addend.get(e) as u64;
+    let addend = rel.r_addend.get(e);
     let r_type = rel.r_type(e, false);
     let rel_info = A::relocation_from_raw(r_type)?;
 
@@ -2030,7 +2031,7 @@ fn apply_debug_relocation<S: StorageModel, A: Arch>(
             RelocationKind::DtpOff => resolution
                 .value()
                 .wrapping_sub(layout.tls_end_address())
-                .wrapping_add(addend),
+                .wrapping_add(addend as u64),
             kind => bail!("Unsupported debug relocation kind {kind:?}"),
         }
     } else if let Some(section_index) = section_index {
@@ -2062,7 +2063,7 @@ fn write_absolute_relocation<S: StorageModel, A: Arch>(
     table_writer: &mut TableWriter,
     resolution: Resolution,
     place: u64,
-    addend: u64,
+    addend: i64,
     section_info: SectionInfo,
     symbol_index: object::SymbolIndex,
     object_layout: &ObjectLayout,
@@ -2086,7 +2087,7 @@ fn write_absolute_relocation<S: StorageModel, A: Arch>(
         table_writer.write_address_relocation::<A>(place, address as i64)?;
         Ok(0)
     } else if resolution.value_flags.contains(ValueFlags::IFUNC) {
-        Ok(resolution.plt_address()?.wrapping_add(addend))
+        Ok(resolution.plt_address()?.wrapping_add(addend as u64))
     } else {
         resolution.value_with_addend(
             addend,

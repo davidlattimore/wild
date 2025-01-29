@@ -4030,7 +4030,7 @@ impl Resolution {
 
     pub(crate) fn value_with_addend(
         &self,
-        addend: u64,
+        addend: i64,
         symbol_index: object::SymbolIndex,
         object_layout: &ObjectLayout,
         merged_strings: &OutputSectionMap<MergedStringsSection>,
@@ -4055,7 +4055,7 @@ impl Resolution {
                 return Ok(r);
             }
         }
-        Ok(self.raw_value.wrapping_add(addend))
+        Ok(self.raw_value.wrapping_add(addend as u64))
     }
 }
 

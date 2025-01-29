@@ -768,7 +768,7 @@ impl<'data> MergeString<'data> {
 /// address in the output.
 pub(crate) fn get_merged_string_output_address(
     symbol_index: object::SymbolIndex,
-    addend: u64,
+    addend: i64,
     object: &crate::elf::File,
     sections: &[SectionSlot],
     merged_strings: &OutputSectionMap<MergedStringsSection>,
@@ -797,7 +797,7 @@ pub(crate) fn get_merged_string_output_address(
         if zero_unnamed {
             return Ok(Some(0));
         }
-        input_offset = input_offset.wrapping_add(addend);
+        input_offset = input_offset.wrapping_add(addend as u64);
     }
 
     let section_id = merge_slot.part_id.output_section_id();
@@ -822,7 +822,7 @@ pub(crate) fn get_merged_string_output_address(
         merged_string_start_addresses.addresses.get(section_id)[string_offset.bucket()];
     let mut address = bucket_base + string_offset.offset_in_bucket();
     if symbol_has_name {
-        address = address.wrapping_add(addend);
+        address = address.wrapping_add(addend as u64);
     }
     Ok(Some(address))
 }
