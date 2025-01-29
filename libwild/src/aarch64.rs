@@ -905,7 +905,7 @@ impl crate::arch::Relaxation for Relaxation {
         None
     }
 
-    fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut u64) {
+    fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64) {
         self.kind.apply(section_bytes, offset_in_section, addend);
     }
 

@@ -7,7 +7,7 @@ pub enum RelaxationKind {
 }
 
 impl RelaxationKind {
-    pub fn apply(self, _section_bytes: &mut [u8], _offset_in_section: &mut u64, _addend: &mut u64) {
+    pub fn apply(self, _section_bytes: &mut [u8], _offset_in_section: &mut u64, _addend: &mut i64) {
         match self {
             RelaxationKind::NoOp => {}
         }

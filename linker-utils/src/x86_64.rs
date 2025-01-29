@@ -48,7 +48,7 @@ pub enum RelaxationKind {
 }
 
 impl RelaxationKind {
-    pub fn apply(self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut u64) {
+    pub fn apply(self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64) {
         let offset = *offset_in_section as usize;
         match self {
             RelaxationKind::MovIndirectToLea => {
@@ -117,7 +117,7 @@ impl RelaxationKind {
                     0x48, 0x03, 0x05,
                 ]);
                 *offset_in_section += 8;
-                *addend = -12_i64 as u64;
+                *addend = -12_i64;
             }
             RelaxationKind::TlsLdToLocalExec => {
                 section_bytes[offset - 3..offset + 9].copy_from_slice(&[
