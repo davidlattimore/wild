@@ -1411,6 +1411,7 @@ fn integration_test(
         "eh_frame.c",
         "trivial_asm.s",
         "non-alloc.s",
+        "symbol-versions.c",
         "libc-integration.c",
         "rust-integration.rs",
         "rust-integration-dynamic.rs",
