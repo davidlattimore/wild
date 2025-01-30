@@ -570,6 +570,7 @@ trait SymbolLoader {
     ) -> Result {
         let e = LittleEndian;
         let base_symbol_id = symbols_out.next;
+
         for symbol in object.symbols.iter() {
             let symbol_id = symbols_out.next;
             let mut value_flags = self.compute_value_flags(symbol);
@@ -585,7 +586,21 @@ trait SymbolLoader {
                 symbols_out.set_next(value_flags, resolution, file_id);
                 continue;
             }
-            let name = SymbolName::prehashed(object.symbol_name(symbol)?);
+
+            let mut name_bytes = object.symbol_name(symbol)?;
+
+            // Symbols can contain version specifiers, e.g. `foo@1.1` or `foo@@2.0`. The latter,
+            // with double-at specifies that it's the default version. We don't currently support
+            // matching arbitrary versions, however if we see a default version, we strip it so that
+            // it can be used via a regular symbol reference.
+            if let Some(at_offset) = memchr::memchr(b'@', name_bytes) {
+                if name_bytes[at_offset..].starts_with(b"@@") {
+                    name_bytes = &name_bytes[..at_offset];
+                }
+            }
+
+            let name = SymbolName::prehashed(name_bytes);
+
             if self.should_downgrade_to_local(&name) {
                 value_flags |= ValueFlags::DOWNGRADE_TO_LOCAL;
                 // If we're downgrading to a local, then we're writing a shared object. Shared
@@ -594,10 +609,12 @@ trait SymbolLoader {
                     value_flags |= ValueFlags::CAN_BYPASS_GOT;
                 }
             }
+
             let pending = PendingSymbol::from_prehashed(symbol_id, name);
             outputs.pending_symbols.push(pending);
             symbols_out.set_next(value_flags, resolution, file_id);
         }
+
         Ok(())
     }
 
