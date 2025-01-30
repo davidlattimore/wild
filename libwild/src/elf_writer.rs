@@ -1794,11 +1794,11 @@ fn apply_relocation<S: StorageModel, A: Arch>(
     table_writer: &mut TableWriter,
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
-    let place = section_address + offset_in_section;
+    let original_place = section_address + offset_in_section;
     let _span = tracing::trace_span!(
         "relocation",
-        address = place,
-        address_hex = format!("{place:x}")
+        address = original_place,
+        address_hex = format!("{original_place:x}")
     )
     .entered();
 
@@ -1841,6 +1841,10 @@ fn apply_relocation<S: StorageModel, A: Arch>(
         rel_info = A::relocation_from_raw(r_type)?;
         tracing::trace!(%value_flags, %resolution_flags, ?rel_info.kind, %symbol_name, "relocation applied");
     }
+
+    // Compute place to which IP-relative relocations will be relative. This is different to
+    // `original_place` in that our `offset_in_section` may have been adjusted by a relaxation.
+    let place = section_address + offset_in_section;
 
     let mask = get_page_mask(rel_info.mask);
     let value = match rel_info.kind {
