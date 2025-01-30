@@ -117,7 +117,6 @@ impl RelaxationKind {
                     0x48, 0x03, 0x05,
                 ]);
                 *offset_in_section += 8;
-                *addend = -12_i64;
             }
             RelaxationKind::TlsLdToLocalExec => {
                 section_bytes[offset - 3..offset + 9].copy_from_slice(&[
