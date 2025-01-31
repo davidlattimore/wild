@@ -11,7 +11,7 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq {
     type RType: RType;
 
     /// A type representing relaxations on this architecture.
-    type RelaxationKind: Copy + Clone + Debug + Eq + PartialEq;
+    type RelaxationKind: RelaxationKind;
 
     /// A type representing a decoded instruction on this architecture.
     type RawInstruction: Copy + Clone;
@@ -67,6 +67,11 @@ pub(crate) trait RType: Copy + Debug + Display + Eq + PartialEq {
     }
 
     fn dynamic_relocation_kind(self) -> Option<DynamicRelocationKind>;
+}
+
+pub(crate) trait RelaxationKind: Copy + Clone + Debug + Eq + PartialEq {
+    /// Returns whether this relaxation does nothing.
+    fn is_no_op(self) -> bool;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

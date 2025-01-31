@@ -45,6 +45,7 @@ use crate::arch::Arch;
 use crate::arch::Instruction;
 use crate::arch::RType;
 use crate::arch::Relaxation;
+use crate::arch::RelaxationKind;
 use crate::diagnostics::TraceOutput;
 use crate::section_map;
 use crate::Binary;
@@ -407,7 +408,9 @@ fn resolution_diff_exec<A: Arch>(
     section_id: InputSectionId,
     layout: &IndexedLayout,
 ) -> Result<Diff> {
-    let key = diff_key_for_res_mismatch(resolutions, original_annotation.as_ref());
+    let bin_attributes = testers[1].bin.address_index.bin_attributes;
+
+    let key = diff_key_for_res_mismatch(resolutions, original_annotation.as_ref(), bin_attributes);
 
     let diff = ExecDiff {
         offset,
@@ -446,14 +449,41 @@ fn rel_target_name<'data>(
 fn diff_key_for_res_mismatch<A: Arch>(
     resolutions: &[Resolution<A>],
     original_annotation: Option<&SuccessAnnotation<A>>,
+    bin_attributes: BinAttributes,
 ) -> String {
     if resolutions.len() < 2 {
         return "missing-resolutions".to_owned();
     }
 
-    match (resolutions[0].relaxation, resolutions[1].relaxation) {
+    // We might have failed to match one of the reference linker outputs, so find the first
+    // reference linker output that we successfully matched.
+    let reference = resolutions.iter().skip(1).find_map(|r| r.relaxation);
+
+    match (resolutions[0].relaxation, reference) {
         (Some(r1), Some(r2)) => {
-            format!("rel.{}.{}", r1.new_r_type, r2.new_r_type)
+            match (
+                original_annotation,
+                r1.relaxation_kind.is_no_op(),
+                r2.relaxation_kind.is_no_op(),
+            ) {
+                (Some(orig), true, false) => {
+                    format!(
+                        "rel.missing-opt.{}.{:?}.{}",
+                        orig.r_type,
+                        r2.relaxation_kind,
+                        bin_attributes.type_name()
+                    )
+                }
+                (Some(orig), false, true) => {
+                    format!(
+                        "rel.extra-opt.{}.{:?}.{}",
+                        orig.r_type,
+                        r1.relaxation_kind,
+                        bin_attributes.type_name()
+                    )
+                }
+                _ => format!("rel.{}.{}", r1.new_r_type, r2.new_r_type),
+            }
         }
         _ => {
             let failure_kind = |r: &Resolution<A>| match &r.annotation {
@@ -1720,6 +1750,7 @@ pub(crate) struct AddressIndex<'data> {
     /// Dynamic symbol names by their index.
     dynamic_symbol_names: Vec<SymbolName<'data>>,
     is_relocatable: bool,
+    bin_attributes: BinAttributes,
 }
 
 struct PltIndex<'data> {
@@ -1783,6 +1814,12 @@ impl<'data> AddressIndex<'data> {
             jmprel_got_addresses: Vec::new(),
             dynamic_relocations_by_address: Default::default(),
             is_relocatable: is_relocatable(elf_file),
+            bin_attributes: BinAttributes {
+                // These may be overridden in `index_dynamic`.
+                output_kind: OutputKind::Executable,
+                relocatability: Relocatability::NonRelocatable,
+                link_type: LinkType::Static,
+            },
         };
 
         if let Err(error) = info.build_indexes(elf_file) {
@@ -1975,11 +2012,23 @@ impl<'data> AddressIndex<'data> {
 
     fn index_dynamic(&mut self, elf_file: &ElfFile64) {
         let e = LittleEndian;
+
         let dynamic_segment = elf_file
             .elf_program_headers()
             .iter()
             .find(|seg| seg.p_type(LittleEndian) == object::elf::PT_DYNAMIC);
+
         self.dynamic_segment_address = dynamic_segment.map(|seg| seg.p_vaddr(e));
+
+        if elf_file.elf_header().e_type(LittleEndian) == object::elf::ET_DYN {
+            self.bin_attributes.relocatability = Relocatability::Relocatable;
+        }
+
+        if dynamic_segment.is_some() {
+            // We'll change back to executable if the PIE flag is set below.
+            self.bin_attributes.output_kind = OutputKind::SharedObject;
+        };
+
         dynamic_segment
             .and_then(|seg| seg.data(LittleEndian, elf_file.data()).ok())
             .and_then(|dynamic_table_data| {
@@ -1994,6 +2043,14 @@ impl<'data> AddressIndex<'data> {
                 }
                 object::elf::DT_VERSYM => {
                     self.versym_address = Some(entry.d_val.get(e));
+                }
+                object::elf::DT_FLAGS_1 => {
+                    if entry.d_val.get(e) & u64::from(object::elf::DF_1_PIE) != 0 {
+                        self.bin_attributes.output_kind = OutputKind::Executable;
+                    }
+                }
+                object::elf::DT_NEEDED => {
+                    self.bin_attributes.link_type = LinkType::Dynamic;
                 }
                 _ => {}
             });
@@ -2328,5 +2385,51 @@ impl Display for SymbolName<'_> {
             write!(f, "@{}", String::from_utf8_lossy(version))?;
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BinAttributes {
+    output_kind: OutputKind,
+    relocatability: Relocatability,
+    link_type: LinkType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputKind {
+    Executable,
+    SharedObject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Relocatability {
+    Relocatable,
+    NonRelocatable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkType {
+    Dynamic,
+    Static,
+}
+
+impl BinAttributes {
+    fn type_name(self) -> &'static str {
+        match (self.output_kind, self.relocatability, self.link_type) {
+            (OutputKind::Executable, Relocatability::Relocatable, LinkType::Dynamic) => {
+                "dynamic-pie"
+            }
+            (OutputKind::Executable, Relocatability::Relocatable, LinkType::Static) => "static-pie",
+            (OutputKind::Executable, Relocatability::NonRelocatable, LinkType::Dynamic) => {
+                "dynamic-non-pie"
+            }
+            (OutputKind::Executable, Relocatability::NonRelocatable, LinkType::Static) => {
+                "static-non-pie"
+            }
+            (OutputKind::SharedObject, Relocatability::Relocatable, LinkType::Dynamic) => {
+                "shared-object"
+            }
+            (OutputKind::SharedObject, _, _) => "invalid-shared-object",
+        }
     }
 }

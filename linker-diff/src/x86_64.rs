@@ -7,6 +7,7 @@ use crate::arch::RelocationTypeInfo;
 use iced_x86::Formatter as _;
 use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::x86_64::RelaxationKind;
 use object::SectionKind;
 use std::fmt::Display;
 
@@ -278,5 +279,11 @@ impl crate::arch::RType for RType {
 impl Display for RType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(&x86_64_rel_type_to_string(self.0), f)
+    }
+}
+
+impl crate::arch::RelaxationKind for RelaxationKind {
+    fn is_no_op(self) -> bool {
+        matches!(self, RelaxationKind::NoOp)
     }
 }
