@@ -10,11 +10,11 @@ use object::Object;
 use object::ObjectSymbol;
 use object::SymbolKind;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt::Display;
-use std::io::Read;
 use std::ops::Range;
-use std::os::unix::fs::FileExt;
 use std::path::Path;
+use std::path::PathBuf;
 
 /// A .layout file plus all the files that it references. All data is owned. This struct mostly
 /// exists so that `IndexedLayout` has something to borrow from.
@@ -22,25 +22,47 @@ pub(crate) struct LayoutAndFiles {
     layout: linker_layout::Layout,
 
     /// The bytes of each file in the layout.
-    files: Vec<Vec<u8>>,
+    files: HashMap<PathBuf, memmap2::Mmap>,
 }
 
 impl LayoutAndFiles {
     pub(crate) fn from_base_path(base_path: &Path) -> Result<Option<Self>> {
         let layout_path = linker_layout::layout_path(base_path);
+
         if !layout_path.exists() {
             return Ok(None);
         }
+
         let layout_bytes = std::fs::read(layout_path)
             .with_context(|| format!("Failed to read `{}`", base_path.display()))?;
+
         let layout = linker_layout::Layout::from_bytes(&layout_bytes)?;
-        let files = layout
-            .files
-            .iter()
-            .map(read_object_bytes)
-            .collect::<Result<Vec<Vec<u8>>>>()?;
+
+        let filenames: HashSet<&PathBuf> = layout.files.iter().map(|file| &file.path).collect();
+
+        let files = filenames
+            .into_iter()
+            .map(|filename| {
+                mmap_file(filename)
+                    .with_context(|| format!("Failed to read input file {}", filename.display()))
+                    .map(|m| (filename.clone(), m))
+            })
+            .collect::<Result<HashMap<PathBuf, memmap2::Mmap>>>()?;
+
         Ok(Some(Self { layout, files }))
     }
+}
+
+fn mmap_file(filename: &PathBuf) -> Result<memmap2::Mmap> {
+    let file = std::fs::File::open(filename)?;
+
+    // Safety: This is safe so long as the file isn't changed while we're running. We satisfy this
+    // by telling our users not to change files while we run. It's lame, but there's no way to
+    // create a safe abstraction over mmap on Linux and the performance gains of using mmap are too
+    // great to not use it.
+    let mmap = unsafe { memmap2::Mmap::map(&file)? };
+
+    Ok(mmap)
 }
 
 /// A `.layout` file after we've done some indexing of its contents.
@@ -72,13 +94,18 @@ impl<'data> IndexedLayout<'data> {
         let mut files = Vec::with_capacity(layout_and_files.layout.files.len());
         let mut symbol_info_by_name = HashMap::new();
 
-        for ((file_index, file), object_bytes) in layout_and_files
-            .layout
-            .files
-            .iter()
-            .enumerate()
-            .zip(&layout_and_files.files)
-        {
+        for (file_index, file) in layout_and_files.layout.files.iter().enumerate() {
+            let mmap = layout_and_files
+                .files
+                .get(&file.path)
+                .expect("We should have read all the files");
+
+            let object_bytes = if let Some(entry) = file.archive_entry.as_ref() {
+                &mmap[entry.range.clone()]
+            } else {
+                &mmap[..]
+            };
+
             let elf_file = crate::ElfFile64::parse(object_bytes)?;
             let mut functions_by_section = vec![Vec::new(); file.sections.len()];
 
@@ -272,19 +299,6 @@ pub(crate) struct FileIdentifier<'data> {
 pub(crate) struct InputSectionId {
     pub(crate) file_index: usize,
     pub(crate) section_index: object::SectionIndex,
-}
-
-fn read_object_bytes(input_file: &linker_layout::InputFile) -> Result<Vec<u8>> {
-    let mut file = std::fs::File::open(&input_file.path)
-        .with_context(|| format!("Failed to open `{}`", input_file.path.display()))?;
-    let mut buffer = Vec::new();
-    if let Some(entry) = input_file.archive_entry.as_ref() {
-        buffer.resize(entry.range.end - entry.range.start, 0);
-        file.read_exact_at(&mut buffer, entry.range.start as u64)?;
-    } else {
-        file.read_to_end(&mut buffer)?;
-    }
-    Ok(buffer)
 }
 
 impl SectionInfo<'_> {
