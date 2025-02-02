@@ -7,6 +7,7 @@ use linker_layout::ArchiveEntryInfo;
 use object::read::elf::ElfSection64;
 use object::LittleEndian;
 use object::Object;
+use object::ObjectSection;
 use object::ObjectSymbol;
 use object::SymbolKind;
 use std::collections::HashMap;
@@ -306,14 +307,35 @@ impl SectionInfo<'_> {
         self.section_id.section_index
     }
 
-    pub(crate) fn function_at_offset(&self, offset: u64) -> Option<FunctionInfo> {
+    pub(crate) fn function_at_offset(
+        &self,
+        offset: u64,
+        layout: &IndexedLayout,
+    ) -> Result<FunctionInfo> {
+        if self.functions.is_empty() {
+            bail!("Cannot diff section with no functions");
+        }
+
         match self
             .functions
             .binary_search_by_key(&offset, |f| f.offset_in_section)
         {
-            Ok(i) => Some(self.functions[i]),
-            Err(0) => None,
-            Err(i) => Some(self.functions[i - 1]),
+            Ok(i) => Ok(self.functions[i]),
+            Err(0) => {
+                let input_file = &layout.files[self.section_id.file_index];
+                let elf_section = input_file
+                    .elf_file
+                    .section_by_index(self.section_id.section_index)?;
+                let section_name = String::from_utf8_lossy(elf_section.name_bytes()?);
+
+                bail!(
+                    "No function at offset 0x{offset:x} in section `{section_name}` of {file}. \
+                    First function starts at 0x{first:x}",
+                    file = input_file.identifier,
+                    first = self.functions[0].offset_in_section,
+                )
+            }
+            Err(i) => Ok(self.functions[i - 1]),
         }
     }
 }

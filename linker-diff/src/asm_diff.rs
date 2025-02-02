@@ -175,14 +175,10 @@ fn compare_sections<A: Arch>(
             offset.saturating_sub(MAX_RELAX_MODIFY_BEFORE),
         )?;
 
-        let original_symbol_name = rel_target_name(
+        let original_referent = get_original_referent(
             &rel,
             layout.input_file_for_section(section_versions.input_section_id),
-        );
-
-        let original_referent = original_symbol_name.map_or(Referent::Unknown, |name| {
-            Referent::Named(name, rel.addend())
-        });
+        )?;
 
         let original_annotation = SuccessAnnotation::<A> {
             r_type: get_r_type(&rel),
@@ -197,7 +193,7 @@ fn compare_sections<A: Arch>(
             let mut trace = TraceOutput::default();
 
             let res = crate::diagnostics::trace_scope(&mut trace, || {
-                tester.try_resolve(section_kind, offset, &rel, original_symbol_name.as_ref())
+                tester.try_resolve(section_kind, offset, &rel, original_referent)
             })?;
 
             if let Some(mut resolution) = res {
@@ -328,8 +324,7 @@ impl<A: Arch> ExecDiff<'_, A> {
         let function_info = layout
             .get_section_info(self.section_id)
             .context("Attempted to diff a section that wasn't emitted")?
-            .function_at_offset(self.offset)
-            .context("Cannot diff executable sections that don't contain any functions")?;
+            .function_at_offset(self.offset, layout)?;
 
         // We'll print all instructions that overlap with this range.
         let range = self.resolutions.iter().map(|r| r.start).min().unwrap_or(0)
@@ -429,21 +424,39 @@ fn resolution_diff_exec<A: Arch>(
     })
 }
 
-/// Returns the symbol name to which a relocation refers.
-fn rel_target_name<'data>(
+/// Returns information about what the original relocation refers to.
+fn get_original_referent<'data, R: RType>(
     rel: &object::Relocation,
     input_file: &crate::section_map::InputFile<'data>,
-) -> Option<SymbolName<'data>> {
+) -> Result<Referent<'data, R>> {
     if let RelocationTarget::Symbol(symbol_index) = rel.target() {
-        let symbol = input_file.elf_file.symbol_by_index(symbol_index).ok()?;
-        let name_bytes = symbol.name_bytes().ok()?;
+        let symbol = input_file.elf_file.symbol_by_index(symbol_index)?;
 
-        return Some(SymbolName {
+        if let Some(section_index) = symbol.section_index() {
+            let section = input_file.elf_file.section_by_index(section_index)?;
+
+            let flags = section.elf_section_header().sh_flags(LittleEndian) as u32;
+
+            if flags & object::elf::SHF_MERGE != 0 && flags & object::elf::SHF_STRINGS != 0 {
+                let section_data = section.data()?;
+                let string_plus_rest = &section_data[symbol.address() as usize..];
+                if let Some(end_offset) = memchr::memchr(0, string_plus_rest) {
+                    return Ok(Referent::MergeString(&string_plus_rest[..end_offset]));
+                }
+            }
+        }
+
+        let name_bytes = symbol.name_bytes()?;
+
+        let name = SymbolName {
             bytes: name_bytes,
             version: None,
-        });
+        };
+
+        return Ok(Referent::Named(name, rel.addend()));
     }
-    None
+
+    Ok(Referent::Unknown)
 }
 
 fn diff_key_for_res_mismatch<A: Arch>(
@@ -884,6 +897,8 @@ enum Referent<'data, R: RType> {
 
     Absolute(u64),
 
+    MergeString(&'data [u8]),
+
     /// A reference to an ifunc. TODO: Validate that we're pointing to the correct ifunc.
     IFunc,
     DtpMod,
@@ -928,6 +943,13 @@ impl<R: RType> Referent<'_, R> {
             Referent::Absolute(value) => {
                 write!(f, "#0x{value:x}")?;
             }
+            Referent::MergeString(data) => {
+                if let Ok(str) = core::str::from_utf8(data) {
+                    write!(f, "MergedString({str:?})")?;
+                } else {
+                    write!(f, "MergedString(InvalidUtf8({data:?}))")?;
+                }
+            }
             Referent::DynamicRelocation(dynamic_relocation) => dynamic_relocation.write_to(f)?,
             Referent::IFunc => write!(f, "IFunc")?,
             Referent::DtpMod => write!(f, "DtpMod")?,
@@ -947,6 +969,13 @@ impl<R: RType> Referent<'_, R> {
             }
             (Referent::DynamicRelocation(a), Referent::DynamicRelocation(b)) => a.matches(b),
             _ => self == other,
+        }
+    }
+
+    fn is_symbol_with_name(&self, name: &[u8]) -> bool {
+        match self {
+            Self::Named(n, _) => n.bytes == name,
+            _ => false,
         }
     }
 }
@@ -1061,7 +1090,7 @@ impl<'data> RelaxationTester<'data> {
         candidate: Relaxation<A>,
         rel: &object::Relocation,
         mut offset: u64,
-        original_symbol_name: Option<&SymbolName>,
+        original_referent: Referent<A::RType>,
     ) -> Result<MatchResult<'data, A>> {
         // Relocations need to have been previously sorted by offset.
         assert!(
@@ -1112,8 +1141,6 @@ impl<'data> RelaxationTester<'data> {
 
         let mut addend = rel.addend();
 
-        let mut e = vec![addend];
-
         // Apply the relaxation to our scratch buffer.
         let mut scratch_offset = base_scratch_offset;
         let next_modifier = A::next_relocation_modifier(candidate.relaxation_kind);
@@ -1124,8 +1151,6 @@ impl<'data> RelaxationTester<'data> {
             &mut addend,
         );
 
-        e.push(addend);
-
         // Check to see if the resulting bytes match what's in the output section.
         if !mask.matches(scratch, &section_data[copy_start..copy_end]) {
             return fail("Relaxation output didn't match");
@@ -1135,21 +1160,16 @@ impl<'data> RelaxationTester<'data> {
         // offset.
         offset = copy_start as u64 + scratch_offset;
 
-        let reference = match self.read_reference(
-            candidate,
-            addend,
-            offset,
-            section_data,
-            original_symbol_name,
-        ) {
-            Ok(v) => v,
-            Err(error) => {
-                return Ok(MatchResult::Failed(FailedMatch::new(
-                    candidate,
-                    error.to_string(),
-                )))
-            }
-        };
+        let reference =
+            match self.read_reference(candidate, addend, offset, section_data, original_referent) {
+                Ok(v) => v,
+                Err(error) => {
+                    return Ok(MatchResult::Failed(FailedMatch::new(
+                        candidate,
+                        error.to_string(),
+                    )))
+                }
+            };
 
         let relocation_info = candidate
             .new_r_type
@@ -1199,7 +1219,7 @@ impl<'data> RelaxationTester<'data> {
         addend: i64,
         offset: u64,
         section_data: &[u8],
-        original_symbol_name: Option<&SymbolName>,
+        original_referent: Referent<A::RType>,
     ) -> Result<Reference<'data, A::RType>> {
         let relocation_info = candidate
             .new_r_type
@@ -1280,7 +1300,39 @@ impl<'data> RelaxationTester<'data> {
             }
         }
 
-        value = value.wrapping_add(relative_to).wrapping_sub(addend as u64);
+        value = value.wrapping_add(relative_to);
+
+        if relocation_info.size_in_bytes == 4 {
+            value = u64::from(value as u32);
+        }
+
+        if matches!(original_referent, Referent::MergeString(_)) {
+            let string_address = if relocation_info.kind == RelocationKind::Relative {
+                // We'd like to add the offset from the relocation to the next instruction, however
+                // we don't have that information without decoding instructions, so we use the size
+                // of relocation in bytes, since for instructions that load the address of a string,
+                // that should be the same. Note, we can't use the addend because the addend is
+                // sometimes used to select which string in the string merge section we're pointing
+                // at. If we subtracted the addend, then instead of pointing at the correct string,
+                // we'd end up pointing to the start of the string-merge section.
+                value + relocation_info.size_in_bytes as u64
+            } else {
+                value
+            };
+
+            let bytes =
+                read_bytes_starting_at(self.bin.elf_file, string_address).with_context(|| {
+                    format!("Failed to read bytes starting at 0x{string_address:x}")
+                })?;
+            let null_offset = memchr::memchr(0, bytes).with_context(|| {
+                format!(
+                    "Missing null-terminator for merged string starting at 0x{string_address:x}"
+                )
+            })?;
+            referent = Some(Referent::MergeString(&bytes[..null_offset]));
+        }
+
+        value = value.wrapping_sub(addend as u64);
 
         if relocation_info.size_in_bytes == 4 {
             value = u64::from(value as u32);
@@ -1306,7 +1358,7 @@ impl<'data> RelaxationTester<'data> {
             // location in the GOT. However, for relocations that are used to obtain a pointer to
             // the base of the GOT, we don't want to do this.
             let allow_got_dereference =
-                original_symbol_name.is_none_or(|n| n.bytes != b"_GLOBAL_OFFSET_TABLE_");
+                !original_referent.is_symbol_with_name(b"_GLOBAL_OFFSET_TABLE_");
 
             if allow_got_dereference && self.bin.address_index.is_got_address(value) {
                 reference_props.via_got = true;
@@ -1334,7 +1386,7 @@ impl<'data> RelaxationTester<'data> {
         }
 
         if referent.is_none() {
-            if let Some(original_name) = original_symbol_name {
+            if let Referent::Named(original_name, _) = original_referent {
                 match self.bin.symbol_by_name(original_name.bytes) {
                     crate::NameLookupResult::Defined(elf_symbol) => {
                         let offset = value.wrapping_sub(elf_symbol.address()) as i64;
@@ -1367,7 +1419,7 @@ impl<'data> RelaxationTester<'data> {
         section_kind: SectionKind,
         offset: u64,
         rel: &object::Relocation,
-        original_symbol_name: Option<&SymbolName>,
+        original_referent: Referent<A::RType>,
     ) -> Result<Option<Resolution<'data, A>>> {
         let r_type = get_r_type(rel);
 
@@ -1384,7 +1436,7 @@ impl<'data> RelaxationTester<'data> {
         let mut error = None;
 
         A::possible_relaxations_do(r_type, section_kind, |relaxation| {
-            match self.resolve(relaxation, rel, offset, original_symbol_name) {
+            match self.resolve(relaxation, rel, offset, original_referent) {
                 Ok(MatchResult::Matched(resolution)) => {
                     if let Some(existing) = selected_resolution.as_mut() {
                         existing.merge_ambiguous(resolution);
@@ -1409,7 +1461,7 @@ impl<'data> RelaxationTester<'data> {
                 let mut failed_matches = Vec::new();
 
                 A::possible_relaxations_do(r_type, section_kind, |relaxation| {
-                    let result = self.resolve(relaxation, rel, offset, original_symbol_name);
+                    let result = self.resolve(relaxation, rel, offset, original_referent);
 
                     match result {
                         Ok(MatchResult::Failed(failure)) => {
@@ -2332,8 +2384,8 @@ impl PltEntry {
     }
 }
 
-/// Attempts to read some data from `address`.
-fn read_segment<'data>(elf_file: &ElfFile64<'data>, address: u64, len: u64) -> Option<Data<'data>> {
+/// Attempts to read some data starting at `address` up to the end of the segment.
+fn read_segment<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<Data<'data>> {
     // This could well end up needing to be optimised if we end up caring about performance.
     for raw_seg in elf_file.elf_program_headers() {
         let e = LittleEndian;
@@ -2344,31 +2396,33 @@ fn read_segment<'data>(elf_file: &ElfFile64<'data>, address: u64, len: u64) -> O
         let seg_len = raw_seg.p_memsz(e);
         let seg_end = seg_address + seg_len;
 
-        if seg_address <= address && address.saturating_add(len) <= seg_end {
+        if seg_address <= address && address < seg_end {
             let start = (address - seg_address) as usize;
-            let end = start + len as usize;
             let file_start = raw_seg.p_offset(e) as usize;
             let file_size = raw_seg.p_filesz(e) as usize;
             let file_end = file_start + file_size;
             let file_bytes = elf_file.data();
-            let bytes = if file_end <= file_bytes.len() {
-                &file_bytes[file_start..file_end]
-            } else {
-                &[]
-            };
-            let data = if end > bytes.len() {
-                Data::Bss
-            } else {
-                Data::Bytes(&bytes[start..end])
-            };
-            return Some(data);
+            if file_bytes.is_empty() {
+                return Some(Data::Bss);
+            }
+            let bytes = &file_bytes[file_start..file_end];
+            return Some(Data::Bytes(&bytes[start..]));
         }
     }
     None
 }
 
 fn read_bytes<'data>(elf_file: &ElfFile64<'data>, address: u64, len: u64) -> Option<&'data [u8]> {
-    read_segment(elf_file, address, len).and_then(|data| match data {
+    read_segment(elf_file, address).and_then(|data| match data {
+        Data::Bytes(bytes) => bytes.get(..len as usize),
+        Data::Bss => None,
+    })
+}
+
+/// Returns bytes starting at `address` up to the end of the containing segment. This is useful when
+/// you don't know what length you need to read, e.g. when reading a null-terminated string.
+fn read_bytes_starting_at<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<&'data [u8]> {
+    read_segment(elf_file, address).and_then(|data| match data {
         Data::Bytes(bytes) => Some(bytes),
         Data::Bss => None,
     })

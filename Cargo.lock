@@ -670,6 +670,7 @@ dependencies = [
  "linker-layout",
  "linker-trace",
  "linker-utils",
+ "memchr",
  "memmap2",
  "object",
  "rayon",
