@@ -34,6 +34,7 @@ colored = "3.0.0"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 memmap2 = "0.9.5"
+memchr = "2.7.4"
 
 [lints]
 workspace = true
