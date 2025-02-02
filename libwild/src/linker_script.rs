@@ -198,6 +198,12 @@ impl<'a> Tokeniser<'a> {
                 }
                 continue;
             }
+            if self.text.starts_with('#') {
+                if take_up_to(&mut self.text, "\n").is_err() {
+                    self.text = "";
+                }
+                continue;
+            }
             if self.text.is_empty() {
                 return None;
             }
@@ -422,7 +428,9 @@ mod tests {
     #[test]
     fn test_parse_version_script() {
         let data = VersionScriptData {
-            raw: r#"{global:
+            raw: r#"
+                    # Comment starting with a hash
+                    {global:
                         /* Single-line comment */
                         foo; /* Trailing comment */
                         bar*;
