@@ -1549,6 +1549,8 @@ fn workaround_wait_timeout_race() {
         // binary.
         let _ = Command::new("ld")
             .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .unwrap()
             .wait_timeout(Duration::from_secs(1));
