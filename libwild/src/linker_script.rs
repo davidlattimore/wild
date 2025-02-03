@@ -10,8 +10,8 @@ use crate::error::Result;
 use crate::hash::PassThroughHasher;
 use crate::hash::PreHashed;
 use crate::input_data::VersionScriptData;
-use crate::symbol::SymbolName;
-use anyhow::Context;
+use crate::symbol::UnversionedSymbolName;
+use anyhow::Context as _;
 use anyhow::anyhow;
 use anyhow::bail;
 use normalize_path::NormalizePath;
@@ -80,7 +80,7 @@ struct Version<'data> {
 #[derive(Default)]
 struct MatchRules<'data> {
     matches_all: bool,
-    exact: HashSet<PreHashed<SymbolName<'data>>, PassThroughHasher>,
+    exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
     prefixes: Vec<&'data [u8]>,
 }
 
@@ -90,12 +90,13 @@ impl<'data> MatchRules<'data> {
             SymbolMatcher::All => self.matches_all = true,
             SymbolMatcher::Prefix(prefix) => self.prefixes.push(prefix.as_bytes()),
             SymbolMatcher::Exact(exact) => {
-                self.exact.insert(SymbolName::prehashed(exact.as_bytes()));
+                self.exact
+                    .insert(UnversionedSymbolName::prehashed(exact.as_bytes()));
             }
         }
     }
 
-    fn matches(&self, name: &PreHashed<SymbolName>) -> bool {
+    fn matches(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
         self.matches_all
             || self.exact.contains(name)
             || self
@@ -125,7 +126,7 @@ impl<'data> VersionScript<'data> {
         })
     }
 
-    pub(crate) fn is_local(&self, name: &PreHashed<SymbolName>) -> bool {
+    pub(crate) fn is_local(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
         self.version.as_ref().is_some_and(|ver| ver.is_local(name))
     }
 }
@@ -185,7 +186,7 @@ impl<'data> Version<'data> {
         bail!("Missing close '}}' in version script");
     }
 
-    fn is_local(&self, name: &PreHashed<SymbolName>) -> bool {
+    fn is_local(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
         if self.globals.matches(name) {
             return false;
         }

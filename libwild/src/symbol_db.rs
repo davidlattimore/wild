@@ -19,13 +19,17 @@ use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
 use crate::storage::StorageModel;
 use crate::storage::SymbolNameMap;
-use crate::symbol::SymbolName;
+use crate::symbol::UnversionedSymbolName;
+use crate::symbol::VersionedSymbolName;
 use crate::threading::prelude::*;
+use ahash::HashMap;
+use ahash::RandomState;
 use anyhow::Context;
 use itertools::Itertools;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
 use std::collections::hash_map;
+use std::fmt::Display;
 use std::mem::replace;
 use std::mem::take;
 
@@ -59,6 +63,11 @@ pub struct SymbolDb<'data, S: StorageModel> {
     /// alternate definition with that name until the undefined symbol is reached.
     pub(crate) alternative_definitions: Vec<SymbolId>,
 
+    /// Alternative definitions, but only for versioned symbols. This might be more efficient with a
+    /// proper multi-map that doesn't need a separate Vec for each value, however we don't expect
+    /// many entries here.
+    pub(crate) alternative_versioned_definitions: HashMap<SymbolId, Vec<SymbolId>>,
+
     /// The symbol IDs of the first symbol with each name for which there are alternative
     /// definitions. This can be used to find the head of a linked list in
     /// `alternative_definitions`.
@@ -71,14 +80,20 @@ pub struct SymbolDb<'data, S: StorageModel> {
 
     /// The names of symbols that mark the start / stop of sections. These are indexed by the offset
     /// into the epilogue's symbol IDs.
-    start_stop_symbol_names: Vec<SymbolName<'data>>,
+    start_stop_symbol_names: Vec<UnversionedSymbolName<'data>>,
 }
 
 /// A global symbol that hasn't been put into our database yet.
 #[derive(Clone, Copy)]
 pub(crate) struct PendingSymbol<'data> {
     pub(crate) symbol_id: SymbolId,
-    pub(crate) name: PreHashed<SymbolName<'data>>,
+    pub(crate) name: PreHashed<UnversionedSymbolName<'data>>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PendingVersionedSymbol<'data> {
+    pub(crate) symbol_id: SymbolId,
+    pub(crate) name: PreHashed<VersionedSymbolName<'data>>,
 }
 
 /// An ID for a symbol. All symbols from all input files are allocated a unique symbol ID. The
@@ -201,8 +216,10 @@ impl Iterator for SymbolIdRangeIterator {
     }
 }
 
+#[derive(Default)]
 struct SymbolLoadOutputs<'data> {
     pending_symbols: Vec<PendingSymbol<'data>>,
+    pending_versioned_symbols: Vec<PendingVersionedSymbol<'data>>,
 }
 
 impl<'data, S: StorageModel> SymbolDb<'data, S> {
@@ -260,6 +277,7 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
             args,
             global_names: S::SymbolNameMap::empty(),
             alternative_definitions: vec![SymbolId::undefined(); num_symbols],
+            alternative_versioned_definitions: HashMap::with_hasher(RandomState::new()),
             symbols_with_alternatives: Vec::new(),
             epilogue_file_id,
             symbol_file_ids,
@@ -283,36 +301,25 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
             .map(|s| s.pending_symbols.len())
             .sum();
         self.global_names.reserve(approx_num_symbols);
-        for pending in symbol_per_file {
-            self.add_symbols(pending.pending_symbols);
-        }
-        Ok(())
-    }
 
-    fn add_symbols(&mut self, pending: Vec<PendingSymbol<'data>>) {
-        for symbol in pending {
-            self.add_symbol(symbol);
+        for pending in symbol_per_file {
+            for symbol in pending.pending_symbols {
+                self.add_symbol(symbol);
+            }
+
+            for symbol in pending.pending_versioned_symbols {
+                self.add_versioned_symbol(symbol);
+            }
         }
+
+        Ok(())
     }
 
     fn add_symbol(&mut self, pending: PendingSymbol<'data>) {
         match self.global_names.entry(pending.name) {
             hash_map::Entry::Occupied(entry) => {
                 let first_symbol_id = *entry.get();
-                // Update the entry at `first_symbol_id` to point to the new last symbol (the
-                // pending symbol).
-                let previous_last = replace(
-                    &mut self.alternative_definitions[first_symbol_id.as_usize()],
-                    pending.symbol_id,
-                );
-                // Our pending symbol is now last. Update its entry to point to the previous last
-                // symbol.
-                self.alternative_definitions[pending.symbol_id.as_usize()] = previous_last;
-                if previous_last.is_undefined() {
-                    // This is the first alternative definition for this name, note the first symbol
-                    // ID for later when we resolve alternatives.
-                    self.symbols_with_alternatives.push(first_symbol_id);
-                }
+                self.add_extra_symbol_definition(first_symbol_id, pending.symbol_id);
             }
             hash_map::Entry::Vacant(entry) => {
                 entry.insert(pending.symbol_id);
@@ -320,9 +327,43 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
         }
     }
 
+    fn add_versioned_symbol(&mut self, pending: PendingVersionedSymbol<'data>) {
+        match self.global_names.versioned_entry(pending.name) {
+            hash_map::Entry::Occupied(entry) => {
+                let first_symbol_id = *entry.get();
+                self.alternative_versioned_definitions
+                    .entry(first_symbol_id)
+                    .or_default()
+                    .push(pending.symbol_id);
+            }
+            hash_map::Entry::Vacant(entry) => {
+                entry.insert(pending.symbol_id);
+            }
+        }
+    }
+
+    fn add_extra_symbol_definition(&mut self, first_symbol_id: SymbolId, new_symbol_id: SymbolId) {
+        // Update the entry at `first_symbol_id` to point to the new last symbol (the
+        // pending symbol).
+        let previous_last = replace(
+            &mut self.alternative_definitions[first_symbol_id.as_usize()],
+            new_symbol_id,
+        );
+
+        // Our pending symbol is now last. Update its entry to point to the previous last
+        // symbol.
+        self.alternative_definitions[new_symbol_id.as_usize()] = previous_last;
+
+        if previous_last.is_undefined() {
+            // This is the first alternative definition for this name, note the first symbol
+            // ID for later when we resolve alternatives.
+            self.symbols_with_alternatives.push(first_symbol_id);
+        }
+    }
+
     pub(crate) fn add_start_stop_symbol(
         &mut self,
-        symbol_name: PreHashed<SymbolName<'data>>,
+        symbol_name: PreHashed<UnversionedSymbolName<'data>>,
     ) -> SymbolId {
         let symbol_id = SymbolId::from_usize(self.symbol_definitions.len());
         self.add_symbol(PendingSymbol {
@@ -345,12 +386,15 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
         }
     }
 
-    pub(crate) fn symbol_name_for_display(&self, symbol_id: SymbolId) -> SymbolName<'data> {
+    pub(crate) fn symbol_name_for_display(
+        &self,
+        symbol_id: SymbolId,
+    ) -> UnversionedSymbolName<'data> {
         self.symbol_name(symbol_id)
-            .unwrap_or_else(|_| SymbolName::new(b"??"))
+            .unwrap_or_else(|_| UnversionedSymbolName::new(b"??"))
     }
 
-    pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> Result<SymbolName<'data>> {
+    pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> Result<UnversionedSymbolName<'data>> {
         let file_id = self.file_id_for_symbol(symbol_id);
         let input_object = self.file(file_id);
         match input_object {
@@ -448,16 +492,17 @@ fn read_symbols<'data, 'out>(
         .par_iter()
         .zip(symbols_out_by_file)
         .map(|(group, symbols_out)| {
-            let mut outputs = SymbolLoadOutputs {
-                pending_symbols: Vec::new(),
-            };
+            let mut outputs = SymbolLoadOutputs::default();
+
             for file in &group.files {
                 let filename = file.filename();
+
                 load_symbols_from_file(file, version_script, symbols_out, &mut outputs, args)
                     .with_context(|| {
                         format!("Failed to load symbols from `{}`", filename.display())
                     })?;
             }
+
             Ok(outputs)
         })
         .collect::<Result<Vec<SymbolLoadOutputs>>>()
@@ -473,18 +518,18 @@ fn load_symbols_from_file<'data>(
     match reader {
         ParsedInput::Object(s) => {
             if s.is_dynamic() {
-                DynamicObjectSymbolLoader.load_symbols(
+                DynamicObjectSymbolLoader::new(&s.object)?.load_symbols(
                     s.file_id,
-                    &s.object,
                     symbols_out,
                     outputs,
                 )?;
             } else {
                 RegularObjectSymbolLoader {
+                    object: &s.object,
                     args,
                     version_script,
                 }
-                .load_symbols(s.file_id, &s.object, symbols_out, outputs)?;
+                .load_symbols(s.file_id, symbols_out, outputs)?;
             }
         }
         ParsedInput::Prelude(s) => s.load_symbols(symbols_out, outputs, args.output_kind()),
@@ -560,18 +605,17 @@ impl<'out> SymbolInfoWriter<'out> {
     }
 }
 
-trait SymbolLoader {
-    fn load_symbols<'data>(
+trait SymbolLoader<'data> {
+    fn load_symbols(
         &self,
         file_id: FileId,
-        object: &crate::elf::File<'data>,
         symbols_out: &mut SymbolInfoWriter,
         outputs: &mut SymbolLoadOutputs<'data>,
     ) -> Result {
         let e = LittleEndian;
         let base_symbol_id = symbols_out.next;
 
-        for symbol in object.symbols.iter() {
+        for symbol in self.object().symbols.iter() {
             let symbol_id = symbols_out.next;
             let mut value_flags = self.compute_value_flags(symbol);
             if symbol.is_undefined(e) {
@@ -580,26 +624,16 @@ trait SymbolLoader {
             }
             let resolution = symbol_id;
 
-            if symbol.is_local()
-                || self.is_hidden_version(symbol_id.offset_from(base_symbol_id), object)
-            {
+            let local_index = symbol_id.offset_from(base_symbol_id);
+
+            if symbol.is_local() {
                 symbols_out.set_next(value_flags, resolution, file_id);
                 continue;
             }
 
-            let mut name_bytes = object.symbol_name(symbol)?;
+            let info = self.get_symbol_name_and_version(symbol, local_index)?;
 
-            // Symbols can contain version specifiers, e.g. `foo@1.1` or `foo@@2.0`. The latter,
-            // with double-at specifies that it's the default version. We don't currently support
-            // matching arbitrary versions, however if we see a default version, we strip it so that
-            // it can be used via a regular symbol reference.
-            if let Some(at_offset) = memchr::memchr(b'@', name_bytes) {
-                if name_bytes[at_offset..].starts_with(b"@@") {
-                    name_bytes = &name_bytes[..at_offset];
-                }
-            }
-
-            let name = SymbolName::prehashed(name_bytes);
+            let name = UnversionedSymbolName::prehashed(info.name_bytes);
 
             if self.should_downgrade_to_local(&name) {
                 value_flags |= ValueFlags::DOWNGRADE_TO_LOCAL;
@@ -610,44 +644,143 @@ trait SymbolLoader {
                 }
             }
 
-            let pending = PendingSymbol::from_prehashed(symbol_id, name);
-            outputs.pending_symbols.push(pending);
+            if info.is_default {
+                let pending = PendingSymbol::from_prehashed(symbol_id, name);
+                outputs.pending_symbols.push(pending);
+            }
+
+            if let Some(version) = info.version_name {
+                let pending = PendingVersionedSymbol::from_prehashed(symbol_id, name, version);
+                outputs.pending_versioned_symbols.push(pending);
+            }
+
             symbols_out.set_next(value_flags, resolution, file_id);
         }
 
         Ok(())
     }
 
+    fn object(&self) -> &crate::elf::File<'data>;
+
     fn compute_value_flags(&self, symbol: &crate::elf::Symbol) -> ValueFlags;
 
     /// Returns whether we should downgrade a symbol with the specified name to be a local.
-    fn should_downgrade_to_local(&self, _name: &PreHashed<SymbolName>) -> bool {
+    fn should_downgrade_to_local(&self, _name: &PreHashed<UnversionedSymbolName>) -> bool {
         false
     }
 
-    fn is_hidden_version(&self, _symbol_index: usize, _object: &crate::elf::File) -> bool {
-        false
-    }
+    fn get_symbol_name_and_version(
+        &self,
+        symbol: &crate::elf::Symbol,
+        local_index: usize,
+    ) -> Result<RawSymbolName<'data>>;
 }
 
-struct RegularObjectSymbolLoader<'a> {
+pub(crate) struct RawSymbolName<'data> {
+    pub(crate) name_bytes: &'data [u8],
+
+    pub(crate) version_name: Option<&'data [u8]>,
+
+    /// Whether the symbol can be referred to without a version.
+    pub(crate) is_default: bool,
+}
+
+struct RegularObjectSymbolLoader<'a, 'data> {
+    object: &'a crate::elf::File<'data>,
     args: &'a Args,
     version_script: &'a VersionScript<'a>,
 }
 
-struct DynamicObjectSymbolLoader;
+struct DynamicObjectSymbolLoader<'a, 'data> {
+    object: &'a crate::elf::File<'data>,
+    version_names: Vec<Option<&'data [u8]>>,
+}
 
-impl SymbolLoader for RegularObjectSymbolLoader<'_> {
+impl<'a, 'data> DynamicObjectSymbolLoader<'a, 'data> {
+    fn new(object: &'a crate::elf::File<'data>) -> Result<Self> {
+        let endian = LittleEndian;
+
+        let mut version_names = vec![None; object.verdefnum as usize + 1];
+
+        // See https://refspecs.linuxfoundation.org/LSB_3.0.0/LSB-PDA/LSB-PDA.junk/symversion.html
+        // for information about symbol versioning.
+
+        if let Some((verdefs, string_table_index)) = &object.verdef {
+            let strings = object
+                .sections
+                .strings(endian, object.data, *string_table_index)?;
+
+            for r in verdefs.clone() {
+                let (verdef, mut aux_iterator) = r?;
+                // Every VERDEF entry should have at least one AUX entry. We currently only care
+                // about the first one.
+                let aux = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
+                let version_index = verdef.vd_ndx.get(endian);
+                let name = aux.name(endian, strings)?;
+
+                *version_names
+                    .get_mut(usize::from(version_index))
+                    .with_context(|| format!("Invalid version index {version_index}"))? =
+                    Some(name);
+            }
+        }
+
+        Ok(Self {
+            object,
+            version_names,
+        })
+    }
+}
+
+impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
     fn compute_value_flags(&self, symbol: &crate::elf::Symbol) -> ValueFlags {
         value_flags_from_elf_symbol(symbol, self.args)
     }
 
-    fn should_downgrade_to_local(&self, name: &PreHashed<SymbolName>) -> bool {
+    fn should_downgrade_to_local(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
         self.version_script.is_local(name)
+    }
+
+    fn get_symbol_name_and_version(
+        &self,
+        symbol: &crate::elf::Symbol,
+        _local_index: usize,
+    ) -> Result<RawSymbolName<'data>> {
+        Ok(RawSymbolName::parse(self.object.symbol_name(symbol)?))
+    }
+
+    fn object(&self) -> &crate::elf::File<'data> {
+        self.object
     }
 }
 
-impl SymbolLoader for DynamicObjectSymbolLoader {
+impl<'data> RawSymbolName<'data> {
+    pub(crate) fn parse(mut name_bytes: &'data [u8]) -> Self {
+        let mut version_name = None;
+        let mut is_default = true;
+
+        // Symbols can contain version specifiers, e.g. `foo@1.1` or `foo@@2.0`. The latter,
+        // with double-at specifies that it's the default version.
+        if let Some(at_offset) = memchr::memchr(b'@', name_bytes) {
+            if name_bytes[at_offset..].starts_with(b"@@") {
+                version_name = Some(&name_bytes[at_offset + 2..]);
+            } else {
+                version_name = Some(&name_bytes[at_offset + 1..]);
+                is_default = false;
+            }
+
+            name_bytes = &name_bytes[..at_offset];
+        }
+
+        RawSymbolName {
+            name_bytes,
+            version_name,
+            is_default,
+        }
+    }
+}
+
+impl<'data> SymbolLoader<'data> for DynamicObjectSymbolLoader<'_, 'data> {
     fn compute_value_flags(&self, symbol: &crate::elf::Symbol) -> ValueFlags {
         let mut flags = ValueFlags::DYNAMIC;
         let st_type = symbol.st_type();
@@ -660,11 +793,39 @@ impl SymbolLoader for DynamicObjectSymbolLoader {
         flags
     }
 
-    fn is_hidden_version(&self, symbol_index: usize, object: &crate::elf::File) -> bool {
-        object
-            .versym
-            .get(symbol_index)
-            .is_some_and(|versym| versym.0.get(LittleEndian) & object::elf::VERSYM_HIDDEN != 0)
+    fn get_symbol_name_and_version(
+        &self,
+        symbol: &crate::elf::Symbol,
+        local_index: usize,
+    ) -> Result<RawSymbolName<'data>> {
+        let name_bytes = self.object.symbol_name(symbol)?;
+
+        let is_default;
+        let version_name;
+
+        if let Some(versym) = self.object.versym.get(local_index) {
+            let versym = versym.0.get(LittleEndian);
+            is_default = versym & object::elf::VERSYM_HIDDEN == 0;
+            let version_index = versym & object::elf::VERSYM_VERSION;
+            version_name = self
+                .version_names
+                .get(usize::from(version_index))
+                .copied()
+                .flatten();
+        } else {
+            is_default = true;
+            version_name = None;
+        };
+
+        Ok(RawSymbolName {
+            name_bytes,
+            version_name,
+            is_default,
+        })
+    }
+
+    fn object(&self) -> &crate::elf::File<'data> {
+        self.object
     }
 }
 
@@ -680,7 +841,7 @@ impl<S: StorageModel> std::fmt::Display for SymbolDebug<'_, '_, S> {
         let symbol_name = self
             .db
             .symbol_name(symbol_id)
-            .unwrap_or_else(|_| SymbolName::new(b"??"));
+            .unwrap_or_else(|_| UnversionedSymbolName::new(b"??"));
         let definition = self.db.definition(symbol_id);
         let file_id = self.db.file_id_for_symbol(symbol_id);
         let file = self.db.file(file_id);
@@ -825,14 +986,27 @@ impl InternalSymDefInfo {
 
 impl<'data> PendingSymbol<'data> {
     fn new(symbol_id: SymbolId, name: &'data [u8]) -> PendingSymbol<'data> {
-        Self::from_prehashed(symbol_id, SymbolName::prehashed(name))
+        Self::from_prehashed(symbol_id, UnversionedSymbolName::prehashed(name))
     }
 
     fn from_prehashed(
         symbol_id: SymbolId,
-        name: PreHashed<SymbolName<'data>>,
+        name: PreHashed<UnversionedSymbolName<'data>>,
     ) -> PendingSymbol<'data> {
         PendingSymbol { symbol_id, name }
+    }
+}
+
+impl<'data> PendingVersionedSymbol<'data> {
+    fn from_prehashed(
+        symbol_id: SymbolId,
+        name: PreHashed<UnversionedSymbolName<'data>>,
+        version: &'data [u8],
+    ) -> PendingVersionedSymbol<'data> {
+        PendingVersionedSymbol {
+            symbol_id,
+            name: VersionedSymbolName::prehashed(name, version),
+        }
     }
 }
 
@@ -851,5 +1025,21 @@ impl ShardKey for SymbolId {
 
     fn as_usize(self) -> usize {
         self.0 as usize
+    }
+}
+
+impl Display for RawSymbolName<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", String::from_utf8_lossy(self.name_bytes))?;
+        if let Some(version) = self.version_name {
+            if self.is_default {
+                write!(f, "@@")?;
+            } else {
+                write!(f, "@")?;
+            }
+            write!(f, "{}", String::from_utf8_lossy(version))?;
+        }
+
+        Ok(())
     }
 }

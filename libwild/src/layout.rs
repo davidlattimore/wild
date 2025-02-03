@@ -55,7 +55,7 @@ use crate::storage::SymbolNameMap as _;
 use crate::string_merging::MergedStringStartAddresses;
 use crate::string_merging::MergedStringsSection;
 use crate::string_merging::get_merged_string_output_address;
-use crate::symbol::SymbolName;
+use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolDebug;
 use crate::symbol_db::SymbolId;
@@ -2655,7 +2655,7 @@ impl PreludeLayoutState {
         let symbol_id = resources
             .symbol_db
             .global_names
-            .get(&SymbolName::prehashed(b"_start"))
+            .get_unversioned(&UnversionedSymbolName::prehashed(b"_start"))
             .context("Missing _start symbol")?;
         self.entry_symbol_id = Some(symbol_id);
         let file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
@@ -4464,7 +4464,7 @@ fn print_symbol_info<S: StorageModel>(
 ) {
     let symbol_id = symbol_db
         .global_names
-        .get(&SymbolName::prehashed(name.as_bytes()));
+        .get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()));
     println!("Global name `{name}` refers to: {symbol_id:?}",);
 
     println!("Definitions / references with name `{name}`:");
