@@ -121,6 +121,7 @@ impl<'data> IndexedLayout<'data> {
                     .is_some_and(|sec| sec.is_some())
                 {
                     // This symbol points to a section that we didn't copy. Ignore it.
+                    continue;
                 }
 
                 let name = symbol.name_bytes()?;
