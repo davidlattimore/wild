@@ -637,6 +637,25 @@ pub enum RelocationInstruction {
     JumpCall,
 }
 
+impl RelocationInstruction {
+    #[must_use]
+    pub fn bit_mask(&self, range: BitRange) -> [u8; 4] {
+        let mut mask = [0; 4];
+
+        // To figure out which bits are part of the relocation, we write a value with
+        // all ones into a buffer that initially contains zeros.
+        let all_ones = (1 << (range.end - range.start)) - 1;
+        self.write_to_value(all_ones, false, &mut mask);
+
+        // Wherever we get a 1 is part of the relocation, so invert all bits.
+        for b in &mut mask {
+            *b = !*b;
+        }
+
+        mask
+    }
+}
+
 #[derive(Clone, Debug, Copy)]
 pub enum RelocationSize {
     ByteSize(usize),
