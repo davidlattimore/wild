@@ -18,7 +18,7 @@ dhat = { version = "0.3.3", optional = true }
 
 [dev-dependencies]
 anyhow = "1.0.95"
-wait-timeout = "0.2.0"
+wait-timeout = "0.2.1"
 itertools = "0.14.0"
 object = { version = "0.36.7", default-features = false, features = [
     "elf",
