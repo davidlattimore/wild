@@ -198,10 +198,10 @@ impl Arch for X86_64 {
         instructions
     }
 
-    fn instruction_to_string(instruction: Self::RawInstruction) -> String {
+    fn instruction_to_string(instruction: &Instruction<Self>) -> String {
         let mut out = String::new();
         let mut formatter = iced_x86::GasFormatter::new();
-        formatter.format(&instruction, &mut out);
+        formatter.format(&instruction.raw_instruction, &mut out);
         out
     }
 

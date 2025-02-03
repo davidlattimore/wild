@@ -76,7 +76,7 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
     fn next_relocation_modifier(relaxation_kind: Self::RelaxationKind) -> RelocationModifier;
 
     /// Returns a human readable form of the supplied instruction.
-    fn instruction_to_string(instruction: Self::RawInstruction) -> String;
+    fn instruction_to_string(instruction: &Instruction<Self>) -> String;
 
     /// Decode instructions that are in or overlap with the supplied range. The start of `range` may
     /// be part way through an instruction. For variable length instructions, implementations will

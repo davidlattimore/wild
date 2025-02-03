@@ -674,7 +674,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
                 offset += 1;
             }
 
-            let out = A::instruction_to_string(instruction.raw_instruction);
+            let out = A::instruction_to_string(instruction);
 
             let instruction_padding =
                 (maximum_widths.instruction_bytes - instruction.bytes.len()) * 3;
