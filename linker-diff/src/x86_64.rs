@@ -352,8 +352,7 @@ impl<'data> AsmDecoder<'data> {
         let next_offset = self.instruction_decoder.position();
         let bytes = &self.bytes[offset..next_offset];
         Some(Instruction {
-            base_address: self.base_address,
-            offset: offset as u64,
+            address: self.base_address + offset as u64,
             raw_instruction: instruction,
             bytes,
         })
