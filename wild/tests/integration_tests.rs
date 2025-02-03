@@ -34,7 +34,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::Once;
 use std::sync::OnceLock;
-use std::time::Duration;
 use std::time::Instant;
 use wait_timeout::ChildExt;
 
@@ -1426,8 +1425,6 @@ fn integration_test(
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
 ) -> Result {
-    workaround_wait_timeout_race();
-
     let program_inputs = ProgramInputs::new(program_name)?;
 
     let mut linkers = vec![
@@ -1531,28 +1528,4 @@ fn integration_test(
     }
 
     Ok(())
-}
-
-/// Apply a workaround for https://github.com/alexcrichton/wait-timeout/issues/36. This workaround
-/// should hopefully ensure that wait-timeout gets initialised before any other subprocesses get
-/// spawned, provided our test(s) call this before they spawn any other subprocesses. In theory, we
-/// could still trigger the race condition if our subprocess somehow managed to terminate before
-/// wait-timeout got initialised. This however, seems unlikely since process startup and shutdown
-/// isn't that fast even on Linux.
-fn workaround_wait_timeout_race() {
-    static INIT: Once = Once::new();
-
-    INIT.call_once(|| {
-        // It doesn't matter what we call here. The workaround appears to work perfectly well even
-        // with a fast running binary like `true`. However to reduce the chances that it'll
-        // terminate before wait-timeout initialises, thus triggering the bug, we pick a heavier
-        // binary.
-        let _ = Command::new("ld")
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap()
-            .wait_timeout(Duration::from_secs(1));
-    });
 }
