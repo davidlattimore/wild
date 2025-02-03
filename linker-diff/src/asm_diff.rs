@@ -63,9 +63,11 @@ use colored::Colorize as _;
 use itertools::Itertools as _;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
+use linker_utils::elf::BitMask;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
+use linker_utils::elf::RelocationSize;
 use linker_utils::relaxation::RelocationModifier;
 use object::read::elf::ElfSection64;
 use object::read::elf::FileHeader as _;
@@ -78,19 +80,24 @@ use object::ObjectSymbol as _;
 use object::RelocationFlags;
 use object::RelocationTarget;
 use object::SectionKind;
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::fmt::Write as _;
+use std::iter::Peekable;
 use std::ops::Range;
+
+/// Set this environment variable to a function name to show only diffs for that function.
+const SHOW_FUNCTION_ENV: &str = "LINKER_DIFF_FOCUS_FUNCTION";
 
 /// Reports differences in sections in particular differences in the relocations that were applied
 /// to those sections, although the literal bytes between the relocations are also diffed.
 pub(crate) fn report_section_diffs(report: &mut Report, binaries: &[Binary]) {
-    // TODO: add support for aarch64 target
     match binaries[0].elf_file.elf_header().e_machine(LittleEndian) {
         object::elf::EM_X86_64 => {
             report_function_diffs_for_arch::<crate::x86_64::X86_64>(report, binaries);
+        }
+        object::elf::EM_AARCH64 => {
+            report_function_diffs_for_arch::<crate::aarch64::AArch64>(report, binaries);
         }
         _ => {}
     }
@@ -164,72 +171,57 @@ fn compare_sections<A: Arch>(
     let mut relocations = original_section.relocations().collect_vec();
     relocations.sort_by_key(|(offset, _)| *offset);
 
-    let mut resolutions = Vec::new();
+    let mut relocations = relocations.into_iter().peekable();
 
-    for (offset, rel) in relocations {
-        resolutions.clear();
-
+    while let Some(group) = RelocationGroup::<A>::next(&mut relocations, section_versions, layout)?
+    {
         diff_literal_bytes::<A>(
             report,
             section_versions,
             layout,
             &mut testers,
-            offset.saturating_sub(A::MAX_RELAX_MODIFY_BEFORE),
+            group
+                .start_offset()
+                .saturating_sub(A::MAX_RELAX_MODIFY_BEFORE),
         )?;
 
-        let mut orig_trace = TraceOutput::default();
+        if testers[0].next_modifier == RelocationModifier::SkipNextRelocation {
+            // If one tester is skipping, then all should be, since otherwise the previous
+            // relocation wouldn't have matched. So we don't need to do any comparison here and
+            // can just skip the relocation.
+            testers[0].next_modifier = RelocationModifier::Normal;
 
-        let original_referent = crate::diagnostics::trace_scope(&mut orig_trace, || {
-            get_original_referent(
-                &rel,
-                layout.input_file_for_section(section_versions.input_section_id),
-            )
-        })?;
+            continue;
+        }
 
-        let original_annotation = OriginalAnnotation {
-            success: SuccessAnnotation::<A> {
-                r_type: get_r_type(&rel),
-                relaxation_kind: None,
-                reference: Reference {
-                    referent: original_referent,
-                    props: ReferenceProperties::default(),
-                },
-            },
-            trace: orig_trace,
-        };
-
+        let mut resolutions = Vec::new();
         for tester in &mut testers {
-            let mut trace = TraceOutput::default();
-
-            let res = crate::diagnostics::trace_scope(&mut trace, || {
-                tester.try_resolve(section_kind, offset, &rel, original_referent)
-            })?;
-
-            if let Some(mut resolution) = res {
-                resolution.trace = trace;
-
-                resolutions.push(resolution);
-            }
+            resolutions.push(tester.resolve_group_traced(section_kind, &group));
         }
 
         // The first resolution (the one from our linker-under-test) must be equal to at least one
         // of the other resolutions.
         if let Some(first) = resolutions.first() {
-            let at_least_one_match = resolutions[1..].iter().any(|other| first.matches(other));
+            let mut trace = TraceOutput::default();
+
+            let at_least_one_match = crate::diagnostics::trace_scope(&mut trace, || {
+                resolutions[1..].iter().any(|other| first.matches(other))
+            });
 
             // Ideally we'd successfully match all binaries, however GNU ld when it has PLT
             // relocation for an undefined symbol emits a PLT entry that points to an invalid GOT
             // address. We don't have any good way to match something like that.
-            let first_has_match_failure = first.relaxation.is_none();
+            let first_has_match_failure = first.relaxations.is_none();
 
             if !at_least_one_match || first_has_match_failure {
                 report.add_diff(resolution_diff_exec(
-                    offset,
-                    Some(original_annotation),
+                    group.start_offset(),
+                    group.into_original_annotations(),
                     &resolutions,
                     &testers,
                     section_versions.input_section_id,
                     layout,
+                    trace,
                 )?);
             }
         };
@@ -245,6 +237,180 @@ fn compare_sections<A: Arch>(
     )?;
 
     Ok(())
+}
+
+struct RelocationGroup<'data, A: Arch> {
+    relocations: Vec<InputRelocation<'data, A>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RelaxationGroup<'data, A: Arch> {
+    /// Match results for each relocation in the group.
+    match_results: Vec<RelaxationMatchResult<'data, A>>,
+    is_complete: bool,
+}
+
+impl<'data, A: Arch> RelaxationGroup<'data, A> {
+    fn start_offset(&self) -> u64 {
+        self.match_results
+            .iter()
+            .map(|r| r.start())
+            .min()
+            .unwrap_or(0)
+    }
+
+    fn end_offset(&self) -> u64 {
+        self.match_results
+            .iter()
+            .map(|r| r.end())
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn first_if_matched(&self) -> Option<&RelaxationMatch<'data, A>> {
+        if !self.match_results.iter().all(|m| m.matched()) {
+            return None;
+        }
+        match self.match_results.first()? {
+            RelaxationMatchResult::Matched(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    fn eliminate_alt_r_types(&mut self, reference: &Reference<A::RType>) {
+        for result in &mut self.match_results {
+            if let RelaxationMatchResult::Matched(m) = result {
+                if let Some(alt_r_type) = m.relaxation.alt_r_type {
+                    // Some relaxations cannot be identified purely by the instruction bytes. For example
+                    // relaxing a PLT32 to a PC32, the instruction bytes are left the same. All that differs is
+                    // whether we now point to the PLT or not.
+
+                    match (
+                        reference.verify_consistent_with_r_type(m.relaxation.new_r_type),
+                        reference.verify_consistent_with_r_type(alt_r_type),
+                    ) {
+                        (Err(_), Ok(())) => {
+                            m.relaxation.new_r_type = alt_r_type;
+                        }
+                        (Ok(()), Err(_)) => {
+                            m.relaxation.alt_r_type = None;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    fn matches_if_ok(&self) -> Option<Vec<RelaxationMatch<A>>> {
+        self.match_results
+            .iter()
+            .map(|r| match r {
+                RelaxationMatchResult::Matched(relaxation_match) => Ok(*relaxation_match),
+                _ => Err(()),
+            })
+            .collect::<Result<Vec<RelaxationMatch<A>>, ()>>()
+            .ok()
+    }
+}
+
+impl<'data, A: Arch> RelocationGroup<'data, A> {
+    fn into_original_annotations(self) -> Vec<OriginalAnnotation<'data, A>> {
+        self.relocations
+            .into_iter()
+            .map(|r| r.original_annotation)
+            .collect()
+    }
+
+    fn next(
+        relocations_in: &mut Peekable<std::vec::IntoIter<(u64, object::Relocation)>>,
+        section_versions: &SectionVersions<'data>,
+        layout: &IndexedLayout<'data>,
+    ) -> Result<Option<RelocationGroup<'data, A>>> {
+        let mut relocations = Vec::new();
+
+        let mut chain = Vec::new();
+
+        while let Some(next_r_type) = relocations_in
+            .peek()
+            .map(|(_, rel)| get_r_type::<A::RType>(rel))
+        {
+            chain.push(next_r_type);
+            if chain.len() >= 2 && !A::should_chain_relocations(&chain) {
+                break;
+            }
+
+            let (offset, rel) = relocations_in.next().unwrap();
+
+            let original_annotation =
+                get_original_annotation::<A>(section_versions, layout, &rel, offset)?;
+
+            relocations.push(InputRelocation {
+                offset,
+                rel,
+                original_annotation,
+            });
+        }
+
+        if relocations.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(RelocationGroup { relocations }))
+        }
+    }
+
+    fn start_offset(&self) -> u64 {
+        self.relocations[0].offset
+    }
+
+    fn is_complete_group(&self) -> bool {
+        A::is_complete_chain(self.relocations.iter().map(|r| get_r_type(&r.rel)))
+    }
+}
+
+struct InputRelocation<'data, A: Arch> {
+    offset: u64,
+
+    rel: object::Relocation,
+
+    original_annotation: OriginalAnnotation<'data, A>,
+}
+
+impl<'data, A: Arch> InputRelocation<'data, A> {
+    fn original_referent(&self) -> Referent<'data, <A as Arch>::RType> {
+        self.original_annotation.reference.referent
+    }
+}
+
+fn get_original_annotation<'data, A: Arch>(
+    section_versions: &SectionVersions<'data>,
+    layout: &IndexedLayout<'data>,
+    rel: &object::Relocation,
+    offset: u64,
+) -> Result<OriginalAnnotation<'data, A>> {
+    let mut orig_trace = TraceOutput::default();
+
+    let original_referent = crate::diagnostics::trace_scope(&mut orig_trace, || {
+        get_original_referent(
+            rel,
+            layout.input_file_for_section(section_versions.input_section_id),
+        )
+    })?;
+
+    let original_annotation = OriginalAnnotation {
+        success: MatchedRelaxation::<A> {
+            r_type: get_r_type(rel),
+            relaxation_kind: None,
+        },
+        reference: Reference {
+            referent: original_referent,
+            props: ReferenceProperties::default(),
+        },
+        trace: orig_trace,
+        offset,
+    };
+
+    Ok(original_annotation)
 }
 
 /// Diffs literal bytes up to `end`.
@@ -281,28 +447,27 @@ fn diff_literal_bytes<'data, A: Arch>(
     } else {
         let resolutions = testers
             .iter()
-            .map(|_| Resolution {
-                relaxation: None,
-                annotation: Annotation::<A>::LiteralByteMismatch,
-                reference: Reference {
-                    referent: Referent::Unknown,
-                    props: ReferenceProperties::default(),
-                },
+            .map(|_| ResolvedGroup {
+                relaxations: None,
+                annotations: vec![Annotation {
+                    offset_in_section: start,
+                    kind: AnnotationKind::<A>::LiteralByteMismatch,
+                }],
+                reference: Reference::unknown(),
                 start,
                 end,
-                next_modifier: RelocationModifier::Normal,
-                offset: start,
                 trace: TraceOutput::default(),
             })
             .collect_vec();
 
         report.add_diff(resolution_diff_exec(
             end,
-            None,
+            vec![],
             &resolutions,
             testers,
             section_versions.input_section_id,
             layout,
+            TraceOutput::default(),
         )?);
     }
 
@@ -319,10 +484,11 @@ fn get_r_type<R: RType>(rel: &object::Relocation) -> R {
 /// Represents a diff found in executable code.
 struct ExecDiff<'data, A: Arch> {
     offset: u64,
-    original_annotation: Option<OriginalAnnotation<'data, A>>,
-    resolutions: &'data [Resolution<'data, A>],
+    original_annotations: Vec<OriginalAnnotation<'data, A>>,
+    resolutions: &'data [ResolvedGroup<'data, A>],
     testers: &'data [RelaxationTester<'data>],
     section_id: InputSectionId,
+    trace: TraceOutput,
 }
 
 impl<A: Arch> ExecDiff<'_, A> {
@@ -347,18 +513,27 @@ impl<A: Arch> ExecDiff<'_, A> {
             function_name = String::from_utf8_lossy(function_info.name).cyan()
         )?;
 
-        let mut annotation = None;
         let mut trace = TraceOutput::default();
 
-        if let Some(orig) = self.original_annotation.as_ref() {
-            annotation = Some(Annotation::Success(orig.success.clone()));
-            trace = orig.trace.clone();
-        }
+        let annotations = self
+            .original_annotations
+            .iter()
+            .map(|orig| {
+                let annotation = Annotation {
+                    offset_in_section: orig.offset,
+                    kind: AnnotationKind::MatchedRelaxation(orig.success.clone()),
+                };
+
+                trace.append(orig.trace.clone());
+
+                annotation
+            })
+            .collect_vec();
 
         let mut blocks = vec![RelocationInstructionBlock {
             name: ORIG,
-            relocation_offset: self.offset,
-            annotation,
+            annotations,
+            reference: self.original_annotations.last().unwrap().reference,
             trace_messages: Vec::new(),
             section_bytes: original_section.data()?,
             section_address: 0,
@@ -375,8 +550,8 @@ impl<A: Arch> ExecDiff<'_, A> {
 
             let block = RelocationInstructionBlock {
                 name: &tester.bin.name,
-                relocation_offset: res.offset,
-                annotation: Some(res.annotation.clone()),
+                annotations: res.annotations.clone(),
+                reference: res.reference,
                 trace_messages: tester.bin.trace.messages_in(
                     range.start + tester.section_address..range.end + tester.section_address,
                 ),
@@ -409,6 +584,10 @@ impl<A: Arch> ExecDiff<'_, A> {
             block.write_to(f, &maximum_widths)?;
         }
 
+        for message in &self.trace.messages {
+            write!(f, "    {message}")?;
+        }
+
         Ok(())
     }
 }
@@ -417,22 +596,24 @@ impl<A: Arch> ExecDiff<'_, A> {
 /// code.
 fn resolution_diff_exec<A: Arch>(
     offset: u64,
-    original_annotation: Option<OriginalAnnotation<A>>,
-    resolutions: &[Resolution<A>],
+    original_annotations: Vec<OriginalAnnotation<A>>,
+    resolutions: &[ResolvedGroup<A>],
     testers: &[RelaxationTester<'_>],
     section_id: InputSectionId,
     layout: &IndexedLayout,
+    trace: TraceOutput,
 ) -> Result<Diff> {
     let bin_attributes = testers[1].bin.address_index.bin_attributes;
 
-    let key = diff_key_for_res_mismatch(resolutions, original_annotation.as_ref(), bin_attributes);
+    let key = diff_key_for_res_mismatch(resolutions, &original_annotations, bin_attributes);
 
     let diff = ExecDiff {
         offset,
-        original_annotation,
+        original_annotations,
         resolutions,
         testers,
         section_id,
+        trace,
     };
 
     let mut out = String::new();
@@ -468,7 +649,7 @@ fn get_original_referent<'data, R: RType>(
 
                     return Ok(Referent::MergedString(MergedStringRef {
                         data: &string_plus_rest[..end_offset],
-                        addend,
+                        named_symbol_addend: addend,
                     }));
                 }
             }
@@ -488,8 +669,8 @@ fn get_original_referent<'data, R: RType>(
 }
 
 fn diff_key_for_res_mismatch<A: Arch>(
-    resolutions: &[Resolution<A>],
-    original_annotation: Option<&OriginalAnnotation<A>>,
+    resolutions: &[ResolvedGroup<A>],
+    original_annotations: &[OriginalAnnotation<A>],
     bin_attributes: BinAttributes,
 ) -> String {
     if resolutions.len() < 2 {
@@ -498,43 +679,79 @@ fn diff_key_for_res_mismatch<A: Arch>(
 
     // We might have failed to match one of the reference linker outputs, so find the first
     // reference linker output that we successfully matched.
-    let reference = resolutions.iter().skip(1).find_map(|r| r.relaxation);
+    let reference = resolutions
+        .iter()
+        .skip(1)
+        .find_map(|r| r.relaxations.as_ref().and_then(|r| r.first_if_matched()));
 
-    match (resolutions[0].relaxation, reference) {
+    let ours = resolutions[0]
+        .relaxations
+        .as_ref()
+        .and_then(|r| r.first_if_matched());
+
+    let Some(orig) = original_annotations.first() else {
+        return "missing-original".to_owned();
+    };
+
+    match (ours, reference) {
         (Some(r1), Some(r2)) => {
             match (
-                original_annotation,
-                r1.relaxation_kind.is_no_op(),
-                r2.relaxation_kind.is_no_op(),
+                r1.relaxation.relaxation_kind.is_no_op(),
+                r2.relaxation.relaxation_kind.is_no_op(),
             ) {
-                (Some(orig), true, false) => {
+                (true, false) => {
                     format!(
                         "rel.missing-opt.{}.{:?}.{}",
                         orig.success.r_type,
-                        r2.relaxation_kind,
+                        r2.relaxation.relaxation_kind,
                         bin_attributes.type_name()
                     )
                 }
-                (Some(orig), false, true) => {
+                (false, true) => {
                     format!(
                         "rel.extra-opt.{}.{:?}.{}",
                         orig.success.r_type,
-                        r1.relaxation_kind,
+                        r1.relaxation.relaxation_kind,
                         bin_attributes.type_name()
                     )
                 }
-                _ => format!("rel.{}.{}", r1.new_r_type, r2.new_r_type),
+                _ => {
+                    let ours_is_copy = resolutions[0].reference.referent.is_copy_relocation();
+                    let any_others_copy = resolutions[1..]
+                        .iter()
+                        .any(|r| r.reference.referent.is_copy_relocation());
+
+                    if ours_is_copy && !any_others_copy {
+                        format!("rel.extra-copy-relocation.{}", orig.success.r_type)
+                    } else if !ours_is_copy && any_others_copy {
+                        format!("rel.missing-copy-relocation.{}", orig.success.r_type)
+                    } else {
+                        format!(
+                            "rel.{}.{}",
+                            r1.relaxation.new_r_type, r2.relaxation.new_r_type
+                        )
+                    }
+                }
             }
         }
         _ => {
-            let failure_kind = |r: &Resolution<A>| match &r.annotation {
-                Annotation::Ambiguous(_) => Some("rel.multiple_matches".to_owned()),
-                Annotation::MatchFailed(_) => {
-                    original_annotation.map(|a| format!("rel.match_failed.{}", a.success.r_type))
-                }
-                Annotation::Success(_) => None,
-                Annotation::LiteralByteMismatch => Some("literal-byte-mismatch".to_owned()),
+            let failure_kind = |r: &ResolvedGroup<A>| {
+                r.annotations
+                    .iter()
+                    .zip(original_annotations)
+                    .find_map(|(a, orig)| match &a.kind {
+                        AnnotationKind::Ambiguous(_) => Some("rel.multiple_matches".to_owned()),
+                        AnnotationKind::MatchFailed(_) => {
+                            Some(format!("rel.match_failed.{}", orig.success.r_type))
+                        }
+                        AnnotationKind::MatchedRelaxation(_) => None,
+                        AnnotationKind::LiteralByteMismatch => {
+                            Some("literal-byte-mismatch".to_owned())
+                        }
+                        AnnotationKind::Error(e) => Some(e.clone()),
+                    })
             };
+
             failure_kind(&resolutions[0])
                 .or(failure_kind(&resolutions[1]))
                 .unwrap_or("rel.unknown_failure".to_owned())
@@ -547,10 +764,9 @@ struct RelocationInstructionBlock<'data, A: Arch> {
     /// The name to display in the left-side gutter.
     name: &'data str,
 
-    /// The offset of the relocation within the section.
-    relocation_offset: u64,
+    annotations: Vec<Annotation<'data, A>>,
 
-    annotation: Option<Annotation<'data, A>>,
+    reference: Reference<'data, A::RType>,
 
     trace_messages: Vec<&'data str>,
 
@@ -570,48 +786,166 @@ struct RelocationInstructionBlock<'data, A: Arch> {
 
     /// The instructions that we're going to display.
     instructions: Vec<Instruction<'data, A>>,
+
     trace: TraceOutput,
 }
 
 struct OriginalAnnotation<'data, A: Arch> {
-    success: SuccessAnnotation<'data, A>,
+    success: MatchedRelaxation<A>,
 
     trace: TraceOutput,
+
+    offset: u64,
+
+    reference: Reference<'data, A::RType>,
 }
 
 #[derive(Clone, Debug)]
-enum Annotation<'data, A: Arch> {
-    Success(SuccessAnnotation<'data, A>),
-    Ambiguous(Vec<SuccessAnnotation<'data, A>>),
+struct Annotation<'data, A: Arch> {
+    /// The offset of the annotation within the section.
+    offset_in_section: u64,
+
+    kind: AnnotationKind<'data, A>,
+}
+
+#[derive(Clone, Debug)]
+enum AnnotationKind<'data, A: Arch> {
+    MatchedRelaxation(MatchedRelaxation<A>),
+    Ambiguous(Vec<RelaxationMatch<'data, A>>),
     MatchFailed(Vec<FailedMatch<A>>),
+    Error(String),
     LiteralByteMismatch,
 }
 
 #[derive(Clone, Debug)]
-struct SuccessAnnotation<'data, A: Arch> {
+struct MatchedRelaxation<A: Arch> {
     r_type: A::RType,
-
-    reference: Reference<'data, A::RType>,
 
     relaxation_kind: Option<<A as Arch>::RelaxationKind>,
 }
 
-enum MatchResult<'data, A: Arch> {
-    Matched(Resolution<'data, A>),
-    Failed(FailedMatch<A>),
+#[derive(Debug, PartialEq, Eq, Clone)]
+enum RelaxationMatchResult<'data, A: Arch> {
+    /// We matched to exactly one relaxation.
+    Matched(RelaxationMatch<'data, A>),
+
+    /// We failed to match all candidate relaxations. Holds the reasons why each candidate failed.
+    AllFailed(Vec<FailedMatch<A>>),
+
+    /// We matched multiple relaxations.
+    Ambiguous(Vec<RelaxationMatch<'data, A>>),
 }
 
-#[derive(Clone, Debug)]
+impl<'data, A: Arch> RelaxationMatchResult<'data, A> {
+    fn start(&self) -> u64 {
+        match self {
+            RelaxationMatchResult::Matched(relaxation_match) => relaxation_match.start,
+            RelaxationMatchResult::AllFailed(failed) => {
+                failed.iter().map(|m| m.start).min().unwrap_or(0)
+            }
+            RelaxationMatchResult::Ambiguous(matches) => {
+                matches.iter().map(|m| m.start).min().unwrap_or(0)
+            }
+        }
+    }
+
+    fn end(&self) -> u64 {
+        match self {
+            RelaxationMatchResult::Matched(relaxation_match) => relaxation_match.end,
+            RelaxationMatchResult::AllFailed(failed) => {
+                failed.iter().map(|m| m.end).max().unwrap_or(0)
+            }
+            RelaxationMatchResult::Ambiguous(matches) => {
+                matches.iter().map(|m| m.end).max().unwrap_or(0)
+            }
+        }
+    }
+
+    fn annotations(&self) -> Vec<Annotation<'data, A>> {
+        match self {
+            RelaxationMatchResult::Matched(relaxation_match) => {
+                vec![relaxation_match.annotation()]
+            }
+            RelaxationMatchResult::AllFailed(failed_matches) => {
+                failed_matches.iter().map(|r| r.annotation()).collect()
+            }
+            RelaxationMatchResult::Ambiguous(matches) => vec![Annotation {
+                offset_in_section: matches.first().unwrap().offset,
+                kind: AnnotationKind::Ambiguous(matches.clone()),
+            }],
+        }
+    }
+
+    fn matches(&self, b: &RelaxationMatchResult<'_, A>) -> bool {
+        match (self, b) {
+            (RelaxationMatchResult::Matched(a_match), RelaxationMatchResult::Matched(b_match)) => {
+                a_match.relaxation == b_match.relaxation
+            }
+            _ => false,
+        }
+    }
+
+    fn next_modifier(&self) -> RelocationModifier {
+        match self {
+            RelaxationMatchResult::Matched(m) => m.next_modifier,
+            _ => RelocationModifier::Normal,
+        }
+    }
+
+    fn matched(&self) -> bool {
+        matches!(self, RelaxationMatchResult::Matched(_))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RelaxationMatch<'data, A: Arch> {
+    relaxation: Relaxation<A>,
+
+    /// The extracted value.
+    value: u64,
+
+    /// The inclusive start-offset of the bytes covered by this relaxation.
+    start: u64,
+
+    /// The exclusive end-offset of the bytes covered by this relaxation.
+    end: u64,
+
+    original_referent: Referent<'data, <A as Arch>::RType>,
+    addend: i64,
+    offset: u64,
+    next_modifier: RelocationModifier,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct FailedMatch<A: Arch> {
     candidate: Relaxation<A>,
-    reason: Cow<'static, str>,
+    reason: String,
+    offset: u64,
+    start: u64,
+    end: u64,
 }
 
 impl<A: Arch> FailedMatch<A> {
-    fn new(candidate: Relaxation<A>, reason: impl Into<Cow<'static, str>>) -> FailedMatch<A> {
+    fn new(
+        candidate: Relaxation<A>,
+        reason: String,
+        offset: u64,
+        start: u64,
+        end: u64,
+    ) -> FailedMatch<A> {
         FailedMatch {
             candidate,
-            reason: reason.into(),
+            reason,
+            offset,
+            start,
+            end,
+        }
+    }
+
+    fn annotation(&self) -> Annotation<'static, A> {
+        Annotation {
+            offset_in_section: self.offset,
+            kind: AnnotationKind::MatchFailed(vec![self.clone()]),
         }
     }
 }
@@ -648,6 +982,8 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
         let name_width = maximum_widths.name;
         let address_width = maximum_widths.address;
 
+        let mut annotations = self.annotations.iter().peekable();
+
         for instruction in &self.instructions {
             let instruction_offset = instruction.address() - self.section_address;
 
@@ -681,63 +1017,39 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
 
             writeln!(f, "{:instruction_padding$}] {}", "", out.purple())?;
 
-            if self.relocation_offset >= instruction_offset
-                && self.relocation_offset < instruction_end
-            {
-                let num_spaces = name_width
-                    + address_width
-                    + 7
-                    + (self.relocation_offset - instruction_offset) as usize * 3;
+            if let Some(annotation) = annotations.peek() {
+                if annotation.offset_in_section >= instruction_offset
+                    && annotation.offset_in_section < instruction_end
+                {
+                    let num_spaces = name_width
+                        + address_width
+                        + 7
+                        + (annotation.offset_in_section - instruction_offset) as usize * 3;
 
-                self.write_annotation(f, num_spaces)?;
-                self.write_traces(f, maximum_widths)?;
+                    annotation.write(f, num_spaces)?;
+
+                    annotations.next();
+                }
             }
         }
 
-        // If we failed to match, then we might not have any instructions. In that case, make sure
-        // we still print the annotation.
-        if self.instructions.is_empty() {
+        // If we failed to match, then we might not have any instructions. In that case, print any
+        // remaining annotations.
+        for annotation in annotations {
             write!(f, "{:name_width$} ", self.name.blue())?;
 
-            self.write_annotation(f, 0)?;
-            self.write_traces(f, maximum_widths)?;
+            annotation.write(f, 0)?;
         }
+
+        write!(f, "{:name_width$} ", "")?;
+        self.reference.write_to(f)?;
+        writeln!(f)?;
+
+        self.write_traces(f, maximum_widths)?;
 
         for message in &self.trace.messages {
             writeln!(f, "{:name_width$} {message}", self.name.blue())?;
         }
-
-        Ok(())
-    }
-
-    fn write_annotation(&self, f: &mut String, num_spaces: usize) -> Result {
-        let Some(annotation) = self.annotation.as_ref() else {
-            return Ok(());
-        };
-
-        match annotation {
-            Annotation::Success(inner) => {
-                inner.write_to(f, num_spaces)?;
-            }
-            Annotation::Ambiguous(possible) => {
-                for a in possible {
-                    a.write_to(f, num_spaces)?;
-                    writeln!(f)?;
-                }
-            }
-            Annotation::MatchFailed(failures) => {
-                for m in failures {
-                    write!(f, "{:num_spaces$}", "")?;
-                    m.write_to(f)?;
-                    writeln!(f)?;
-                }
-            }
-            Annotation::LiteralByteMismatch => {
-                return Ok(());
-            }
-        }
-
-        writeln!(f)?;
 
         Ok(())
     }
@@ -778,7 +1090,40 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
     }
 }
 
-impl<A: Arch> SuccessAnnotation<'_, A> {
+impl<A: Arch> Annotation<'_, A> {
+    fn write(&self, f: &mut String, num_spaces: usize) -> Result {
+        match &self.kind {
+            AnnotationKind::MatchedRelaxation(inner) => {
+                inner.write_to(f, num_spaces)?;
+            }
+            AnnotationKind::Ambiguous(possible) => {
+                for a in possible {
+                    a.write_to(f, num_spaces)?;
+                    writeln!(f)?;
+                }
+            }
+            AnnotationKind::MatchFailed(failures) => {
+                for m in failures {
+                    write!(f, "{:num_spaces$}", "")?;
+                    m.write_to(f)?;
+                    writeln!(f)?;
+                }
+            }
+            AnnotationKind::Error(error) => {
+                writeln!(f, "{:num_spaces$}{}", "", error.red())?;
+            }
+            AnnotationKind::LiteralByteMismatch => {
+                return Ok(());
+            }
+        }
+
+        writeln!(f)?;
+
+        Ok(())
+    }
+}
+
+impl<A: Arch> MatchedRelaxation<A> {
     fn write_to(&self, f: &mut String, num_spaces: usize) -> Result {
         write!(f, "{:num_spaces$}", "")?;
         write_carets_for_r_type(f, self.r_type)?;
@@ -786,13 +1131,41 @@ impl<A: Arch> SuccessAnnotation<'_, A> {
         if let Some(r) = self.relaxation_kind {
             write!(f, "{} ", format!("{r:?}").bright_green())?;
         }
-        writeln!(f)?;
-
-        let num_spaces = num_spaces + num_carets_for_r_type(self.r_type) + 1;
-        write!(f, "{:num_spaces$}", "")?;
-        self.reference.write_to(f)?;
 
         Ok(())
+    }
+}
+
+impl<'data, A: Arch> RelaxationMatch<'data, A> {
+    fn write_to(&self, f: &mut String, num_spaces: usize) -> Result {
+        let rel = self.relaxation;
+
+        write!(f, "{:num_spaces$}", "")?;
+        write_carets_for_r_type(f, rel.new_r_type)?;
+
+        write!(f, "{} ", rel.new_r_type.to_string().green())?;
+
+        if let Some(alt) = rel.alt_r_type {
+            write!(f, "/{} ", alt.to_string().green())?;
+        }
+
+        writeln!(
+            f,
+            "{} ",
+            format!("{:?}", rel.relaxation_kind).bright_green()
+        )?;
+
+        Ok(())
+    }
+
+    fn annotation(&self) -> Annotation<'data, A> {
+        Annotation {
+            offset_in_section: self.offset,
+            kind: AnnotationKind::MatchedRelaxation(MatchedRelaxation {
+                r_type: self.relaxation.new_r_type,
+                relaxation_kind: Some(self.relaxation.relaxation_kind),
+            }),
+        }
     }
 }
 
@@ -803,7 +1176,7 @@ fn write_carets_for_r_type<R: RType>(f: &mut String, r_type: R) -> Result {
 }
 
 fn num_carets_for_r_type<R: RType>(r_type: R) -> usize {
-    let relocation_size = r_type.relocation_info().map_or(1, relocation_num_bytes);
+    let relocation_size = r_type.opt_relocation_info().map_or(1, relocation_num_bytes);
     (relocation_size * 3).saturating_sub(1).max(1)
 }
 
@@ -841,11 +1214,11 @@ impl ColumnWidths {
 }
 
 #[derive(Debug)]
-struct Resolution<'data, A: Arch> {
+struct ResolvedGroup<'data, A: Arch> {
     /// The chosen relaxation if we successfully matched to exactly one.
-    relaxation: Option<Relaxation<A>>,
+    relaxations: Option<RelaxationGroup<'data, A>>,
 
-    annotation: Annotation<'data, A>,
+    annotations: Vec<Annotation<'data, A>>,
 
     reference: Reference<'data, A::RType>,
 
@@ -857,44 +1230,36 @@ struct Resolution<'data, A: Arch> {
     /// the bytes of the relocation offset.
     end: u64,
 
-    next_modifier: RelocationModifier,
-
-    /// The offset at which the relocation would be applied.
-    offset: u64,
-
     trace: TraceOutput,
 }
 
-impl<'data, A: Arch> Resolution<'data, A> {
-    /// Multiple possible resolutions have been identified. Mark `self` as ambiguous and merge the
-    /// supplied resolution into this one.
-    fn merge_ambiguous(&mut self, other: Resolution<'data, A>) {
-        let mut possible = match &mut self.annotation {
-            Annotation::Success(success_annotation) => {
-                vec![success_annotation.clone()]
-            }
-            Annotation::Ambiguous(possible) => core::mem::take(possible),
-            Annotation::MatchFailed(_) => return,
-            Annotation::LiteralByteMismatch => return,
-        };
-
-        match other.annotation {
-            Annotation::Success(o) => possible.push(o),
-            Annotation::Ambiguous(mut o) => possible.append(&mut o),
-            Annotation::MatchFailed(vec) => self.annotation = Annotation::MatchFailed(vec),
-            Annotation::LiteralByteMismatch => return,
-        }
-
-        self.annotation = Annotation::Ambiguous(possible);
-
-        self.start = self.start.min(other.start);
-        self.end = self.end.max(other.end);
-    }
-
+impl<A: Arch> ResolvedGroup<'_, A> {
     /// Returns whether two resolutions from different objects files match. Like equality, but only
     /// looks at the parts of the resolution that are expected to match.
-    fn matches(&self, other: &Resolution<A>) -> bool {
-        self.relaxation == other.relaxation && self.reference.matches(other.reference)
+    fn matches(&self, other: &ResolvedGroup<A>) -> bool {
+        relaxations_match(self.relaxations.as_ref(), other.relaxations.as_ref())
+            && self.reference.matches(other.reference)
+    }
+}
+
+fn relaxations_match<A: Arch>(
+    group1: Option<&RelaxationGroup<'_, A>>,
+    group2: Option<&RelaxationGroup<'_, A>>,
+) -> bool {
+    match (group1, group2) {
+        (None, None) => true,
+        (Some(_), None) => false,
+        (None, Some(_)) => false,
+        (Some(a), Some(b)) => {
+            if a.match_results.len() != b.match_results.len() {
+                return false;
+            }
+
+            a.match_results
+                .iter()
+                .zip(&b.match_results)
+                .all(|(a, b)| a.matches(b))
+        }
     }
 }
 
@@ -924,6 +1289,9 @@ enum Referent<'data, R: RType> {
     /// we're not pointing directly to it.
     Named(SymbolName<'data>, i64),
 
+    /// Like `Named`, but where the symbol has been copy relocated.
+    Copy(SymbolName<'data>, i64),
+
     DynamicRelocation(DynamicRelocation<'data, R>),
 
     UnmatchedAddress(UnmatchedAddress),
@@ -947,16 +1315,16 @@ struct MergedStringRef<'data> {
     /// present when our string reference is via a named symbol. For unnamed symbols (section
     /// references), the addend is assumed to be applied before determining which string we're
     /// referencing.
-    addend: Option<i64>,
+    named_symbol_addend: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct UnmatchedAddress {
     address: u64,
-    reason: Option<&'static str>,
+    reason: &'static str,
 }
 
-impl<R: RType> Reference<'_, R> {
+impl<'data, R: RType> Reference<'data, R> {
     fn write_to(&self, f: &mut String) -> Result {
         if self.props.via_plt {
             write!(f, "PLT{}", arrow())?;
@@ -974,6 +1342,32 @@ impl<R: RType> Reference<'_, R> {
     fn matches(self, other: Reference<'_, R>) -> bool {
         self.props == other.props && self.referent.matches(other.referent)
     }
+
+    fn verify_consistent_with_r_type(&self, new_r_type: R) -> Result<()> {
+        let rel_info = new_r_type.relocation_info()?;
+
+        match rel_info.kind {
+            RelocationKind::PltRelative | RelocationKind::PltRelGotBase => {
+                if !self.props.via_plt {
+                    bail!("PLT relocation with non-PLT address");
+                }
+            }
+            _ => {
+                if self.props.via_plt {
+                    bail!("Non-PLT relocation with PLT address");
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn unknown() -> Reference<'data, R> {
+        Reference {
+            referent: Referent::Unknown,
+            props: Default::default(),
+        }
+    }
 }
 
 impl<R: RType> Referent<'_, R> {
@@ -986,6 +1380,15 @@ impl<R: RType> Referent<'_, R> {
                 if *offset != 0 {
                     write!(f, " {offset:+}")?;
                 }
+            }
+            Referent::Copy(symbol_name, offset) => {
+                write!(f, "COPY({symbol_name}")?;
+
+                if *offset != 0 {
+                    write!(f, " {offset:+}")?;
+                }
+
+                write!(f, ")")?;
             }
             Referent::UnmatchedAddress(unmatched) => {
                 unmatched.write_to(f)?;
@@ -1024,6 +1427,10 @@ impl<R: RType> Referent<'_, R> {
             _ => false,
         }
     }
+
+    fn is_copy_relocation(&self) -> bool {
+        matches!(self, Referent::Copy(..))
+    }
 }
 
 impl MergedStringRef<'_> {
@@ -1034,7 +1441,7 @@ impl MergedStringRef<'_> {
             write!(f, "MergedString(InvalidUtf8({:?}))", self.data)?;
         }
 
-        if let Some(addend) = self.addend {
+        if let Some(addend) = self.named_symbol_addend {
             write!(f, "{addend:+}")?;
         }
 
@@ -1044,10 +1451,7 @@ impl MergedStringRef<'_> {
 
 impl UnmatchedAddress {
     fn write_to(&self, f: &mut String) -> Result {
-        write!(f, "0x{:x}", self.address)?;
-        if let Some(reason) = self.reason {
-            write!(f, " ({reason})")?;
-        }
+        write!(f, "0x{:x} ({})", self.address, self.reason)?;
 
         Ok(())
     }
@@ -1152,45 +1556,55 @@ impl<'data> RelaxationTester<'data> {
     /// Checks if the bytes in `section_data` match what we'd expect if the candidate relocation
     /// were applied to `original_data`. If it does, returns the value of the symbol used when the
     /// post-relaxation relocation was applied.
-    fn resolve<A: Arch>(
+    fn match_relaxation<A: Arch>(
         &self,
         candidate: Relaxation<A>,
-        rel: &object::Relocation,
-        mut offset: u64,
-        original_referent: Referent<A::RType>,
-    ) -> Result<MatchResult<'data, A>> {
-        // Relocations need to have been previously sorted by offset.
-        assert!(
-            offset >= self.previous_end,
-            "Relocations out of order or overlap {offset} < {}",
-            self.previous_end
-        );
-
-        let fail = |reason| Ok(MatchResult::Failed(FailedMatch::new(candidate, reason)));
-
+        rel: &InputRelocation<'data, A>,
+    ) -> Result<RelaxationMatch<'data, A>, FailedMatch<A>> {
+        let mut offset = rel.offset;
         let relaxation_range = A::relaxation_byte_range(candidate);
+
+        let base_scratch_offset = relaxation_range.offset_shift;
+        let copy_start = offset.saturating_sub(base_scratch_offset) as usize;
+        let copy_end = copy_start + relaxation_range.num_bytes;
+        let end =
+            (offset + candidate.relocation_num_bytes().unwrap_or(0) as u64).max(copy_end as u64);
+
+        let failure = move |reason: String| {
+            Err(FailedMatch::new(
+                candidate,
+                reason,
+                offset,
+                copy_start as u64,
+                end,
+            ))
+        };
+
+        // Relocations need to have been previously sorted by offset.
+        if offset < self.previous_end {
+            return failure(format!(
+                "Relocations out of order or overlap {offset} < {}",
+                self.previous_end
+            ));
+        }
 
         if offset < relaxation_range.offset_shift {
             // There aren't enough bytes prior to offset in this section for the relaxation to be
             // possible.
-            return fail("Not enough bytes prior");
+            return failure("Not enough bytes prior".into());
         }
 
         // If our output section has no data (e.g. BSS), then no relaxation can have been applied,
         // since there would be no place to write the byte changes. Also, BSS isn't executable.
-        let section_data = self
-            .section_bytes
-            .context("Attempted to diff section without data")?;
+        let Some(section_data) = self.section_bytes else {
+            return failure("Attempted to diff section without data".into());
+        };
 
         let mut scratch =
             vec![0_u8; (A::MAX_RELAX_MODIFY_BEFORE + A::MAX_RELAX_MODIFY_AFTER) as usize];
-        let base_scratch_offset = relaxation_range.offset_shift;
-
-        let copy_start = (offset - base_scratch_offset) as usize;
-        let copy_end = copy_start + relaxation_range.num_bytes;
 
         if copy_end > self.original_data.len() {
-            return fail("Not enough bytes after");
+            return failure("Not enough bytes after".into());
         }
 
         let copy_len = copy_end - copy_start;
@@ -1204,10 +1618,14 @@ impl<'data> RelaxationTester<'data> {
         if section_data[previous_end..copy_start] != self.original_data[previous_end..copy_start] {
             // The bytes between the end of the last relocation and the start of the candidate
             // relaxation don't match.
-            return fail("Prior bytes didn't match");
+            return failure(format!(
+                "Prior bytes didn't match [0x{:x}..0x{:x})",
+                self.section_address + previous_end as u64,
+                self.section_address + copy_start as u64,
+            ));
         }
 
-        let mut addend = rel.addend();
+        let mut addend = rel.rel.addend();
 
         // Apply the relaxation to our scratch buffer.
         let mut scratch_offset = base_scratch_offset;
@@ -1223,173 +1641,163 @@ impl<'data> RelaxationTester<'data> {
 
         // Check to see if the resulting bytes match what's in the output section.
         if !mask.matches(scratch, &section_data[copy_start..copy_end]) {
-            return fail("Relaxation output didn't match");
+            return failure(format!(
+                "Relaxation output didn't match: {:x?} != {:x?}",
+                mask.mask_value(scratch),
+                mask.mask_value(&section_data[copy_start..copy_end])
+            ));
         }
 
         // Based on the change in offset when we applied the relaxation, compute the relocation
         // offset.
         offset = copy_start as u64 + scratch_offset;
 
-        let reference =
-            match self.read_reference(candidate, addend, offset, section_data, original_referent) {
-                Ok(v) => v,
-                Err(error) => {
-                    return Ok(MatchResult::Failed(FailedMatch::new(
-                        candidate,
-                        error.to_string(),
-                    )))
-                }
-            };
+        let Some(value_bytes) = section_data.get(offset as usize..) else {
+            return failure("Invalid relocation offset".into());
+        };
 
-        let relocation_info = candidate
-            .new_r_type
-            .relocation_info()
-            .context("Unsupported relocation kind")?;
+        let value = match candidate
+            .relocation_size()
+            .and_then(|size| read_value(size, value_bytes))
+        {
+            Ok(v) => v,
+            Err(error) => return failure(error.to_string()),
+        };
 
-        let end = (offset + relocation_num_bytes(relocation_info) as u64).max(copy_end as u64);
-
-        if rel.kind() == object::RelocationKind::PltRelative {
-            // Some relaxations cannot be identified purely by the instruction bytes. For example
-            // relaxing a PLT32 to a PC32, the instruction bytes are left the same. All that differs is
-            // whether we now point to the PLT or not.
-
-            match relocation_info.kind {
-                RelocationKind::PltRelative | RelocationKind::PltRelGotBase => {
-                    if !reference.props.via_plt {
-                        return fail("PLT relocation with non-PLT address");
-                    }
-                }
-                _ => {
-                    if reference.props.via_plt {
-                        return fail("Non-PLT relocation with PLT address");
-                    }
-                }
-            }
-        }
-
-        Ok(MatchResult::Matched(Resolution {
-            relaxation: Some(candidate),
-            annotation: Annotation::Success(SuccessAnnotation {
-                r_type: candidate.new_r_type,
-                relaxation_kind: Some(candidate.relaxation_kind),
-                reference,
-            }),
-            reference,
+        Ok(RelaxationMatch {
+            relaxation: candidate,
+            value,
             start: copy_start as u64,
             end,
+            original_referent: rel.original_referent(),
+            addend,
             offset,
             next_modifier,
-            trace: TraceOutput::default(),
-        }))
+        })
     }
 
     fn read_reference<A: Arch>(
         &self,
-        candidate: Relaxation<A>,
-        addend: i64,
-        offset: u64,
-        section_data: &[u8],
-        original_referent: Referent<A::RType>,
+        relaxations_matches: &[RelaxationMatch<A>],
     ) -> Result<Reference<'data, A::RType>> {
-        let relocation_info = candidate
-            .new_r_type
-            .relocation_info()
-            .context("Unsupported relocation kind")?;
-
-        let value_bytes = section_data
-            .get(offset as usize..)
-            .context("Invalid relocation offset")?;
-
-        let mut value = match relocation_num_bytes(relocation_info) {
-            8 => u64::from_le_bytes(
-                *value_bytes
-                    .first_chunk::<8>()
-                    .context("Invalid relocation offset")?,
-            ),
-            4 => u64::from(u32::from_le_bytes(
-                *value_bytes
-                    .first_chunk::<4>()
-                    .context("Invalid relocation offset")?,
-            )),
-            0 => 0,
-            other => bail!("Unsupported relocation size {other}"),
-        };
-
-        let mut relative_to = 0;
+        let mut merged_value = 0;
+        let mut addend = 0;
+        let mut referent = None;
 
         // Whether the value should be considered a pointer. If it is, then we do things like check
         // to see if it's pointing to a PLT or GOT entry. If we tried to do that with things that
         // weren't pointers, then we might get false PLT/GOT matches.
         let mut is_pointer = true;
 
-        let mut referent = None;
+        let mut allow_got_dereference = true;
 
-        match relocation_info.kind {
-            RelocationKind::Relative => {
-                relative_to = self.section_address + offset;
-            }
-            RelocationKind::PltRelative
-            | RelocationKind::TlsGd
-            | RelocationKind::TlsLd
-            | RelocationKind::TlsDesc
-            | RelocationKind::GotTpOff
-            | RelocationKind::GotRelative => {
-                relative_to = self.section_address + offset;
-            }
-            RelocationKind::SymRelGotBase
-            | RelocationKind::GotRelGotBase
-            | RelocationKind::TlsGdGotBase
-            | RelocationKind::GotTpOffGotBase
-            | RelocationKind::TlsLdGotBase
-            | RelocationKind::TlsDescGotBase
-            | RelocationKind::PltRelGotBase => {
-                relative_to = self
-                    .bin
-                    .address_index
-                    .got_base_address
-                    .context("Missing GOT base address")?;
-            }
-            RelocationKind::Absolute
-            | RelocationKind::Got
-            | RelocationKind::TlsGdGot
-            | RelocationKind::GotTpOffGot
-            | RelocationKind::AbsoluteAArch64
-            | RelocationKind::TlsDescGot
-            | RelocationKind::TlsLdGot => {
-                // This is an absolute address, no adjustment to value is necessary.
-            }
-            RelocationKind::DtpOff
-            | RelocationKind::TpOff
-            | RelocationKind::TpOffAArch64
-            | RelocationKind::None => {
+        // Empty groups are not permitted.
+        let last_match = relaxations_matches.last().unwrap();
+
+        for relaxation_match in relaxations_matches {
+            let mut value = relaxation_match.value;
+
+            // We keep the addend separate from the value because we need to handle merged-strings
+            // before we apply the addend.
+            addend = relaxation_match.addend;
+
+            let offset = relaxation_match.offset;
+            let original_referent = relaxation_match.original_referent;
+
+            let relocation_info = relaxation_match.relaxation.new_r_type.relocation_info()?;
+
+            let relative_to = self.get_relative_to::<A>(offset, relocation_info)?;
+
+            if is_non_pointer_relocation(relocation_info.kind) {
                 is_pointer = false;
             }
-            RelocationKind::TlsDescCall => {
-                is_pointer = false;
+
+            if relocation_info.kind == RelocationKind::TlsDescCall {
                 referent = Some(Referent::TlsDescCall);
             }
+
+            if relative_to != 0 && relocation_num_bytes(relocation_info) == 4 {
+                // Our value is actually an i32. Sign-extend it so that negative values behave
+                // correctly in the wrapping_add below.
+                value = i64::from(value as i32) as u64;
+            }
+
+            value = relative_to.wrapping_add(value);
+
+            // Generally if we see a pointer to somewhere in the GOT we look to see what's at that
+            // location in the GOT. However, for relocations that are used to obtain a pointer to
+            // the base of the GOT, we don't want to do this.
+            if original_referent.is_symbol_with_name(b"_GLOBAL_OFFSET_TABLE_") {
+                allow_got_dereference = false;
+            }
+
+            merged_value += value;
         }
 
-        value = value.wrapping_add(relative_to);
+        // The relocation info for our primary and alt r-types should be the same for our purposes
+        // here.
+        let last_relocation_info = last_match.relaxation.new_r_type.relocation_info()?;
 
-        if relocation_num_bytes(relocation_info) == 4 {
-            value = u64::from(value as u32);
+        let mut reference_props = ReferenceProperties::default();
+
+        if is_pointer {
+            let mut pointer = merged_value.wrapping_sub(addend as u64);
+
+            if let Some(got_address) = self.bin.address_index.plt_to_got_address::<A>(pointer)? {
+                reference_props.via_plt = true;
+
+                if !self.bin.address_index.is_got_address(got_address) {
+                    bail!(
+                        "PLT entry at 0x{pointer:x} points to non-GOT address 0x{got_address:x} in {}",
+                        self.bin.section_containing_address(got_address).unwrap_or("??")
+                    );
+                }
+
+                pointer = got_address;
+            }
+
+            if allow_got_dereference && self.bin.address_index.is_got_address(pointer) {
+                reference_props.via_got = true;
+
+                let got_entry = self.bin.address_index.dereference_got_address(
+                    pointer,
+                    last_relocation_info.kind,
+                    &self.bin.address_index,
+                )?;
+
+                match got_entry {
+                    Referent::UnmatchedAddress(unmatched) => pointer = unmatched.address,
+                    Referent::Absolute(absolute_value)
+                        if !self.bin.address_index.is_relocatable =>
+                    {
+                        // Our binary is non-relocatable, so we can treat an absolute value like
+                        // an address.
+                        pointer = absolute_value;
+                    }
+                    other => {
+                        referent = Some(other);
+                    }
+                }
+            }
+
+            if reference_props.via_plt || reference_props.via_got {
+                addend = 0;
+                merged_value = pointer;
+            }
         }
 
-        if let Referent::MergedString(orig_merged) = original_referent {
-            let string_address = if let Some(addend) = orig_merged.addend {
-                (value as i64 - addend) as u64
-            } else if relocation_info.kind == RelocationKind::Relative {
-                // We'd like to add the offset from the relocation to the next instruction, however
-                // we don't have that information without decoding instructions, so we use the size
-                // of relocation in bytes, since for instructions that load the address of a string,
-                // that should be the same. Note, we can't use the addend because the addend is
-                // sometimes used to select which string in the string merge section we're pointing
-                // at. If we subtracted the addend, then instead of pointing at the correct string,
-                // we'd end up pointing to the start of the string-merge section.
-                value + relocation_num_bytes(relocation_info) as u64
+        // We need to handle merged strings after GOT pointers are dereferenced, since it's possible
+        // to reference a merged string via the GOT. We also need to handle merged strings before
+        // the addend is added, since how we handle the addend with merged strings depends on
+        // whether the reference is via a named symbol or not.
+        if let Referent::MergedString(orig_merged) = last_match.original_referent {
+            let string_address = if let Some(named_symbol_addend) = orig_merged.named_symbol_addend
+            {
+                (merged_value as i64 - named_symbol_addend) as u64
+            } else if last_relocation_info.kind == RelocationKind::Relative {
+                merged_value + A::relocation_to_pc_offset(&last_relocation_info)
             } else {
-                value
+                merged_value
             };
 
             let bytes =
@@ -1404,99 +1812,65 @@ impl<'data> RelaxationTester<'data> {
 
             referent = Some(Referent::MergedString(MergedStringRef {
                 data: &bytes[..null_offset],
-                addend: None,
+                named_symbol_addend: None,
             }));
         }
 
-        value = value.wrapping_sub(addend as u64);
-
-        if relocation_num_bytes(relocation_info) == 4 {
-            value = u64::from(value as u32);
-        }
-
-        let mut reference_props = ReferenceProperties::default();
-
-        if is_pointer {
-            if let Some(got_address) = self.bin.address_index.plt_to_got_address::<A>(value)? {
-                reference_props.via_plt = true;
-
-                if !self.bin.address_index.is_got_address(got_address) {
-                    bail!(
-                        "PLT entry at 0x{value:x} points to non-GOT address 0x{got_address:x} in {}",
-                        self.bin.section_containing_address(got_address).unwrap_or("??")
-                    );
-                }
-
-                value = got_address;
-            }
-
-            // Generally if we see a pointer to somewhere in the GOT we look to see what's at that
-            // location in the GOT. However, for relocations that are used to obtain a pointer to
-            // the base of the GOT, we don't want to do this.
-            let allow_got_dereference =
-                !original_referent.is_symbol_with_name(b"_GLOBAL_OFFSET_TABLE_");
-
-            if allow_got_dereference && self.bin.address_index.is_got_address(value) {
-                reference_props.via_got = true;
-
-                let got_entry = self.bin.address_index.dereference_got_address(
-                    value,
-                    relocation_info.kind,
-                    &self.bin.address_index,
-                )?;
-
-                match got_entry {
-                    Referent::UnmatchedAddress(unmatched) => value = unmatched.address,
-                    Referent::Absolute(absolute_value)
-                        if !self.bin.address_index.is_relocatable =>
-                    {
-                        // Our binary is non-relocatable, so we can treat an absolute value like
-                        // an address.
-                        value = absolute_value;
-                    }
-                    other => {
-                        referent = Some(other);
-                    }
-                }
-            }
-        }
+        merged_value = merged_value.wrapping_sub(addend as u64);
 
         let referent = referent.unwrap_or_else(|| {
             let reason;
 
-            if let Referent::Named(original_name, _) = original_referent {
-                match self.bin.symbol_by_name(original_name.bytes, value) {
+            if let Referent::Named(original_name, _) = last_match.original_referent {
+                match self.bin.symbol_by_name(original_name.bytes, merged_value) {
                     crate::NameLookupResult::Defined(elf_symbol) => {
-                        let offset = value.wrapping_sub(elf_symbol.address()) as i64;
+                        let offset = merged_value.wrapping_sub(elf_symbol.address()) as i64;
 
-                        if let Ok(bytes) = elf_symbol.name_bytes() {
-                            let symbol_name = SymbolName {
-                                bytes,
-                                version: None,
-                            };
-
-                            if offset.abs() <= 8 {
-                                return Referent::Named(symbol_name, offset);
+                        if let Ok(mut bytes) = elf_symbol.name_bytes() {
+                            // Strip versions from symbol names, since there are currently
+                            // differences between the linkers in terms of whether version names are
+                            // added to debug symbols or not.
+                            if let Some(at_index) = memchr::memchr(b'@', bytes) {
+                                bytes = &bytes[..at_index];
                             }
 
-                            reason = Some("symbol is too far away");
+                            if bytes.is_empty() {
+                                reason = "Symbol has empty name";
+                            } else {
+                                let symbol_name = SymbolName {
+                                    bytes,
+                                    version: None,
+                                };
+
+                                if offset.abs() <= 8 {
+                                    if has_copy_relocation_for_symbol_named::<A::RType>(
+                                        original_name.bytes,
+                                        self.bin,
+                                    ) {
+                                        return Referent::Copy(symbol_name, offset);
+                                    }
+                                    return Referent::Named(symbol_name, offset);
+                                }
+
+                                reason = "symbol is too far away";
+                            }
                         } else {
-                            reason = Some("Error reading symbol name");
+                            reason = "Error reading symbol name";
                         }
                     }
                     crate::NameLookupResult::Undefined => {
-                        reason = Some("symbol is undefined");
+                        reason = "symbol is undefined";
                     }
                     crate::NameLookupResult::Duplicate => {
-                        reason = Some("symbol has multiple definitions");
+                        reason = "symbol has multiple definitions";
                     }
                 }
             } else {
-                reason = Some("original symbol has no name");
+                reason = "original symbol has no name";
             }
 
             Referent::UnmatchedAddress(UnmatchedAddress {
-                address: value,
+                address: merged_value,
                 reason,
             })
         });
@@ -1507,83 +1881,161 @@ impl<'data> RelaxationTester<'data> {
         })
     }
 
-    /// Try to resolve what happened with the supplied relocation at the offset. e.g. was the
-    /// relocation applied as-is (a no-op relaxation), was some relaxation applied, or was the
-    /// relocation skipped entirely due to the previous relocation.
-    fn try_resolve<A: Arch>(
+    /// Returns the value that a relocation is relative to.
+    fn get_relative_to<A: Arch>(
+        &self,
+        offset: u64,
+        relocation_info: RelocationKindInfo,
+    ) -> Result<u64> {
+        let mut relative_to = match relocation_info.kind {
+            RelocationKind::Relative
+            | RelocationKind::PltRelative
+            | RelocationKind::TlsGd
+            | RelocationKind::TlsLd
+            | RelocationKind::TlsDesc
+            | RelocationKind::GotTpOff
+            | RelocationKind::GotRelative => self.section_address + offset,
+            RelocationKind::SymRelGotBase
+            | RelocationKind::GotRelGotBase
+            | RelocationKind::TlsGdGotBase
+            | RelocationKind::GotTpOffGotBase
+            | RelocationKind::TlsLdGotBase
+            | RelocationKind::TlsDescGotBase
+            | RelocationKind::PltRelGotBase => self
+                .bin
+                .address_index
+                .got_base_address
+                .context("Missing GOT base address")?,
+            RelocationKind::Absolute
+            | RelocationKind::Got
+            | RelocationKind::TlsGdGot
+            | RelocationKind::GotTpOffGot
+            | RelocationKind::AbsoluteAArch64
+            | RelocationKind::TlsDescGot
+            | RelocationKind::TlsLdGot
+            | RelocationKind::DtpOff
+            | RelocationKind::TpOff
+            | RelocationKind::TpOffAArch64
+            | RelocationKind::TlsDescCall
+            | RelocationKind::None => 0,
+        };
+
+        relative_to &= A::get_relocation_base_mask(&relocation_info);
+
+        Ok(relative_to)
+    }
+
+    fn resolve_group_traced<A: Arch>(
         &mut self,
         section_kind: SectionKind,
-        offset: u64,
-        rel: &object::Relocation,
-        original_referent: Referent<A::RType>,
-    ) -> Result<Option<Resolution<'data, A>>> {
-        let r_type = get_r_type(rel);
+        group: &RelocationGroup<'data, A>,
+    ) -> ResolvedGroup<'data, A> {
+        let mut trace = TraceOutput::default();
 
-        let mut selected_resolution: Option<Resolution<A>> = None;
-
-        if self.next_modifier == RelocationModifier::SkipNextRelocation {
-            // If one tester is skipping, then all should be, since otherwise the previous
-            // relocation wouldn't have matched. So we don't need to do any comparison here and
-            // can just skip the relocation.
-            self.next_modifier = RelocationModifier::Normal;
-            return Ok(None);
-        }
-
-        let mut error = None;
-
-        A::possible_relaxations_do(r_type, section_kind, |relaxation| {
-            match self.resolve(relaxation, rel, offset, original_referent) {
-                Ok(MatchResult::Matched(resolution)) => {
-                    if let Some(existing) = selected_resolution.as_mut() {
-                        existing.merge_ambiguous(resolution);
-                    } else {
-                        selected_resolution = Some(resolution);
-                    }
-                }
-                Ok(MatchResult::Failed(_)) => {}
-                Err(e) => error = Some(e),
-            }
+        let mut res = crate::diagnostics::trace_scope(&mut trace, || {
+            let relaxation_group = self.determine_relaxations(section_kind, group);
+            self.resolve_group(relaxation_group)
         });
 
-        if let Some(error) = error {
-            return Err(error);
-        }
+        res.trace = trace;
 
-        let res = match selected_resolution {
-            Some(res) => res,
-            None => {
-                // We failed to match, try again, but this time collect up all of the failed matches
-                // so that we can report them.
+        res
+    }
+
+    fn determine_relaxations<A: Arch>(
+        &mut self,
+        section_kind: SectionKind,
+        group: &RelocationGroup<'data, A>,
+    ) -> RelaxationGroup<'data, A> {
+        let match_results = group
+            .relocations
+            .iter()
+            .map(|rel| {
+                let r_type = get_r_type(&rel.rel);
+
+                let mut matched_relaxations = Vec::new();
                 let mut failed_matches = Vec::new();
 
                 A::possible_relaxations_do(r_type, section_kind, |relaxation| {
-                    let result = self.resolve(relaxation, rel, offset, original_referent);
-
-                    match result {
-                        Ok(MatchResult::Failed(failure)) => {
+                    match self.match_relaxation(relaxation, rel) {
+                        Ok(r) => {
+                            matched_relaxations.push(r);
+                        }
+                        Err(failure) => {
                             failed_matches.push(failure);
                         }
-                        // We shouldn't really get here since we got no matches and no errors the
-                        // first time.
-                        Err(e) => panic!("Unexpected error: {e}"),
-                        Ok(MatchResult::Matched(..)) => {
-                            panic!("Unexpected match")
-                        }
-                    }
+                    };
                 });
 
-                self.match_failed_placeholder(offset, r_type, failed_matches)
-            }
-        };
+                let m = match matched_relaxations.len() {
+                    0 => RelaxationMatchResult::AllFailed(failed_matches),
+                    1 => RelaxationMatchResult::Matched(matched_relaxations.pop().unwrap()),
+                    _ => RelaxationMatchResult::Ambiguous(matched_relaxations),
+                };
 
-        self.accept(&res);
+                self.accept(&m);
 
-        Ok(Some(res))
+                m
+            })
+            .collect();
+
+        RelaxationGroup {
+            match_results,
+            is_complete: group.is_complete_group(),
+        }
     }
 
-    fn accept<A: Arch>(&mut self, resolution: &Resolution<A>) {
-        self.previous_end = resolution.end;
-        self.next_modifier = resolution.next_modifier;
+    fn resolve_group<A: Arch>(
+        &self,
+        mut relaxation_group: RelaxationGroup<'data, A>,
+    ) -> ResolvedGroup<'data, A> {
+        let mut reference = None;
+        let mut error = None;
+
+        if relaxation_group.is_complete {
+            if let Some(matches) = relaxation_group.matches_if_ok() {
+                if matches_are_compatible(&matches) {
+                    match self.read_reference(&matches) {
+                        Ok(r) => reference = Some(r),
+                        Err(e) => error = Some(e),
+                    }
+                }
+            }
+        }
+
+        if let Some(reference) = reference.as_ref() {
+            relaxation_group.eliminate_alt_r_types(reference);
+        }
+
+        let mut annotations = relaxation_group
+            .match_results
+            .iter()
+            .flat_map(|r| r.annotations())
+            .collect_vec();
+
+        if let Some(e) = error {
+            annotations.push(Annotation {
+                offset_in_section: relaxation_group.end_offset(),
+                kind: AnnotationKind::Error(e.to_string()),
+            });
+        }
+
+        ResolvedGroup {
+            start: relaxation_group.start_offset(),
+            end: relaxation_group.end_offset(),
+            relaxations: Some(relaxation_group),
+            annotations,
+            reference: reference.unwrap_or(Reference {
+                referent: Referent::Unknown,
+                props: Default::default(),
+            }),
+            trace: TraceOutput::default(),
+        }
+    }
+
+    fn accept<A: Arch>(&mut self, matched_relaxation: &RelaxationMatchResult<A>) {
+        self.previous_end = matched_relaxation.end();
+        self.next_modifier = matched_relaxation.next_modifier();
     }
 
     /// Returns whether section bytes are equal to the original input file from `self.previous_end`
@@ -1594,33 +2046,41 @@ impl<'data> RelaxationTester<'data> {
                 == self.original_data[self.previous_end as usize..offset as usize]
         })
     }
+}
 
-    /// Returns a placeholder resolution that we can use when we fail to identify a relocation at a
-    /// particular offset.
-    fn match_failed_placeholder<A: Arch>(
-        &self,
-        offset: u64,
-        original_r_type: A::RType,
-        failed_matches: Vec<FailedMatch<A>>,
-    ) -> Resolution<'data, A> {
-        let relocation_size = original_r_type
-            .relocation_info()
-            .map_or(1, relocation_num_bytes);
+/// Returns whether the matches have the same referent and addend. Our mechanism of grouping
+/// relocations is somewhat flawed in that unrelated relocations can end up being grouped if they're
+/// adjacent. For now, we ignore any groups where these don't match.
+fn matches_are_compatible<A: Arch>(matches: &[RelaxationMatch<'_, A>]) -> bool {
+    let mut previous_addend = None;
+    let mut previous_referent = None;
 
-        Resolution {
-            relaxation: None,
-            annotation: Annotation::MatchFailed(failed_matches),
-            reference: Reference {
-                referent: Referent::Unknown,
-                props: Default::default(),
-            },
-            start: self.previous_end,
-            end: offset + relocation_size as u64,
-            next_modifier: RelocationModifier::Normal,
-            offset,
-            trace: TraceOutput::default(),
+    for m in matches {
+        if previous_addend.is_some_and(|prev| prev != m.addend) {
+            return false;
         }
+
+        if previous_referent.is_some_and(|prev| prev != m.original_referent) {
+            return false;
+        }
+
+        previous_addend = Some(m.addend);
+        previous_referent = Some(m.original_referent);
     }
+
+    true
+}
+
+/// Returns whether the supplied relocation is not a pointer. e.g. a thread local.
+fn is_non_pointer_relocation(relocation_kind: RelocationKind) -> bool {
+    matches!(
+        relocation_kind,
+        RelocationKind::DtpOff
+            | RelocationKind::TpOff
+            | RelocationKind::TpOffAArch64
+            | RelocationKind::TlsDescCall
+            | RelocationKind::None
+    )
 }
 
 /// Returns a map from symbol name to `SymbolVersions`. This gives us the address of that symbol
@@ -1674,6 +2134,10 @@ fn symbol_versions_by_name<'data>(
     // Clear any records that are incomplete.
     let num_objects = binaries.len();
     by_name.retain(|_, v| v.addresses_by_binary.len() == num_objects);
+
+    if let Ok(fn_name) = std::env::var(SHOW_FUNCTION_ENV) {
+        by_name.retain(|name, _versions| *name == fn_name.as_bytes());
+    }
 
     by_name
 }
@@ -1887,6 +2351,7 @@ pub(crate) struct AddressIndex<'data> {
     versym_address: Option<u64>,
     dynamic_segment_address: Option<u64>,
     dynamic_relocations_by_address: HashMap<u64, object::Relocation>,
+    dynamic_relocations_by_symbol_index: HashMap<object::SymbolIndex, Vec<object::Relocation>>,
 
     /// GOT addresses for each JMPREL relocation by their index.
     jmprel_got_addresses: Vec<u64>,
@@ -1934,10 +2399,11 @@ impl PltIndex<'_> {
             // Sometimes linkers don't set the entry size on PLT sections. In that case, we try both
             // size 8 and if that fails, try size 16.
             self.decode_plt_entry_with_size::<A>(offset, 8)
-                .or_else(|_| self.decode_plt_entry_with_size::<A>(offset, 16))?
+                .or_else(|| self.decode_plt_entry_with_size::<A>(offset, 16))
         } else {
-            self.decode_plt_entry_with_size::<A>(offset, self.entry_length)?
-        };
+            self.decode_plt_entry_with_size::<A>(offset, self.entry_length)
+        }
+        .with_context(|| format!("Unrecognised PLT entry format at 0x{plt_address:x}"))?;
 
         let got_address = match plt_entry {
             PltEntry::DerefJmp(address) => address,
@@ -1960,10 +2426,9 @@ impl PltIndex<'_> {
         &self,
         offset: u64,
         entry_size: u64,
-    ) -> Result<PltEntry> {
+    ) -> Option<PltEntry> {
         let entry_bytes = &self.bytes[offset as usize..(offset + entry_size) as usize];
         A::decode_plt_entry(entry_bytes, self.plt_base, offset)
-            .context("Unrecognised PLT entry format")
     }
 }
 
@@ -1988,6 +2453,7 @@ impl<'data> AddressIndex<'data> {
                 relocatability: Relocatability::NonRelocatable,
                 link_type: LinkType::Static,
             },
+            dynamic_relocations_by_symbol_index: Default::default(),
         };
 
         if let Err(error) = info.build_indexes(elf_file) {
@@ -2097,6 +2563,17 @@ impl<'data> AddressIndex<'data> {
     }
 
     fn index_relocations(&mut self, elf_file: &ElfFile64<'data>) {
+        if let Some(dynamic_relocations) = elf_file.dynamic_relocations() {
+            for (_, rel) in dynamic_relocations {
+                if let RelocationTarget::Symbol(symbol_index) = rel.target() {
+                    self.dynamic_relocations_by_symbol_index
+                        .entry(symbol_index)
+                        .or_default()
+                        .push(rel);
+                }
+            }
+        }
+
         if let Some(dynamic_relocations) = elf_file.dynamic_relocations() {
             self.dynamic_relocations_by_address
                 .extend(dynamic_relocations);
@@ -2464,4 +2941,66 @@ fn relocation_num_bytes(info: RelocationKindInfo) -> usize {
             (mask.range.end.div_ceil(8) - mask.range.start / 8) as usize
         }
     }
+}
+
+fn read_value(size: RelocationSize, value_bytes: &[u8]) -> Result<u64> {
+    match size {
+        RelocationSize::ByteSize(8) => Ok(u64::from_le_bytes(
+            *value_bytes
+                .first_chunk::<8>()
+                .context("Invalid relocation offset")?,
+        )),
+        RelocationSize::ByteSize(4) => Ok(u64::from(u32::from_le_bytes(
+            *value_bytes
+                .first_chunk::<4>()
+                .context("Invalid relocation offset")?,
+        ))),
+        RelocationSize::ByteSize(0) => Ok(0),
+        RelocationSize::ByteSize(other) => bail!("Unsupported relocation size {other}"),
+        RelocationSize::BitMasking(BitMask {
+            range,
+            instruction: insn,
+        }) => {
+            let (raw_value, _negative) = insn.read_value(value_bytes);
+            Ok(raw_value << range.start)
+        }
+    }
+}
+
+impl<A: Arch> Relaxation<A> {
+    fn relocation_size(&self) -> Result<RelocationSize> {
+        let size = self.new_r_type.relocation_info()?.size;
+
+        if let Some(alt_r_type) = self.alt_r_type {
+            let alt_size = alt_r_type.relocation_info()?.size;
+            assert_eq!(alt_size, size);
+        }
+
+        Ok(size)
+    }
+
+    fn relocation_num_bytes(&self) -> Result<usize> {
+        let relocation_info = self.new_r_type.relocation_info()?;
+
+        Ok(relocation_num_bytes(relocation_info))
+    }
+}
+
+fn has_copy_relocation_for_symbol_named<R: RType>(symbol_name: &[u8], bin: &Binary) -> bool {
+    bin.name_index
+        .dynamic_by_name
+        .get(symbol_name)
+        .is_some_and(|symbol_indexes| {
+            symbol_indexes.iter().any(|symbol_index| {
+                bin.address_index
+                    .dynamic_relocations_by_symbol_index
+                    .get(symbol_index)
+                    .is_some_and(|relocations| {
+                        relocations.iter().any(|rel| {
+                            let r_type = get_r_type::<R>(rel);
+                            r_type.dynamic_relocation_kind() == Some(DynamicRelocationKind::Copy)
+                        })
+                    })
+            })
+        })
 }

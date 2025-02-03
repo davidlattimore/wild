@@ -1,3 +1,5 @@
+use crate::Result;
+use anyhow::Context;
 use linker_utils::elf::BitMask;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -40,7 +42,7 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
             bitmask: Vec::new(),
         };
 
-        if let Some(info) = relaxation.new_r_type.relocation_info() {
+        if let Some(info) = relaxation.new_r_type.opt_relocation_info() {
             match info.size {
                 linker_utils::elf::RelocationSize::ByteSize(num_bytes) => {
                     let mask_len = (relocation_offset + num_bytes).max(byte_range.num_bytes);
@@ -90,6 +92,34 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
     ) -> Vec<Instruction<Self>>;
 
     fn decode_plt_entry(plt_entry: &[u8], plt_base: u64, plt_offset: u64) -> Option<PltEntry>;
+
+    /// Returns whether the supplied relocations should be chained together. `chain_prefix` will
+    /// always be of length at least 2.
+    fn should_chain_relocations(chain_prefix: &[Self::RType]) -> bool;
+
+    /// Returns a bitmask that should be applied to the relative-to address for a relocation.
+    fn get_relocation_base_mask(relocation_info: &RelocationKindInfo) -> u64;
+
+    /// Returns the offset from where a relocation occurs to the address to which a PC-relative
+    /// instruction will be relative. In theory this would depend on the instruction, not just the
+    /// relocation, however we want to avoid decoding the instruction, so we use the relocation as a
+    /// good-enough approximation.
+    fn relocation_to_pc_offset(relocation_info: &RelocationKindInfo) -> u64;
+
+    /// Returns whether the supplied chain of relocation types represents a complete chain of
+    /// relocations. Partial chains can occur where relocations for different symbols are
+    /// interleaved by the compiler, presumably in order to give better performance. Unfortunately
+    /// we can't properly process partial chains. We can still resolve the relaxations for the
+    /// relocations in a partial chain, but we cannot resolve what we're pointing at, since we have
+    /// incomplete information.
+    ///
+    /// This is somewhat of a design flaw with the whole idea of chaining relocations. Possibly we
+    /// should redesign this aspect of linker-diff at some stage to work differently. We could get
+    /// rid of chains and just look at relocations individually. Doing so, we can then build up
+    /// information a bit at a time about the referent. For example one relocation might tell us
+    /// that the address of foo is 0x12???, then a later relocation might tell us the low bits, so
+    /// that we know the full address is 0x12345.
+    fn is_complete_chain(chain: impl Iterator<Item = Self::RType>) -> bool;
 }
 
 pub(crate) trait RType: Copy + Debug + Display + Eq + PartialEq {
@@ -97,7 +127,12 @@ pub(crate) trait RType: Copy + Debug + Display + Eq + PartialEq {
 
     fn from_dynamic_relocation_kind(kind: DynamicRelocationKind) -> Self;
 
-    fn relocation_info(self) -> Option<RelocationKindInfo>;
+    fn relocation_info(self) -> Result<RelocationKindInfo> {
+        self.opt_relocation_info()
+            .with_context(|| format!("Unknown relocation type {self}"))
+    }
+
+    fn opt_relocation_info(self) -> Option<RelocationKindInfo>;
 
     fn dynamic_relocation_kind(self) -> Option<DynamicRelocationKind>;
 }
@@ -111,6 +146,11 @@ pub(crate) trait RelaxationKind: Copy + Clone + Debug + Eq + PartialEq {
 pub(crate) struct Relaxation<A: Arch> {
     pub(crate) relaxation_kind: A::RelaxationKind,
     pub(crate) new_r_type: A::RType,
+
+    /// A second relocation type that is also consistent with the same relaxation. The main use-case
+    /// for this is calling a function directly, or calling a function via the PLT. When just
+    /// looking at the instructions, we cannot tell these two apart.
+    pub(crate) alt_r_type: Option<A::RType>,
 }
 
 /// The range of bytes to which a relaxation applies.
@@ -168,6 +208,14 @@ impl RelaxationMask {
             .zip(a)
             .zip(b)
             .all(|((mask, value_a), value_b)| (*value_a & mask) == (*value_b & mask))
+    }
+
+    pub(crate) fn mask_value(&self, value: &[u8]) -> Vec<u8> {
+        value
+            .iter()
+            .zip(&self.bitmask)
+            .map(|(b1, b2)| b1 & b2)
+            .collect()
     }
 }
 

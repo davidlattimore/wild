@@ -33,6 +33,7 @@ use std::fmt::Display;
 use std::path::Path;
 use std::path::PathBuf;
 
+mod aarch64;
 mod arch;
 mod asm_diff;
 mod debug_info_diff;
@@ -115,6 +116,7 @@ struct SectionInfo {
 struct NameIndex<'data> {
     globals_by_name: HashMap<&'data [u8], Vec<object::SymbolIndex>>,
     locals_by_name: HashMap<&'data [u8], Vec<object::SymbolIndex>>,
+    dynamic_by_name: HashMap<&'data [u8], Vec<object::SymbolIndex>>,
 }
 
 impl Config {
@@ -182,6 +184,20 @@ impl Config {
                 "rel.extra-opt.R_X86_64_GOTPCRELX.CallIndirectToRelative.static-*",
                 // We don't yet support emitting warnings.
                 "section.gnu.warning",
+                // GNU ld sometimes optimises these relocations in ways that we don't yet recognise.
+                "rel.match_failed.R_AARCH64_CALL26",
+                "rel.match_failed.R_AARCH64_JUMP26",
+                "rel.match_failed.R_AARCH64_TLSDESC_ADR_PAGE21",
+                "rel.match_failed.R_AARCH64_TLSDESC_LD64_LO12",
+                // We seem to do an optimisation here where GNU ld doesn't. TODO: Look into if this
+                // is OK.
+                "rel.extra-opt.R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21.MovzXnLsl16.static-non-pie",
+                // We currently seem to do copy relocations when GNU ld doesn't. This is almost
+                // certainly a bug on our part.
+                "rel.extra-copy-relocation.R_AARCH64_ADR_GOT_PAGE",
+                // GNU ld seems to sometimes relax an adrp instruction to an adr instruction. We
+                // don't as yet.
+                "rel.match_failed.R_AARCH64_ADR_GOT_PAGE",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
@@ -325,11 +341,12 @@ impl<'data> Binary<'data> {
             return NameLookupResult::Duplicate;
         }
 
-        if let Some(sym) = indexes
-            .first()
-            .and_then(|index| self.elf_file.symbol_by_index(*index).ok())
-        {
-            NameLookupResult::Defined(sym)
+        if let Some(symbol_index) = indexes.first() {
+            if let Ok(sym) = self.elf_file.symbol_by_index(*symbol_index) {
+                NameLookupResult::Defined(sym)
+            } else {
+                NameLookupResult::Undefined
+            }
         } else {
             NameLookupResult::Undefined
         }
@@ -645,6 +662,8 @@ impl<'data> NameIndex<'data> {
     fn new(elf_file: &ElfFile64<'data>) -> NameIndex<'data> {
         let mut globals_by_name: HashMap<&[u8], Vec<object::SymbolIndex>> = HashMap::new();
         let mut locals_by_name: HashMap<&[u8], Vec<object::SymbolIndex>> = HashMap::new();
+        let mut dynamic_by_name: HashMap<&[u8], Vec<object::SymbolIndex>> = HashMap::new();
+
         for sym in elf_file.symbols() {
             // We only index symbols that have a section. Note this is different than the object
             // crate's `is_defined`, which imposes additional requirements that we don't want.
@@ -677,9 +696,17 @@ impl<'data> NameIndex<'data> {
                 }
             }
         }
+
+        for sym in elf_file.dynamic_symbols() {
+            if let Ok(name) = sym.name_bytes() {
+                dynamic_by_name.entry(name).or_default().push(sym.index());
+            }
+        }
+
         NameIndex {
             globals_by_name,
             locals_by_name,
+            dynamic_by_name,
         }
     }
 }
