@@ -34,10 +34,14 @@ use crate::storage::SymbolNameMap as _;
 use crate::string_merging::MergedStringsSection;
 use crate::string_merging::StringMergeSectionExtra;
 use crate::string_merging::StringMergeSectionSlot;
-use crate::symbol::SymbolName;
+use crate::symbol::PreHashedSymbolName;
+use crate::symbol::UnversionedSymbolName;
+use crate::symbol::VersionedSymbolName;
+use crate::symbol_db::RawSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
+use ahash::RandomState;
 use anyhow::Context;
 use anyhow::bail;
 use atomic_take::AtomicTake;
@@ -52,6 +56,8 @@ use object::LittleEndian;
 use object::read::elf::Sym as _;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
+use std::collections::HashMap;
+use std::mem::replace;
 use std::mem::take;
 use std::num::NonZeroU32;
 use std::sync::atomic::AtomicBool;
@@ -85,6 +91,7 @@ pub fn resolve_symbols_and_sections<'data, S: StorageModel>(
         canonicalise_undefined_symbols(undefined_symbols, &output_sections, &groups, symbol_db)?;
 
     resolve_alternative_symbol_definitions(symbol_db, &groups)?;
+    resolve_alternative_versioned_symbol_definitions(symbol_db, &groups)?;
 
     groups[PRELUDE_FILE_ID.group()].files[PRELUDE_FILE_ID.file()] =
         ResolvedFile::Prelude(ResolvedPrelude {
@@ -356,22 +363,55 @@ fn resolve_alternative_symbol_definitions<'data, S: StorageModel>(
     let previous_definitions = take(&mut symbol_db.alternative_definitions);
     let symbols_with_alternatives = take(&mut symbol_db.symbols_with_alternatives);
     let mut alternatives = Vec::new();
+
     for first in symbols_with_alternatives {
         alternatives.clear();
         let mut symbol_id = first;
+
         loop {
             symbol_id = previous_definitions[symbol_id.as_usize()];
             if symbol_id.is_undefined() {
                 break;
             }
+
+            debug_assert_bail!(
+                !alternatives.contains(&symbol_id),
+                "Loop in symbol replacements for symbol {symbol_id}: {alternatives:?}"
+            );
+
             alternatives.push(symbol_id);
         }
+
         let selected = select_symbol(symbol_db, first, &alternatives, resolved);
         symbol_db.replace_definition(first, selected);
+
         for &alt in &alternatives {
             symbol_db.replace_definition(alt, selected);
         }
     }
+
+    Ok(())
+}
+
+#[tracing::instrument(skip_all, name = "Resolve alternative versioned symbol definitions")]
+fn resolve_alternative_versioned_symbol_definitions<'data, S: StorageModel>(
+    symbol_db: &mut SymbolDb<'data, S>,
+    resolved: &[ResolvedGroup],
+) -> Result {
+    let all_alternatives = replace(
+        &mut symbol_db.alternative_versioned_definitions,
+        HashMap::with_hasher(RandomState::new()),
+    );
+
+    for (first, alternatives) in all_alternatives {
+        let selected = select_symbol(symbol_db, first, &alternatives, resolved);
+        symbol_db.replace_definition(first, selected);
+
+        for &alt in &alternatives {
+            symbol_db.replace_definition(alt, selected);
+        }
+    }
+
     Ok(())
 }
 
@@ -600,7 +640,7 @@ struct UndefinedSymbol<'data> {
     /// If we have a file ID here and that file is loaded, then the symbol is actually defined and
     /// this record can be ignored.
     ignore_if_loaded: Option<FileId>,
-    name: PreHashed<SymbolName<'data>>,
+    name: PreHashedSymbolName<'data>,
     symbol_id: SymbolId,
 }
 
@@ -612,11 +652,19 @@ fn canonicalise_undefined_symbols<'data, S: StorageModel>(
     symbol_db: &mut SymbolDb<'data, S>,
 ) -> Result<Vec<InternalSymDefInfo>> {
     let mut custom_start_stop_defs = Vec::new();
-    let mut name_to_id: PassThroughHashMap<SymbolName<'data>, SymbolId> = Default::default();
+
+    let mut name_to_id: PassThroughHashMap<UnversionedSymbolName<'data>, SymbolId> =
+        Default::default();
+
+    let mut versioned_name_to_id: PassThroughHashMap<VersionedSymbolName<'data>, SymbolId> =
+        Default::default();
+
     let mut undefined_symbols = Vec::from_iter(undefined_symbols);
+
     // Sort by symbol ID to ensure deterministic behaviour. This means that the canonical symbol ID
     // for any given name will be the one for the earliest file that refers to that symbol.
     undefined_symbols.sort_by_key(|u| u.symbol_id);
+
     for undefined in undefined_symbols {
         let is_defined = undefined.ignore_if_loaded.is_some_and(|file_id| {
             !matches!(
@@ -624,41 +672,60 @@ fn canonicalise_undefined_symbols<'data, S: StorageModel>(
                 ResolvedFile::NotLoaded(_)
             )
         });
+
         if is_defined {
             // The archive entry that defined the symbol in question ended up being loaded, so the
             // weak symbol is defined after all.
             continue;
         }
-        match name_to_id.entry(undefined.name) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                let symbol_id = allocate_start_stop_symbol_id(
-                    undefined.name,
-                    symbol_db,
-                    &mut custom_start_stop_defs,
-                    output_sections,
-                );
-                // If the symbol isn't a start/stop symbol, then assign responsibility for the
-                // symbol to the first object that referenced it. This lets us have PLT/GOT entries
-                // for the symbol if they're needed.
-                let symbol_id = symbol_id.unwrap_or(undefined.symbol_id);
-                entry.insert(symbol_id);
-                symbol_db.replace_definition(undefined.symbol_id, symbol_id);
+
+        match undefined.name {
+            PreHashedSymbolName::Unversioned(pre_hashed) => {
+                match name_to_id.entry(pre_hashed) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        let symbol_id = allocate_start_stop_symbol_id(
+                            pre_hashed,
+                            symbol_db,
+                            &mut custom_start_stop_defs,
+                            output_sections,
+                        );
+
+                        // If the symbol isn't a start/stop symbol, then assign responsibility for the
+                        // symbol to the first object that referenced it. This lets us have PLT/GOT entries
+                        // for the symbol if they're needed.
+                        let symbol_id = symbol_id.unwrap_or(undefined.symbol_id);
+                        entry.insert(symbol_id);
+                        symbol_db.replace_definition(undefined.symbol_id, symbol_id);
+                    }
+                    std::collections::hash_map::Entry::Occupied(entry) => {
+                        symbol_db.replace_definition(undefined.symbol_id, *entry.get());
+                    }
+                }
             }
-            std::collections::hash_map::Entry::Occupied(entry) => {
-                symbol_db.replace_definition(undefined.symbol_id, *entry.get());
+            PreHashedSymbolName::Versioned(pre_hashed) => {
+                match versioned_name_to_id.entry(pre_hashed) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(undefined.symbol_id);
+                    }
+                    std::collections::hash_map::Entry::Occupied(entry) => {
+                        symbol_db.replace_definition(undefined.symbol_id, *entry.get());
+                    }
+                }
             }
         }
     }
+
     Ok(custom_start_stop_defs)
 }
 
 fn allocate_start_stop_symbol_id<'data, S: StorageModel>(
-    name: PreHashed<SymbolName<'data>>,
+    name: PreHashed<UnversionedSymbolName<'data>>,
     symbol_db: &mut SymbolDb<'data, S>,
     custom_start_stop_defs: &mut Vec<InternalSymDefInfo>,
     output_sections: &OutputSections,
 ) -> Option<SymbolId> {
     let symbol_name_bytes = name.bytes();
+
     let (section_name, is_start) = if let Some(s) = symbol_name_bytes.strip_prefix(b"__start_") {
         (s, true)
     } else if let Some(s) = symbol_name_bytes.strip_prefix(b"__stop_") {
@@ -666,15 +733,19 @@ fn allocate_start_stop_symbol_id<'data, S: StorageModel>(
     } else {
         return None;
     };
+
     let section_id = output_sections.custom_name_to_id(SectionName(section_name))?;
 
     let symbol_id = symbol_db.add_start_stop_symbol(name);
+
     let def_info = if is_start {
         InternalSymDefInfo::SectionStart(section_id)
     } else {
         InternalSymDefInfo::SectionEnd(section_id)
     };
+
     custom_start_stop_defs.push(def_info);
+
     Some(symbol_id)
 }
 
@@ -873,16 +944,16 @@ fn resolve_symbol<'data, S: StorageModel>(
         return Ok(());
     }
 
-    let name_bytes = obj.object.symbol_name(local_symbol)?;
+    let name_info = RawSymbolName::parse(obj.object.symbol_name(local_symbol)?);
 
     debug_assert_bail!(
         !local_symbol.is_local(),
         "Only globals should be undefined, found symbol `{}` ({local_symbol_index})",
-        String::from_utf8_lossy(name_bytes)
+        name_info,
     );
 
     assert!(!local_symbol.is_definition(LittleEndian));
-    let prehashed_name = SymbolName::prehashed(name_bytes);
+    let prehashed_name = PreHashedSymbolName::from_raw(&name_info);
 
     match resources.symbol_db.global_names.get(&prehashed_name) {
         Some(symbol_id) => {

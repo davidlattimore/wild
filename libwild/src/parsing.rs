@@ -13,7 +13,7 @@ use crate::input_data::UNINITIALISED_FILE_ID;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::sharding::ShardKey;
-use crate::symbol::SymbolName;
+use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::threading::prelude::*;
@@ -144,10 +144,10 @@ impl<'data> ParsedInputObject<'data> {
     pub(crate) fn symbol_name(
         &self,
         symbol_id: crate::symbol_db::SymbolId,
-    ) -> Result<SymbolName<'data>> {
+    ) -> Result<UnversionedSymbolName<'data>> {
         let index = symbol_id.to_input(self.symbol_id_range);
         let symbol = self.object.symbol(index)?;
-        Ok(SymbolName::new(self.object.symbol_name(symbol)?))
+        Ok(UnversionedSymbolName::new(self.object.symbol_name(symbol)?))
     }
 }
 
@@ -268,7 +268,7 @@ impl Prelude {
         &self,
         symbol_id: SymbolId,
         output_kind: OutputKind,
-    ) -> SymbolName<'static> {
+    ) -> UnversionedSymbolName<'static> {
         let def = &self.symbol_definitions[symbol_id.as_usize()];
         let name = match def {
             InternalSymDefInfo::Undefined => Some(""),
@@ -280,7 +280,7 @@ impl Prelude {
             }
         }
         .unwrap();
-        SymbolName::new(name.as_bytes())
+        UnversionedSymbolName::new(name.as_bytes())
     }
 }
 

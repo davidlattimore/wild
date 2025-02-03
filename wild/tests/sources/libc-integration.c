@@ -147,6 +147,17 @@ __attribute__ ((section (".ctors"), used)) static void* init3_ptr = init3;
 
 #endif
 
+// Make sure that we can refer to a non-default version of a symbol from libc.
+#if defined(__x86_64__)
+__asm__(".symver old_timer_gettime, timer_gettime@GLIBC_2.2.5");
+#elif defined(__aarch64__)
+__asm__(".symver old_timer_gettime, timer_gettime@GLIBC_2.17");
+#endif
+
+// The signature here doesn't actually matter since we don't call it. Symbol is weak to prevent the
+// compiler from assuming that it can never be null.
+int __attribute__ ((weak)) old_timer_gettime();
+
 void *thread_function(void *data) {
     if (tvar1 != 0) {
         return NULL;
@@ -270,13 +281,19 @@ int main() {
     }
 #ifdef VERIFY_CTORS
     if (ctors_init_val != 42) {
-        return ctors_init_val;
+        return 123;
     }
 #endif
 
     if (weak_fn3() != 15) {
-        return 123;
+        return 124;
     }
+
+#ifdef DYNAMIC_DEP
+    if (&old_timer_gettime == NULL) {
+        return 125;
+    }
+#endif
 
     return 42;
 }

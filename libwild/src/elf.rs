@@ -17,6 +17,7 @@ use linker_utils::elf::extract_bits;
 use linker_utils::elf::sht;
 use object::LittleEndian;
 use object::read::elf::CompressionHeader;
+use object::read::elf::Dyn;
 use object::read::elf::FileHeader as _;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::RelocationSections;
@@ -63,6 +64,9 @@ pub(crate) struct File<'data> {
 
     /// An iterator over the version definitions and the corresponding linked string table index.
     pub(crate) verdef: Option<(VerdefIterator<'data>, object::SectionIndex)>,
+
+    /// Number of verdef versions according to the dynamic table.
+    pub(crate) verdefnum: u64,
 }
 
 impl<'data> File<'data> {
@@ -75,6 +79,8 @@ impl<'data> File<'data> {
         let mut symbols = SymbolTable::default();
         let mut versym: &[Versym] = &[];
         let mut verdef = None;
+        let mut dynamic = None;
+        let mut verdefnum = 0;
 
         // Find all the sections that we're interested in in a single scan of the section table so
         // as to avoid multiple scans.
@@ -92,14 +98,27 @@ impl<'data> File<'data> {
                 sht::GNU_VERDEF => {
                     verdef = section.gnu_verdef(endian, data)?;
                 }
+                sht::DYNAMIC => {
+                    dynamic = section.dynamic(endian, data)?;
+                }
                 _ => {}
             }
         }
+
+        if let Some((dynamic, _)) = dynamic {
+            for dy in dynamic {
+                if dy.d_tag(endian) == u64::from(object::elf::DT_VERDEFNUM) {
+                    verdefnum = dy.d_val(endian);
+                }
+            }
+        }
+
         let relocations = if is_dynamic {
             RelocationSections::default()
         } else {
             sections.relocation_sections(endian, symbols.section())?
         };
+
         let program_headers = get_entries(
             data,
             header.e_phoff(endian) as usize,
@@ -116,6 +135,7 @@ impl<'data> File<'data> {
             program_headers,
             versym,
             verdef,
+            verdefnum,
         })
     }
 
