@@ -453,7 +453,15 @@ fn get_original_referent<'data, R: RType>(
                 let section_data = section.data()?;
                 let string_plus_rest = &section_data[symbol.address() as usize..];
                 if let Some(end_offset) = memchr::memchr(0, string_plus_rest) {
-                    return Ok(Referent::MergeString(&string_plus_rest[..end_offset]));
+                    let addend = symbol
+                        .name_bytes()
+                        .is_ok_and(|name| !name.is_empty())
+                        .then(|| rel.addend());
+
+                    return Ok(Referent::MergedString(MergedStringRef {
+                        data: &string_plus_rest[..end_offset],
+                        addend,
+                    }));
                 }
             }
         }
@@ -914,13 +922,24 @@ enum Referent<'data, R: RType> {
 
     Absolute(u64),
 
-    MergeString(&'data [u8]),
+    MergedString(MergedStringRef<'data>),
 
     /// A reference to an ifunc. TODO: Validate that we're pointing to the correct ifunc.
     IFunc,
     DtpMod,
     UncheckedTlsThing,
     TlsDescCall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MergedStringRef<'data> {
+    data: &'data [u8],
+
+    /// An addend applied to the string after determining which string we're working with. Only
+    /// present when our string reference is via a named symbol. For unnamed symbols (section
+    /// references), the addend is assumed to be applied before determining which string we're
+    /// referencing.
+    addend: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -966,12 +985,8 @@ impl<R: RType> Referent<'_, R> {
             Referent::Absolute(value) => {
                 write!(f, "#0x{value:x}")?;
             }
-            Referent::MergeString(data) => {
-                if let Ok(str) = core::str::from_utf8(data) {
-                    write!(f, "MergedString({str:?})")?;
-                } else {
-                    write!(f, "MergedString(InvalidUtf8({data:?}))")?;
-                }
+            Referent::MergedString(merged) => {
+                merged.write_to(f)?;
             }
             Referent::DynamicRelocation(dynamic_relocation) => dynamic_relocation.write_to(f)?,
             Referent::IFunc => write!(f, "IFunc")?,
@@ -1000,6 +1015,22 @@ impl<R: RType> Referent<'_, R> {
             Self::Named(n, _) => n.bytes == name,
             _ => false,
         }
+    }
+}
+
+impl MergedStringRef<'_> {
+    fn write_to(&self, f: &mut String) -> Result {
+        if let Ok(str) = core::str::from_utf8(self.data) {
+            write!(f, "MergedString({str:?})")?;
+        } else {
+            write!(f, "MergedString(InvalidUtf8({:?}))", self.data)?;
+        }
+
+        if let Some(addend) = self.addend {
+            write!(f, "{addend:+}")?;
+        }
+
+        Ok(())
     }
 }
 
@@ -1340,8 +1371,10 @@ impl<'data> RelaxationTester<'data> {
             value = u64::from(value as u32);
         }
 
-        if matches!(original_referent, Referent::MergeString(_)) {
-            let string_address = if relocation_info.kind == RelocationKind::Relative {
+        if let Referent::MergedString(orig_merged) = original_referent {
+            let string_address = if let Some(addend) = orig_merged.addend {
+                (value as i64 - addend) as u64
+            } else if relocation_info.kind == RelocationKind::Relative {
                 // We'd like to add the offset from the relocation to the next instruction, however
                 // we don't have that information without decoding instructions, so we use the size
                 // of relocation in bytes, since for instructions that load the address of a string,
@@ -1363,7 +1396,11 @@ impl<'data> RelaxationTester<'data> {
                     "Missing null-terminator for merged string starting at 0x{string_address:x}"
                 )
             })?;
-            referent = Some(Referent::MergeString(&bytes[..null_offset]));
+
+            referent = Some(Referent::MergedString(MergedStringRef {
+                data: &bytes[..null_offset],
+                addend: None,
+            }));
         }
 
         value = value.wrapping_sub(addend as u64);
