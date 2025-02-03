@@ -45,17 +45,7 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
                     }
                 }
                 linker_utils::elf::RelocationSize::BitMasking { range, insn } => {
-                    mask.bitmask.resize(4, 0);
-
-                    // To figure out which bits are part of the relocation, we write a value with
-                    // all ones into a buffer that initially contains zeros.
-                    let all_ones = (1 << (range.end - range.start)) - 1;
-                    insn.write_to_value(all_ones, false, &mut mask.bitmask);
-
-                    // Wherever we get a 1 is part of the relocation, so invert all bits.
-                    for b in &mut mask.bitmask {
-                        *b = !*b;
-                    }
+                    mask.bitmask = Vec::from(insn.bit_mask(range));
                 }
             }
         }
