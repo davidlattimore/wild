@@ -892,8 +892,7 @@ enum Referent<'data, R: RType> {
 
     DynamicRelocation(DynamicRelocation<'data, R>),
 
-    /// If we can't get a name for some reason, we fall back to an address.
-    Address(u64),
+    UnmatchedAddress(UnmatchedAddress),
 
     Absolute(u64),
 
@@ -904,6 +903,12 @@ enum Referent<'data, R: RType> {
     DtpMod,
     UncheckedTlsThing,
     TlsDescCall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct UnmatchedAddress {
+    address: u64,
+    reason: Option<&'static str>,
 }
 
 impl<R: RType> Reference<'_, R> {
@@ -937,8 +942,8 @@ impl<R: RType> Referent<'_, R> {
                     write!(f, " {offset:+}")?;
                 }
             }
-            Referent::Address(address) => {
-                write!(f, "0x{address:x}")?;
+            Referent::UnmatchedAddress(unmatched) => {
+                unmatched.write_to(f)?;
             }
             Referent::Absolute(value) => {
                 write!(f, "#0x{value:x}")?;
@@ -962,7 +967,7 @@ impl<R: RType> Referent<'_, R> {
 
     fn matches(self, other: Referent<'_, R>) -> bool {
         match (self, other) {
-            (Referent::Address(_), Referent::Address(_)) => {
+            (Referent::UnmatchedAddress(_), Referent::UnmatchedAddress(_)) => {
                 // We don't yet support matching things that don't have symbol names. So long as
                 // both files don't have a name for something, we accept it.
                 true
@@ -977,6 +982,17 @@ impl<R: RType> Referent<'_, R> {
             Self::Named(n, _) => n.bytes == name,
             _ => false,
         }
+    }
+}
+
+impl UnmatchedAddress {
+    fn write_to(&self, f: &mut String) -> Result {
+        write!(f, "0x{:x}", self.address)?;
+        if let Some(reason) = self.reason {
+            write!(f, " ({reason})")?;
+        }
+
+        Ok(())
     }
 }
 
@@ -1370,7 +1386,7 @@ impl<'data> RelaxationTester<'data> {
                 )?;
 
                 match got_entry {
-                    Referent::Address(address) => value = address,
+                    Referent::UnmatchedAddress(unmatched) => value = unmatched.address,
                     Referent::Absolute(absolute_value)
                         if !self.bin.address_index.is_relocatable =>
                     {
@@ -1385,28 +1401,48 @@ impl<'data> RelaxationTester<'data> {
             }
         }
 
-        if referent.is_none() {
+        let referent = referent.unwrap_or_else(|| {
+            let reason;
+
             if let Referent::Named(original_name, _) = original_referent {
                 match self.bin.symbol_by_name(original_name.bytes) {
                     crate::NameLookupResult::Defined(elf_symbol) => {
                         let offset = value.wrapping_sub(elf_symbol.address()) as i64;
 
-                        let symbol_name = SymbolName {
-                            bytes: elf_symbol.name_bytes()?,
-                            version: None,
-                        };
+                        if let Ok(bytes) = elf_symbol.name_bytes() {
+                            let symbol_name = SymbolName {
+                                bytes,
+                                version: None,
+                            };
 
-                        if offset.abs() <= 8 {
-                            referent = Some(Referent::Named(symbol_name, offset));
+                            if offset.abs() <= 8 {
+                                return Referent::Named(symbol_name, offset);
+                            }
+
+                            reason = Some("symbol is too far away");
+                        } else {
+                            reason = Some("Error reading symbol name");
                         }
                     }
-                    _ => {}
+                    crate::NameLookupResult::Undefined => {
+                        reason = Some("symbol is undefined");
+                    }
+                    crate::NameLookupResult::Duplicate => {
+                        reason = Some("symbol has multiple definitions");
+                    }
                 }
+            } else {
+                reason = Some("original symbol has no name");
             }
-        }
+
+            Referent::UnmatchedAddress(UnmatchedAddress {
+                address: value,
+                reason,
+            })
+        });
 
         Ok(Reference {
-            referent: referent.unwrap_or(Referent::Address(value)),
+            referent,
             props: reference_props,
         })
     }
@@ -2179,7 +2215,12 @@ impl<'data> GotIndex<'data> {
             };
 
             match dynamic_relocation_kind {
-                DynamicRelocationKind::Relative => Ok(Referent::Address(rel.addend() as u64)),
+                DynamicRelocationKind::Relative => {
+                    Ok(Referent::UnmatchedAddress(UnmatchedAddress {
+                        address: rel.addend() as u64,
+                        ..Default::default()
+                    }))
+                }
                 DynamicRelocationKind::Irelative => Ok(Referent::IFunc),
                 DynamicRelocationKind::DtpMod => Ok(Referent::DtpMod),
                 DynamicRelocationKind::TpOff if symbol.is_none() => {
