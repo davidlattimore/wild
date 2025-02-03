@@ -175,18 +175,15 @@ impl RelaxationMask {
 pub(crate) struct Instruction<'data, A: Arch> {
     pub(crate) raw_instruction: A::RawInstruction,
 
-    /// The address of the start of the function that contained this instruction.
-    pub(crate) base_address: u64,
-
-    /// The offset of this instruction within the function.
-    pub(crate) offset: u64,
+    /// The address of the instruction.
+    pub(crate) address: u64,
 
     pub(crate) bytes: &'data [u8],
 }
 
 impl<A: Arch> Instruction<'_, A> {
     pub(crate) fn address(&self) -> u64 {
-        self.base_address + self.offset
+        self.address
     }
 }
 
