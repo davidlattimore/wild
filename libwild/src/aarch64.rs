@@ -1,13 +1,13 @@
 use crate::arch::Arch;
-use crate::elf::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
-use crate::elf::DEFAULT_AARCH64_PAGE_MASK;
-use crate::elf::DEFAULT_AARCH64_PAGE_SIZE;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::resolution::ValueFlags;
 use anyhow::anyhow;
 use anyhow::Result;
 use linker_utils::aarch64::relocation_type_from_raw;
 use linker_utils::aarch64::RelaxationKind;
+use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
+use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_MASK;
+use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_SIZE;
 use linker_utils::elf::aarch64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::elf::DynamicRelocationKind;

@@ -6,7 +6,12 @@ use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
 use crate::relaxation::RelocationModifier;
 
-#[derive(Debug, Clone, Copy)]
+pub const DEFAULT_AARCH64_PAGE_SIZE_BITS: u64 = 12;
+pub const DEFAULT_AARCH64_PAGE_SIZE: u64 = 1 << DEFAULT_AARCH64_PAGE_SIZE_BITS;
+pub const DEFAULT_AARCH64_PAGE_MASK: u64 = DEFAULT_AARCH64_PAGE_SIZE - 1;
+pub const DEFAULT_AARCH64_PAGE_IGNORED_MASK: u64 = !DEFAULT_AARCH64_PAGE_MASK;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelaxationKind {
     /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
     NoOp,
@@ -87,7 +92,7 @@ impl RelaxationKind {
 }
 
 #[must_use]
-pub fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
+pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
     let (kind, size, mask) = match r_type {
         // 5.7.4   Static miscellaneous relocations
         object::elf::R_AARCH64_NONE => (RelocationKind::None, RelocationSize::ByteSize(0), None),
@@ -667,5 +672,79 @@ impl RelocationInstruction {
         for (i, v) in mask_bytes.iter().enumerate() {
             dest[i] |= *v;
         }
+    }
+
+    /// The inverse of `write_to_value`. Returns `(extracted_value, negative)`. Supplied `bytes`
+    /// must be at least 4 bytes, otherwise we panic.
+    #[must_use]
+    pub fn read_value(self, bytes: &[u8]) -> (u64, bool) {
+        let mut negative = false;
+        let value = u32::from_le_bytes(*bytes.first_chunk::<4>().expect("Need at least 4 bytes"));
+        let extracted_value = match self {
+            // C6.2.13
+            RelocationInstruction::Adr => {
+                low_bits(value >> 29, 2) | ((low_bits_signed(value >> 5, 19)) << 2)
+            }
+            // C6.2.252, C6.2.254
+            RelocationInstruction::Movkz => u64::from(value >> 5),
+            // C6.2.253, C6.2.254
+            RelocationInstruction::Movnz => {
+                negative = (value & (1 << 30)) == 0;
+                let v = low_bits(value, 16);
+                if negative {
+                    !v
+                } else {
+                    v
+                }
+            }
+            // C6.2.192
+            RelocationInstruction::Ldr => low_bits_signed(value >> 5, 19),
+            // C6.2.193
+            RelocationInstruction::LdrRegister => low_bits(value >> 10, 12),
+            // C6.2.5
+            RelocationInstruction::Add => low_bits(value >> 10, 12),
+            // C7.2.208, C6.2.383
+            RelocationInstruction::LdSt => low_bits_signed(value >> 10, 12),
+            // C6.2.438
+            RelocationInstruction::TstBr => low_bits_signed(value >> 5, 14),
+            // C6.2.34
+            RelocationInstruction::Bcond => low_bits_signed(value >> 5, 19),
+            // C6.2.33
+            RelocationInstruction::JumpCall => low_bits_signed(value, 26),
+        };
+
+        (extracted_value, negative)
+    }
+}
+
+// Extract the low `num_bits` bits from `value`.
+fn low_bits(value: u32, num_bits: u32) -> u64 {
+    u64::from(value & ((1 << num_bits) - 1))
+}
+
+// Extract the low `num_bits` bits from `value`, sign extending from the most significant bit.
+fn low_bits_signed(value: u32, num_bits: u32) -> u64 {
+    sign_extend(num_bits - 1, low_bits(value, num_bits))
+}
+
+fn sign_extend(sign_bit: u32, value: u64) -> u64 {
+    if value & (1 << sign_bit) != 0 {
+        value | !((2 << sign_bit) - 1)
+    } else {
+        value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sign_extend() {
+        assert_eq!(sign_extend(5, 0), 0);
+        assert_eq!(sign_extend(5, 31), 31);
+        assert_eq!(sign_extend(5, 32) as i64, -32);
+        assert_eq!(sign_extend(5, 33) as i64, -31);
+        assert_eq!(sign_extend(5, 63) as i64, -1);
     }
 }

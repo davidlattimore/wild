@@ -65,12 +65,32 @@ impl Arch for X86_64 {
         section_kind: SectionKind,
         mut cb: impl FnMut(Relaxation<Self>),
     ) {
-        let mut relax = |relaxation_kind, new_r_type| {
-            cb(Relaxation {
-                relaxation_kind,
-                new_r_type: RType::from_raw(new_r_type),
-            });
+        let mut no_op_relaxation = Relaxation {
+            relaxation_kind: Self::RelaxationKind::NoOp,
+            new_r_type: r_type,
+            alt_r_type: None,
         };
+
+        let mut relax = |relaxation_kind, new_r_type| {
+            let new_r_type = RType::from_raw(new_r_type);
+            // We support up to one no-op relaxation with a different relocation kind being grouped
+            // with our main no-op relaxation.
+            if relaxation_kind == Self::RelaxationKind::NoOp {
+                assert!(
+                    no_op_relaxation.alt_r_type.is_none(),
+                    "Only one secondary r_type is currently supported"
+                );
+
+                no_op_relaxation.alt_r_type = Some(new_r_type);
+            } else {
+                cb(Relaxation {
+                    relaxation_kind,
+                    new_r_type,
+                    alt_r_type: None,
+                });
+            }
+        };
+
         match (section_kind, r_type.0) {
             (SectionKind::Text, object::elf::R_X86_64_REX_GOTPCRELX) => {
                 relax(
@@ -155,8 +175,7 @@ impl Arch for X86_64 {
             _ => {}
         };
 
-        // We always support just keeping the relocation as-is.
-        relax(Self::RelaxationKind::NoOp, r_type.0);
+        cb(no_op_relaxation);
     }
 
     fn apply_relaxation(
@@ -317,6 +336,32 @@ impl Arch for X86_64 {
             None
         }
     }
+
+    fn should_chain_relocations(_chain_prefix: &[Self::RType]) -> bool {
+        // X86_64 is CISC, so can fit everything into one instruction, so doesn't need to split
+        // values between multiple relocations.
+        false
+    }
+
+    fn get_relocation_base_mask(_relocation_info: &RelocationKindInfo) -> u64 {
+        u64::MAX
+    }
+
+    fn relocation_to_pc_offset(relocation_info: &RelocationKindInfo) -> u64 {
+        // We make somewhat of an assumption here that there are no instruction bytes between our
+        // relocation and the next instruction. This isn't necessarily true, but is for the cases
+        // where we need to compute this value.
+        if let linker_utils::elf::RelocationSize::ByteSize(b) = relocation_info.size {
+            b as u64
+        } else {
+            0
+        }
+    }
+
+    fn is_complete_chain(_chain: impl Iterator<Item = Self::RType>) -> bool {
+        // We don't use relocation chains on x86, so all chains are "complete".
+        true
+    }
 }
 
 struct AsmDecoder<'data> {
@@ -371,7 +416,7 @@ impl crate::arch::RType for RType {
         Self::from_raw(kind.x86_64_r_type())
     }
 
-    fn relocation_info(self) -> Option<RelocationKindInfo> {
+    fn opt_relocation_info(self) -> Option<RelocationKindInfo> {
         linker_utils::x86_64::relocation_kind_and_size(self.0).map(|(kind, size_in_bytes)| {
             RelocationKindInfo {
                 kind,

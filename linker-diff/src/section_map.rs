@@ -234,7 +234,7 @@ impl<'data> IndexedLayout<'data> {
             .section_by_index(section_id.section_index)?)
     }
 
-    pub(crate) fn input_file_for_section(&self, section_id: InputSectionId) -> &InputFile {
+    pub(crate) fn input_file_for_section(&self, section_id: InputSectionId) -> &InputFile<'data> {
         &self.files[section_id.file_index]
     }
 

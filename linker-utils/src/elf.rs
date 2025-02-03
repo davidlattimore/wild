@@ -616,6 +616,24 @@ impl DynamicRelocationKind {
     }
 
     #[must_use]
+    pub fn from_aarch64_r_type(r_type: u32) -> Option<Self> {
+        let kind = match r_type {
+            object::elf::R_AARCH64_COPY => DynamicRelocationKind::Copy,
+            object::elf::R_AARCH64_IRELATIVE => DynamicRelocationKind::Irelative,
+            object::elf::R_AARCH64_TLS_DTPMOD => DynamicRelocationKind::DtpMod,
+            object::elf::R_AARCH64_TLS_DTPREL => DynamicRelocationKind::DtpOff,
+            object::elf::R_AARCH64_TLS_TPREL => DynamicRelocationKind::TpOff,
+            object::elf::R_AARCH64_RELATIVE => DynamicRelocationKind::Relative,
+            object::elf::R_AARCH64_GLOB_DAT => DynamicRelocationKind::DynamicSymbol,
+            object::elf::R_AARCH64_TLSDESC => DynamicRelocationKind::TlsDesc,
+            object::elf::R_AARCH64_JUMP_SLOT => DynamicRelocationKind::JumpSlot,
+            _ => return None,
+        };
+
+        Some(kind)
+    }
+
+    #[must_use]
     pub fn aarch64_r_type(&self) -> u32 {
         match self {
             DynamicRelocationKind::Copy => object::elf::R_AARCH64_COPY,
@@ -632,13 +650,13 @@ impl DynamicRelocationKind {
 }
 
 // Half-opened range bounded inclusively below and exclusively above: [`start``, `end`)
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub struct BitRange {
     pub start: u32,
     pub end: u32,
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum RelocationInstruction {
     Adr,
     Movkz,
@@ -671,7 +689,7 @@ impl RelocationInstruction {
     }
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum RelocationSize {
     ByteSize(usize),
     BitMasking(BitMask),
@@ -687,7 +705,7 @@ impl RelocationSize {
     }
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub struct BitMask {
     pub instruction: RelocationInstruction,
     pub range: BitRange,

@@ -6,6 +6,7 @@ use anyhow::ensure;
 use anyhow::Context;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
+use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
 use linker_utils::elf::extract_bits;
 use linker_utils::elf::sht;
 use linker_utils::elf::BitMask;
@@ -417,10 +418,6 @@ impl Default for PageMaskValue {
         }
     }
 }
-
-pub(crate) const DEFAULT_AARCH64_PAGE_SIZE: u64 = 0x1000; // 4096
-pub(crate) const DEFAULT_AARCH64_PAGE_MASK: u64 = DEFAULT_AARCH64_PAGE_SIZE - 1;
-pub(crate) const DEFAULT_AARCH64_PAGE_IGNORED_MASK: u64 = !DEFAULT_AARCH64_PAGE_MASK;
 
 pub(crate) fn get_page_mask(mask: Option<PageMask>) -> PageMaskValue {
     let Some(mask) = mask else {
