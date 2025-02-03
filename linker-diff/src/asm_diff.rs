@@ -1405,7 +1405,7 @@ impl<'data> RelaxationTester<'data> {
             let reason;
 
             if let Referent::Named(original_name, _) = original_referent {
-                match self.bin.symbol_by_name(original_name.bytes) {
+                match self.bin.symbol_by_name(original_name.bytes, value) {
                     crate::NameLookupResult::Defined(elf_symbol) => {
                         let offset = value.wrapping_sub(elf_symbol.address()) as i64;
 

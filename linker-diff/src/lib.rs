@@ -290,31 +290,38 @@ impl<'data> Binary<'data> {
         })
     }
 
-    /// Looks up a symbol, first trying to get a global, or failing that a local.
-    pub(crate) fn symbol_by_name(&self, name: &[u8]) -> NameLookupResult {
-        match self.global_by_name(name) {
-            NameLookupResult::Undefined => self.local_by_name(name),
+    /// Looks up a symbol, first trying to get a global, or failing that a local. If multiple
+    /// symbols have the same name, then `hint_address` is used to select which one to return.
+    pub(crate) fn symbol_by_name(&self, name: &[u8], hint_address: u64) -> NameLookupResult {
+        match self.lookup_symbol(&self.name_index.globals_by_name, name, hint_address) {
+            NameLookupResult::Undefined => {
+                self.lookup_symbol(&self.name_index.locals_by_name, name, hint_address)
+            }
             other => other,
         }
-    }
-
-    fn global_by_name(&self, name: &[u8]) -> NameLookupResult {
-        self.lookup_symbol(&self.name_index.globals_by_name, name)
-    }
-
-    fn local_by_name(&self, name: &[u8]) -> NameLookupResult {
-        self.lookup_symbol(&self.name_index.locals_by_name, name)
     }
 
     fn lookup_symbol(
         &self,
         symbol_map: &HashMap<&[u8], Vec<object::SymbolIndex>>,
         name: &[u8],
+        hint_address: u64,
     ) -> NameLookupResult {
         let indexes = symbol_map.get(name).map(Vec::as_slice).unwrap_or_default();
+
         if indexes.len() >= 2 {
+            for sym_index in indexes {
+                if let Ok(sym) = self.elf_file.symbol_by_index(*sym_index) {
+                    if sym.address() == hint_address {
+                        return NameLookupResult::Defined(sym);
+                    }
+                }
+            }
+
+            // We didn't find a symbol with exactly the address hinted at.
             return NameLookupResult::Duplicate;
         }
+
         if let Some(sym) = indexes
             .first()
             .and_then(|index| self.elf_file.symbol_by_index(*index).ok())
