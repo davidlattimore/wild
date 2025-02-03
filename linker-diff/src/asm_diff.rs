@@ -175,18 +175,25 @@ fn compare_sections<A: Arch>(
             offset.saturating_sub(MAX_RELAX_MODIFY_BEFORE),
         )?;
 
-        let original_referent = get_original_referent(
-            &rel,
-            layout.input_file_for_section(section_versions.input_section_id),
-        )?;
+        let mut orig_trace = TraceOutput::default();
 
-        let original_annotation = SuccessAnnotation::<A> {
-            r_type: get_r_type(&rel),
-            relaxation_kind: None,
-            reference: Reference {
-                referent: original_referent,
-                props: ReferenceProperties::default(),
+        let original_referent = crate::diagnostics::trace_scope(&mut orig_trace, || {
+            get_original_referent(
+                &rel,
+                layout.input_file_for_section(section_versions.input_section_id),
+            )
+        })?;
+
+        let original_annotation = OriginalAnnotation {
+            success: SuccessAnnotation::<A> {
+                r_type: get_r_type(&rel),
+                relaxation_kind: None,
+                reference: Reference {
+                    referent: original_referent,
+                    props: ReferenceProperties::default(),
+                },
             },
+            trace: orig_trace,
         };
 
         for tester in &mut testers {
@@ -310,7 +317,7 @@ fn get_r_type<R: RType>(rel: &object::Relocation) -> R {
 /// Represents a diff found in executable code.
 struct ExecDiff<'data, A: Arch> {
     offset: u64,
-    original_annotation: Option<SuccessAnnotation<'data, A>>,
+    original_annotation: Option<OriginalAnnotation<'data, A>>,
     resolutions: &'data [Resolution<'data, A>],
     testers: &'data [RelaxationTester<'data>],
     section_id: InputSectionId,
@@ -338,20 +345,25 @@ impl<A: Arch> ExecDiff<'_, A> {
             function_name = String::from_utf8_lossy(function_info.name).cyan()
         )?;
 
+        let mut annotation = None;
+        let mut trace = TraceOutput::default();
+
+        if let Some(orig) = self.original_annotation.as_ref() {
+            annotation = Some(Annotation::Success(orig.success.clone()));
+            trace = orig.trace.clone();
+        }
+
         let mut blocks = vec![RelocationInstructionBlock {
             name: ORIG,
             relocation_offset: self.offset,
-            annotation: self
-                .original_annotation
-                .as_ref()
-                .map(|a| Annotation::Success(a.clone())),
+            annotation,
             trace_messages: Vec::new(),
             section_bytes: original_section.data()?,
             section_address: 0,
             range: range.start..range.end,
             function_info,
             instructions: Default::default(),
-            trace: TraceOutput::default(),
+            trace,
         }];
 
         for (res, tester) in self.resolutions.iter().zip(self.testers) {
@@ -397,7 +409,7 @@ impl<A: Arch> ExecDiff<'_, A> {
 /// code.
 fn resolution_diff_exec<A: Arch>(
     offset: u64,
-    original_annotation: Option<SuccessAnnotation<A>>,
+    original_annotation: Option<OriginalAnnotation<A>>,
     resolutions: &[Resolution<A>],
     testers: &[RelaxationTester<'_>],
     section_id: InputSectionId,
@@ -461,7 +473,7 @@ fn get_original_referent<'data, R: RType>(
 
 fn diff_key_for_res_mismatch<A: Arch>(
     resolutions: &[Resolution<A>],
-    original_annotation: Option<&SuccessAnnotation<A>>,
+    original_annotation: Option<&OriginalAnnotation<A>>,
     bin_attributes: BinAttributes,
 ) -> String {
     if resolutions.len() < 2 {
@@ -482,7 +494,7 @@ fn diff_key_for_res_mismatch<A: Arch>(
                 (Some(orig), true, false) => {
                     format!(
                         "rel.missing-opt.{}.{:?}.{}",
-                        orig.r_type,
+                        orig.success.r_type,
                         r2.relaxation_kind,
                         bin_attributes.type_name()
                     )
@@ -490,7 +502,7 @@ fn diff_key_for_res_mismatch<A: Arch>(
                 (Some(orig), false, true) => {
                     format!(
                         "rel.extra-opt.{}.{:?}.{}",
-                        orig.r_type,
+                        orig.success.r_type,
                         r1.relaxation_kind,
                         bin_attributes.type_name()
                     )
@@ -502,7 +514,7 @@ fn diff_key_for_res_mismatch<A: Arch>(
             let failure_kind = |r: &Resolution<A>| match &r.annotation {
                 Annotation::Ambiguous(_) => Some("rel.multiple_matches".to_owned()),
                 Annotation::MatchFailed(_) => {
-                    original_annotation.map(|a| format!("rel.match_failed.{}", a.r_type))
+                    original_annotation.map(|a| format!("rel.match_failed.{}", a.success.r_type))
                 }
                 Annotation::Success(_) => None,
                 Annotation::LiteralByteMismatch => Some("literal-byte-mismatch".to_owned()),
@@ -542,6 +554,12 @@ struct RelocationInstructionBlock<'data, A: Arch> {
 
     /// The instructions that we're going to display.
     instructions: Vec<Instruction<'data, A>>,
+    trace: TraceOutput,
+}
+
+struct OriginalAnnotation<'data, A: Arch> {
+    success: SuccessAnnotation<'data, A>,
+
     trace: TraceOutput,
 }
 
