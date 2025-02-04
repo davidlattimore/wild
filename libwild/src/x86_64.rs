@@ -5,8 +5,6 @@
 
 use crate::arch::Arch;
 use crate::args::OutputKind;
-use crate::elf::RelocationKindInfo;
-use crate::elf::RelocationSize;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::resolution::ValueFlags;
 use anyhow::anyhow;
@@ -14,6 +12,8 @@ use anyhow::Result;
 use linker_utils::elf::shf;
 use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::RelocationKindInfo;
+use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::x86_64::RelaxationKind;
@@ -301,7 +301,7 @@ impl crate::arch::Relaxation for Relaxation {
         self.kind.apply(section_bytes, offset_in_section, addend);
     }
 
-    fn rel_info(&self) -> crate::elf::RelocationKindInfo {
+    fn rel_info(&self) -> RelocationKindInfo {
         self.rel_info
     }
 
