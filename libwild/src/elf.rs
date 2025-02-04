@@ -6,8 +6,10 @@ use anyhow::ensure;
 use anyhow::Context;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
+use linker_utils::elf::extract_bits;
 use linker_utils::elf::sht;
-use linker_utils::elf::RelocationKind;
+use linker_utils::elf::PageMask;
+use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionType;
 use object::read::elf::CompressionHeader;
 use object::read::elf::FileHeader as _;
@@ -397,13 +399,6 @@ pub(crate) struct NoteProperty {
     pub(crate) pr_padding: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum PageMask {
-    SymbolPlusAddendAndPosition,
-    GotEntryAndPosition,
-    GotBase,
-}
-
 pub(crate) struct PageMaskValue {
     pub(crate) symbol_plus_addend: u64,
     pub(crate) got_entry: u64,
@@ -449,95 +444,28 @@ pub(crate) fn get_page_mask(mask: Option<PageMask>) -> PageMaskValue {
     }
 }
 
-/// Extract range-specified ([`start`..`end`]) bits from the provided `value`.
-pub fn extract_bits(value: u64, start: u32, end: u32) -> u64 {
-    debug_assert!(start < end);
-    (value >> (start)) & ((1 << (end - start)) - 1)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::extract_bits;
-
-    #[test]
-    fn test_bit_operations() {
-        assert_eq!(0b11000, extract_bits(0b1100_0000, 3, 8));
-        assert_eq!(0b1010_1010_0000, extract_bits(0b10101010_00001111, 4, 16));
-        assert_eq!(u32::MAX, extract_bits(u64::MAX, 0, 32) as u32);
-    }
-
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic]
-    fn test_extract_bits_wrong_range() {
-        extract_bits(0, 2, 1);
-    }
-
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic]
-    fn test_extract_bits_too_large() {
-        extract_bits(0, 0, 100);
-    }
-}
-
-// Half-opened range bounded inclusively below and exclusively above: [`start``, `end`)
-#[derive(Clone, Debug, Copy)]
-pub(crate) struct BitRange {
-    pub(crate) start: u32,
-    pub(crate) end: u32,
-}
-
-#[derive(Clone, Debug, Copy)]
-pub(crate) enum RelocationInstruction {
-    Adr,
-    Movkz,
-    Movnz,
-    Ldr,
-    LdrRegister,
-    Add,
-    LdSt,
-    TstBr,
-    Bcond,
-    JumpCall,
-}
-
-#[derive(Clone, Debug, Copy)]
-pub(crate) enum RelocationSize {
-    ByteSize(usize),
-    BitMasking {
-        range: BitRange,
-        insn: RelocationInstruction,
-    },
-}
-
-impl RelocationSize {
-    pub(crate) fn write_to_buffer(self, value: u64, output: &mut [u8]) -> Result<()> {
-        match self {
-            RelocationSize::ByteSize(byte_size) => {
-                ensure!(
-                    byte_size <= output.len(),
-                    "Relocation outside of bounds of section"
-                );
-                let value_bytes = value.to_le_bytes();
-                output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
-            }
-            RelocationSize::BitMasking { range, insn } => {
-                let extracted_value = extract_bits(value, range.start, range.end);
-                let negative = (value as i64) < 0;
-                insn.write_to_value(extracted_value, negative, &mut output[..4]);
-            }
+pub(crate) fn write_relocation_to_buffer(
+    size: RelocationSize,
+    value: u64,
+    output: &mut [u8],
+) -> Result<()> {
+    match size {
+        RelocationSize::ByteSize(byte_size) => {
+            ensure!(
+                byte_size <= output.len(),
+                "Relocation outside of bounds of section"
+            );
+            let value_bytes = value.to_le_bytes();
+            output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
         }
-
-        Ok(())
+        RelocationSize::BitMasking { range, insn } => {
+            let extracted_value = extract_bits(value, range.start, range.end);
+            let negative = (value as i64) < 0;
+            insn.write_to_value(extracted_value, negative, &mut output[..4]);
+        }
     }
-}
 
-#[derive(Clone, Debug, Copy)]
-pub(crate) struct RelocationKindInfo {
-    pub(crate) kind: RelocationKind,
-    pub(crate) size: RelocationSize,
-    pub(crate) mask: Option<PageMask>,
+    Ok(())
 }
 
 pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut [T] {

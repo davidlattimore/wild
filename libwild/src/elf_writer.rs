@@ -14,6 +14,7 @@ use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
 use crate::debug_assert_bail;
 use crate::elf;
 use crate::elf::slice_from_all_bytes_mut;
+use crate::elf::write_relocation_to_buffer;
 use crate::elf::DynamicEntry;
 use crate::elf::EhFrameHdr;
 use crate::elf::EhFrameHdrEntry;
@@ -1989,9 +1990,8 @@ fn apply_relocation<S: StorageModel, A: Arch>(
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::None | RelocationKind::TlsDescCall => 0,
     };
-    rel_info
-        .size
-        .write_to_buffer(value, &mut out[offset_in_section as usize..])?;
+
+    write_relocation_to_buffer(rel_info.size, value, &mut out[offset_in_section as usize..])?;
 
     Ok(next_modifier)
 }
@@ -2057,9 +2057,8 @@ fn apply_debug_relocation<S: StorageModel, A: Arch>(
         bail!("Could not find a relocation resolution for a debug info section");
     };
 
-    rel_info
-        .size
-        .write_to_buffer(value, &mut out[offset_in_section as usize..])?;
+    write_relocation_to_buffer(rel_info.size, value, &mut out[offset_in_section as usize..])?;
+
     Ok(())
 }
 
