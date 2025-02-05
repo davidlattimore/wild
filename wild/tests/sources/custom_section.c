@@ -30,6 +30,9 @@ extern int __stop_w2[] __attribute__ ((weak));
 static int dot1 __attribute__ ((used, retain, section (".dot"))) = 7;
 static int dot2 __attribute__ ((used, retain, section (".dot.2"))) = 8;
 
+// Make sure we don't discard this custom, alloc section just because of its name.
+static int debug_script __attribute__ ((section (".debug_script"))) = 15;
+
 // Override a symbol that would normally be created by the custom section.
 int __stop_w3 = 88;
 
@@ -82,6 +85,10 @@ void _start(void) {
     set_foo1(10);
     if (get_foo1() != 10) {
         exit_syscall(109);
+    }
+
+    if (debug_script != 15) {
+        exit_syscall(110);
     }
 
     exit_syscall(value);

@@ -45,6 +45,7 @@ use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use itertools::Itertools;
+use linker_utils::elf::shf;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use object::read::elf::Sym as _;
@@ -771,7 +772,9 @@ fn resolve_sections_for_object<'data>(
                         }
                         TemporaryPartId::Custom(custom_section_id, _alignment) => {
                             let section_name = custom_section_id.name.bytes();
-                            if section_name.starts_with(b".debug_") {
+                            if section_name.starts_with(b".debug_")
+                                && !section_flags.contains(shf::ALLOC)
+                            {
                                 if args.strip_debug {
                                     custom_section = None;
                                     SectionSlot::Discard
