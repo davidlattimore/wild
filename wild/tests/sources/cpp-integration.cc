@@ -20,6 +20,7 @@
 //#CompArgs:-mcmodel=large
 //#LinkArgs:--cc=g++ -Wl,-z,now
 //#EnableLinker:lld
+//#Cross:false
 
 #include <iostream>
 #include <string>

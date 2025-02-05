@@ -69,34 +69,49 @@ struct ThirdPartyLinker {
     name: &'static str,
     gcc_name: &'static str,
     path: PathBuf,
+    cross_paths: HashMap<Architecture, PathBuf>,
     enabled_by_default: bool,
 }
 
 impl Linker {
-    fn path(&self) -> &Path {
+    fn path(&self, cross_arch: Option<Architecture>) -> &Path {
         match self {
             Linker::Wild => wild_path(),
-            Linker::ThirdParty(info) => &info.path,
+            Linker::ThirdParty(info) => cross_arch
+                .and_then(|arch| info.cross_paths.get(&arch))
+                .unwrap_or(&info.path),
         }
     }
 
-    fn link_shared(&self, obj_path: &Path, so_path: &Path, config: &Config) -> Result<LinkerInput> {
+    fn link_shared(
+        &self,
+        obj_path: &Path,
+        so_path: &Path,
+        config: &Config,
+        cross_arch: Option<Architecture>,
+    ) -> Result<LinkerInput> {
         let mut linker_args = config.linker_args.clone();
+
         linker_args
             .args
             .extend(config.linker_so_args.args.iter().cloned());
+
         linker_args.args.push("-shared".to_owned());
+
         let mut command = LinkCommand::new(
             self,
             &[LinkerInput::new(obj_path.to_owned())],
             so_path,
             &linker_args,
             config,
-        );
+            cross_arch,
+        )?;
+
         if self.is_wild() || !is_newer(so_path, obj_path) || !command.can_skip {
             command.run(config)?;
             write_cmd_file(so_path, &command.to_string())?;
         }
+
         Ok(LinkerInput::with_command(so_path.to_owned(), command))
     }
 
@@ -153,21 +168,50 @@ enum LinkerInvocationMode {
     Script,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HostArchitecture {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Architecture {
     X86_64,
     AArch64,
 }
 
+impl Architecture {
+    fn name(&self) -> &'static str {
+        match self {
+            Architecture::X86_64 => "x86_64",
+            Architecture::AArch64 => "aarch64",
+        }
+    }
+
+    fn emulation_name(&self) -> &'static str {
+        match self {
+            Architecture::X86_64 => "x86_64",
+            Architecture::AArch64 => "aarch64elf",
+        }
+    }
+
+    fn default_target_triple(&self) -> &'static str {
+        match self {
+            Architecture::X86_64 => "x86_64-unknown-linux-gnu",
+            Architecture::AArch64 => "aarch64-unknown-linux-gnu",
+        }
+    }
+}
+
+impl Display for Architecture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self.name(), f)
+    }
+}
+
 #[allow(unreachable_code)]
-fn get_host_architecture() -> HostArchitecture {
+fn get_host_architecture() -> Architecture {
     #[cfg(target_arch = "x86_64")]
     {
-        return HostArchitecture::X86_64;
+        return Architecture::X86_64;
     }
     #[cfg(target_arch = "aarch64")]
     {
-        return HostArchitecture::AArch64;
+        return Architecture::AArch64;
     }
     todo!("Unsupported architecture")
 }
@@ -207,6 +251,7 @@ struct Config {
     diff_ignore: Vec<String>,
     skip_linkers: HashSet<String>,
     enabled_linkers: HashSet<String>,
+    cross_enabled: bool,
     section_equiv: Vec<(String, String)>,
     is_abstract: bool,
     deps: Vec<Dep>,
@@ -214,7 +259,7 @@ struct Config {
     should_diff: bool,
     should_run: bool,
     expect_error: Option<String>,
-    support_architectures: Vec<HostArchitecture>,
+    support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_clang_with_tlsdesc: bool,
 }
@@ -323,7 +368,8 @@ impl Default for Config {
             should_diff: true,
             should_run: true,
             expect_error: None,
-            support_architectures: vec![HostArchitecture::X86_64, HostArchitecture::AArch64],
+            cross_enabled: true,
+            support_architectures: vec![Architecture::X86_64, Architecture::AArch64],
             requires_glibc: false,
             requires_clang_with_tlsdesc: false,
         }
@@ -424,6 +470,13 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                 "EnableLinker" => {
                     config.enabled_linkers.insert(arg.trim().to_owned());
                 }
+                "Cross" => {
+                    config.cross_enabled = match arg.trim() {
+                        "true" => true,
+                        "false" => false,
+                        other => bail!("Unsupported value for Cross '{other}'"),
+                    }
+                }
                 "ExpectError" => {
                     config.expect_error = Some(arg.trim().to_owned());
                 }
@@ -453,8 +506,8 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                         .map(|arch| {
                             let arch = arch.trim().to_lowercase();
                             match arch.as_str() {
-                                "x86_64" => Ok(HostArchitecture::X86_64),
-                                "aarch64" => Ok(HostArchitecture::AArch64),
+                                "x86_64" => Ok(Architecture::X86_64),
+                                "aarch64" => Ok(Architecture::AArch64),
                                 _ => Err(anyhow!(format!("Unsupported architecture: `{}`", arch))),
                             }
                         })
@@ -487,7 +540,12 @@ impl ProgramInputs {
         Ok(Self { source_file })
     }
 
-    fn build<'a>(&self, linker: &Linker, config: &'a Config) -> Result<Program<'a>> {
+    fn build<'a>(
+        &self,
+        linker: &Linker,
+        config: &'a Config,
+        cross_arch: Option<Architecture>,
+    ) -> Result<Program<'a>> {
         let primary = build_linker_input(
             &Dep {
                 filename: self.source_file.to_owned(),
@@ -495,17 +553,18 @@ impl ProgramInputs {
             },
             config,
             linker,
+            cross_arch,
         );
         let inputs = std::iter::once(primary)
             .chain(
                 config
                     .deps
                     .iter()
-                    .map(|dep| build_linker_input(dep, config, linker)),
+                    .map(|dep| build_linker_input(dep, config, linker, cross_arch)),
             )
             .collect::<Result<Vec<_>>>()?;
 
-        let link_output = linker.link(self.name(), &inputs, config)?;
+        let link_output = linker.link(self.name(), &inputs, config, cross_arch)?;
         let shared_objects = inputs
             .into_iter()
             .filter(|input| input.path.extension().is_some_and(|ext| ext == "so"))
@@ -523,11 +582,28 @@ impl ProgramInputs {
 }
 
 impl Program<'_> {
-    fn run(&self) -> Result {
+    fn run(&self, cross_arch: Option<Architecture>) -> Result {
         self.assertions
             .check(&self.link_output)
             .context("Output binary assertions failed")?;
-        let mut child = Command::new(&self.link_output.binary).spawn()?;
+
+        let mut command = if let Some(arch) = cross_arch {
+            let mut c = Command::new(format!("qemu-{arch}"));
+            c.arg("-L");
+            c.arg("/usr/aarch64-linux-gnu");
+            c.arg(&self.link_output.binary);
+            c
+        } else {
+            Command::new(&self.link_output.binary)
+        };
+
+        let mut child = command.spawn().with_context(|| {
+            format!(
+                "Command `{}` failed",
+                command.get_program().to_string_lossy()
+            )
+        })?;
+
         let status = match child.wait_timeout(std::time::Duration::from_millis(500))? {
             Some(s) => s,
             None => {
@@ -535,9 +611,11 @@ impl Program<'_> {
                 bail!("Binary ran for too long");
             }
         };
+
         let exit_code = status
             .code()
             .ok_or_else(|| anyhow!("Binary exited with signal"))?;
+
         if exit_code != 42 {
             bail!("Binary exited with unexpected exit code {exit_code}");
         }
@@ -585,12 +663,17 @@ impl LinkerInput {
 }
 
 /// Creates a linker input from a source file. This will be either an object file or an archive.
-fn build_linker_input(dep: &Dep, config: &Config, linker: &Linker) -> Result<LinkerInput> {
+fn build_linker_input(
+    dep: &Dep,
+    config: &Config,
+    linker: &Linker,
+    cross_arch: Option<Architecture>,
+) -> Result<LinkerInput> {
     let src_path = src_path(&dep.filename);
     if dep.filename.ends_with(".a") {
         return Ok(LinkerInput::new(src_path));
     }
-    let obj_path = build_obj(dep, config, dep.input_type)?;
+    let obj_path = build_obj(dep, config, dep.input_type, cross_arch)?;
 
     match dep.input_type {
         InputType::Archive => {
@@ -603,7 +686,7 @@ fn build_linker_input(dep: &Dep, config: &Config, linker: &Linker) -> Result<Lin
         InputType::Object => Ok(LinkerInput::new(obj_path)),
         InputType::SharedObject => {
             let so_path = obj_path.with_extension(format!("{linker}.so"));
-            let out = linker.link_shared(&obj_path, &so_path, config)?;
+            let out = linker.link_shared(&obj_path, &so_path, config, cross_arch)?;
             let assertions = Assertions::default();
             assertions
                 .check_path(&out.path, linker)
@@ -619,32 +702,45 @@ enum CompilerKind {
     Rust,
 }
 
-struct ToolPaths {
-    cc: &'static str,
-    cpp: &'static str,
+#[derive(Clone, Copy, Debug)]
+enum CLanguage {
+    C,
+    Cpp,
 }
 
-impl ToolPaths {
-    fn get(compiler: &str) -> Option<&'static ToolPaths> {
-        static CLANG_INSTANCE: OnceLock<ToolPaths> = OnceLock::new();
-        static GCC_INSTANCE: OnceLock<ToolPaths> = OnceLock::new();
-
-        match compiler {
-            "gcc" => Some(GCC_INSTANCE.get_or_init(|| ToolPaths {
-                cc: select_bin(&["gcc"]),
-                cpp: select_bin(&["g++"]),
-            })),
-            "clang" => Some(CLANG_INSTANCE.get_or_init(|| ToolPaths {
-                cc: select_bin(&["clang"]),
-                cpp: select_bin(&["clang++"]),
-            })),
-            _ => None,
+impl CLanguage {
+    fn from_gcc_name(cc: &str) -> Result<CLanguage> {
+        match cc {
+            "gcc" => Ok(CLanguage::C),
+            "g++" => Ok(CLanguage::Cpp),
+            other => bail!("Unsupported C compiler {other}"),
         }
     }
 }
 
+fn get_c_compiler(
+    compiler: &str,
+    c_language: CLanguage,
+    cross_arch: Option<Architecture>,
+) -> Result<&'static str> {
+    match (cross_arch, compiler, c_language) {
+        (None, "gcc", CLanguage::C) => Ok("gcc"),
+        (None, "gcc", CLanguage::Cpp) => Ok("g++"),
+        (None, "clang", CLanguage::C) => Ok("clang"),
+        (None, "clang", CLanguage::Cpp) => Ok("clang++"),
+        (Some(Architecture::AArch64), "gcc" | "g++", CLanguage::C) => Ok("aarch64-linux-gnu-gcc"),
+        (Some(Architecture::AArch64), "gcc" | "g++", CLanguage::Cpp) => Ok("aarch64-linux-gnu-g++"),
+        _ => bail!("Unsupported compiler and or architecture `{compiler}` / {cross_arch:?}"),
+    }
+}
+
 /// Builds some C source and returns the path to the object file.
-fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBuf> {
+fn build_obj(
+    dep: &Dep,
+    config: &Config,
+    input_type: InputType,
+    cross_arch: Option<Architecture>,
+) -> Result<PathBuf> {
     let src_path = src_path(&dep.filename);
     let extension = src_path
         .extension()
@@ -652,12 +748,19 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
         .to_str()
         .context("Extension isn't valid UTF-8")?;
 
-    let tool_paths = ToolPaths::get(&config.compiler)
-        .ok_or(anyhow!("Unknown compiler `{}`", config.compiler))?;
     let (compiler, compiler_kind) = match extension {
-        "cc" => (tool_paths.cpp, CompilerKind::C),
-        "c" => (tool_paths.cc, CompilerKind::C),
-        "s" => (tool_paths.cc, CompilerKind::C),
+        "cc" => (
+            get_c_compiler(&config.compiler, CLanguage::Cpp, cross_arch)?,
+            CompilerKind::C,
+        ),
+        "c" => (
+            get_c_compiler(&config.compiler, CLanguage::C, cross_arch)?,
+            CompilerKind::C,
+        ),
+        "s" => (
+            get_c_compiler(&config.compiler, CLanguage::C, cross_arch)?,
+            CompilerKind::C,
+        ),
         "rs" => ("rustc", CompilerKind::Rust),
         "o" => return Ok(src_path),
         _ => bail!("Don't know how to compile {extension} files"),
@@ -669,7 +772,16 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
         CompilerKind::C => ".o",
         CompilerKind::Rust => "",
     };
+
     let mut command = Command::new(compiler);
+
+    let compiler_args =
+        if input_type == InputType::SharedObject && !config.compiler_so_args.args.is_empty() {
+            &config.compiler_so_args.args
+        } else {
+            &config.compiler_args.args
+        };
+
     match compiler_kind {
         CompilerKind::C => {
             if let Some(v) = config.variant_num {
@@ -683,22 +795,43 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
         }
         CompilerKind::Rust => {
             let wild = wild_path().to_str().context("Need UTF-8 path")?.to_owned();
+
             command
                 .env("WILD_SAVE_SKIP_LINKING", "1")
                 .arg("+nightly")
                 .args(["-C", "linker=clang"])
                 .args(["-C", &format!("link-arg=--ld-path={wild}")]);
+
+            if let Some(arch) = cross_arch {
+                let target = get_target(compiler_args).cloned().unwrap_or_else(|_| {
+                    command.arg(format!("--target={}", arch.default_target_triple()));
+                    arch.default_target_triple().to_owned()
+                });
+                let target_underscore = target.replace('-', "_");
+                let target_triple = target.replace("-unknown", "");
+
+                command.env(
+                    format!("CC_{target_underscore}"),
+                    format!("{target_triple}-gcc"),
+                );
+
+                command.env(
+                    format!("AR_{target_underscore}"),
+                    format!("{target_triple}-ar"),
+                );
+
+                command.arg(format!("-Clink-arg=--target={target}"));
+            }
+
             if input_type == InputType::SharedObject {
                 command.arg("--crate-type").arg("cdylib");
             }
         }
     }
+
     command.arg(&src_path);
-    if input_type == InputType::SharedObject && !config.compiler_so_args.args.is_empty() {
-        command.args(&config.compiler_so_args.args);
-    } else {
-        command.args(&config.compiler_args.args);
-    }
+
+    command.args(compiler_args);
 
     // Files that are shared between several tests end up being compiled with various different
     // flags and the config name isn't sufficient to disambiguate them. So we hash the command then
@@ -707,10 +840,13 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
     command_as_str(&command).hash(&mut hasher);
     let command_hash = hasher.finish();
 
-    let output_path = build_dir().join(
-        Path::new(&dep.filename)
-            .with_extension(format!("{}-{command_hash:x}{suffix}", config.name)),
-    );
+    let arch_str = cross_name(cross_arch);
+
+    let output_path = build_dir().join(Path::new(&dep.filename).with_extension(format!(
+        "{}-{arch_str}-{command_hash:x}{suffix}",
+        config.name
+    )));
+
     match compiler_kind {
         CompilerKind::C => {
             command.arg("-o").arg(&output_path);
@@ -728,15 +864,37 @@ fn build_obj(dep: &Dep, config: &Config, input_type: InputType) -> Result<PathBu
     if is_newer(&output_path, &src_path) {
         return Ok(output_path);
     }
+
     let status = command.status()?;
+
     if output_path.is_dir() {
         post_process_run_script(&output_path)?;
     }
+
     if !status.success() {
         bail!("Compilation failed: {}", command_as_str(&command));
     }
 
     Ok(output_path)
+}
+
+/// Returns the value of the --target flag.
+fn get_target(compiler_args: &[String]) -> Result<&String> {
+    let mut is_next = false;
+
+    for arg in compiler_args {
+        if is_next {
+            return Ok(arg);
+        }
+
+        is_next = arg == "--target";
+    }
+
+    bail!("No --target flag found");
+}
+
+fn cross_name(cross_arch: Option<Architecture>) -> &'static str {
+    cross_arch.map(|a| a.name()).unwrap_or("host")
 }
 
 /// Returns a mutex that should be locked while we're writing to `path`.
@@ -829,15 +987,22 @@ fn is_newer(output_path: &Path, src_path: &Path) -> bool {
 impl Linker {
     /// Links the supplied object files with this configuration and returns the path to the
     /// resulting binary.
-    fn link(&self, basename: &str, inputs: &[LinkerInput], config: &Config) -> Result<LinkOutput> {
-        let output_path = self.output_path(basename, config);
+    fn link(
+        &self,
+        basename: &str,
+        inputs: &[LinkerInput],
+        config: &Config,
+        cross_arch: Option<Architecture>,
+    ) -> Result<LinkOutput> {
+        let output_path = self.output_path(basename, config, cross_arch);
         let mut linker_args = config.linker_args.clone();
         if self.is_wild() {
             linker_args
                 .args
                 .extend(config.wild_extra_linker_args.args.iter().cloned());
         }
-        let mut command = LinkCommand::new(self, inputs, &output_path, &linker_args, config);
+        let mut command =
+            LinkCommand::new(self, inputs, &output_path, &linker_args, config, cross_arch)?;
         if !command.can_skip {
             command.run(config)?;
             write_cmd_file(&output_path, &command.to_string())?;
@@ -849,8 +1014,14 @@ impl Linker {
         })
     }
 
-    fn output_path(&self, basename: &str, config: &Config) -> PathBuf {
-        build_dir().join(format!("{basename}-{}.{self}", config.name))
+    fn output_path(
+        &self,
+        basename: &str,
+        config: &Config,
+        cross_arch: Option<Architecture>,
+    ) -> PathBuf {
+        let cross = cross_name(cross_arch);
+        build_dir().join(format!("{basename}-{}-{cross}.{self}", config.name))
     }
 }
 
@@ -872,7 +1043,8 @@ impl LinkCommand {
         output_path: &Path,
         linker_args: &ArgumentSet,
         config: &Config,
-    ) -> LinkCommand {
+        cross_arch: Option<Architecture>,
+    ) -> Result<LinkCommand> {
         let mut command;
         let mut invocation_mode = LinkerInvocationMode::Direct;
         let mut opt_save_dir = None;
@@ -881,18 +1053,25 @@ impl LinkCommand {
             command = Command::new("bash");
             command.env("OUT", output_path);
             command.arg(script);
-            command.arg(linker.path());
+            command.arg(linker.path(cross_arch));
             command.args(extra_inputs.iter().map(|i| &i.path));
             invocation_mode = LinkerInvocationMode::Script;
         } else {
-            let linker_path = linker.path();
+            let linker_path = linker.path(cross_arch);
+
             if let Some(cc) = linker_args
                 .args
                 .first()
                 .and_then(|a| a.strip_prefix("--cc="))
             {
                 invocation_mode = LinkerInvocationMode::Cc;
-                command = Command::new(cc);
+
+                if cross_arch.is_some() {
+                    let c_compiler = get_c_compiler(cc, CLanguage::from_gcc_name(cc)?, cross_arch)?;
+                    command = Command::new(c_compiler);
+                } else {
+                    command = Command::new(cc);
+                }
 
                 // It's convenient when debugging to be able to run the linker via a script rather
                 // than by calling the C compiler, so we get wild to write out a script. In
@@ -933,6 +1112,11 @@ impl LinkCommand {
                 command.args(&linker_args.args[1..]);
             } else {
                 command = Command::new(linker_path);
+
+                if let Some(arch) = cross_arch {
+                    command.arg("-m").arg(arch.emulation_name());
+                }
+
                 command
                     .arg("--gc-sections")
                     .arg("-static")
@@ -974,7 +1158,7 @@ impl LinkCommand {
             && cmd_file_is_current(output_path, &link_command.to_string());
         link_command.can_skip = can_skip;
 
-        link_command
+        Ok(link_command)
     }
 
     fn run(&mut self, config: &Config) -> Result {
@@ -1366,11 +1550,18 @@ fn find_bin(names: &[&str]) -> Result<PathBuf> {
         })
 }
 
-fn select_bin<'a>(names: &[&'a str]) -> &'a str {
-    names
-        .iter()
-        .find(|n| which::which(n).is_ok())
-        .unwrap_or_else(|| names.last().unwrap())
+fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
+    [Architecture::AArch64]
+        .into_iter()
+        .filter_map(|arch| {
+            let path = PathBuf::from(format!("/usr/{arch}-linux-gnu/bin/{name}"));
+            if path.exists() {
+                Some((arch, path))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 static INIT: Once = Once::new();
@@ -1432,12 +1623,14 @@ fn integration_test(
             name: "ld",
             gcc_name: "bfd",
             path: find_bin(&["ld"])?,
+            cross_paths: find_cross_paths("ld"),
             enabled_by_default: true,
         }),
         Linker::ThirdParty(ThirdPartyLinker {
             name: "lld",
             gcc_name: "lld",
             path: find_bin(&["ld.lld"])?,
+            cross_paths: find_cross_paths("ld.lld"),
             enabled_by_default: false,
         }),
     ];
@@ -1449,6 +1642,7 @@ fn integration_test(
             name: "gold",
             gcc_name: "gold",
             path,
+            cross_paths: find_cross_paths("gold"),
             enabled_by_default: false,
         }));
     }
@@ -1457,6 +1651,7 @@ fn integration_test(
             name: "mold",
             gcc_name: "mold",
             path,
+            cross_paths: find_cross_paths("mold"),
             enabled_by_default: false,
         }));
     }
@@ -1468,61 +1663,77 @@ fn integration_test(
     let configs = parse_configs(&src_path(filename))
         .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
 
+    let host_arch = get_host_architecture();
+
+    // We only currently support cross compilation from x86_64 to aarch64, so we don't need to track
+    // which targets are enabled, since there's only one.
+    let cross_enabled = std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v == "aarch64");
+
     for config in configs {
-        if !config
-            .support_architectures
-            .contains(&get_host_architecture())
-            || config.requires_glibc && !cfg!(target_env = "gnu")
-            || (config.requires_clang_with_tlsdesc && !host_supports_clang_with_tls_desc())
-        {
-            eprintln!("Skipping config: {}", config.name);
-            continue;
-        }
-        let programs = linkers
-            .iter()
-            .filter(|linker| config.is_linker_enabled(linker))
-            .map(|linker| {
-                let start = Instant::now();
-                let result = program_inputs.build(linker, &config).with_context(|| {
-                    format!(
-                        "Failed to build program `{program_inputs}` \
+        for &arch in &config.support_architectures {
+            let cross_arch = (arch != host_arch).then_some(arch);
+
+            if config.requires_glibc && !cfg!(target_env = "gnu")
+                || (config.requires_clang_with_tlsdesc && !host_supports_clang_with_tls_desc())
+                || (cross_arch.is_some()
+                    && (config.compiler == "clang" || !config.cross_enabled || !cross_enabled))
+            {
+                eprintln!(
+                    "Skipping config: {} for arch {}",
+                    config.name,
+                    cross_arch.map(|arch| arch.name()).unwrap_or("host")
+                );
+                continue;
+            }
+
+            let programs = linkers
+                .iter()
+                .filter(|linker| config.is_linker_enabled(linker))
+                .map(|linker| {
+                    let start = Instant::now();
+                    let result = program_inputs
+                        .build(linker, &config, cross_arch)
+                        .with_context(|| {
+                            format!(
+                                "Failed to build program `{program_inputs}` \
                                 with linker `{linker}` config `{}`",
-                        config.name
-                    )
-                });
-                let is_cache_hit = result
-                    .as_ref()
-                    .is_ok_and(|p| p.link_output.command.can_skip);
-                if !is_cache_hit && print_timing {
-                    println!(
-                        "{program_inputs}-{config} with {linker} took {} ms",
-                        start.elapsed().as_millis()
-                    );
+                                config.name
+                            )
+                        });
+                    let is_cache_hit = result
+                        .as_ref()
+                        .is_ok_and(|p| p.link_output.command.can_skip);
+                    if !is_cache_hit && print_timing {
+                        println!(
+                            "{program_inputs}-{config} with {linker} took {} ms",
+                            start.elapsed().as_millis()
+                        );
+                    }
+                    result
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            // If we expected an error, then don't try to diff or run the output.
+            if config.expect_error.is_some() {
+                continue;
+            }
+
+            let start = Instant::now();
+            diff_shared_objects(&config, &programs)?;
+            diff_executables(&config, &programs)?;
+            if print_timing {
+                println!(
+                    "{program_inputs}-{config} diff took {} ms",
+                    start.elapsed().as_millis()
+                );
+            }
+
+            if config.should_run {
+                for program in programs {
+                    program
+                        .run(cross_arch)
+                        .with_context(|| format!("Failed to run program. {program}"))?;
                 }
-                result
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        // If we expected an error, then don't try to diff or run the output.
-        if config.expect_error.is_some() {
-            continue;
-        }
-
-        let start = Instant::now();
-        diff_shared_objects(&config, &programs)?;
-        diff_executables(&config, &programs)?;
-        if print_timing {
-            println!(
-                "{program_inputs}-{config} diff took {} ms",
-                start.elapsed().as_millis()
-            );
-        }
-
-        if config.should_run {
-            for program in programs {
-                program
-                    .run()
-                    .with_context(|| format!("Failed to run program. {program}"))?;
             }
         }
     }

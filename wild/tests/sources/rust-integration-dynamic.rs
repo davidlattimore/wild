@@ -3,6 +3,7 @@
 //#DiffIgnore:section.tdata.alignment
 //#CompArgs:-C debuginfo=2
 //#Shared:rdyn1.rs
+//#Cross: false
 
 extern "C" {
     fn foo() -> i32;

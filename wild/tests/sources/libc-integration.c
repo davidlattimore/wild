@@ -12,6 +12,7 @@
 //#DiffIgnore:section.rela.plt.link
 //#CompArgs:-g -ftls-model=global-dynamic
 //#RequiresGlibc:true
+//#Cross: false
 
 //#Config:clang-static:default
 //#LinkArgs:--cc=clang -static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now

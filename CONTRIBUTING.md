@@ -33,6 +33,31 @@ To run tests (and have them pass) there are a number of pre-requisites to have i
 
 then use `cargo test` as usual.
 
+## Running aarch64 tests on x86_64
+
+Some, but currently not all, of the tests that run on aarch64 can be run on x64_64.
+
+Setup procedure:
+
+* `rustup target add --toolchain nightly aarch64-unknown-linux-gnu aarch64-unknown-linux-musl`
+* For apt-based systems:
+  * `sudo apt install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu build-essential`
+
+Then when running tests:
+
+```sh
+WILD_TEST_CROSS=aarch64 cargo test
+```
+
+This will run both the host-native tests (x86_64) as well as many of the same tests, but on aarch64.
+Qemu is used for running the binaries produced by the linker. All compilation, linking and diffing
+however is done natively on the host system, so should run at full speed.
+
+Cross compilation is currently only done with GCC and rustc, so clang-based tests currently all
+disable cross compilation.
+
+Cross compilation is set up in docker/ubuntu.Dockerfile.
+
 ## Github workflow
 
 TL;DR: We're pretty relaxed. Feel free to force push or not. Squash, rebase, merge, whatever you
