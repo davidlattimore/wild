@@ -64,6 +64,7 @@ use itertools::Itertools as _;
 use linker_utils::elf::secnames::*;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKind;
+use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
 use object::read::elf::ElfSection64;
 use object::read::elf::FileHeader as _;
@@ -795,7 +796,7 @@ fn write_carets_for_r_type<R: RType>(f: &mut String, r_type: R) -> Result {
 }
 
 fn num_carets_for_r_type<R: RType>(r_type: R) -> usize {
-    let relocation_size = r_type.relocation_num_bytes().unwrap_or(1);
+    let relocation_size = r_type.relocation_info().map_or(1, relocation_num_bytes);
     (relocation_size * 3).saturating_sub(1).max(1)
 }
 
@@ -1241,7 +1242,7 @@ impl<'data> RelaxationTester<'data> {
             .relocation_info()
             .context("Unsupported relocation kind")?;
 
-        let end = (offset + relocation_info.size_in_bytes as u64).max(copy_end as u64);
+        let end = (offset + relocation_num_bytes(relocation_info) as u64).max(copy_end as u64);
 
         if rel.kind() == object::RelocationKind::PltRelative {
             // Some relaxations cannot be identified purely by the instruction bytes. For example
@@ -1295,7 +1296,7 @@ impl<'data> RelaxationTester<'data> {
             .get(offset as usize..)
             .context("Invalid relocation offset")?;
 
-        let mut value = match relocation_info.size_in_bytes {
+        let mut value = match relocation_num_bytes(relocation_info) {
             8 => u64::from_le_bytes(
                 *value_bytes
                     .first_chunk::<8>()
@@ -1367,7 +1368,7 @@ impl<'data> RelaxationTester<'data> {
 
         value = value.wrapping_add(relative_to);
 
-        if relocation_info.size_in_bytes == 4 {
+        if relocation_num_bytes(relocation_info) == 4 {
             value = u64::from(value as u32);
         }
 
@@ -1382,7 +1383,7 @@ impl<'data> RelaxationTester<'data> {
                 // sometimes used to select which string in the string merge section we're pointing
                 // at. If we subtracted the addend, then instead of pointing at the correct string,
                 // we'd end up pointing to the start of the string-merge section.
-                value + relocation_info.size_in_bytes as u64
+                value + relocation_num_bytes(relocation_info) as u64
             } else {
                 value
             };
@@ -1405,7 +1406,7 @@ impl<'data> RelaxationTester<'data> {
 
         value = value.wrapping_sub(addend as u64);
 
-        if relocation_info.size_in_bytes == 4 {
+        if relocation_num_bytes(relocation_info) == 4 {
             value = u64::from(value as u32);
         }
 
@@ -1598,7 +1599,9 @@ impl<'data> RelaxationTester<'data> {
         original_r_type: A::RType,
         failed_matches: Vec<FailedMatch<A>>,
     ) -> Resolution<'data, A> {
-        let relocation_size = original_r_type.relocation_num_bytes().unwrap_or(1);
+        let relocation_size = original_r_type
+            .relocation_info()
+            .map_or(1, relocation_num_bytes);
 
         Resolution {
             relaxation: None,
@@ -2580,6 +2583,15 @@ impl BinAttributes {
                 "shared-object"
             }
             (OutputKind::SharedObject, _, _) => "invalid-shared-object",
+        }
+    }
+}
+
+fn relocation_num_bytes(info: RelocationKindInfo) -> usize {
+    match info.size {
+        linker_utils::elf::RelocationSize::ByteSize(b) => b,
+        linker_utils::elf::RelocationSize::BitMasking { range, .. } => {
+            (range.end.div_ceil(8) - range.start / 8) as usize
         }
     }
 }
