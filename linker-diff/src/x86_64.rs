@@ -3,10 +3,10 @@ use crate::arch::Instruction;
 use crate::arch::RType as _;
 use crate::arch::Relaxation;
 use crate::arch::RelaxationMask;
-use crate::arch::RelocationTypeInfo;
 use iced_x86::Formatter as _;
 use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::RelocationKindInfo;
 use linker_utils::x86_64::RelaxationKind;
 use object::SectionKind;
 use std::fmt::Display;
@@ -262,11 +262,12 @@ impl crate::arch::RType for RType {
         Self::from_raw(kind.x86_64_r_type())
     }
 
-    fn relocation_info(self) -> Option<RelocationTypeInfo> {
+    fn relocation_info(self) -> Option<RelocationKindInfo> {
         linker_utils::x86_64::relocation_kind_and_size(self.0).map(|(kind, size_in_bytes)| {
-            RelocationTypeInfo {
+            RelocationKindInfo {
                 kind,
-                size_in_bytes,
+                size: linker_utils::elf::RelocationSize::ByteSize(size_in_bytes),
+                mask: None,
             }
         })
     }

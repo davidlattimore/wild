@@ -1,5 +1,5 @@
 use linker_utils::elf::DynamicRelocationKind;
-use linker_utils::elf::RelocationKind;
+use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -60,11 +60,7 @@ pub(crate) trait RType: Copy + Debug + Display + Eq + PartialEq {
 
     fn from_dynamic_relocation_kind(kind: DynamicRelocationKind) -> Self;
 
-    fn relocation_info(self) -> Option<RelocationTypeInfo>;
-
-    fn relocation_num_bytes(self) -> Option<usize> {
-        self.relocation_info().map(|info| info.size_in_bytes)
-    }
+    fn relocation_info(self) -> Option<RelocationKindInfo>;
 
     fn dynamic_relocation_kind(self) -> Option<DynamicRelocationKind>;
 }
@@ -78,14 +74,6 @@ pub(crate) trait RelaxationKind: Copy + Clone + Debug + Eq + PartialEq {
 pub(crate) struct Relaxation<A: Arch> {
     pub(crate) relaxation_kind: A::RelaxationKind,
     pub(crate) new_r_type: A::RType,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RelocationTypeInfo {
-    pub(crate) kind: RelocationKind,
-
-    /// The number of whole or partial bytes that the relocation spans.
-    pub(crate) size_in_bytes: usize,
 }
 
 /// A bitmask used for comparing the bytes produced by a relaxation with the bytes in the actual
