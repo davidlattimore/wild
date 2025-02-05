@@ -148,7 +148,10 @@ impl<'data> UnresolvedSection<'data> {
             // We don't currently allow references to these sections, discard them so that we avoid
             // allocating output section IDs.
             None
-        } else if args.strip_debug && section_name.starts_with(b".debug_") {
+        } else if args.strip_debug
+            && section_name.starts_with(b".debug_")
+            && !section_flags.contains(shf::ALLOC)
+        {
             // Drop soon string merge debug info section.
             None
         } else if section_name == NOTE_GNU_PROPERTY_SECTION_NAME {
