@@ -5,12 +5,25 @@
 
 FROM rust:1.83 AS chef
 RUN apt-get update && \
-    apt-get install -y clang lld-16 less && \
+    apt-get install -y \
+        clang \
+        lld-16 \
+        less \
+        qemu-user \
+        gcc-aarch64-linux-gnu \
+        g++-aarch64-linux-gnu \
+        binutils-aarch64-linux-gnu \
+        build-essential \
+        && \
     rm -rf /var/lib/apt/lists/*
+RUN ln -s `which ld.lld-16` /usr/local/bin/ld.lld
 RUN cargo install --locked cargo-chef
 RUN rustup toolchain install nightly && \
-    rustup target add x86_64-unknown-linux-musl && \
-    rustup target add x86_64-unknown-linux-musl --toolchain nightly && \
+    rustup target add --toolchain nightly \
+        x86_64-unknown-linux-musl \
+        aarch64-unknown-linux-gnu \
+        aarch64-unknown-linux-musl \
+        && \
     rustup component add rustc-codegen-cranelift-preview --toolchain nightly
 WORKDIR /wild
 

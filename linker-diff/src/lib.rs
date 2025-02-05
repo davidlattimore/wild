@@ -142,8 +142,11 @@ impl Config {
                 // We set this to 8. GNU ld sometimes does too, but sometimes to 0.
                 "section.got.entsize",
                 "section.plt.got.entsize",
+                "section.plt.entsize",
                 // GNU ld sometimes sets this differently that we do.
+                "section.plt",
                 "section.plt.alignment",
+                "section.bss.alignment",
                 "section.gnu.build.attributes",
                 "section.annobin.notes.entsize",
                 // We currently output version info when linking against the interpreter

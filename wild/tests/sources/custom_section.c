@@ -1,5 +1,6 @@
 //#AbstractConfig:default
 //#Object:exit.c
+//#Cross:false
 
 //#Config:archive:default
 //#Archive:custom_section0.c

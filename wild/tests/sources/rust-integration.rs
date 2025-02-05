@@ -2,6 +2,7 @@
 //#DiffIgnore:section.tdata.alignment
 // We include some more archive members than what other linkers do (#162).
 //#DiffIgnore:debug_info.missing_unit
+//#Cross: false
 
 //#Config:llvm-static:default
 //#CompArgs:--target x86_64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2
@@ -25,6 +26,7 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic.DT_PLTGOT
 //#DiffIgnore:.dynamic.DT_PLTREL
+//#Cross: true
 
 fn foo() {
     panic!("Make sure unwinding works");
