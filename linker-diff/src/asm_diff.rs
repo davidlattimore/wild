@@ -391,7 +391,13 @@ impl<A: Arch> ExecDiff<'_, A> {
         }
 
         for block in &mut blocks {
-            block.decode_instructions();
+            let mut trace = TraceOutput::default();
+
+            crate::diagnostics::trace_scope(&mut trace, || {
+                block.decode_instructions();
+            });
+
+            block.trace.append(trace);
         }
 
         let maximum_widths = blocks.iter().fold(ColumnWidths::default(), |widths, b| {
