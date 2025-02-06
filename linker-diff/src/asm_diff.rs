@@ -682,7 +682,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
             writeln!(f, "{:instruction_padding$}] {}", "", out.purple())?;
 
             if self.relocation_offset >= instruction_offset
-                && self.relocation_offset <= instruction_end
+                && self.relocation_offset < instruction_end
             {
                 let num_spaces = name_width
                     + address_width
