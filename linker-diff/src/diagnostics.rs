@@ -23,6 +23,12 @@ pub(crate) struct TraceOutput {
     pub(crate) messages: Vec<String>,
 }
 
+impl TraceOutput {
+    pub(crate) fn append(&mut self, mut other: TraceOutput) {
+        self.messages.append(&mut other.messages);
+    }
+}
+
 thread_local! {
     pub static TRACE_STACK: RefCell<Vec<TraceOutput>> = const { RefCell::new(Vec::new()) };
 }
