@@ -171,7 +171,7 @@ might contribute to this backlog. Whether this happens depends on how much RAM y
 also your kernel settings. For example, if you run `cat /proc/sys/vm/dirty_ratio` that will show the
 percentage of reclaimable memory that is allowed to be dirty (needing writing) before further writes
 will block. If that shows zero, then `cat /proc/sys/vm/dirty_bytes` will show the same, but as an
-absolute number of bytes. On some systems, the the absolute dirty byte limit might be set as low as
+absolute number of bytes. On some systems, the absolute dirty byte limit might be set as low as
 256MiB, meaning that if we're writing a large output file, we can easily hit this limit. You could
 increase this limit, or switch to using `dirty_ratio` of say 20% instead, but it might be better to
 just take the filesystem out of the equation and write the output to a tmpfs instead. See next
