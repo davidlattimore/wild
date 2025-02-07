@@ -1669,7 +1669,7 @@ fn integration_test(
     // which targets are enabled, since there's only one.
     let cross_enabled = std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v == "aarch64");
 
-    for config in configs {
+    for mut config in configs {
         for &arch in &config.support_architectures {
             let cross_arch = (arch != host_arch).then_some(arch);
 
@@ -1684,6 +1684,15 @@ fn integration_test(
                     cross_arch.map(|arch| arch.name()).unwrap_or("host")
                 );
                 continue;
+            }
+
+            // GCC cross compilers, when passed `-fuse-ld=lld` won't look for `ld.lld` on the path.
+            // Instead it'll look for `aarch64-linux-gnu-ld.lld` on the path and look for `ld.lld`
+            // only in the sysroot (e.g. `aarch64-linux-gnu`). We could hack around this by creating
+            // a temporary directory containing a symlink with the appropriate name, but for now, we
+            // just skip running with lld when cross compiling.
+            if cross_arch.is_some() {
+                config.enabled_linkers.remove("lld");
             }
 
             let programs = linkers
