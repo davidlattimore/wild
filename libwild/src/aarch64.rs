@@ -6,8 +6,10 @@ use crate::elf::PLT_ENTRY_SIZE;
 use crate::resolution::ValueFlags;
 use anyhow::anyhow;
 use anyhow::Result;
+use linker_utils::aarch64::relocation_type_from_raw;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::elf::aarch64_rel_type_to_string;
+use linker_utils::elf::shf;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationInstruction;
 use linker_utils::elf::RelocationKind;
@@ -111,11 +113,14 @@ impl crate::arch::Relaxation for Relaxation {
     where
         Self: std::marker::Sized,
     {
+        let rel = AArch64::relocation_from_raw(relocation_kind);
+        let can_bypass_got = value_flags.contains(ValueFlags::CAN_BYPASS_GOT);
+
         // IFuncs cannot be referenced directly, they always need to go via the GOT.
         if value_flags.contains(ValueFlags::IFUNC) {
             return match relocation_kind {
-                rel @ object::elf::R_AARCH64_CALL26 => {
-                    let mut relocation = AArch64::relocation_from_raw(rel).unwrap();
+                object::elf::R_AARCH64_CALL26 => {
+                    let mut relocation = rel.unwrap();
                     relocation.kind = RelocationKind::PltRelative;
                     return Some(Relaxation {
                         kind: RelaxationKind::NoOp,
@@ -124,6 +129,58 @@ impl crate::arch::Relaxation for Relaxation {
                 }
                 _ => None,
             };
+        }
+
+        // All relaxations below only apply to executable code, so we shouldn't attempt them if a
+        // relocation is in a non-executable section.
+        if !section_flags.contains(shf::EXECINSTR) {
+            return None;
+        }
+
+        let offset = offset_in_section as usize;
+        // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
+        // because fetching it contains potential error paths, the optimiser probably can't optimise
+        // away fetching it.
+
+        match relocation_kind {
+            object::elf::R_AARCH64_TLSDESC_ADR_PAGE21
+                if can_bypass_got && output_kind.is_static_executable() =>
+            {
+                // TODO: check we met all consecutive 4 instructions!
+                return Some(Relaxation {
+                    kind: RelaxationKind::ReplaceWithNop,
+                    rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
+                });
+            }
+            object::elf::R_AARCH64_TLSDESC_LD64_LO12
+                if can_bypass_got && output_kind.is_static_executable() =>
+            {
+                return Some(Relaxation {
+                    kind: RelaxationKind::ReplaceWithNop,
+                    rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
+                });
+            }
+            object::elf::R_AARCH64_TLSDESC_ADD_LO12
+                if can_bypass_got && output_kind.is_static_executable() =>
+            {
+                return Some(Relaxation {
+                    kind: RelaxationKind::MovzX0Lsl16,
+                    rel_info: relocation_type_from_raw(object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1)
+                        .unwrap(),
+                });
+            }
+            object::elf::R_AARCH64_TLSDESC_CALL
+                if can_bypass_got && output_kind.is_static_executable() =>
+            {
+                return Some(Relaxation {
+                    kind: RelaxationKind::MovkX0,
+                    rel_info: relocation_type_from_raw(
+                        object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G0_NC,
+                    )
+                    .unwrap(),
+                });
+            }
+            _ => (),
         }
 
         None

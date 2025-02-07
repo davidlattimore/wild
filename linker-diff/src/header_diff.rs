@@ -109,7 +109,7 @@ fn symbol_with_address(obj: &Binary, address: u64, allow_empty: bool) -> Option<
         }
         if sym.address() == address {
             if let Ok(name) = sym.name() {
-                if !name.is_empty() {
+                if !name.is_empty() && name != "$x" {
                     return Some(name.to_owned());
                 }
             }
