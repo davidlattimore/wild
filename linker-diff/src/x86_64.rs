@@ -2,7 +2,7 @@ use crate::arch::Arch;
 use crate::arch::Instruction;
 use crate::arch::RType as _;
 use crate::arch::Relaxation;
-use crate::arch::RelaxationMask;
+use crate::arch::RelaxationByteRange;
 use iced_x86::Formatter as _;
 use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::elf::DynamicRelocationKind;
@@ -13,7 +13,7 @@ use std::fmt::Display;
 
 const BIT_CLASS: u32 = 64;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct X86_64;
 
 impl Arch for X86_64 {
@@ -29,36 +29,28 @@ impl Arch for X86_64 {
         relaxation_kind.next_modifier()
     }
 
-    fn relaxation_mask(relaxation: Relaxation<Self>) -> crate::arch::RelaxationMask {
+    fn relaxation_byte_range(relaxation: Relaxation<Self>) -> RelaxationByteRange {
         match relaxation.relaxation_kind {
-            Self::RelaxationKind::MovIndirectToLea => RelaxationMask::new(2, &[0xff; 2]),
-            Self::RelaxationKind::MovIndirectToAbsolute => RelaxationMask::new(2, &[0xff; 2]),
-            Self::RelaxationKind::RexMovIndirectToAbsolute => RelaxationMask::new(3, &[0xff; 3]),
-            Self::RelaxationKind::RexSubIndirectToAbsolute => RelaxationMask::new(3, &[0xff; 3]),
-            Self::RelaxationKind::RexCmpIndirectToAbsolute => RelaxationMask::new(3, &[0xff; 3]),
-            Self::RelaxationKind::CallIndirectToRelative => RelaxationMask::new(2, &[0xff; 2]),
-            Self::RelaxationKind::JmpIndirectToRelative => {
-                RelaxationMask::new(2, &[0xff, 0, 0, 0, 0, 0xff])
-            }
-            Self::RelaxationKind::TlsGdToLocalExec => RelaxationMask::new(4, &[0xff; 12]),
-            Self::RelaxationKind::TlsGdToLocalExecLarge => RelaxationMask::new(
-                3,
-                &[
-                    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0, 0,
-                    0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-                ],
-            ),
-            Self::RelaxationKind::TlsGdToInitialExec => RelaxationMask::new(4, &[0xff; 12]),
-            Self::RelaxationKind::TlsLdToLocalExec => RelaxationMask::new(3, &[0xff; 12]),
-            Self::RelaxationKind::TlsLdToLocalExec64 => RelaxationMask::new(3, &[0xff; 18]),
-            Self::RelaxationKind::SkipTlsDescCall => RelaxationMask::new(0, &[0xff; 2]),
-            Self::RelaxationKind::TlsDescToLocalExec => RelaxationMask::new(3, &[0xff; 3]),
+            Self::RelaxationKind::MovIndirectToLea => RelaxationByteRange::new(2, 6),
+            Self::RelaxationKind::MovIndirectToAbsolute => RelaxationByteRange::new(2, 6),
+            Self::RelaxationKind::RexMovIndirectToAbsolute => RelaxationByteRange::new(3, 7),
+            Self::RelaxationKind::RexSubIndirectToAbsolute => RelaxationByteRange::new(3, 7),
+            Self::RelaxationKind::RexCmpIndirectToAbsolute => RelaxationByteRange::new(3, 7),
+            Self::RelaxationKind::CallIndirectToRelative => RelaxationByteRange::new(2, 6),
+            Self::RelaxationKind::JmpIndirectToRelative => RelaxationByteRange::new(2, 6),
+            Self::RelaxationKind::TlsGdToLocalExec => RelaxationByteRange::new(4, 16),
+            Self::RelaxationKind::TlsGdToLocalExecLarge => RelaxationByteRange::new(3, 22),
+            Self::RelaxationKind::TlsGdToInitialExec => RelaxationByteRange::new(4, 16),
+            Self::RelaxationKind::TlsLdToLocalExec => RelaxationByteRange::new(3, 12),
+            Self::RelaxationKind::TlsLdToLocalExec64 => RelaxationByteRange::new(3, 22),
+            Self::RelaxationKind::SkipTlsDescCall => RelaxationByteRange::new(0, 2),
+            Self::RelaxationKind::TlsDescToLocalExec => RelaxationByteRange::new(3, 7),
             Self::RelaxationKind::NoOp => match relaxation.new_r_type.0 {
                 // TLSDESC_CALL is a relocation that does nothing unless it's optimised away. To
                 // verify that it hasn't been optimised away, we need to make sure that we compare
                 // the bytes immediately after the relocation.
-                object::elf::R_X86_64_TLSDESC_CALL => RelaxationMask::new(0, &[0xff; 2]),
-                _ => RelaxationMask::new(0, &[]),
+                object::elf::R_X86_64_TLSDESC_CALL => RelaxationByteRange::new(0, 2),
+                _ => RelaxationByteRange::new(0, 0),
             },
         }
     }
