@@ -1173,9 +1173,9 @@ impl<'data> RelaxationTester<'data> {
 
         let fail = |reason| Ok(MatchResult::Failed(FailedMatch::new(candidate, reason)));
 
-        let mask = A::relaxation_mask(candidate);
+        let relaxation_range = A::relaxation_byte_range(candidate);
 
-        if offset < mask.offset_shift {
+        if offset < relaxation_range.offset_shift {
             // There aren't enough bytes prior to offset in this section for the relaxation to be
             // possible.
             return fail("Not enough bytes prior");
@@ -1188,10 +1188,10 @@ impl<'data> RelaxationTester<'data> {
             .context("Attempted to diff section without data")?;
 
         let mut scratch = [0_u8; (MAX_RELAX_MODIFY_BEFORE + MAX_RELAX_MODIFY_AFTER) as usize];
-        let base_scratch_offset = mask.offset_shift;
+        let base_scratch_offset = relaxation_range.offset_shift;
 
         let copy_start = (offset - base_scratch_offset) as usize;
-        let copy_end = copy_start + mask.bitmask.len();
+        let copy_end = copy_start + relaxation_range.num_bytes;
 
         if copy_end > self.original_data.len() {
             return fail("Not enough bytes after");
@@ -1222,6 +1222,8 @@ impl<'data> RelaxationTester<'data> {
             &mut scratch_offset,
             &mut addend,
         );
+
+        let mask = A::relaxation_mask(candidate, scratch_offset as usize);
 
         // Check to see if the resulting bytes match what's in the output section.
         if !mask.matches(scratch, &section_data[copy_start..copy_end]) {

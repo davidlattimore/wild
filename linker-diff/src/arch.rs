@@ -6,7 +6,7 @@ use std::fmt::Display;
 use std::ops::Range;
 
 /// Provides architecture-specific functionality needed by linker-diff.
-pub(crate) trait Arch: Clone + Copy + Eq + PartialEq {
+pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
     /// The type of relocations on this architecture.
     type RType: RType;
 
@@ -25,7 +25,45 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq {
     );
 
     /// Returns a mask that can be used to identify the supplied relaxation.
-    fn relaxation_mask(relaxation: Relaxation<Self>) -> RelaxationMask;
+    fn relaxation_mask(relaxation: Relaxation<Self>, relocation_offset: usize) -> RelaxationMask {
+        let byte_range = Self::relaxation_byte_range(relaxation);
+
+        let mut mask = RelaxationMask {
+            offset_shift: byte_range.offset_shift,
+            bitmask: Vec::new(),
+        };
+
+        if let Some(info) = relaxation.new_r_type.relocation_info() {
+            match info.size {
+                linker_utils::elf::RelocationSize::ByteSize(num_bytes) => {
+                    let mask_len = (relocation_offset + num_bytes).max(byte_range.num_bytes);
+
+                    mask.bitmask.resize(mask_len, 0xff);
+
+                    for b in &mut mask.bitmask[relocation_offset..relocation_offset + num_bytes] {
+                        *b = 0;
+                    }
+                }
+                linker_utils::elf::RelocationSize::BitMasking { range, insn } => {
+                    mask.bitmask.resize(4, 0);
+
+                    // To figure out which bits are part of the relocation, we write a value with
+                    // all ones into a buffer that initially contains zeros.
+                    let all_ones = (1 << (range.end - range.start)) - 1;
+                    insn.write_to_value(all_ones, false, &mut mask.bitmask);
+
+                    // Wherever we get a 1 is part of the relocation, so invert all bits.
+                    for b in &mut mask.bitmask {
+                        *b = !*b;
+                    }
+                }
+            }
+        }
+
+        mask
+    }
+
+    fn relaxation_byte_range(relaxation: Relaxation<Self>) -> RelaxationByteRange;
 
     /// Applies the supplied relaxation to `section_bytes`, possibly also updating
     /// `offset_in_section` and `addend` according to the relaxation kind.
@@ -76,8 +114,29 @@ pub(crate) struct Relaxation<A: Arch> {
     pub(crate) new_r_type: A::RType,
 }
 
+/// The range of bytes to which a relaxation applies.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RelaxationByteRange {
+    /// Number of bytes prior to the offset of the original relocation at which the bitmask starts.
+    pub(crate) offset_shift: u64,
+
+    /// Number of bytes covered by this relaxation, including bytes in which the relocation will be
+    /// written.
+    pub(crate) num_bytes: usize,
+}
+
+impl RelaxationByteRange {
+    pub(crate) fn new(offset_shift: u64, num_bytes: usize) -> Self {
+        Self {
+            offset_shift,
+            num_bytes,
+        }
+    }
+}
+
 /// A bitmask used for comparing the bytes produced by a relaxation with the bytes in the actual
 /// file.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RelaxationMask {
     /// Number of bytes prior to the offset of the original relocation at which the bitmask starts.
     pub(crate) offset_shift: u64,
@@ -97,17 +156,10 @@ pub(crate) struct RelaxationMask {
     ///
     /// The mask would be [0xff, 0xff, 0xff] since the first three bytes of the instruction should
     /// be compared in their entirety.
-    pub(crate) bitmask: &'static [u8],
+    pub(crate) bitmask: Vec<u8>,
 }
 
 impl RelaxationMask {
-    pub(crate) fn new(offset_shift: u64, bitmask: &'static [u8]) -> Self {
-        Self {
-            offset_shift,
-            bitmask,
-        }
-    }
-
     /// Returns whether `a` == `b`, ignoring bits where the corresponding bit in our mask is 0.
     pub(crate) fn matches(&self, a: &[u8], b: &[u8]) -> bool {
         assert_eq!(a.len(), b.len());
