@@ -11,12 +11,37 @@ use crate::relaxation::RelocationModifier;
 pub enum RelaxationKind {
     /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
     NoOp,
+
+    /// Replace with nop
+    ReplaceWithNop,
+
+    /// Replace with movz x0 lsl #16
+    MovzX0Lsl16,
+
+    /// Replace with movk x0
+    MovkX0,
 }
 
 impl RelaxationKind {
-    pub fn apply(self, _section_bytes: &mut [u8], _offset_in_section: &mut u64, _addend: &mut i64) {
+    pub fn apply(self, section_bytes: &mut [u8], offset_in_section: &mut u64, _addend: &mut i64) {
+        let offset = *offset_in_section as usize;
         match self {
             RelaxationKind::NoOp => {}
+            RelaxationKind::ReplaceWithNop => {
+                section_bytes[offset..offset + 4].copy_from_slice(&[
+                    0x1f, 0x20, 0x03, 0xd5, // nop
+                ]);
+            }
+            RelaxationKind::MovzX0Lsl16 => {
+                section_bytes[offset..offset + 4].copy_from_slice(&[
+                    0x0, 0x0, 0xa0, 0xd2, // movz x0, ${offset}, lsl #16
+                ]);
+            }
+            RelaxationKind::MovkX0 => {
+                section_bytes[offset..offset + 4].copy_from_slice(&[
+                    0x0, 0x09, 0x80, 0xf2, // movk x0, ${offset}
+                ]);
+            }
         }
     }
 
