@@ -10,6 +10,7 @@
 //#DiffIgnore:section.rodata.cst32.entsize
 // This is only an issue on openSUSE
 //#DiffIgnore:section.rela.plt.link
+//#DiffIgnore:section.data.alignment
 //#CompArgs:-g -ftls-model=global-dynamic
 //#RequiresGlibc:true
 
