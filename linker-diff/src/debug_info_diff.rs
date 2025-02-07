@@ -18,25 +18,18 @@ struct CompilationUnitIdentifier {
     comp_dir: String,
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Hash)]
-struct CompilationUnit {
-    size: usize,
-}
-
 impl Display for CompilationUnitIdentifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("{} ({})", self.name, self.comp_dir))
     }
 }
 
-type DebugInfo = HashMap<CompilationUnitIdentifier, CompilationUnit>;
-
 const DEBUG_INFO_ERROR_KEY: &str = "debug_info";
 
 fn parse_unit_info(
     unit: gimli::UnitRef<'_, gimli::EndianSlice<'_, LittleEndian>>,
     size: usize,
-) -> Result<(CompilationUnitIdentifier, CompilationUnit)> {
+) -> Result<(CompilationUnitIdentifier, usize)> {
     let mut name = None;
     let mut comp_dir = None;
 
@@ -72,13 +65,10 @@ fn parse_unit_info(
     let Some(comp_dir) = comp_dir else {
         anyhow::bail!("Missing comp_dir for a compilation unit");
     };
-    Ok((
-        CompilationUnitIdentifier { name, comp_dir },
-        CompilationUnit { size },
-    ))
+    Ok((CompilationUnitIdentifier { name, comp_dir }, size))
 }
 
-fn read_file_debug_info(obj: &Binary) -> Result<DebugInfo> {
+fn read_file_debug_info(obj: &Binary) -> Result<HashMap<CompilationUnitIdentifier, usize>> {
     let load_section = |id: gimli::SectionId| -> Result<Cow<[u8]>> {
         Ok(match obj.section_by_name(id.name()) {
             Some(section) => section.uncompressed_data()?,
@@ -91,16 +81,20 @@ fn read_file_debug_info(obj: &Binary) -> Result<DebugInfo> {
     let dwarf = dwarf_sections.borrow(borrow_section);
 
     let units: Vec<_> = dwarf.units().collect()?;
+    let mut cu_sizes = HashMap::new();
 
-    units
-        .iter()
-        .map(|unit| parse_unit_info(dwarf.unit(*unit)?.unit_ref(&dwarf), unit.unit_length()))
-        .collect::<Result<DebugInfo>>()
+    for unit in units {
+        let (cu_name, cu_size) =
+            parse_unit_info(dwarf.unit(unit)?.unit_ref(&dwarf), unit.unit_length())?;
+        *cu_sizes.entry(cu_name).or_default() += cu_size;
+    }
+
+    Ok(cu_sizes)
 }
 
 fn diff_debug_info(
     objects: &[Binary<'_>],
-    get_fields_fn: impl Fn(&Binary<'_>) -> Result<DebugInfo>,
+    get_fields_fn: impl Fn(&Binary<'_>) -> Result<HashMap<CompilationUnitIdentifier, usize>>,
     diff_mode: DiffMode,
 ) -> Vec<Diff> {
     let debug_infos = objects.iter().map(get_fields_fn).collect_vec();
@@ -131,17 +125,17 @@ fn diff_debug_info(
         }];
     }
 
-    for (ref_unit_ident, ref_unit) in ok.first().unwrap() {
+    for (ref_unit_ident, ref_unit_size) in ok.first().unwrap() {
         for (object_id, info) in ok.iter().enumerate().skip(1) {
             let unit = info.get(ref_unit_ident);
             match unit {
-                Some(unit) => {
-                    if ref_unit.size != unit.size {
+                Some(unit_size) => {
+                    if ref_unit_size != unit_size {
                         mismatches.push(Diff {
                             key: format!("{DEBUG_INFO_ERROR_KEY}.size_mismatch"),
                             values: DiffValues::PreFormatted(format!(
-                                "Size mismatch for {ref_unit_ident} in {}, expected: {}, got: {}",
-                                objects[object_id].name, ref_unit.size, unit.size
+                                "Total size mismatch for {ref_unit_ident} in {}, expected: {}, got: {}",
+                                objects[object_id].name, ref_unit_size, unit_size
                             )),
                         });
                     }
