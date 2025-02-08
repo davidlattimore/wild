@@ -21,6 +21,8 @@
 //#LinkArgs:--cc=g++ -Wl,-z,now
 //#EnableLinker:lld
 //#Cross:false
+// TODO: Ubuntu: cc1plus: sorry, unimplemented: code model 'large' with '-fPIC'
+//#Arch: x86_64
 
 #include <iostream>
 #include <string>
