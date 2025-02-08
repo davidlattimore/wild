@@ -113,14 +113,13 @@ impl crate::arch::Relaxation for Relaxation {
     where
         Self: std::marker::Sized,
     {
-        let rel = AArch64::relocation_from_raw(relocation_kind);
+        let mut relocation = AArch64::relocation_from_raw(relocation_kind).unwrap();
         let can_bypass_got = value_flags.contains(ValueFlags::CAN_BYPASS_GOT);
 
         // IFuncs cannot be referenced directly, they always need to go via the GOT.
         if value_flags.contains(ValueFlags::IFUNC) {
             return match relocation_kind {
-                object::elf::R_AARCH64_CALL26 => {
-                    let mut relocation = rel.unwrap();
+                object::elf::R_AARCH64_CALL26 | object::elf::R_AARCH64_JUMP26 => {
                     relocation.kind = RelocationKind::PltRelative;
                     return Some(Relaxation {
                         kind: RelaxationKind::NoOp,
@@ -143,35 +142,27 @@ impl crate::arch::Relaxation for Relaxation {
         // away fetching it.
 
         match relocation_kind {
-            object::elf::R_AARCH64_TLSDESC_ADR_PAGE21
-                if can_bypass_got && output_kind.is_static_executable() =>
-            {
+            object::elf::R_AARCH64_TLSDESC_ADR_PAGE21 if can_bypass_got => {
                 // TODO: check we met all consecutive 4 instructions!
                 return Some(Relaxation {
                     kind: RelaxationKind::ReplaceWithNop,
                     rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
                 });
             }
-            object::elf::R_AARCH64_TLSDESC_LD64_LO12
-                if can_bypass_got && output_kind.is_static_executable() =>
-            {
+            object::elf::R_AARCH64_TLSDESC_LD64_LO12 if can_bypass_got => {
                 return Some(Relaxation {
                     kind: RelaxationKind::ReplaceWithNop,
                     rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
                 });
             }
-            object::elf::R_AARCH64_TLSDESC_ADD_LO12
-                if can_bypass_got && output_kind.is_static_executable() =>
-            {
+            object::elf::R_AARCH64_TLSDESC_ADD_LO12 if can_bypass_got => {
                 return Some(Relaxation {
                     kind: RelaxationKind::MovzX0Lsl16,
                     rel_info: relocation_type_from_raw(object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1)
                         .unwrap(),
                 });
             }
-            object::elf::R_AARCH64_TLSDESC_CALL
-                if can_bypass_got && output_kind.is_static_executable() =>
-            {
+            object::elf::R_AARCH64_TLSDESC_CALL if can_bypass_got => {
                 return Some(Relaxation {
                     kind: RelaxationKind::MovkX0,
                     rel_info: relocation_type_from_raw(
@@ -180,6 +171,23 @@ impl crate::arch::Relaxation for Relaxation {
                     .unwrap(),
                 });
             }
+            object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 if can_bypass_got => {
+                return Some(Relaxation {
+                    kind: RelaxationKind::MovzXnLsl16,
+                    rel_info: relocation_type_from_raw(object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1)
+                        .unwrap(),
+                });
+            }
+            object::elf::R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC if can_bypass_got => {
+                return Some(Relaxation {
+                    kind: RelaxationKind::MovkXn,
+                    rel_info: relocation_type_from_raw(
+                        object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G0_NC,
+                    )
+                    .unwrap(),
+                });
+            }
+
             _ => (),
         }
 
