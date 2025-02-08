@@ -56,7 +56,7 @@ however is done natively on the host system, so should run at full speed.
 Cross compilation is currently only done with GCC and rustc, so clang-based tests currently all
 disable cross compilation.
 
-Cross compilation is set up in docker/ubuntu.Dockerfile.
+Cross compilation is set up in docker/debian.Dockerfile.
 
 ## Github workflow
 
