@@ -113,14 +113,13 @@ impl crate::arch::Relaxation for Relaxation {
     where
         Self: std::marker::Sized,
     {
-        let rel = AArch64::relocation_from_raw(relocation_kind);
+        let mut relocation = AArch64::relocation_from_raw(relocation_kind).unwrap();
         let can_bypass_got = value_flags.contains(ValueFlags::CAN_BYPASS_GOT);
 
         // IFuncs cannot be referenced directly, they always need to go via the GOT.
         if value_flags.contains(ValueFlags::IFUNC) {
             return match relocation_kind {
-                object::elf::R_AARCH64_CALL26 => {
-                    let mut relocation = rel.unwrap();
+                object::elf::R_AARCH64_CALL26 | object::elf::R_AARCH64_JUMP26 => {
                     relocation.kind = RelocationKind::PltRelative;
                     return Some(Relaxation {
                         kind: RelaxationKind::NoOp,
