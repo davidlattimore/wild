@@ -98,6 +98,22 @@ use tracing::debug_span;
 use tracing::instrument;
 use uuid::Uuid;
 
+struct HexU64 {
+    value: u64,
+}
+
+impl HexU64 {
+    fn new(value: u64) -> Self {
+        Self { value }
+    }
+}
+
+impl Display for HexU64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:x}", self.value)
+    }
+}
+
 pub struct Output {
     path: Arc<Path>,
     creator: FileCreator,
@@ -1799,7 +1815,7 @@ fn apply_relocation<S: StorageModel, A: Arch>(
     let _span = tracing::trace_span!(
         "relocation",
         address = original_place,
-        address_hex = format!("{original_place:x}")
+        address_hex = %HexU64::new(original_place)
     )
     .entered();
 
@@ -1990,11 +2006,10 @@ fn apply_relocation<S: StorageModel, A: Arch>(
         RelocationKind::None | RelocationKind::TlsDescCall => 0,
     };
 
-    let value_hex = format!("{value:x}");
     if let Some(relaxation) = relaxation {
-        tracing::trace!(kind = ?relaxation.debug_kind(), %value_flags, %resolution_flags, ?rel_info.kind, value, value_hex, %symbol_name, "relaxation applied");
+        tracing::trace!(kind = ?relaxation.debug_kind(), %value_flags, %resolution_flags, ?rel_info.kind, value, value_hex = %HexU64::new(value), %symbol_name, "relaxation applied");
     } else {
-        tracing::trace!(%value_flags, %resolution_flags, ?rel_info.kind, value, value_hex, %symbol_name, "relocation applied");
+        tracing::trace!(%value_flags, %resolution_flags, ?rel_info.kind, value, value_hex = %HexU64::new(value), %symbol_name, "relocation applied");
     }
 
     write_relocation_to_buffer(rel_info.size, value, &mut out[offset_in_section as usize..])?;
