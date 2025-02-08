@@ -770,7 +770,7 @@ fn build_obj(
     // perform the link step.
     let suffix = match compiler_kind {
         CompilerKind::C => ".o",
-        CompilerKind::Rust => "",
+        CompilerKind::Rust => ".d",
     };
 
     let mut command = Command::new(compiler);
