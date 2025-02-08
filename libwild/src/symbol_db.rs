@@ -654,6 +654,9 @@ impl SymbolLoader for DynamicObjectSymbolLoader {
         if st_type == object::elf::STT_FUNC || st_type == object::elf::STT_GNU_IFUNC {
             flags |= ValueFlags::FUNCTION;
         }
+        if symbol.is_undefined(LittleEndian) {
+            flags |= ValueFlags::ABSOLUTE;
+        }
         flags
     }
 
