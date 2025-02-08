@@ -1,7 +1,7 @@
-# Run on a recent version of Ubuntu
+# Run on a recent version of Debian
 #
-# docker build --progress=plain -t wild-dev-ubuntu . -f docker/ubuntu.Dockerfile
-# docker run -it wild-dev-ubuntu
+# docker build --progress=plain -t wild-dev-debian . -f docker/debian.Dockerfile
+# docker run -it wild-dev-debian
 
 FROM rust:1.83 AS chef
 RUN apt-get update && \
