@@ -53,6 +53,8 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq {
         function_offset_in_section: u64,
         range: Range<u64>,
     ) -> Vec<Instruction<Self>>;
+
+    fn decode_plt_entry(plt_entry: &[u8], plt_base: u64, plt_offset: u64) -> Option<PltEntry>;
 }
 
 pub(crate) trait RType: Copy + Debug + Display + Eq + PartialEq {
@@ -137,4 +139,13 @@ impl<A: Arch> Instruction<'_, A> {
     pub(crate) fn address(&self) -> u64 {
         self.base_address + self.offset
     }
+}
+
+pub(crate) enum PltEntry {
+    /// The parameter is an address (most likely of a GOT entry) that will be dereferenced by the
+    /// PLT entry then jumped to.
+    DerefJmp(u64),
+
+    /// The parameter is an index into .rela.plt.
+    JumpSlot(u32),
 }
