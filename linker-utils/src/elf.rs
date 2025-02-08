@@ -614,6 +614,21 @@ impl DynamicRelocationKind {
             DynamicRelocationKind::JumpSlot => object::elf::R_X86_64_JUMP_SLOT,
         }
     }
+
+    #[must_use]
+    pub fn aarch64_r_type(&self) -> u32 {
+        match self {
+            DynamicRelocationKind::Copy => object::elf::R_AARCH64_COPY,
+            DynamicRelocationKind::Irelative => object::elf::R_AARCH64_IRELATIVE,
+            DynamicRelocationKind::DtpMod => object::elf::R_AARCH64_TLS_DTPMOD,
+            DynamicRelocationKind::DtpOff => object::elf::R_AARCH64_TLS_DTPREL,
+            DynamicRelocationKind::TpOff => object::elf::R_AARCH64_TLS_TPREL,
+            DynamicRelocationKind::Relative => object::elf::R_AARCH64_RELATIVE,
+            DynamicRelocationKind::DynamicSymbol => object::elf::R_AARCH64_GLOB_DAT,
+            DynamicRelocationKind::TlsDesc => object::elf::R_AARCH64_TLSDESC,
+            DynamicRelocationKind::JumpSlot => object::elf::R_AARCH64_JUMP_SLOT,
+        }
+    }
 }
 
 // Half-opened range bounded inclusively below and exclusively above: [`start``, `end`)
