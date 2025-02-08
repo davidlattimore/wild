@@ -174,7 +174,7 @@ fn compare_sections<A: Arch>(
             section_versions,
             layout,
             &mut testers,
-            offset.saturating_sub(MAX_RELAX_MODIFY_BEFORE),
+            offset.saturating_sub(A::MAX_RELAX_MODIFY_BEFORE),
         )?;
 
         let mut orig_trace = TraceOutput::default();
@@ -1108,12 +1108,6 @@ struct RelaxationTester<'data> {
     bin: &'data Binary<'data>,
 }
 
-/// The maximum number of bytes prior to a relocation offset that a relaxation might modify.
-const MAX_RELAX_MODIFY_BEFORE: u64 = 4;
-
-/// The maximum number of bytes after a relocation offset that a relaxation might modify.
-const MAX_RELAX_MODIFY_AFTER: u64 = 19;
-
 impl<'data> RelaxationTester<'data> {
     fn new(
         original_section: &ElfSection64<'data, '_, LittleEndian>,
@@ -1188,7 +1182,7 @@ impl<'data> RelaxationTester<'data> {
             .section_bytes
             .context("Attempted to diff section without data")?;
 
-        let mut scratch = [0_u8; (MAX_RELAX_MODIFY_BEFORE + MAX_RELAX_MODIFY_AFTER) as usize];
+        let mut scratch = vec![0_u8; (A::MAX_RELAX_MODIFY_BEFORE + A::MAX_RELAX_MODIFY_AFTER) as usize];
         let base_scratch_offset = relaxation_range.offset_shift;
 
         let copy_start = (offset - base_scratch_offset) as usize;

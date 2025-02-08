@@ -25,6 +25,9 @@ impl Arch for X86_64 {
 
     type RawInstruction = iced_x86::Instruction;
 
+    const MAX_RELAX_MODIFY_BEFORE: u64 = 4;
+    const MAX_RELAX_MODIFY_AFTER: u64 = 19;
+
     fn next_relocation_modifier(
         relaxation_kind: Self::RelaxationKind,
     ) -> linker_utils::relaxation::RelocationModifier {
