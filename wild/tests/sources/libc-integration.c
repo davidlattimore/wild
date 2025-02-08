@@ -78,6 +78,8 @@
 //#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Shared:libc-integration-0.c
 //#Shared:libc-integration-1.c
+// TODO: cc1plus: sorry, unimplemented: code model 'large' with '-fPIC'
+//#Arch: x86_64
 
 #include <stdlib.h>
 #include <string.h>
