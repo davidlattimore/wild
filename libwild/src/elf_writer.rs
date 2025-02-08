@@ -1826,21 +1826,20 @@ fn apply_relocation<S: StorageModel, A: Arch>(
     let output_kind = layout.args().output_kind();
     let symbol_name = layout.symbol_db.symbol_name(local_symbol_id)?;
 
-    if let Some(relaxation) = A::Relaxation::new(
+    let relaxation = A::Relaxation::new(
         r_type,
         out,
         offset_in_section,
         value_flags,
         output_kind,
         section_info.section_flags,
-    ) {
+    );
+    if let Some(relaxation) = &relaxation {
         rel_info = relaxation.rel_info();
-        tracing::trace!(kind = ?relaxation.debug_kind(), %value_flags, %resolution_flags, ?rel_info.kind, %symbol_name, "relaxation applied");
         relaxation.apply(out, &mut offset_in_section, &mut addend);
         next_modifier = relaxation.next_modifier();
     } else {
         rel_info = A::relocation_from_raw(r_type)?;
-        tracing::trace!(%value_flags, %resolution_flags, ?rel_info.kind, %symbol_name, "relocation applied");
     }
 
     // Compute place to which IP-relative relocations will be relative. This is different to
@@ -1990,6 +1989,13 @@ fn apply_relocation<S: StorageModel, A: Arch>(
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::None | RelocationKind::TlsDescCall => 0,
     };
+
+    let value_hex = format!("{value:x}");
+    if let Some(relaxation) = relaxation {
+        tracing::trace!(kind = ?relaxation.debug_kind(), %value_flags, %resolution_flags, ?rel_info.kind, value, value_hex, %symbol_name, "relaxation applied");
+    } else {
+        tracing::trace!(%value_flags, %resolution_flags, ?rel_info.kind, value, value_hex, %symbol_name, "relocation applied");
+    }
 
     write_relocation_to_buffer(rel_info.size, value, &mut out[offset_in_section as usize..])?;
 
