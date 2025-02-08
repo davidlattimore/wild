@@ -8,6 +8,7 @@ use bytemuck::Pod;
 use bytemuck::Zeroable;
 use linker_utils::elf::secnames::EH_FRAME_HDR_SECTION_NAME_STR;
 use linker_utils::elf::secnames::EH_FRAME_SECTION_NAME_STR;
+use linker_utils::utils::u32_from_slice;
 use object::elf::ProgramHeader64;
 use object::read::elf::ProgramHeader;
 use object::LittleEndian;
@@ -204,10 +205,9 @@ fn read_eh_frame_pc_begin(
     if start_offset >= eh_frame_data.len() {
         return None;
     }
-    let pc_begin_bytes = eh_frame_data[start_offset..].first_chunk::<4>()?;
     Some(
         (hdr_info_address + EH_FRAME_PC_BEGIN_OFFSET as u64)
-            .wrapping_add(i64::from(i32::from_le_bytes(*pc_begin_bytes)) as u64),
+            .wrapping_add(i64::from(u32_from_slice(&eh_frame_data[start_offset..])) as u64),
     )
 }
 

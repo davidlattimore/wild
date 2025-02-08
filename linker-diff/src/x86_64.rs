@@ -8,6 +8,7 @@ use iced_x86::Formatter as _;
 use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
+use linker_utils::utils::u32_from_slice;
 use linker_utils::x86_64::RelaxationKind;
 use object::SectionKind;
 use std::fmt::Display;
@@ -217,9 +218,7 @@ impl Arch for X86_64 {
             // jmp *{relative GOT}(%rip)
             // xchg %ax, %ax
             if plt_entry.starts_with(&[0xff, 0x25]) && plt_entry.ends_with(&[0x66, 0x90]) {
-                let offset = u64::from(u32::from_le_bytes(
-                    *plt_entry[RIP_OFFSET - 4..].first_chunk::<4>().unwrap(),
-                ));
+                let offset = u64::from(u32_from_slice(&plt_entry[RIP_OFFSET - 4..]));
                 return Some(PltEntry::DerefJmp(
                     (plt_base + plt_offset + RIP_OFFSET as u64).wrapping_add(offset),
                 ));
@@ -242,9 +241,7 @@ impl Arch for X86_64 {
                     // The offset of the instruction pointer when the jmp instruction is processed -
                     // i.e. the start of the next instruction after the jmp instruction.
                     const RIP_OFFSET: usize = 11;
-                    let offset = u64::from(u32::from_le_bytes(
-                        *plt_entry[RIP_OFFSET - 4..].first_chunk::<4>().unwrap(),
-                    ));
+                    let offset = u64::from(u32_from_slice(&plt_entry[RIP_OFFSET - 4..]));
                     return Some(PltEntry::DerefJmp(
                         (plt_base + plt_offset + RIP_OFFSET as u64).wrapping_add(offset),
                     ));
@@ -262,7 +259,7 @@ impl Arch for X86_64 {
                 // Because we use the index that gets pushed, we ignore the bytes of the later
                 // instructions, so that we support these variants.
                 if plt_entry[..5] == PLT_ENTRY_TEMPLATE[..5] {
-                    let index = u32::from_le_bytes(*plt_entry[5..].first_chunk::<4>().unwrap());
+                    let index = u32_from_slice(&plt_entry[5..]);
                     return Some(PltEntry::JumpSlot(index));
                 }
             }
@@ -280,9 +277,7 @@ impl Arch for X86_64 {
                     // The offset of the instruction pointer when the jmp instruction is processed -
                     // i.e. the start of the next instruction after the jmp instruction.
                     const RIP_OFFSET: usize = 6;
-                    let offset = u64::from(u32::from_le_bytes(
-                        *plt_entry[RIP_OFFSET - 4..].first_chunk::<4>().unwrap(),
-                    ));
+                    let offset = u64::from(u32_from_slice(&plt_entry[RIP_OFFSET - 4..]));
                     return Some(PltEntry::DerefJmp(
                         (plt_base + plt_offset + RIP_OFFSET as u64).wrapping_add(offset),
                     ));
@@ -300,9 +295,7 @@ impl Arch for X86_64 {
                     && plt_entry[12..16] == PLT_ENTRY_TEMPLATE[12..16]
                 {
                     const RIP_OFFSET: usize = 12;
-                    let offset = u64::from(u32::from_le_bytes(
-                        *plt_entry[RIP_OFFSET - 4..].first_chunk::<4>().unwrap(),
-                    ));
+                    let offset = u64::from(u32_from_slice(&plt_entry[RIP_OFFSET - 4..]));
                     return Some(PltEntry::DerefJmp(
                         (plt_base + plt_offset + RIP_OFFSET as u64).wrapping_add(offset),
                     ));
@@ -312,7 +305,7 @@ impl Arch for X86_64 {
             // endbr, jmp indirect relative
             let prefix = &[0xf3, 0x0f, 0x1e, 0xfa, 0xff, 0x25];
             if let Some(rest) = plt_entry.strip_prefix(prefix) {
-                let offset = u64::from(u32::from_le_bytes(*rest.first_chunk::<4>().unwrap()));
+                let offset = u64::from(u32_from_slice(rest));
                 return Some(PltEntry::DerefJmp(
                     (plt_base + plt_offset + prefix.len() as u64 + 4).wrapping_add(offset),
                 ));
