@@ -20,6 +20,12 @@ pub enum RelaxationKind {
 
     /// Replace with movk x0
     MovkX0,
+
+    /// Replace with movz xn lsl #16
+    MovzXnLsl16,
+
+    /// Replace with movk xn
+    MovkXn,
 }
 
 impl RelaxationKind {
@@ -39,7 +45,37 @@ impl RelaxationKind {
             }
             RelaxationKind::MovkX0 => {
                 section_bytes[offset..offset + 4].copy_from_slice(&[
-                    0x0, 0x09, 0x80, 0xf2, // movk x0, ${offset}
+                    0x0, 0x0, 0x80, 0xf2, // movk x0, ${offset}
+                ]);
+            }
+            RelaxationKind::MovzXnLsl16 => {
+                let reg = extract_bits(
+                    u64::from(u32::from_le_bytes(
+                        *section_bytes[offset..offset + 4]
+                            .first_chunk::<4>()
+                            .unwrap(),
+                    )),
+                    0,
+                    5,
+                ) as u8;
+                section_bytes[offset..offset + 4].copy_from_slice(&[
+                    reg, 0x0, 0xa0, 0xd2, // movz x{reg}, ${offset}, lsl #16
+                ]);
+            }
+            RelaxationKind::MovkXn => {
+                let raw = u64::from(u32::from_le_bytes(
+                    *section_bytes[offset..offset + 4]
+                        .first_chunk::<4>()
+                        .unwrap(),
+                ));
+                let dst_reg = extract_bits(raw, 0, 5) as u8;
+                let src_reg = extract_bits(raw, 5, 10) as u8;
+                debug_assert_eq!(
+                    src_reg, dst_reg,
+                    "Source and destination registers must be equal"
+                );
+                section_bytes[offset..offset + 4].copy_from_slice(&[
+                    dst_reg, 0x0, 0x80, 0xf2, // movk x{dst}, ${offset}
                 ]);
             }
         }

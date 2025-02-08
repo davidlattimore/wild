@@ -180,6 +180,23 @@ impl crate::arch::Relaxation for Relaxation {
                     .unwrap(),
                 });
             }
+            object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 if can_bypass_got => {
+                return Some(Relaxation {
+                    kind: RelaxationKind::MovzXnLsl16,
+                    rel_info: relocation_type_from_raw(object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1)
+                        .unwrap(),
+                });
+            }
+            object::elf::R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC if can_bypass_got => {
+                return Some(Relaxation {
+                    kind: RelaxationKind::MovkXn,
+                    rel_info: relocation_type_from_raw(
+                        object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G0_NC,
+                    )
+                    .unwrap(),
+                });
+            }
+
             _ => (),
         }
 
