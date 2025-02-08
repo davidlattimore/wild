@@ -48,17 +48,7 @@ impl crate::arch::Arch for AArch64 {
     }
 
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
-        match relocation {
-            DynamicRelocationKind::Copy => object::elf::R_AARCH64_COPY,
-            DynamicRelocationKind::Irelative => object::elf::R_AARCH64_IRELATIVE,
-            DynamicRelocationKind::DtpMod => object::elf::R_AARCH64_TLS_DTPMOD,
-            DynamicRelocationKind::DtpOff => object::elf::R_AARCH64_TLS_DTPREL,
-            DynamicRelocationKind::TpOff => object::elf::R_AARCH64_TLS_TPREL,
-            DynamicRelocationKind::Relative => object::elf::R_AARCH64_RELATIVE,
-            DynamicRelocationKind::DynamicSymbol => object::elf::R_AARCH64_GLOB_DAT,
-            DynamicRelocationKind::TlsDesc => object::elf::R_AARCH64_TLSDESC,
-            DynamicRelocationKind::JumpSlot => object::elf::R_AARCH64_JUMP_SLOT,
-        }
+        relocation.aarch64_r_type()
     }
 
     fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
