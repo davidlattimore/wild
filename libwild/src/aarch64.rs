@@ -143,35 +143,27 @@ impl crate::arch::Relaxation for Relaxation {
         // away fetching it.
 
         match relocation_kind {
-            object::elf::R_AARCH64_TLSDESC_ADR_PAGE21
-                if can_bypass_got && output_kind.is_static_executable() =>
-            {
+            object::elf::R_AARCH64_TLSDESC_ADR_PAGE21 if can_bypass_got => {
                 // TODO: check we met all consecutive 4 instructions!
                 return Some(Relaxation {
                     kind: RelaxationKind::ReplaceWithNop,
                     rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
                 });
             }
-            object::elf::R_AARCH64_TLSDESC_LD64_LO12
-                if can_bypass_got && output_kind.is_static_executable() =>
-            {
+            object::elf::R_AARCH64_TLSDESC_LD64_LO12 if can_bypass_got => {
                 return Some(Relaxation {
                     kind: RelaxationKind::ReplaceWithNop,
                     rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
                 });
             }
-            object::elf::R_AARCH64_TLSDESC_ADD_LO12
-                if can_bypass_got && output_kind.is_static_executable() =>
-            {
+            object::elf::R_AARCH64_TLSDESC_ADD_LO12 if can_bypass_got => {
                 return Some(Relaxation {
                     kind: RelaxationKind::MovzX0Lsl16,
                     rel_info: relocation_type_from_raw(object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1)
                         .unwrap(),
                 });
             }
-            object::elf::R_AARCH64_TLSDESC_CALL
-                if can_bypass_got && output_kind.is_static_executable() =>
-            {
+            object::elf::R_AARCH64_TLSDESC_CALL if can_bypass_got => {
                 return Some(Relaxation {
                     kind: RelaxationKind::MovkX0,
                     rel_info: relocation_type_from_raw(
