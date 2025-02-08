@@ -1109,6 +1109,12 @@ impl LinkCommand {
                     }
                     _ => panic!("Unsupported cc={cc}"),
                 }
+                let arch = cross_arch.unwrap_or_else(get_host_architecture);
+                if arch == Architecture::AArch64 {
+                    // Provide a workaround for ld.lld: error: unknown argument '--fix-cortex-a53-835769'
+                    // Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
+                    command.arg("-mno-fix-cortex-a53-835769");
+                }
                 command.args(&linker_args.args[1..]);
             } else {
                 command = Command::new(linker_path);
