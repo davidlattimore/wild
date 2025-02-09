@@ -674,10 +674,23 @@ impl RelocationInstruction {
 #[derive(Clone, Debug, Copy)]
 pub enum RelocationSize {
     ByteSize(usize),
-    BitMasking {
-        range: BitRange,
-        insn: RelocationInstruction,
-    },
+    BitMasking(BitMask),
+}
+
+impl RelocationSize {
+    pub(crate) const fn bit_mask(
+        bit_start: u32,
+        bit_end: u32,
+        instruction: RelocationInstruction,
+    ) -> RelocationSize {
+        Self::BitMasking(BitMask::new(instruction, bit_start, bit_end))
+    }
+}
+
+#[derive(Clone, Debug, Copy)]
+pub struct BitMask {
+    pub instruction: RelocationInstruction,
+    pub range: BitRange,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -692,6 +705,19 @@ pub struct RelocationKindInfo {
     pub kind: RelocationKind,
     pub size: RelocationSize,
     pub mask: Option<PageMask>,
+}
+
+impl BitMask {
+    #[must_use]
+    pub const fn new(instruction: RelocationInstruction, bit_start: u32, bit_end: u32) -> Self {
+        Self {
+            instruction,
+            range: BitRange {
+                start: bit_start,
+                end: bit_end,
+            },
+        }
+    }
 }
 
 /// Extract range-specified ([`start`..`end`]) bits from the provided `value`.
