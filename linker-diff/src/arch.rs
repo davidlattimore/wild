@@ -1,3 +1,4 @@
+use linker_utils::elf::BitMask;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
@@ -50,8 +51,8 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
                         *b = 0;
                     }
                 }
-                linker_utils::elf::RelocationSize::BitMasking { range, insn } => {
-                    mask.bitmask = Vec::from(insn.bit_mask(range));
+                linker_utils::elf::RelocationSize::BitMasking(BitMask { range, instruction }) => {
+                    mask.bitmask = Vec::from(instruction.bit_mask(range));
                 }
             }
         }

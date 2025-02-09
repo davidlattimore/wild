@@ -8,6 +8,7 @@ use bytemuck::Pod;
 use bytemuck::Zeroable;
 use linker_utils::elf::extract_bits;
 use linker_utils::elf::sht;
+use linker_utils::elf::BitMask;
 use linker_utils::elf::PageMask;
 use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionType;
@@ -458,7 +459,10 @@ pub(crate) fn write_relocation_to_buffer(
             let value_bytes = value.to_le_bytes();
             output[..byte_size].copy_from_slice(&value_bytes[..byte_size]);
         }
-        RelocationSize::BitMasking { range, insn } => {
+        RelocationSize::BitMasking(BitMask {
+            range,
+            instruction: insn,
+        }) => {
             let extracted_value = extract_bits(value, range.start, range.end);
             let negative = (value as i64) < 0;
             insn.write_to_value(extracted_value, negative, &mut output[..4]);

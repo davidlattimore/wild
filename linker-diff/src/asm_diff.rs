@@ -1182,7 +1182,8 @@ impl<'data> RelaxationTester<'data> {
             .section_bytes
             .context("Attempted to diff section without data")?;
 
-        let mut scratch = vec![0_u8; (A::MAX_RELAX_MODIFY_BEFORE + A::MAX_RELAX_MODIFY_AFTER) as usize];
+        let mut scratch =
+            vec![0_u8; (A::MAX_RELAX_MODIFY_BEFORE + A::MAX_RELAX_MODIFY_AFTER) as usize];
         let base_scratch_offset = relaxation_range.offset_shift;
 
         let copy_start = (offset - base_scratch_offset) as usize;
@@ -2459,8 +2460,8 @@ impl BinAttributes {
 fn relocation_num_bytes(info: RelocationKindInfo) -> usize {
     match info.size {
         linker_utils::elf::RelocationSize::ByteSize(b) => b,
-        linker_utils::elf::RelocationSize::BitMasking { range, .. } => {
-            (range.end.div_ceil(8) - range.start / 8) as usize
+        linker_utils::elf::RelocationSize::BitMasking(mask) => {
+            (mask.range.end.div_ceil(8) - mask.range.start / 8) as usize
         }
     }
 }
