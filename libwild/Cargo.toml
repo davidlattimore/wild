@@ -42,7 +42,7 @@ flate2 = "1.0.35"
 bumpalo-herd = "0.1.2"
 zstd = "0.13.2"
 blake3 = { version = "1.5.5", features = ["rayon"] }
-uuid = { version = "1.12.1", features = ["v4"] }
+uuid = { version = "1.13.1", features = ["v4"] }
 hex = "0.4.3"
 atomic-take = "1.1.0"
 
