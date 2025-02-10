@@ -213,12 +213,12 @@ pub fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
             None,
         ),
         object::elf::R_AARCH64_JUMP26 => (
-            RelocationKind::Relative,
+            RelocationKind::PltRelative,
             RelocationSize::bit_mask(2, 28, RelocationInstruction::JumpCall),
             None,
         ),
         object::elf::R_AARCH64_CALL26 => (
-            RelocationKind::Relative,
+            RelocationKind::PltRelative,
             RelocationSize::bit_mask(2, 28, RelocationInstruction::JumpCall),
             None,
         ),
