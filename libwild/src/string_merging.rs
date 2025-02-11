@@ -748,6 +748,10 @@ impl<'data> MergeStringsSectionBucket<'data> {
             ..Default::default()
         }
     }
+
+    pub(crate) fn len(&self) -> usize {
+        self.next_offset as usize
+    }
 }
 
 impl<'data> MergeString<'data> {
