@@ -132,6 +132,14 @@ impl crate::arch::Relaxation for Relaxation {
         // away fetching it.
 
         match relocation_kind {
+            object::elf::R_AARCH64_CALL26 | object::elf::R_AARCH64_JUMP26 if can_bypass_got => {
+                relocation.kind = RelocationKind::Relative;
+                return Some(Relaxation {
+                    kind: RelaxationKind::NoOp,
+                    rel_info: relocation,
+                });
+            }
+
             object::elf::R_AARCH64_TLSDESC_ADR_PAGE21 if can_bypass_got => {
                 // TODO: check we met all consecutive 4 instructions!
                 return Some(Relaxation {
