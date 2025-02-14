@@ -195,9 +195,10 @@ impl Config {
                 // We currently seem to do copy relocations when GNU ld doesn't. This is almost
                 // certainly a bug on our part.
                 "rel.extra-copy-relocation.R_AARCH64_ADR_GOT_PAGE",
-                // GNU ld seems to sometimes relax an adrp instruction to an adr instruction. We
-                // don't as yet.
-                "rel.match_failed.R_AARCH64_ADR_GOT_PAGE",
+                // GNU ld sometimes relaxes an adrp instruction to an adr instruction when the
+                // address is known and within +/-1MB. We don't as yet.
+                "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.AdrpToAdr.*",
+                "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.AdrpToAdr.*",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
