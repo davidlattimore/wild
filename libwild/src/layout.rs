@@ -159,7 +159,8 @@ pub fn compute<'data, 'symbol_db, S: StorageModel, A: Arch>(
         &symbol_resolution_flags,
         gc_outputs.sections_with_content,
     );
-    let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections);
+    let section_part_layouts =
+        layout_section_parts(&section_part_sizes, &output_sections, symbol_db.args);
     let section_layouts = layout_sections(&section_part_layouts);
     output.set_size(compute_total_file_size(&section_layouts));
 
@@ -4074,6 +4075,7 @@ impl Resolution {
 fn layout_section_parts(
     sizes: &OutputSectionPartMap<u64>,
     output_sections: &OutputSections,
+    args: &Args,
 ) -> OutputSectionPartMap<OutputRecordLayout> {
     let mut file_offset = 0;
     let mut mem_offset = output_sections.base_address;
@@ -4094,7 +4096,7 @@ fn layout_section_parts(
             let seg_id = output_sections.loadable_segment_id_for(section_id);
             if current_seg_id != seg_id {
                 current_seg_id = seg_id;
-                let segment_alignment = seg_id.map_or(alignment::MIN, |s| s.alignment());
+                let segment_alignment = seg_id.map_or(alignment::MIN, |s| s.alignment(args));
                 mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
             }
             let file_size = if output_sections.has_data_in_file(section_id) {
@@ -4527,8 +4529,9 @@ fn test_no_disallowed_overlaps() {
         crate::output_section_id::OutputSectionsBuilder::with_base_address(0x1000)
             .build()
             .unwrap();
+    let args = Args::default();
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
-    let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections);
+    let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections, &args);
     let section_layouts = layout_sections(&section_part_layouts);
 
     // Make sure no alloc sections overlap

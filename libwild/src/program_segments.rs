@@ -1,3 +1,5 @@
+use crate::Args;
+
 pub(crate) const MAX_SEGMENTS: usize = PROGRAM_SEGMENT_DEFS.len();
 
 #[derive(Default, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, Debug)]
@@ -83,9 +85,9 @@ impl ProgramSegmentId {
         )
     }
 
-    pub(crate) fn alignment(self) -> crate::alignment::Alignment {
+    pub(crate) fn alignment(self, args: &Args) -> crate::alignment::Alignment {
         if self.segment_type() == object::elf::PT_LOAD {
-            crate::alignment::PAGE
+            args.loadable_segment_alignment()
         } else {
             crate::alignment::MIN
         }

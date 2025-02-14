@@ -537,7 +537,7 @@ fn write_program_headers<S: StorageModel>(
         let segment_header = program_headers_out.take_header()?;
         let mut alignment = segment_sizes.alignment;
         if segment_id.segment_type() == object::elf::PT_LOAD {
-            alignment = alignment.max(crate::alignment::PAGE);
+            alignment = alignment.max(layout.args().loadable_segment_alignment());
         }
         let e = LittleEndian;
         segment_header.p_type.set(e, segment_id.segment_type());

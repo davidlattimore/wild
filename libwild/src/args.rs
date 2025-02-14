@@ -12,6 +12,7 @@
 //! Basically, we need to be able to parse arguments in the same way as the other linkers on the
 //! platform that we're targeting.
 
+use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::error::Result;
 use crate::input_data::FileId;
@@ -655,6 +656,13 @@ impl Args {
                 OutputKind::StaticExecutable(self.relocation_model)
             }
         })
+    }
+
+    pub(crate) fn loadable_segment_alignment(&self) -> Alignment {
+        match self.arch {
+            Architecture::X86_64 => Alignment { exponent: 12 },
+            Architecture::AArch64 => Alignment { exponent: 16 },
+        }
     }
 }
 

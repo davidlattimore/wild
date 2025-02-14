@@ -32,9 +32,6 @@ pub(crate) const GNU_HASH: Alignment = Alignment { exponent: 3 };
 /// The minimum alignment of a phdr entry.
 pub(crate) const PROGRAM_HEADER_ENTRY: Alignment = Alignment { exponent: 3 };
 
-/// The minimum alignment of loadable program segments.
-pub(crate) const PAGE: Alignment = Alignment { exponent: 12 };
-
 /// The minimum alignment of a PLT entry.
 pub(crate) const PLT: Alignment = Alignment { exponent: 4 };
 
@@ -114,6 +111,7 @@ fn test_align_up() {
 
 #[test]
 fn test_align_modulo() {
+    const PAGE: Alignment = Alignment { exponent: 12 };
     assert_eq!(PAGE.align_modulo(0x123456, 0x987456), 0x988456);
     assert_eq!(PAGE.align_modulo(0x123456, 0x987555), 0x988456);
     assert_eq!(PAGE.align_modulo(0x123456, 0x987222), 0x988456);
