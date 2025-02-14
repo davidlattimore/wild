@@ -78,6 +78,18 @@ impl Arch for AArch64 {
             object::elf::R_AARCH64_JUMP26 => {
                 relax(RelaxationKind::ReplaceWithNop, object::elf::R_AARCH64_NONE);
             }
+            object::elf::R_AARCH64_ADR_GOT_PAGE => {
+                relax(
+                    RelaxationKind::AdrpToAdr,
+                    object::elf::R_AARCH64_ADR_PREL_LO21,
+                );
+            }
+            object::elf::R_AARCH64_ADR_PREL_PG_HI21 => {
+                relax(
+                    RelaxationKind::AdrpToAdr,
+                    object::elf::R_AARCH64_ADR_PREL_LO21,
+                );
+            }
             _ => {}
         }
 

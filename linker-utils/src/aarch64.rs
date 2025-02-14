@@ -30,6 +30,9 @@ pub enum RelaxationKind {
 
     /// Replace with movk xn
     MovkXn,
+
+    /// Replace adrp with adr
+    AdrpToAdr,
 }
 
 impl RelaxationKind {
@@ -81,6 +84,10 @@ impl RelaxationKind {
                 section_bytes[offset..offset + 4].copy_from_slice(&[
                     dst_reg, 0x0, 0x80, 0xf2, // movk x{dst}, ${offset}
                 ]);
+            }
+            RelaxationKind::AdrpToAdr => {
+                // Clear the op bit of the instruction. See C6.2.12 and C6.2.13.
+                section_bytes[offset + 3] &= !0x80;
             }
         }
     }
