@@ -195,58 +195,67 @@ const DEFAULT_FLAGS: &[&str] = &[
     "EL", // little endian
 ];
 
+impl Default for Args {
+    fn default() -> Self {
+        Args {
+            arch: default_target_arch(),
+
+            lib_search_path: Vec::new(),
+            inputs: Vec::new(),
+            output: Arc::from(Path::new("a.out")),
+            is_dynamic_executable: false,
+            dynamic_linker: None,
+            output_kind: None,
+            time_phases: false,
+            num_threads: crate::threading::available_parallelism(),
+            strip_all: false,
+            strip_debug: false,
+            // For now, we default to --gc-sections. This is different to other linkers, but other than
+            // being different, there doesn't seem to be any downside to doing this. We don't currently do
+            // any less work if we're not GCing sections, but do end up writing more, so --no-gc-sections
+            // will almost always be as slow or slower than --gc-sections. For that reason, the latter is
+            // probably a good default.
+            gc_sections: true,
+            prepopulate_maps: false,
+            sym_info: None,
+            merge_strings: true,
+            debug_fuel: None,
+            validate_output: std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1"),
+            write_layout: std::env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1"),
+            write_trace: std::env::var(WRITE_TRACE_ENV).is_ok_and(|v| v == "1"),
+            verify_allocation_consistency: std::env::var(WRITE_VERIFY_ALLOCATIONS_ENV)
+                .is_ok_and(|v| v == "1"),
+            print_allocations: std::env::var("WILD_PRINT_ALLOCATIONS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .map(FileId::from_encoded),
+            relocation_model: RelocationModel::NonRelocatable,
+            version_script_path: None,
+            debug_address: None,
+            should_write_eh_frame_hdr: false,
+            write_gc_stats: None,
+            gc_stats_ignore: Vec::new(),
+            verbose_gc_stats: false,
+            rpaths: Vec::new(),
+            soname: None,
+            execstack: false,
+            should_fork: true,
+            file_write_mode: FileWriteMode::UnlinkAndReplace,
+            build_id: BuildIdOption::None,
+            files_per_group: None,
+            no_undefined: false,
+        }
+    }
+}
+
 // Parse the supplied input arguments, which should not include the program name.
 pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Result<Action> {
     let mut args = Args {
-        arch: default_target_arch(),
-
-        lib_search_path: Vec::new(),
-        inputs: Vec::new(),
-        output: Arc::from(Path::new("a.out")),
-        is_dynamic_executable: false,
-        dynamic_linker: None,
-        output_kind: None,
-        time_phases: false,
-        num_threads: crate::threading::available_parallelism(),
-        strip_all: false,
-        strip_debug: false,
-        // For now, we default to --gc-sections. This is different to other linkers, but other than
-        // being different, there doesn't seem to be any downside to doing this. We don't currently do
-        // any less work if we're not GCing sections, but do end up writing more, so --no-gc-sections
-        // will almost always be as slow or slower than --gc-sections. For that reason, the latter is
-        // probably a good default.
-        gc_sections: true,
-        prepopulate_maps: false,
-        sym_info: None,
-        merge_strings: true,
-        debug_fuel: None,
-        validate_output: std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1"),
-        write_layout: std::env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1"),
-        write_trace: std::env::var(WRITE_TRACE_ENV).is_ok_and(|v| v == "1"),
-        verify_allocation_consistency: std::env::var(WRITE_VERIFY_ALLOCATIONS_ENV)
-            .is_ok_and(|v| v == "1"),
-        print_allocations: std::env::var("WILD_PRINT_ALLOCATIONS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .map(FileId::from_encoded),
-        relocation_model: RelocationModel::NonRelocatable,
-        version_script_path: None,
-        debug_address: None,
-        should_write_eh_frame_hdr: false,
-        write_gc_stats: None,
-        gc_stats_ignore: Vec::new(),
-        verbose_gc_stats: false,
-        rpaths: Vec::new(),
-        soname: None,
-        execstack: false,
-        should_fork: true,
-        file_write_mode: FileWriteMode::UnlinkAndReplace,
-        build_id: BuildIdOption::None,
         files_per_group: std::env::var(FILES_PER_GROUP_ENV)
             .ok()
             .map(|s| s.parse())
             .transpose()?,
-        no_undefined: false,
+        ..Default::default()
     };
 
     let mut action = None;
