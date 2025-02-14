@@ -72,6 +72,12 @@ impl Arch for AArch64 {
                     object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G0_NC,
                 );
             }
+            object::elf::R_AARCH64_CALL26 => {
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_AARCH64_NONE);
+            }
+            object::elf::R_AARCH64_JUMP26 => {
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_AARCH64_NONE);
+            }
             _ => {}
         }
 

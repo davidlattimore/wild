@@ -184,9 +184,9 @@ impl Config {
                 "rel.extra-opt.R_X86_64_GOTPCRELX.CallIndirectToRelative.static-*",
                 // We don't yet support emitting warnings.
                 "section.gnu.warning",
-                // GNU ld sometimes optimises these relocations in ways that we don't yet recognise.
-                "rel.match_failed.R_AARCH64_CALL26",
-                "rel.match_failed.R_AARCH64_JUMP26",
+                // GNU ld sometimes applies relaxations that we don't yet.
+                "rel.missing-opt.R_AARCH64_CALL26.ReplaceWithNop.static-non-pie",
+                "rel.missing-opt.R_AARCH64_JUMP26.ReplaceWithNop.static-non-pie",
                 "rel.match_failed.R_AARCH64_TLSDESC_ADR_PAGE21",
                 "rel.match_failed.R_AARCH64_TLSDESC_LD64_LO12",
                 // We seem to do an optimisation here where GNU ld doesn't. TODO: Look into if this
