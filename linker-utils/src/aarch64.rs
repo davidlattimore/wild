@@ -140,13 +140,13 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationKind::Relative,
             RelocationSize::ByteSize(4),
             None,
-            AllowedRange::new(-(2i64.pow(15)), 2i64.pow(16)),
+            AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
         ),
         object::elf::R_AARCH64_PREL16 => (
             RelocationKind::Relative,
             RelocationSize::ByteSize(2),
             None,
-            AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
+            AllowedRange::new(-(2i64.pow(15)), 2i64.pow(16)),
         ),
 
         // TODO: missing in upstream header file (as well as in Object crate):
