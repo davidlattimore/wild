@@ -15,6 +15,7 @@ libwild = { path = "../libwild" }
 mimalloc = { version = "0.1", default-features = false, optional = true }
 
 dhat = { version = "0.3.3", optional = true }
+os_info = "3.10.0"
 
 [dev-dependencies]
 anyhow = "1.0.95"
