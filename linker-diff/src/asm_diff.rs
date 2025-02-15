@@ -124,6 +124,10 @@ pub(crate) fn report_function_diffs_for_arch<A: Arch>(report: &mut Report, binar
     let mut section_ids_to_process: Vec<InputSectionId> =
         matched_sections.keys().copied().collect();
 
+    // Sort sections so that we process sections in a deterministic order, since that affects our
+    // output order.
+    section_ids_to_process.sort();
+
     while let Some(section_id) = section_ids_to_process.pop() {
         let section_versions = matched_sections.get(&section_id).unwrap();
 
