@@ -14,6 +14,7 @@ use crate::symbol::SymbolName;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context;
+use normalize_path::NormalizePath;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -23,6 +24,7 @@ pub(crate) fn linker_script_to_inputs(
     bytes: &[u8],
     path: &Path,
     modifiers: Modifiers,
+    sysroot: Option<&Path>,
 ) -> Result<Vec<Input>> {
     let text = std::str::from_utf8(bytes)?;
     let directory = path
@@ -33,9 +35,34 @@ pub(crate) fn linker_script_to_inputs(
         .into_iter()
         .map(|mut input| {
             input.search_first = Some(directory.to_owned());
+            if let (Some(sysroot), InputSpec::File(file)) = (sysroot, &mut input.spec) {
+                if let Some(new_file) = maybe_apply_sysroot(path, file, sysroot) {
+                    *file = new_file;
+                }
+            }
+
             input
         })
         .collect())
+}
+
+fn maybe_apply_sysroot(
+    linker_script_path: &Path,
+    input_path: &Path,
+    sysroot: &Path,
+) -> Option<Box<Path>> {
+    if linker_script_path.normalize().starts_with(sysroot) {
+        Some(Box::from(sysroot.join(input_path.strip_prefix("/").ok()?)))
+    } else {
+        maybe_forced_sysroot(input_path, sysroot)
+    }
+}
+
+pub(crate) fn maybe_forced_sysroot(path: &Path, sysroot: &Path) -> Option<Box<Path>> {
+    path.strip_prefix("=")
+        .or_else(|_| path.strip_prefix("$SYSROOT"))
+        .ok()
+        .map(|stripped| Box::from(sysroot.join(stripped)))
 }
 
 /// A version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
@@ -460,5 +487,46 @@ mod tests {
             ["bar"],
         );
         assert!(version.locals.matches_all);
+    }
+
+    #[test]
+    fn test_sysroot_application() {
+        let sysroot = Path::new("/usr/aarch64-linux-gnu");
+        // Linker script is located in the sysroot
+        assert_equal(
+            maybe_apply_sysroot(
+                &sysroot.join("lib/libc.so"),
+                Path::new("/lib/libc.so.6"),
+                sysroot,
+            ),
+            Some(Box::from(sysroot.join("lib/libc.so.6"))),
+        );
+        // Linker script is not located in the sysroot
+        assert_equal(
+            maybe_apply_sysroot(
+                Path::new("/lib/libc.so"),
+                Path::new("/lib/libc.so.6"),
+                sysroot,
+            ),
+            None,
+        );
+        // Sysroot enforced by `=`
+        assert_equal(
+            maybe_apply_sysroot(
+                Path::new("/lib/libc.so"),
+                Path::new("=/lib/libc.so.6"),
+                sysroot,
+            ),
+            Some(Box::from(sysroot.join("lib/libc.so.6"))),
+        );
+        // Sysroot enforced by `$SYSROOT`
+        assert_equal(
+            maybe_apply_sysroot(
+                Path::new("/lib/libc.so"),
+                Path::new("$SYSROOT/lib/libc.so.6"),
+                sysroot,
+            ),
+            Some(Box::from(sysroot.join("lib/libc.so.6"))),
+        );
     }
 }

@@ -16,6 +16,7 @@ use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::error::Result;
 use crate::input_data::FileId;
+use crate::linker_script::maybe_forced_sysroot;
 use crate::save_dir::SaveDir;
 use anyhow::bail;
 use anyhow::ensure;
@@ -56,6 +57,7 @@ pub(crate) struct Args {
     pub(crate) file_write_mode: FileWriteMode,
     pub(crate) no_undefined: bool,
     pub(crate) allow_copy_relocations: bool,
+    pub(crate) sysroot: Option<Box<Path>>,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -240,6 +242,7 @@ impl Default for Args {
             files_per_group: None,
             no_undefined: false,
             should_print_version: false,
+            sysroot: None,
         }
     }
 }
@@ -302,13 +305,19 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         };
 
         if let Some(rest) = arg.strip_prefix("-L") {
+            let handle_sysroot = |path| {
+                args.sysroot
+                    .as_ref()
+                    .and_then(|sysroot| maybe_forced_sysroot(path, sysroot))
+                    .unwrap_or_else(|| Box::from(path))
+            };
             if rest.is_empty() {
                 if let Some(next) = input.next() {
                     args.lib_search_path
-                        .push(Box::from(Path::new(next.as_ref())));
+                        .push(handle_sysroot(Path::new(next.as_ref())));
                 }
             } else {
-                args.lib_search_path.push(Box::from(Path::new(rest)));
+                args.lib_search_path.push(handle_sysroot(Path::new(rest)));
             }
         } else if let Some(rest) = arg.strip_prefix("-l") {
             args.inputs.push(Input {
@@ -507,8 +516,14 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if strip_option(arg)
             .is_some_and(|stripped_arg| SILENTLY_IGNORED_FLAGS.contains(&stripped_arg))
         {
-        } else if long_arg_split_prefix("sysroot=").is_some() {
-            warn_unsupported("--sysroot")?;
+        } else if let Some(sysroot) = long_arg_split_prefix("sysroot=") {
+            let sysroot = Path::new(sysroot);
+            args.sysroot = Some(Box::from(sysroot));
+            for path in &mut args.lib_search_path {
+                if let Some(new_path) = maybe_forced_sysroot(path, sysroot) {
+                    *path = new_path;
+                }
+            }
         } else if arg.starts_with('-') {
             unrecognised.push(format!("`{arg}`"));
         } else {
@@ -889,6 +904,7 @@ mod tests {
         "-X",
         "-EL",
         "-v",
+        "--sysroot=/usr/aarch64-linux-gnu",
     ];
 
     #[track_caller]
@@ -923,6 +939,10 @@ mod tests {
         assert_eq!(args.soname, Some("bar".to_owned()));
         assert_eq!(args.num_threads, NonZeroUsize::new(1).unwrap());
         assert!(args.should_print_version);
+        assert_eq!(
+            args.sysroot,
+            Some(Box::from(Path::new("/usr/aarch64-linux-gnu")))
+        );
     }
 
     #[test]
