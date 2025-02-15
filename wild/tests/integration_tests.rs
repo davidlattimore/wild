@@ -1577,7 +1577,11 @@ fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
     [Architecture::AArch64]
         .into_iter()
         .filter_map(|arch| {
-            let path = PathBuf::from(format!("/usr/{arch}-linux-gnu/bin/{name}"));
+            let path = PathBuf::from(if is_host_opensuse() {
+                format!("/usr/{arch}-suse-linux/bin/{name}")
+            } else {
+                format!("/usr/{arch}-linux-gnu/bin/{name}")
+            });
             if path.exists() {
                 Some((arch, path))
             } else {
