@@ -27,6 +27,7 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -225,21 +226,19 @@ fn host_supports_clang_with_tls_desc() -> bool {
     static CLANG_SUPPORTS_TLS_DESC: OnceLock<bool> = OnceLock::new();
 
     *CLANG_SUPPORTS_TLS_DESC.get_or_init(|| {
-        let mut echo_child = Command::new("echo")
-            .arg("int main() { return 0; }")
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("Failed to start echo process");
-        echo_child.wait().expect("Failed to wait for echo");
-        let echo_out = echo_child.stdout.expect("Failed to open echo stdout");
-
-        let clang = Command::new("clang")
+        let mut clang = Command::new("clang")
             .args(["-mtls-dialect=gnu2", "-x", "c", "-", "-o/dev/null"])
-            .stdin(Stdio::from(echo_out))
-            .output()
+            .stdin(Stdio::piped())
+            .spawn()
             .expect("Failed to run clang");
+        let mut stdin = clang.stdin.take().expect("Failed to open stdin");
+        std::thread::spawn(move || {
+            stdin
+                .write_all("int main() { return 0; }".as_bytes())
+                .expect("Failed to write to stdin");
+        });
 
-        clang.status.success()
+        dbg!(clang.wait().expect("Wait failed").success())
     })
 }
 
