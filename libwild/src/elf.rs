@@ -11,6 +11,7 @@ use linker_utils::elf::extract_bits;
 use linker_utils::elf::sht;
 use linker_utils::elf::BitMask;
 use linker_utils::elf::PageMask;
+use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionType;
 use object::read::elf::CompressionHeader;
@@ -443,11 +444,13 @@ pub(crate) fn get_page_mask(mask: Option<PageMask>) -> PageMaskValue {
 }
 
 pub(crate) fn write_relocation_to_buffer(
-    size: RelocationSize,
+    rel_info: RelocationKindInfo,
     value: u64,
     output: &mut [u8],
 ) -> Result<()> {
-    match size {
+    rel_info.range.verify(value as i64)?;
+
+    match rel_info.size {
         RelocationSize::ByteSize(byte_size) => {
             ensure!(
                 byte_size <= output.len(),
@@ -461,7 +464,7 @@ pub(crate) fn write_relocation_to_buffer(
             instruction: insn,
         }) => {
             let extracted_value = extract_bits(value, range.start, range.end);
-            let negative = (value as i64) < 0;
+            let negative = (value as i64).is_negative();
             insn.write_to_value(extracted_value, negative, &mut output[..4]);
         }
     }

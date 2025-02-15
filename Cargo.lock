@@ -739,6 +739,7 @@ dependencies = [
 name = "linker-utils"
 version = "0.3.0"
 dependencies = [
+ "anyhow",
  "object",
 ]
 

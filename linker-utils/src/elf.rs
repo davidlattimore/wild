@@ -1,3 +1,4 @@
+use anyhow::Result;
 use object::read::elf::SectionHeader;
 use object::LittleEndian;
 use std::borrow::Cow;
@@ -718,11 +719,42 @@ pub enum PageMask {
     GotBase,
 }
 
+// Allow range (half-open) of a computed value of a relocation
+#[derive(Clone, Debug, Copy)]
+pub struct AllowedRange {
+    pub min: i64,
+    pub max: i64,
+}
+
+impl AllowedRange {
+    #[must_use]
+    pub const fn new(min: i64, max: i64) -> Self {
+        Self { min, max }
+    }
+
+    #[must_use]
+    pub const fn no_check() -> Self {
+        Self::new(i64::MIN, i64::MAX)
+    }
+
+    pub fn verify(&self, value: i64) -> Result<()> {
+        anyhow::ensure!(
+            self.min <= value && value < self.max,
+            format!(
+                "Relocation {value} outside of bounds [{}, {})",
+                self.min, self.max
+            )
+        );
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Copy)]
 pub struct RelocationKindInfo {
     pub kind: RelocationKind,
     pub size: RelocationSize,
     pub mask: Option<PageMask>,
+    pub range: AllowedRange,
 }
 
 impl BitMask {
