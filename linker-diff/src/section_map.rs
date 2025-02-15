@@ -356,3 +356,19 @@ impl Display for FileIdentifier<'_> {
         Ok(())
     }
 }
+
+impl PartialOrd for InputSectionId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for InputSectionId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.file_index.cmp(&other.file_index) {
+            core::cmp::Ordering::Equal => {}
+            ord => return ord,
+        }
+        self.section_index.0.cmp(&other.section_index.0)
+    }
+}
