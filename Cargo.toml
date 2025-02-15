@@ -10,15 +10,6 @@ readme = "README.md"
 rust-version = "1.83"
 edition = "2021"
 
-[profile.release.package.disarm64]
-# disarm64 seems to be incredibly slow to build when optimisations are enabled. This is likely due
-# to it containing an auto-generated 280k line source file. Since we only disassemble in linker-diff
-# and only when there's a match failure, we don't care too much about performance, so we turn off
-# optimisation for this crate. At the time of writing, on David's laptop, building just disarm64,
-# with dependencies already built, took almost 4 minutes for a release build but only 46 seconds
-# with opt-level=0.
-opt-level = 0
-
 [profile.opt-debug]
 inherits = "release"
 debug = true

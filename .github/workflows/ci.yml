@@ -41,9 +41,9 @@ jobs:
     steps:
       - run: echo "WILD_TEST_CROSS=aarch64" >> $GITHUB_ENV
         if: ${{ matrix.test-qemu }}
-      - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap
+      - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap binutils-aarch64-linux-gnu
         if: ${{ contains(matrix.container, 'ubuntu') }}
-      - run: apt-get update && apt-get -y install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu
+      - run: apt-get update && apt-get -y install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
         if: ${{ matrix.test-qemu }}
       - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
         if: ${{ contains(matrix.container, 'opensuse') }}

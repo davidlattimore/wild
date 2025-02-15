@@ -17,7 +17,7 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
     type RelaxationKind: RelaxationKind;
 
     /// A type representing a decoded instruction on this architecture.
-    type RawInstruction: Copy + Clone;
+    type RawInstruction: Clone;
 
     /// The maximum number of bytes prior to a relocation offset that a relaxation might modify.
     const MAX_RELAX_MODIFY_BEFORE: u64;
