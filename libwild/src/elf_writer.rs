@@ -2012,7 +2012,7 @@ fn apply_relocation<S: StorageModel, A: Arch>(
         tracing::trace!(%value_flags, %resolution_flags, ?rel_info.kind, value, value_hex = %HexU64::new(value), %symbol_name, "relocation applied");
     }
 
-    write_relocation_to_buffer(rel_info.size, value, &mut out[offset_in_section as usize..])?;
+    write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section as usize..])?;
 
     Ok(next_modifier)
 }
@@ -2078,7 +2078,7 @@ fn apply_debug_relocation<S: StorageModel, A: Arch>(
         bail!("Could not find a relocation resolution for a debug info section");
     };
 
-    write_relocation_to_buffer(rel_info.size, value, &mut out[offset_in_section as usize..])?;
+    write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section as usize..])?;
 
     Ok(())
 }
