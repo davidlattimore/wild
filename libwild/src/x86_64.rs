@@ -11,6 +11,7 @@ use anyhow::anyhow;
 use anyhow::Result;
 use linker_utils::elf::shf;
 use linker_utils::elf::x86_64_rel_type_to_string;
+use linker_utils::elf::AllowedRange;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
@@ -49,6 +50,7 @@ impl crate::arch::Arch for X86_64 {
             kind,
             size: RelocationSize::ByteSize(size),
             mask: None,
+            range: AllowedRange::no_check(),
         })
     }
 

@@ -19,6 +19,7 @@ use object::LittleEndian;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
+use os_info::Type;
 use rstest::fixture;
 use rstest::rstest;
 use std::collections::HashMap;
@@ -214,6 +215,10 @@ fn get_host_architecture() -> Architecture {
         return Architecture::AArch64;
     }
     todo!("Unsupported architecture")
+}
+
+fn is_host_opensuse() -> bool {
+    os_info::get().os_type() == Type::openSUSE
 }
 
 fn host_supports_clang_with_tls_desc() -> bool {
@@ -590,7 +595,11 @@ impl Program<'_> {
         let mut command = if let Some(arch) = cross_arch {
             let mut c = Command::new(format!("qemu-{arch}"));
             c.arg("-L");
-            c.arg("/usr/aarch64-linux-gnu");
+            c.arg(if is_host_opensuse() {
+                "/usr/aarch64-suse-linux/sys-root/"
+            } else {
+                "/usr/aarch64-linux-gnu"
+            });
             c.arg(&self.link_output.binary);
             c
         } else {
@@ -728,8 +737,16 @@ fn get_c_compiler(
         (None, "gcc", CLanguage::Cpp) => Ok("g++"),
         (None, "clang", CLanguage::C) => Ok("clang"),
         (None, "clang", CLanguage::Cpp) => Ok("clang++"),
-        (Some(Architecture::AArch64), "gcc" | "g++", CLanguage::C) => Ok("aarch64-linux-gnu-gcc"),
-        (Some(Architecture::AArch64), "gcc" | "g++", CLanguage::Cpp) => Ok("aarch64-linux-gnu-g++"),
+        (Some(Architecture::AArch64), "gcc" | "g++", CLanguage::C) => Ok(if is_host_opensuse() {
+            "aarch64-suse-linux-gcc"
+        } else {
+            "aarch64-linux-gnu-gcc"
+        }),
+        (Some(Architecture::AArch64), "gcc" | "g++", CLanguage::Cpp) => Ok(if is_host_opensuse() {
+            "aarch64-suse-linux-g++"
+        } else {
+            "aarch64-linux-gnu-g++"
+        }),
         _ => bail!("Unsupported compiler and or architecture `{compiler}` / {cross_arch:?}"),
     }
 }
@@ -1560,7 +1577,11 @@ fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
     [Architecture::AArch64]
         .into_iter()
         .filter_map(|arch| {
-            let path = PathBuf::from(format!("/usr/{arch}-linux-gnu/bin/{name}"));
+            let path = PathBuf::from(if is_host_opensuse() {
+                format!("/usr/{arch}-suse-linux/bin/{name}")
+            } else {
+                format!("/usr/{arch}-linux-gnu/bin/{name}")
+            });
             if path.exists() {
                 Some((arch, path))
             } else {
