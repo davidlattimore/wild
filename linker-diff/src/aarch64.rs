@@ -2,7 +2,9 @@ use crate::arch::Arch;
 use crate::arch::Instruction;
 use crate::arch::Relaxation;
 use crate::arch::RelaxationByteRange;
-use disarm64::Opcode;
+use anyhow::Context;
+use anyhow::Result;
+use itertools::Itertools;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_SIZE_BITS;
@@ -14,16 +16,52 @@ use linker_utils::elf::RelocationInstruction;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
 use std::fmt::Display;
+use std::io::Write;
+use std::process::Command;
+use std::process::Stdio;
+use tempfile::NamedTempFile;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct AArch64;
+
+fn decode_insn_with_objdump(insn: &[u8]) -> Result<String> {
+    // TODO: seems objdump cannot read from stdin
+    let mut tmpfile = NamedTempFile::new()?;
+    tmpfile.write_all(insn)?;
+    tmpfile.flush()?;
+
+    let command = Command::new("objdump")
+        .arg("-b")
+        .arg("binary")
+        .arg("-m")
+        .arg("aarch64")
+        .arg("-D")
+        .arg(tmpfile.path())
+        .stdout(Stdio::piped())
+        .spawn()
+        .context("Failed to spawn objdump")?;
+
+    let output = command.wait_with_output().expect("Failed to read stdout");
+    // Sample output: 0:	37000008 	tbnz	w8, #0, 0x0
+    let insn_line = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .last()
+        .context("No objdump output")?
+        .to_owned();
+    Ok(insn_line
+        .split_whitespace()
+        .skip(2)
+        .join(" ")
+        .replacen(" ", "\t", 1)
+        .to_string())
+}
 
 impl Arch for AArch64 {
     type RType = RType;
 
     type RelaxationKind = RelaxationKind;
 
-    type RawInstruction = Option<Opcode>;
+    type RawInstruction = Option<String>;
 
     const MAX_RELAX_MODIFY_BEFORE: u64 = 0;
     const MAX_RELAX_MODIFY_AFTER: u64 = 4;
@@ -117,17 +155,10 @@ impl Arch for AArch64 {
     }
 
     fn instruction_to_string(instruction: &Instruction<Self>) -> String {
-        let mut out = String::new();
-
-        if let Some(opcode) = instruction.raw_instruction {
-            if let Err(error) =
-                disarm64::format_insn::format_insn_pc(instruction.address(), &mut out, &opcode)
-            {
-                return format!("Failed to print instruction: {error}");
-            }
+        if let Some(str) = instruction.raw_instruction.as_ref() {
+            return str.to_owned();
         }
-
-        out
+        String::new()
     }
 
     fn decode_instructions_in_range(
@@ -142,8 +173,7 @@ impl Arch for AArch64 {
 
         while offset < range.end {
             let bytes = &section_bytes[offset as usize..offset as usize + 4];
-            let value = u32::from_le_bytes(*bytes.first_chunk::<4>().unwrap());
-            let raw_instruction = disarm64::decoder::decode(value);
+            let raw_instruction = decode_insn_with_objdump(bytes).ok();
 
             instructions.push(crate::arch::Instruction {
                 raw_instruction,
