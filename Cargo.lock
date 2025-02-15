@@ -652,6 +652,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
+ "normalize-path",
  "object",
  "rayon",
  "sharded-offset-map",
@@ -793,6 +794,12 @@ checksum = "c4c25a3bb7d880e8eceab4822f3141ad0700d20f025991c1f03bd3d00219a5fc"
 dependencies = [
  "bitflags",
 ]
+
+[[package]]
+name = "normalize-path"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5438dd2b2ff4c6df6e1ce22d825ed2fa93ee2922235cc45186991717f0a892d"
 
 [[package]]
 name = "nu-ansi-term"

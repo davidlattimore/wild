@@ -99,7 +99,7 @@ impl<'config> InputData<'config> {
         };
 
         for input in &config.inputs {
-            input_data.register_input(input)?;
+            input_data.register_input(input, config.sysroot.as_deref())?;
         }
 
         // Our last "file", similar to the prelude is responsible for internal stuff, but this time
@@ -114,7 +114,7 @@ impl<'config> InputData<'config> {
         Ok(input_data)
     }
 
-    fn register_input(&mut self, input: &Input) -> Result {
+    fn register_input(&mut self, input: &Input, sysroot: Option<&Path>) -> Result {
         let paths = input.path(self.config)?;
         let absolute_path = &paths.absolute;
         if !self.filenames.insert(absolute_path.clone()) {
@@ -154,8 +154,9 @@ impl<'config> InputData<'config> {
                 &bytes,
                 absolute_path,
                 input.modifiers,
+                sysroot,
             )? {
-                self.register_input(&input)?;
+                self.register_input(&input, sysroot)?;
             }
             return Ok(());
         }
