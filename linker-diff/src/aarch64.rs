@@ -25,7 +25,7 @@ use tempfile::NamedTempFile;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct AArch64;
 
-fn decode_insn_with_objdump(insn: &[u8]) -> Result<String> {
+fn decode_insn_with_objdump(insn: &[u8], address: u64) -> Result<String> {
     static OBJDUMP_BIN: OnceLock<&'static str> = OnceLock::new();
 
     // TODO: seems objdump cannot read from stdin
@@ -43,6 +43,7 @@ fn decode_insn_with_objdump(insn: &[u8]) -> Result<String> {
     let command = Command::new(objdump)
         .arg("-b")
         .arg("binary")
+        .arg(format!("--adjust-vma=0x{address:x}"))
         .arg("-m")
         .arg("aarch64")
         .arg("-D")
@@ -69,7 +70,7 @@ fn decode_insn_with_objdump(insn: &[u8]) -> Result<String> {
 #[test]
 fn test_align_up() {
     assert_eq!(
-        decode_insn_with_objdump(&[0xe3, 0x93, 0x44, 0xa9]).unwrap(),
+        decode_insn_with_objdump(&[0xe3, 0x93, 0x44, 0xa9], 0x1000).unwrap(),
         "ldp\tx3, x4, [sp, #72]"
     );
 }
@@ -191,11 +192,13 @@ impl Arch for AArch64 {
 
         while offset < range.end {
             let bytes = &section_bytes[offset as usize..offset as usize + 4];
-            let raw_instruction = decode_insn_with_objdump(bytes).ok();
+            let address = section_address + offset;
+
+            let raw_instruction = decode_insn_with_objdump(bytes, address).ok();
 
             instructions.push(crate::arch::Instruction {
                 raw_instruction,
-                address: section_address + offset,
+                address,
                 bytes,
             });
 
