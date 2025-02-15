@@ -30,7 +30,12 @@ fn decode_insn_with_objdump(insn: &[u8]) -> Result<String> {
     tmpfile.write_all(insn)?;
     tmpfile.flush()?;
 
-    let command = Command::new("objdump")
+    let objdump = ["aarch64-linux-gnu-objdump", "objdump"]
+        .iter()
+        .find(|bin| which::which(bin).is_ok())
+        .unwrap();
+
+    let command = Command::new(objdump)
         .arg("-b")
         .arg("binary")
         .arg("-m")

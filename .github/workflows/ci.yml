@@ -39,7 +39,7 @@ jobs:
         if: ${{ runner.arch == 'ARM64' }}
       - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap
         if: ${{ contains(matrix.container, 'ubuntu') }}      
-      - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
+      - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap binutils-aarch64-linux-gnu
         if: ${{ contains(matrix.container, 'opensuse') }}
       - run: useradd -m -g users user && su user && cd ~
       - uses: actions/checkout@v4
