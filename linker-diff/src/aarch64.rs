@@ -56,6 +56,14 @@ fn decode_insn_with_objdump(insn: &[u8]) -> Result<String> {
         .to_string())
 }
 
+#[test]
+fn test_align_up() {
+    assert_eq!(
+        decode_insn_with_objdump(&[0xe3, 0x93, 0x44, 0xa9]).unwrap(),
+        "ldp\tx3, x4, [sp, #72]"
+    );
+}
+
 impl Arch for AArch64 {
     type RType = RType;
 
