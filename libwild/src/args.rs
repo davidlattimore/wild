@@ -118,6 +118,10 @@ pub(crate) struct Modifiers {
 
     /// Whether we're currently allowed to link against shared libraries.
     pub(crate) allow_shared: bool,
+
+    /// Whether object files in archives should be linked even if they do not contain symbols that
+    /// are referenced.
+    pub(crate) whole_archive: bool,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -417,6 +421,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             modifier_stack.last_mut().unwrap().as_needed = true;
         } else if long_arg_eq("no-as-needed") {
             modifier_stack.last_mut().unwrap().as_needed = false;
+        } else if long_arg_eq("whole-archive") {
+            modifier_stack.last_mut().unwrap().whole_archive = true;
+        } else if long_arg_eq("no-whole-archive") {
+            modifier_stack.last_mut().unwrap().whole_archive = false;
         } else if long_arg_eq("push-state") {
             modifier_stack.push(*modifier_stack.last().unwrap());
         } else if long_arg_eq("pop-state") {
@@ -687,6 +695,7 @@ impl Default for Modifiers {
         Self {
             as_needed: false,
             allow_shared: true,
+            whole_archive: false,
         }
     }
 }
