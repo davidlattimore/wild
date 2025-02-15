@@ -238,7 +238,7 @@ fn host_supports_clang_with_tls_desc() -> bool {
                 .expect("Failed to write to stdin");
         });
 
-        dbg!(clang.wait().expect("Wait failed").success())
+        clang.wait().expect("Wait failed").success()
     })
 }
 
