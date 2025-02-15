@@ -19,21 +19,26 @@ use std::fmt::Display;
 use std::io::Write;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::OnceLock;
 use tempfile::NamedTempFile;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct AArch64;
 
 fn decode_insn_with_objdump(insn: &[u8]) -> Result<String> {
+    static OBJDUMP_BIN: OnceLock<&'static str> = OnceLock::new();
+
     // TODO: seems objdump cannot read from stdin
     let mut tmpfile = NamedTempFile::new()?;
     tmpfile.write_all(insn)?;
     tmpfile.flush()?;
 
-    let objdump = ["aarch64-linux-gnu-objdump", "objdump"]
-        .iter()
-        .find(|bin| which::which(bin).is_ok())
-        .unwrap();
+    let objdump = OBJDUMP_BIN.get_or_init(|| {
+        ["aarch64-linux-gnu-objdump", "objdump"]
+            .iter()
+            .find(|bin| which::which(bin).is_ok())
+            .unwrap()
+    });
 
     let command = Command::new(objdump)
         .arg("-b")
