@@ -13,7 +13,7 @@ env:
 
 jobs:
   test-nightly:
-    name: Test (${{ contains(matrix.runs-on, 'arm') && 'AArch64' || 'x86_64'}}, ${{ matrix.container }})
+    name: Test (${{ contains(matrix.runs-on, 'arm') && 'AArch64' || 'x86_64'}}, ${{ matrix.container }}${{ matrix.test-qemu && ', QEMU' || ''}})
 
     strategy:
       matrix:
@@ -25,6 +25,12 @@ jobs:
           - 'ubuntu:latest'
           - 'ubuntu:rolling'
           - 'opensuse/tumbleweed:latest'
+        test-qemu:
+          - false
+        include:
+          - runs-on: ubuntu-latest
+            container: 'ubuntu:rolling'
+            test-qemu: true
       fail-fast: false
 
     runs-on: ${{ matrix.runs-on }}
@@ -33,12 +39,12 @@ jobs:
       image: ${{ matrix.container }}
 
     steps:
-      - run: echo "ARCH=x86_64" >> $GITHUB_ENV
-        if: ${{ runner.arch == 'X64' }}
-      - run: echo "ARCH=aarch64" >> $GITHUB_ENV
-        if: ${{ runner.arch == 'ARM64' }}
+      - run: echo "WILD_TEST_CROSS=aarch64" >> $GITHUB_ENV
+        if: ${{ matrix.test-qemu }}
       - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap
-        if: ${{ contains(matrix.container, 'ubuntu') }}      
+        if: ${{ contains(matrix.container, 'ubuntu') }}
+      - run: apt-get update && apt-get -y install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu
+        if: ${{ matrix.test-qemu }}
       - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
         if: ${{ contains(matrix.container, 'opensuse') }}
       - run: useradd -m -g users user && su user && cd ~
@@ -46,7 +52,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
         with:
-          targets: $ARCH-unknown-linux-gnu,$ARCH-unknown-linux-musl
+          targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl
           components: rustc-codegen-cranelift-preview
       - uses: actions/cache@v4
         with:
@@ -58,7 +64,7 @@ jobs:
             target/
           key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
       - run: cargo build --profile ci --workspace --no-default-features
-      - run: cargo test --profile ci --workspace
+      - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace
 
   clippy:
     name: Clippy
