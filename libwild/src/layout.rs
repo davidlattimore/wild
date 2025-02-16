@@ -2465,7 +2465,18 @@ fn process_relocation<S: StorageModel, A: Arch>(
                 resolution_kind.remove(ResolutionFlags::DIRECT);
                 resolution_kind |= ResolutionFlags::PLT | ResolutionFlags::GOT;
             } else if !symbol_value_flags.contains(ValueFlags::ABSOLUTE) {
-                resolution_kind |= ResolutionFlags::COPY_RELOCATION;
+                if args.allow_copy_relocations {
+                    resolution_kind |= ResolutionFlags::COPY_RELOCATION;
+                } else {
+                    // We don't at present support text relocations, so if we can't apply a copy
+                    // relocation, we error instead.
+                    bail!(
+                        "Direct relocation ({}) to dynamic symbol from non-writable section, \
+                        but copy relocations are disabled. {}",
+                        A::rel_type_to_string(r_type),
+                        symbol_db.symbol_debug(symbol_id),
+                    );
+                }
             }
         }
 
