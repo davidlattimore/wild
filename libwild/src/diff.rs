@@ -16,7 +16,7 @@ use std::process::Command;
 pub(crate) fn maybe_diff() -> Result {
     if let Ok(reference_linker) = std::env::var(crate::args::REFERENCE_LINKER_ENV) {
         if let Some(paths) = run_with_linker(&reference_linker)? {
-            run_diff(&paths).context("Failed to run linker-diff")?;
+            run_diff(&paths)?;
         }
     }
     Ok(())
@@ -58,19 +58,34 @@ fn run_with_linker(reference_linker: &str) -> Result<Option<BinPaths>> {
 
 fn run_diff(paths: &BinPaths) -> Result {
     let linker_diff_path = std::env::current_exe()?.with_file_name("linker-diff");
+
     if !linker_diff_path.exists() {
         bail!("linker-diff binary needs to be in the same directory as wild")
     }
-    let status = Command::new(linker_diff_path)
+
+    let mut command = Command::new(linker_diff_path);
+    command
         .arg("--wild-defaults")
         .arg("--display-names")
         .arg("wild,ref")
         .arg("--ref")
         .arg(&paths.reference_output)
-        .arg(&paths.our_output)
-        .status()?;
+        .arg(&paths.our_output);
+
+    let status = command.status()?;
+
     if !status.success() {
-        bail!("linker-diff exited with non-zero status");
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        bail!(
+            "linker-diff reported errors. To rerun, execute:\n{} {}",
+            command.get_program().to_string_lossy(),
+            args.join(" ")
+        );
     }
+
     Ok(())
 }
