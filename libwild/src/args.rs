@@ -55,6 +55,7 @@ pub(crate) struct Args {
     pub(crate) build_id: BuildIdOption,
     pub(crate) file_write_mode: FileWriteMode,
     pub(crate) no_undefined: bool,
+    pub(crate) allow_copy_relocations: bool,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -220,6 +221,7 @@ impl Default for Args {
             prepopulate_maps: false,
             sym_info: None,
             merge_strings: true,
+            allow_copy_relocations: true,
             debug_fuel: None,
             validate_output: std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1"),
             write_layout: std::env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1"),
@@ -299,6 +301,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 "notext" => {}
                 "execstack" => args.execstack = true,
                 "noexecstack" => args.execstack = false,
+                "nocopyreloc" => args.allow_copy_relocations = false,
                 _ => {
                     warn_unsupported(&format!("-z {arg}"))?;
                     // TODO: Handle these
