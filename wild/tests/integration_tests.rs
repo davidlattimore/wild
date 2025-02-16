@@ -197,6 +197,14 @@ impl Architecture {
             Architecture::AArch64 => "aarch64-unknown-linux-gnu",
         }
     }
+
+    fn get_cross_sysroot_path(&self) -> String {
+        if is_host_opensuse() {
+            format!("/usr/{self}-suse-linux/sys-root")
+        } else {
+            format!("/usr/{self}-linux-gnu")
+        }
+    }
 }
 
 impl Display for Architecture {
@@ -592,11 +600,7 @@ impl Program<'_> {
         let mut command = if let Some(arch) = cross_arch {
             let mut c = Command::new(format!("qemu-{arch}"));
             c.arg("-L");
-            c.arg(if is_host_opensuse() {
-                "/usr/aarch64-suse-linux/sys-root/"
-            } else {
-                "/usr/aarch64-linux-gnu"
-            });
+            c.arg(arch.get_cross_sysroot_path());
             c.arg(&self.link_output.binary);
             c
         } else {
@@ -815,6 +819,15 @@ fn build_obj(
                 .arg("+nightly")
                 .args(["-C", "linker=clang"])
                 .args(["-C", &format!("link-arg=--ld-path={wild}")]);
+
+            if let Some(arch) = cross_arch {
+                if is_host_opensuse() {
+                    command.args([
+                        "-C",
+                        &format!("link-arg=-L{}/lib64", arch.get_cross_sysroot_path()),
+                    ]);
+                }
+            }
 
             if let Some(arch) = cross_arch {
                 let target = get_target(compiler_args).cloned().unwrap_or_else(|_| {
