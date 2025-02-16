@@ -231,13 +231,16 @@ fn host_supports_clang_with_tls_desc() -> bool {
             .stdin(Stdio::piped())
             .spawn()
             .expect("Failed to run clang");
+        let mut clang = Command::new("clang")
+            .args(["-mtls-dialect=gnu2", "-x", "c", "-", "-o/dev/null"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("Failed to run clang");
         let mut stdin = clang.stdin.take().expect("Failed to open stdin");
-        std::thread::spawn(move || {
-            stdin
-                .write_all("int main() { return 0; }".as_bytes())
-                .expect("Failed to write to stdin");
-        });
-
+        stdin
+            .write_all("int main() { return 0; }".as_bytes())
+            .expect("Write of a source file failed");
+        drop(stdin);
         clang.wait().expect("Wait failed").success()
     })
 }
