@@ -1482,7 +1482,13 @@ impl<R: RType> DynamicRelocation<'_, R> {
 
 impl<R: RType> DynamicRelocation<'_, R> {
     fn write_to(&self, f: &mut String) -> Result {
-        write!(f, "{}{}{}", self.r_type, arrow(), self.symbol)?;
+        write!(
+            f,
+            "{}{}{}",
+            self.r_type.to_string().green().bold(),
+            arrow(),
+            self.symbol.to_string().cyan()
+        )?;
         if self.addend != 0 {
             write!(f, " {:+}", self.addend)?;
         }
