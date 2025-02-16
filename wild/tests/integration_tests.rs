@@ -199,9 +199,9 @@ impl Architecture {
 
     fn get_cross_sysroot_path(&self) -> String {
         if is_host_opensuse() {
-            format!("/usr/{self}-suse-linux/sys-root/")
+            format!("/usr/{self}-suse-linux/sys-root")
         } else {
-            format!("/usr/{self}-linux-gnu/")
+            format!("/usr/{self}-linux-gnu")
         }
     }
 }
