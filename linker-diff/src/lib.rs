@@ -192,9 +192,6 @@ impl Config {
                 // We seem to do an optimisation here where GNU ld doesn't. TODO: Look into if this
                 // is OK.
                 "rel.extra-opt.R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21.MovzXnLsl16.static-non-pie",
-                // We currently seem to do copy relocations when GNU ld doesn't. This is almost
-                // certainly a bug on our part.
-                "rel.extra-copy-relocation.R_AARCH64_ADR_GOT_PAGE",
                 // GNU ld sometimes relaxes an adrp instruction to an adr instruction when the
                 // address is known and within +/-1MB. We don't as yet.
                 "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.AdrpToAdr.*",
