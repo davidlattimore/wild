@@ -2518,7 +2518,9 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
         RelocationKind::PltRelative | RelocationKind::PltRelGotBase => {
             ResolutionFlags::PLT | ResolutionFlags::GOT
         }
-        RelocationKind::GotRelGotBase | RelocationKind::GotRelative => ResolutionFlags::GOT,
+        RelocationKind::Got | RelocationKind::GotRelGotBase | RelocationKind::GotRelative => {
+            ResolutionFlags::GOT
+        }
         RelocationKind::GotTpOff
         | RelocationKind::GotTpOffGot
         | RelocationKind::GotTpOffGotBase => ResolutionFlags::GOT_TLS_OFFSET,
@@ -2538,7 +2540,6 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
         | RelocationKind::TpOff
         | RelocationKind::TpOffAArch64
         | RelocationKind::SymRelGotBase
-        | RelocationKind::Got
         | RelocationKind::None => ResolutionFlags::DIRECT,
         RelocationKind::AbsoluteAArch64 => ResolutionFlags::empty(),
     }
