@@ -596,9 +596,9 @@ impl Program<'_> {
             let mut c = Command::new(format!("qemu-{arch}"));
             c.arg("-L");
             c.arg(if is_host_opensuse() {
-                "/usr/aarch64-suse-linux/sys-root/"
+                format!("/usr/{arch}-suse-linux/sys-root/")
             } else {
-                "/usr/aarch64-linux-gnu"
+                format!("/usr/{arch}-linux-gnu")
             });
             c.arg(&self.link_output.binary);
             c
@@ -818,6 +818,15 @@ fn build_obj(
                 .arg("+nightly")
                 .args(["-C", "linker=clang"])
                 .args(["-C", &format!("link-arg=--ld-path={wild}")]);
+
+            if let Some(arch) = cross_arch {
+                if is_host_opensuse() {
+                    command.args([
+                        "-C",
+                        &format!("link-arg=-L/usr/{arch}-suse-linux/sys-root/lib64"),
+                    ]);
+                }
+            }
 
             if let Some(arch) = cross_arch {
                 let target = get_target(compiler_args).cloned().unwrap_or_else(|_| {
