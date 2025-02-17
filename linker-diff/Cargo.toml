@@ -35,7 +35,7 @@ tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 memmap2 = "0.9.5"
 memchr = "2.7.4"
-tempfile = "3.16.0"
+tempfile = "3.17.1"
 which = "7.0.2"
 
 [lints]
