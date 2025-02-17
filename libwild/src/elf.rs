@@ -1,3 +1,4 @@
+use crate::arch::Architecture;
 use crate::error::Result;
 use crate::resolution::LoadedMetrics;
 use anyhow::anyhow;
@@ -51,6 +52,7 @@ type SectionTable<'data> = object::read::elf::SectionTable<'data, FileHeader>;
 type SymbolTable<'data> = object::read::elf::SymbolTable<'data, FileHeader>;
 
 pub(crate) struct File<'data> {
+    pub(crate) arch: Architecture,
     pub(crate) data: &'data [u8],
     pub(crate) sections: SectionTable<'data>,
     /// This may be symtab or dynsym depending on the file type.
@@ -67,6 +69,7 @@ impl<'data> File<'data> {
     pub(crate) fn parse(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
         let header = FileHeader::parse(data)?;
         let endian = header.endian()?;
+        let architecture = header.e_machine(endian).try_into()?;
         let sections = header.sections(endian, data)?;
 
         let mut symbols = SymbolTable::default();
@@ -103,7 +106,9 @@ impl<'data> File<'data> {
             header.e_phnum(endian) as usize,
         )
         .context("Failed to read program headers")?;
+
         Ok(Self {
+            arch: architecture,
             data,
             sections,
             symbols,

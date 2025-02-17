@@ -8,6 +8,8 @@ use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::SectionFlags;
 use linker_utils::relaxation::RelocationModifier;
+use object::elf::EM_AARCH64;
+use object::elf::EM_X86_64;
 use std::borrow::Cow;
 use std::str::FromStr;
 
@@ -30,6 +32,7 @@ pub(crate) trait Arch {
     fn rel_type_to_string(r_type: u32) -> Cow<'static, str>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Architecture {
     X86_64,
     AArch64,
@@ -43,6 +46,18 @@ impl FromStr for Architecture {
             "elf_x86_64" => Ok(Architecture::X86_64),
             "aarch64elf" | "aarch64linux" => Ok(Architecture::AArch64),
             _ => bail!("-m {s} is not yet supported"),
+        }
+    }
+}
+
+impl TryFrom<u16> for Architecture {
+    type Error = anyhow::Error;
+
+    fn try_from(arch: u16) -> Result<Self, Self::Error> {
+        match arch {
+            EM_X86_64 => Ok(Self::X86_64),
+            EM_AARCH64 => Ok(Self::AArch64),
+            _ => bail!("Unsupported architecture: 0x{:x}", arch),
         }
     }
 }
