@@ -241,6 +241,14 @@ impl<'data> IndexedLayout<'data> {
     pub(crate) fn input_filename_for_section(&self, section_id: InputSectionId) -> &FileIdentifier {
         &self.input_file_for_section(section_id).identifier
     }
+
+    pub(crate) fn all_sections_do(&self, mut callback: impl FnMut(&SectionInfo)) {
+        for file in &self.files {
+            for sec in file.sections.iter().flatten() {
+                callback(sec);
+            }
+        }
+    }
 }
 
 struct DisplaySection<'data> {
@@ -281,7 +289,7 @@ impl Display for DisplaySection<'_> {
 #[derive(Clone)]
 pub(crate) struct SectionInfo<'data> {
     addresses: Range<u64>,
-    section_id: InputSectionId,
+    pub(crate) section_id: InputSectionId,
     functions: Vec<FunctionInfo<'data>>,
 }
 
@@ -294,6 +302,11 @@ pub(crate) struct InputFile<'data> {
 pub(crate) struct FileIdentifier<'data> {
     pub(crate) filename: &'data Path,
     pub(crate) archive_entry: Option<&'data ArchiveEntryInfo>,
+}
+
+pub(crate) struct OwnedFileIdentifier {
+    filename: PathBuf,
+    archive_entry_name: Option<String>,
 }
 
 /// Identifies an input section.
@@ -370,5 +383,29 @@ impl Ord for InputSectionId {
             ord => return ord,
         }
         self.section_index.0.cmp(&other.section_index.0)
+    }
+}
+
+impl FileIdentifier<'_> {
+    pub(crate) fn to_owned(&self) -> OwnedFileIdentifier {
+        OwnedFileIdentifier {
+            filename: self.filename.to_owned(),
+            archive_entry_name: self
+                .archive_entry
+                .as_ref()
+                .map(|entry| String::from_utf8_lossy(&entry.identifier).into_owned()),
+        }
+    }
+}
+
+impl Display for OwnedFileIdentifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.filename.display())?;
+
+        if let Some(entry) = self.archive_entry_name.as_ref() {
+            write!(f, " @ {entry}")?;
+        }
+
+        Ok(())
     }
 }

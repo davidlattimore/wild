@@ -55,6 +55,7 @@ use crate::DiffValues;
 use crate::ElfFile64;
 use crate::Report;
 use crate::Result;
+use crate::SectionCoverage;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::Context as _;
@@ -118,6 +119,10 @@ pub(crate) fn report_function_diffs_for_arch<A: Arch>(report: &mut Report, binar
         return;
     }
 
+    if let Some(cov) = report.coverage.as_mut() {
+        populate_section_coverage(cov, layout);
+    }
+
     let by_name = symbol_versions_by_name(binaries, layout);
     let matched_sections = unified_sections_from_symbols(report, by_name, layout, binaries);
 
@@ -153,6 +158,15 @@ fn compare_sections<A: Arch>(
     layout: &IndexedLayout,
 ) -> Result {
     let original_section = section_versions.original_section(layout)?;
+
+    if let Some(coverage) = report.coverage.as_mut() {
+        if let Some(sec_cov) = coverage
+            .sections
+            .get_mut(&section_versions.input_section_id)
+        {
+            sec_cov.diffed = true;
+        }
+    }
 
     let mut testers = binaries
         .iter()
@@ -3013,4 +3027,29 @@ fn has_copy_relocation_for_symbol_named<R: RType>(symbol_name: &[u8], bin: &Bina
                     })
             })
         })
+}
+
+fn populate_section_coverage(cov: &mut crate::Coverage, layout: &IndexedLayout<'_>) {
+    layout.all_sections_do(|section_info| {
+        let Ok(elf_section) = layout.get_elf_section(section_info.section_id) else {
+            return;
+        };
+
+        let Some(name) = elf_section.name_bytes().ok() else {
+            return;
+        };
+
+        cov.sections.insert(
+            section_info.section_id,
+            SectionCoverage {
+                original_file: layout
+                    .input_file_for_section(section_info.section_id)
+                    .identifier
+                    .to_owned(),
+                name: String::from_utf8_lossy(name).into_owned(),
+                num_bytes: elf_section.size(),
+                diffed: false,
+            },
+        );
+    });
 }

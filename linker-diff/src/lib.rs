@@ -50,7 +50,10 @@ type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
 type ElfSymbol64<'data, 'file> = object::read::elf::ElfSymbol64<'data, 'file, LittleEndian>;
 
+use colored::Colorize;
 pub use diagnostics::enable_diagnostics;
+use section_map::InputSectionId;
+use section_map::OwnedFileIdentifier;
 
 #[non_exhaustive]
 #[derive(Parser, Default, Clone)]
@@ -71,6 +74,10 @@ pub struct Config {
     /// subject to change as Wild changes.
     #[arg(long)]
     pub wild_defaults: bool,
+
+    /// Print information about what sections did and didn't get diffed.
+    #[arg(long)]
+    pub coverage: bool,
 
     /// Display names for input files.
     #[arg(long, value_delimiter = ',', value_name = "NAME,NAME...")]
@@ -403,10 +410,39 @@ fn validate_objects(
 }
 
 pub struct Report {
+    /// The names of each of our binaries. These should be short, not a full path, since we often
+    /// prefix lines with these names.
     names: Vec<String>,
+
+    /// The full path of each of our binaries.
     paths: Vec<PathBuf>,
+
+    /// The differences that were detected.
     diffs: Vec<Diff>,
+
+    /// The configuration that was used.
     config: Config,
+
+    coverage: Option<Coverage>,
+}
+
+#[derive(Default)]
+struct Coverage {
+    sections: HashMap<InputSectionId, SectionCoverage>,
+}
+
+struct SectionCoverage {
+    /// The original input file from which the section came.
+    original_file: OwnedFileIdentifier,
+
+    /// The name of the section.
+    name: String,
+
+    /// Whether we diffed this section at all.
+    diffed: bool,
+
+    /// The size of the section in bytes.
+    num_bytes: u64,
 }
 
 impl Report {
@@ -459,6 +495,7 @@ impl Report {
             names: objects.iter().map(|o| o.name.clone()).collect(),
             paths: objects.iter().map(|o| o.path.clone()).collect(),
             diffs: Default::default(),
+            coverage: config.coverage.then(Coverage::default),
             config,
         };
         report.run_on_objects(&objects);
@@ -559,8 +596,10 @@ impl Display for Report {
         for (name, path) in self.names.iter().zip(&self.paths) {
             writeln!(f, "{name}: {}", path.display())?;
         }
+
         for diff in &self.diffs {
             writeln!(f, "{}", diff.key)?;
+
             match &diff.values {
                 DiffValues::PerObject(values) => {
                     for (filename, result) in self.names.iter().zip(values) {
@@ -573,8 +612,14 @@ impl Display for Report {
                     }
                 }
             }
+
             writeln!(f)?;
         }
+
+        if let Some(coverage) = self.coverage.as_ref() {
+            Display::fmt(coverage, f)?;
+        }
+
         Ok(())
     }
 }
@@ -582,6 +627,43 @@ impl Display for Report {
 impl Display for Binary<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.name.fmt(f)
+    }
+}
+
+impl Display for Coverage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "Diffed sections:")?;
+
+        let mut total_bytes = 0;
+        let mut total_diffed = 0;
+
+        for sec in self.sections.values() {
+            writeln!(
+                f,
+                "  {} {}: {}",
+                sec.original_file,
+                sec.name,
+                if sec.diffed {
+                    "true".green()
+                } else {
+                    "false".red()
+                }
+            )?;
+
+            if sec.diffed {
+                total_diffed += sec.num_bytes;
+            }
+
+            total_bytes += sec.num_bytes;
+        }
+
+        writeln!(
+            f,
+            "Diffed {total_diffed} of {total_bytes} section bytes ({}%)",
+            total_diffed * 100 / total_bytes
+        )?;
+
+        Ok(())
     }
 }
 
