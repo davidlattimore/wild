@@ -23,7 +23,6 @@
 //#Config:llvm-dynamic:default
 //#CompArgs:-C debuginfo=2
 //#DiffIgnore:.dynamic.DT_JMPREL
-//#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic.DT_PLTGOT
 //#DiffIgnore:.dynamic.DT_PLTREL
 //#Cross: true

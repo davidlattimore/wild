@@ -1,5 +1,4 @@
 //#AbstractConfig:default
-//#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.data
 //#DiffIgnore:section.rodata.alignment
