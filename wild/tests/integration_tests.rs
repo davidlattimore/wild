@@ -230,6 +230,10 @@ fn is_host_opensuse() -> bool {
     os_info::get().os_type() == Type::openSUSE
 }
 
+fn is_host_debian_based() -> bool {
+    os_info::get().os_type() == Type::Debian || os_info::get().os_type() == Type::Ubuntu
+}
+
 fn host_supports_clang_with_tls_desc() -> bool {
     static CLANG_SUPPORTS_TLS_DESC: OnceLock<bool> = OnceLock::new();
 
@@ -821,10 +825,12 @@ fn build_obj(
                 .args(["-C", &format!("link-arg=--ld-path={wild}")]);
 
             if let Some(arch) = cross_arch {
-                if is_host_opensuse() {
+                // Debian sets sysroot to `/` and uses real paths for libraries in linker scripts.
+                // So using real sysroot path breaks linking.
+                if !is_host_debian_based() {
                     command.args([
                         "-C",
-                        &format!("link-arg=-L{}/lib64", arch.get_cross_sysroot_path()),
+                        &format!("link-arg=--sysroot={}", arch.get_cross_sysroot_path()),
                     ]);
                 }
             }
