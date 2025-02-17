@@ -4,7 +4,6 @@
 //#DiffIgnore:.got.plt
 //#DiffIgnore:.dynamic.DT_PLTGOT
 //#DiffIgnore:.dynamic.DT_JMPREL
-//#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic.DT_PLTREL
 //#DiffIgnore:section.plt.entsize
 //#DiffIgnore:section.rodata.cst32.entsize
@@ -14,6 +13,12 @@
 //#CompArgs:-g -ftls-model=global-dynamic
 //#RequiresGlibc:true
 //#Cross: false
+
+//#AbstractConfig:shared:default
+//#Shared:libc-integration-0.c
+//#Shared:libc-integration-1.c
+// Each binary links against shared objects created by that linker. So different names are expected.
+//#DiffIgnore:.dynamic.DT_NEEDED
 
 //#Config:clang-static:default
 //#LinkArgs:--cc=clang -static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
@@ -39,45 +44,35 @@
 //#Object:libc-integration-1.c
 //#EnableLinker:lld
 
-//#Config:clang-initial-exec:default
+//#Config:clang-initial-exec:shared
 //#CompArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP
 //#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#EnableLinker:lld
-//#Shared:libc-integration-0.c
-//#Shared:libc-integration-1.c
 //#DiffIgnore:section.relro_padding
 
-//#Config:clang-global-dynamic:default
+//#Config:clang-global-dynamic:shared
 //#Compiler:clang
 //#CompArgs:-g -fPIC -ftls-model=global-dynamic -DDYNAMIC_DEP
 //#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#EnableLinker:lld
-//#Shared:libc-integration-0.c
-//#Shared:libc-integration-1.c
 //#DiffIgnore:section.relro_padding
 //#DiffIgnore:section.rodata.entsize
 //#DiffIgnore:section.rodata.flags
 
-//#Config:gcc-dynamic-pie:default
+//#Config:gcc-dynamic-pie:shared
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
-//#Shared:libc-integration-0.c
-//#Shared:libc-integration-1.c
 
-//#Config:gcc-dynamic-no-pie:default
+//#Config:gcc-dynamic-no-pie:shared
 //#CompArgs:-g -no-pie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkArgs:--cc=gcc -dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
-//#Shared:libc-integration-0.c
-//#Shared:libc-integration-1.c
 
-//#Config:gcc-dynamic-pie-large:default
+//#Config:gcc-dynamic-pie-large:shared
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -mcmodel=large
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
-//#Shared:libc-integration-0.c
-//#Shared:libc-integration-1.c
 // TODO: cc1plus: sorry, unimplemented: code model 'large' with '-fPIC'
 //#Arch: x86_64
 

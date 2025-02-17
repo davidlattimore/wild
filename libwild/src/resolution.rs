@@ -825,6 +825,7 @@ fn resolve_symbols<'data, S: StorageModel>(
                     resources,
                     obj,
                     undefined_symbols_out,
+                    false,
                 )
             },
         )?;
@@ -850,6 +851,7 @@ fn resolve_dynamic_symbols<'data, S: StorageModel>(
                     resources,
                     obj,
                     undefined_symbols_out,
+                    true,
                 )
             },
         )?;
@@ -863,26 +865,35 @@ fn resolve_symbol<'data, S: StorageModel>(
     resources: &ResolutionResources<'data, '_, '_, S>,
     obj: &ParsedInputObject<'data>,
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
+    is_from_shared_object: bool,
 ) -> Result {
     // Don't try to resolve symbols that are already defined, e.g. locals and globals that we
     // define. Also don't try to resolve symbol zero - the undefined symbol.
     if !definition_out.is_undefined() || local_symbol_index.0 == 0 {
         return Ok(());
     }
+
     let name_bytes = obj.object.symbol_name(local_symbol)?;
+
     debug_assert_bail!(
         !local_symbol.is_local(),
         "Only globals should be undefined, found symbol `{}` ({local_symbol_index})",
         String::from_utf8_lossy(name_bytes)
     );
+
     assert!(!local_symbol.is_definition(LittleEndian));
     let prehashed_name = SymbolName::prehashed(name_bytes);
+
     match resources.symbol_db.global_names.get(&prehashed_name) {
         Some(symbol_id) => {
             *definition_out = symbol_id;
             let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
+
             if symbol_file_id != obj.file_id && !local_symbol.is_weak() {
-                resources.request_file_id(symbol_file_id);
+                // Undefined symbols in shared objects don't trigger loading of other objects.
+                if !is_from_shared_object {
+                    resources.request_file_id(symbol_file_id);
+                }
             } else if symbol_file_id != PRELUDE_FILE_ID {
                 // The symbol is weak and we can't be sure that the file that defined it will end up
                 // being loaded, so the symbol might actually be undefined. Register it as an
