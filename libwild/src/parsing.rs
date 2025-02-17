@@ -17,6 +17,7 @@ use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::threading::prelude::*;
+use anyhow::bail;
 use anyhow::Context;
 use std::path::Path;
 
@@ -153,7 +154,17 @@ impl<'data> ParsedInput<'data> {
     fn new(input: &'data InputBytes, args: &'data Args) -> Result<Self> {
         Ok(match input.kind {
             FileKind::ElfObject | FileKind::Archive => {
-                Self::Object(ParsedInputObject::new(input, false)?)
+                let obj = ParsedInputObject::new(input, false)?;
+                if obj.object.arch == args.arch {
+                    Self::Object(obj)
+                } else {
+                    bail!(
+                        "`{}` has incompatible architecture: {:?}, expecting {:?}",
+                        obj.filename().display(),
+                        obj.object.arch,
+                        args.arch,
+                    )
+                }
             }
             FileKind::Prelude => Self::Prelude(Prelude::new(args)),
             FileKind::ElfDynamic => Self::Object(ParsedInputObject::new(input, true)?),
