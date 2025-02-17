@@ -2487,7 +2487,15 @@ fn process_relocation<S: StorageModel, A: Arch>(
             && rel_info.kind == RelocationKind::Absolute
             && symbol_value_flags.contains(ValueFlags::ADDRESS)
         {
-            common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+            if section_is_writable {
+                common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
+            } else {
+                bail!(
+                    "Cannot apply relocation {} to read-only section. \
+                    Please recompile with -fPIC or link with -no-pie",
+                    A::rel_type_to_string(r_type),
+                );
+            }
         }
 
         if previous_flags.is_empty() {
