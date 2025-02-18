@@ -15,7 +15,7 @@
 //#Cross: false
 
 //#AbstractConfig:shared:default
-//#Shared:libc-integration-0.c
+//#Shared:libc-integration-0.c,libc-integration-0b.c
 //#Shared:libc-integration-1.c
 // Each binary links against shared objects created by that linker. So different names are expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
@@ -92,6 +92,7 @@ void set_tvar2(int v);
 
 int __attribute__ ((weak)) weak_fn1(void);
 int __attribute__ ((weak)) weak_fn2(void);
+int __attribute__ ((weak)) weak_fn3(void);
 
 int __attribute__ ((weak)) sometimes_weak_fn(void) {
     return 7;
@@ -272,6 +273,10 @@ int main() {
         return ctors_init_val;
     }
 #endif
+
+    if (weak_fn3() != 15) {
+        return 123;
+    }
 
     return 42;
 }

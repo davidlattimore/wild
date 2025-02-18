@@ -3643,15 +3643,24 @@ impl<'data> ObjectLayoutState<'data> {
         for (sym_index, sym) in self.object.symbols.enumerate() {
             if can_export_symbol(sym) {
                 let symbol_id = self.symbol_id_range().input_to_id(sym_index);
+
+                if !resources.symbol_db.is_canonical(symbol_id) {
+                    continue;
+                }
+
                 let value_flags = resources.symbol_db.local_symbol_value_flags(symbol_id);
+
                 if value_flags.contains(ValueFlags::DOWNGRADE_TO_LOCAL) {
                     continue;
                 }
+
                 let old_flags = resources.symbol_resolution_flags[symbol_id.as_usize()]
                     .fetch_or(ResolutionFlags::EXPORT_DYNAMIC);
+
                 if old_flags.is_empty() {
                     self.load_symbol::<A>(common, symbol_id, resources, queue)?;
                 }
+
                 if !old_flags.contains(ResolutionFlags::EXPORT_DYNAMIC) {
                     export_dynamic(common, symbol_id, resources)?;
                 }
