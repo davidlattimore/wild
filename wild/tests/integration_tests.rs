@@ -87,7 +87,7 @@ impl Linker {
 
     fn link_shared(
         &self,
-        obj_path: &Path,
+        obj_paths: &[PathBuf],
         so_path: &Path,
         config: &Config,
         cross_arch: Option<Architecture>,
@@ -102,14 +102,17 @@ impl Linker {
 
         let mut command = LinkCommand::new(
             self,
-            &[LinkerInput::new(obj_path.to_owned())],
+            &obj_paths
+                .iter()
+                .map(|p| LinkerInput::new(p.clone()))
+                .collect_vec(),
             so_path,
             &linker_args,
             config,
             cross_arch,
         )?;
 
-        if self.is_wild() || !is_newer(so_path, obj_path) || !command.can_skip {
+        if self.is_wild() || !is_newer(so_path, obj_paths.iter()) || !command.can_skip {
             command.run(config)?;
             write_cmd_file(so_path, &command.to_string())?;
         }
@@ -287,7 +290,7 @@ impl Config {
 
 #[derive(Clone, PartialEq, Eq)]
 struct Dep {
-    filename: String,
+    filenames: Vec<String>,
     input_type: InputType,
 }
 
@@ -497,15 +500,15 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                         .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
                 ),
                 "Object" => config.deps.push(Dep {
-                    filename: arg.to_owned(),
+                    filenames: arg.split(',').map(|s| s.to_owned()).collect(),
                     input_type: InputType::Object,
                 }),
                 "Archive" => config.deps.push(Dep {
-                    filename: arg.to_owned(),
+                    filenames: arg.split(',').map(|s| s.to_owned()).collect(),
                     input_type: InputType::Archive,
                 }),
                 "Shared" => config.deps.push(Dep {
-                    filename: arg.to_owned(),
+                    filenames: arg.split(',').map(|s| s.to_owned()).collect(),
                     input_type: InputType::SharedObject,
                 }),
                 "Compiler" => config.compiler = arg.trim().to_owned(),
@@ -558,7 +561,7 @@ impl ProgramInputs {
     ) -> Result<Program<'a>> {
         let primary = build_linker_input(
             &Dep {
-                filename: self.source_file.to_owned(),
+                filenames: vec![self.source_file.to_owned()],
                 input_type: InputType::Object,
             },
             config,
@@ -679,24 +682,44 @@ fn build_linker_input(
     linker: &Linker,
     cross_arch: Option<Architecture>,
 ) -> Result<LinkerInput> {
-    let src_path = src_path(&dep.filename);
-    if dep.filename.ends_with(".a") {
-        return Ok(LinkerInput::new(src_path));
+    if let [single_filename] = dep.filenames.as_slice() {
+        if single_filename.ends_with(".a") {
+            return Ok(LinkerInput::new(src_path(single_filename)));
+        }
     }
-    let obj_path = build_obj(dep, config, dep.input_type, cross_arch)?;
+
+    let obj_paths = dep
+        .filenames
+        .iter()
+        .map(|filename| build_obj(filename, config, dep.input_type, cross_arch))
+        .collect::<Result<Vec<PathBuf>>>()?;
+
+    // When building archives or shared objects, we use the name of the first object to determine
+    // the name.
+    let first_obj_path = obj_paths
+        .first()
+        .context("At least one object is required")?;
 
     match dep.input_type {
         InputType::Archive => {
-            let archive_path = obj_path.with_extension("a");
-            if !is_newer(&archive_path, &obj_path) {
-                make_archive(&archive_path, &obj_path)?;
+            let archive_path = first_obj_path.with_extension("a");
+            if !is_newer(&archive_path, obj_paths.iter()) {
+                make_archive(&archive_path, &obj_paths)?;
             }
             Ok(LinkerInput::new(archive_path))
         }
-        InputType::Object => Ok(LinkerInput::new(obj_path)),
+        InputType::Object => {
+            if obj_paths.len() > 1 {
+                bail!(
+                    "Multiple source files on a single line is only supported with Shared/Archive"
+                );
+            }
+
+            Ok(LinkerInput::new(first_obj_path.clone()))
+        }
         InputType::SharedObject => {
-            let so_path = obj_path.with_extension(format!("{linker}.so"));
-            let out = linker.link_shared(&obj_path, &so_path, config, cross_arch)?;
+            let so_path = first_obj_path.with_extension(format!("{linker}.so"));
+            let out = linker.link_shared(&obj_paths, &so_path, config, cross_arch)?;
             let assertions = Assertions::default();
             assertions
                 .check_path(&out.path, linker)
@@ -754,12 +777,12 @@ fn get_c_compiler(
 
 /// Builds some C source and returns the path to the object file.
 fn build_obj(
-    dep: &Dep,
+    filename: &str,
     config: &Config,
     input_type: InputType,
     cross_arch: Option<Architecture>,
 ) -> Result<PathBuf> {
-    let src_path = src_path(&dep.filename);
+    let src_path = src_path(filename);
     let extension = src_path
         .extension()
         .context("Missing extension")?
@@ -869,7 +892,7 @@ fn build_obj(
 
     let arch_str = cross_name(cross_arch);
 
-    let output_path = build_dir().join(Path::new(&dep.filename).with_extension(format!(
+    let output_path = build_dir().join(Path::new(filename).with_extension(format!(
         "{}-{arch_str}-{command_hash:x}{suffix}",
         config.name
     )));
@@ -888,7 +911,7 @@ fn build_obj(
     let mutex = mutex_for_path(&output_path);
     let _guard = mutex.lock().unwrap();
 
-    if is_newer(&output_path, &src_path) {
+    if is_newer(&output_path, std::iter::once(&src_path)) {
         return Ok(output_path);
     }
 
@@ -996,19 +1019,22 @@ fn src_path(filename: &str) -> PathBuf {
     base_dir().join("tests").join("sources").join(filename)
 }
 
-/// Returns whether both `output_path` and `src_path` exist and `output_path` has a modification
-/// timestamp >= that of `src_path`.
-fn is_newer(output_path: &Path, src_path: &Path) -> bool {
+/// Returns whether both `output_path` all `src_paths` exist and `output_path` has a modification
+/// timestamp >= that of all elements of `src_paths`.
+fn is_newer<P: AsRef<Path>>(output_path: &Path, mut src_paths: impl Iterator<Item = P>) -> bool {
     let Ok(out) = std::fs::metadata(output_path) else {
         return false;
     };
-    let Ok(src) = std::fs::metadata(src_path) else {
+
+    let Ok(mod_out) = out.modified() else {
         return false;
     };
-    let (Ok(mod_out), Ok(mod_src)) = (out.modified(), src.modified()) else {
-        return false;
-    };
-    mod_out >= mod_src
+
+    src_paths.all(|src_path| {
+        std::fs::metadata(src_path.as_ref())
+            .and_then(|src| src.modified())
+            .is_ok_and(|mod_src| mod_out >= mod_src)
+    })
 }
 
 impl Linker {
@@ -1052,10 +1078,10 @@ impl Linker {
     }
 }
 
-fn make_archive(archive_path: &Path, path: &Path) -> Result {
+fn make_archive(archive_path: &Path, paths: &[PathBuf]) -> Result {
     let _ = std::fs::remove_file(archive_path);
     let mut cmd = Command::new("ar");
-    cmd.arg("cr").arg(archive_path).arg(path);
+    cmd.arg("cr").arg(archive_path).args(paths);
     let status = cmd.status()?;
     if !status.success() {
         bail!("Failed to create archive");
@@ -1185,9 +1211,7 @@ impl LinkCommand {
         // our output file, but not if we're linking with our linker, since we're always changing
         // that. We also require that the command we're going to run hasn't changed.
         let can_skip = !matches!(linker, Linker::Wild)
-            && inputs
-                .iter()
-                .all(|input| is_newer(output_path, &input.path))
+            && is_newer(output_path, inputs.iter().map(|i| i.path.as_path()))
             && cmd_file_is_current(output_path, &link_command.to_string());
         link_command.can_skip = can_skip;
 
