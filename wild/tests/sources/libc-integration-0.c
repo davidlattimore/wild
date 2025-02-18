@@ -72,3 +72,8 @@ int sometimes_weak_fn(void) {
 int black_box(int v) {
     return v;
 }
+
+// This function is also defined in libc-integration-0b.c. The definition here should be used.
+int __attribute__ ((weak)) weak_fn3(void) {
+    return 15;
+}
