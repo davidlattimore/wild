@@ -60,14 +60,12 @@ pub(crate) mod x86_64;
 pub use subprocess::run_in_subprocess;
 
 pub struct Linker {
-    action: args::Action,
+    args: Args,
 }
 
 impl Linker {
     pub fn from_args<S: AsRef<str>, I: Iterator<Item = S>>(args: I) -> error::Result<Self> {
-        Ok(Linker {
-            action: parse(args)?,
-        })
+        Ok(Linker { args: parse(args)? })
     }
 
     pub fn run(&self) -> error::Result {
@@ -80,44 +78,40 @@ impl Linker {
         &self,
         done_closure: Option<Box<dyn FnOnce()>>,
     ) -> error::Result {
-        match &self.action {
-            args::Action::Link(args) => {
-                if args.time_phases {
-                    timing::init_tracing();
-                } else if args.write_trace {
-                    output_trace::init(args);
-                } else if args.print_allocations.is_some() {
-                    debug_trace::init();
-                } else {
-                    tracing_subscriber::registry()
-                        .with(fmt::layer())
-                        .with(EnvFilter::from_default_env())
-                        .init();
-                }
-                match args.arch {
-                    arch::Architecture::X86_64 => {
-                        link::<storage::InMemory, x86_64::X86_64>(args, done_closure)
-                    }
-                    arch::Architecture::AArch64 => {
-                        link::<storage::InMemory, aarch64::AArch64>(args, done_closure)
-                    }
-                }
+        let args = &self.args;
+        if args.time_phases {
+            timing::init_tracing();
+        } else if args.write_trace {
+            output_trace::init(args);
+        } else if args.print_allocations.is_some() {
+            debug_trace::init();
+        } else {
+            tracing_subscriber::registry()
+                .with(fmt::layer())
+                .with(EnvFilter::from_default_env())
+                .init();
+        }
+        if args.should_print_version {
+            println!(
+                "Wild version {} (compatible with GNU linkers)",
+                env!("CARGO_PKG_VERSION")
+            );
+            if args.inputs.is_empty() {
+                return Ok(());
             }
-            args::Action::Version => {
-                println!(
-                    "Wild version {} (compatible with GNU linkers)",
-                    env!("CARGO_PKG_VERSION")
-                );
-                Ok(())
+        }
+        match args.arch {
+            arch::Architecture::X86_64 => {
+                link::<storage::InMemory, x86_64::X86_64>(args, done_closure)
+            }
+            arch::Architecture::AArch64 => {
+                link::<storage::InMemory, aarch64::AArch64>(args, done_closure)
             }
         }
     }
 
     pub fn should_fork(&self) -> bool {
-        match &self.action {
-            args::Action::Link(args) => args.should_fork(),
-            args::Action::Version => false,
-        }
+        self.args.should_fork()
     }
 }
 

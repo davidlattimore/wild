@@ -69,6 +69,7 @@ pub(crate) struct Args {
     pub(crate) print_allocations: Option<FileId>,
     pub(crate) execstack: bool,
     pub(crate) verify_allocation_consistency: bool,
+    pub(crate) should_print_version: bool,
 
     output_kind: Option<OutputKind>,
     is_dynamic_executable: bool,
@@ -81,15 +82,6 @@ pub(crate) enum BuildIdOption {
     Fast,
     Hex(Vec<u8>),
     Uuid,
-}
-
-#[allow(clippy::large_enum_variant)]
-pub(crate) enum Action {
-    /// The default. Link something.
-    Link(Args),
-
-    /// Print the linker version.
-    Version,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,12 +239,13 @@ impl Default for Args {
             build_id: BuildIdOption::None,
             files_per_group: None,
             no_undefined: false,
+            should_print_version: false,
         }
     }
 }
 
 // Parse the supplied input arguments, which should not include the program name.
-pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Result<Action> {
+pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Result<Args> {
     let mut args = Args {
         files_per_group: std::env::var(FILES_PER_GROUP_ENV)
             .ok()
@@ -260,8 +253,6 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             .transpose()?,
         ..Default::default()
     };
-
-    let mut action = None;
 
     let mut unrecognised = Vec::new();
 
@@ -487,7 +478,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if let Some(rest) = long_arg_split_prefix("gc-stats-ignore=") {
             args.gc_stats_ignore.push(rest.to_owned());
         } else if long_arg_eq("version") || arg == "-v" {
-            action = Some(Action::Version);
+            args.should_print_version = true;
         } else if long_arg_eq("verbose-gc-stats") {
             args.verbose_gc_stats = true;
         } else if let Some(rest) = long_arg_split_prefix("debug-address=") {
@@ -536,11 +527,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
 
     save_dir.finish()?;
 
-    if let Some(a) = action {
-        return Ok(a);
-    }
-
-    Ok(Action::Link(args))
+    Ok(args)
 }
 
 const fn default_target_arch() -> Architecture {
@@ -556,7 +543,7 @@ const fn default_target_arch() -> Architecture {
     }
 }
 
-fn parse_from_argument_file(path: &Path) -> Result<Action> {
+fn parse_from_argument_file(path: &Path) -> Result<Args> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read arguments from file `{}`", path.display()))?;
     parse(arguments_from_string(&contents)?.into_iter())
@@ -801,7 +788,6 @@ fn warn_unsupported(opt: &str) -> Result {
 #[cfg(test)]
 mod tests {
     use super::SILENTLY_IGNORED_FLAGS;
-    use crate::args::Action;
     use crate::args::InputSpec;
     use itertools::Itertools;
     use std::num::NonZeroUsize;
@@ -902,6 +888,7 @@ mod tests {
         "--discard-locals",
         "-X",
         "-EL",
+        "-v",
     ];
 
     #[track_caller]
@@ -911,9 +898,7 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let Action::Link(args) = super::parse(INPUT1.iter()).unwrap() else {
-            panic!("Unexpected action");
-        };
+        let args = super::parse(INPUT1.iter()).unwrap();
         assert!(args.is_relocatable());
         assert_eq!(
             args.inputs
@@ -937,6 +922,7 @@ mod tests {
         );
         assert_eq!(args.soname, Some("bar".to_owned()));
         assert_eq!(args.num_threads, NonZeroUsize::new(1).unwrap());
+        assert!(args.should_print_version);
     }
 
     #[test]
