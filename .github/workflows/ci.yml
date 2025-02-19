@@ -7,6 +7,8 @@ on:
     branches: [ '**' ]
   workflow_dispatch:
 
+permissions: {}
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: '-D warnings'
@@ -49,6 +51,8 @@ jobs:
         if: ${{ contains(matrix.container, 'opensuse') }}
       - run: useradd -m -g users user && su user && cd ~
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
         with:
@@ -71,6 +75,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
     - uses: dtolnay/rust-toolchain@stable
       id: rust-toolchain
       with:
@@ -91,6 +97,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
     - uses: dtolnay/rust-toolchain@nightly
       with:
         components: rustfmt
@@ -101,5 +109,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Spell Check Repo
         uses: crate-ci/typos@v1.29.8
