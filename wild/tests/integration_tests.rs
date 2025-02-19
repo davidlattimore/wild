@@ -11,9 +11,9 @@
 //!
 //! TODO: Document the rest of the directives.
 
+use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
-use anyhow::Context;
 use itertools::Itertools;
 use object::LittleEndian;
 use object::Object;

@@ -1,15 +1,15 @@
 use crate::ElfFile64;
 use crate::Result;
-use anyhow::bail;
 use anyhow::Context;
+use anyhow::bail;
 use itertools::Itertools;
 use linker_layout::ArchiveEntryInfo;
-use object::read::elf::ElfSection64;
 use object::LittleEndian;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
 use object::SymbolKind;
+use object::read::elf::ElfSection64;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;

@@ -29,20 +29,20 @@ use crate::layout::OutputRecordLayout;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
-use crate::part_id::PartId;
 use crate::part_id::NUM_PARTS_PER_TWO_PART_SECTION;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
+use crate::part_id::PartId;
 use crate::part_id::REGULAR_PART_BASE;
 use crate::program_segments::ProgramSegmentId;
 use crate::resolution::SectionSlot;
 use ahash::AHashMap;
 use anyhow::anyhow;
+use linker_utils::elf::SectionFlags;
+use linker_utils::elf::SectionType;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
-use linker_utils::elf::SectionFlags;
-use linker_utils::elf::SectionType;
 use std::fmt::Debug;
 use std::fmt::Display;
 
@@ -542,8 +542,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
 ];
 
-pub(crate) fn built_in_section_ids(
-) -> impl ExactSizeIterator<Item = OutputSectionId> + DoubleEndedIterator<Item = OutputSectionId> {
+pub(crate) fn built_in_section_ids()
+-> impl ExactSizeIterator<Item = OutputSectionId> + DoubleEndedIterator<Item = OutputSectionId> {
     (0..NUM_BUILT_IN_SECTIONS).map(|n| OutputSectionId(n as u32))
 }
 

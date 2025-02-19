@@ -1,9 +1,9 @@
 use crate::args::parse;
 use args::Args;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 pub(crate) mod aarch64;
 pub(crate) mod alignment;

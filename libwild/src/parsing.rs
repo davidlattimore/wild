@@ -17,8 +17,8 @@ use crate::symbol::SymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::threading::prelude::*;
-use anyhow::bail;
 use anyhow::Context;
+use anyhow::bail;
 use std::path::Path;
 
 #[tracing::instrument(skip_all, name = "Parse input files")]

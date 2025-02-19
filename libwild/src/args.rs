@@ -18,15 +18,15 @@ use crate::error::Result;
 use crate::input_data::FileId;
 use crate::linker_script::maybe_forced_sysroot;
 use crate::save_dir::SaveDir;
+use anyhow::Context as _;
 use anyhow::bail;
 use anyhow::ensure;
-use anyhow::Context as _;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
+use std::sync::atomic::AtomicI64;
 
 pub(crate) struct Args {
     pub(crate) arch: Architecture,
@@ -353,15 +353,18 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             args.build_id = BuildIdOption::Fast;
         } else if let Some(build_id_value) = long_arg_split_prefix("build-id=") {
             args.build_id = match build_id_value {
-                "none" =>  BuildIdOption::None,
-                "fast" | "md5"| "sha1" => BuildIdOption::Fast,
+                "none" => BuildIdOption::None,
+                "fast" | "md5" | "sha1" => BuildIdOption::Fast,
                 "uuid" => BuildIdOption::Uuid,
-                s if s.starts_with("0x") || s.starts_with("0X")=> {
+                s if s.starts_with("0x") || s.starts_with("0X") => {
                     let hex_string = &s[2..];
-                    let decoded_bytes = hex::decode(hex_string).with_context(|| format!("Invalid Hex Build Id `0x{hex_string}`"))?;
+                    let decoded_bytes = hex::decode(hex_string)
+                        .with_context(|| format!("Invalid Hex Build Id `0x{hex_string}`"))?;
                     BuildIdOption::Hex(decoded_bytes)
                 }
-                s => bail!("Invalid build-id value `{s}` valid values are `none`, `fast`, `md5`, `sha1` and `uuid`"),
+                s => bail!(
+                    "Invalid build-id value `{s}` valid values are `none`, `fast`, `md5`, `sha1` and `uuid`"
+                ),
             };
         } else if let Some(value) = long_arg_split_prefix("icf=") {
             match value {

@@ -1,17 +1,17 @@
 use crate::Binary;
 use crate::Result;
+use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
-use anyhow::Context;
 use linker_utils::elf::secnames::GNU_HASH_SECTION_NAME_STR;
-use object::elf::FileHeader64;
-use object::read::elf::ElfSymbolTable;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
 use object::ObjectSymbolTable;
 use object::SymbolIndex;
+use object::elf::FileHeader64;
+use object::read::elf::ElfSymbolTable;
 
 type GnuHashHeader = object::elf::GnuHashHeader<LittleEndian>;
 
