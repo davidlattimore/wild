@@ -7,15 +7,15 @@ use crate::arch::Arch;
 use crate::args::OutputKind;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::resolution::ValueFlags;
-use anyhow::anyhow;
 use anyhow::Result;
-use linker_utils::elf::shf;
-use linker_utils::elf::x86_64_rel_type_to_string;
+use anyhow::anyhow;
 use linker_utils::elf::AllowedRange;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
+use linker_utils::elf::shf;
+use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::x86_64::RelaxationKind;
 
@@ -207,14 +207,14 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::CallIndirectToRelative,
                                 object::elf::R_X86_64_PC32,
-                            )
+                            );
                         }
                         // jmp *x(%rip)
                         [0xff, 0x25] => {
                             return create(
                                 RelaxationKind::JmpIndirectToRelative,
                                 object::elf::R_X86_64_PC32,
-                            )
+                            );
                         }
                         _ => return None,
                     }
@@ -241,7 +241,7 @@ impl crate::arch::Relaxation for Relaxation {
                         return create(
                             RelaxationKind::RexMovIndirectToAbsolute,
                             object::elf::R_X86_64_TPOFF32,
-                        )
+                        );
                     }
                     _ => {}
                 }

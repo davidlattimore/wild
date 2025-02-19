@@ -1,8 +1,8 @@
-use crate::header_diff::DiffMode;
 use crate::Binary;
 use crate::Diff;
 use crate::DiffValues;
 use crate::Report;
+use crate::header_diff::DiffMode;
 use anyhow::Result;
 use fallible_iterator::FallibleIterator;
 use gimli::LittleEndian;

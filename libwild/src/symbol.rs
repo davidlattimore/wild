@@ -1,6 +1,6 @@
 use crate::hash::PreHashed;
-use object::read::elf::Sym as _;
 use object::LittleEndian;
+use object::read::elf::Sym as _;
 use std::fmt::Display;
 
 #[derive(Clone, Copy, PartialEq, Eq)]

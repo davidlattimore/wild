@@ -1,26 +1,26 @@
-use crate::slice_from_all_bytes;
 use crate::Binary;
 use crate::Config;
 use crate::Diff;
 use crate::DiffValues;
 use crate::Report;
 use crate::Result;
+use crate::slice_from_all_bytes;
+use anyhow::Context as _;
 use anyhow::anyhow;
 use anyhow::bail;
-use anyhow::Context as _;
 use itertools::Itertools;
+use linker_utils::elf::SectionFlags;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use linker_utils::elf::shf;
-use linker_utils::elf::SectionFlags;
-#[allow(clippy::wildcard_imports)]
-use object::elf::*;
-use object::read::elf::Dyn;
-use object::read::elf::ElfSection64;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
+#[allow(clippy::wildcard_imports)]
+use object::elf::*;
+use object::read::elf::Dyn;
+use object::read::elf::ElfSection64;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
