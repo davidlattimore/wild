@@ -5,10 +5,14 @@ on:
 
 name: Cron continuous integration
 
+permissions: {}
+
 jobs:
   markdown-link-check:
     if: github.repository_owner == 'davidlattimore'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: gaurav-nelson/github-action-markdown-link-check@v1
