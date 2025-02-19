@@ -244,6 +244,7 @@ fn host_supports_clang_with_tls_desc() -> bool {
         let mut clang = Command::new("clang")
             .args(["-mtls-dialect=gnu2", "-x", "c", "-", "-o/dev/null"])
             .stdin(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .expect("Failed to run clang");
         let mut stdin = clang.stdin.take().expect("Failed to open stdin");
