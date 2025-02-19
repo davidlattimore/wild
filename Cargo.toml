@@ -1,5 +1,12 @@
 [workspace]
-members = ["linker-diff", "linker-layout", "linker-trace", "linker-utils", "wild", "libwild"]
+members = [
+    "linker-diff",
+    "linker-layout",
+    "linker-trace",
+    "linker-utils",
+    "wild",
+    "libwild",
+]
 resolver = "2"
 
 [workspace.package]
@@ -7,8 +14,8 @@ repository = "https://github.com/davidlattimore/wild"
 license = "MIT OR Apache-2.0"
 version = "0.3.0"
 readme = "README.md"
-rust-version = "1.83"
-edition = "2021"
+rust-version = "1.85"
+edition = "2024"
 
 [profile.opt-debug]
 inherits = "release"
