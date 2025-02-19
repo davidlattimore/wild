@@ -25,6 +25,7 @@ use rstest::rstest;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
+use std::fs::File;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io::Write;
@@ -32,8 +33,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -915,8 +914,15 @@ fn build_obj(
 
     // If multiple threads try to create a file at the same time, only one should do so and the
     // others should wait.
-    let mutex = mutex_for_path(&output_path);
-    let _guard = mutex.lock().unwrap();
+    let lock_path = output_path.with_extension(format!(
+        "{}.lock",
+        output_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default()
+    ));
+    let mut output_file_lock = fd_lock::RwLock::new(File::create(&lock_path)?);
+    let _write_lock = output_file_lock.write().unwrap();
 
     if is_newer(&output_path, std::iter::once(&src_path)) {
         return Ok(output_path);
@@ -952,18 +958,6 @@ fn get_target(compiler_args: &[String]) -> Result<&String> {
 
 fn cross_name(cross_arch: Option<Architecture>) -> &'static str {
     cross_arch.map(|a| a.name()).unwrap_or("host")
-}
-
-/// Returns a mutex that should be locked while we're writing to `path`.
-fn mutex_for_path(path: &Path) -> Arc<Mutex<()>> {
-    static PATH_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
-    PATH_LOCKS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap()
-        .entry(path.to_owned())
-        .or_default()
-        .clone()
 }
 
 /// Newer versions of rustc pass -soname=... to the linker when writing shared objects. This sets
