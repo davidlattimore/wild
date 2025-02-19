@@ -30,10 +30,9 @@ object = { version = "0.36.7", default-features = false, features = [
 linker-diff = { path = "../linker-diff" }
 which = "7.0.2"
 rstest = "0.24.0"
+fd-lock = "4.0.2"
 
 [features]
-default = [
-    "fork",
-]
+default = ["fork"]
 
 fork = ["libwild/fork"]
