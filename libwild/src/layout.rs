@@ -155,8 +155,13 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         .into_iter()
         .map(|f| f.into_non_atomic())
         .collect();
-    let non_addressable_counts = apply_non_addressable_indexes(&mut group_states, symbol_db.args)?;
-
+    let verdef_count = if symbol_db.version_script.version_count() > 0 {
+        symbol_db.version_script.version_count() + 1
+    } else {
+        0
+    };
+    let non_addressable_counts =
+        apply_non_addressable_indexes(&mut group_states, symbol_db.args, verdef_count)?;
     let section_part_sizes = compute_total_section_part_sizes(
         &mut group_states,
         &mut output_sections,
@@ -537,6 +542,7 @@ pub(crate) struct EpilogueLayout<'data> {
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     dynsym_start_index: u32,
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
+    pub(crate) verdefs: Vec<VersionDef>,
 }
 
 pub(crate) struct ObjectLayout<'data> {
@@ -1750,12 +1756,16 @@ fn compute_total_section_part_sizes(
 fn apply_non_addressable_indexes(
     group_states: &mut [GroupState],
     args: &Args,
+    verdef_count: u64,
 ) -> Result<NonAddressableCounts> {
     let mut indexes = NonAddressableIndexes {
         // Allocate version indexes starting from after the local and global indexes.
         gnu_version_r_index: object::elf::VER_NDX_GLOBAL + 1,
     };
-    let mut counts = NonAddressableCounts { verneed_count: 0 };
+    let mut counts = NonAddressableCounts {
+        verneed_count: 0,
+        verdef_count,
+    };
     for g in group_states.iter_mut() {
         for s in &mut g.files {
             match s {
@@ -1770,7 +1780,9 @@ fn apply_non_addressable_indexes(
     // If we were going to output symbol versions, but we didn't actually use any, then we drop all
     // versym allocations. This is partly to avoid wasting unnecessary space in the output file, but
     // mostly in order match what GNU ld does.
-    if counts.verneed_count == 0 && args.should_output_symbol_versions() {
+    if (counts.verneed_count == 0 && counts.verdef_count == 0)
+        && args.should_output_symbol_versions()
+    {
         for g in group_states {
             *g.common.mem_sizes.get_mut(part_id::GNU_VERSION) = 0;
         }
@@ -1787,6 +1799,7 @@ struct NonAddressableIndexes {
 pub(crate) struct NonAddressableCounts {
     /// The number of shared objects that want to emit a verneed record.
     pub(crate) verneed_count: u64,
+    pub(crate) verdef_count: u64,
 }
 
 /// Returns the starting memory address for each alignment within each segment.
@@ -2928,7 +2941,7 @@ impl PreludeLayoutState {
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
-        resources: &FinaliseLayoutResources,
+        resources: &FinaliseLayoutResources<'_, '_>,
     ) -> Result<PreludeLayout> {
         let header_layout = resources
             .section_layouts
@@ -3188,6 +3201,37 @@ impl<'data> EpilogueLayoutState<'data> {
             common.allocate(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
+        let mut verdef_entries = symbol_db.version_script.version_count();
+        if verdef_entries > 0 {
+            let base_name = symbol_db.args.soname.as_ref().map_or_else(
+                || {
+                    symbol_db
+                        .args
+                        .output
+                        .file_name()
+                        .unwrap_or_default()
+                        .as_encoded_bytes()
+                },
+                |s| s.as_bytes(),
+            );
+
+            common.allocate(part_id::DYNSTR, base_name.len() as u64 + 1);
+            verdef_entries += 1;
+
+            let parent_count = symbol_db.version_script.parent_count();
+            common.allocate(
+                part_id::GNU_VERSION_D,
+                size_of::<crate::elf::Verdef>() as u64 * verdef_entries
+                    + size_of::<crate::elf::Verdaux>() as u64 * (verdef_entries + parent_count),
+            );
+
+            for version in symbol_db.version_script.version_iter() {
+                if let Some(name) = version.name {
+                    common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -3256,12 +3300,65 @@ impl<'data> EpilogueLayoutState<'data> {
             memory_offsets.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
+        // TODO: avoid this
+        let mut verdefs = Vec::new();
+
+        let mut version_count = resources.symbol_db.version_script.version_count();
+        if version_count > 0 {
+            // TODO: this is a lazy hack, do it right
+            let base_name = resources.symbol_db.args.soname.as_ref().map_or_else(
+                || {
+                    resources
+                        .symbol_db
+                        .args
+                        .output
+                        .file_name()
+                        .unwrap_or_default()
+                        .as_encoded_bytes()
+                },
+                |s| s.as_bytes(),
+            );
+
+            // Base version
+            verdefs.push(VersionDef {
+                name: base_name.to_vec(),
+                index: 1,
+                parent_name: None,
+                is_base: true,
+            });
+            version_count += 1;
+
+            for (i, version) in resources
+                .symbol_db
+                .version_script
+                .version_iter()
+                .enumerate()
+            {
+                if let Some(name) = version.name {
+                    verdefs.push(VersionDef {
+                        name: name.as_bytes().to_vec(),
+                        index: (i + 2) as u16,
+                        parent_name: version.parent.map(|p| p.as_bytes().to_vec()),
+                        is_base: false,
+                    });
+                }
+            }
+
+            let parent_count = resources.symbol_db.version_script.parent_count();
+            memory_offsets.increment(
+                part_id::GNU_VERSION_D,
+                size_of::<crate::elf::Verdef>() as u64 * version_count
+                    + size_of::<crate::elf::Verdaux>() as u64 * (version_count + parent_count),
+            );
+        }
+
         Ok(EpilogueLayout {
             internal_symbols: self.internal_symbols,
             gnu_hash_layout: self.gnu_hash_layout,
             dynamic_symbol_definitions: self.dynamic_symbol_definitions,
             dynsym_start_index,
             gnu_property_notes: self.gnu_property_notes,
+            verdefs,
         })
     }
 }
@@ -4888,4 +4985,12 @@ fn verify_consistent_allocation_handling(
         )
     })?;
     Ok(())
+}
+
+// TODO: Avoid allocations
+pub(crate) struct VersionDef {
+    pub(crate) name: Vec<u8>,
+    pub(crate) index: u16,
+    pub(crate) parent_name: Option<Vec<u8>>,
+    pub(crate) is_base: bool,
 }

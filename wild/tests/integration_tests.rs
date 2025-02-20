@@ -726,6 +726,14 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                 "RequiresClangWithTlsDesc" => {
                     config.requires_clang_with_tlsdesc = arg.to_lowercase().parse()?;
                 }
+                // TODO: This is but a poor hack, think of a better way
+                "VersionScript" => config.linker_args.args.push(format!(
+                    "--version-script={}",
+                    src_path(&arg.trim().to_lowercase())
+                        .canonicalize()
+                        .unwrap()
+                        .display()
+                )),
                 other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
             }
         }

@@ -445,6 +445,8 @@ pub mod secnames {
     pub const INTERP_SECTION_NAME: &[u8] = INTERP_SECTION_NAME_STR.as_bytes();
     pub const GNU_VERSION_SECTION_NAME_STR: &str = ".gnu.version";
     pub const GNU_VERSION_SECTION_NAME: &[u8] = GNU_VERSION_SECTION_NAME_STR.as_bytes();
+    pub const GNU_VERSION_D_SECTION_NAME_STR: &str = ".gnu.version_d";
+    pub const GNU_VERSION_D_SECTION_NAME: &[u8] = GNU_VERSION_D_SECTION_NAME_STR.as_bytes();
     pub const GNU_VERSION_R_SECTION_NAME_STR: &str = ".gnu.version_r";
     pub const GNU_VERSION_R_SECTION_NAME: &[u8] = GNU_VERSION_R_SECTION_NAME_STR.as_bytes();
     pub const PROGRAM_HEADERS_SECTION_NAME_STR: &str = ".phdr";

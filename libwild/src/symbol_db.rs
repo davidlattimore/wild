@@ -66,6 +66,9 @@ pub struct SymbolDb<'data> {
     /// The names of symbols that mark the start / stop of sections. These are indexed by the offset
     /// into the epilogue's symbol IDs.
     start_stop_symbol_names: Vec<UnversionedSymbolName<'data>>,
+
+    // TODO: find better place or way
+    pub(crate) version_script: VersionScript<'data>,
 }
 
 struct SymbolBucket<'data> {
@@ -248,7 +251,7 @@ impl<'data> SymbolDb<'data> {
     #[tracing::instrument(skip_all, name = "Build symbol DB")]
     pub fn build(
         groups: Vec<Group<'data>>,
-        version_script_data: Option<&VersionScriptData>,
+        version_script_data: Option<&'data VersionScriptData>,
         args: &'data Args,
     ) -> Result<Self> {
         let version_script = version_script_data
@@ -316,6 +319,7 @@ impl<'data> SymbolDb<'data> {
             num_symbols_per_group,
             start_stop_symbol_names: Default::default(),
             symbol_value_flags,
+            version_script,
         };
 
         index.populate_symbol_db(&per_group_outputs)?;
