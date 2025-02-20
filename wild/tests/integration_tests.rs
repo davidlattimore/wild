@@ -996,7 +996,15 @@ fn write_cmd_file(output_path: &Path, command_str: &str) -> Result {
 
 fn command_as_str(command: &Command) -> String {
     format!(
-        "{} {}",
+        "{} {} {}",
+        command
+            .get_envs()
+            .filter_map(|(key, value)| value.map(|value| format!(
+                "{}={}",
+                key.to_string_lossy(),
+                value.to_string_lossy()
+            )))
+            .join(" "),
         command.get_program().to_string_lossy(),
         command
             .get_args()
