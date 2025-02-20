@@ -233,7 +233,10 @@ fn is_host_opensuse() -> bool {
 }
 
 fn is_host_debian_based() -> bool {
-    os_info::get().os_type() == Type::Debian || os_info::get().os_type() == Type::Ubuntu
+    matches!(
+        os_info::get().os_type(),
+        Type::Debian | Type::Ubuntu | Type::Pop
+    )
 }
 
 fn host_supports_clang_with_tls_desc() -> bool {
