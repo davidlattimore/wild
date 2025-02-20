@@ -1,6 +1,6 @@
 use anyhow::Result;
-use object::read::elf::SectionHeader;
 use object::LittleEndian;
+use object::read::elf::SectionHeader;
 use std::borrow::Cow;
 
 macro_rules! const_name_by_value {

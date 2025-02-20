@@ -3,8 +3,8 @@
 //! dependency in our tests so that we can verify consistency.
 
 use crate::error::Result;
-use anyhow::bail;
 use anyhow::Context;
+use anyhow::bail;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
 use std::ops::Range;
@@ -212,8 +212,8 @@ impl<'data> Iterator for ArchiveIterator<'data> {
 mod tests {
     use super::*;
     use crate::error::Result;
-    use anyhow::bail;
     use anyhow::Context;
+    use anyhow::bail;
     use std::io::Read;
     use std::path::Path;
 

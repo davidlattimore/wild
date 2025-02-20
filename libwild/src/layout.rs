@@ -2,10 +2,10 @@
 //! referenced. Determines which sections need to be linked, sums their sizes decides what goes
 //! where in the output file then allocates addresses for each symbol.
 
-use self::elf::NoteHeader;
-use self::elf::Symbol;
 use self::elf::GNU_NOTE_NAME;
 use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
+use self::elf::NoteHeader;
+use self::elf::Symbol;
 use self::output_section_id::InfoInputs;
 use crate::alignment;
 use crate::alignment::Alignment;
@@ -19,8 +19,8 @@ use crate::elf;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
 use crate::elf::FileHeader;
-use crate::elf::Versym;
 use crate::elf::GOT_ENTRY_SIZE;
+use crate::elf::Versym;
 use crate::elf_writer;
 use crate::error::Error;
 use crate::error::Result;
@@ -28,18 +28,18 @@ use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::output_section_id;
+use crate::output_section_id::FILE_HEADER;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
-use crate::output_section_id::FILE_HEADER;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::part_id;
-use crate::part_id::PartId;
 use crate::part_id::NUM_GENERATED_PARTS;
+use crate::part_id::PartId;
 use crate::program_segments;
-use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::MAX_SEGMENTS;
+use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::STACK;
 use crate::resolution;
 use crate::resolution::FrameIndex;
@@ -52,29 +52,29 @@ use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
 use crate::storage::StorageModel;
 use crate::storage::SymbolNameMap as _;
-use crate::string_merging::get_merged_string_output_address;
 use crate::string_merging::MergedStringStartAddresses;
 use crate::string_merging::MergedStringsSection;
+use crate::string_merging::get_merged_string_output_address;
 use crate::symbol::SymbolName;
-use crate::symbol_db::is_mapping_symbol_name;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolDebug;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
+use crate::symbol_db::is_mapping_symbol_name;
 use crate::threading::prelude::*;
+use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::ensure;
-use anyhow::Context;
 use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use itertools::Itertools;
-use linker_utils::elf::shf;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::SectionFlags;
+use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
-use object::elf::gnu_hash;
-use object::elf::Rela64;
+use object::LittleEndian;
+use object::SectionIndex;
 use object::elf::GNU_PROPERTY_AARCH64_FEATURE_1_AND;
 use object::elf::GNU_PROPERTY_X86_UINT32_AND_HI;
 use object::elf::GNU_PROPERTY_X86_UINT32_AND_LO;
@@ -82,13 +82,13 @@ use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_HI;
 use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_LO;
 use object::elf::GNU_PROPERTY_X86_UINT32_OR_HI;
 use object::elf::GNU_PROPERTY_X86_UINT32_OR_LO;
+use object::elf::Rela64;
+use object::elf::gnu_hash;
 use object::read::elf::Dyn as _;
 use object::read::elf::Rela as _;
 use object::read::elf::SectionHeader;
 use object::read::elf::Sym as _;
 use object::read::elf::VerdefIterator;
-use object::LittleEndian;
-use object::SectionIndex;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -99,11 +99,11 @@ use std::mem::swap;
 use std::mem::take;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
+use std::sync::Mutex;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicU8;
-use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
 
 #[tracing::instrument(skip_all, name = "Layout")]
 pub fn compute<'data, 'symbol_db, S: StorageModel, A: Arch>(
@@ -1607,10 +1607,10 @@ fn compute_segment_layout(
 
                 if active_records.is_empty() {
                     ensure!(
-                    part.mem_offset == 0,
-                    "Expected zero address for section `{}` not present in any program segment.",
-                    output_sections.name(section_id)
-                );
+                        part.mem_offset == 0,
+                        "Expected zero address for section `{}` not present in any program segment.",
+                        output_sections.name(section_id)
+                    );
                     ensure!(
                         !section_flags.contains(shf::ALLOC),
                         "Section with SHF_ALLOC flag `{}` not present in any program segment.",

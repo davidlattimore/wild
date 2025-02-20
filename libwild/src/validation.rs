@@ -6,11 +6,11 @@ use crate::layout::ResolutionFlags;
 use crate::resolution::ValueFlags;
 use crate::storage::StorageModel;
 use crate::storage::SymbolNameMap;
-use anyhow::bail;
 use anyhow::Context;
+use anyhow::bail;
 use linker_utils::elf::secnames::GOT_SECTION_NAME_STR;
-use object::read::elf::SectionHeader as _;
 use object::LittleEndian;
+use object::read::elf::SectionHeader as _;
 
 pub(crate) fn validate_bytes<S: StorageModel>(layout: &Layout<S>, file_bytes: &[u8]) -> Result {
     let object =

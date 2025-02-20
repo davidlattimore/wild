@@ -1,12 +1,12 @@
 use crate::Binary;
 use crate::Result;
 use anyhow::bail;
-use linker_utils::elf::sht;
 use linker_utils::elf::SectionType;
-use object::read::elf::SectionHeader as _;
+use linker_utils::elf::sht;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSymbol;
+use object::read::elf::SectionHeader as _;
 use std::ops::Not;
 
 pub(crate) fn validate_debug(object: &Binary) -> Result {

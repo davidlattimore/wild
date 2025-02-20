@@ -3,8 +3,8 @@
 use crate::elf;
 use crate::error::Result;
 use anyhow::bail;
-use object::read::elf::FileHeader;
 use object::LittleEndian;
+use object::read::elf::FileHeader;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum FileKind {

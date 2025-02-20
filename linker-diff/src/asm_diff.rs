@@ -41,6 +41,13 @@ use self::section_map::FunctionInfo;
 use self::section_map::IndexedLayout;
 use self::section_map::InputSectionId;
 use self::section_map::SymbolInfo;
+use crate::Binary;
+use crate::Diff;
+use crate::DiffValues;
+use crate::ElfFile64;
+use crate::Report;
+use crate::Result;
+use crate::SectionCoverage;
 use crate::arch::Arch;
 use crate::arch::Instruction;
 use crate::arch::PltEntry;
@@ -49,31 +56,20 @@ use crate::arch::Relaxation;
 use crate::arch::RelaxationKind;
 use crate::diagnostics::TraceOutput;
 use crate::section_map;
-use crate::Binary;
-use crate::Diff;
-use crate::DiffValues;
-use crate::ElfFile64;
-use crate::Report;
-use crate::Result;
-use crate::SectionCoverage;
+use anyhow::Context as _;
 use anyhow::anyhow;
 use anyhow::bail;
-use anyhow::Context as _;
 use colored::ColoredString;
 use colored::Colorize as _;
 use itertools::Itertools as _;
-#[allow(clippy::wildcard_imports)]
-use linker_utils::elf::secnames::*;
 use linker_utils::elf::BitMask;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
+#[allow(clippy::wildcard_imports)]
+use linker_utils::elf::secnames::*;
 use linker_utils::relaxation::RelocationModifier;
-use object::read::elf::ElfSection64;
-use object::read::elf::FileHeader as _;
-use object::read::elf::ProgramHeader as _;
-use object::read::elf::SectionHeader as _;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection as _;
@@ -81,6 +77,10 @@ use object::ObjectSymbol as _;
 use object::RelocationFlags;
 use object::RelocationTarget;
 use object::SectionKind;
+use object::read::elf::ElfSection64;
+use object::read::elf::FileHeader as _;
+use object::read::elf::ProgramHeader as _;
+use object::read::elf::SectionHeader as _;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::fmt::Write as _;
@@ -1773,7 +1773,9 @@ impl<'data> RelaxationTester<'data> {
                 if !self.bin.address_index.is_got_address(got_address) {
                     bail!(
                         "PLT entry at 0x{pointer:x} points to non-GOT address 0x{got_address:x} in {}",
-                        self.bin.section_containing_address(got_address).unwrap_or("??")
+                        self.bin
+                            .section_containing_address(got_address)
+                            .unwrap_or("??")
                     );
                 }
 

@@ -5,16 +5,16 @@ use crate::elf::SectionHeader;
 use crate::error::Result;
 use crate::output_section_id;
 use crate::output_section_id::BuiltInSectionDetails;
-use crate::output_section_id::OutputSectionId;
-use crate::output_section_id::SectionName;
 use crate::output_section_id::FINI;
 use crate::output_section_id::INIT;
+use crate::output_section_id::OutputSectionId;
+use crate::output_section_id::SectionName;
+use linker_utils::elf::SectionFlags;
+use linker_utils::elf::SectionType;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
-use linker_utils::elf::SectionFlags;
-use linker_utils::elf::SectionType;
 use std::fmt::Debug;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -304,8 +304,8 @@ impl<'data> TemporaryPartId<'data> {
 }
 
 #[cfg(test)]
-pub(crate) fn built_in_part_ids(
-) -> impl ExactSizeIterator<Item = PartId> + DoubleEndedIterator<Item = PartId> {
+pub(crate) fn built_in_part_ids()
+-> impl ExactSizeIterator<Item = PartId> + DoubleEndedIterator<Item = PartId> {
     (0..NUM_BUILT_IN_PARTS).map(|n| PartId(n as u32))
 }
 

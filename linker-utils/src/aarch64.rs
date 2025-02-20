@@ -1,10 +1,10 @@
-use crate::elf::extract_bits;
 use crate::elf::AllowedRange;
 use crate::elf::PageMask;
 use crate::elf::RelocationInstruction;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
+use crate::elf::extract_bits;
 use crate::relaxation::RelocationModifier;
 
 pub const DEFAULT_AARCH64_PAGE_SIZE_BITS: u64 = 12;
@@ -905,11 +905,7 @@ impl RelocationInstruction {
             RelocationInstruction::Movnz => {
                 negative = (value & (1 << 30)) == 0;
                 let v = low_bits(value, 16);
-                if negative {
-                    !v
-                } else {
-                    v
-                }
+                if negative { !v } else { v }
             }
             // C6.2.192
             RelocationInstruction::Ldr => low_bits_signed(value >> 5, 19),

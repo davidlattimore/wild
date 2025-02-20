@@ -13,19 +13,19 @@
 
 #![allow(clippy::too_many_arguments)]
 
-use anyhow::bail;
 use anyhow::Context as _;
+use anyhow::bail;
 use asm_diff::AddressIndex;
 use clap::Parser;
 use clap::ValueEnum;
 use itertools::Itertools as _;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
-use object::read::elf::ElfSection64;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection;
 use object::ObjectSymbol as _;
+use object::read::elf::ElfSection64;
 use section_map::IndexedLayout;
 use section_map::LayoutAndFiles;
 use std::collections::HashMap;

@@ -1,8 +1,8 @@
-use self::elf::get_page_mask;
+use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use self::elf::NoteHeader;
 use self::elf::NoteProperty;
-use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use self::elf::TLS_MODULE_BASE_SYMBOL_NAME;
+use self::elf::get_page_mask;
 use crate::alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
@@ -13,12 +13,11 @@ use crate::args::OutputKind;
 use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
 use crate::debug_assert_bail;
 use crate::elf;
-use crate::elf::slice_from_all_bytes_mut;
-use crate::elf::write_relocation_to_buffer;
 use crate::elf::DynamicEntry;
 use crate::elf::EhFrameHdr;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::FileHeader;
+use crate::elf::GNU_NOTE_NAME;
 use crate::elf::GnuHashHeader;
 use crate::elf::ProgramHeader;
 use crate::elf::SectionHeader;
@@ -26,9 +25,9 @@ use crate::elf::SymtabEntry;
 use crate::elf::Vernaux;
 use crate::elf::Verneed;
 use crate::elf::Versym;
-use crate::elf::GNU_NOTE_NAME;
+use crate::elf::slice_from_all_bytes_mut;
+use crate::elf::write_relocation_to_buffer;
 use crate::error::Result;
-use crate::layout::compute_allocations;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
@@ -44,6 +43,7 @@ use crate::layout::Resolution;
 use crate::layout::ResolutionFlags;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
+use crate::layout::compute_allocations;
 use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputSectionId;
@@ -62,25 +62,25 @@ use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::SymbolDb;
 use crate::threading::prelude::*;
 use ahash::AHashMap;
+use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
-use anyhow::Context;
+use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::RelocationKind;
+use linker_utils::elf::SectionFlags;
 use linker_utils::elf::secnames::DEBUG_LOC_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_RANGES_SECTION_NAME;
 use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
-use linker_utils::elf::DynamicRelocationKind;
-use linker_utils::elf::RelocationKind;
-use linker_utils::elf::SectionFlags;
 use linker_utils::relaxation::RelocationModifier;
 use memmap2::MmapOptions;
+use object::LittleEndian;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::from_bytes_mut;
 use object::read::elf::Rela;
 use object::read::elf::Sym as _;
-use object::LittleEndian;
 use std::fmt::Display;
 use std::io::Write;
 use std::marker::PhantomData;
@@ -90,10 +90,10 @@ use std::ops::DerefMut;
 use std::ops::Range;
 use std::ops::Sub;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
 use tracing::debug_span;
 use tracing::instrument;
 use uuid::Uuid;
@@ -1416,7 +1416,8 @@ impl<'data> ObjectLayout<'data> {
                 bail!(
                     "Insufficient space allocated to section `{}`. Tried to take {} bytes, but only {} remain",
                     self.object.section_display_name(sec.index),
-                    allocation_size, section_buffer.len()
+                    allocation_size,
+                    section_buffer.len()
                 );
             }
             let out = slice_take_prefix_mut(section_buffer, allocation_size);
@@ -1647,7 +1648,9 @@ impl<'data> ObjectLayout<'data> {
                             let Some(section_index) =
                                 self.object.symbol_section(elf_symbol, index)?
                             else {
-                                bail!(".eh_frame pc-begin refers to symbol that's not defined in file");
+                                bail!(
+                                    ".eh_frame pc-begin refers to symbol that's not defined in file"
+                                );
                             };
                             let offset_in_section =
                                 (elf_symbol.st_value(e) as i64 + rel.r_addend.get(e)) as u64;
