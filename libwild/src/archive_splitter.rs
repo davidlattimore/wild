@@ -21,49 +21,42 @@ pub fn split_archives<'data>(input_data: &'data InputData) -> Result<Vec<InputBy
     let split_output = input_data
         .files
         .par_iter()
-        .map(|f| {
-            match f.kind {
-                FileKind::Archive => {
-                    let mut extended_filenames = None;
-                    let mut outputs = Vec::new();
-                    for entry in ArchiveIterator::from_archive_bytes(f.data())? {
-                        let entry = entry?;
-                        match entry {
-                            ArchiveEntry::Symbols(_) => {
-                                // We used to read the symbol table from the archive, but when you're linking
-                                // lots of archives and discarding very few, it turns out it's faster to just
-                                // ignore the symbol table and eagerly read the objects.
-                            }
-                            ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
-                            ArchiveEntry::Regular(archive_entry) => {
-                                outputs.push(InputBytes {
-                                    kind: f.kind,
-                                    input: InputRef {
-                                        file: f,
-                                        entry: Some(EntryMeta {
-                                            identifier: archive_entry
-                                                .identifier(extended_filenames),
-                                            from: archive_entry.data_range(),
-                                        }),
-                                    },
-                                    data: archive_entry.entry_data,
-                                    modifiers: f.modifiers,
-                                });
-                            }
+        .map(|f| match f.kind {
+            FileKind::Archive => {
+                let mut extended_filenames = None;
+                let mut outputs = Vec::new();
+                for entry in ArchiveIterator::from_archive_bytes(f.data())? {
+                    let entry = entry?;
+                    match entry {
+                        ArchiveEntry::Ignored => {}
+                        ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
+                        ArchiveEntry::Regular(archive_entry) => {
+                            outputs.push(InputBytes {
+                                kind: f.kind,
+                                input: InputRef {
+                                    file: f,
+                                    entry: Some(EntryMeta {
+                                        identifier: archive_entry.identifier(extended_filenames),
+                                        from: archive_entry.data_range(),
+                                    }),
+                                },
+                                data: archive_entry.entry_data,
+                                modifiers: f.modifiers,
+                            });
                         }
                     }
-                    Ok(outputs)
                 }
-                _ => Ok(vec![InputBytes {
-                    input: InputRef {
-                        file: f,
-                        entry: None,
-                    },
-                    kind: f.kind,
-                    data: f.data(),
-                    modifiers: f.modifiers,
-                }]),
+                Ok(outputs)
             }
+            _ => Ok(vec![InputBytes {
+                input: InputRef {
+                    file: f,
+                    entry: None,
+                },
+                kind: f.kind,
+                data: f.data(),
+                modifiers: f.modifiers,
+            }]),
         })
         .collect::<Result<Vec<Vec<InputBytes>>>>()?;
     Ok(split_output.into_iter().flatten().collect())
