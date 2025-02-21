@@ -115,10 +115,10 @@ pub(crate) fn resolve_symbols_in_files<'data, S: StorageModel>(
     &'data Prelude,
 )> {
     let mut num_objects = 0;
-    let mut objects = Vec::new();
 
     let mut symbol_definitions = symbol_db.take_definitions();
     let mut symbol_definitions_slice = symbol_definitions.as_mut();
+
     let mut definitions_per_group_and_file = groups
         .iter()
         .map(|group| {
@@ -135,7 +135,9 @@ pub(crate) fn resolve_symbols_in_files<'data, S: StorageModel>(
         })
         .collect_vec();
 
+    let work_queue = SegQueue::new();
     let mut prelude = None;
+
     let mut resolved: Vec<ResolvedGroup<'_>> = groups
         .iter()
         .zip(&mut definitions_per_group_and_file)
@@ -156,9 +158,9 @@ pub(crate) fn resolve_symbols_in_files<'data, S: StorageModel>(
                     }
                     ParsedInput::Object(s) => {
                         if !s.is_optional() {
-                            objects.push(WorkItem {
+                            work_queue.push(LoadObjectRequest {
                                 file_id: s.file_id,
-                                definitions: definitions.take().unwrap(),
+                                definitions_out: definitions.take().unwrap(),
                             });
                         }
                         num_objects += 1;
@@ -183,11 +185,6 @@ pub(crate) fn resolve_symbols_in_files<'data, S: StorageModel>(
 
     let outputs = Outputs::new(num_objects);
 
-    let work_queue = SegQueue::new();
-    for work_item in objects {
-        work_queue.push(work_item);
-    }
-
     let num_threads = symbol_db.args.num_threads.get();
 
     let resources = ResolutionResources {
@@ -207,8 +204,11 @@ pub(crate) fn resolve_symbols_in_files<'data, S: StorageModel>(
                 let mut idle = false;
                 while !done.load(Ordering::Relaxed) {
                     while let Some(work_item) = resources.work_queue.pop() {
-                        let r =
-                            process_object(work_item.file_id, work_item.definitions, &resources);
+                        let r = process_object(
+                            work_item.file_id,
+                            work_item.definitions_out,
+                            &resources,
+                        );
                         if let Err(e) = r {
                             // We currently only store the first error.
                             let _ = resources.outputs.errors.push(e);
@@ -246,6 +246,7 @@ pub(crate) fn resolve_symbols_in_files<'data, S: StorageModel>(
     drop(resources);
     drop(definitions_per_group_and_file);
     symbol_db.restore_definitions(symbol_definitions);
+
     if let Some(e) = outputs.errors.pop() {
         return Err(e);
     }
@@ -297,9 +298,14 @@ fn resolve_sections<'data>(
     Ok(())
 }
 
-struct WorkItem<'definitions> {
+/// A request to load an object.
+struct LoadObjectRequest<'definitions> {
+    /// The ID of the object to load.
     file_id: FileId,
-    definitions: &'definitions mut [SymbolId],
+
+    /// The symbol resolutions for the object to be loaded that should be written to when we load
+    /// the object.
+    definitions_out: &'definitions mut [SymbolId],
 }
 
 #[derive(Default)]
@@ -324,25 +330,32 @@ struct ResolutionResources<'data, 'definitions, 'outer_scope, S: StorageModel> {
     idle_threads: Option<ArrayQueue<Thread>>,
     symbol_db: &'outer_scope SymbolDb<'data, S>,
     outputs: &'outer_scope Outputs<'data>,
-    work_queue: SegQueue<WorkItem<'definitions>>,
+    work_queue: SegQueue<LoadObjectRequest<'definitions>>,
 }
 
 impl<S: StorageModel> ResolutionResources<'_, '_, '_, S> {
+    /// Request loading of `file_id`.
     fn request_file_id(&self, file_id: FileId) {
-        if let Some(definitions) = self.definitions_per_file[file_id.group()][file_id.file()].take()
+        let Some(definitions_out) =
+            self.definitions_per_file[file_id.group()][file_id.file()].take()
+        else {
+            // The definitions have previously been taken indicating that this file has already been
+            // processed, nothing more to do.
+            return;
+        };
+
+        self.work_queue.push(LoadObjectRequest {
+            file_id,
+            definitions_out,
+        });
+
+        // If there is a thread sleeping, wake it.
+        if let Some(thread) = self
+            .idle_threads
+            .as_ref()
+            .and_then(|idle_threads| idle_threads.pop())
         {
-            self.work_queue.push(WorkItem {
-                file_id,
-                definitions,
-            });
-            // If there is a thread sleeping, wake it.
-            if let Some(thread) = self
-                .idle_threads
-                .as_ref()
-                .and_then(|idle_threads| idle_threads.pop())
-            {
-                thread.unpark();
-            }
+            thread.unpark();
         }
     }
 }
