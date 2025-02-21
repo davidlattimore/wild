@@ -10,10 +10,8 @@ use bytemuck::Zeroable;
 use std::ops::Range;
 
 pub(crate) enum ArchiveEntry<'data> {
+    Ignored,
     Regular(ArchiveContent<'data>),
-    // TODO: Consider if we want to keep this.
-    #[allow(dead_code)]
-    Symbols(SymbolTable<'data>),
     Filenames(ExtendedFilenames<'data>),
 }
 
@@ -43,12 +41,6 @@ pub(crate) struct ArchiveContent<'data> {
 
     /// The offset in the archive at which the data is from.
     pub(crate) data_offset: usize,
-}
-
-// TODO: Consider if we want to keep this.
-#[allow(dead_code)]
-pub(crate) struct SymbolTable<'data> {
-    pub(crate) data: &'data [u8],
 }
 
 pub(crate) struct ArchiveIterator<'data> {
@@ -115,7 +107,11 @@ impl<'data> ArchiveIterator<'data> {
         let ident = ident.trim();
         let entry_data = &self.data[..size];
         let entry = match ident {
-            "/" => ArchiveEntry::Symbols(SymbolTable { data: entry_data }),
+            "/" => {
+                // This is a symbol table provided by the archive. We don't use it because it isn't
+                // really helpful, we just use the symbol table from the individual objects.
+                ArchiveEntry::Ignored
+            }
             "//" => ArchiveEntry::Filenames(ExtendedFilenames { data: entry_data }),
             _ => ArchiveEntry::Regular(ArchiveContent {
                 ident,
@@ -272,7 +268,7 @@ mod tests {
                         ArchiveEntry::Regular(content) => {
                             our_entries.push(content);
                         }
-                        ArchiveEntry::Symbols(_symbol_table) => {}
+                        ArchiveEntry::Ignored => {}
                         ArchiveEntry::Filenames(table) => filenames = Some(table),
                     }
                 }
