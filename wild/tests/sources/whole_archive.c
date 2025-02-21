@@ -1,7 +1,7 @@
 //#Object:exit.c
-
 //#LinkArgs:--whole-archive
 //#Archive:whole_archive0.c
+//#Cross:false
 
 #include "exit.h"
 
