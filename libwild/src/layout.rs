@@ -68,6 +68,7 @@ use anyhow::bail;
 use anyhow::ensure;
 use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
+use crossbeam_queue::SegQueue;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::SectionFlags;
@@ -932,10 +933,22 @@ impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for EpilogueLayoutSt
     fn load_symbol<'scope, A: Arch>(
         &mut self,
         _common: &mut CommonGroupState,
-        _symbol_id: SymbolId,
-        _resources: &GraphResources<'data, 'scope, S>,
+        symbol_id: SymbolId,
+        resources: &GraphResources<'data, 'scope, S>,
         _queue: &mut LocalWorkQueue,
     ) -> Result {
+        let def_info =
+            &self.internal_symbols.symbol_definitions[self.symbol_id_range.id_to_offset(symbol_id)];
+
+        if let Some(output_section_id) = def_info.section_id() {
+            // We've gotten a request to load a __start_ / __stop_ symbol, sent requests to load all
+            // sections that would go into that section.
+            let sections = resources.start_stop_sections.get(output_section_id);
+            while let Some(request) = sections.pop() {
+                resources.send_work(request.file_id, WorkItem::LoadSection(request));
+            }
+        }
+
         Ok(())
     }
 }
@@ -1256,6 +1269,11 @@ struct GraphResources<'data, 'scope, S: StorageModel> {
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
 
     has_static_tls: AtomicBool,
+
+    /// For each OutputSectionId, this tracks a list of sections that should be loaded if that
+    /// section gets referenced. The sections here will only be those that are eligible for having
+    /// __start_ / __stop_ symbols. i.e. sections that don't start their names with a ".".
+    start_stop_sections: OutputSectionMap<SegQueue<SectionLoadRequest>>,
 }
 
 struct FinaliseLayoutResources<'scope, 'data, S: StorageModel> {
@@ -1277,17 +1295,27 @@ enum WorkItem {
     /// A direct reference to a dynamic symbol has been encountered. The symbol should be defined in
     /// BSS with a copy relocation.
     ExportCopyRelocation(SymbolId),
+
+    /// A request to load a particular section.
+    LoadSection(SectionLoadRequest),
+}
+
+#[derive(Copy, Clone, Debug)]
+struct SectionLoadRequest {
+    file_id: FileId,
+
+    /// The offset of the section within the file's sections. i.e. the same as object::SectionIndex,
+    /// but stored as a u32 for compactness.
+    section_index: u32,
 }
 
 impl WorkItem {
     fn file_id<S: StorageModel>(self, symbol_db: &SymbolDb<S>) -> FileId {
-        symbol_db.file_id_for_symbol(self.symbol_id())
-    }
-
-    fn symbol_id(self) -> SymbolId {
         match self {
-            WorkItem::LoadGlobalSymbol(s) => s,
-            WorkItem::ExportCopyRelocation(s) => s,
+            WorkItem::LoadGlobalSymbol(s) | WorkItem::ExportCopyRelocation(s) => {
+                symbol_db.file_id_for_symbol(s)
+            }
+            WorkItem::LoadSection(s) => s.file_id,
         }
     }
 }
@@ -1794,6 +1822,7 @@ fn find_required_sections<'data, S: StorageModel, A: Arch>(
         sections_with_content: output_sections.new_section_map(),
         merged_strings,
         has_static_tls: AtomicBool::new(false),
+        start_stop_sections: output_sections.new_section_map(),
     };
     let resources_ref = &resources;
 
@@ -2175,6 +2204,9 @@ impl<'data> FileLayoutState<'data> {
                     )
                 }
             },
+            WorkItem::LoadSection(request) => {
+                self.handle_section_request::<S, A>(common, request, resources, queue)
+            }
         }
     }
 
@@ -2201,6 +2233,29 @@ impl<'data> FileLayoutState<'data> {
             }
         }
         Ok(())
+    }
+
+    fn handle_section_request<'scope, S: StorageModel, A: Arch>(
+        &mut self,
+        common: &mut CommonGroupState<'data>,
+        request: SectionLoadRequest,
+        resources: &GraphResources<'data, 'scope, S>,
+        queue: &mut LocalWorkQueue,
+    ) -> Result {
+        match self {
+            FileLayoutState::Object(state) => {
+                state
+                    .sections_required
+                    .push(SectionRequest::new(object::SectionIndex(
+                        request.section_index as usize,
+                    )));
+
+                state.load_sections::<S, A>(common, resources, queue)?;
+
+                Ok(())
+            }
+            _ => bail!("Request to load section sent to non-object: {self}"),
+        }
     }
 
     fn finalise_layout<S: StorageModel>(
@@ -2366,6 +2421,9 @@ impl std::fmt::Display for ObjectLayout<'_> {
     }
 }
 
+// TODO: Experiment with unifying this with SectionLoadRequest, which also has a FileId. This might
+// allow us to move the sections-to-load queue from ObjectLayoutState to the group, reducing heap
+// allocations.
 struct SectionRequest {
     id: object::SectionIndex,
 }
@@ -3201,15 +3259,26 @@ impl<'data> ObjectLayoutState<'data> {
         let mut note_gnu_property_section = None;
 
         let no_gc = !resources.symbol_db.args.gc_sections;
+
         for (i, section) in self.sections.iter().enumerate() {
             match section {
                 SectionSlot::MustLoad(..) | SectionSlot::UnloadedDebugInfo(..) => {
                     self.sections_required
                         .push(SectionRequest::new(object::SectionIndex(i)));
                 }
-                SectionSlot::Unloaded(..) if no_gc => {
-                    self.sections_required
-                        .push(SectionRequest::new(object::SectionIndex(i)));
+                SectionSlot::Unloaded(sec) => {
+                    if no_gc {
+                        self.sections_required
+                            .push(SectionRequest::new(object::SectionIndex(i)));
+                    } else if sec.start_stop_eligible {
+                        resources
+                            .start_stop_sections
+                            .get(sec.part_id.output_section_id())
+                            .push(SectionLoadRequest {
+                                file_id: self.file_id,
+                                section_index: i as u32,
+                            });
+                    }
                 }
                 SectionSlot::EhFrameData(index) => {
                     eh_frame_section = Some(*index);
@@ -3220,6 +3289,7 @@ impl<'data> ObjectLayoutState<'data> {
                 _ => (),
             }
         }
+
         if let Some(eh_frame_section_index) = eh_frame_section {
             process_eh_frame_data::<S, A>(
                 self,

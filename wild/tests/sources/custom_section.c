@@ -1,6 +1,5 @@
 //#AbstractConfig:default
 //#Object:exit.c
-//#Cross:false
 
 //#Config:archive:default
 //#Archive:custom_section0.c
@@ -10,11 +9,11 @@
 
 #include "exit.h"
 
-static int foo1 __attribute__ ((used, retain, section ("foo"))) = 2;
-static int foo2 __attribute__ ((used, retain, section ("foo"))) = 5;
+static int foo1 __attribute__ ((used, section ("foo"))) = 2;
+static int foo2 __attribute__ ((used, section ("foo"))) = 5;
 
-static int w1a __attribute__ ((used, retain, section ("w1"))) = 88;
-static int w3a __attribute__ ((used, retain, section ("w3"))) = 88;
+static int w1a __attribute__ ((used, section ("w1"))) = 88;
+static int w3a __attribute__ ((used, section ("w3"))) = 88;
 
 extern int __start_foo[];
 extern int __stop_foo[];
@@ -28,8 +27,8 @@ extern int __stop_w1[] __attribute__ ((weak));
 extern int __start_w2[] __attribute__ ((weak));
 extern int __stop_w2[] __attribute__ ((weak));
 
-static int dot1 __attribute__ ((used, retain, section (".dot"))) = 7;
-static int dot2 __attribute__ ((used, retain, section (".dot.2"))) = 8;
+static int dot1 __attribute__ ((used, section (".dot"))) = 7;
+static int dot2 __attribute__ ((used, section (".dot.2"))) = 8;
 
 // Make sure we don't discard this custom, alloc section just because of its name.
 static int debug_script __attribute__ ((section (".debug_script"))) = 15;

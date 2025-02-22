@@ -532,6 +532,10 @@ pub(crate) struct UnloadedSection {
 
     /// The index of the last FDE for this section. Previous FDEs will be linked from this.
     pub(crate) last_frame_index: Option<FrameIndex>,
+
+    /// Whether the section has a name that makes it eligible for generation of __start_ / __stop_
+    /// symbols. In particular, the name of the section doesn't start with a ".".
+    pub(crate) start_stop_eligible: bool,
 }
 
 impl UnloadedSection {
@@ -539,6 +543,7 @@ impl UnloadedSection {
         Self {
             part_id,
             last_frame_index: None,
+            start_stop_eligible: false,
         }
     }
 }
@@ -857,9 +862,11 @@ fn resolve_sections_for_object<'data>(
                                     part_id::CUSTOM_PLACEHOLDER,
                                 ))
                             } else {
-                                SectionSlot::Unloaded(UnloadedSection::new(
-                                    part_id::CUSTOM_PLACEHOLDER,
-                                ))
+                                let mut unloaded_section =
+                                    UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
+                                unloaded_section.start_stop_eligible =
+                                    !section_name.starts_with(b".");
+                                SectionSlot::Unloaded(unloaded_section)
                             }
                         }
                         TemporaryPartId::EhFrameData => {
