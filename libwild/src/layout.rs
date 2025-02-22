@@ -799,14 +799,20 @@ impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for ObjectLayoutStat
             "Tried to load symbol in a file that doesn't hold the definition: {}",
             resources.symbol_db.symbol_debug(symbol_id)
         );
+
         let object_symbol_index = self.symbol_id_range.id_to_input(symbol_id);
         let local_symbol = self.object.symbol(object_symbol_index)?;
+
         if let Some(section_id) = self
             .object
             .symbol_section(local_symbol, object_symbol_index)?
         {
-            self.sections_required.push(SectionRequest::new(section_id));
-            self.load_sections::<S, A>(common, resources, queue)?;
+            queue
+                .local_work
+                .push(WorkItem::LoadSection(SectionLoadRequest::new(
+                    self.file_id,
+                    section_id,
+                )));
         } else if local_symbol.is_common(LittleEndian) {
             let common_symbol = CommonSymbol::new(local_symbol)?;
             common.allocate(
@@ -814,6 +820,7 @@ impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for ObjectLayoutStat
                 common_symbol.size,
             );
         }
+
         Ok(())
     }
 }
@@ -1039,9 +1046,6 @@ struct ObjectLayoutState<'data> {
     /// Info about each of our sections. Empty until this object has been activated. Indexed the
     /// same as the sections in the input object.
     sections: Vec<SectionSlot>,
-
-    /// A queue of sections that we need to load.
-    sections_required: Vec<SectionRequest>,
 
     cies: SmallVec<[CieAtOffset<'data>; 2]>,
 
@@ -2204,9 +2208,16 @@ impl<'data> FileLayoutState<'data> {
                     )
                 }
             },
-            WorkItem::LoadSection(request) => {
-                self.handle_section_request::<S, A>(common, request, resources, queue)
-            }
+            WorkItem::LoadSection(request) => match self {
+                FileLayoutState::Object(object_layout_state) => object_layout_state
+                    .handle_section_load_request::<S, A>(
+                        common,
+                        resources,
+                        queue,
+                        request.section_index(),
+                    ),
+                _ => bail!("Request to load section from non-object: {self}"),
+            },
         }
     }
 
@@ -2233,29 +2244,6 @@ impl<'data> FileLayoutState<'data> {
             }
         }
         Ok(())
-    }
-
-    fn handle_section_request<'scope, S: StorageModel, A: Arch>(
-        &mut self,
-        common: &mut CommonGroupState<'data>,
-        request: SectionLoadRequest,
-        resources: &GraphResources<'data, 'scope, S>,
-        queue: &mut LocalWorkQueue,
-    ) -> Result {
-        match self {
-            FileLayoutState::Object(state) => {
-                state
-                    .sections_required
-                    .push(SectionRequest::new(object::SectionIndex(
-                        request.section_index as usize,
-                    )));
-
-                state.load_sections::<S, A>(common, resources, queue)?;
-
-                Ok(())
-            }
-            _ => bail!("Request to load section sent to non-object: {self}"),
-        }
     }
 
     fn finalise_layout<S: StorageModel>(
@@ -2418,19 +2406,6 @@ impl std::fmt::Display for ObjectLayout<'_> {
         // TODO: This is mostly for debugging use. Consider only showing this if some environment
         // variable is set, or only in debug builds.
         write!(f, " ({})", self.file_id)
-    }
-}
-
-// TODO: Experiment with unifying this with SectionLoadRequest, which also has a FileId. This might
-// allow us to move the sections-to-load queue from ObjectLayoutState to the group, reducing heap
-// allocations.
-struct SectionRequest {
-    id: object::SectionIndex,
-}
-
-impl SectionRequest {
-    fn new(id: object::SectionIndex) -> Self {
-        Self { id }
     }
 }
 
@@ -3225,7 +3200,6 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             eh_frame_section: None,
             eh_frame_size: 0,
             sections: non_dynamic.sections,
-            sections_required: Default::default(),
             cies: Default::default(),
             gnu_property_notes: Default::default(),
         })
@@ -3263,13 +3237,21 @@ impl<'data> ObjectLayoutState<'data> {
         for (i, section) in self.sections.iter().enumerate() {
             match section {
                 SectionSlot::MustLoad(..) | SectionSlot::UnloadedDebugInfo(..) => {
-                    self.sections_required
-                        .push(SectionRequest::new(object::SectionIndex(i)));
+                    queue
+                        .local_work
+                        .push(WorkItem::LoadSection(SectionLoadRequest::new(
+                            self.file_id,
+                            object::SectionIndex(i),
+                        )));
                 }
                 SectionSlot::Unloaded(sec) => {
                     if no_gc {
-                        self.sections_required
-                            .push(SectionRequest::new(object::SectionIndex(i)));
+                        queue
+                            .local_work
+                            .push(WorkItem::LoadSection(SectionLoadRequest::new(
+                                self.file_id,
+                                object::SectionIndex(i),
+                            )));
                     } else if sec.start_stop_eligible {
                         resources
                             .start_stop_sections
@@ -3309,43 +3291,40 @@ impl<'data> ObjectLayoutState<'data> {
         if resources.symbol_db.args.output_kind() == OutputKind::SharedObject {
             self.load_non_hidden_symbols::<S, A>(common, resources, queue)?;
         }
-        self.load_sections::<S, A>(common, resources, queue)
+
+        Ok(())
     }
 
-    /// Loads sections in `sections_required` (which may be empty).
-    fn load_sections<'scope, S: StorageModel, A: Arch>(
+    fn handle_section_load_request<'scope, S: StorageModel, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         resources: &GraphResources<'data, 'scope, S>,
         queue: &mut LocalWorkQueue,
-    ) -> Result {
-        let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
-        let _span = tracing::debug_span!("load_sections", file = %self.input).entered();
-        while let Some(section_request) = self.sections_required.pop() {
-            let section_id = section_request.id;
-            match &self.sections[section_id.0] {
-                SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => {
-                    self.load_section::<S, A>(common, queue, *unloaded, section_id, resources)?;
-                }
-                SectionSlot::UnloadedDebugInfo(part_id) => {
-                    self.load_debug_section(common, *part_id, section_id)?;
-                }
-                SectionSlot::Discard => {
-                    bail!(
-                        "{self}: Don't know what segment to put `{}` in, but it's referenced",
-                        self.object.section_display_name(section_id),
-                    );
-                }
-                SectionSlot::Loaded(_)
-                | SectionSlot::EhFrameData(..)
-                | SectionSlot::LoadedDebugInfo(..)
-                | SectionSlot::NoteGnuProperty(..) => {}
-                SectionSlot::MergeStrings(_) => {
-                    // We currently always load everything in merge-string sections. i.e. we don't
-                    // GC unreferenced data. So there's nothing to do here.
-                }
+        section_index: SectionIndex,
+    ) -> Result<(), Error> {
+        match &self.sections[section_index.0] {
+            SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => {
+                self.load_section::<S, A>(common, queue, *unloaded, section_index, resources)?;
             }
-        }
+            SectionSlot::UnloadedDebugInfo(part_id) => {
+                self.load_debug_section(common, *part_id, section_index)?;
+            }
+            SectionSlot::Discard => {
+                bail!(
+                    "{self}: Don't know what segment to put `{}` in, but it's referenced",
+                    self.object.section_display_name(section_index),
+                );
+            }
+            SectionSlot::Loaded(_)
+            | SectionSlot::EhFrameData(..)
+            | SectionSlot::LoadedDebugInfo(..)
+            | SectionSlot::NoteGnuProperty(..) => {}
+            SectionSlot::MergeStrings(_) => {
+                // We currently always load everything in merge-string sections. i.e. we don't
+                // GC unreferenced data. So there's nothing to do here.
+            }
+        };
+
         Ok(())
     }
 
@@ -4615,6 +4594,19 @@ impl<'data> DynamicSymbolDefinition<'data> {
             name,
             hash: gnu_hash(name),
         }
+    }
+}
+
+impl SectionLoadRequest {
+    fn new(file_id: FileId, section_index: SectionIndex) -> Self {
+        Self {
+            file_id,
+            section_index: section_index.0 as u32,
+        }
+    }
+
+    fn section_index(self) -> SectionIndex {
+        SectionIndex(self.section_index as usize)
     }
 }
 
