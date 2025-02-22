@@ -297,6 +297,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 "origin" => {}
                 "norelro" => {}
                 "notext" => {}
+                "nostart-stop-gc" => {}
                 "execstack" => args.execstack = true,
                 "noexecstack" => args.execstack = false,
                 "nocopyreloc" => args.allow_copy_relocations = false,
