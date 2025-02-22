@@ -170,7 +170,15 @@ impl RelaxationKind {
             | RelaxationKind::TlsLdToLocalExec
             | RelaxationKind::TlsLdToLocalExec64
             | RelaxationKind::TlsDescToLocalExec => RelocationModifier::SkipNextRelocation,
-            _ => RelocationModifier::Normal,
+            RelaxationKind::MovIndirectToLea
+            | RelaxationKind::MovIndirectToAbsolute
+            | RelaxationKind::RexMovIndirectToAbsolute
+            | RelaxationKind::RexSubIndirectToAbsolute
+            | RelaxationKind::RexCmpIndirectToAbsolute
+            | RelaxationKind::CallIndirectToRelative
+            | RelaxationKind::JmpIndirectToRelative
+            | RelaxationKind::NoOp
+            | RelaxationKind::SkipTlsDescCall => RelocationModifier::Normal,
         }
     }
 }
