@@ -4007,7 +4007,8 @@ fn create_resolution(
         } else {
             resolution.got_address = Some(allocate_got(1, memory_offsets));
         }
-    } else if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE)
+    }
+    if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE)
         | res_kind.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR)
     {
         resolution.got_address = Some(allocate_got(2, memory_offsets));
