@@ -49,6 +49,9 @@ pub enum RelaxationKind {
     // Transform TLSDESC to local exec for a statically linked executables.
     TlsDescToLocalExec,
 
+    // Transform TLSDESC to initial exec.
+    TlsDescToInitialExec,
+
     /// Convert a TLSDESC_CALL to a no-op.
     SkipTlsDescCall,
 }
@@ -151,6 +154,13 @@ impl RelaxationKind {
                     0x66, 0x90,
                 ]);
             }
+            RelaxationKind::TlsDescToInitialExec => {
+                section_bytes[offset - 3..offset + 6].copy_from_slice(&[
+                    // mov {GOT}(%rip),%rax
+                    0x48, 0x8b, 0x05, 0, 0, 0, 0, // xchg   %ax,%ax
+                    0x66, 0x90,
+                ]);
+            }
             RelaxationKind::SkipTlsDescCall => {
                 section_bytes[offset..offset + 2].copy_from_slice(&[
                     // xchg %ax,%ax
@@ -169,7 +179,8 @@ impl RelaxationKind {
             | RelaxationKind::TlsGdToLocalExecLarge
             | RelaxationKind::TlsLdToLocalExec
             | RelaxationKind::TlsLdToLocalExec64
-            | RelaxationKind::TlsDescToLocalExec => RelocationModifier::SkipNextRelocation,
+            | RelaxationKind::TlsDescToLocalExec
+            | RelaxationKind::TlsDescToInitialExec => RelocationModifier::SkipNextRelocation,
             _ => RelocationModifier::Normal,
         }
     }

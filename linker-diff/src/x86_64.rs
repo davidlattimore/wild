@@ -50,6 +50,7 @@ impl Arch for X86_64 {
             Self::RelaxationKind::TlsLdToLocalExec64 => RelaxationByteRange::new(3, 22),
             Self::RelaxationKind::SkipTlsDescCall => RelaxationByteRange::new(0, 2),
             Self::RelaxationKind::TlsDescToLocalExec => RelaxationByteRange::new(3, 7),
+            Self::RelaxationKind::TlsDescToInitialExec => RelaxationByteRange::new(3, 7),
             Self::RelaxationKind::NoOp => match relaxation.new_r_type.0 {
                 // TLSDESC_CALL is a relocation that does nothing unless it's optimised away. To
                 // verify that it hasn't been optimised away, we need to make sure that we compare
