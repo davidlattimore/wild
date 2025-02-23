@@ -215,7 +215,7 @@ pub(crate) fn merge_strings<'data>(
 
     // Dropping our ReusePool can take a little while, do it in the background while we continue
     // with other work.
-    crate::threading::spawn(|| drop(reuse_pool));
+    rayon::spawn(|| drop(reuse_pool));
 
     Ok(output_string_sections)
 }
@@ -333,7 +333,7 @@ impl<'data> MergedStringsSection<'data> {
         let (error_tx, error_rx) = std::sync::mpsc::channel();
 
         // Spawn a task for each thread.
-        crate::threading::scope(|s| {
+        rayon::scope(|s| {
             for _ in 0..num_threads {
                 s.spawn(|_| {
                     if let Err(error) = do_splitting_work(&resources, reuse_pool) {

@@ -21,6 +21,7 @@ use crate::save_dir::SaveDir;
 use anyhow::Context as _;
 use anyhow::bail;
 use anyhow::ensure;
+use rayon::ThreadPoolBuilder;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -195,6 +196,10 @@ const DEFAULT_FLAGS: &[&str] = &[
     "EL", // little endian
 ];
 
+pub(crate) fn available_parallelism() -> std::num::NonZeroUsize {
+    std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::new(1).unwrap())
+}
+
 impl Default for Args {
     fn default() -> Self {
         Args {
@@ -207,7 +212,7 @@ impl Default for Args {
             dynamic_linker: None,
             output_kind: None,
             time_phases: false,
-            num_threads: crate::threading::available_parallelism(),
+            num_threads: available_parallelism(),
             strip_all: false,
             strip_debug: false,
             // For now, we default to --gc-sections. This is different to other linkers, but other than
@@ -382,7 +387,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             args.num_threads = NonZeroUsize::try_from(rest.parse::<usize>()?)?;
         } else if long_arg_eq("threads") {
             // Default behaviour (multiple threads)
-            args.num_threads = crate::threading::available_parallelism();
+            args.num_threads = available_parallelism();
         } else if let Some(rest) = long_arg_split_prefix("thread-count=") {
             args.num_threads = NonZeroUsize::try_from(rest.parse::<usize>()?)?;
         } else if long_arg_eq("no-threads") {
@@ -578,7 +583,7 @@ fn parse_from_argument_file(path: &Path) -> Result<Args> {
 
 impl Args {
     pub(crate) fn setup_thread_pool(&self) -> Result {
-        crate::threading::ThreadPoolBuilder::new()
+        ThreadPoolBuilder::new()
             .num_threads(self.num_threads.get())
             .build_global()?;
         Ok(())
