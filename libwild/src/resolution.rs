@@ -198,7 +198,7 @@ pub(crate) fn resolve_symbols_in_files<'data, S: StorageModel>(
 
     let done = AtomicBool::new(false);
 
-    crate::threading::scope(|s| {
+    rayon::scope(|s| {
         for _ in 0..symbol_db.args.num_threads.get() {
             s.spawn(|_| {
                 let mut idle = false;
