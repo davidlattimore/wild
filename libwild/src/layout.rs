@@ -2544,9 +2544,14 @@ fn process_relocation<S: StorageModel, A: Arch>(
                 symbol_value_flags,
                 args,
             ) {
+                let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
                 resources.report_error(anyhow::anyhow!(
                     "Undefined symbol {}, referenced by {}",
-                    symbol_db.symbol_name_for_display(symbol_id),
+                    if args.demangle {
+                        symbol_name.to_string()
+                    } else {
+                        String::from_utf8_lossy(symbol_name.bytes()).to_string()
+                    },
                     object.input
                 ));
             }

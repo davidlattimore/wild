@@ -73,6 +73,7 @@ pub(crate) struct Args {
     pub(crate) execstack: bool,
     pub(crate) verify_allocation_consistency: bool,
     pub(crate) should_print_version: bool,
+    pub(crate) demangle: bool,
 
     output_kind: Option<OutputKind>,
     is_dynamic_executable: bool,
@@ -252,6 +253,7 @@ impl Default for Args {
             no_undefined: false,
             should_print_version: false,
             sysroot: None,
+            demangle: true,
         }
     }
 }
@@ -516,6 +518,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             args.num_threads = NonZeroUsize::new(1).unwrap();
         } else if long_arg_eq("no-undefined") {
             args.no_undefined = true;
+        } else if long_arg_eq("demangle") {
+            args.demangle = true;
+        } else if long_arg_eq("no-demangle") {
+            args.demangle = false;
         } else if let Some(path) = arg.strip_prefix('@') {
             if input.next().is_some() || arg_num > 1 {
                 bail!("Mixing of @{{filename}} and regular arguments isn't supported");
@@ -923,6 +929,8 @@ mod tests {
         "-EL",
         "-v",
         "--sysroot=/usr/aarch64-linux-gnu",
+        "--demangle",
+        "--no-demangle",
     ];
 
     #[track_caller]
