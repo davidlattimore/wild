@@ -25,8 +25,14 @@
 //#CompArgs:-mcmodel=large
 //#LinkArgs:--cc=g++ -Wl,-z,now
 //#EnableLinker:lld
-//#Cross:false
 // TODO: Ubuntu: cc1plus: sorry, unimplemented: code model 'large' with '-fPIC'
+//#Arch: x86_64
+
+//#Config:clang-model-large:default
+//#Compiler:clang
+//#CompArgs:-mcmodel=large
+//#LinkArgs:--cc=clang++ -Wl,-z,now
+//#EnableLinker:lld
 //#Arch: x86_64
 
 #include <iostream>

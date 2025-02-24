@@ -158,6 +158,8 @@ impl Config {
                 "section.bss.alignment",
                 "section.gnu.build.attributes",
                 "section.annobin.notes.entsize",
+                // We don't yet group .lrodata sections separately.
+                "section.lrodata",
                 // We currently output version info when linking against the interpreter
                 // (ld-linux-x86-64.so.2). GNU ld doesn't.
                 ".dynamic.DT_VERNEEDNUM",
