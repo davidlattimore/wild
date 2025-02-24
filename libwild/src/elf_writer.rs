@@ -1917,7 +1917,13 @@ fn apply_relocation<S: StorageModel, A: Arch>(
             .bitand(mask.got_entry)
             .wrapping_add(addend as u64),
         RelocationKind::SymRelGotBase => resolution
-            .value()
+            .value_with_addend(
+                addend,
+                symbol_index,
+                object_layout,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+            )?
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::PltRelGotBase => resolution
