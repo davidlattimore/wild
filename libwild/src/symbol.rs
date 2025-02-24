@@ -63,7 +63,11 @@ impl<'data> VersionedSymbolName<'data> {
 
 impl Display for UnversionedSymbolName<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        String::from_utf8_lossy(self.bytes).fmt(f)
+        if let Ok(s) = std::str::from_utf8(self.bytes) {
+            symbolic_demangle::demangle(s).fmt(f)
+        } else {
+            write!(f, "INVALID UTF-8({:?})", self.bytes)
+        }
     }
 }
 
