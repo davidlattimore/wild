@@ -719,10 +719,13 @@ impl<'data> OutputSectionsBuilder<'data> {
         sections: &mut [SectionSlot],
     ) {
         for custom in custom_sections {
-            let section_id = self.add_section(custom.name, custom.section_flags, custom.ty);
+            // Some flags, when set on the input section, don't propagate to the output section.
+            let section_flags = custom.section_flags.without(shf::GROUP);
+
+            let section_id = self.add_section(custom.name, section_flags, custom.ty);
             // Section flags are sometimes different, take the union of everything we're
             // given.
-            self.section_infos[section_id.as_usize()].section_flags |= custom.section_flags;
+            self.section_infos[section_id.as_usize()].section_flags |= section_flags;
 
             if let Some(slot) = sections.get_mut(custom.index.0) {
                 slot.set_part_id(section_id.part_id_with_alignment(custom.alignment));
