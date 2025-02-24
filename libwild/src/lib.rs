@@ -46,12 +46,6 @@ pub(crate) mod subprocess;
 pub(crate) mod subprocess;
 pub(crate) mod symbol;
 pub(crate) mod symbol_db;
-#[cfg(not(feature = "single-threaded"))]
-#[path = "threading_rayon.rs"]
-pub(crate) mod threading;
-#[cfg(feature = "single-threaded")]
-#[path = "threading_none.rs"]
-pub(crate) mod threading;
 pub(crate) mod timing;
 pub(crate) mod validation;
 pub(crate) mod verification;

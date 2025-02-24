@@ -60,7 +60,6 @@ use crate::slice::take_first_mut;
 use crate::storage::StorageModel;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::SymbolDb;
-use crate::threading::prelude::*;
 use ahash::AHashMap;
 use anyhow::Context;
 use anyhow::anyhow;
@@ -81,6 +80,9 @@ use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::from_bytes_mut;
 use object::read::elf::Rela;
 use object::read::elf::Sym as _;
+use rayon::iter::IntoParallelIterator;
+use rayon::iter::ParallelBridge;
+use rayon::iter::ParallelIterator;
 use std::fmt::Display;
 use std::io::Write;
 use std::marker::PhantomData;
@@ -215,7 +217,7 @@ impl Output {
 
                 let write_mode = self.file_write_mode;
 
-                crate::threading::spawn(move || {
+                rayon::spawn(move || {
                     if write_mode == FileWriteMode::UnlinkAndReplace {
                         // Rename the old output file so that we can create a new file in its place.
                         // Reusing the existing file would also be an option, but that wouldn't
@@ -227,7 +229,7 @@ impl Output {
                         // from a separate task so that it can run in the background while other
                         // threads continue working. Deleting can take a while for large files.
                         if rename_status.is_ok() {
-                            crate::threading::spawn(move || {
+                            rayon::spawn(move || {
                                 let _ = std::fs::remove_file(renamed_old_file);
                                 // Note, we don't currently signal when we've finished deleting the
                                 // file. Based on experiments run on Linux 6.9.3, if we exit while

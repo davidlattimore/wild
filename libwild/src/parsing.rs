@@ -16,9 +16,10 @@ use crate::sharding::ShardKey;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
-use crate::threading::prelude::*;
 use anyhow::Context;
 use anyhow::bail;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
 use std::path::Path;
 
 #[tracing::instrument(skip_all, name = "Parse input files")]

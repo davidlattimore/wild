@@ -61,7 +61,6 @@ use crate::symbol_db::SymbolDebug;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::symbol_db::is_mapping_symbol_name;
-use crate::threading::prelude::*;
 use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
@@ -90,6 +89,11 @@ use object::read::elf::Rela as _;
 use object::read::elf::SectionHeader;
 use object::read::elf::Sym as _;
 use object::read::elf::VerdefIterator;
+use rayon::iter::IndexedParallelIterator;
+use rayon::iter::IntoParallelIterator;
+use rayon::iter::IntoParallelRefMutIterator;
+use rayon::iter::ParallelIterator;
+use rayon::slice::ParallelSliceMut;
 use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -1843,7 +1847,7 @@ fn find_required_sections<'data, S: StorageModel, A: Arch>(
             Ok(())
         })?;
 
-    crate::threading::scope(|scope| {
+    rayon::scope(|scope| {
         for _ in 0..num_threads {
             scope.spawn(|_| {
                 let panic_result = std::panic::catch_unwind(|| {
