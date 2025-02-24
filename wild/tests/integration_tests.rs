@@ -1147,7 +1147,7 @@ impl LinkCommand {
                 opt_save_dir = Some(save_dir);
 
                 match cc {
-                    "clang" => {
+                    "clang" | "clang++" => {
                         command.arg(format!(
                             "--ld-path={}",
                             linker_path

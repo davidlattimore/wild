@@ -15,6 +15,12 @@
 //#LinkArgs:--cc=g++ -no-pie -Wl,-z,now
 //#EnableLinker:lld
 
+//#Config:clang-pie:default
+//#CompArgs:-fpie
+//#Compiler:clang
+//#LinkArgs:--cc=clang++ -pie -Wl,-z,now
+//#EnableLinker:lld
+
 //#Config:model-large:default
 //#CompArgs:-mcmodel=large
 //#LinkArgs:--cc=g++ -Wl,-z,now
