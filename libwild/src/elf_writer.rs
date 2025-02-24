@@ -2598,7 +2598,7 @@ fn write_internal_symbols<S: StorageModel>(
             .with_context(|| {
                 format!(
                     "symbol `{}` in section `{}` that we're not going to output {resolution:?}",
-                    symbol_name,
+                    layout.symbol_db.symbol_name_for_display(symbol_id),
                     layout.output_sections.display_name(section_id)
                 )
             })?;

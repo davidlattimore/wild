@@ -64,7 +64,7 @@ impl<'data> VersionedSymbolName<'data> {
 impl Display for UnversionedSymbolName<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Ok(s) = std::str::from_utf8(self.bytes) {
-            symbolic_demangle::demangle(s).fmt(f)
+            Display::fmt(s, f)
         } else {
             write!(f, "INVALID UTF-8({:?})", self.bytes)
         }

@@ -115,6 +115,11 @@ pub(crate) struct SymbolIdRange {
     num_symbols: usize,
 }
 
+pub(crate) struct SymbolNameDisplay<'data> {
+    name: Option<UnversionedSymbolName<'data>>,
+    demangle: bool,
+}
+
 impl SymbolIdRange {
     pub(crate) fn prelude(num_symbols: usize) -> SymbolIdRange {
         SymbolIdRange {
@@ -388,12 +393,11 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
         }
     }
 
-    pub(crate) fn symbol_name_for_display(
-        &self,
-        symbol_id: SymbolId,
-    ) -> UnversionedSymbolName<'data> {
-        self.symbol_name(symbol_id)
-            .unwrap_or_else(|_| UnversionedSymbolName::new(b"??"))
+    pub(crate) fn symbol_name_for_display(&self, symbol_id: SymbolId) -> SymbolNameDisplay<'data> {
+        SymbolNameDisplay {
+            name: self.symbol_name(symbol_id).ok(),
+            demangle: self.args.demangle,
+        }
     }
 
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> Result<UnversionedSymbolName<'data>> {
@@ -873,7 +877,7 @@ impl<S: StorageModel> std::fmt::Display for SymbolDebug<'_, '_, S> {
                 ParsedInput::Epilogue(_) => write!(f, "<unnamed custom-section symbol>")?,
             }
         } else {
-            write!(f, "symbol `{symbol_name}`")?;
+            write!(f, "symbol `{}`", self.db.symbol_name_for_display(symbol_id))?;
         }
         write!(
             f,
@@ -1043,5 +1047,23 @@ impl Display for RawSymbolName<'_> {
         }
 
         Ok(())
+    }
+}
+
+impl Display for SymbolNameDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(name) = self.name {
+            if let Ok(s) = std::str::from_utf8(name.bytes()) {
+                if self.demangle {
+                    Display::fmt(&symbolic_demangle::demangle(s), f)
+                } else {
+                    Display::fmt(s, f)
+                }
+            } else {
+                write!(f, "INVALID UTF-8({:?})", name.bytes())
+            }
+        } else {
+            write!(f, "SYMBOL-READ-ERROR")
+        }
     }
 }
