@@ -679,7 +679,7 @@ trait SymbolRequestHandler<'data, S: StorageModel>: std::fmt::Display + HandlerD
     ) -> Result {
         bail!(
             "Cannot perform copy relocation for undefined symbol `{}`",
-            symbol_db.symbol_name(symbol_id)?
+            symbol_db.symbol_name_for_display(symbol_id)
         );
     }
 }
@@ -2546,13 +2546,8 @@ fn process_relocation<S: StorageModel, A: Arch>(
             ) {
                 let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
                 resources.report_error(anyhow::anyhow!(
-                    "Undefined symbol {}, referenced by {}",
-                    if args.demangle {
-                        symbol_name.to_string()
-                    } else {
-                        String::from_utf8_lossy(symbol_name.bytes()).to_string()
-                    },
-                    object.input
+                    "Undefined symbol {symbol_name}, referenced by {}",
+                    object.input,
                 ));
             }
         }
