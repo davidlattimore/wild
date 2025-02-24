@@ -840,7 +840,8 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
             *got_entry = 0;
             return Ok(());
         }
-        if !self.tls.contains(&address) {
+        // TLS_MODULE_BASE points at the end of the .tbss in some cases, thus relax the verification.
+        if !(self.tls.start..=self.tls.end).contains(&address) {
             bail!(
                 "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
                 address

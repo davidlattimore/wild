@@ -2594,9 +2594,8 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
         | RelocationKind::TpOffAArch64
-        | RelocationKind::SymRelGotBase
-        | RelocationKind::None => ResolutionFlags::DIRECT,
-        RelocationKind::AbsoluteAArch64 => ResolutionFlags::empty(),
+        | RelocationKind::SymRelGotBase => ResolutionFlags::DIRECT,
+        RelocationKind::None | RelocationKind::AbsoluteAArch64 => ResolutionFlags::empty(),
     }
 }
 
@@ -4010,7 +4009,8 @@ fn create_resolution(
         } else {
             resolution.got_address = Some(allocate_got(1, memory_offsets));
         }
-    } else if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE)
+    }
+    if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE)
         | res_kind.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR)
     {
         resolution.got_address = Some(allocate_got(2, memory_offsets));
