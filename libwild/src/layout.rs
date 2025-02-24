@@ -2595,9 +2595,8 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
         | RelocationKind::TpOffAArch64
-        | RelocationKind::SymRelGotBase
-        | RelocationKind::None => ResolutionFlags::DIRECT,
-        RelocationKind::AbsoluteAArch64 => ResolutionFlags::empty(),
+        | RelocationKind::SymRelGotBase => ResolutionFlags::DIRECT,
+        RelocationKind::None | RelocationKind::AbsoluteAArch64 => ResolutionFlags::empty(),
     }
 }
 
