@@ -920,10 +920,10 @@ fn build_obj(
 
     // If multiple threads try to create a file at the same time, only one should do so and the
     // others should wait.
-    let lock_path = output_path.with_extension(format!(
-        "{}.lock",
+    let lock_path = output_path.with_file_name(format!(
+        ".{}.lock",
         output_path
-            .extension()
+            .file_name()
             .and_then(|ext| ext.to_str())
             .unwrap_or_default()
     ));
