@@ -263,6 +263,7 @@ struct Config {
     name: String,
     variant_num: Option<u32>,
     assertions: Assertions,
+    linker_driver: Option<LinkerDriver>,
     linker_args: ArgumentSet,
     linker_so_args: ArgumentSet,
     wild_extra_linker_args: ArgumentSet,
@@ -283,6 +284,7 @@ struct Config {
     requires_glibc: bool,
     requires_clang_with_tlsdesc: bool,
 }
+
 impl Config {
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
         if self.skip_linkers.contains(linker.name()) {
@@ -293,6 +295,13 @@ impl Config {
         }
         linker.enabled_by_default()
     }
+}
+
+/// A compiler via which the linker is invoked.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LinkerDriver {
+    Gcc(CLanguage),
+    Clang(CLanguage),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -373,6 +382,7 @@ impl Default for Config {
             name: "default".to_owned(),
             variant_num: None,
             assertions: Default::default(),
+            linker_driver: None,
             linker_args: ArgumentSet::default_for_linking(),
             linker_so_args: ArgumentSet::default_for_linking(),
             compiler_args: ArgumentSet::default_for_compiling(),
@@ -457,6 +467,9 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                         bail!("LinkSoArgs is not used when building Rust code");
                     }
                     config.linker_so_args = ArgumentSet::parse(arg)?
+                }
+                "LinkerDriver" => {
+                    config.linker_driver = LinkerDriver::parse(arg)?;
                 }
                 "WildExtraLinkArgs" => config.wild_extra_linker_args = ArgumentSet::parse(arg)?,
                 "CompArgs" => config.compiler_args = ArgumentSet::parse(arg)?,
@@ -742,20 +755,10 @@ enum CompilerKind {
     Rust,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CLanguage {
     C,
     Cpp,
-}
-
-impl CLanguage {
-    fn from_gcc_name(cc: &str) -> Result<CLanguage> {
-        match cc {
-            "gcc" => Ok(CLanguage::C),
-            "g++" => Ok(CLanguage::Cpp),
-            other => bail!("Unsupported C compiler {other}"),
-        }
-    }
 }
 
 fn get_c_compiler(
@@ -1124,18 +1127,18 @@ impl LinkCommand {
         } else {
             let linker_path = linker.path(cross_arch);
 
-            if let Some(cc) = linker_args
-                .args
-                .first()
-                .and_then(|a| a.strip_prefix("--cc="))
-            {
+            if let Some(linker_driver) = config.linker_driver {
                 invocation_mode = LinkerInvocationMode::Cc;
 
                 if cross_arch.is_some() {
-                    let c_compiler = get_c_compiler(cc, CLanguage::from_gcc_name(cc)?, cross_arch)?;
+                    let c_compiler = get_c_compiler(
+                        linker_driver.name(),
+                        linker_driver.c_language(),
+                        cross_arch,
+                    )?;
                     command = Command::new(c_compiler);
                 } else {
-                    command = Command::new(cc);
+                    command = Command::new(linker_driver.name());
                 }
 
                 // It's convenient when debugging to be able to run the linker via a script rather
@@ -1146,8 +1149,8 @@ impl LinkCommand {
                 command.env("WILD_SAVE_DIR", &save_dir);
                 opt_save_dir = Some(save_dir);
 
-                match cc {
-                    "clang" | "clang++" => {
+                match linker_driver {
+                    LinkerDriver::Clang(_) => {
                         command.arg(format!(
                             "--ld-path={}",
                             linker_path
@@ -1155,7 +1158,7 @@ impl LinkCommand {
                                 .expect("Linker path must be valid UTF-8")
                         ));
                     }
-                    "gcc" | "g++" => {
+                    LinkerDriver::Gcc(_) => {
                         match linker {
                             Linker::Wild => {
                                 // GCC unfortunately doesn't provide any way to use a custom linker.
@@ -1172,15 +1175,16 @@ impl LinkCommand {
                             }
                         }
                     }
-                    _ => panic!("Unsupported cc={cc}"),
                 }
+
                 let arch = cross_arch.unwrap_or_else(get_host_architecture);
                 if arch == Architecture::AArch64 {
                     // Provide a workaround for ld.lld: error: unknown argument '--fix-cortex-a53-835769'
                     // Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
                     command.arg("-mno-fix-cortex-a53-835769");
                 }
-                command.args(&linker_args.args[1..]);
+
+                command.args(&linker_args.args);
             } else {
                 command = Command::new(linker_path);
 
@@ -1393,6 +1397,34 @@ fn read_comments<'data>(obj: &ElfFile64<'data>) -> Result<Vec<std::borrow::Cow<'
         .map(|c| String::from_utf8_lossy(c))
         .filter(|c| !c.is_empty())
         .collect())
+}
+
+impl LinkerDriver {
+    fn parse(arg: &str) -> Result<Option<LinkerDriver>> {
+        match arg.trim() {
+            "gcc" => Ok(Some(LinkerDriver::Gcc(CLanguage::C))),
+            "g++" => Ok(Some(LinkerDriver::Gcc(CLanguage::Cpp))),
+            "clang" => Ok(Some(LinkerDriver::Clang(CLanguage::C))),
+            "clang++" => Ok(Some(LinkerDriver::Clang(CLanguage::Cpp))),
+            "" | "none" => Ok(None),
+            other => bail!("Unsupported linker driver `{other}`"),
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            LinkerDriver::Gcc(CLanguage::C) => "gcc",
+            LinkerDriver::Gcc(CLanguage::Cpp) => "g++",
+            LinkerDriver::Clang(CLanguage::C) => "clang",
+            LinkerDriver::Clang(CLanguage::Cpp) => "clang++",
+        }
+    }
+
+    fn c_language(&self) -> CLanguage {
+        match self {
+            LinkerDriver::Gcc(lang) | LinkerDriver::Clang(lang) => *lang,
+        }
+    }
 }
 
 impl Display for LinkCommand {

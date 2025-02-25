@@ -7,7 +7,8 @@
 
 //#Config:gcc-tls-desc:default
 //#CompArgs:-mtls-dialect=gnu2
-//#LinkArgs:--cc=gcc -Wl,-z,now
+//#LinkerDriver:gcc
+//#LinkArgs:-Wl,-z,now
 //#Object:tlsdesc-obj.c
 //#Arch: x86_64
 
