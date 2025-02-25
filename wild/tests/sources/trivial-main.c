@@ -1,5 +1,6 @@
 //#AbstractConfig:default
-//#LinkArgs:--cc=gcc -Wl,-z,now
+//#LinkerDriver:gcc
+//#LinkArgs:-Wl,-z,now
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.data
 
