@@ -165,7 +165,14 @@ RUSTFLAGS="-Clinker=clang -Clink-args=--ld-path=wild" cargo test
 
 ## Contributing
 
-For more information on contributing to `wild` see [CONTRIBUTING.md](CONTRIBUTING.md)
+For more information on contributing to `wild` see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+For a high-level overview of Wild's design, see [DESIGN.md](DESIGN.md).
+
+## Further reading
+
+Many of the posts on [David's blog](https://davidlattimore.github.io/) are about various aspects of
+the Wild linker.
 
 ## Sponsorship
 
