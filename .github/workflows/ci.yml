@@ -79,7 +79,7 @@ jobs:
         persist-credentials: false
     # This is where we check that we're not using features from a more recent rust version. When
     # updating this, please also update workspace.package.rust-version in `Cargo.toml`.
-    - uses: dtolnay/rust-toolchain@1.85.0
+    - uses: dtolnay/rust-toolchain@1.90.0
       id: rust-toolchain
       with:
         components: clippy
