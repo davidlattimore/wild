@@ -473,6 +473,8 @@ pub mod secnames {
     pub const DEBUG_RANGES_SECTION_NAME: &[u8] = DEBUG_RANGES_SECTION_NAME_STR.as_bytes();
     pub const GROUP_SECTION_NAME_STR: &str = ".group";
     pub const GROUP_SECTION_NAME: &[u8] = GROUP_SECTION_NAME_STR.as_bytes();
+    pub const DATA_REL_RO_SECTION_NAME_STR: &str = ".data.rel.ro";
+    pub const DATA_REL_RO_SECTION_NAME: &[u8] = DATA_REL_RO_SECTION_NAME_STR.as_bytes();
 }
 
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -

@@ -111,8 +111,9 @@ pub(crate) const BSS: OutputSectionId = OutputSectionId::regular(10);
 pub(crate) const COMMENT: OutputSectionId = OutputSectionId::regular(11);
 pub(crate) const GCC_EXCEPT_TABLE: OutputSectionId = OutputSectionId::regular(12);
 pub(crate) const NOTE_ABI_TAG: OutputSectionId = OutputSectionId::regular(13);
+pub(crate) const DATA_REL_RO: OutputSectionId = OutputSectionId::regular(14);
 
-pub(crate) const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 14;
+pub(crate) const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 15;
 
 pub(crate) struct OutputSections<'data> {
     /// The base address for our output binary.
@@ -540,6 +541,12 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::ALLOC.with(shf::GNU_RETAIN),
         ..DEFAULT_DEFS
     },
+    BuiltInSectionDetails {
+        name: SectionName(DATA_REL_RO_SECTION_NAME),
+        ty: sht::PROGBITS,
+        section_flags: shf::ALLOC.with(shf::WRITE),
+        ..DEFAULT_DEFS
+    },
 ];
 
 pub(crate) fn built_in_section_ids()
@@ -802,6 +809,7 @@ impl CustomSectionIds {
         events.push(GNU_VERSION.event());
         events.push(GNU_VERSION_R.event());
         events.push(RELA_DYN.event());
+        events.push(RELA_PLT.event());
         events.push(RODATA.event());
         events.push(OrderEvent::SegmentStart(crate::program_segments::EH_FRAME));
         events.push(EH_FRAME_HDR.event());
@@ -821,19 +829,21 @@ impl CustomSectionIds {
         events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_EXEC));
 
         events.push(OrderEvent::SegmentStart(crate::program_segments::LOAD_RW));
-        events.push(GOT.event());
-        events.push(RELA_PLT.event());
-        events.push(INIT_ARRAY.event());
-        events.push(FINI_ARRAY.event());
-        events.push(DATA.event());
-        events.push(OrderEvent::SegmentStart(crate::program_segments::DYNAMIC));
-        events.push(DYNAMIC.event());
-        events.push(OrderEvent::SegmentEnd(crate::program_segments::DYNAMIC));
-        events.extend(build_section_events(&self.data));
+        events.push(OrderEvent::SegmentStart(crate::program_segments::RELRO));
         events.push(OrderEvent::SegmentStart(crate::program_segments::TLS));
         events.push(TDATA.event());
         events.push(TBSS.event());
         events.push(OrderEvent::SegmentEnd(crate::program_segments::TLS));
+        events.push(INIT_ARRAY.event());
+        events.push(FINI_ARRAY.event());
+        events.push(DATA_REL_RO.event());
+        events.push(OrderEvent::SegmentStart(crate::program_segments::DYNAMIC));
+        events.push(DYNAMIC.event());
+        events.push(OrderEvent::SegmentEnd(crate::program_segments::DYNAMIC));
+        events.push(GOT.event());
+        events.push(OrderEvent::SegmentEnd(crate::program_segments::RELRO));
+        events.push(DATA.event());
+        events.extend(build_section_events(&self.data));
         events.push(BSS.event());
         events.extend(build_section_events(&self.bss));
         events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RW));
@@ -1000,6 +1010,7 @@ fn test_constant_ids() {
         (NOTE_ABI_TAG, NOTE_ABI_TAG_SECTION_NAME),
         (NOTE_GNU_PROPERTY, NOTE_GNU_PROPERTY_SECTION_NAME),
         (NOTE_GNU_BUILD_ID, NOTE_GNU_BUILD_ID_SECTION_NAME),
+        (DATA_REL_RO, DATA_REL_RO_SECTION_NAME),
     ];
     for (id, name) in check {
         assert_eq!(id.built_in_details().name.bytes(), *name);

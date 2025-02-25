@@ -104,6 +104,8 @@ impl<'data> UnresolvedSection<'data> {
             Some(output_section_id::RODATA)
         } else if section_name.starts_with(TEXT_SECTION_NAME) {
             Some(output_section_id::TEXT)
+        } else if section_name.starts_with(DATA_REL_RO_SECTION_NAME) {
+            Some(output_section_id::DATA_REL_RO)
         } else if section_name.starts_with(DATA_SECTION_NAME) {
             Some(output_section_id::DATA)
         } else if section_name.starts_with(BSS_SECTION_NAME) {
