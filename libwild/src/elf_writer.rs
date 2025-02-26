@@ -2790,13 +2790,15 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |inputs| inputs.section_part_layouts.get(part_id::RELA_PLT).mem_size > 0,
         |inputs| inputs.section_part_layouts.get(part_id::RELA_PLT).mem_size,
     ),
-    DynamicEntryWriter::new(object::elf::DT_RELA, |inputs| {
+    DynamicEntryWriter::optional(object::elf::DT_RELA, has_rela_dyn, |inputs| {
         inputs.vma_of_section(output_section_id::RELA_DYN)
     }),
-    DynamicEntryWriter::new(object::elf::DT_RELASZ, |inputs| {
+    DynamicEntryWriter::optional(object::elf::DT_RELASZ, has_rela_dyn, |inputs| {
         inputs.size_of_section(output_section_id::RELA_DYN)
     }),
-    DynamicEntryWriter::new(object::elf::DT_RELAENT, |_inputs| elf::RELA_ENTRY_SIZE),
+    DynamicEntryWriter::optional(object::elf::DT_RELAENT, has_rela_dyn, |_inputs| {
+        elf::RELA_ENTRY_SIZE
+    }),
     // Note, rela-count is just the count of the relative relocations and doesn't include any
     // glob-dat relocations. This is as opposed to rela-size, which includes both.
     DynamicEntryWriter::new(object::elf::DT_RELACOUNT, |inputs| {
@@ -3219,6 +3221,12 @@ fn write_layout_to<S: StorageModel>(layout: &Layout<S>, path: &Path) -> Result {
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
     layout.layout_data().write(&mut file)?;
     Ok(())
+}
+
+fn has_rela_dyn(inputs: &DynamicEntryInputs) -> bool {
+    let relative = inputs.section_part_layouts.get(part_id::RELA_DYN_RELATIVE);
+    let general = inputs.section_part_layouts.get(part_id::RELA_DYN_GENERAL);
+    relative.mem_size > 0 || general.mem_size > 0
 }
 
 struct ResFlagsDisplay<'a>(&'a Resolution);
