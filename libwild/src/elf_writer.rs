@@ -89,6 +89,7 @@ use std::marker::PhantomData;
 use std::ops::BitAnd;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::ops::Not as _;
 use std::ops::Range;
 use std::ops::Sub;
 use std::path::Path;
@@ -633,18 +634,22 @@ impl<'data> FileLayout<'data> {
 #[derive(Default)]
 struct VersionWriter<'out> {
     version_r: &'out mut [u8],
-    versym: &'out mut [Versym],
+
+    /// None if versioning is disabled, which we do if no symbols have versions.
+    versym: Option<&'out mut [Versym]>,
 }
 
 impl<'out> VersionWriter<'out> {
-    fn new(version_r: &'out mut [u8], versym: &'out mut [Versym]) -> Self {
+    fn new(version_r: &'out mut [u8], versym: Option<&'out mut [Versym]>) -> Self {
         Self { version_r, versym }
     }
 
     fn set_next_symbol_version(&mut self, index: u16) -> Result {
-        let versym = crate::slice::take_first_mut(&mut self.versym)
-            .ok_or_else(|| insufficient_allocation(".gnu.version"))?;
-        versym.0.set(LittleEndian, index);
+        if let Some(versym_table) = self.versym.as_mut() {
+            let versym = crate::slice::take_first_mut(versym_table)
+                .ok_or_else(|| insufficient_allocation(".gnu.version"))?;
+            versym.0.set(LittleEndian, index);
+        }
         Ok(())
     }
 
@@ -667,12 +672,14 @@ impl<'out> VersionWriter<'out> {
     }
 
     fn check_exhausted(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
-        if !self.versym.is_empty() {
-            return Err(excessive_allocation(
-                ".gnu.version",
-                self.versym.len() as u64 * elf::GNU_VERSION_ENTRY_SIZE,
-                *mem_sizes.get(part_id::GNU_VERSION),
-            ));
+        if let Some(versym) = self.versym.as_ref() {
+            if !versym.is_empty() {
+                return Err(excessive_allocation(
+                    ".gnu.version",
+                    versym.len() as u64 * elf::GNU_VERSION_ENTRY_SIZE,
+                    *mem_sizes.get(part_id::GNU_VERSION),
+                ));
+            }
         }
         if !self.version_r.is_empty() {
             bail!(
@@ -740,9 +747,10 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         let eh_frame = buffers.take(part_id::EH_FRAME);
         let eh_frame_hdr = buffers.take(part_id::EH_FRAME_HDR);
         let dynamic = DynamicEntriesWriter::new(buffers.take(part_id::DYNAMIC));
+        let versym = slice_from_all_bytes_mut(buffers.take(part_id::GNU_VERSION));
         let version_writer = VersionWriter::new(
             buffers.take(part_id::GNU_VERSION_R),
-            slice_from_all_bytes_mut(buffers.take(part_id::GNU_VERSION)),
+            versym.is_empty().not().then_some(versym),
         );
 
         TableWriter {
@@ -2466,10 +2474,10 @@ fn write_dynamic_symbol_definitions<S: StorageModel>(
 
                 // We don't yet support setting symbol versions for symbols that we export, so right
                 // now we just set them all to the global version.
-                if let Some(version_out) =
-                    crate::slice::take_first_mut(&mut table_writer.version_writer.versym)
-                {
-                    version_out.0.set(LittleEndian, object::elf::VER_NDX_GLOBAL);
+                if let Some(versym) = table_writer.version_writer.versym.as_mut() {
+                    if let Some(version_out) = crate::slice::take_first_mut(versym) {
+                        version_out.0.set(LittleEndian, object::elf::VER_NDX_GLOBAL);
+                    }
                 }
             }
             FileLayout::Dynamic(object) => {
@@ -2480,12 +2488,14 @@ fn write_dynamic_symbol_definitions<S: StorageModel>(
                     &mut table_writer.dynsym_writer,
                 )?;
 
-                write_symbol_version(
-                    object.input_symbol_versions,
-                    object.symbol_id_range.id_to_offset(sym_def.symbol_id),
-                    &object.version_mapping,
-                    &mut table_writer.version_writer.versym,
-                )?;
+                if let Some(versym) = table_writer.version_writer.versym.as_mut() {
+                    write_symbol_version(
+                        object.input_symbol_versions,
+                        object.symbol_id_range.id_to_offset(sym_def.symbol_id),
+                        &object.version_mapping,
+                        versym,
+                    )?;
+                }
             }
             _ => bail!(
                 "Internal error: Unexpected dynamic symbol definition from {:?}. {}",
@@ -3055,12 +3065,14 @@ impl<'data> DynamicLayout<'data> {
                         .dynsym_writer
                         .copy_symbol_shndx(symbol, name, 0, 0)?;
 
-                    write_symbol_version(
-                        self.input_symbol_versions,
-                        self.symbol_id_range.id_to_offset(symbol_id),
-                        &self.version_mapping,
-                        &mut table_writer.version_writer.versym,
-                    )?;
+                    if let Some(versym) = table_writer.version_writer.versym.as_mut() {
+                        write_symbol_version(
+                            self.input_symbol_versions,
+                            self.symbol_id_range.id_to_offset(symbol_id),
+                            &self.version_mapping,
+                            versym,
+                        )?;
+                    }
                 }
 
                 table_writer.process_resolution::<A>(res).with_context(|| {
