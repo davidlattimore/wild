@@ -203,11 +203,16 @@ fn compare_sections<A: Arch>(
                 .saturating_sub(A::MAX_RELAX_MODIFY_BEFORE),
         )?;
 
-        if testers[0].next_modifier == RelocationModifier::SkipNextRelocation {
-            // If one tester is skipping, then all should be, since otherwise the previous
-            // relocation wouldn't have matched. So we don't need to do any comparison here and
-            // can just skip the relocation.
-            testers[0].next_modifier = RelocationModifier::Normal;
+        // If any tester indicates that the next relocation should be skipped, then either all
+        // testers will say to skip, or the previous relocation didn't match. In either case, we
+        // want to skip the next relocation.
+        if testers
+            .iter()
+            .any(|t| t.next_modifier == RelocationModifier::SkipNextRelocation)
+        {
+            testers
+                .iter_mut()
+                .for_each(|t| t.next_modifier = RelocationModifier::Normal);
 
             continue;
         }
@@ -451,7 +456,11 @@ fn diff_literal_bytes<'data, A: Arch>(
 
     let mut ok = true;
 
-    for tester in testers.iter() {
+    for tester in testers.iter_mut() {
+        // If the previous match failed, then the testers might be at different positions,
+        // synchronise them.
+        tester.previous_end = start;
+
         if end > tester.previous_end {
             ok &= tester.is_equal_up_to(end);
         }
@@ -551,7 +560,7 @@ impl<A: Arch> ExecDiff<'_, A> {
         let mut blocks = vec![RelocationInstructionBlock {
             name: ORIG,
             annotations,
-            reference: self.original_annotations.last().unwrap().reference,
+            reference: self.original_annotations.last().map(|a| a.reference),
             trace_messages: Vec::new(),
             section_bytes: original_section.data()?,
             section_address: 0,
@@ -569,7 +578,7 @@ impl<A: Arch> ExecDiff<'_, A> {
             let block = RelocationInstructionBlock {
                 name: &tester.bin.name,
                 annotations: res.annotations.clone(),
-                reference: res.reference,
+                reference: Some(res.reference),
                 trace_messages: tester.bin.trace.messages_in(
                     range.start + tester.section_address..range.end + tester.section_address,
                 ),
@@ -707,12 +716,12 @@ fn diff_key_for_res_mismatch<A: Arch>(
         .as_ref()
         .and_then(|r| r.first_if_matched());
 
-    let Some(orig) = original_annotations.first() else {
-        return "missing-original".to_owned();
-    };
-
     match (ours, reference) {
         (Some(r1), Some(r2)) => {
+            let Some(orig) = original_annotations.first() else {
+                return "missing-original".to_owned();
+            };
+
             match (
                 r1.relaxation.relaxation_kind.is_no_op(),
                 r2.relaxation.relaxation_kind.is_no_op(),
@@ -754,20 +763,27 @@ fn diff_key_for_res_mismatch<A: Arch>(
         }
         _ => {
             let failure_kind = |r: &ResolvedGroup<A>| {
-                r.annotations
+                if r.annotations
                     .iter()
-                    .zip(original_annotations)
-                    .find_map(|(a, orig)| match &a.kind {
-                        AnnotationKind::Ambiguous(_) => Some("rel.multiple_matches".to_owned()),
-                        AnnotationKind::MatchFailed(_) => {
-                            Some(format!("rel.match_failed.{}", orig.success.r_type))
-                        }
-                        AnnotationKind::MatchedRelaxation(_) => None,
-                        AnnotationKind::LiteralByteMismatch => {
-                            Some("literal-byte-mismatch".to_owned())
-                        }
-                        AnnotationKind::Error(e) => Some(e.clone()),
-                    })
+                    .any(|a| matches!(a.kind, AnnotationKind::LiteralByteMismatch))
+                {
+                    Some("literal-byte-mismatch".to_owned())
+                } else {
+                    r.annotations
+                        .iter()
+                        .zip(original_annotations)
+                        .find_map(|(a, orig)| match &a.kind {
+                            AnnotationKind::Ambiguous(_) => Some("rel.multiple_matches".to_owned()),
+                            AnnotationKind::MatchFailed(_) => {
+                                Some(format!("rel.match_failed.{}", orig.success.r_type))
+                            }
+                            AnnotationKind::MatchedRelaxation(_) => None,
+                            AnnotationKind::LiteralByteMismatch => {
+                                unreachable!();
+                            }
+                            AnnotationKind::Error(e) => Some(e.clone()),
+                        })
+                }
             };
 
             failure_kind(&resolutions[0])
@@ -784,7 +800,7 @@ struct RelocationInstructionBlock<'data, A: Arch> {
 
     annotations: Vec<Annotation<'data, A>>,
 
-    reference: Reference<'data, A::RType>,
+    reference: Option<Reference<'data, A::RType>>,
 
     trace_messages: Vec<&'data str>,
 
@@ -1059,8 +1075,11 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
             annotation.write(f, 0)?;
         }
 
-        write!(f, "{:name_width$} ", "")?;
-        self.reference.write_to(f)?;
+        if let Some(r) = self.reference {
+            write!(f, "{:name_width$} ", "")?;
+            r.write_to(f)?;
+        }
+
         writeln!(f)?;
 
         self.write_traces(f, maximum_widths)?;
