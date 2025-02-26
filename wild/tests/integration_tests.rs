@@ -263,7 +263,7 @@ struct Config {
     name: String,
     variant_num: Option<u32>,
     assertions: Assertions,
-    linker_driver: Option<LinkerDriver>,
+    linker_driver: LinkerDriver,
     linker_args: ArgumentSet,
     linker_so_args: ArgumentSet,
     wild_extra_linker_args: ArgumentSet,
@@ -285,6 +285,17 @@ struct Config {
     requires_clang_with_tlsdesc: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DirectConfig {
+    is_static: bool,
+}
+
+impl Default for DirectConfig {
+    fn default() -> Self {
+        Self { is_static: true }
+    }
+}
+
 impl Config {
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
         if self.skip_linkers.contains(linker.name()) {
@@ -297,9 +308,18 @@ impl Config {
     }
 }
 
-/// A compiler via which the linker is invoked.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LinkerDriver {
+    /// Invoke the linker via a compiler.
+    Compiler(Compiler),
+
+    /// Invoke the linker directly.
+    Direct(DirectConfig),
+}
+
+/// A compiler via which the linker is invoked.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Compiler {
     Gcc(CLanguage),
     Clang(CLanguage),
 }
@@ -382,7 +402,7 @@ impl Default for Config {
             name: "default".to_owned(),
             variant_num: None,
             assertions: Default::default(),
-            linker_driver: None,
+            linker_driver: LinkerDriver::Direct(DirectConfig::default()),
             linker_args: ArgumentSet::default_for_linking(),
             linker_so_args: ArgumentSet::default_for_linking(),
             compiler_args: ArgumentSet::default_for_compiling(),
@@ -490,6 +510,7 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                     .assertions
                     .contains_strings
                     .push(arg.trim().to_owned()),
+                "Static" => config.linker_driver.direct_mut()?.is_static = arg.parse()?,
                 "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
                 "DiffEnabled" => {
                     config.should_diff = arg.parse().context("Invalid bool for DiffEnabled")?
@@ -1127,75 +1148,71 @@ impl LinkCommand {
         } else {
             let linker_path = linker.path(cross_arch);
 
-            if let Some(linker_driver) = config.linker_driver {
-                invocation_mode = LinkerInvocationMode::Cc;
-
-                if cross_arch.is_some() {
-                    let c_compiler = get_c_compiler(
-                        linker_driver.name(),
-                        linker_driver.c_language(),
-                        cross_arch,
-                    )?;
-                    command = Command::new(c_compiler);
-                } else {
-                    command = Command::new(linker_driver.name());
-                }
-
-                // It's convenient when debugging to be able to run the linker via a script rather
-                // than by calling the C compiler, so we get wild to write out a script. In
-                // particular, this makes it easier to inspect the linker arguments, since they're
-                // in the script.
-                let save_dir = output_path.with_extension("save");
-                command.env("WILD_SAVE_DIR", &save_dir);
-                opt_save_dir = Some(save_dir);
-
-                match linker_driver {
-                    LinkerDriver::Clang(_) => {
-                        command.arg(format!(
-                            "--ld-path={}",
-                            linker_path
-                                .to_str()
-                                .expect("Linker path must be valid UTF-8")
-                        ));
+            match config.linker_driver {
+                LinkerDriver::Compiler(linker_driver) => {
+                    invocation_mode = LinkerInvocationMode::Cc;
+                    if cross_arch.is_some() {
+                        let c_compiler = get_c_compiler(
+                            linker_driver.name(),
+                            linker_driver.c_language(),
+                            cross_arch,
+                        )?;
+                        command = Command::new(c_compiler);
+                    } else {
+                        command = Command::new(linker_driver.name());
                     }
-                    LinkerDriver::Gcc(_) => {
-                        match linker {
-                            Linker::Wild => {
-                                // GCC unfortunately doesn't provide any way to use a custom linker.
-                                // Their flag for switching linkers only accepts a hard-coded list
-                                // of alternatives and the developers don't seem to want any
-                                // equivalent to clang's --ld-path. The closest we can get is to put
-                                // a file called "ld" in a directory, then pass "-B" and that
-                                // directory.
-                                let bin_dir = wild_path().parent().unwrap();
-                                command.arg("-B").arg(bin_dir);
-                            }
-                            Linker::ThirdParty(third_party_linker) => {
-                                command.arg(format!("-fuse-ld={}", third_party_linker.gcc_name));
+                    let save_dir = output_path.with_extension("save");
+                    command.env("WILD_SAVE_DIR", &save_dir);
+                    opt_save_dir = Some(save_dir);
+                    match linker_driver {
+                        Compiler::Clang(_) => {
+                            command.arg(format!(
+                                "--ld-path={}",
+                                linker_path
+                                    .to_str()
+                                    .expect("Linker path must be valid UTF-8")
+                            ));
+                        }
+                        Compiler::Gcc(_) => {
+                            match linker {
+                                Linker::Wild => {
+                                    // GCC unfortunately doesn't provide any way to use a custom linker.
+                                    // Their flag for switching linkers only accepts a hard-coded list
+                                    // of alternatives and the developers don't seem to want any
+                                    // equivalent to clang's --ld-path. The closest we can get is to put
+                                    // a file called "ld" in a directory, then pass "-B" and that
+                                    // directory.
+                                    let bin_dir = wild_path().parent().unwrap();
+                                    command.arg("-B").arg(bin_dir);
+                                }
+                                Linker::ThirdParty(third_party_linker) => {
+                                    command
+                                        .arg(format!("-fuse-ld={}", third_party_linker.gcc_name));
+                                }
                             }
                         }
                     }
+                    let arch = cross_arch.unwrap_or_else(get_host_architecture);
+                    if arch == Architecture::AArch64 {
+                        // Provide a workaround for ld.lld: error: unknown argument '--fix-cortex-a53-835769'
+                        // Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
+                        command.arg("-mno-fix-cortex-a53-835769");
+                    }
+                    command.args(&linker_args.args);
                 }
+                LinkerDriver::Direct(direct_config) => {
+                    command = Command::new(linker_path);
 
-                let arch = cross_arch.unwrap_or_else(get_host_architecture);
-                if arch == Architecture::AArch64 {
-                    // Provide a workaround for ld.lld: error: unknown argument '--fix-cortex-a53-835769'
-                    // Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
-                    command.arg("-mno-fix-cortex-a53-835769");
+                    if let Some(arch) = cross_arch {
+                        command.arg("-m").arg(arch.emulation_name());
+                    }
+
+                    if direct_config.is_static {
+                        command.arg("-static");
+                    }
+
+                    command.arg("--gc-sections").args(&linker_args.args);
                 }
-
-                command.args(&linker_args.args);
-            } else {
-                command = Command::new(linker_path);
-
-                if let Some(arch) = cross_arch {
-                    command.arg("-m").arg(arch.emulation_name());
-                }
-
-                command
-                    .arg("--gc-sections")
-                    .arg("-static")
-                    .args(&linker_args.args);
             }
             if !linker_args.args.iter().any(|arg| arg == "-o") {
                 command.arg("-o").arg(output_path);
@@ -1400,29 +1417,40 @@ fn read_comments<'data>(obj: &ElfFile64<'data>) -> Result<Vec<std::borrow::Cow<'
 }
 
 impl LinkerDriver {
-    fn parse(arg: &str) -> Result<Option<LinkerDriver>> {
+    fn parse(arg: &str) -> Result<LinkerDriver> {
         match arg.trim() {
-            "gcc" => Ok(Some(LinkerDriver::Gcc(CLanguage::C))),
-            "g++" => Ok(Some(LinkerDriver::Gcc(CLanguage::Cpp))),
-            "clang" => Ok(Some(LinkerDriver::Clang(CLanguage::C))),
-            "clang++" => Ok(Some(LinkerDriver::Clang(CLanguage::Cpp))),
-            "" | "none" => Ok(None),
+            "gcc" => Ok(LinkerDriver::Compiler(Compiler::Gcc(CLanguage::C))),
+            "g++" => Ok(LinkerDriver::Compiler(Compiler::Gcc(CLanguage::Cpp))),
+            "clang" => Ok(LinkerDriver::Compiler(Compiler::Clang(CLanguage::C))),
+            "clang++" => Ok(LinkerDriver::Compiler(Compiler::Clang(CLanguage::Cpp))),
+            "" | "none" => Ok(LinkerDriver::Direct(Default::default())),
             other => bail!("Unsupported linker driver `{other}`"),
         }
     }
 
+    fn direct_mut(&mut self) -> Result<&mut DirectConfig> {
+        match self {
+            LinkerDriver::Compiler(_) => {
+                bail!("Config option is incompatible with LinkerDriver::Compiler")
+            }
+            LinkerDriver::Direct(direct_config) => Ok(direct_config),
+        }
+    }
+}
+
+impl Compiler {
     fn name(&self) -> &str {
         match self {
-            LinkerDriver::Gcc(CLanguage::C) => "gcc",
-            LinkerDriver::Gcc(CLanguage::Cpp) => "g++",
-            LinkerDriver::Clang(CLanguage::C) => "clang",
-            LinkerDriver::Clang(CLanguage::Cpp) => "clang++",
+            Compiler::Gcc(CLanguage::C) => "gcc",
+            Compiler::Gcc(CLanguage::Cpp) => "g++",
+            Compiler::Clang(CLanguage::C) => "clang",
+            Compiler::Clang(CLanguage::Cpp) => "clang++",
         }
     }
 
     fn c_language(&self) -> CLanguage {
         match self {
-            LinkerDriver::Gcc(lang) | LinkerDriver::Clang(lang) => *lang,
+            Compiler::Gcc(lang) | Compiler::Clang(lang) => *lang,
         }
     }
 }
