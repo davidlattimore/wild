@@ -16,6 +16,8 @@ mimalloc = { version = "0.1", default-features = false, optional = true }
 
 dhat = { version = "0.3.3", optional = true }
 os_info = "3.10.0"
+strum = { version = "0.27.1", features = ["derive"] }
+strum_macros = "0.27.1"
 
 [dev-dependencies]
 anyhow = "1.0.95"

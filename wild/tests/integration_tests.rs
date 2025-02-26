@@ -34,9 +34,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
+use std::str::FromStr;
 use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Instant;
+use strum::EnumString;
 use wait_timeout::ChildExt;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
@@ -370,7 +372,7 @@ enum Compiler {
 
 #[derive(Clone, PartialEq, Eq)]
 struct Dep {
-    filenames: Vec<String>,
+    files: Vec<(String, ArgumentSet)>,
     input_type: InputType,
 }
 
@@ -401,10 +403,11 @@ impl ExpectedSymtabEntry {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, EnumString)]
 enum InputType {
     Object,
     Archive,
+    #[strum(serialize = "Shared")]
     SharedObject,
 }
 
@@ -584,18 +587,21 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                         .ok_or_else(|| anyhow!("DiffIgnore missing '='"))
                         .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
                 ),
-                "Object" => config.deps.push(Dep {
-                    filenames: arg.split(',').map(|s| s.to_owned()).collect(),
-                    input_type: InputType::Object,
-                }),
-                "Archive" => config.deps.push(Dep {
-                    filenames: arg.split(',').map(|s| s.to_owned()).collect(),
-                    input_type: InputType::Archive,
-                }),
-                "Shared" => config.deps.push(Dep {
-                    filenames: arg.split(',').map(|s| s.to_owned()).collect(),
-                    input_type: InputType::SharedObject,
-                }),
+                input_type @ ("Object" | "Archive" | "Shared") => {
+                    let input_type = InputType::from_str(input_type)?;
+                    let filenames = arg
+                        .split(",")
+                        .map(|arg| {
+                            let (filename, comp_args) = arg.split_once(":").unwrap_or((arg, ""));
+                            Ok((filename.to_string(), ArgumentSet::parse(comp_args)?))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+
+                    config.deps.push(Dep {
+                        files: filenames,
+                        input_type,
+                    })
+                }
                 "Compiler" => config.compiler = arg.trim().to_owned(),
                 "Arch" => {
                     config.support_architectures = arg
@@ -646,7 +652,7 @@ impl ProgramInputs {
     ) -> Result<Program<'a>> {
         let primary = build_linker_input(
             &Dep {
-                filenames: vec![self.source_file.to_owned()],
+                files: vec![(self.source_file.to_owned(), ArgumentSet::empty())],
                 input_type: InputType::Object,
             },
             config,
@@ -767,16 +773,16 @@ fn build_linker_input(
     linker: &Linker,
     cross_arch: Option<Architecture>,
 ) -> Result<LinkerInput> {
-    if let [single_filename] = dep.filenames.as_slice() {
+    if let [(single_filename, _)] = dep.files.as_slice() {
         if single_filename.ends_with(".a") {
             return Ok(LinkerInput::new(src_path(single_filename)));
         }
     }
 
     let obj_paths = dep
-        .filenames
+        .files
         .iter()
-        .map(|filename| build_obj(filename, config, dep.input_type, cross_arch))
+        .map(|file| build_obj(&file.0, config, dep.input_type, cross_arch, &file.1))
         .collect::<Result<Vec<PathBuf>>>()?;
 
     // When building archives or shared objects, we use the name of the first object to determine
@@ -856,6 +862,7 @@ fn build_obj(
     config: &Config,
     input_type: InputType,
     cross_arch: Option<Architecture>,
+    extra_comp_args: &ArgumentSet,
 ) -> Result<PathBuf> {
     let src_path = src_path(filename);
     let extension = src_path
@@ -891,12 +898,13 @@ fn build_obj(
 
     let mut command = Command::new(compiler);
 
-    let compiler_args =
+    let mut compiler_args =
         if input_type == InputType::SharedObject && !config.compiler_so_args.args.is_empty() {
-            &config.compiler_so_args.args
+            config.compiler_so_args.args.clone()
         } else {
-            &config.compiler_args.args
+            config.compiler_args.args.clone()
         };
+    compiler_args.extend_from_slice(&extra_comp_args.args);
 
     match compiler_kind {
         CompilerKind::C => {
@@ -930,7 +938,7 @@ fn build_obj(
             }
 
             if let Some(arch) = cross_arch {
-                let target = get_target(compiler_args).cloned().unwrap_or_else(|_| {
+                let target = get_target(&compiler_args).cloned().unwrap_or_else(|_| {
                     command.arg(format!("--target={}", arch.default_target_triple()));
                     arch.default_target_triple().to_owned()
                 });
@@ -1777,6 +1785,7 @@ fn integration_test(
         "internal-syms.c",
         "tls.c",
         "tlsdesc.c",
+        "tls-variant.c",
         "old_init.c",
         "custom_section.c",
         "stack_alignment.s",
