@@ -485,15 +485,6 @@ impl SectionResolution {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TlsMode {
-    /// Convert TLS access to local-exec mode.
-    LocalExec,
-
-    /// Preserve TLS access mode of the input.
-    Preserve,
-}
-
 enum FileLayoutState<'data> {
     Prelude(PreludeLayoutState),
     Object(ObjectLayoutState<'data>),
@@ -1278,6 +1269,8 @@ struct GraphResources<'data, 'scope, S: StorageModel> {
 
     has_static_tls: AtomicBool,
 
+    uses_tlsld: AtomicBool,
+
     /// For each OutputSectionId, this tracks a list of sections that should be loaded if that
     /// section gets referenced. The sections here will only be those that are eligible for having
     /// __start_ / __stop_ symbols. i.e. sections that don't start their names with a ".".
@@ -1830,6 +1823,7 @@ fn find_required_sections<'data, S: StorageModel, A: Arch>(
         sections_with_content: output_sections.new_section_map(),
         merged_strings,
         has_static_tls: AtomicBool::new(false),
+        uses_tlsld: AtomicBool::new(false),
         start_stop_sections: output_sections.new_section_map(),
     };
     let resources_ref = &resources;
@@ -1886,13 +1880,28 @@ fn find_required_sections<'data, S: StorageModel, A: Arch>(
             });
         }
     });
+
     let mut errors: Vec<Error> = take(resources.errors.lock().unwrap().as_mut());
     // TODO: Figure out good way to report more than one error.
     if let Some(error) = errors.pop() {
         return Err(error);
     }
-    let group_states = unwrap_worker_states(&resources.worker_slots);
+
+    let mut group_states = unwrap_worker_states(&resources.worker_slots);
     let sections_with_content = resources.sections_with_content.into_map(|v| v.into_inner());
+
+    // Give our prelude a chance to tie up a few last sizes while we still have access to
+    // `resources`.
+    let prelude_group = &mut group_states[0];
+    let FileLayoutState::Prelude(prelude) = &mut prelude_group.files[0] else {
+        unreachable!("Prelude must be first");
+    };
+    prelude.pre_finalise_sizes(
+        &mut prelude_group.common,
+        &resources.uses_tlsld,
+        resources.symbol_db.args,
+    );
+
     Ok(GcOutputs {
         group_states,
         sections_with_content,
@@ -2517,6 +2526,10 @@ fn process_relocation<S: StorageModel, A: Arch>(
             }
         }
 
+        if needs_tlsld(rel_info.kind) && !resources.uses_tlsld.load(atomic::Ordering::Relaxed) {
+            resources.uses_tlsld.store(true, atomic::Ordering::Relaxed);
+        }
+
         let previous_flags =
             resources.symbol_resolution_flags[symbol_id.as_usize()].fetch_or(resolution_kind);
 
@@ -2648,16 +2661,6 @@ impl PreludeLayoutState {
         if resources.symbol_db.args.output_kind().is_executable() {
             self.load_entry_point(resources, queue)?;
         }
-        if resources.symbol_db.args.tls_mode() == TlsMode::Preserve {
-            // Allocate space for a TLS module number and offset for use with TLSLD relocations.
-            common.allocate(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
-            self.needs_tlsld_got_entry = true;
-            // For shared objects, we'll need to use a DTPMOD relocation to fill in the TLS module
-            // number.
-            if !resources.symbol_db.args.output_kind().is_executable() {
-                common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
-            }
-        }
 
         if resources.symbol_db.args.needs_dynsym() {
             // Allocate space for the null symbol.
@@ -2700,6 +2703,24 @@ impl PreludeLayoutState {
             queue.send_work(resources, file_id, WorkItem::LoadGlobalSymbol(symbol_id));
         }
         Ok(())
+    }
+
+    fn pre_finalise_sizes(
+        &mut self,
+        common: &mut CommonGroupState,
+        uses_tlsld: &AtomicBool,
+        args: &Args,
+    ) {
+        if uses_tlsld.load(atomic::Ordering::Relaxed) {
+            // Allocate space for a TLS module number and offset for use with TLSLD relocations.
+            common.allocate(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
+            self.needs_tlsld_got_entry = true;
+            // For shared objects, we'll need to use a DTPMOD relocation to fill in the TLS module
+            // number.
+            if !args.output_kind().is_executable() {
+                common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
+            }
+        }
     }
 
     fn finalise_sizes<S: StorageModel>(
@@ -4611,6 +4632,13 @@ impl SectionLoadRequest {
     fn section_index(self) -> SectionIndex {
         SectionIndex(self.section_index as usize)
     }
+}
+
+fn needs_tlsld(relocation_kind: RelocationKind) -> bool {
+    matches!(
+        relocation_kind,
+        RelocationKind::TlsLd | RelocationKind::TlsLdGot | RelocationKind::TlsLdGotBase
+    )
 }
 
 /// Performs layout of sections and segments then makes sure that the loadable segments don't
