@@ -1340,7 +1340,7 @@ enum Referent<'data, R: RType> {
     /// A reference to an ifunc. TODO: Validate that we're pointing to the correct ifunc.
     IFunc,
     DtpMod,
-    UncheckedTlsThing,
+    UncheckedRelocation(RelocationKind),
     TlsDescCall,
 }
 
@@ -1440,7 +1440,7 @@ impl<R: RType> Referent<'_, R> {
             Referent::IFunc => write!(f, "IFunc")?,
             Referent::DtpMod => write!(f, "DtpMod")?,
             Referent::TlsDescCall => write!(f, "TlsDescCall")?,
-            Referent::UncheckedTlsThing => write!(f, "UncheckedTlsThing")?,
+            Referent::UncheckedRelocation(kind) => write!(f, "UncheckedRelocation({kind:?})")?,
         }
 
         Ok(())
@@ -2857,7 +2857,7 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::TlsDesc
                 | RelocationKind::TlsDescGot
                 | RelocationKind::TlsDescGotBase
-                | RelocationKind::TlsDescCall => Ok(Referent::UncheckedTlsThing),
+                | RelocationKind::TlsDescCall => Ok(Referent::UncheckedRelocation(relocation_kind)),
                 _ => Ok(Referent::Absolute(*raw_value)),
             }
         }
