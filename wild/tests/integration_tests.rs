@@ -16,9 +16,10 @@ use anyhow::anyhow;
 use anyhow::bail;
 use itertools::Itertools;
 use object::LittleEndian;
-use object::Object;
-use object::ObjectSection;
-use object::ObjectSymbol;
+use object::Object as _;
+use object::ObjectSection as _;
+use object::ObjectSymbol as _;
+use object::read::elf::ProgramHeader;
 use os_info::Type;
 use rstest::fixture;
 use rstest::rstest;
@@ -207,13 +208,49 @@ impl Architecture {
             format!("/usr/{self}-linux-gnu")
         }
     }
+}
 
-    fn dynamic_linker_path(&self) -> &'static str {
-        match self {
-            Architecture::X86_64 => "/lib64/ld-linux-x86-64.so.2",
-            Architecture::AArch64 => "/lib/ld-linux-aarch64.so.1",
-        }
+fn dynamic_linker_path(cross_arch: Option<Architecture>) -> &'static str {
+    match cross_arch {
+        None => host_dynamic_linker_cached(),
+        Some(Architecture::X86_64) => "/lib64/ld-linux-x86-64.so.2",
+        Some(Architecture::AArch64) => "/lib/ld-linux-aarch64.so.1",
     }
+}
+
+/// Returns the dynamic linker shared object that appears to be used on the host platform. This is
+/// determined by trying various binaries that are likely to be dynamically linked.
+fn host_dynamic_linker_cached() -> &'static str {
+    static VALUE: OnceLock<String> = OnceLock::new();
+    let value = VALUE.get_or_init(|| {
+        ["/bin/true", "/bin/ls", "/usr/bin/ls", "/proc/self/exe"]
+            .into_iter()
+            .find_map(get_dynamic_linker)
+            .expect("Failed to find a suitable host dynamically linked binary")
+    });
+    value.as_str()
+}
+
+/// Returns the dynamic linker used by the specified binary or None if it doesn't exist or isn't
+/// dynamically linked.
+fn get_dynamic_linker(path: impl AsRef<Path>) -> Option<String> {
+    let file_bytes = std::fs::read(path.as_ref()).ok()?;
+    let file = ElfFile64::parse(&*file_bytes).ok()?;
+
+    let interp_header = file
+        .elf_program_headers()
+        .iter()
+        .find(|header| header.p_type(LittleEndian) == object::elf::PT_INTERP)?;
+
+    let mut interp_data = interp_header
+        .data(LittleEndian, file.data())
+        .ok()?
+        .to_owned();
+
+    // Remove null terminator.
+    interp_data.pop();
+
+    String::from_utf8(interp_data.to_owned()).ok()
 }
 
 impl Display for Architecture {
@@ -1224,7 +1261,7 @@ impl LinkCommand {
                     } else {
                         command
                             .arg("-dynamic-linker")
-                            .arg(arch.dynamic_linker_path());
+                            .arg(dynamic_linker_path(cross_arch));
                     }
 
                     command.arg("--gc-sections").args(&linker_args.args);
