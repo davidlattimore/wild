@@ -207,6 +207,13 @@ impl Architecture {
             format!("/usr/{self}-linux-gnu")
         }
     }
+
+    fn dynamic_linker_path(&self) -> &'static str {
+        match self {
+            Architecture::X86_64 => "/lib64/ld-linux-x86-64.so.2",
+            Architecture::AArch64 => "/lib/ld-linux-aarch64.so.1",
+        }
+    }
 }
 
 impl Display for Architecture {
@@ -1148,9 +1155,12 @@ impl LinkCommand {
         } else {
             let linker_path = linker.path(cross_arch);
 
+            let arch = cross_arch.unwrap_or_else(get_host_architecture);
+
             match config.linker_driver {
                 LinkerDriver::Compiler(linker_driver) => {
                     invocation_mode = LinkerInvocationMode::Cc;
+
                     if cross_arch.is_some() {
                         let c_compiler = get_c_compiler(
                             linker_driver.name(),
@@ -1161,9 +1171,11 @@ impl LinkCommand {
                     } else {
                         command = Command::new(linker_driver.name());
                     }
+
                     let save_dir = output_path.with_extension("save");
                     command.env("WILD_SAVE_DIR", &save_dir);
                     opt_save_dir = Some(save_dir);
+
                     match linker_driver {
                         Compiler::Clang(_) => {
                             command.arg(format!(
@@ -1192,7 +1204,7 @@ impl LinkCommand {
                             }
                         }
                     }
-                    let arch = cross_arch.unwrap_or_else(get_host_architecture);
+
                     if arch == Architecture::AArch64 {
                         // Provide a workaround for ld.lld: error: unknown argument '--fix-cortex-a53-835769'
                         // Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
@@ -1209,6 +1221,10 @@ impl LinkCommand {
 
                     if direct_config.is_static {
                         command.arg("-static");
+                    } else {
+                        command
+                            .arg("-dynamic-linker")
+                            .arg(arch.dynamic_linker_path());
                     }
 
                     command.arg("--gc-sections").args(&linker_args.args);
@@ -1711,6 +1727,7 @@ fn integration_test(
     #[values(
         "trivial.c",
         "trivial-main.c",
+        "trivial-dynamic.c",
         "link_args.c",
         "global_definitions.c",
         "data.c",
