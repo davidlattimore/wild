@@ -370,9 +370,24 @@ enum Compiler {
     Clang(CLanguage),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FilenameArgumentPair {
+    filename: String,
+    args: ArgumentSet,
+}
+
+impl FilenameArgumentPair {
+    fn new(filename: &str, args: ArgumentSet) -> Self {
+        Self {
+            filename: filename.to_string(),
+            args,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct Dep {
-    files: Vec<(String, ArgumentSet)>,
+    files: Vec<FilenameArgumentPair>,
     input_type: InputType,
 }
 
@@ -589,18 +604,18 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                 ),
                 input_type @ ("Object" | "Archive" | "Shared") => {
                     let input_type = InputType::from_str(input_type)?;
-                    let filenames = arg
+                    let files = arg
                         .split(",")
                         .map(|arg| {
                             let (filename, comp_args) = arg.split_once(":").unwrap_or((arg, ""));
-                            Ok((filename.to_string(), ArgumentSet::parse(comp_args)?))
+                            Ok(FilenameArgumentPair::new(
+                                filename,
+                                ArgumentSet::parse(comp_args)?,
+                            ))
                         })
                         .collect::<Result<Vec<_>>>()?;
 
-                    config.deps.push(Dep {
-                        files: filenames,
-                        input_type,
-                    })
+                    config.deps.push(Dep { files, input_type })
                 }
                 "Compiler" => config.compiler = arg.trim().to_owned(),
                 "Arch" => {
@@ -652,7 +667,10 @@ impl ProgramInputs {
     ) -> Result<Program<'a>> {
         let primary = build_linker_input(
             &Dep {
-                files: vec![(self.source_file.to_owned(), ArgumentSet::empty())],
+                files: vec![FilenameArgumentPair::new(
+                    self.source_file,
+                    ArgumentSet::empty(),
+                )],
                 input_type: InputType::Object,
             },
             config,
@@ -773,16 +791,16 @@ fn build_linker_input(
     linker: &Linker,
     cross_arch: Option<Architecture>,
 ) -> Result<LinkerInput> {
-    if let [(single_filename, _)] = dep.files.as_slice() {
-        if single_filename.ends_with(".a") {
-            return Ok(LinkerInput::new(src_path(single_filename)));
+    if let [single_file] = dep.files.as_slice() {
+        if single_file.filename.ends_with(".a") {
+            return Ok(LinkerInput::new(src_path(&single_file.filename)));
         }
     }
 
     let obj_paths = dep
         .files
         .iter()
-        .map(|file| build_obj(&file.0, config, dep.input_type, cross_arch, &file.1))
+        .map(|file| build_obj(file, config, dep.input_type, cross_arch))
         .collect::<Result<Vec<PathBuf>>>()?;
 
     // When building archives or shared objects, we use the name of the first object to determine
@@ -858,13 +876,12 @@ fn get_c_compiler(
 
 /// Builds some C source and returns the path to the object file.
 fn build_obj(
-    filename: &str,
+    file: &FilenameArgumentPair,
     config: &Config,
     input_type: InputType,
     cross_arch: Option<Architecture>,
-    extra_comp_args: &ArgumentSet,
 ) -> Result<PathBuf> {
-    let src_path = src_path(filename);
+    let src_path = src_path(&file.filename);
     let extension = src_path
         .extension()
         .context("Missing extension")?
@@ -904,7 +921,7 @@ fn build_obj(
         } else {
             config.compiler_args.args.clone()
         };
-    compiler_args.extend_from_slice(&extra_comp_args.args);
+    compiler_args.extend_from_slice(&file.args.args);
 
     match compiler_kind {
         CompilerKind::C => {
@@ -977,7 +994,7 @@ fn build_obj(
 
     let arch_str = cross_name(cross_arch);
 
-    let output_path = build_dir().join(Path::new(filename).with_extension(format!(
+    let output_path = build_dir().join(Path::new(&file.filename).with_extension(format!(
         "{}-{arch_str}-{command_hash:x}{suffix}",
         config.name
     )));
