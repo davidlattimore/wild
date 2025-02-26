@@ -628,16 +628,6 @@ impl Args {
         }
     }
 
-    /// Returns how we should handle TLS relocations like TLSLD and TLSGD.
-    pub(crate) fn tls_mode(&self) -> crate::layout::TlsMode {
-        match self.output_kind() {
-            OutputKind::StaticExecutable(_) => crate::layout::TlsMode::LocalExec,
-            OutputKind::DynamicExecutable(_) | OutputKind::SharedObject => {
-                crate::layout::TlsMode::Preserve
-            }
-        }
-    }
-
     pub(crate) fn needs_dynsym(&self) -> bool {
         self.output_kind().needs_dynsym()
     }
