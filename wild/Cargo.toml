@@ -16,8 +16,6 @@ mimalloc = { version = "0.1", default-features = false, optional = true }
 
 dhat = { version = "0.3.3", optional = true }
 os_info = "3.10.0"
-strum = { version = "0.27.1", features = ["derive"] }
-strum_macros = "0.27.1"
 
 [dev-dependencies]
 anyhow = "1.0.95"
@@ -33,6 +31,8 @@ linker-diff = { path = "../linker-diff" }
 which = "7.0.2"
 rstest = "0.24.0"
 fd-lock = "4.0.2"
+strum = { version = "0.27.1", features = ["derive"] }
+strum_macros = "0.27.1"
 
 [features]
 default = ["fork"]
