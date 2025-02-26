@@ -339,6 +339,10 @@ const CHAINS: &[&[RType]] = &[
         RType(object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21),
         RType(object::elf::R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC),
     ],
+    &[
+        RType(object::elf::R_AARCH64_TLSGD_ADR_PAGE21),
+        RType(object::elf::R_AARCH64_TLSGD_ADD_LO12_NC),
+    ],
 ];
 
 const REL_ADR_PAGE: BitMask = BitMask::new(
