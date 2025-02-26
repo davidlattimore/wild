@@ -1836,94 +1836,112 @@ impl<'data> RelaxationTester<'data> {
         // the addend is added, since how we handle the addend with merged strings depends on
         // whether the reference is via a named symbol or not.
         if let Referent::MergedString(orig_merged) = last_match.original_referent {
-            let string_address = if let Some(named_symbol_addend) = orig_merged.named_symbol_addend
-            {
-                (merged_value as i64 - named_symbol_addend) as u64
-            } else if last_relocation_info.kind == RelocationKind::Relative {
-                merged_value + A::relocation_to_pc_offset(&last_relocation_info)
-            } else {
-                merged_value
-            };
-
-            let bytes =
-                read_bytes_starting_at(self.bin.elf_file, string_address).with_context(|| {
-                    format!("Failed to read bytes starting at 0x{string_address:x}")
-                })?;
-            let null_offset = memchr::memchr(0, bytes).with_context(|| {
-                format!(
-                    "Missing null-terminator for merged string starting at 0x{string_address:x}"
-                )
-            })?;
-
-            referent = Some(Referent::MergedString(MergedStringRef {
-                data: &bytes[..null_offset],
-                named_symbol_addend: None,
-            }));
+            referent = Some(self.resolve_merged_string::<A>(
+                merged_value,
+                last_relocation_info,
+                orig_merged,
+            )?);
         }
 
         merged_value = merged_value.wrapping_sub(addend as u64);
 
         let referent = referent.unwrap_or_else(|| {
-            let reason;
-
-            if let Referent::Named(original_name, _) = last_match.original_referent {
-                match self.bin.symbol_by_name(original_name.bytes, merged_value) {
-                    crate::NameLookupResult::Defined(elf_symbol) => {
-                        let offset = merged_value.wrapping_sub(elf_symbol.address()) as i64;
-
-                        if let Ok(mut bytes) = elf_symbol.name_bytes() {
-                            // Strip versions from symbol names, since there are currently
-                            // differences between the linkers in terms of whether version names are
-                            // added to debug symbols or not.
-                            if let Some(at_index) = memchr::memchr(b'@', bytes) {
-                                bytes = &bytes[..at_index];
-                            }
-
-                            if bytes.is_empty() {
-                                reason = "Symbol has empty name";
-                            } else {
-                                let symbol_name = SymbolName {
-                                    bytes,
-                                    version: None,
-                                };
-
-                                if offset.abs() <= 8 {
-                                    if has_copy_relocation_for_symbol_named::<A::RType>(
-                                        original_name.bytes,
-                                        self.bin,
-                                    ) {
-                                        return Referent::Copy(symbol_name, offset);
-                                    }
-                                    return Referent::Named(symbol_name, offset);
-                                }
-
-                                reason = "symbol is too far away";
-                            }
-                        } else {
-                            reason = "Error reading symbol name";
-                        }
-                    }
-                    crate::NameLookupResult::Undefined => {
-                        reason = "symbol is undefined";
-                    }
-                    crate::NameLookupResult::Duplicate => {
-                        reason = "symbol has multiple definitions";
-                    }
-                }
-            } else {
-                reason = "original symbol has no name";
-            }
-
-            Referent::UnmatchedAddress(UnmatchedAddress {
-                address: merged_value,
-                reason,
-            })
+            self.resolve_by_symbol_name::<A>(merged_value, last_match.original_referent)
         });
 
         Ok(Reference {
             referent,
             props: reference_props,
         })
+    }
+
+    /// Attempts to confirm that `merged_value` is a reference to `original_referent`, or if it
+    /// isn't, tells us why.
+    fn resolve_by_symbol_name<A: Arch>(
+        &self,
+        merged_value: u64,
+        original_referent: Referent<'_, <A as Arch>::RType>,
+    ) -> Referent<'data, <A as Arch>::RType> {
+        let reason;
+
+        if let Referent::Named(original_name, _) = original_referent {
+            match self.bin.symbol_by_name(original_name.bytes, merged_value) {
+                crate::NameLookupResult::Defined(elf_symbol) => {
+                    let offset = merged_value.wrapping_sub(elf_symbol.address()) as i64;
+
+                    if let Ok(mut bytes) = elf_symbol.name_bytes() {
+                        // Strip versions from symbol names, since there are currently
+                        // differences between the linkers in terms of whether version names are
+                        // added to debug symbols or not.
+                        if let Some(at_index) = memchr::memchr(b'@', bytes) {
+                            bytes = &bytes[..at_index];
+                        }
+
+                        if bytes.is_empty() {
+                            reason = "Symbol has empty name";
+                        } else {
+                            let symbol_name = SymbolName {
+                                bytes,
+                                version: None,
+                            };
+
+                            if offset.abs() <= 8 {
+                                if has_copy_relocation_for_symbol_named::<A::RType>(
+                                    original_name.bytes,
+                                    self.bin,
+                                ) {
+                                    return Referent::Copy(symbol_name, offset);
+                                }
+                                return Referent::Named(symbol_name, offset);
+                            }
+
+                            reason = "symbol is too far away";
+                        }
+                    } else {
+                        reason = "Error reading symbol name";
+                    }
+                }
+                crate::NameLookupResult::Undefined => {
+                    reason = "symbol is undefined";
+                }
+                crate::NameLookupResult::Duplicate => {
+                    reason = "symbol has multiple definitions";
+                }
+            }
+        } else {
+            reason = "original symbol has no name";
+        }
+
+        Referent::UnmatchedAddress(UnmatchedAddress {
+            address: merged_value,
+            reason,
+        })
+    }
+
+    fn resolve_merged_string<A: Arch>(
+        &self,
+        merged_value: u64,
+        last_relocation_info: RelocationKindInfo,
+        orig_merged: MergedStringRef<'_>,
+    ) -> Result<Referent<'data, <A as Arch>::RType>> {
+        let string_address = if let Some(named_symbol_addend) = orig_merged.named_symbol_addend {
+            (merged_value as i64 - named_symbol_addend) as u64
+        } else if last_relocation_info.kind == RelocationKind::Relative {
+            merged_value + A::relocation_to_pc_offset(&last_relocation_info)
+        } else {
+            merged_value
+        };
+
+        let bytes = read_bytes_starting_at(self.bin.elf_file, string_address)
+            .with_context(|| format!("Failed to read bytes starting at 0x{string_address:x}"))?;
+        let null_offset = memchr::memchr(0, bytes).with_context(|| {
+            format!("Missing null-terminator for merged string starting at 0x{string_address:x}")
+        })?;
+
+        Ok(Referent::MergedString(MergedStringRef {
+            data: &bytes[..null_offset],
+            named_symbol_addend: None,
+        }))
     }
 
     /// Returns the value that a relocation is relative to.
