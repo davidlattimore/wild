@@ -4083,13 +4083,13 @@ impl Resolution {
                 .contains(ResolutionFlags::GOT_TLS_MODULE),
             "Called tlsgd_got_address without GOT_TLS_MODULE being set"
         );
-        let got_address = self.got_address()?;
         // If we've got both a GOT_TLS_OFFSET and a GOT_TLS_MODULE, then the latter comes second.
+        let mut got_address = self.got_address()?;
         if self
             .resolution_flags
             .contains(ResolutionFlags::GOT_TLS_OFFSET)
         {
-            return Ok(got_address + elf::GOT_ENTRY_SIZE);
+            got_address += elf::GOT_ENTRY_SIZE;
         }
         Ok(got_address)
     }
