@@ -246,6 +246,15 @@ fn compare_sections<A: Arch>(
                     layout,
                     trace,
                 )?);
+
+                update_offsets_if_match_failed(
+                    section_versions,
+                    layout,
+                    original_section.size(),
+                    &mut testers,
+                    &resolutions,
+                    &mut relocations,
+                )?;
             }
         };
     }
@@ -258,6 +267,48 @@ fn compare_sections<A: Arch>(
         &mut testers,
         original_section.size(),
     )?;
+
+    Ok(())
+}
+
+/// If we got a match failure, then advance to the start of the next function, or if there is no
+/// next function to the end of the section. This is to avoid getting follow-on errors after a match
+/// failure.
+fn update_offsets_if_match_failed<A: Arch>(
+    section_versions: &SectionVersions<'_>,
+    layout: &IndexedLayout<'_>,
+    section_size: u64,
+    testers: &mut Vec<RelaxationTester<'_>>,
+    resolutions: &[ResolvedGroup<'_, A>],
+    relocations: &mut Peekable<std::vec::IntoIter<(u64, object::Relocation)>>,
+) -> Result {
+    if resolutions.iter().any(|r| {
+        r.annotations
+            .iter()
+            .any(|a| matches!(a.kind, AnnotationKind::MatchFailed(..)))
+    }) {
+        let offset = testers.iter().map(|t| t.previous_end).max().unwrap_or(0);
+
+        let section_info = layout
+            .get_section_info(section_versions.input_section_id)
+            .context("Attempt to diff missing section")?;
+
+        let new_offset = section_info
+            .next_function_offset(offset)
+            .unwrap_or(section_size);
+
+        // Update all testers to the new location.
+        testers.iter_mut().for_each(|t| t.previous_end = new_offset);
+
+        // Skip any relocations that applied to the addresses we skipped.
+        while let Some((next_rel_offset, _rel)) = relocations.peek() {
+            if *next_rel_offset < new_offset {
+                relocations.next();
+            } else {
+                break;
+            }
+        }
+    };
 
     Ok(())
 }
