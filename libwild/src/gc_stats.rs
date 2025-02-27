@@ -154,6 +154,6 @@ struct Bytes(u64);
 
 impl std::fmt::Display for Bytes {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", bytesize::to_string(self.0, true))
+        write!(f, "{}", bytesize::ByteSize(self.0))
     }
 }
