@@ -202,6 +202,8 @@ impl<'data> File<'data> {
 
         if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
             decompress_into(compression, &data[COMPRESSION_HEADER_SIZE..], out)?;
+        } else if section.sh_type(LittleEndian) == object::elf::SHT_NOBITS {
+            out.fill(0);
         } else {
             out.copy_from_slice(data);
         }
