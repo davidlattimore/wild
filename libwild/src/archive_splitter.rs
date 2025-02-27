@@ -46,10 +46,9 @@ pub fn split_archives<'data>(input_data: &'data InputData) -> Result<Vec<InputBy
                             });
                         },
                         ArchiveEntry::FileReference(archive_entry) => {
-                            let filename = archive_entry.identifier(extended_filenames).as_slice();
-                            let filename = std::str::from_utf8(filename)
-                                .expect("Bad filename");
-                            println!("TODO: Read referenced file {}", filename);
+                            let filename = archive_entry.identifier(extended_filenames).as_filename();
+                            let filename = std::str::from_utf8(filename).unwrap_or("<invalid filename>");
+                            println!("TODO: read referenced file `{}`", filename);
                         },
                     }
                 }

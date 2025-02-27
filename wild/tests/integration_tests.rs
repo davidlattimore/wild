@@ -331,7 +331,7 @@ impl ExpectedSymtabEntry {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum InputType {
     Object,
-    Archive,
+    Archive {thin: bool},
     SharedObject,
 }
 
@@ -512,7 +512,11 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                 }),
                 "Archive" => config.deps.push(Dep {
                     filenames: arg.split(',').map(|s| s.to_owned()).collect(),
-                    input_type: InputType::Archive,
+                    input_type: InputType::Archive {thin: false},
+                }),
+                "ThinArchive" => config.deps.push(Dep {
+                    filenames: arg.split(',').map(|s| s.to_owned()).collect(),
+                    input_type: InputType::Archive {thin: true},
                 }),
                 "Shared" => config.deps.push(Dep {
                     filenames: arg.split(',').map(|s| s.to_owned()).collect(),
@@ -708,10 +712,10 @@ fn build_linker_input(
         .context("At least one object is required")?;
 
     match dep.input_type {
-        InputType::Archive => {
+        InputType::Archive {thin} => {
             let archive_path = first_obj_path.with_extension("a");
             if !is_newer(&archive_path, obj_paths.iter()) {
-                make_archive(&archive_path, &obj_paths)?;
+                make_archive(&archive_path, &obj_paths, thin)?;
             }
             Ok(LinkerInput::new(archive_path))
         }
@@ -1090,10 +1094,14 @@ impl Linker {
     }
 }
 
-fn make_archive(archive_path: &Path, paths: &[PathBuf]) -> Result {
+fn make_archive(archive_path: &Path, paths: &[PathBuf], thin: bool) -> Result {
     let _ = std::fs::remove_file(archive_path);
     let mut cmd = Command::new("ar");
-    cmd.arg("cr").arg(archive_path).args(paths);
+    if thin {
+        cmd.arg("cr").arg("--thin").arg(archive_path).args(paths);
+    } else {
+        cmd.arg("cr").arg(archive_path).args(paths);
+    }
     let status = cmd.status()?;
     if !status.success() {
         bail!("Failed to create archive");
@@ -1479,7 +1487,8 @@ impl Display for InputType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InputType::Object => write!(f, "object"),
-            InputType::Archive => write!(f, "archive"),
+            InputType::Archive {thin: false} => write!(f, "archive"),
+            InputType::Archive {thin: true} => write!(f, "thin archive"),
             InputType::SharedObject => write!(f, "shared"),
         }
     }

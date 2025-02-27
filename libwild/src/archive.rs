@@ -236,6 +236,12 @@ impl<'data> Identifier<'data> {
         let end = memchr::memchr(b'/', self.data).unwrap_or(self.data.len());
         &self.data[..end]
     }
+
+    // Get the filename indicated by this identifier
+    pub(crate) fn as_filename(&self) -> &'data [u8] {
+        let end = memchr::memchr(b'\n', self.data).unwrap_or(self.data.len());
+        &self.data[..end]
+    }
 }
 
 impl<'data> Iterator for ArchiveIterator<'data> {
@@ -309,6 +315,9 @@ mod tests {
                     match entry {
                         ArchiveEntry::Regular(content) => {
                             our_entries.push(content);
+                        }
+                        ArchiveEntry::FileReference(_) => {
+                            // TODO: Implement
                         }
                         ArchiveEntry::Ignored => {}
                         ArchiveEntry::Filenames(table) => filenames = Some(table),
