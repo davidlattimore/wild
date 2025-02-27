@@ -117,30 +117,30 @@ impl<'data> ArchiveIterator<'data> {
         self.offset += HEADER_SIZE;
         let ident = std::str::from_utf8(&header.ident).context("archive ident is invalid UTF-8")?;
         let ident = ident.trim();
-        let (ident_kind, content) = match ident {
-            "/" => (IdentifierKind::SymbolTable, rest),
-            "//" => (IdentifierKind::Filenames, rest),
+        let ident_kind = match ident {
+            "/" => IdentifierKind::SymbolTable,
+            "//" => IdentifierKind::Filenames,
             _ => match self.is_thin {
-                false => (IdentifierKind::InlineContent, rest),
-                true => (IdentifierKind::FileReference, rest),
+                false => IdentifierKind::InlineContent,
+                true => IdentifierKind::FileReference,
             },
         };
 
-        let entry_data = match ident_kind {
+        let (entry_data, size) = match ident_kind {
             IdentifierKind::InlineContent | IdentifierKind::SymbolTable | IdentifierKind::Filenames => {
-                if content.len() < size {
+                if self.data.len() < size {
                     bail!(
                         "Entry size is {size}, but only {} bytes left",
-                        content.len()
+                        self.data.len()
                     );
                 }
-                &self.data[..size]
+                (&self.data[..size], size)
             },
             IdentifierKind::FileReference => {
                 // Return the identifier itself.
                 // This can be used along with an ArchiveEntry::Filenames to
                 // figure out which file to read.
-                &(header.ident)
+                (header.ident.as_slice(), 0)
             },
         };
         let entry = match ident_kind {
