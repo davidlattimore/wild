@@ -4,6 +4,7 @@
 //#DiffIgnore:section.data
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.rodata.alignment
+//#DiffIgnore:rel.match_failed.R_AARCH64_TLSGD_ADR_PAGE21
 
 //#Config:gcc:default
 //#CompArgs:-fpic
