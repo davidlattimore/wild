@@ -789,17 +789,22 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         let mut got_address = got_address.get();
         let resolution_flags = res.resolution_flags;
 
-        // For TLS variables, we'll generally only have one of these, but we might have both.
-        if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
-            self.process_got_tls_offset::<A>(res, got_address)?;
-            got_address += crate::elf::GOT_ENTRY_SIZE;
-        }
-        if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
-            return self.process_got_tls_mod::<A>(res, got_address);
-        } else if resolution_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
-            return self.process_got_tls_descriptor::<A>(res, got_address);
-        }
-        if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+        // For TLS variables, we'll generally only have one of these, but we might have all 3 combinations.
+        if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET)
+            || resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
+            || resolution_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR)
+        {
+            if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+                self.process_got_tls_offset::<A>(res, got_address)?;
+                got_address += crate::elf::GOT_ENTRY_SIZE;
+            }
+            if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
+                self.process_got_tls_mod::<A>(res, got_address)?;
+                got_address += 2 * crate::elf::GOT_ENTRY_SIZE;
+            }
+            if resolution_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
+                self.process_got_tls_descriptor::<A>(res, got_address)?;
+            }
             return Ok(());
         }
 

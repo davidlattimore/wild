@@ -19,7 +19,6 @@ use crate::elf;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
 use crate::elf::FileHeader;
-use crate::elf::GOT_ENTRY_SIZE;
 use crate::elf::Versym;
 use crate::elf_writer;
 use crate::error::Error;
@@ -748,6 +747,12 @@ fn allocate_resolution(
             mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
         }
     }
+    if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
+        if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) {
+            mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+        }
+    }
     if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
         // For executables, the TLS module ID is known at link time. For shared objects, we
@@ -756,12 +761,6 @@ fn allocate_resolution(
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
         if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
-            mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-        }
-    }
-    if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
-        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
-        if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
     }
@@ -4024,17 +4023,21 @@ fn create_resolution(
         resolution.got_address = Some(allocate_got(1, memory_offsets));
     } else if res_kind.contains(ResolutionFlags::GOT) {
         resolution.got_address = Some(allocate_got(1, memory_offsets));
-    } else if res_kind.contains(ResolutionFlags::GOT_TLS_OFFSET) {
-        if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
-            resolution.got_address = Some(allocate_got(3, memory_offsets));
-        } else {
-            resolution.got_address = Some(allocate_got(1, memory_offsets));
+    } else {
+        // Handle the TLS GOT addresses where we can combine up to 3 different access methods.
+        let mut num_got_slots = 0;
+        if res_kind.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+            num_got_slots += 1;
         }
-    }
-    if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE)
-        | res_kind.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR)
-    {
-        resolution.got_address = Some(allocate_got(2, memory_offsets));
+        if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
+            num_got_slots += 2;
+        }
+        if res_kind.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
+            num_got_slots += 2;
+        }
+        if num_got_slots > 0 {
+            resolution.got_address = Some(allocate_got(num_got_slots, memory_offsets));
+        }
     }
     resolution
 }
@@ -4080,13 +4083,13 @@ impl Resolution {
                 .contains(ResolutionFlags::GOT_TLS_MODULE),
             "Called tlsgd_got_address without GOT_TLS_MODULE being set"
         );
-        let got_address = self.got_address()?;
         // If we've got both a GOT_TLS_OFFSET and a GOT_TLS_MODULE, then the latter comes second.
+        let mut got_address = self.got_address()?;
         if self
             .resolution_flags
             .contains(ResolutionFlags::GOT_TLS_OFFSET)
         {
-            return Ok(got_address + crate::elf::GOT_ENTRY_SIZE);
+            got_address += elf::GOT_ENTRY_SIZE;
         }
         Ok(got_address)
     }
@@ -4097,16 +4100,23 @@ impl Resolution {
                 .contains(ResolutionFlags::GOT_TLS_DESCRIPTOR),
             "Called tls_descriptor_got_address without GOT_TLS_DESCRIPTOR being set"
         );
-        // We might have both GOT_TLS_OFFSET and GOT_TLS_DESCRIPTOR at the same time
-        // for a single symbol. Then the TLS descriptor comes later and we reflect that in the GOT address.
+        // We might have both GOT_TLS_OFFSET, GOT_TLS_MODULE and GOT_TLS_DESCRIPTOR at the same time
+        // for a single symbol. Then the TLS descriptor comes as the last one.
+        let mut got_address = self.got_address()?;
         if self
             .resolution_flags
             .contains(ResolutionFlags::GOT_TLS_OFFSET)
         {
-            self.got_address().map(|v| v + GOT_ENTRY_SIZE)
-        } else {
-            self.got_address()
+            got_address += elf::GOT_ENTRY_SIZE;
         }
+        if self
+            .resolution_flags
+            .contains(ResolutionFlags::GOT_TLS_MODULE)
+        {
+            got_address += 2 * elf::GOT_ENTRY_SIZE;
+        }
+
+        Ok(got_address)
     }
 
     pub(crate) fn plt_address(&self) -> Result<u64> {
