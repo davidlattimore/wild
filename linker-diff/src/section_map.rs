@@ -352,6 +352,17 @@ impl SectionInfo<'_> {
             Err(i) => Ok(self.functions[i - 1]),
         }
     }
+
+    /// Returns the start of the next function at or after `offset`.
+    pub(crate) fn next_function_offset(&self, offset: u64) -> Option<u64> {
+        match self
+            .functions
+            .binary_search_by_key(&offset, |f| f.offset_in_section)
+        {
+            Ok(i) => Some(self.functions[i].offset_in_section),
+            Err(i) => Some(self.functions.get(i)?.offset_in_section),
+        }
+    }
 }
 
 impl Display for InputFile<'_> {
