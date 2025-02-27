@@ -492,6 +492,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 .as_ref()
                 .to_owned();
             warn_unsupported(&format!("--plugin {other}"))?;
+        } else if let Some(rest) = long_arg_split_prefix("dependency-file=") {
+            warn_unsupported(&format!("--dependency-file={rest}"))?;
         } else if long_arg_eq("rpath-link") {
             // TODO
             input.next();
