@@ -7,7 +7,8 @@
 
 //#Config:pie:default
 //#CompArgs:-fpie
-//#LinkArgs:--cc=gcc -Wl,-z,now
+//#LinkerDriver:gcc
+//#LinkArgs:-Wl,-z,now
 
 int exit_code = 2;
 

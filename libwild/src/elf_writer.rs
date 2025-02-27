@@ -89,6 +89,7 @@ use std::marker::PhantomData;
 use std::ops::BitAnd;
 use std::ops::Deref;
 use std::ops::DerefMut;
+use std::ops::Not as _;
 use std::ops::Range;
 use std::ops::Sub;
 use std::path::Path;
@@ -633,18 +634,22 @@ impl<'data> FileLayout<'data> {
 #[derive(Default)]
 struct VersionWriter<'out> {
     version_r: &'out mut [u8],
-    versym: &'out mut [Versym],
+
+    /// None if versioning is disabled, which we do if no symbols have versions.
+    versym: Option<&'out mut [Versym]>,
 }
 
 impl<'out> VersionWriter<'out> {
-    fn new(version_r: &'out mut [u8], versym: &'out mut [Versym]) -> Self {
+    fn new(version_r: &'out mut [u8], versym: Option<&'out mut [Versym]>) -> Self {
         Self { version_r, versym }
     }
 
     fn set_next_symbol_version(&mut self, index: u16) -> Result {
-        let versym = crate::slice::take_first_mut(&mut self.versym)
-            .ok_or_else(|| insufficient_allocation(".gnu.version"))?;
-        versym.0.set(LittleEndian, index);
+        if let Some(versym_table) = self.versym.as_mut() {
+            let versym = crate::slice::take_first_mut(versym_table)
+                .ok_or_else(|| insufficient_allocation(".gnu.version"))?;
+            versym.0.set(LittleEndian, index);
+        }
         Ok(())
     }
 
@@ -667,12 +672,14 @@ impl<'out> VersionWriter<'out> {
     }
 
     fn check_exhausted(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
-        if !self.versym.is_empty() {
-            return Err(excessive_allocation(
-                ".gnu.version",
-                self.versym.len() as u64 * elf::GNU_VERSION_ENTRY_SIZE,
-                *mem_sizes.get(part_id::GNU_VERSION),
-            ));
+        if let Some(versym) = self.versym.as_ref() {
+            if !versym.is_empty() {
+                return Err(excessive_allocation(
+                    ".gnu.version",
+                    versym.len() as u64 * elf::GNU_VERSION_ENTRY_SIZE,
+                    *mem_sizes.get(part_id::GNU_VERSION),
+                ));
+            }
         }
         if !self.version_r.is_empty() {
             bail!(
@@ -740,9 +747,10 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         let eh_frame = buffers.take(part_id::EH_FRAME);
         let eh_frame_hdr = buffers.take(part_id::EH_FRAME_HDR);
         let dynamic = DynamicEntriesWriter::new(buffers.take(part_id::DYNAMIC));
+        let versym = slice_from_all_bytes_mut(buffers.take(part_id::GNU_VERSION));
         let version_writer = VersionWriter::new(
             buffers.take(part_id::GNU_VERSION_R),
-            slice_from_all_bytes_mut(buffers.take(part_id::GNU_VERSION)),
+            versym.is_empty().not().then_some(versym),
         );
 
         TableWriter {
@@ -781,17 +789,22 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         let mut got_address = got_address.get();
         let resolution_flags = res.resolution_flags;
 
-        // For TLS variables, we'll generally only have one of these, but we might have both.
-        if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
-            self.process_got_tls_offset::<A>(res, got_address)?;
-            got_address += crate::elf::GOT_ENTRY_SIZE;
-        }
-        if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
-            return self.process_got_tls_mod::<A>(res, got_address);
-        } else if resolution_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
-            return self.process_got_tls_descriptor::<A>(res, got_address);
-        }
-        if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+        // For TLS variables, we'll generally only have one of these, but we might have all 3 combinations.
+        if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET)
+            || resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
+            || resolution_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR)
+        {
+            if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+                self.process_got_tls_offset::<A>(res, got_address)?;
+                got_address += crate::elf::GOT_ENTRY_SIZE;
+            }
+            if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
+                self.process_got_tls_mod::<A>(res, got_address)?;
+                got_address += 2 * crate::elf::GOT_ENTRY_SIZE;
+            }
+            if resolution_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
+                self.process_got_tls_descriptor::<A>(res, got_address)?;
+            }
             return Ok(());
         }
 
@@ -840,7 +853,8 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
             *got_entry = 0;
             return Ok(());
         }
-        if !self.tls.contains(&address) {
+        // TLS_MODULE_BASE points at the end of the .tbss in some cases, thus relax the verification.
+        if !(self.tls.start..=self.tls.end).contains(&address) {
             bail!(
                 "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
                 address
@@ -1916,7 +1930,13 @@ fn apply_relocation<S: StorageModel, A: Arch>(
             .bitand(mask.got_entry)
             .wrapping_add(addend as u64),
         RelocationKind::SymRelGotBase => resolution
-            .value()
+            .value_with_addend(
+                addend,
+                symbol_index,
+                object_layout,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+            )?
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::PltRelGotBase => resolution
@@ -2459,10 +2479,10 @@ fn write_dynamic_symbol_definitions<S: StorageModel>(
 
                 // We don't yet support setting symbol versions for symbols that we export, so right
                 // now we just set them all to the global version.
-                if let Some(version_out) =
-                    crate::slice::take_first_mut(&mut table_writer.version_writer.versym)
-                {
-                    version_out.0.set(LittleEndian, object::elf::VER_NDX_GLOBAL);
+                if let Some(versym) = table_writer.version_writer.versym.as_mut() {
+                    if let Some(version_out) = crate::slice::take_first_mut(versym) {
+                        version_out.0.set(LittleEndian, object::elf::VER_NDX_GLOBAL);
+                    }
                 }
             }
             FileLayout::Dynamic(object) => {
@@ -2473,12 +2493,14 @@ fn write_dynamic_symbol_definitions<S: StorageModel>(
                     &mut table_writer.dynsym_writer,
                 )?;
 
-                write_symbol_version(
-                    object.input_symbol_versions,
-                    object.symbol_id_range.id_to_offset(sym_def.symbol_id),
-                    &object.version_mapping,
-                    &mut table_writer.version_writer.versym,
-                )?;
+                if let Some(versym) = table_writer.version_writer.versym.as_mut() {
+                    write_symbol_version(
+                        object.input_symbol_versions,
+                        object.symbol_id_range.id_to_offset(sym_def.symbol_id),
+                        &object.version_mapping,
+                        versym,
+                    )?;
+                }
             }
             _ => bail!(
                 "Internal error: Unexpected dynamic symbol definition from {:?}. {}",
@@ -2597,7 +2619,7 @@ fn write_internal_symbols<S: StorageModel>(
             .with_context(|| {
                 format!(
                     "symbol `{}` in section `{}` that we're not going to output {resolution:?}",
-                    symbol_name,
+                    layout.symbol_db.symbol_name_for_display(symbol_id),
                     layout.output_sections.display_name(section_id)
                 )
             })?;
@@ -2773,13 +2795,15 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |inputs| inputs.section_part_layouts.get(part_id::RELA_PLT).mem_size > 0,
         |inputs| inputs.section_part_layouts.get(part_id::RELA_PLT).mem_size,
     ),
-    DynamicEntryWriter::new(object::elf::DT_RELA, |inputs| {
+    DynamicEntryWriter::optional(object::elf::DT_RELA, has_rela_dyn, |inputs| {
         inputs.vma_of_section(output_section_id::RELA_DYN)
     }),
-    DynamicEntryWriter::new(object::elf::DT_RELASZ, |inputs| {
+    DynamicEntryWriter::optional(object::elf::DT_RELASZ, has_rela_dyn, |inputs| {
         inputs.size_of_section(output_section_id::RELA_DYN)
     }),
-    DynamicEntryWriter::new(object::elf::DT_RELAENT, |_inputs| elf::RELA_ENTRY_SIZE),
+    DynamicEntryWriter::optional(object::elf::DT_RELAENT, has_rela_dyn, |_inputs| {
+        elf::RELA_ENTRY_SIZE
+    }),
     // Note, rela-count is just the count of the relative relocations and doesn't include any
     // glob-dat relocations. This is as opposed to rela-size, which includes both.
     DynamicEntryWriter::new(object::elf::DT_RELACOUNT, |inputs| {
@@ -3048,12 +3072,14 @@ impl<'data> DynamicLayout<'data> {
                         .dynsym_writer
                         .copy_symbol_shndx(symbol, name, 0, 0)?;
 
-                    write_symbol_version(
-                        self.input_symbol_versions,
-                        self.symbol_id_range.id_to_offset(symbol_id),
-                        &self.version_mapping,
-                        &mut table_writer.version_writer.versym,
-                    )?;
+                    if let Some(versym) = table_writer.version_writer.versym.as_mut() {
+                        write_symbol_version(
+                            self.input_symbol_versions,
+                            self.symbol_id_range.id_to_offset(symbol_id),
+                            &self.version_mapping,
+                            versym,
+                        )?;
+                    }
                 }
 
                 table_writer.process_resolution::<A>(res).with_context(|| {
@@ -3200,6 +3226,12 @@ fn write_layout_to<S: StorageModel>(layout: &Layout<S>, path: &Path) -> Result {
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
     layout.layout_data().write(&mut file)?;
     Ok(())
+}
+
+fn has_rela_dyn(inputs: &DynamicEntryInputs) -> bool {
+    let relative = inputs.section_part_layouts.get(part_id::RELA_DYN_RELATIVE);
+    let general = inputs.section_part_layouts.get(part_id::RELA_DYN_GENERAL);
+    relative.mem_size > 0 || general.mem_size > 0
 }
 
 struct ResFlagsDisplay<'a>(&'a Resolution);

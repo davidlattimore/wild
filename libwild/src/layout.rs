@@ -19,7 +19,6 @@ use crate::elf;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
 use crate::elf::FileHeader;
-use crate::elf::GOT_ENTRY_SIZE;
 use crate::elf::Versym;
 use crate::elf_writer;
 use crate::error::Error;
@@ -485,15 +484,6 @@ impl SectionResolution {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum TlsMode {
-    /// Convert TLS access to local-exec mode.
-    LocalExec,
-
-    /// Preserve TLS access mode of the input.
-    Preserve,
-}
-
 enum FileLayoutState<'data> {
     Prelude(PreludeLayoutState),
     Object(ObjectLayoutState<'data>),
@@ -679,7 +669,7 @@ trait SymbolRequestHandler<'data, S: StorageModel>: std::fmt::Display + HandlerD
     ) -> Result {
         bail!(
             "Cannot perform copy relocation for undefined symbol `{}`",
-            symbol_db.symbol_name(symbol_id)?
+            symbol_db.symbol_name_for_display(symbol_id)
         );
     }
 }
@@ -757,6 +747,12 @@ fn allocate_resolution(
             mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
         }
     }
+    if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
+        if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) {
+            mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
+        }
+    }
     if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
         // For executables, the TLS module ID is known at link time. For shared objects, we
@@ -765,12 +761,6 @@ fn allocate_resolution(
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
         if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
-            mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-        }
-    }
-    if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
-        mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
-        if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
     }
@@ -1277,6 +1267,8 @@ struct GraphResources<'data, 'scope, S: StorageModel> {
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
 
     has_static_tls: AtomicBool,
+
+    uses_tlsld: AtomicBool,
 
     /// For each OutputSectionId, this tracks a list of sections that should be loaded if that
     /// section gets referenced. The sections here will only be those that are eligible for having
@@ -1830,6 +1822,7 @@ fn find_required_sections<'data, S: StorageModel, A: Arch>(
         sections_with_content: output_sections.new_section_map(),
         merged_strings,
         has_static_tls: AtomicBool::new(false),
+        uses_tlsld: AtomicBool::new(false),
         start_stop_sections: output_sections.new_section_map(),
     };
     let resources_ref = &resources;
@@ -1886,13 +1879,28 @@ fn find_required_sections<'data, S: StorageModel, A: Arch>(
             });
         }
     });
+
     let mut errors: Vec<Error> = take(resources.errors.lock().unwrap().as_mut());
     // TODO: Figure out good way to report more than one error.
     if let Some(error) = errors.pop() {
         return Err(error);
     }
-    let group_states = unwrap_worker_states(&resources.worker_slots);
+
+    let mut group_states = unwrap_worker_states(&resources.worker_slots);
     let sections_with_content = resources.sections_with_content.into_map(|v| v.into_inner());
+
+    // Give our prelude a chance to tie up a few last sizes while we still have access to
+    // `resources`.
+    let prelude_group = &mut group_states[0];
+    let FileLayoutState::Prelude(prelude) = &mut prelude_group.files[0] else {
+        unreachable!("Prelude must be first");
+    };
+    prelude.pre_finalise_sizes(
+        &mut prelude_group.common,
+        &resources.uses_tlsld,
+        resources.symbol_db.args,
+    );
+
     Ok(GcOutputs {
         group_states,
         sections_with_content,
@@ -2517,6 +2525,10 @@ fn process_relocation<S: StorageModel, A: Arch>(
             }
         }
 
+        if needs_tlsld(rel_info.kind) && !resources.uses_tlsld.load(atomic::Ordering::Relaxed) {
+            resources.uses_tlsld.store(true, atomic::Ordering::Relaxed);
+        }
+
         let previous_flags =
             resources.symbol_resolution_flags[symbol_id.as_usize()].fetch_or(resolution_kind);
 
@@ -2544,11 +2556,10 @@ fn process_relocation<S: StorageModel, A: Arch>(
                 symbol_value_flags,
                 args,
             ) {
-                let symbol_name = symbol_db.symbol_name(symbol_id)?;
+                let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
                 resources.report_error(anyhow::anyhow!(
-                    "Undefined symbol {}, referenced by {}",
-                    String::from_utf8_lossy(symbol_name.bytes()),
-                    object.input
+                    "Undefined symbol {symbol_name}, referenced by {}",
+                    object.input,
                 ));
             }
         }
@@ -2595,9 +2606,8 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
         | RelocationKind::TpOffAArch64
-        | RelocationKind::SymRelGotBase
-        | RelocationKind::None => ResolutionFlags::DIRECT,
-        RelocationKind::AbsoluteAArch64 => ResolutionFlags::empty(),
+        | RelocationKind::SymRelGotBase => ResolutionFlags::DIRECT,
+        RelocationKind::None | RelocationKind::AbsoluteAArch64 => ResolutionFlags::empty(),
     }
 }
 
@@ -2650,16 +2660,6 @@ impl PreludeLayoutState {
         if resources.symbol_db.args.output_kind().is_executable() {
             self.load_entry_point(resources, queue)?;
         }
-        if resources.symbol_db.args.tls_mode() == TlsMode::Preserve {
-            // Allocate space for a TLS module number and offset for use with TLSLD relocations.
-            common.allocate(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
-            self.needs_tlsld_got_entry = true;
-            // For shared objects, we'll need to use a DTPMOD relocation to fill in the TLS module
-            // number.
-            if !resources.symbol_db.args.output_kind().is_executable() {
-                common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
-            }
-        }
 
         if resources.symbol_db.args.needs_dynsym() {
             // Allocate space for the null symbol.
@@ -2702,6 +2702,24 @@ impl PreludeLayoutState {
             queue.send_work(resources, file_id, WorkItem::LoadGlobalSymbol(symbol_id));
         }
         Ok(())
+    }
+
+    fn pre_finalise_sizes(
+        &mut self,
+        common: &mut CommonGroupState,
+        uses_tlsld: &AtomicBool,
+        args: &Args,
+    ) {
+        if uses_tlsld.load(atomic::Ordering::Relaxed) {
+            // Allocate space for a TLS module number and offset for use with TLSLD relocations.
+            common.allocate(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
+            self.needs_tlsld_got_entry = true;
+            // For shared objects, we'll need to use a DTPMOD relocation to fill in the TLS module
+            // number.
+            if !args.output_kind().is_executable() {
+                common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
+            }
+        }
     }
 
     fn finalise_sizes<S: StorageModel>(
@@ -4005,16 +4023,21 @@ fn create_resolution(
         resolution.got_address = Some(allocate_got(1, memory_offsets));
     } else if res_kind.contains(ResolutionFlags::GOT) {
         resolution.got_address = Some(allocate_got(1, memory_offsets));
-    } else if res_kind.contains(ResolutionFlags::GOT_TLS_OFFSET) {
-        if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
-            resolution.got_address = Some(allocate_got(3, memory_offsets));
-        } else {
-            resolution.got_address = Some(allocate_got(1, memory_offsets));
+    } else {
+        // Handle the TLS GOT addresses where we can combine up to 3 different access methods.
+        let mut num_got_slots = 0;
+        if res_kind.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+            num_got_slots += 1;
         }
-    } else if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE)
-        | res_kind.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR)
-    {
-        resolution.got_address = Some(allocate_got(2, memory_offsets));
+        if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
+            num_got_slots += 2;
+        }
+        if res_kind.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
+            num_got_slots += 2;
+        }
+        if num_got_slots > 0 {
+            resolution.got_address = Some(allocate_got(num_got_slots, memory_offsets));
+        }
     }
     resolution
 }
@@ -4060,13 +4083,13 @@ impl Resolution {
                 .contains(ResolutionFlags::GOT_TLS_MODULE),
             "Called tlsgd_got_address without GOT_TLS_MODULE being set"
         );
-        let got_address = self.got_address()?;
         // If we've got both a GOT_TLS_OFFSET and a GOT_TLS_MODULE, then the latter comes second.
+        let mut got_address = self.got_address()?;
         if self
             .resolution_flags
             .contains(ResolutionFlags::GOT_TLS_OFFSET)
         {
-            return Ok(got_address + crate::elf::GOT_ENTRY_SIZE);
+            got_address += elf::GOT_ENTRY_SIZE;
         }
         Ok(got_address)
     }
@@ -4077,16 +4100,23 @@ impl Resolution {
                 .contains(ResolutionFlags::GOT_TLS_DESCRIPTOR),
             "Called tls_descriptor_got_address without GOT_TLS_DESCRIPTOR being set"
         );
-        // We might have both GOT_TLS_OFFSET and GOT_TLS_DESCRIPTOR at the same time
-        // for a single symbol. Then the TLS descriptor comes later and we reflect that in the GOT address.
+        // We might have both GOT_TLS_OFFSET, GOT_TLS_MODULE and GOT_TLS_DESCRIPTOR at the same time
+        // for a single symbol. Then the TLS descriptor comes as the last one.
+        let mut got_address = self.got_address()?;
         if self
             .resolution_flags
             .contains(ResolutionFlags::GOT_TLS_OFFSET)
         {
-            self.got_address().map(|v| v + GOT_ENTRY_SIZE)
-        } else {
-            self.got_address()
+            got_address += elf::GOT_ENTRY_SIZE;
         }
+        if self
+            .resolution_flags
+            .contains(ResolutionFlags::GOT_TLS_MODULE)
+        {
+            got_address += 2 * elf::GOT_ENTRY_SIZE;
+        }
+
+        Ok(got_address)
     }
 
     pub(crate) fn plt_address(&self) -> Result<u64> {
@@ -4612,6 +4642,13 @@ impl SectionLoadRequest {
     fn section_index(self) -> SectionIndex {
         SectionIndex(self.section_index as usize)
     }
+}
+
+fn needs_tlsld(relocation_kind: RelocationKind) -> bool {
+    matches!(
+        relocation_kind,
+        RelocationKind::TlsLd | RelocationKind::TlsLdGot | RelocationKind::TlsLdGotBase
+    )
 }
 
 /// Performs layout of sections and segments then makes sure that the loadable segments don't

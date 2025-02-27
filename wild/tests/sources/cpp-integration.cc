@@ -7,20 +7,37 @@
 
 //#Config:pie:default
 //#CompArgs:-fpie -fmerge-constants
-//#LinkArgs:--cc=g++ -pie -Wl,-z,now
+//#LinkerDriver:g++
+//#LinkArgs:-pie -Wl,-z,now
 //#EnableLinker:lld
 
 //#Config:no-pie:default
 //#CompArgs:-fno-pie -fmerge-constants
-//#LinkArgs:--cc=g++ -no-pie -Wl,-z,now
+//#LinkerDriver:g++
+//#LinkArgs:-no-pie -Wl,-z,now
+//#EnableLinker:lld
+
+//#Config:clang-pie:default
+//#CompArgs:-fpie
+//#Compiler:clang
+//#LinkerDriver:clang++
+//#LinkArgs:-pie -Wl,-z,now
 //#EnableLinker:lld
 
 //#Config:model-large:default
 //#CompArgs:-mcmodel=large
-//#LinkArgs:--cc=g++ -Wl,-z,now
+//#LinkerDriver:g++
+//#LinkArgs:-Wl,-z,now
 //#EnableLinker:lld
-//#Cross:false
 // TODO: Ubuntu: cc1plus: sorry, unimplemented: code model 'large' with '-fPIC'
+//#Arch: x86_64
+
+//#Config:clang-model-large:default
+//#Compiler:clang
+//#CompArgs:-mcmodel=large
+//#LinkerDriver:clang++
+//#LinkArgs:-Wl,-z,now
+//#EnableLinker:lld
 //#Arch: x86_64
 
 #include <iostream>

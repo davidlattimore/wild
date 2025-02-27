@@ -21,39 +21,45 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 
 //#Config:clang-static:default
-//#LinkArgs:--cc=clang -static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkerDriver:clang
+//#LinkArgs:-static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 
 //#Config:clang-static-pie:default
 //#CompArgs:-fPIE -fPIC
-//#LinkArgs:--cc=clang -static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkerDriver:clang
+//#LinkArgs:-static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 //#EnableLinker:lld
 
 //#Config:gcc-static:default
-//#LinkArgs:--cc=gcc -static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkerDriver:gcc
+//#LinkArgs:-static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 
 //#Config:gcc-static-pie:default
 //#CompArgs:-fPIE
-//#LinkArgs:--cc=gcc -static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkerDriver:gcc
+//#LinkArgs:-static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 //#EnableLinker:lld
 
 //#Config:clang-initial-exec:shared
 //#CompArgs:-g -fPIC -ftls-model=initial-exec -DDYNAMIC_DEP
-//#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
+//#LinkerDriver:clang
+//#LinkArgs:-fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#EnableLinker:lld
 //#DiffIgnore:section.relro_padding
 
 //#Config:clang-global-dynamic:shared
 //#Compiler:clang
 //#CompArgs:-g -fPIC -ftls-model=global-dynamic -DDYNAMIC_DEP
-//#LinkArgs:--cc=clang -fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
+//#LinkerDriver:clang
+//#LinkArgs:-fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#EnableLinker:lld
 //#DiffIgnore:section.relro_padding
 //#DiffIgnore:section.rodata.entsize
@@ -62,17 +68,20 @@
 //#Config:gcc-dynamic-pie:shared
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
-//#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkerDriver:gcc
+//#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 
 //#Config:gcc-dynamic-no-pie:shared
 //#CompArgs:-g -no-pie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
-//#LinkArgs:--cc=gcc -dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkerDriver:gcc
+//#LinkArgs:-dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 
 //#Config:gcc-dynamic-pie-large:shared
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -mcmodel=large
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
-//#LinkArgs:--cc=gcc -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkerDriver:gcc
+//#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 // TODO: cc1plus: sorry, unimplemented: code model 'large' with '-fPIC'
 //#Arch: x86_64
 

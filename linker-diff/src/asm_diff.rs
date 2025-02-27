@@ -203,11 +203,16 @@ fn compare_sections<A: Arch>(
                 .saturating_sub(A::MAX_RELAX_MODIFY_BEFORE),
         )?;
 
-        if testers[0].next_modifier == RelocationModifier::SkipNextRelocation {
-            // If one tester is skipping, then all should be, since otherwise the previous
-            // relocation wouldn't have matched. So we don't need to do any comparison here and
-            // can just skip the relocation.
-            testers[0].next_modifier = RelocationModifier::Normal;
+        // If any tester indicates that the next relocation should be skipped, then either all
+        // testers will say to skip, or the previous relocation didn't match. In either case, we
+        // want to skip the next relocation.
+        if testers
+            .iter()
+            .any(|t| t.next_modifier == RelocationModifier::SkipNextRelocation)
+        {
+            testers
+                .iter_mut()
+                .for_each(|t| t.next_modifier = RelocationModifier::Normal);
 
             continue;
         }
@@ -241,6 +246,15 @@ fn compare_sections<A: Arch>(
                     layout,
                     trace,
                 )?);
+
+                update_offsets_if_match_failed(
+                    section_versions,
+                    layout,
+                    original_section.size(),
+                    &mut testers,
+                    &resolutions,
+                    &mut relocations,
+                )?;
             }
         };
     }
@@ -253,6 +267,48 @@ fn compare_sections<A: Arch>(
         &mut testers,
         original_section.size(),
     )?;
+
+    Ok(())
+}
+
+/// If we got a match failure, then advance to the start of the next function, or if there is no
+/// next function to the end of the section. This is to avoid getting follow-on errors after a match
+/// failure.
+fn update_offsets_if_match_failed<A: Arch>(
+    section_versions: &SectionVersions<'_>,
+    layout: &IndexedLayout<'_>,
+    section_size: u64,
+    testers: &mut Vec<RelaxationTester<'_>>,
+    resolutions: &[ResolvedGroup<'_, A>],
+    relocations: &mut Peekable<std::vec::IntoIter<(u64, object::Relocation)>>,
+) -> Result {
+    if resolutions.iter().any(|r| {
+        r.annotations
+            .iter()
+            .any(|a| matches!(a.kind, AnnotationKind::MatchFailed(..)))
+    }) {
+        let offset = testers.iter().map(|t| t.previous_end).max().unwrap_or(0);
+
+        let section_info = layout
+            .get_section_info(section_versions.input_section_id)
+            .context("Attempt to diff missing section")?;
+
+        let new_offset = section_info
+            .next_function_offset(offset)
+            .unwrap_or(section_size);
+
+        // Update all testers to the new location.
+        testers.iter_mut().for_each(|t| t.previous_end = new_offset);
+
+        // Skip any relocations that applied to the addresses we skipped.
+        while let Some((next_rel_offset, _rel)) = relocations.peek() {
+            if *next_rel_offset < new_offset {
+                relocations.next();
+            } else {
+                break;
+            }
+        }
+    };
 
     Ok(())
 }
@@ -451,7 +507,11 @@ fn diff_literal_bytes<'data, A: Arch>(
 
     let mut ok = true;
 
-    for tester in testers.iter() {
+    for tester in testers.iter_mut() {
+        // If the previous match failed, then the testers might be at different positions,
+        // synchronise them.
+        tester.previous_end = start;
+
         if end > tester.previous_end {
             ok &= tester.is_equal_up_to(end);
         }
@@ -551,7 +611,7 @@ impl<A: Arch> ExecDiff<'_, A> {
         let mut blocks = vec![RelocationInstructionBlock {
             name: ORIG,
             annotations,
-            reference: self.original_annotations.last().unwrap().reference,
+            reference: self.original_annotations.last().map(|a| a.reference),
             trace_messages: Vec::new(),
             section_bytes: original_section.data()?,
             section_address: 0,
@@ -569,7 +629,7 @@ impl<A: Arch> ExecDiff<'_, A> {
             let block = RelocationInstructionBlock {
                 name: &tester.bin.name,
                 annotations: res.annotations.clone(),
-                reference: res.reference,
+                reference: Some(res.reference),
                 trace_messages: tester.bin.trace.messages_in(
                     range.start + tester.section_address..range.end + tester.section_address,
                 ),
@@ -707,12 +767,12 @@ fn diff_key_for_res_mismatch<A: Arch>(
         .as_ref()
         .and_then(|r| r.first_if_matched());
 
-    let Some(orig) = original_annotations.first() else {
-        return "missing-original".to_owned();
-    };
-
     match (ours, reference) {
         (Some(r1), Some(r2)) => {
+            let Some(orig) = original_annotations.first() else {
+                return "missing-original".to_owned();
+            };
+
             match (
                 r1.relaxation.relaxation_kind.is_no_op(),
                 r2.relaxation.relaxation_kind.is_no_op(),
@@ -754,20 +814,27 @@ fn diff_key_for_res_mismatch<A: Arch>(
         }
         _ => {
             let failure_kind = |r: &ResolvedGroup<A>| {
-                r.annotations
+                if r.annotations
                     .iter()
-                    .zip(original_annotations)
-                    .find_map(|(a, orig)| match &a.kind {
-                        AnnotationKind::Ambiguous(_) => Some("rel.multiple_matches".to_owned()),
-                        AnnotationKind::MatchFailed(_) => {
-                            Some(format!("rel.match_failed.{}", orig.success.r_type))
-                        }
-                        AnnotationKind::MatchedRelaxation(_) => None,
-                        AnnotationKind::LiteralByteMismatch => {
-                            Some("literal-byte-mismatch".to_owned())
-                        }
-                        AnnotationKind::Error(e) => Some(e.clone()),
-                    })
+                    .any(|a| matches!(a.kind, AnnotationKind::LiteralByteMismatch))
+                {
+                    Some("literal-byte-mismatch".to_owned())
+                } else {
+                    r.annotations
+                        .iter()
+                        .zip(original_annotations)
+                        .find_map(|(a, orig)| match &a.kind {
+                            AnnotationKind::Ambiguous(_) => Some("rel.multiple_matches".to_owned()),
+                            AnnotationKind::MatchFailed(_) => {
+                                Some(format!("rel.match_failed.{}", orig.success.r_type))
+                            }
+                            AnnotationKind::MatchedRelaxation(_) => None,
+                            AnnotationKind::LiteralByteMismatch => {
+                                unreachable!();
+                            }
+                            AnnotationKind::Error(e) => Some(e.clone()),
+                        })
+                }
             };
 
             failure_kind(&resolutions[0])
@@ -784,7 +851,7 @@ struct RelocationInstructionBlock<'data, A: Arch> {
 
     annotations: Vec<Annotation<'data, A>>,
 
-    reference: Reference<'data, A::RType>,
+    reference: Option<Reference<'data, A::RType>>,
 
     trace_messages: Vec<&'data str>,
 
@@ -1059,8 +1126,11 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
             annotation.write(f, 0)?;
         }
 
-        write!(f, "{:name_width$} ", "")?;
-        self.reference.write_to(f)?;
+        if let Some(r) = self.reference {
+            write!(f, "{:name_width$} ", "")?;
+            r.write_to(f)?;
+        }
+
         writeln!(f)?;
 
         self.write_traces(f, maximum_widths)?;
@@ -1321,7 +1391,7 @@ enum Referent<'data, R: RType> {
     /// A reference to an ifunc. TODO: Validate that we're pointing to the correct ifunc.
     IFunc,
     DtpMod,
-    UncheckedTlsThing,
+    UncheckedRelocation(RelocationKind),
     TlsDescCall,
 }
 
@@ -1421,7 +1491,7 @@ impl<R: RType> Referent<'_, R> {
             Referent::IFunc => write!(f, "IFunc")?,
             Referent::DtpMod => write!(f, "DtpMod")?,
             Referent::TlsDescCall => write!(f, "TlsDescCall")?,
-            Referent::UncheckedTlsThing => write!(f, "UncheckedTlsThing")?,
+            Referent::UncheckedRelocation(kind) => write!(f, "UncheckedRelocation({kind:?})")?,
         }
 
         Ok(())
@@ -1817,94 +1887,112 @@ impl<'data> RelaxationTester<'data> {
         // the addend is added, since how we handle the addend with merged strings depends on
         // whether the reference is via a named symbol or not.
         if let Referent::MergedString(orig_merged) = last_match.original_referent {
-            let string_address = if let Some(named_symbol_addend) = orig_merged.named_symbol_addend
-            {
-                (merged_value as i64 - named_symbol_addend) as u64
-            } else if last_relocation_info.kind == RelocationKind::Relative {
-                merged_value + A::relocation_to_pc_offset(&last_relocation_info)
-            } else {
-                merged_value
-            };
-
-            let bytes =
-                read_bytes_starting_at(self.bin.elf_file, string_address).with_context(|| {
-                    format!("Failed to read bytes starting at 0x{string_address:x}")
-                })?;
-            let null_offset = memchr::memchr(0, bytes).with_context(|| {
-                format!(
-                    "Missing null-terminator for merged string starting at 0x{string_address:x}"
-                )
-            })?;
-
-            referent = Some(Referent::MergedString(MergedStringRef {
-                data: &bytes[..null_offset],
-                named_symbol_addend: None,
-            }));
+            referent = Some(self.resolve_merged_string::<A>(
+                merged_value,
+                last_relocation_info,
+                orig_merged,
+            )?);
         }
 
         merged_value = merged_value.wrapping_sub(addend as u64);
 
         let referent = referent.unwrap_or_else(|| {
-            let reason;
-
-            if let Referent::Named(original_name, _) = last_match.original_referent {
-                match self.bin.symbol_by_name(original_name.bytes, merged_value) {
-                    crate::NameLookupResult::Defined(elf_symbol) => {
-                        let offset = merged_value.wrapping_sub(elf_symbol.address()) as i64;
-
-                        if let Ok(mut bytes) = elf_symbol.name_bytes() {
-                            // Strip versions from symbol names, since there are currently
-                            // differences between the linkers in terms of whether version names are
-                            // added to debug symbols or not.
-                            if let Some(at_index) = memchr::memchr(b'@', bytes) {
-                                bytes = &bytes[..at_index];
-                            }
-
-                            if bytes.is_empty() {
-                                reason = "Symbol has empty name";
-                            } else {
-                                let symbol_name = SymbolName {
-                                    bytes,
-                                    version: None,
-                                };
-
-                                if offset.abs() <= 8 {
-                                    if has_copy_relocation_for_symbol_named::<A::RType>(
-                                        original_name.bytes,
-                                        self.bin,
-                                    ) {
-                                        return Referent::Copy(symbol_name, offset);
-                                    }
-                                    return Referent::Named(symbol_name, offset);
-                                }
-
-                                reason = "symbol is too far away";
-                            }
-                        } else {
-                            reason = "Error reading symbol name";
-                        }
-                    }
-                    crate::NameLookupResult::Undefined => {
-                        reason = "symbol is undefined";
-                    }
-                    crate::NameLookupResult::Duplicate => {
-                        reason = "symbol has multiple definitions";
-                    }
-                }
-            } else {
-                reason = "original symbol has no name";
-            }
-
-            Referent::UnmatchedAddress(UnmatchedAddress {
-                address: merged_value,
-                reason,
-            })
+            self.resolve_by_symbol_name::<A>(merged_value, last_match.original_referent)
         });
 
         Ok(Reference {
             referent,
             props: reference_props,
         })
+    }
+
+    /// Attempts to confirm that `merged_value` is a reference to `original_referent`, or if it
+    /// isn't, tells us why.
+    fn resolve_by_symbol_name<A: Arch>(
+        &self,
+        merged_value: u64,
+        original_referent: Referent<'_, <A as Arch>::RType>,
+    ) -> Referent<'data, <A as Arch>::RType> {
+        let reason;
+
+        if let Referent::Named(original_name, _) = original_referent {
+            match self.bin.symbol_by_name(original_name.bytes, merged_value) {
+                crate::NameLookupResult::Defined(elf_symbol) => {
+                    let offset = merged_value.wrapping_sub(elf_symbol.address()) as i64;
+
+                    if let Ok(mut bytes) = elf_symbol.name_bytes() {
+                        // Strip versions from symbol names, since there are currently
+                        // differences between the linkers in terms of whether version names are
+                        // added to debug symbols or not.
+                        if let Some(at_index) = memchr::memchr(b'@', bytes) {
+                            bytes = &bytes[..at_index];
+                        }
+
+                        if bytes.is_empty() {
+                            reason = "Symbol has empty name";
+                        } else {
+                            let symbol_name = SymbolName {
+                                bytes,
+                                version: None,
+                            };
+
+                            if offset.abs() <= 8 {
+                                if has_copy_relocation_for_symbol_named::<A::RType>(
+                                    original_name.bytes,
+                                    self.bin,
+                                ) {
+                                    return Referent::Copy(symbol_name, offset);
+                                }
+                                return Referent::Named(symbol_name, offset);
+                            }
+
+                            reason = "symbol is too far away";
+                        }
+                    } else {
+                        reason = "Error reading symbol name";
+                    }
+                }
+                crate::NameLookupResult::Undefined => {
+                    reason = "symbol is undefined";
+                }
+                crate::NameLookupResult::Duplicate => {
+                    reason = "symbol has multiple definitions";
+                }
+            }
+        } else {
+            reason = "original symbol has no name";
+        }
+
+        Referent::UnmatchedAddress(UnmatchedAddress {
+            address: merged_value,
+            reason,
+        })
+    }
+
+    fn resolve_merged_string<A: Arch>(
+        &self,
+        merged_value: u64,
+        last_relocation_info: RelocationKindInfo,
+        orig_merged: MergedStringRef<'_>,
+    ) -> Result<Referent<'data, <A as Arch>::RType>> {
+        let string_address = if let Some(named_symbol_addend) = orig_merged.named_symbol_addend {
+            (merged_value as i64 - named_symbol_addend) as u64
+        } else if last_relocation_info.kind == RelocationKind::Relative {
+            merged_value + A::relocation_to_pc_offset(&last_relocation_info)
+        } else {
+            merged_value
+        };
+
+        let bytes = read_bytes_starting_at(self.bin.elf_file, string_address)
+            .with_context(|| format!("Failed to read bytes starting at 0x{string_address:x}"))?;
+        let null_offset = memchr::memchr(0, bytes).with_context(|| {
+            format!("Missing null-terminator for merged string starting at 0x{string_address:x}")
+        })?;
+
+        Ok(Referent::MergedString(MergedStringRef {
+            data: &bytes[..null_offset],
+            named_symbol_addend: None,
+        }))
     }
 
     /// Returns the value that a relocation is relative to.
@@ -2838,7 +2926,7 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::TlsDesc
                 | RelocationKind::TlsDescGot
                 | RelocationKind::TlsDescGotBase
-                | RelocationKind::TlsDescCall => Ok(Referent::UncheckedTlsThing),
+                | RelocationKind::TlsDescCall => Ok(Referent::UncheckedRelocation(relocation_kind)),
                 _ => Ok(Referent::Absolute(*raw_value)),
             }
         }

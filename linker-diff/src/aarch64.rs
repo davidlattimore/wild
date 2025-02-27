@@ -110,11 +110,19 @@ impl Arch for AArch64 {
                     RelaxationKind::MovzX0Lsl16,
                     object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1,
                 );
+                relax(
+                    RelaxationKind::AdrpX0,
+                    object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21,
+                );
             }
             object::elf::R_AARCH64_TLSDESC_CALL => {
                 relax(
                     RelaxationKind::MovkX0,
                     object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G0_NC,
+                );
+                relax(
+                    RelaxationKind::LdrX0,
+                    object::elf::R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC,
                 );
             }
             object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 => {
@@ -330,6 +338,10 @@ const CHAINS: &[&[RType]] = &[
     &[
         RType(object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21),
         RType(object::elf::R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC),
+    ],
+    &[
+        RType(object::elf::R_AARCH64_TLSGD_ADR_PAGE21),
+        RType(object::elf::R_AARCH64_TLSGD_ADD_LO12_NC),
     ],
 ];
 

@@ -169,6 +169,40 @@ impl crate::arch::Relaxation for Relaxation {
                     .unwrap(),
                 });
             }
+
+            // Relax TLSDESC to initial exec
+            object::elf::R_AARCH64_TLSDESC_ADR_PAGE21 if output_kind.is_executable() => {
+                // TODO: check we met all consecutive 4 instructions!
+                return Some(Relaxation {
+                    kind: RelaxationKind::ReplaceWithNop,
+                    rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
+                });
+            }
+            object::elf::R_AARCH64_TLSDESC_LD64_LO12 if output_kind.is_executable() => {
+                return Some(Relaxation {
+                    kind: RelaxationKind::ReplaceWithNop,
+                    rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
+                });
+            }
+            object::elf::R_AARCH64_TLSDESC_ADD_LO12 if output_kind.is_executable() => {
+                return Some(Relaxation {
+                    kind: RelaxationKind::AdrpX0,
+                    rel_info: relocation_type_from_raw(
+                        object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21,
+                    )
+                    .unwrap(),
+                });
+            }
+            object::elf::R_AARCH64_TLSDESC_CALL if output_kind.is_executable() => {
+                return Some(Relaxation {
+                    kind: RelaxationKind::LdrX0,
+                    rel_info: relocation_type_from_raw(
+                        object::elf::R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC,
+                    )
+                    .unwrap(),
+                });
+            }
+
             object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 if can_bypass_got => {
                 return Some(Relaxation {
                     kind: RelaxationKind::MovzXnLsl16,

@@ -31,6 +31,8 @@ linker-diff = { path = "../linker-diff" }
 which = "7.0.2"
 rstest = "0.24.0"
 fd-lock = "4.0.2"
+strum = { version = "0.27.1", features = ["derive"] }
+strum_macros = "0.27.1"
 
 [features]
 default = ["fork"]

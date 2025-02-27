@@ -47,6 +47,7 @@ Wild in Rust, it's hoped that the complexity of incremental linking will be achi
 The following platforms / architectures are currently supported:
 
 * x86-64 on Linux
+* ARM64 on Linux
 
 The following is working with the caveat that there may be bugs:
 
@@ -64,7 +65,7 @@ Lots of stuff. Here are some of the larger things that aren't yet done, roughly 
 priority:
 
 * Incremental linking
-* Support for architectures other than x86-64
+* Support for more architectures
 * Support for a wider range of linker flags
 * Linker scripts
 * Mac support
@@ -165,7 +166,14 @@ RUSTFLAGS="-Clinker=clang -Clink-args=--ld-path=wild" cargo test
 
 ## Contributing
 
-For more information on contributing to `wild` see [CONTRIBUTING.md](CONTRIBUTING.md)
+For more information on contributing to `wild` see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+For a high-level overview of Wild's design, see [DESIGN.md](DESIGN.md).
+
+## Further reading
+
+Many of the posts on [David's blog](https://davidlattimore.github.io/) are about various aspects of
+the Wild linker.
 
 ## Sponsorship
 

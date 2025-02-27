@@ -6,7 +6,8 @@
 
 //#Config:pie:default
 //#CompArgs:-fpie
-//#LinkArgs:--cc=gcc -Wl,-z,now
+//#LinkerDriver:gcc
+//#LinkArgs:-Wl,-z,now
 
 __thread long tvar = 1;
 __thread int tvar2 = 2;

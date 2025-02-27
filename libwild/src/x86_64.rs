@@ -294,6 +294,15 @@ impl crate::arch::Relaxation for Relaxation {
                     );
                 }
             }
+            object::elf::R_X86_64_GOTPC32_TLSDESC if output_kind.is_executable() => {
+                // lea    0x0(%rip),%rax
+                if section_bytes.get(offset - 3..offset)? == [0x48, 0x8d, 0x05] {
+                    return create(
+                        RelaxationKind::TlsDescToInitialExec,
+                        object::elf::R_X86_64_GOTTPOFF,
+                    );
+                }
+            }
             _ => return None,
         };
         None

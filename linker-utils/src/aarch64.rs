@@ -34,6 +34,12 @@ pub enum RelaxationKind {
 
     /// Replace adrp with adr
     AdrpToAdr,
+
+    /// Replace with adrp x0 with adr
+    AdrpX0,
+
+    /// Replace with ldr x0
+    LdrX0,
 }
 
 impl RelaxationKind {
@@ -89,6 +95,16 @@ impl RelaxationKind {
             RelaxationKind::AdrpToAdr => {
                 // Clear the op bit of the instruction. See C6.2.12 and C6.2.13.
                 section_bytes[offset + 3] &= !0x80;
+            }
+            RelaxationKind::AdrpX0 => {
+                section_bytes[offset..offset + 4].copy_from_slice(&[
+                    0x0, 0x0, 0x0, 0x90, // adrp x0 {addr}
+                ]);
+            }
+            RelaxationKind::LdrX0 => {
+                section_bytes[offset..offset + 4].copy_from_slice(&[
+                    0x0, 0x0, 0x40, 0xf9, // x0, [x0, {addr}]
+                ]);
             }
         }
     }

@@ -16,9 +16,10 @@ use anyhow::anyhow;
 use anyhow::bail;
 use itertools::Itertools;
 use object::LittleEndian;
-use object::Object;
-use object::ObjectSection;
-use object::ObjectSymbol;
+use object::Object as _;
+use object::ObjectSection as _;
+use object::ObjectSymbol as _;
+use object::read::elf::ProgramHeader;
 use os_info::Type;
 use rstest::fixture;
 use rstest::rstest;
@@ -33,9 +34,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Stdio;
+use std::str::FromStr;
 use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Instant;
+use strum::EnumString;
 use wait_timeout::ChildExt;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
@@ -209,6 +212,49 @@ impl Architecture {
     }
 }
 
+fn dynamic_linker_path(cross_arch: Option<Architecture>) -> &'static str {
+    match cross_arch {
+        None => host_dynamic_linker_cached(),
+        Some(Architecture::X86_64) => "/lib64/ld-linux-x86-64.so.2",
+        Some(Architecture::AArch64) => "/lib/ld-linux-aarch64.so.1",
+    }
+}
+
+/// Returns the dynamic linker shared object that appears to be used on the host platform. This is
+/// determined by trying various binaries that are likely to be dynamically linked.
+fn host_dynamic_linker_cached() -> &'static str {
+    static VALUE: OnceLock<String> = OnceLock::new();
+    let value = VALUE.get_or_init(|| {
+        ["/bin/true", "/bin/ls", "/usr/bin/ls", "/proc/self/exe"]
+            .into_iter()
+            .find_map(get_dynamic_linker)
+            .expect("Failed to find a suitable host dynamically linked binary")
+    });
+    value.as_str()
+}
+
+/// Returns the dynamic linker used by the specified binary or None if it doesn't exist or isn't
+/// dynamically linked.
+fn get_dynamic_linker(path: impl AsRef<Path>) -> Option<String> {
+    let file_bytes = std::fs::read(path.as_ref()).ok()?;
+    let file = ElfFile64::parse(&*file_bytes).ok()?;
+
+    let interp_header = file
+        .elf_program_headers()
+        .iter()
+        .find(|header| header.p_type(LittleEndian) == object::elf::PT_INTERP)?;
+
+    let mut interp_data = interp_header
+        .data(LittleEndian, file.data())
+        .ok()?
+        .to_owned();
+
+    // Remove null terminator.
+    interp_data.pop();
+
+    String::from_utf8(interp_data.to_owned()).ok()
+}
+
 impl Display for Architecture {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         Display::fmt(self.name(), f)
@@ -263,6 +309,7 @@ struct Config {
     name: String,
     variant_num: Option<u32>,
     assertions: Assertions,
+    linker_driver: LinkerDriver,
     linker_args: ArgumentSet,
     linker_so_args: ArgumentSet,
     wild_extra_linker_args: ArgumentSet,
@@ -283,6 +330,18 @@ struct Config {
     requires_glibc: bool,
     requires_clang_with_tlsdesc: bool,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct DirectConfig {
+    is_static: bool,
+}
+
+impl Default for DirectConfig {
+    fn default() -> Self {
+        Self { is_static: true }
+    }
+}
+
 impl Config {
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
         if self.skip_linkers.contains(linker.name()) {
@@ -295,9 +354,40 @@ impl Config {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LinkerDriver {
+    /// Invoke the linker via a compiler.
+    Compiler(Compiler),
+
+    /// Invoke the linker directly.
+    Direct(DirectConfig),
+}
+
+/// A compiler via which the linker is invoked.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Compiler {
+    Gcc(CLanguage),
+    Clang(CLanguage),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FilenameArgumentPair {
+    filename: String,
+    args: ArgumentSet,
+}
+
+impl FilenameArgumentPair {
+    fn new(filename: &str, args: ArgumentSet) -> Self {
+        Self {
+            filename: filename.to_string(),
+            args,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct Dep {
-    filenames: Vec<String>,
+    files: Vec<FilenameArgumentPair>,
     input_type: InputType,
 }
 
@@ -328,10 +418,12 @@ impl ExpectedSymtabEntry {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, EnumString)]
 enum InputType {
     Object,
-    Archive {thin: bool},
+    Archive,
+    ThinArchive,
+    #[strum(serialize = "Shared")]
     SharedObject,
 }
 
@@ -373,6 +465,7 @@ impl Default for Config {
             name: "default".to_owned(),
             variant_num: None,
             assertions: Default::default(),
+            linker_driver: LinkerDriver::Direct(DirectConfig::default()),
             linker_args: ArgumentSet::default_for_linking(),
             linker_so_args: ArgumentSet::default_for_linking(),
             compiler_args: ArgumentSet::default_for_compiling(),
@@ -458,6 +551,9 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                     }
                     config.linker_so_args = ArgumentSet::parse(arg)?
                 }
+                "LinkerDriver" => {
+                    config.linker_driver = LinkerDriver::parse(arg)?;
+                }
                 "WildExtraLinkArgs" => config.wild_extra_linker_args = ArgumentSet::parse(arg)?,
                 "CompArgs" => config.compiler_args = ArgumentSet::parse(arg)?,
                 "CompSoArgs" => config.compiler_so_args = ArgumentSet::parse(arg)?,
@@ -477,6 +573,7 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                     .assertions
                     .contains_strings
                     .push(arg.trim().to_owned()),
+                "Static" => config.linker_driver.direct_mut()?.is_static = arg.parse()?,
                 "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
                 "DiffEnabled" => {
                     config.should_diff = arg.parse().context("Invalid bool for DiffEnabled")?
@@ -506,22 +603,21 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                         .ok_or_else(|| anyhow!("DiffIgnore missing '='"))
                         .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
                 ),
-                "Object" => config.deps.push(Dep {
-                    filenames: arg.split(',').map(|s| s.to_owned()).collect(),
-                    input_type: InputType::Object,
-                }),
-                "Archive" => config.deps.push(Dep {
-                    filenames: arg.split(',').map(|s| s.to_owned()).collect(),
-                    input_type: InputType::Archive {thin: false},
-                }),
-                "ThinArchive" => config.deps.push(Dep {
-                    filenames: arg.split(',').map(|s| s.to_owned()).collect(),
-                    input_type: InputType::Archive {thin: true},
-                }),
-                "Shared" => config.deps.push(Dep {
-                    filenames: arg.split(',').map(|s| s.to_owned()).collect(),
-                    input_type: InputType::SharedObject,
-                }),
+                input_type @ ("Object" | "Archive" | "ThinArchive" | "Shared") => {
+                    let input_type = InputType::from_str(input_type)?;
+                    let files = arg
+                        .split(",")
+                        .map(|arg| {
+                            let (filename, comp_args) = arg.split_once(":").unwrap_or((arg, ""));
+                            Ok(FilenameArgumentPair::new(
+                                filename,
+                                ArgumentSet::parse(comp_args)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+
+                    config.deps.push(Dep { files, input_type })
+                }
                 "Compiler" => config.compiler = arg.trim().to_owned(),
                 "Arch" => {
                     config.support_architectures = arg
@@ -572,7 +668,10 @@ impl ProgramInputs {
     ) -> Result<Program<'a>> {
         let primary = build_linker_input(
             &Dep {
-                filenames: vec![self.source_file.to_owned()],
+                files: vec![FilenameArgumentPair::new(
+                    self.source_file,
+                    ArgumentSet::empty(),
+                )],
                 input_type: InputType::Object,
             },
             config,
@@ -693,16 +792,16 @@ fn build_linker_input(
     linker: &Linker,
     cross_arch: Option<Architecture>,
 ) -> Result<LinkerInput> {
-    if let [single_filename] = dep.filenames.as_slice() {
-        if single_filename.ends_with(".a") {
-            return Ok(LinkerInput::new(src_path(single_filename)));
+    if let [single_file] = dep.files.as_slice() {
+        if single_file.filename.ends_with(".a") {
+            return Ok(LinkerInput::new(src_path(&single_file.filename)));
         }
     }
 
     let obj_paths = dep
-        .filenames
+        .files
         .iter()
-        .map(|filename| build_obj(filename, config, dep.input_type, cross_arch))
+        .map(|file| build_obj(file, config, dep.input_type, cross_arch))
         .collect::<Result<Vec<PathBuf>>>()?;
 
     // When building archives or shared objects, we use the name of the first object to determine
@@ -712,7 +811,8 @@ fn build_linker_input(
         .context("At least one object is required")?;
 
     match dep.input_type {
-        InputType::Archive {thin} => {
+        InputType::Archive | InputType::ThinArchive => {
+            let thin = matches!(dep.input_type, InputType::ThinArchive);
             let archive_path = first_obj_path.with_extension("a");
             if !is_newer(&archive_path, obj_paths.iter()) {
                 make_archive(&archive_path, &obj_paths, thin)?;
@@ -746,20 +846,10 @@ enum CompilerKind {
     Rust,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CLanguage {
     C,
     Cpp,
-}
-
-impl CLanguage {
-    fn from_gcc_name(cc: &str) -> Result<CLanguage> {
-        match cc {
-            "gcc" => Ok(CLanguage::C),
-            "g++" => Ok(CLanguage::Cpp),
-            other => bail!("Unsupported C compiler {other}"),
-        }
-    }
 }
 
 fn get_c_compiler(
@@ -788,12 +878,12 @@ fn get_c_compiler(
 
 /// Builds some C source and returns the path to the object file.
 fn build_obj(
-    filename: &str,
+    file: &FilenameArgumentPair,
     config: &Config,
     input_type: InputType,
     cross_arch: Option<Architecture>,
 ) -> Result<PathBuf> {
-    let src_path = src_path(filename);
+    let src_path = src_path(&file.filename);
     let extension = src_path
         .extension()
         .context("Missing extension")?
@@ -827,12 +917,13 @@ fn build_obj(
 
     let mut command = Command::new(compiler);
 
-    let compiler_args =
+    let mut compiler_args =
         if input_type == InputType::SharedObject && !config.compiler_so_args.args.is_empty() {
-            &config.compiler_so_args.args
+            config.compiler_so_args.args.clone()
         } else {
-            &config.compiler_args.args
+            config.compiler_args.args.clone()
         };
+    compiler_args.extend_from_slice(&file.args.args);
 
     match compiler_kind {
         CompilerKind::C => {
@@ -866,7 +957,7 @@ fn build_obj(
             }
 
             if let Some(arch) = cross_arch {
-                let target = get_target(compiler_args).cloned().unwrap_or_else(|_| {
+                let target = get_target(&compiler_args).cloned().unwrap_or_else(|_| {
                     command.arg(format!("--target={}", arch.default_target_triple()));
                     arch.default_target_triple().to_owned()
                 });
@@ -905,7 +996,7 @@ fn build_obj(
 
     let arch_str = cross_name(cross_arch);
 
-    let output_path = build_dir().join(Path::new(filename).with_extension(format!(
+    let output_path = build_dir().join(Path::new(&file.filename).with_extension(format!(
         "{}-{arch_str}-{command_hash:x}{suffix}",
         config.name
     )));
@@ -921,10 +1012,10 @@ fn build_obj(
 
     // If multiple threads try to create a file at the same time, only one should do so and the
     // others should wait.
-    let lock_path = output_path.with_extension(format!(
-        "{}.lock",
+    let lock_path = output_path.with_file_name(format!(
+        ".{}.lock",
         output_path
-            .extension()
+            .file_name()
             .and_then(|ext| ext.to_str())
             .unwrap_or_default()
     ));
@@ -1132,74 +1223,80 @@ impl LinkCommand {
         } else {
             let linker_path = linker.path(cross_arch);
 
-            if let Some(cc) = linker_args
-                .args
-                .first()
-                .and_then(|a| a.strip_prefix("--cc="))
-            {
-                invocation_mode = LinkerInvocationMode::Cc;
+            let arch = cross_arch.unwrap_or_else(get_host_architecture);
 
-                if cross_arch.is_some() {
-                    let c_compiler = get_c_compiler(cc, CLanguage::from_gcc_name(cc)?, cross_arch)?;
-                    command = Command::new(c_compiler);
-                } else {
-                    command = Command::new(cc);
-                }
+            match config.linker_driver {
+                LinkerDriver::Compiler(linker_driver) => {
+                    invocation_mode = LinkerInvocationMode::Cc;
 
-                // It's convenient when debugging to be able to run the linker via a script rather
-                // than by calling the C compiler, so we get wild to write out a script. In
-                // particular, this makes it easier to inspect the linker arguments, since they're
-                // in the script.
-                let save_dir = output_path.with_extension("save");
-                command.env("WILD_SAVE_DIR", &save_dir);
-                opt_save_dir = Some(save_dir);
-
-                match cc {
-                    "clang" => {
-                        command.arg(format!(
-                            "--ld-path={}",
-                            linker_path
-                                .to_str()
-                                .expect("Linker path must be valid UTF-8")
-                        ));
+                    if cross_arch.is_some() {
+                        let c_compiler = get_c_compiler(
+                            linker_driver.name(),
+                            linker_driver.c_language(),
+                            cross_arch,
+                        )?;
+                        command = Command::new(c_compiler);
+                    } else {
+                        command = Command::new(linker_driver.name());
                     }
-                    "gcc" | "g++" => {
-                        match linker {
-                            Linker::Wild => {
-                                // GCC unfortunately doesn't provide any way to use a custom linker.
-                                // Their flag for switching linkers only accepts a hard-coded list
-                                // of alternatives and the developers don't seem to want any
-                                // equivalent to clang's --ld-path. The closest we can get is to put
-                                // a file called "ld" in a directory, then pass "-B" and that
-                                // directory.
-                                let bin_dir = wild_path().parent().unwrap();
-                                command.arg("-B").arg(bin_dir);
-                            }
-                            Linker::ThirdParty(third_party_linker) => {
-                                command.arg(format!("-fuse-ld={}", third_party_linker.gcc_name));
+
+                    let save_dir = output_path.with_extension("save");
+                    command.env("WILD_SAVE_DIR", &save_dir);
+                    opt_save_dir = Some(save_dir);
+
+                    match linker_driver {
+                        Compiler::Clang(_) => {
+                            command.arg(format!(
+                                "--ld-path={}",
+                                linker_path
+                                    .to_str()
+                                    .expect("Linker path must be valid UTF-8")
+                            ));
+                        }
+                        Compiler::Gcc(_) => {
+                            match linker {
+                                Linker::Wild => {
+                                    // GCC unfortunately doesn't provide any way to use a custom linker.
+                                    // Their flag for switching linkers only accepts a hard-coded list
+                                    // of alternatives and the developers don't seem to want any
+                                    // equivalent to clang's --ld-path. The closest we can get is to put
+                                    // a file called "ld" in a directory, then pass "-B" and that
+                                    // directory.
+                                    let bin_dir = wild_path().parent().unwrap();
+                                    command.arg("-B").arg(bin_dir);
+                                }
+                                Linker::ThirdParty(third_party_linker) => {
+                                    command
+                                        .arg(format!("-fuse-ld={}", third_party_linker.gcc_name));
+                                }
                             }
                         }
                     }
-                    _ => panic!("Unsupported cc={cc}"),
-                }
-                let arch = cross_arch.unwrap_or_else(get_host_architecture);
-                if arch == Architecture::AArch64 {
-                    // Provide a workaround for ld.lld: error: unknown argument '--fix-cortex-a53-835769'
-                    // Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
-                    command.arg("-mno-fix-cortex-a53-835769");
-                }
-                command.args(&linker_args.args[1..]);
-            } else {
-                command = Command::new(linker_path);
 
-                if let Some(arch) = cross_arch {
-                    command.arg("-m").arg(arch.emulation_name());
+                    if arch == Architecture::AArch64 {
+                        // Provide a workaround for ld.lld: error: unknown argument '--fix-cortex-a53-835769'
+                        // Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
+                        command.arg("-mno-fix-cortex-a53-835769");
+                    }
+                    command.args(&linker_args.args);
                 }
+                LinkerDriver::Direct(direct_config) => {
+                    command = Command::new(linker_path);
 
-                command
-                    .arg("--gc-sections")
-                    .arg("-static")
-                    .args(&linker_args.args);
+                    if let Some(arch) = cross_arch {
+                        command.arg("-m").arg(arch.emulation_name());
+                    }
+
+                    if direct_config.is_static {
+                        command.arg("-static");
+                    } else {
+                        command
+                            .arg("-dynamic-linker")
+                            .arg(dynamic_linker_path(cross_arch));
+                    }
+
+                    command.arg("--gc-sections").args(&linker_args.args);
+                }
             }
             if !linker_args.args.iter().any(|arg| arg == "-o") {
                 command.arg("-o").arg(output_path);
@@ -1403,6 +1500,45 @@ fn read_comments<'data>(obj: &ElfFile64<'data>) -> Result<Vec<std::borrow::Cow<'
         .collect())
 }
 
+impl LinkerDriver {
+    fn parse(arg: &str) -> Result<LinkerDriver> {
+        match arg.trim() {
+            "gcc" => Ok(LinkerDriver::Compiler(Compiler::Gcc(CLanguage::C))),
+            "g++" => Ok(LinkerDriver::Compiler(Compiler::Gcc(CLanguage::Cpp))),
+            "clang" => Ok(LinkerDriver::Compiler(Compiler::Clang(CLanguage::C))),
+            "clang++" => Ok(LinkerDriver::Compiler(Compiler::Clang(CLanguage::Cpp))),
+            "" | "none" => Ok(LinkerDriver::Direct(Default::default())),
+            other => bail!("Unsupported linker driver `{other}`"),
+        }
+    }
+
+    fn direct_mut(&mut self) -> Result<&mut DirectConfig> {
+        match self {
+            LinkerDriver::Compiler(_) => {
+                bail!("Config option is incompatible with LinkerDriver::Compiler")
+            }
+            LinkerDriver::Direct(direct_config) => Ok(direct_config),
+        }
+    }
+}
+
+impl Compiler {
+    fn name(&self) -> &str {
+        match self {
+            Compiler::Gcc(CLanguage::C) => "gcc",
+            Compiler::Gcc(CLanguage::Cpp) => "g++",
+            Compiler::Clang(CLanguage::C) => "clang",
+            Compiler::Clang(CLanguage::Cpp) => "clang++",
+        }
+    }
+
+    fn c_language(&self) -> CLanguage {
+        match self {
+            Compiler::Gcc(lang) | Compiler::Clang(lang) => *lang,
+        }
+    }
+}
+
 impl Display for LinkCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(save_dir) = self.opt_save_dir.as_ref() {
@@ -1487,8 +1623,8 @@ impl Display for InputType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             InputType::Object => write!(f, "object"),
-            InputType::Archive {thin: false} => write!(f, "archive"),
-            InputType::Archive {thin: true} => write!(f, "thin archive"),
+            InputType::Archive => write!(f, "archive"),
+            InputType::ThinArchive => write!(f, "thin archive"),
             InputType::SharedObject => write!(f, "shared"),
         }
     }
@@ -1660,6 +1796,7 @@ fn integration_test(
     #[values(
         "trivial.c",
         "trivial-main.c",
+        "trivial-dynamic.c",
         "link_args.c",
         "global_definitions.c",
         "data.c",
@@ -1672,6 +1809,7 @@ fn integration_test(
         "internal-syms.c",
         "tls.c",
         "tlsdesc.c",
+        "tls-variant.c",
         "old_init.c",
         "custom_section.c",
         "stack_alignment.s",

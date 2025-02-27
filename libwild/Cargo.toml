@@ -28,6 +28,7 @@ object = { version = "0.36.7", default-features = false, features = [
 ] }
 rayon = "1.10.0"
 smallvec = "1.13.2"
+symbolic-demangle = "12.13.4"
 tracing = { version = "0.1.41" }
 tracing-subscriber = { version = "0.3.19", default-features = false, features = [
     "env-filter",

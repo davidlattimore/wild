@@ -8,7 +8,6 @@ use object::LittleEndian;
 use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
-use object::SymbolKind;
 use object::read::elf::ElfSection64;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -144,12 +143,12 @@ impl<'data> IndexedLayout<'data> {
                     }
                 }
 
-                if symbol.kind() == SymbolKind::Text {
-                    functions_by_section[section_index.0].push(FunctionInfo {
-                        offset_in_section: symbol.address(),
-                        name,
-                    });
-                }
+                // We only care about functions, however some functions don't have their type set,
+                // so we index all symbols.
+                functions_by_section[section_index.0].push(FunctionInfo {
+                    offset_in_section: symbol.address(),
+                    name,
+                });
             }
 
             files.push(InputFile {
@@ -249,6 +248,37 @@ impl<'data> IndexedLayout<'data> {
             }
         }
     }
+
+    pub(crate) fn input_section_display(
+        &self,
+        section_id: InputSectionId,
+    ) -> InputSectionDisplay<'_, 'data> {
+        InputSectionDisplay {
+            layout: self,
+            section_id,
+        }
+    }
+}
+
+pub(crate) struct InputSectionDisplay<'layout, 'data> {
+    layout: &'layout IndexedLayout<'data>,
+    section_id: InputSectionId,
+}
+
+impl Display for InputSectionDisplay<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let file = &self.layout.files[self.section_id.file_index];
+        write!(f, "{file} ")?;
+        if let Ok(section_name) = file
+            .elf_file
+            .section_by_index(self.section_id.section_index)
+            .and_then(|sec| sec.name_bytes())
+        {
+            write!(f, "{}", String::from_utf8_lossy(section_name))?;
+        }
+
+        Ok(())
+    }
 }
 
 struct DisplaySection<'data> {
@@ -327,7 +357,10 @@ impl SectionInfo<'_> {
         layout: &IndexedLayout,
     ) -> Result<FunctionInfo> {
         if self.functions.is_empty() {
-            bail!("Cannot diff section with no functions");
+            bail!(
+                "Cannot diff section with no functions: {}",
+                layout.input_section_display(self.section_id)
+            );
         }
 
         match self
@@ -350,6 +383,17 @@ impl SectionInfo<'_> {
                 )
             }
             Err(i) => Ok(self.functions[i - 1]),
+        }
+    }
+
+    /// Returns the start of the next function at or after `offset`.
+    pub(crate) fn next_function_offset(&self, offset: u64) -> Option<u64> {
+        match self
+            .functions
+            .binary_search_by_key(&offset, |f| f.offset_in_section)
+        {
+            Ok(i) => Some(self.functions[i].offset_in_section),
+            Err(i) => Some(self.functions.get(i)?.offset_in_section),
         }
     }
 }

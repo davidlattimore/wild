@@ -77,7 +77,9 @@ jobs:
     - uses: actions/checkout@v4
       with:
         persist-credentials: false
-    - uses: dtolnay/rust-toolchain@stable
+    # This is where we check that we're not using features from a more recent rust version. When
+    # updating this, please also update workspace.package.rust-version in `Cargo.toml`.
+    - uses: dtolnay/rust-toolchain@1.85.0
       id: rust-toolchain
       with:
         components: clippy
@@ -112,4 +114,4 @@ jobs:
         with:
           persist-credentials: false
       - name: Spell Check Repo
-        uses: crate-ci/typos@v1.29.9
+        uses: crate-ci/typos@v1.29.10

@@ -156,6 +156,8 @@ linkers need to do.
   * [ELF-64 Object File Format](https://uclibc.org/docs/elf-64-gen.pdf)
   * [ELF x86-64-ABI psABI](https://gitlab.com/x86-psABIs/x86-64-ABI)
   * [ELF Handling For Thread-Local Storage](https://www.uclibc.org/docs/tls.pdf)
+  * [ELF for the Arm® 64-bit Architecture (AArch64)](https://github.com/ARM-software/abi-aa/blob/main/aaelf64/aaelf64.rst)
+  * [System V ABI for the Arm® 64-bit Architecture (AArch64)](https://github.com/ARM-software/abi-aa/blob/main/sysvabi64/sysvabi64.rst)
 * [A Deep dive into (implicit) Thread Local Storage](https://chao-tic.github.io/blog/2018/12/25/tls)
 
 ## Finding an issue to work on
