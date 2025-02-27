@@ -241,11 +241,15 @@ impl Prelude {
         // The undefined symbol must always be symbol 0.
         let mut symbol_definitions = vec![InternalSymDefInfo::Undefined];
         for section_id in output_section_id::built_in_section_ids() {
-            // If we're not producing a relocatable output, then don't define any symbols for the
-            // .dynamic section.
-            if section_id == output_section_id::DYNAMIC && !args.is_relocatable() {
+            // If we're producing non-relocatable, static executable, then don't define any symbols
+            // for the .dynamic section.
+            if section_id == output_section_id::DYNAMIC
+                && args.output_kind()
+                    == OutputKind::StaticExecutable(RelocationModel::NonRelocatable)
+            {
                 continue;
             }
+
             let def = section_id.built_in_details();
             // .rela.plt start/stop symbols are only emitted for non-relocatable executables.
             // Emitting them for relocatable binaries causes glibc to try to call the resolver
@@ -255,9 +259,11 @@ impl Prelude {
             {
                 continue;
             }
+
             if def.start_symbol_name(args.output_kind()).is_some() {
                 symbol_definitions.push(InternalSymDefInfo::SectionStart(section_id));
             }
+
             if def.end_symbol_name(args.output_kind()).is_some() {
                 symbol_definitions.push(InternalSymDefInfo::SectionEnd(section_id));
             }
