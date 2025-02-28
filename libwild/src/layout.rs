@@ -1298,6 +1298,10 @@ enum WorkItem {
 
     /// A request to load a particular section.
     LoadSection(SectionLoadRequest),
+
+    /// Requests that the specified symbol be exported as a dynamic symbol. Will be ignored if the
+    /// object that defines the symbol is not loaded or is itself a shared object.
+    ExportDynamic(SymbolId),
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -1316,6 +1320,7 @@ impl WorkItem {
                 symbol_db.file_id_for_symbol(s)
             }
             WorkItem::LoadSection(s) => s.file_id,
+            WorkItem::ExportDynamic(symbol_id) => symbol_db.file_id_for_symbol(symbol_id),
         }
     }
 }
@@ -2229,6 +2234,16 @@ impl<'data> FileLayoutState<'data> {
                         request.section_index(),
                     ),
                 _ => bail!("Request to load section from non-object: {self}"),
+            },
+            WorkItem::ExportDynamic(symbol_id) => match self {
+                FileLayoutState::Object(object) => {
+                    object.export_dynamic::<S, A>(common, symbol_id, resources, queue)
+                }
+                _ => {
+                    // Non-loaded and dynamic objects don't do anything in response to a request to
+                    // export a dynamic symbol.
+                    Ok(())
+                }
             },
         }
     }
@@ -3739,6 +3754,27 @@ impl<'data> ObjectLayoutState<'data> {
         }
         Ok(())
     }
+
+    fn export_dynamic<'scope, S: StorageModel, A: Arch>(
+        &mut self,
+        common: &mut CommonGroupState<'data>,
+        symbol_id: SymbolId,
+        resources: &GraphResources<'data, 'scope, S>,
+        queue: &mut LocalWorkQueue,
+    ) -> Result {
+        let old_flags = resources.symbol_resolution_flags[symbol_id.as_usize()]
+            .fetch_or(ResolutionFlags::EXPORT_DYNAMIC);
+
+        if old_flags.is_empty() {
+            self.load_symbol::<A>(common, symbol_id, resources, queue)?;
+        }
+
+        if !old_flags.contains(ResolutionFlags::EXPORT_DYNAMIC) {
+            export_dynamic(common, symbol_id, resources)?;
+        }
+
+        Ok(())
+    }
 }
 
 pub(crate) struct SymbolCopyInfo<'data> {
@@ -4255,44 +4291,42 @@ impl<'data> DynamicLayoutState<'data> {
     ) -> Result {
         let dt_info = DynamicTagValues::read(self.object)?;
         self.symbol_versions_needed = vec![false; dt_info.verdefnum as usize];
+
         if let Some(soname) = dt_info.soname {
             self.lib_name = soname;
         }
+
         common.allocate(
             part_id::DYNAMIC,
             size_of::<crate::elf::DynamicEntry>() as u64,
         );
+
         common.allocate(part_id::DYNSTR, self.lib_name.len() as u64 + 1);
-        self.request_all_undefined_symbols(common, resources, queue)
+
+        self.request_all_undefined_symbols(resources, queue);
+
+        Ok(())
     }
 
     fn request_all_undefined_symbols<S: StorageModel>(
         &self,
-        common: &mut CommonGroupState<'data>,
         resources: &GraphResources<'data, '_, S>,
         queue: &mut LocalWorkQueue,
-    ) -> Result {
+    ) {
         for symbol_id in self.symbol_id_range() {
             if resources.symbol_db.is_canonical(symbol_id) {
                 continue;
             }
+
             let definition_symbol_id = resources.symbol_db.definition(symbol_id);
             let file_id = resources.symbol_db.file_id_for_symbol(definition_symbol_id);
-            // If a shared object references a symbol from say another shared object, there's
-            // nothing we need to do.
-            if !resources.symbol_db.file(file_id).is_regular_object() {
-                continue;
-            }
-            let old_flags = resources.symbol_resolution_flags[definition_symbol_id.as_usize()]
-                .fetch_or(ResolutionFlags::EXPORT_DYNAMIC);
-            if old_flags.is_empty() {
-                queue.send_symbol_request(definition_symbol_id, resources);
-            }
-            if !old_flags.contains(ResolutionFlags::EXPORT_DYNAMIC) {
-                export_dynamic(common, definition_symbol_id, resources)?;
-            }
+
+            queue.send_work(
+                resources,
+                file_id,
+                WorkItem::ExportDynamic(definition_symbol_id),
+            );
         }
-        Ok(())
     }
 
     fn finalise_sizes(&mut self, common: &mut CommonGroupState<'data>) -> Result {
