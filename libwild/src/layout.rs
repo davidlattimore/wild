@@ -155,11 +155,7 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         .into_iter()
         .map(|f| f.into_non_atomic())
         .collect();
-    let verdef_count = if symbol_db.version_script.version_count() > 0 {
-        symbol_db.version_script.version_count() + 1
-    } else {
-        0
-    };
+    let verdef_count = symbol_db.version_script.version_count();
     let non_addressable_counts =
         apply_non_addressable_indexes(&mut group_states, symbol_db.args, verdef_count)?;
     let section_part_sizes = compute_total_section_part_sizes(
@@ -3201,7 +3197,7 @@ impl<'data> EpilogueLayoutState<'data> {
             common.allocate(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
-        let mut verdef_entries = symbol_db.version_script.version_count();
+        let verdef_entries = symbol_db.version_script.version_count();
         if verdef_entries > 0 {
             let base_name = symbol_db.args.soname.as_ref().map_or_else(
                 || {
@@ -3216,7 +3212,6 @@ impl<'data> EpilogueLayoutState<'data> {
             );
 
             common.allocate(part_id::DYNSTR, base_name.len() as u64 + 1);
-            verdef_entries += 1;
 
             let parent_count = symbol_db.version_script.parent_count();
             common.allocate(
@@ -3225,10 +3220,8 @@ impl<'data> EpilogueLayoutState<'data> {
                     + size_of::<crate::elf::Verdaux>() as u64 * (verdef_entries + parent_count),
             );
 
-            for version in symbol_db.version_script.version_iter() {
-                if let Some(name) = version.name {
-                    common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
-                }
+            for (_, name, _) in symbol_db.version_script.version_iter() {
+                common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
             }
         }
 
@@ -3303,7 +3296,7 @@ impl<'data> EpilogueLayoutState<'data> {
         // TODO: avoid this
         let mut verdefs = Vec::new();
 
-        let mut version_count = resources.symbol_db.version_script.version_count();
+        let version_count = resources.symbol_db.version_script.version_count();
         if version_count > 0 {
             // TODO: this is a lazy hack, do it right
             let base_name = resources.symbol_db.args.soname.as_ref().map_or_else(
@@ -3326,22 +3319,19 @@ impl<'data> EpilogueLayoutState<'data> {
                 parent_name: None,
                 is_base: true,
             });
-            version_count += 1;
 
-            for (i, version) in resources
+            for (i, (_, name, parent)) in resources
                 .symbol_db
                 .version_script
                 .version_iter()
                 .enumerate()
             {
-                if let Some(name) = version.name {
-                    verdefs.push(VersionDef {
-                        name: name.as_bytes().to_vec(),
-                        index: (i + 2) as u16,
-                        parent_name: version.parent.map(|p| p.as_bytes().to_vec()),
-                        is_base: false,
-                    });
-                }
+                verdefs.push(VersionDef {
+                    name: name.as_bytes().to_vec(),
+                    index: (i + 2) as u16,
+                    parent_name: parent.map(|p| p.as_bytes().to_vec()),
+                    is_base: false,
+                });
             }
 
             let parent_count = resources.symbol_db.version_script.parent_count();

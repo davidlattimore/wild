@@ -68,14 +68,17 @@ pub(crate) fn maybe_forced_sysroot(path: &Path, sysroot: &Path) -> Option<Box<Pa
 /// A version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
 #[derive(Default)]
 pub(crate) struct VersionScript<'data> {
-    versions: Vec<Version<'data>>,
+    inner: Option<AnonymousOrVersioned<'data>>,
+}
+
+enum AnonymousOrVersioned<'data> {
+    Anonymous(Version<'data>),
+    Versioned(Vec<(Version<'data>, &'data str, Option<&'data str>)>),
 }
 
 pub(crate) struct Version<'data> {
-    pub(crate) name: Option<&'data str>,
     globals: MatchRules<'data>,
     locals: MatchRules<'data>,
-    pub(crate) parent: Option<&'data str>,
 }
 
 #[derive(Default)]
@@ -118,62 +121,114 @@ impl<'data> VersionScript<'data> {
     #[tracing::instrument(skip_all, name = "Parse version script")]
     pub(crate) fn parse(data: &'data VersionScriptData) -> Result<VersionScript<'data>> {
         let mut tokens = Tokeniser::new(&data.raw);
-        let mut versions = Vec::new();
 
-        loop {
-            tokens.text = tokens.text.trim();
-            if tokens.text.is_empty() {
-                break;
-            }
+        tokens.text = tokens.text.trim();
 
-            let token = tokens.next().unwrap();
-            let name = if token.starts_with('{') {
-                None
-            } else {
-                let name = token;
-                tokens.expect("{")?;
-                Some(name)
-            };
-
-            let version = Version::parse(&mut tokens, name)?;
-            versions.push(version);
-
-            if tokens.text.trim().is_empty() {
-                break;
-            }
+        let mut token = tokens.next().unwrap();
+        // Simple version script, only defines symbols visibility
+        if token.starts_with('{') {
+            return Ok(VersionScript {
+                inner: Some(AnonymousOrVersioned::Anonymous(
+                    Version::parse(&mut tokens)?.0,
+                )),
+            });
         }
 
-        Ok(VersionScript { versions })
+        let mut versions = Vec::new();
+        loop {
+            tokens.expect("{")?;
+
+            let (version, parent) = Version::parse(&mut tokens)?;
+            versions.push((version, token, parent));
+
+            if let Some(next_token) = tokens.next() {
+                token = next_token;
+            } else {
+                break;
+            };
+        }
+
+        Ok(VersionScript {
+            inner: Some(AnonymousOrVersioned::Versioned(versions)),
+        })
     }
 
     pub(crate) fn is_local(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
-        // TODO: Can symbols be local for some versions but global for other?
         // TODO: Probably not the most efficient way to do this
-        self.versions.iter().any(|ver| ver.is_local(name))
+        let inner = if let Some(inner) = &self.inner {
+            inner
+        } else {
+            return false;
+        };
+        match inner {
+            AnonymousOrVersioned::Anonymous(version) => version.is_local(name),
+            AnonymousOrVersioned::Versioned(versions) => {
+                versions.iter().any(|(ver, _, _)| ver.is_local(name))
+            }
+        }
     }
 
     // TODO: Surely not u64
     pub(crate) fn version_count(&self) -> u64 {
-        // self.versions.len() as u64
-        self.versions
-            .iter()
-            .fold(0, |acc, v| acc + u64::from(v.name.is_some()))
+        let inner = if let Some(inner) = &self.inner {
+            inner
+        } else {
+            return 0;
+        };
+        match inner {
+            AnonymousOrVersioned::Anonymous(_) => 0,
+            AnonymousOrVersioned::Versioned(versions) => versions.len() as u64 + 1,
+        }
     }
     pub(crate) fn parent_count(&self) -> u64 {
-        self.versions.iter().filter(|v| v.parent.is_some()).count() as u64
+        let inner = if let Some(inner) = &self.inner {
+            inner
+        } else {
+            return 0;
+        };
+        match inner {
+            AnonymousOrVersioned::Anonymous(_) => 0,
+            AnonymousOrVersioned::Versioned(versions) => versions
+                .iter()
+                .filter(|(_, _, parent)| parent.is_some())
+                .count() as u64,
+        }
     }
-    pub(crate) fn version_iter(&self) -> impl Iterator<Item = &Version> {
-        self.versions.iter()
+    pub(crate) fn version_iter(
+        &self,
+    ) -> impl Iterator<Item = &(Version, &'data str, Option<&'data str>)> {
+        let inner = if let Some(inner) = &self.inner {
+            inner
+        } else {
+            return [].iter();
+        };
+        match inner {
+            AnonymousOrVersioned::Anonymous(_) => [].iter(),
+            AnonymousOrVersioned::Versioned(versions) => versions.iter(),
+        }
     }
     pub(crate) fn version_for_symbol(
         &self,
         name: &PreHashed<UnversionedSymbolName>,
     ) -> Option<u16> {
-        self.versions.iter().enumerate().find_map(|(number, ver)| {
-            // local: 0, global: 1, base: 2, actual version: X
-            (ver.is_present(name) && ver.name.is_some())
-                .then(|| number as u16 + object::elf::VER_NDX_GLOBAL + 1)
-        })
+        let inner = if let Some(inner) = &self.inner {
+            inner
+        } else {
+            return None;
+        };
+        match inner {
+            AnonymousOrVersioned::Anonymous(_) => None,
+            AnonymousOrVersioned::Versioned(versions) => {
+                versions
+                    .iter()
+                    .enumerate()
+                    .find_map(|(number, (ver, _, _))| {
+                        // local: 0, global: 1, base: 2, actual version: X
+                        ver.is_present(name)
+                            .then(|| number as u16 + object::elf::VER_NDX_GLOBAL + 1)
+                    })
+            }
+        }
     }
 }
 
@@ -183,12 +238,10 @@ enum VersionRuleSection {
 }
 
 impl<'data> Version<'data> {
-    fn parse(tokens: &mut Tokeniser<'data>, name: Option<&'data str>) -> Result<Version<'data>> {
+    fn parse(tokens: &mut Tokeniser<'data>) -> Result<(Version<'data>, Option<&'data str>)> {
         let mut version = Version {
-            name,
             globals: Default::default(),
             locals: Default::default(),
-            parent: None,
         };
 
         let mut section = None;
@@ -196,13 +249,11 @@ impl<'data> Version<'data> {
         // important when for example rustc emits a version script that's more than 300k lines.
         while let Some(line) = tokens.next_line() {
             let mut line = line.trim();
-            if let Some(line) = line.strip_prefix('}') {
-                if !line.starts_with(';') {
-                    if let Some(predecessor) = line.strip_suffix(';') {
-                        version.parent = Some(predecessor.trim());
-                    }
+            if let Some(parent_string) = line.strip_prefix('}') {
+                if parent_string.starts_with(';') {
+                    return Ok((version, None));
                 }
-                return Ok(version);
+                return Ok((version, parent_string.trim().strip_suffix(';')));
             }
             // Note, we don't currently support comments that have content after them on the same
             // line. Doing so would require us to search every line for embedded comments, which
@@ -529,7 +580,9 @@ mod tests {
             .into(),
         };
         let script = VersionScript::parse(&data).unwrap();
-        let version = &script.versions[0];
+        let AnonymousOrVersioned::Anonymous(version) = script.inner.unwrap() else {
+            panic!("Expected Anonymous version");
+        };
         assert_equal(
             version
                 .globals
@@ -567,31 +620,37 @@ mod tests {
             .into(),
         };
         let script = VersionScript::parse(&data).unwrap();
-        let versions = &script.versions;
+        let AnonymousOrVersioned::Versioned(versions) = script.inner.unwrap() else {
+            panic!("Expected versioned script");
+        };
         assert_eq!(versions.len(), 2);
 
-        let ver1 = &versions[0];
-        assert_eq!(ver1.name, Some("VERS_1.1"));
+        let (version, name, parent) = &versions[0];
+        assert_eq!(*name, "VERS_1.1");
+        assert_eq!(*parent, None);
         assert_equal(
-            ver1.globals
+            version
+                .globals
                 .exact
                 .iter()
                 .map(|s| std::str::from_utf8(s.bytes()).unwrap()),
             ["foo1"],
         );
         assert_equal(
-            ver1.locals
+            version
+                .locals
                 .prefixes
                 .iter()
                 .map(|s| std::str::from_utf8(s).unwrap()),
             ["old"],
         );
 
-        let ver2 = &versions[1];
-        assert_eq!(ver2.name, Some("VERS_1.2"));
-        assert_eq!(ver2.parent, Some("VERS_1.1"));
+        let (version, name, parent) = &versions[1];
+        assert_eq!(*name, "VERS_1.2");
+        assert_eq!(*parent, Some("VERS_1.1"));
         assert_equal(
-            ver2.globals
+            version
+                .globals
                 .exact
                 .iter()
                 .map(|s| std::str::from_utf8(s.bytes()).unwrap()),
