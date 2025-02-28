@@ -1806,8 +1806,16 @@ impl<'data> RelaxationTester<'data> {
                 is_pointer = false;
             }
 
-            if relocation_info.kind == RelocationKind::TlsDescCall {
-                referent = Some(Referent::TlsDescCall);
+            match relocation_info.kind {
+                RelocationKind::TlsDescCall => {
+                    referent = Some(Referent::TlsDescCall);
+                }
+                RelocationKind::Relative | RelocationKind::Absolute => {
+                    // This is mostly to avoid falsely identifying a GOT dereference when there's an
+                    // end-of-section pointer to the section before the GOT.
+                    allow_got_dereference = false;
+                }
+                _ => {}
             }
 
             if relative_to != 0 && relocation_num_bytes(relocation_info) == 4 {
