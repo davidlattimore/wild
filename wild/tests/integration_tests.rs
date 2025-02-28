@@ -1825,7 +1825,8 @@ fn integration_test(
         "ifunc2.c",
         "tls-local-exec.c",
         "undefined_symbols.c",
-        "whole_archive.c"
+        "whole_archive.c",
+        "shared.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),

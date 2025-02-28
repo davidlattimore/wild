@@ -204,14 +204,6 @@ impl<'data> ParsedInput<'data> {
         }
     }
 
-    pub(crate) fn is_regular_object(&self) -> bool {
-        match self {
-            ParsedInput::Object(o) => !o.is_dynamic(),
-            ParsedInput::Prelude(_) => false,
-            ParsedInput::Epilogue(_) => false,
-        }
-    }
-
     pub(crate) fn file_id(&self) -> FileId {
         let file_id = match self {
             ParsedInput::Prelude(_) => PRELUDE_FILE_ID,
