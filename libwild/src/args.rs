@@ -195,6 +195,7 @@ const DEFAULT_FLAGS: &[&str] = &[
     "discard-locals",
     "X",  // alias for --discard-locals
     "EL", // little endian
+    "enable-new-dtags",
 ];
 
 pub(crate) fn available_parallelism() -> std::num::NonZeroUsize {
