@@ -967,7 +967,7 @@ fn symtab_info(info: &InfoInputs) -> u32 {
 }
 
 fn version_d_info(info: &InfoInputs) -> u32 {
-    info.non_addressable_counts.verdef_count as u32
+    info.non_addressable_counts.verdef_count.into()
 }
 
 fn version_r_info(info: &InfoInputs) -> u32 {
