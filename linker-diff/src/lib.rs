@@ -160,8 +160,9 @@ impl Config {
                 "section.annobin.notes.entsize",
                 // We don't yet group .lrodata sections separately.
                 "section.lrodata",
-                // We currently output version info when linking against the interpreter
-                // (ld-linux-x86-64.so.2). GNU ld doesn't.
+                // We sometimes eliminate __tls_get_addr where GNU ld doesn't. This can mean that we
+                // have no versioned symbols for ld-linux-x86-64.so.2 or equivalent, which means we
+                // end up with one less version record.
                 ".dynamic.DT_VERNEEDNUM",
                 // We currently handle these dynamic tags differently
                 ".dynamic.DT_JMPREL",
