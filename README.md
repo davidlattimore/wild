@@ -20,7 +20,7 @@ and manually copy the `wild` binary somewhere on your path.
 To build and install, you can run:
 
 ```sh
-cargo install --locked --bin wild --git https://github.com/davidlattimore/wild.git wild
+cargo install --locked --bin wild --git https://github.com/davidlattimore/wild.git wild-linker
 ```
 
 ## Using as your default linker

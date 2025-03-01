@@ -1431,7 +1431,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "wild"
+name = "wild-linker"
 version = "0.3.0"
 dependencies = [
  "anyhow",
