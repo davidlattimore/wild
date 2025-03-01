@@ -13,9 +13,25 @@ x86-64 Linux. If you hit any issues, please file a bug report.
 
 ## Installation
 
+### From github releases
+
 To install a pre-built binary, you can copy and paste the command from the [releases
 page](https://github.com/davidlattimore/wild/releases). Alternatively, you can download the tarball
 and manually copy the `wild` binary somewhere on your path.
+
+### Cargo binstall
+
+```sh
+cargo binstall wild-linker
+```
+
+### Build latest release from crates.io
+
+```sh
+cargo install --locked wild-linker
+```
+
+### Build from git head
 
 To build and install, you can run:
 
