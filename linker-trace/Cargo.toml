@@ -1,5 +1,6 @@
 [package]
 name = "linker-trace"
+description = "Data structures for storing trace outputs from the Wild linker"
 version.workspace = true
 license.workspace = true
 repository.workspace = true

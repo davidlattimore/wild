@@ -1,5 +1,6 @@
 [package]
 name = "wild-linker"
+description = "A very fast linker for Linux"
 version.workspace = true
 license.workspace = true
 repository.workspace = true
