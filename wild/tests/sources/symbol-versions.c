@@ -11,7 +11,6 @@
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:file-header.entry
-//#DiffIgnore:rel.*
 //#Object:exit.c
 //#EnableLinker:lld
 //#LinkArgs:--shared
