@@ -3063,29 +3063,29 @@ impl<'data> DynamicLayout<'data> {
             }
         }
 
-        if let Some(verdef_info) = &self.verdef_info {
-            let mut verdefs = verdef_info.defs.clone();
+        if let Some(verneed_info) = &self.verneed_info {
+            let mut verdefs = verneed_info.defs.clone();
             let e = LittleEndian;
             let strings = self.object.sections.strings(
                 e,
                 self.object.data,
-                verdef_info.string_table_index,
+                verneed_info.string_table_index,
             )?;
             let ver_need = table_writer.version_writer.take_verneed()?;
             let next_verneed_offset = if self.is_last_verneed {
                 0
             } else {
-                (size_of::<Verneed>() + size_of::<Vernaux>() * verdef_info.version_count as usize)
+                (size_of::<Verneed>() + size_of::<Vernaux>() * verneed_info.version_count as usize)
                     as u32
             };
             ver_need.vn_version.set(e, 1);
-            ver_need.vn_cnt.set(e, verdef_info.version_count);
+            ver_need.vn_cnt.set(e, verneed_info.version_count);
             ver_need.vn_aux.set(e, size_of::<Verneed>() as u32);
             ver_need.vn_next.set(e, next_verneed_offset);
 
             let auxes = table_writer
                 .version_writer
-                .take_auxes(verdef_info.version_count)?;
+                .take_auxes(verneed_info.version_count)?;
             let mut aux_index = 0;
             while let Some((verdef, mut aux_iterator)) = verdefs.next()? {
                 let input_version = verdef.vd_ndx.get(e);
