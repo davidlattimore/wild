@@ -303,7 +303,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             match arg {
                 "now" => {}
                 "origin" => {}
-                "norelro" => {}
+                "relro" => {}
                 "notext" => {}
                 "nostart-stop-gc" => {}
                 "execstack" => args.execstack = true,
