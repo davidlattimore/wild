@@ -12,7 +12,7 @@ name = "wild"
 path = "src/main.rs"
 
 [dependencies]
-libwild = { path = "../libwild" }
+libwild = { path = "../libwild", version = "0.4.0" }
 
 # This is off by default, since it doesn't appear to help. However, if you're linking against musl
 # libc, which has a comparatively slow allocator, then enabling this does help. To enable this,
@@ -32,7 +32,7 @@ object = { version = "0.36.7", default-features = false, features = [
     "std",
     "unaligned",
 ] }
-linker-diff = { path = "../linker-diff" }
+linker-diff = { path = "../linker-diff", version = "0.4.0" }
 which = "7.0.2"
 rstest = "0.24.0"
 fd-lock = "4.0.2"
