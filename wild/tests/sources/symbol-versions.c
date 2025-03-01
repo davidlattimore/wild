@@ -40,3 +40,7 @@ void bar_local(void) {
 void bar_v2(void) {
     exit_syscall(42);
 }
+
+void bar_v2_1(void) {
+    exit_syscall(42);
+}
