@@ -8,9 +8,9 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
-linker-layout = { path = "../linker-layout" }
-linker-trace = { path = "../linker-trace" }
-linker-utils = { path = "../linker-utils" }
+linker-layout = { path = "../linker-layout", version = "0.4.0" }
+linker-trace = { path = "../linker-trace", version = "0.4.0" }
+linker-utils = { path = "../linker-utils", version = "0.4.0" }
 object = { version = "0.36.7", default-features = false, features = [
     "elf",
     "read_core",

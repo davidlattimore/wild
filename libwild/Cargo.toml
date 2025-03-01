@@ -15,9 +15,9 @@ bytemuck = { version = "1.21.0", features = ["derive"] }
 crossbeam-queue = "0.3.12"
 crossbeam-utils = "0.8.21"
 libc = "0.2"
-linker-layout = { path = "../linker-layout" }
-linker-trace = { path = "../linker-trace" }
-linker-utils = { path = "../linker-utils" }
+linker-layout = { path = "../linker-layout", version = "0.4.0" }
+linker-trace = { path = "../linker-trace", version = "0.4.0" }
+linker-utils = { path = "../linker-utils", version = "0.4.0" }
 memchr = "2.7.4"
 memmap2 = "0.9.5"
 object = { version = "0.36.7", default-features = false, features = [
