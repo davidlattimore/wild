@@ -169,7 +169,7 @@ impl<'data> VersionScript<'data> {
     }
 
     // TODO: Surely not u64
-    pub(crate) fn version_count(&self) -> u64 {
+    pub(crate) fn version_count(&self) -> u16 {
         let inner = if let Some(inner) = &self.inner {
             inner
         } else {
@@ -177,10 +177,10 @@ impl<'data> VersionScript<'data> {
         };
         match inner {
             AnonymousOrVersioned::Anonymous(_) => 0,
-            AnonymousOrVersioned::Versioned(versions) => versions.len() as u64 + 1,
+            AnonymousOrVersioned::Versioned(versions) => versions.len() as u16 + 1,
         }
     }
-    pub(crate) fn parent_count(&self) -> u64 {
+    pub(crate) fn parent_count(&self) -> u16 {
         let inner = if let Some(inner) = &self.inner {
             inner
         } else {
@@ -191,7 +191,7 @@ impl<'data> VersionScript<'data> {
             AnonymousOrVersioned::Versioned(versions) => versions
                 .iter()
                 .filter(|(_, _, parent)| parent.is_some())
-                .count() as u64,
+                .count() as u16,
         }
     }
     pub(crate) fn version_iter(

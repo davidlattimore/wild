@@ -2923,7 +2923,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
                 .mem_size
                 > 0
         },
-        |inputs| inputs.non_addressable_counts.verdef_count,
+        |inputs| inputs.non_addressable_counts.verdef_count.into(),
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_VERNEED,
