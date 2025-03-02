@@ -3216,19 +3216,12 @@ impl<'data> EpilogueLayoutState<'data> {
         // If we got only the base version, skip verdefs
         let verdef_entries = symbol_db.version_script.version_count();
         if verdef_entries > 1 {
-            let base_name = symbol_db.args.soname.as_ref().map_or_else(
-                || {
-                    symbol_db
-                        .args
-                        .output
-                        .file_name()
-                        .unwrap_or_default()
-                        .as_encoded_bytes()
-                },
-                |s| s.as_bytes(),
-            );
-
-            common.allocate(part_id::DYNSTR, base_name.len() as u64 + 1);
+            // TODO: I don't like having to keep in sync in two places (three if you count elf_writer.rs)
+            // If soname is not provided, allocate space for file name as the base version
+            if symbol_db.args.soname.is_none() {
+                let file_name_length = symbol_db.args.output.file_name().unwrap().len();
+                common.allocate(part_id::DYNSTR, file_name_length as u64 + 1);
+            }
 
             let dependencies_count = symbol_db.version_script.parent_count();
             common.allocate(
@@ -3323,21 +3316,17 @@ impl<'data> EpilogueLayoutState<'data> {
         if let Some(verdef_info) = &self.verdef_info {
             verdefs.reserve(verdef_info.version_count.into());
 
-            // TODO: this is a lazy hack, do it right
-            // If soname is provided, this will needlessly allocate it again in .dynstr.
-            // LD and LLD can skip second allocation.
-            let base_name = resources.symbol_db.args.soname.as_ref().map_or_else(
-                || {
-                    resources
-                        .symbol_db
-                        .args
-                        .output
-                        .file_name()
-                        .unwrap_or_default()
-                        .as_encoded_bytes()
-                },
-                |s| s.as_bytes(),
-            );
+            let base_name = if resources.symbol_db.args.soname.is_some() {
+                &[]
+            } else {
+                resources
+                    .symbol_db
+                    .args
+                    .output
+                    .file_name()
+                    .unwrap()
+                    .as_encoded_bytes()
+            };
 
             // Base version
             verdefs.push(VersionDef {

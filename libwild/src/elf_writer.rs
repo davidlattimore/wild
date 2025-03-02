@@ -2398,7 +2398,12 @@ impl PreludeLayout {
     }
 }
 
-fn write_verdef(verdefs: &[VersionDef], table_writer: &mut TableWriter) -> Result {
+fn write_verdef(
+    verdefs: &[VersionDef],
+    table_writer: &mut TableWriter,
+    soname: Option<&[u8]>,
+    soname_offset: Option<u32>,
+) -> Result {
     let e = LittleEndian;
 
     // TODO: Maybe we can do better here?
@@ -2406,6 +2411,19 @@ fn write_verdef(verdefs: &[VersionDef], table_writer: &mut TableWriter) -> Resul
 
     for (i, verdef) in verdefs.iter().enumerate() {
         let verdef_out = table_writer.version_writer.take_verdef()?;
+        // Base version may use (already allocated)
+        let (name, name_offset) = match (soname, soname_offset) {
+            (Some(soname), Some(offset)) if i == 0 => (soname, offset),
+            _ => {
+                let offset = *strings.entry(&verdef.name).or_insert_with(|| {
+                    table_writer
+                        .dynsym_writer
+                        .strtab_writer
+                        .write_str(&verdef.name)
+                });
+                (verdef.name.as_slice(), offset)
+            }
+        };
 
         verdef_out.vd_version.set(e, object::elf::VER_DEF_CURRENT);
         verdef_out.vd_flags.set(
@@ -2419,7 +2437,7 @@ fn write_verdef(verdefs: &[VersionDef], table_writer: &mut TableWriter) -> Resul
         verdef_out.vd_ndx.set(e, verdef.index);
         let aux_count = if verdef.parent_name.is_some() { 2 } else { 1 };
         verdef_out.vd_cnt.set(e, aux_count);
-        verdef_out.vd_hash.set(e, object::elf::hash(&verdef.name));
+        verdef_out.vd_hash.set(e, object::elf::hash(name));
         verdef_out
             .vd_aux
             .set(e, size_of::<crate::elf::Verdef>() as u32);
@@ -2430,13 +2448,6 @@ fn write_verdef(verdefs: &[VersionDef], table_writer: &mut TableWriter) -> Resul
                 + size_of::<crate::elf::Verdaux>() * aux_count as usize) as u32
         };
         verdef_out.vd_next.set(e, next_verdef_offset);
-
-        let name_offset = *strings.entry(&verdef.name).or_insert_with(|| {
-            table_writer
-                .dynsym_writer
-                .strtab_writer
-                .write_str(&verdef.name)
-        });
 
         let verdaux = table_writer.version_writer.take_verdaux()?;
         verdaux.vda_name.set(e, name_offset);
@@ -2463,7 +2474,12 @@ fn write_verdef(verdefs: &[VersionDef], table_writer: &mut TableWriter) -> Resul
     Ok(())
 }
 
-fn write_epilogue_dynamic_entries(layout: &Layout, table_writer: &mut TableWriter) -> Result {
+fn write_epilogue_dynamic_entries(
+    layout: &Layout,
+    table_writer: &mut TableWriter,
+    // TODO: Do it better?
+    soname_offset: &mut Option<u32>,
+) -> Result {
     for rpath in &layout.args().rpaths {
         let offset = table_writer
             .dynsym_writer
@@ -2481,6 +2497,7 @@ fn write_epilogue_dynamic_entries(layout: &Layout, table_writer: &mut TableWrite
         table_writer
             .dynamic
             .write(object::elf::DT_SONAME, offset.into())?;
+        soname_offset.replace(offset);
     }
 
     let inputs = DynamicEntryInputs {
@@ -2514,8 +2531,9 @@ impl EpilogueLayout<'_> {
                 &mut table_writer.debug_symbol_writer,
             )?;
         }
+        let mut soname_offset = None;
         if layout.args().needs_dynamic() {
-            write_epilogue_dynamic_entries(layout, table_writer)?;
+            write_epilogue_dynamic_entries(layout, table_writer, &mut soname_offset)?;
         }
         write_gnu_hash_tables(self, buffers)?;
 
@@ -2526,7 +2544,12 @@ impl EpilogueLayout<'_> {
         }
 
         if !self.verdefs.is_empty() {
-            write_verdef(&self.verdefs, table_writer)?;
+            write_verdef(
+                &self.verdefs,
+                table_writer,
+                layout.args().soname.as_ref().map(|s| s.as_bytes()),
+                soname_offset,
+            )?;
         }
 
         Ok(())
