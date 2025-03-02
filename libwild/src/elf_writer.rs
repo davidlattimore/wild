@@ -2401,7 +2401,7 @@ impl PreludeLayout {
 fn write_verdef(verdefs: &[VersionDef], table_writer: &mut TableWriter) -> Result {
     let e = LittleEndian;
 
-    // TODO: Maybe we do better here?
+    // TODO: Maybe we can do better here?
     let mut strings = AHashMap::new();
 
     for (i, verdef) in verdefs.iter().enumerate() {
