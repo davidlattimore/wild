@@ -49,8 +49,6 @@ use crate::resolution::SectionSlot;
 use crate::resolution::UnloadedSection;
 use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
-use crate::storage::StorageModel;
-use crate::storage::SymbolNameMap as _;
 use crate::string_merging::MergedStringStartAddresses;
 use crate::string_merging::MergedStringsSection;
 use crate::string_merging::get_merged_string_output_address;
@@ -110,11 +108,11 @@ use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 
 #[tracing::instrument(skip_all, name = "Layout")]
-pub fn compute<'data, 'symbol_db, S: StorageModel, A: Arch>(
-    symbol_db: &'symbol_db SymbolDb<'data, S>,
+pub fn compute<'data, 'symbol_db, A: Arch>(
+    symbol_db: &'symbol_db SymbolDb<'data>,
     resolved: ResolutionOutputs<'data>,
     output: &mut elf_writer::Output,
-) -> Result<Layout<'data, 'symbol_db, S>> {
+) -> Result<Layout<'data, 'symbol_db>> {
     let ResolutionOutputs {
         groups,
         mut output_sections,
@@ -124,7 +122,7 @@ pub fn compute<'data, 'symbol_db, S: StorageModel, A: Arch>(
 
     let symbol_resolution_flags = vec![AtomicResolutionFlags::empty(); symbol_db.num_symbols()];
 
-    let gc_outputs = find_required_sections::<S, A>(
+    let gc_outputs = find_required_sections::<A>(
         groups,
         symbol_db,
         &output_sections,
@@ -254,8 +252,8 @@ fn update_dynamic_symbol_resolutions(
 }
 
 #[tracing::instrument(skip_all, name = "Finalise per-object sizes")]
-fn finalise_all_sizes<'data, S: StorageModel>(
-    symbol_db: &SymbolDb<'data, S>,
+fn finalise_all_sizes<'data>(
+    symbol_db: &SymbolDb<'data>,
     output_sections: &OutputSections,
     group_states: &mut [GroupState<'data>],
     symbol_resolution_flags: &[AtomicResolutionFlags],
@@ -389,8 +387,8 @@ fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout
 
 /// Information about what goes where. Also includes relocation data, since that's computed at the
 /// same time.
-pub struct Layout<'data, 'symbol_db, S: StorageModel> {
-    pub(crate) symbol_db: &'symbol_db SymbolDb<'data, S>,
+pub struct Layout<'data, 'symbol_db> {
+    pub(crate) symbol_db: &'symbol_db SymbolDb<'data>,
     pub(crate) symbol_resolutions: SymbolResolutions,
     pub(crate) section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
     pub(crate) section_layouts: OutputSectionMap<OutputRecordLayout>,
@@ -584,11 +582,11 @@ trait HandlerData {
     fn file_id(&self) -> FileId;
 }
 
-trait SymbolRequestHandler<'data, S: StorageModel>: std::fmt::Display + HandlerData {
+trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
     fn finalise_symbol_sizes(
         &mut self,
         common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'data, S>,
+        symbol_db: &SymbolDb<'data>,
         symbol_resolution_flags: &[AtomicResolutionFlags],
     ) -> Result {
         let _file_span = symbol_db.args.trace_span_for_file(self.file_id());
@@ -657,14 +655,14 @@ trait SymbolRequestHandler<'data, S: StorageModel>: std::fmt::Display + HandlerD
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
-        resources: &GraphResources<'data, 'scope, S>,
+        resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result;
 
     fn allocate_copy_relocation(
         &mut self,
         _common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'data, S>,
+        symbol_db: &SymbolDb<'data>,
         symbol_id: SymbolId,
     ) -> Result {
         bail!(
@@ -674,10 +672,10 @@ trait SymbolRequestHandler<'data, S: StorageModel>: std::fmt::Display + HandlerD
     }
 }
 
-fn export_dynamic<'data, S: StorageModel>(
+fn export_dynamic<'data>(
     common: &mut CommonGroupState<'data>,
     symbol_id: SymbolId,
-    graph_resources: &GraphResources<'data, '_, S>,
+    graph_resources: &GraphResources<'data, '_>,
 ) -> Result {
     let name = graph_resources.symbol_db.symbol_name(symbol_id)?;
     common
@@ -780,12 +778,12 @@ impl HandlerData for ObjectLayoutState<'_> {
     }
 }
 
-impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for ObjectLayoutState<'data> {
+impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
     fn load_symbol<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
-        resources: &GraphResources<'data, 'scope, S>,
+        resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
         debug_assert_bail!(
@@ -829,12 +827,12 @@ impl HandlerData for DynamicLayoutState<'_> {
     }
 }
 
-impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for DynamicLayoutState<'data> {
+impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
     fn load_symbol<'scope, A: Arch>(
         &mut self,
         _common: &mut CommonGroupState,
         symbol_id: SymbolId,
-        _resources: &GraphResources<'data, 'scope, S>,
+        _resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
     ) -> Result {
         let local_index = symbol_id.to_offset(self.symbol_id_range());
@@ -857,7 +855,7 @@ impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for DynamicLayoutSta
     fn allocate_copy_relocation(
         &mut self,
         common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'data, S>,
+        symbol_db: &SymbolDb<'data>,
         symbol_id: SymbolId,
     ) -> Result {
         if symbol_db.args.output_kind() == OutputKind::SharedObject {
@@ -908,12 +906,12 @@ impl HandlerData for PreludeLayoutState {
     }
 }
 
-impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for PreludeLayoutState {
+impl<'data> SymbolRequestHandler<'data> for PreludeLayoutState {
     fn load_symbol<'scope, A: Arch>(
         &mut self,
         _common: &mut CommonGroupState,
         _symbol_id: SymbolId,
-        _resources: &GraphResources<'data, 'scope, S>,
+        _resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
     ) -> Result {
         Ok(())
@@ -930,12 +928,12 @@ impl HandlerData for EpilogueLayoutState<'_> {
     }
 }
 
-impl<'data, S: StorageModel> SymbolRequestHandler<'data, S> for EpilogueLayoutState<'data> {
+impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState<'data> {
     fn load_symbol<'scope, A: Arch>(
         &mut self,
         _common: &mut CommonGroupState,
         symbol_id: SymbolId,
-        resources: &GraphResources<'data, 'scope, S>,
+        resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
     ) -> Result {
         let def_info =
@@ -1238,8 +1236,8 @@ pub(crate) struct OutputRecordLayout {
     pub(crate) mem_offset: u64,
 }
 
-struct GraphResources<'data, 'scope, S: StorageModel> {
-    symbol_db: &'scope SymbolDb<'data, S>,
+struct GraphResources<'data, 'scope> {
+    symbol_db: &'scope SymbolDb<'data>,
 
     worker_slots: Vec<Mutex<WorkerSlot<'data>>>,
 
@@ -1276,8 +1274,8 @@ struct GraphResources<'data, 'scope, S: StorageModel> {
     start_stop_sections: OutputSectionMap<SegQueue<SectionLoadRequest>>,
 }
 
-struct FinaliseLayoutResources<'scope, 'data, S: StorageModel> {
-    symbol_db: &'scope SymbolDb<'data, S>,
+struct FinaliseLayoutResources<'scope, 'data> {
+    symbol_db: &'scope SymbolDb<'data>,
     symbol_resolution_flags: &'scope [ResolutionFlags],
     output_sections: &'scope OutputSections<'data>,
     section_layouts: &'scope OutputSectionMap<OutputRecordLayout>,
@@ -1314,7 +1312,7 @@ struct SectionLoadRequest {
 }
 
 impl WorkItem {
-    fn file_id<S: StorageModel>(self, symbol_db: &SymbolDb<S>) -> FileId {
+    fn file_id(self, symbol_db: &SymbolDb) -> FileId {
         match self {
             WorkItem::LoadGlobalSymbol(s) | WorkItem::ExportCopyRelocation(s) => {
                 symbol_db.file_id_for_symbol(s)
@@ -1325,7 +1323,7 @@ impl WorkItem {
     }
 }
 
-impl<'data, S: StorageModel> Layout<'data, '_, S> {
+impl<'data> Layout<'data, '_> {
     pub(crate) fn prelude(&self) -> &PreludeLayout {
         let Some(FileLayout::Prelude(i)) = self.group_layouts.first().and_then(|g| g.files.first())
         else {
@@ -1338,7 +1336,7 @@ impl<'data, S: StorageModel> Layout<'data, '_, S> {
         self.symbol_db.args
     }
 
-    pub(crate) fn symbol_debug(&self, symbol_id: SymbolId) -> SymbolDebug<'_, 'data, S> {
+    pub(crate) fn symbol_debug(&self, symbol_id: SymbolId) -> SymbolDebug<'_, 'data> {
         self.symbol_db.symbol_debug(symbol_id)
     }
 
@@ -1530,11 +1528,11 @@ fn compute_start_offsets_by_group(
 }
 
 #[tracing::instrument(skip_all, name = "Assign symbol addresses")]
-fn compute_symbols_and_layouts<'data, S: StorageModel>(
+fn compute_symbols_and_layouts<'data>(
     group_states: Vec<GroupState<'data>>,
     starting_mem_offsets_by_group: Vec<OutputSectionPartMap<u64>>,
     per_group_res_writers: &mut [sharded_vec_writer::Shard<Option<Resolution>>],
-    resources: &FinaliseLayoutResources<'_, 'data, S>,
+    resources: &FinaliseLayoutResources<'_, 'data>,
 ) -> Result<Vec<GroupLayout<'data>>> {
     group_states
         .into_par_iter()
@@ -1795,9 +1793,9 @@ struct GcOutputs<'data> {
 }
 
 #[tracing::instrument(skip_all, name = "Find required sections")]
-fn find_required_sections<'data, S: StorageModel, A: Arch>(
+fn find_required_sections<'data, A: Arch>(
     groups_in: Vec<resolution::ResolvedGroup<'data>>,
-    symbol_db: &SymbolDb<'data, S>,
+    symbol_db: &SymbolDb<'data>,
     output_sections: &OutputSections<'data>,
     symbol_resolution_flags: &[AtomicResolutionFlags],
     merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
@@ -1838,7 +1836,7 @@ fn find_required_sections<'data, S: StorageModel, A: Arch>(
         .try_for_each(|(i, mut group)| -> Result {
             let _span = tracing::debug_span!("find_required_sections", gid = i).entered();
             for file in &mut group.files {
-                activate::<S, A>(&mut group.common, file, &mut group.queue, resources_ref)
+                activate::<A>(&mut group.common, file, &mut group.queue, resources_ref)
                     .with_context(|| format!("Failed to activate {file}"))?;
             }
             let _ = resources_ref.waiting_workers.push(group);
@@ -1852,7 +1850,7 @@ fn find_required_sections<'data, S: StorageModel, A: Arch>(
                     let mut idle = false;
                     while !resources.done.load(atomic::Ordering::SeqCst) {
                         while let Some(worker) = resources.waiting_workers.pop() {
-                            worker.do_pending_work::<S, A>(resources_ref);
+                            worker.do_pending_work::<A>(resources_ref);
                         }
                         if idle {
                             // Wait until there's more work to do or until we shut down.
@@ -1913,10 +1911,10 @@ fn find_required_sections<'data, S: StorageModel, A: Arch>(
     })
 }
 
-fn create_worker_slots<'data, S: StorageModel>(
+fn create_worker_slots<'data>(
     groups_in: Vec<resolution::ResolvedGroup<'data>>,
     output_sections: &OutputSections<'data>,
-    symbol_db: &SymbolDb<'data, S>,
+    symbol_db: &SymbolDb<'data>,
     mut custom_start_stop_defs: Vec<InternalSymDefInfo>,
 ) -> (Vec<Mutex<WorkerSlot<'data>>>, Vec<GroupState<'data>>) {
     let mut worker_slots = Vec::with_capacity(groups_in.len());
@@ -1957,16 +1955,13 @@ fn unwrap_worker_states<'data>(
 impl<'data> GroupState<'data> {
     /// Does work until there's nothing left in the queue, then returns our worker to its slot and
     /// shuts down.
-    fn do_pending_work<'scope, S: StorageModel, A: Arch>(
-        mut self,
-        resources: &GraphResources<'data, 'scope, S>,
-    ) {
+    fn do_pending_work<'scope, A: Arch>(mut self, resources: &GraphResources<'data, 'scope>) {
         loop {
             while let Some(work_item) = self.queue.local_work.pop() {
                 let file_id = work_item.file_id(resources.symbol_db);
                 let file = &mut self.files[file_id.file()];
                 if let Err(error) =
-                    file.do_work::<S, A>(&mut self.common, work_item, resources, &mut self.queue)
+                    file.do_work::<A>(&mut self.common, work_item, resources, &mut self.queue)
                 {
                     resources.report_error(error);
                     return;
@@ -1983,9 +1978,9 @@ impl<'data> GroupState<'data> {
         }
     }
 
-    fn finalise_sizes<S: StorageModel>(
+    fn finalise_sizes(
         &mut self,
-        symbol_db: &SymbolDb<'data, S>,
+        symbol_db: &SymbolDb<'data>,
         output_sections: &OutputSections,
         symbol_resolution_flags: &[AtomicResolutionFlags],
     ) -> Result {
@@ -2001,11 +1996,11 @@ impl<'data> GroupState<'data> {
         Ok(())
     }
 
-    fn finalise_layout<S: StorageModel>(
+    fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution>>,
-        resources: &FinaliseLayoutResources<'_, 'data, S>,
+        resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<GroupLayout<'data>> {
         let eh_frame_start_address = *memory_offsets.get(part_id::EH_FRAME);
         let mut files = self
@@ -2040,9 +2035,9 @@ impl<'data> GroupState<'data> {
 /// contributes to .gnu.version_r. If we are, then finds the last dynamic object in the group that
 /// has verdef_info and lets it know that it's the last verneed. This is needed when we write so
 /// that we know whether to output the offset to the next verneed, or zero for the last record.
-fn set_last_verneed<S: StorageModel>(
+fn set_last_verneed(
     common: &CommonGroupState,
-    resources: &FinaliseLayoutResources<S>,
+    resources: &FinaliseLayoutResources,
     memory_offsets: &OutputSectionPartMap<u64>,
     files: &mut [FileLayout],
 ) {
@@ -2064,14 +2059,14 @@ fn set_last_verneed<S: StorageModel>(
     }
 }
 
-fn activate<'data, S: StorageModel, A: Arch>(
+fn activate<'data, A: Arch>(
     common: &mut CommonGroupState<'data>,
     file: &mut FileLayoutState<'data>,
     queue: &mut LocalWorkQueue,
-    resources: &GraphResources<'data, '_, S>,
+    resources: &GraphResources<'data, '_>,
 ) -> Result {
     match file {
-        FileLayoutState::Object(s) => s.activate::<S, A>(common, resources, queue)?,
+        FileLayoutState::Object(s) => s.activate::<A>(common, resources, queue)?,
         FileLayoutState::Prelude(s) => s.activate(common, resources, queue)?,
         FileLayoutState::Dynamic(s) => s.activate(common, resources, queue)?,
         FileLayoutState::NotLoaded(_) => {}
@@ -2081,12 +2076,7 @@ fn activate<'data, S: StorageModel, A: Arch>(
 }
 
 impl LocalWorkQueue {
-    fn send_work<S: StorageModel>(
-        &mut self,
-        resources: &GraphResources<S>,
-        file_id: FileId,
-        work: WorkItem,
-    ) {
+    fn send_work(&mut self, resources: &GraphResources, file_id: FileId, work: WorkItem) {
         if file_id.group() == self.index {
             self.local_work.push(work);
         } else {
@@ -2101,11 +2091,7 @@ impl LocalWorkQueue {
         }
     }
 
-    fn send_symbol_request<S: StorageModel>(
-        &mut self,
-        symbol_id: SymbolId,
-        resources: &GraphResources<S>,
-    ) {
+    fn send_symbol_request(&mut self, symbol_id: SymbolId, resources: &GraphResources) {
         debug_assert!(resources.symbol_db.is_canonical(symbol_id));
         let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
         self.send_work(
@@ -2115,11 +2101,7 @@ impl LocalWorkQueue {
         );
     }
 
-    fn send_copy_relocation_request<S: StorageModel>(
-        &mut self,
-        symbol_id: SymbolId,
-        resources: &GraphResources<S>,
-    ) {
+    fn send_copy_relocation_request(&mut self, symbol_id: SymbolId, resources: &GraphResources) {
         debug_assert!(resources.symbol_db.is_canonical(symbol_id));
         let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
         self.send_work(
@@ -2130,7 +2112,7 @@ impl LocalWorkQueue {
     }
 }
 
-impl<S: StorageModel> GraphResources<'_, '_, S> {
+impl GraphResources<'_, '_> {
     fn report_error(&self, error: Error) {
         self.errors.lock().unwrap().push(error);
     }
@@ -2171,10 +2153,10 @@ impl<S: StorageModel> GraphResources<'_, '_, S> {
 }
 
 impl<'data> FileLayoutState<'data> {
-    fn finalise_sizes<S: StorageModel>(
+    fn finalise_sizes(
         &mut self,
         common: &mut CommonGroupState<'data>,
-        symbol_db: &SymbolDb<'data, S>,
+        symbol_db: &SymbolDb<'data>,
         output_sections: &OutputSections,
         symbol_resolution_flags: &[AtomicResolutionFlags],
     ) -> Result {
@@ -2200,16 +2182,16 @@ impl<'data> FileLayoutState<'data> {
         Ok(())
     }
 
-    fn do_work<'scope, S: StorageModel, A: Arch>(
+    fn do_work<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         work_item: WorkItem,
-        resources: &GraphResources<'data, 'scope, S>,
+        resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
         match work_item {
             WorkItem::LoadGlobalSymbol(symbol_id) => self
-                .handle_symbol_request::<S, A>(common, symbol_id, resources, queue)
+                .handle_symbol_request::<A>(common, symbol_id, resources, queue)
                 .with_context(|| {
                     format!(
                         "Failed to load {} from {self}",
@@ -2227,7 +2209,7 @@ impl<'data> FileLayoutState<'data> {
             },
             WorkItem::LoadSection(request) => match self {
                 FileLayoutState::Object(object_layout_state) => object_layout_state
-                    .handle_section_load_request::<S, A>(
+                    .handle_section_load_request::<A>(
                         common,
                         resources,
                         queue,
@@ -2237,7 +2219,7 @@ impl<'data> FileLayoutState<'data> {
             },
             WorkItem::ExportDynamic(symbol_id) => match self {
                 FileLayoutState::Object(object) => {
-                    object.export_dynamic::<S, A>(common, symbol_id, resources, queue)
+                    object.export_dynamic::<A>(common, symbol_id, resources, queue)
                 }
                 _ => {
                     // Non-loaded and dynamic objects don't do anything in response to a request to
@@ -2248,11 +2230,11 @@ impl<'data> FileLayoutState<'data> {
         }
     }
 
-    fn handle_symbol_request<'scope, S: StorageModel, A: Arch>(
+    fn handle_symbol_request<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
-        resources: &GraphResources<'data, 'scope, S>,
+        resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
         match self {
@@ -2273,11 +2255,11 @@ impl<'data> FileLayoutState<'data> {
         Ok(())
     }
 
-    fn finalise_layout<S: StorageModel>(
+    fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution>>,
-        resources: &FinaliseLayoutResources<'_, 'data, S>,
+        resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<FileLayout<'data>> {
         let resolutions_out = &mut ResolutionWriter { resolutions_out };
         let file_layout = match self {
@@ -2478,12 +2460,12 @@ impl Section {
     }
 }
 
-fn process_relocation<S: StorageModel, A: Arch>(
+fn process_relocation<A: Arch>(
     object: &mut ObjectLayoutState,
     common: &mut CommonGroupState,
     rel: &Rela64<LittleEndian>,
     section: &object::elf::SectionHeader64<LittleEndian>,
-    resources: &GraphResources<S>,
+    resources: &GraphResources,
     queue: &mut LocalWorkQueue,
 ) -> Result<RelocationModifier> {
     let args = resources.symbol_db.args;
@@ -2644,10 +2626,10 @@ impl PreludeLayoutState {
         }
     }
 
-    fn activate<S: StorageModel>(
+    fn activate(
         &mut self,
         common: &mut CommonGroupState,
-        resources: &GraphResources<S>,
+        resources: &GraphResources,
         queue: &mut LocalWorkQueue,
     ) -> Result {
         resources.merged_strings.for_each(|section_id, merged| {
@@ -2699,14 +2681,13 @@ impl PreludeLayoutState {
         Ok(())
     }
 
-    fn load_entry_point<S: StorageModel>(
+    fn load_entry_point(
         &mut self,
-        resources: &GraphResources<S>,
+        resources: &GraphResources,
         queue: &mut LocalWorkQueue,
     ) -> Result {
         let symbol_id = resources
             .symbol_db
-            .global_names
             .get_unversioned(&UnversionedSymbolName::prehashed(b"_start"))
             .context("Missing _start symbol")?;
         self.entry_symbol_id = Some(symbol_id);
@@ -2737,10 +2718,10 @@ impl PreludeLayoutState {
         }
     }
 
-    fn finalise_sizes<S: StorageModel>(
+    fn finalise_sizes(
         &self,
         common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'_, S>,
+        symbol_db: &SymbolDb<'_>,
         symbol_resolution_flags: &[AtomicResolutionFlags],
     ) -> Result {
         if !symbol_db.args.strip_all {
@@ -2868,11 +2849,11 @@ impl PreludeLayoutState {
         self.header_info = Some(header_info);
     }
 
-    fn finalise_layout<S: StorageModel>(
+    fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
-        resources: &FinaliseLayoutResources<S>,
+        resources: &FinaliseLayoutResources,
     ) -> Result<PreludeLayout> {
         let header_layout = resources
             .section_layouts
@@ -2921,10 +2902,10 @@ impl PreludeLayoutState {
 }
 
 impl InternalSymbols {
-    fn allocate_symbol_table_sizes<S: StorageModel>(
+    fn allocate_symbol_table_sizes(
         &self,
         common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'_, S>,
+        symbol_db: &SymbolDb<'_>,
         symbol_resolution_flags: &[AtomicResolutionFlags],
     ) -> Result {
         // Allocate space in the symbol table for the symbols that we define.
@@ -2948,11 +2929,11 @@ impl InternalSymbols {
         Ok(())
     }
 
-    fn finalise_layout<S: StorageModel>(
+    fn finalise_layout(
         &self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
-        resources: &FinaliseLayoutResources<S>,
+        resources: &FinaliseLayoutResources,
     ) -> Result {
         // Define symbols that are optionally put at the start/end of some sections.
         let emitter = create_global_address_emitter(resources.symbol_resolution_flags);
@@ -2973,9 +2954,9 @@ impl InternalSymbols {
     }
 }
 
-fn create_start_end_symbol_resolution<S: StorageModel>(
+fn create_start_end_symbol_resolution(
     memory_offsets: &mut OutputSectionPartMap<u64>,
-    resources: &FinaliseLayoutResources<'_, '_, S>,
+    resources: &FinaliseLayoutResources<'_, '_>,
     emitter: &GlobalAddressEmitter<'_>,
     def_info: InternalSymDefInfo,
     symbol_id: SymbolId,
@@ -3026,10 +3007,10 @@ fn is_symbol_undefined(
 }
 
 impl<'data> EpilogueLayoutState<'data> {
-    fn activate<S: StorageModel>(
+    fn activate(
         &mut self,
         _common: &mut CommonGroupState,
-        resources: &GraphResources<S>,
+        resources: &GraphResources,
         _queue: &mut LocalWorkQueue,
     ) {
         self.build_id_size = match &resources.symbol_db.args.build_id {
@@ -3075,10 +3056,10 @@ impl<'data> EpilogueLayoutState<'data> {
         Some((size_of::<NoteHeader>() + GNU_NOTE_NAME.len() + self.build_id_size?) as u64)
     }
 
-    fn finalise_sizes<S: StorageModel>(
+    fn finalise_sizes(
         &mut self,
         common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'data, S>,
+        symbol_db: &SymbolDb<'data>,
         symbol_resolution_flags: &[AtomicResolutionFlags],
     ) -> Result {
         if !symbol_db.args.strip_all {
@@ -3160,11 +3141,11 @@ impl<'data> EpilogueLayoutState<'data> {
         self.gnu_hash_layout = Some(gnu_hash_layout);
     }
 
-    fn finalise_layout<S: StorageModel>(
+    fn finalise_layout(
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
-        resources: &FinaliseLayoutResources<'_, 'data, S>,
+        resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<EpilogueLayout<'data>> {
         self.internal_symbols
             .finalise_layout(memory_offsets, resolutions_out, resources)?;
@@ -3260,10 +3241,10 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
 }
 
 impl<'data> ObjectLayoutState<'data> {
-    fn activate<'scope, S: StorageModel, A: Arch>(
+    fn activate<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
-        resources: &GraphResources<'data, 'scope, S>,
+        resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
         let mut eh_frame_section = None;
@@ -3310,7 +3291,7 @@ impl<'data> ObjectLayoutState<'data> {
         }
 
         if let Some(eh_frame_section_index) = eh_frame_section {
-            process_eh_frame_data::<S, A>(
+            process_eh_frame_data::<A>(
                 self,
                 common,
                 self.symbol_id_range(),
@@ -3326,22 +3307,22 @@ impl<'data> ObjectLayoutState<'data> {
         }
 
         if resources.symbol_db.args.output_kind() == OutputKind::SharedObject {
-            self.load_non_hidden_symbols::<S, A>(common, resources, queue)?;
+            self.load_non_hidden_symbols::<A>(common, resources, queue)?;
         }
 
         Ok(())
     }
 
-    fn handle_section_load_request<'scope, S: StorageModel, A: Arch>(
+    fn handle_section_load_request<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
-        resources: &GraphResources<'data, 'scope, S>,
+        resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
         section_index: SectionIndex,
     ) -> Result<(), Error> {
         match &self.sections[section_index.0] {
             SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => {
-                self.load_section::<S, A>(common, queue, *unloaded, section_index, resources)?;
+                self.load_section::<A>(common, queue, *unloaded, section_index, resources)?;
             }
             SectionSlot::UnloadedDebugInfo(part_id) => {
                 self.load_debug_section(common, *part_id, section_index)?;
@@ -3365,13 +3346,13 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_section<'scope, S: StorageModel, A: Arch>(
+    fn load_section<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
         unloaded: UnloadedSection,
         section_id: SectionIndex,
-        resources: &GraphResources<'data, 'scope, S>,
+        resources: &GraphResources<'data, 'scope>,
     ) -> Result {
         let part_id = unloaded.part_id;
         let section = Section::create(self, section_id, part_id)?;
@@ -3381,7 +3362,7 @@ impl<'data> ObjectLayoutState<'data> {
                 modifier = RelocationModifier::Normal;
                 continue;
             }
-            modifier = process_relocation::<S, A>(
+            modifier = process_relocation::<A>(
                 self,
                 common,
                 rel,
@@ -3398,7 +3379,7 @@ impl<'data> ObjectLayoutState<'data> {
             .get(part_id.output_section_id())
             .fetch_or(true, atomic::Ordering::Relaxed);
 
-        self.process_section_exception_frames::<S, A>(
+        self.process_section_exception_frames::<A>(
             unloaded.last_frame_index,
             common,
             resources,
@@ -3411,11 +3392,11 @@ impl<'data> ObjectLayoutState<'data> {
     }
 
     /// Processes the exception frames for a section that we're loading.
-    fn process_section_exception_frames<S: StorageModel, A: Arch>(
+    fn process_section_exception_frames<A: Arch>(
         &mut self,
         frame_index: Option<FrameIndex>,
         common: &mut CommonGroupState<'data>,
-        resources: &GraphResources<'data, '_, S>,
+        resources: &GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
         let mut num_frames = 0;
@@ -3434,14 +3415,7 @@ impl<'data> ObjectLayoutState<'data> {
             // section.
             if let Some(eh_frame_section) = self.eh_frame_section {
                 for rel in frame_data_relocations {
-                    process_relocation::<S, A>(
-                        self,
-                        common,
-                        rel,
-                        eh_frame_section,
-                        resources,
-                        queue,
-                    )?;
+                    process_relocation::<A>(self, common, rel, eh_frame_section, resources, queue)?;
                 }
             }
         }
@@ -3470,10 +3444,10 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn finalise_sizes<S: StorageModel>(
+    fn finalise_sizes(
         &mut self,
         common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'data, S>,
+        symbol_db: &SymbolDb<'data>,
         output_sections: &OutputSections,
         symbol_resolution_flags: &[AtomicResolutionFlags],
     ) {
@@ -3500,10 +3474,10 @@ impl<'data> ObjectLayoutState<'data> {
         common.allocate(part_id::EH_FRAME, self.eh_frame_size);
     }
 
-    fn allocate_symtab_space<S: StorageModel>(
+    fn allocate_symtab_space(
         &self,
         common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'data, S>,
+        symbol_db: &SymbolDb<'data>,
         symbol_resolution_flags: &[AtomicResolutionFlags],
     ) {
         let _file_span = symbol_db.args.trace_span_for_file(self.file_id());
@@ -3544,11 +3518,11 @@ impl<'data> ObjectLayoutState<'data> {
         common.allocate(part_id::STRTAB, strings_size as u64);
     }
 
-    fn finalise_layout<S: StorageModel>(
+    fn finalise_layout(
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
-        resources: &FinaliseLayoutResources<'_, 'data, S>,
+        resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<ObjectLayout<'data>> {
         let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
@@ -3613,9 +3587,9 @@ impl<'data> ObjectLayoutState<'data> {
         })
     }
 
-    fn finalise_symbol<'scope, S: StorageModel>(
+    fn finalise_symbol<'scope>(
         &self,
-        resources: &FinaliseLayoutResources<'scope, 'data, S>,
+        resources: &FinaliseLayoutResources<'scope, 'data>,
         resolution_flags: ResolutionFlags,
         local_symbol: &object::elf::Sym64<LittleEndian>,
         local_symbol_index: object::SymbolIndex,
@@ -3637,9 +3611,9 @@ impl<'data> ObjectLayoutState<'data> {
         resolutions_out.write(resolution)
     }
 
-    fn create_symbol_resolution<'scope, S: StorageModel>(
+    fn create_symbol_resolution<'scope>(
         &self,
-        resources: &FinaliseLayoutResources<'scope, 'data, S>,
+        resources: &FinaliseLayoutResources<'scope, 'data>,
         resolution_flags: ResolutionFlags,
         local_symbol: &object::elf::Sym64<LittleEndian>,
         local_symbol_index: object::SymbolIndex,
@@ -3720,10 +3694,10 @@ impl<'data> ObjectLayoutState<'data> {
         )))
     }
 
-    fn load_non_hidden_symbols<'scope, S: StorageModel, A: Arch>(
+    fn load_non_hidden_symbols<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
-        resources: &GraphResources<'data, 'scope, S>,
+        resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
         for (sym_index, sym) in self.object.symbols.enumerate() {
@@ -3755,11 +3729,11 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn export_dynamic<'scope, S: StorageModel, A: Arch>(
+    fn export_dynamic<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
-        resources: &GraphResources<'data, 'scope, S>,
+        resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
         let old_flags = resources.symbol_resolution_flags[symbol_id.as_usize()]
@@ -3785,12 +3759,12 @@ impl<'data> SymbolCopyInfo<'data> {
     /// The primary purpose of this function is to determine whether a symbol should be copied into
     /// the symtab. In the process, we also return the name of the symbol, to avoid needing to read
     /// it again.
-    pub(crate) fn new<S: StorageModel>(
+    pub(crate) fn new(
         object: &crate::elf::File<'data>,
         sym_index: object::SymbolIndex,
         sym: &crate::elf::Symbol,
         symbol_id: SymbolId,
-        symbol_db: &SymbolDb<'data, S>,
+        symbol_db: &SymbolDb<'data>,
         symbol_state: ResolutionFlags,
         sections: &[SectionSlot],
     ) -> Option<SymbolCopyInfo<'data>> {
@@ -3833,12 +3807,12 @@ pub(crate) fn can_export_symbol(sym: &crate::elf::SymtabEntry) -> bool {
         && (visibility == object::elf::STV_DEFAULT || visibility == object::elf::STV_PROTECTED)
 }
 
-fn process_eh_frame_data<'data, S: StorageModel, A: Arch>(
+fn process_eh_frame_data<'data, A: Arch>(
     object: &mut ObjectLayoutState<'data>,
     common: &mut CommonGroupState<'data>,
     file_symbol_id_range: SymbolIdRange,
     eh_frame_section_index: object::SectionIndex,
-    resources: &GraphResources<S>,
+    resources: &GraphResources,
     queue: &mut LocalWorkQueue,
 ) -> Result {
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
@@ -3876,14 +3850,7 @@ fn process_eh_frame_data<'data, S: StorageModel, A: Arch>(
                 }
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                process_relocation::<S, A>(
-                    object,
-                    common,
-                    rel,
-                    eh_frame_section,
-                    resources,
-                    queue,
-                )?;
+                process_relocation::<A>(object, common, rel, eh_frame_section, resources, queue)?;
                 if let Some(local_sym_index) = rel.symbol(e, false) {
                     let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);
                     let definition = resources.symbol_db.definition(local_symbol_id);
@@ -4283,10 +4250,10 @@ fn layout_section_parts(
 }
 
 impl<'data> DynamicLayoutState<'data> {
-    fn activate<S: StorageModel>(
+    fn activate(
         &mut self,
         common: &mut CommonGroupState<'data>,
-        resources: &GraphResources<'data, '_, S>,
+        resources: &GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
         let dt_info = DynamicTagValues::read(self.object)?;
@@ -4308,9 +4275,9 @@ impl<'data> DynamicLayoutState<'data> {
         Ok(())
     }
 
-    fn request_all_undefined_symbols<S: StorageModel>(
+    fn request_all_undefined_symbols(
         &self,
-        resources: &GraphResources<'data, '_, S>,
+        resources: &GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
     ) {
         for symbol_id in self.symbol_id_range() {
@@ -4405,11 +4372,11 @@ impl<'data> DynamicLayoutState<'data> {
         Ok(())
     }
 
-    fn finalise_layout<S: StorageModel>(
+    fn finalise_layout(
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
-        resources: &FinaliseLayoutResources<'_, 'data, S>,
+        resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result<DynamicLayout<'data>> {
         let version_mapping = self.compute_version_mapping();
 
@@ -4555,7 +4522,7 @@ fn take_dynsym_index(
     Ok(index)
 }
 
-impl<S: StorageModel> Layout<'_, '_, S> {
+impl Layout<'_, '_> {
     pub(crate) fn mem_address_of_built_in(&self, section_id: OutputSectionId) -> u64 {
         self.section_layouts.get(section_id).mem_offset
     }
@@ -4573,15 +4540,13 @@ impl std::fmt::Debug for FileLayoutState<'_> {
     }
 }
 
-fn print_symbol_info<S: StorageModel>(
-    symbol_db: &SymbolDb<S>,
+fn print_symbol_info(
+    symbol_db: &SymbolDb,
     name: &str,
     resolution_flags: &[AtomicResolutionFlags],
     groups: &[GroupState],
 ) {
-    let symbol_id = symbol_db
-        .global_names
-        .get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()));
+    let symbol_id = symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()));
     println!("Global name `{name}` refers to: {symbol_id:?}",);
 
     println!("Definitions / references with name `{name}`:");

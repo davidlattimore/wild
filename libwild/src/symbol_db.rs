@@ -5,6 +5,7 @@ use crate::args::Args;
 use crate::args::OutputKind;
 use crate::error::Result;
 use crate::grouping::Group;
+use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
@@ -17,8 +18,7 @@ use crate::parsing::ParsedInput;
 use crate::parsing::Prelude;
 use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
-use crate::storage::StorageModel;
-use crate::storage::SymbolNameMap;
+use crate::symbol::PreHashedSymbolName;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol::VersionedSymbolName;
 use ahash::HashMap;
@@ -35,7 +35,7 @@ use std::fmt::Display;
 use std::mem::replace;
 use std::mem::take;
 
-pub struct SymbolDb<'data, S: StorageModel> {
+pub struct SymbolDb<'data> {
     pub(crate) args: &'data Args,
 
     pub(crate) groups: &'data [Group<'data>],
@@ -44,7 +44,8 @@ pub struct SymbolDb<'data, S: StorageModel> {
     /// globals with the same name, then this will point to the one we encountered first, which may
     /// not be the selected definition. In order to find the selected definition, you still need to
     /// look a `symbol_definitions`.
-    pub(crate) global_names: S::SymbolNameMap<'data>,
+    name_to_id: PassThroughHashMap<UnversionedSymbolName<'data>, SymbolId>,
+    versioned_name_to_id: PassThroughHashMap<VersionedSymbolName<'data>, SymbolId>,
 
     /// Which file each symbol ID belongs to. Indexes past the end are assumed to be for custom
     /// section start/stop symbols.
@@ -229,7 +230,7 @@ struct SymbolLoadOutputs<'data> {
     pending_versioned_symbols: Vec<PendingVersionedSymbol<'data>>,
 }
 
-impl<'data, S: StorageModel> SymbolDb<'data, S> {
+impl<'data> SymbolDb<'data> {
     #[tracing::instrument(skip_all, name = "Build symbol DB")]
     pub fn build(
         groups: &'data [Group],
@@ -282,7 +283,8 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
         let epilogue_file_id = groups.last().unwrap().files.last().unwrap().file_id();
         let mut index = SymbolDb {
             args,
-            global_names: S::SymbolNameMap::empty(),
+            name_to_id: Default::default(),
+            versioned_name_to_id: Default::default(),
             alternative_definitions: vec![SymbolId::undefined(); num_symbols],
             alternative_versioned_definitions: HashMap::with_hasher(RandomState::new()),
             symbols_with_alternatives: Vec::new(),
@@ -307,7 +309,7 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
             .iter()
             .map(|s| s.pending_symbols.len())
             .sum();
-        self.global_names.reserve(approx_num_symbols);
+        self.name_to_id.reserve(approx_num_symbols);
 
         for pending in symbol_per_file {
             for symbol in pending.pending_symbols {
@@ -323,7 +325,7 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
     }
 
     fn add_symbol(&mut self, pending: PendingSymbol<'data>) {
-        match self.global_names.entry(pending.name) {
+        match self.name_to_id.entry(pending.name) {
             hash_map::Entry::Occupied(entry) => {
                 let first_symbol_id = *entry.get();
                 self.add_extra_symbol_definition(first_symbol_id, pending.symbol_id);
@@ -335,7 +337,7 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
     }
 
     fn add_versioned_symbol(&mut self, pending: PendingVersionedSymbol<'data>) {
-        match self.global_names.versioned_entry(pending.name) {
+        match self.versioned_name_to_id.entry(pending.name) {
             hash_map::Entry::Occupied(entry) => {
                 let first_symbol_id = *entry.get();
                 self.alternative_versioned_definitions
@@ -386,7 +388,7 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
     }
 
     /// Returns a struct that can be used to print debug information about the specified symbol.
-    pub(crate) fn symbol_debug(&self, symbol_id: SymbolId) -> SymbolDebug<'_, 'data, S> {
+    pub(crate) fn symbol_debug(&self, symbol_id: SymbolId) -> SymbolDebug<'_, 'data> {
         SymbolDebug {
             db: self,
             symbol_id,
@@ -478,6 +480,26 @@ impl<'data, S: StorageModel> SymbolDb<'data, S> {
             return false;
         };
         is_mapping_symbol_name(name.bytes())
+    }
+
+    pub(crate) fn get_unversioned(
+        &self,
+        prehashed: &PreHashed<UnversionedSymbolName>,
+    ) -> Option<SymbolId> {
+        self.name_to_id.get(prehashed).copied()
+    }
+
+    pub(crate) fn get(&self, key: &PreHashedSymbolName) -> Option<SymbolId> {
+        match key {
+            PreHashedSymbolName::Unversioned(key) => self.name_to_id.get(key).copied(),
+            PreHashedSymbolName::Versioned(key) => self.versioned_name_to_id.get(key).copied(),
+        }
+    }
+
+    pub(crate) fn all_unversioned_symbols(
+        &self,
+    ) -> impl Iterator<Item = (&PreHashed<UnversionedSymbolName>, &SymbolId)> {
+        self.name_to_id.iter()
     }
 }
 
@@ -836,12 +858,12 @@ impl<'data> SymbolLoader<'data> for DynamicObjectSymbolLoader<'_, 'data> {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct SymbolDebug<'db, 'data, S: StorageModel> {
-    db: &'db SymbolDb<'data, S>,
+pub(crate) struct SymbolDebug<'db, 'data> {
+    db: &'db SymbolDb<'data>,
     symbol_id: SymbolId,
 }
 
-impl<S: StorageModel> std::fmt::Display for SymbolDebug<'_, '_, S> {
+impl std::fmt::Display for SymbolDebug<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let symbol_id = self.symbol_id;
         let symbol_name = self

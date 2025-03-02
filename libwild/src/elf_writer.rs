@@ -57,7 +57,6 @@ use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
 use crate::slice::slice_take_prefix_mut;
 use crate::slice::take_first_mut;
-use crate::storage::StorageModel;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::SymbolDb;
 use ahash::AHashMap;
@@ -253,9 +252,9 @@ impl Output {
     }
 
     #[tracing::instrument(skip_all, name = "Write output file")]
-    pub fn write<'data, 'symbol_db, S: StorageModel, A: Arch>(
+    pub fn write<'data, 'symbol_db, A: Arch>(
         &mut self,
-        layout: &Layout<'data, 'symbol_db, S>,
+        layout: &Layout<'data, 'symbol_db>,
     ) -> Result<SizedOutput> {
         if layout.args().write_layout {
             write_layout(layout)?;
@@ -274,7 +273,7 @@ impl Output {
                 self.create_file_non_lazily(file_size)?
             }
         };
-        sized_output.write::<S, A>(layout)?;
+        sized_output.write::<A>(layout)?;
         sized_output.flush()?;
         // This triggers writing our .trace file if any. See output_trace module.
         tracing::trace!(output_write_complete = true);
@@ -319,8 +318,8 @@ impl SizedOutput {
         Ok(SizedOutput { file, out, path })
     }
 
-    pub(crate) fn write<S: StorageModel, A: Arch>(&mut self, layout: &Layout<S>) -> Result {
-        self.write_file_contents::<S, A>(layout)?;
+    pub(crate) fn write<A: Arch>(&mut self, layout: &Layout) -> Result {
+        self.write_file_contents::<A>(layout)?;
         if layout.args().validate_output {
             crate::validation::validate_bytes(layout, &self.out)?;
         }
@@ -334,10 +333,10 @@ impl SizedOutput {
         Ok(())
     }
 
-    fn write_gnu_build_id_note<S: StorageModel>(
+    fn write_gnu_build_id_note(
         &mut self,
         build_id_option: &BuildIdOption,
-        layout: &Layout<S>,
+        layout: &Layout,
     ) -> Result {
         let hash_placeholder;
         let uuid_placeholder;
@@ -393,9 +392,9 @@ impl SizedOutput {
     }
 
     #[tracing::instrument(skip_all, name = "Write data to file")]
-    pub(crate) fn write_file_contents<'data, 'symbol_db, S: StorageModel, A: Arch>(
+    pub(crate) fn write_file_contents<'data, 'symbol_db, A: Arch>(
         &mut self,
-        layout: &Layout<'data, 'symbol_db, S>,
+        layout: &Layout<'data, 'symbol_db>,
     ) -> Result {
         let mut section_buffers = split_output_into_sections(layout, &mut self.out);
 
@@ -413,7 +412,7 @@ impl SizedOutput {
                 );
 
                 for file in &group.files {
-                    file.write::<S, A>(&mut buffers, &mut table_writer, layout)
+                    file.write::<A>(&mut buffers, &mut table_writer, layout)
                         .with_context(|| format!("Failed copying from {file} to output file"))?;
                 }
                 table_writer
@@ -460,8 +459,8 @@ fn verify_allocations_message() -> String {
 }
 
 #[tracing::instrument(skip_all, name = "Split output buffers by group")]
-fn split_output_by_group<'layout, 'data, 'symbol_db, 'out, S: StorageModel>(
-    layout: &'layout Layout<'data, 'symbol_db, S>,
+fn split_output_by_group<'layout, 'data, 'symbol_db, 'out>(
+    layout: &'layout Layout<'data, 'symbol_db>,
     writable_buckets: &'out mut OutputSectionPartMap<&mut [u8]>,
 ) -> Vec<(
     &'layout GroupLayout<'data>,
@@ -474,8 +473,8 @@ fn split_output_by_group<'layout, 'data, 'symbol_db, 'out, S: StorageModel>(
         .collect()
 }
 
-fn split_output_into_sections<'out, S: StorageModel>(
-    layout: &Layout<S>,
+fn split_output_into_sections<'out>(
+    layout: &Layout,
     mut data: &'out mut [u8],
 ) -> OutputSectionMap<&'out mut [u8]> {
     let mut section_allocations = Vec::with_capacity(layout.section_layouts.len());
@@ -515,9 +514,9 @@ fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {
 }
 
 /// Splits the writable buffers for each segment further into separate buffers for each alignment.
-fn split_buffers_by_alignment<'out, S: StorageModel>(
+fn split_buffers_by_alignment<'out>(
     section_buffers: &'out mut OutputSectionMap<&mut [u8]>,
-    layout: &Layout<S>,
+    layout: &Layout,
 ) -> OutputSectionPartMap<&'out mut [u8]> {
     layout.section_part_layouts.output_order_map(
         &layout.output_sections,
@@ -530,10 +529,7 @@ fn split_buffers_by_alignment<'out, S: StorageModel>(
     )
 }
 
-fn write_program_headers<S: StorageModel>(
-    program_headers_out: &mut ProgramHeaderWriter,
-    layout: &Layout<S>,
-) -> Result {
+fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: &Layout) -> Result {
     for segment_layout in &layout.segment_layouts.segments {
         let segment_sizes = &segment_layout.sizes;
         let segment_id = segment_layout.id;
@@ -565,8 +561,8 @@ fn write_program_headers<S: StorageModel>(
     Ok(())
 }
 
-fn populate_file_header<S: StorageModel, A: Arch>(
-    layout: &Layout<S>,
+fn populate_file_header<A: Arch>(
+    layout: &Layout,
     header_info: &HeaderInfo,
     header: &mut FileHeader,
 ) -> Result {
@@ -614,18 +610,18 @@ fn populate_file_header<S: StorageModel, A: Arch>(
 }
 
 impl<'data> FileLayout<'data> {
-    fn write<'symbol_db, S: StorageModel, A: Arch>(
+    fn write<'symbol_db, A: Arch>(
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
-        layout: &Layout<'data, 'symbol_db, S>,
+        layout: &Layout<'data, 'symbol_db>,
     ) -> Result {
         match self {
-            FileLayout::Object(s) => s.write_file::<S, A>(buffers, table_writer, layout)?,
-            FileLayout::Prelude(s) => s.write_file::<S, A>(buffers, table_writer, layout)?,
-            FileLayout::Epilogue(s) => s.write_file::<S, A>(buffers, table_writer, layout)?,
+            FileLayout::Object(s) => s.write_file::<A>(buffers, table_writer, layout)?,
+            FileLayout::Prelude(s) => s.write_file::<A>(buffers, table_writer, layout)?,
+            FileLayout::Epilogue(s) => s.write_file::<A>(buffers, table_writer, layout)?,
             FileLayout::NotLoaded => {}
-            FileLayout::Dynamic(s) => s.write_file::<S, A>(table_writer, layout)?,
+            FileLayout::Dynamic(s) => s.write_file::<A>(table_writer, layout)?,
         }
         Ok(())
     }
@@ -714,8 +710,8 @@ struct TableWriter<'data, 'layout, 'out> {
 }
 
 impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
-    fn from_layout<'symbol_db, S: StorageModel>(
-        layout: &'layout Layout<'data, 'symbol_db, S>,
+    fn from_layout<'symbol_db>(
+        layout: &'layout Layout<'data, 'symbol_db>,
         dynstr_start_offset: u32,
         strtab_start_offset: u32,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
@@ -1316,24 +1312,24 @@ impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
 }
 
 impl<'data> ObjectLayout<'data> {
-    fn write_file<'symbol_db, S: StorageModel, A: Arch>(
+    fn write_file<'symbol_db, A: Arch>(
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
-        layout: &Layout<'data, 'symbol_db, S>,
+        layout: &Layout<'data, 'symbol_db>,
     ) -> Result {
         let _span = debug_span!("write_file", filename = %self.input).entered();
         let _file_span = layout.args().trace_span_for_file(self.file_id);
         for sec in &self.sections {
             match sec {
                 SectionSlot::Loaded(sec) => {
-                    self.write_section::<S, A>(layout, sec, buffers, table_writer)?;
+                    self.write_section::<A>(layout, sec, buffers, table_writer)?;
                 }
                 SectionSlot::LoadedDebugInfo(sec) => {
-                    self.write_debug_section::<S, A>(layout, sec, buffers)?;
+                    self.write_debug_section::<A>(layout, sec, buffers)?;
                 }
                 SectionSlot::EhFrameData(section_index) => {
-                    self.write_eh_frame_data::<S, A>(*section_index, layout, table_writer)?;
+                    self.write_eh_frame_data::<A>(*section_index, layout, table_writer)?;
                 }
                 _ => (),
             }
@@ -1374,15 +1370,15 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn write_section<'symbol_db, S: StorageModel, A: Arch>(
+    fn write_section<'symbol_db, A: Arch>(
         &self,
-        layout: &Layout<'data, 'symbol_db, S>,
+        layout: &Layout<'data, 'symbol_db>,
         sec: &Section,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
     ) -> Result {
         let out = self.write_section_raw(layout, sec, buffers)?;
-        self.apply_relocations::<S, A>(out, sec, layout, table_writer)
+        self.apply_relocations::<A>(out, sec, layout, table_writer)
             .with_context(|| {
                 format!(
                     "Failed to apply relocations in section `{}` of {}",
@@ -1398,14 +1394,14 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn write_debug_section<'symbol_db, S: StorageModel, A: Arch>(
+    fn write_debug_section<'symbol_db, A: Arch>(
         &self,
-        layout: &Layout<'data, 'symbol_db, S>,
+        layout: &Layout<'data, 'symbol_db>,
         sec: &Section,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
     ) -> Result {
         let out = self.write_section_raw(layout, sec, buffers)?;
-        self.apply_debug_relocations::<S, A>(out, sec, layout)
+        self.apply_debug_relocations::<A>(out, sec, layout)
             .with_context(|| {
                 format!(
                     "Failed to apply relocations in section `{}` of {}",
@@ -1416,9 +1412,9 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn write_section_raw<'symbol_db, 'out, S: StorageModel>(
+    fn write_section_raw<'symbol_db, 'out>(
         &self,
-        layout: &Layout<'data, 'symbol_db, S>,
+        layout: &Layout<'data, 'symbol_db>,
         sec: &Section,
         buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
     ) -> Result<&'out mut [u8]> {
@@ -1449,10 +1445,10 @@ impl<'data> ObjectLayout<'data> {
     }
 
     /// Writes debug symbols.
-    fn write_symbols<'symbol_db, S: StorageModel>(
+    fn write_symbols<'symbol_db>(
         &self,
         symbol_writer: &mut SymbolTableWriter,
-        layout: &Layout<'data, 'symbol_db, S>,
+        layout: &Layout<'data, 'symbol_db>,
     ) -> Result {
         for ((sym_index, sym), sym_state) in self
             .object
@@ -1515,11 +1511,11 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn apply_relocations<'symbol_db, S: StorageModel, A: Arch>(
+    fn apply_relocations<'symbol_db, A: Arch>(
         &self,
         out: &mut [u8],
         section: &Section,
-        layout: &Layout<'data, 'symbol_db, S>,
+        layout: &Layout<'data, 'symbol_db>,
         table_writer: &mut TableWriter,
     ) -> Result {
         let section_address = self.section_resolutions[section.index.0]
@@ -1540,7 +1536,7 @@ impl<'data> ObjectLayout<'data> {
                 continue;
             }
             let offset_in_section = rel.r_offset.get(LittleEndian);
-            modifier = apply_relocation::<S, A>(
+            modifier = apply_relocation::<A>(
                 self,
                 offset_in_section,
                 rel,
@@ -1556,18 +1552,18 @@ impl<'data> ObjectLayout<'data> {
             .with_context(|| {
                 format!(
                     "Failed to apply {} at offset 0x{offset_in_section:x}",
-                    self.display_relocation::<S, A>(rel, layout)
+                    self.display_relocation::<A>(rel, layout)
                 )
             })?;
         }
         Ok(())
     }
 
-    fn apply_debug_relocations<'symbol_db, S: StorageModel, A: Arch>(
+    fn apply_debug_relocations<'symbol_db, A: Arch>(
         &self,
         out: &mut [u8],
         section: &Section,
-        layout: &Layout<'data, 'symbol_db, S>,
+        layout: &Layout<'data, 'symbol_db>,
     ) -> Result {
         let object_section = self.object.section(section.index)?;
         let section_name = self.object.section_name(object_section)?;
@@ -1591,28 +1587,21 @@ impl<'data> ObjectLayout<'data> {
             .fetch_add(relocations.len() as u64, Relaxed);
         for rel in relocations {
             let offset_in_section = rel.r_offset.get(LittleEndian);
-            apply_debug_relocation::<S, A>(
-                self,
-                offset_in_section,
-                rel,
-                layout,
-                tombstone_value,
-                out,
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to apply {} at offset 0x{offset_in_section:x}",
-                    self.display_relocation::<S, A>(rel, layout)
-                )
-            })?;
+            apply_debug_relocation::<A>(self, offset_in_section, rel, layout, tombstone_value, out)
+                .with_context(|| {
+                    format!(
+                        "Failed to apply {} at offset 0x{offset_in_section:x}",
+                        self.display_relocation::<A>(rel, layout)
+                    )
+                })?;
         }
         Ok(())
     }
 
-    fn write_eh_frame_data<'symbol_db, S: StorageModel, A: Arch>(
+    fn write_eh_frame_data<'symbol_db, A: Arch>(
         &self,
         eh_frame_section_index: object::SectionIndex,
-        layout: &Layout<'data, 'symbol_db, S>,
+        layout: &Layout<'data, 'symbol_db>,
         table_writer: &mut TableWriter,
     ) -> Result {
         let eh_frame_section = self.object.section(eh_frame_section_index)?;
@@ -1718,7 +1707,7 @@ impl<'data> ObjectLayout<'data> {
                         // This relocation belongs to the next entry.
                         break;
                     }
-                    apply_relocation::<S, A>(
+                    apply_relocation::<A>(
                         self,
                         rel_offset - input_pos as u64,
                         rel,
@@ -1735,7 +1724,7 @@ impl<'data> ObjectLayout<'data> {
                     .with_context(|| {
                         format!(
                             "Failed to apply eh_frame {}",
-                            self.display_relocation::<S, A>(rel, layout)
+                            self.display_relocation::<A>(rel, layout)
                         )
                     })?;
                     relocations.next();
@@ -1770,12 +1759,12 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn display_relocation<'a, 'symbol_db, S: StorageModel, A: Arch>(
+    fn display_relocation<'a, 'symbol_db, A: Arch>(
         &'a self,
         rel: &'a elf::Rela,
-        layout: &'a Layout<'data, 'symbol_db, S>,
-    ) -> DisplayRelocation<'a, 'data, S, A> {
-        DisplayRelocation::<'a, 'data, S, A> {
+        layout: &'a Layout<'data, 'symbol_db>,
+    ) -> DisplayRelocation<'a, 'data, A> {
+        DisplayRelocation::<'a, 'data, A> {
             rel,
             symbol_db: layout.symbol_db,
             object: self,
@@ -1784,14 +1773,14 @@ impl<'data> ObjectLayout<'data> {
     }
 }
 
-struct DisplayRelocation<'a, 'data, S: StorageModel, A: Arch> {
+struct DisplayRelocation<'a, 'data, A: Arch> {
     rel: &'a elf::Rela,
-    symbol_db: &'a SymbolDb<'data, S>,
+    symbol_db: &'a SymbolDb<'data>,
     object: &'a ObjectLayout<'a>,
     phantom: PhantomData<A>,
 }
 
-impl<S: StorageModel, A: Arch> Display for DisplayRelocation<'_, '_, S, A> {
+impl<A: Arch> Display for DisplayRelocation<'_, '_, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let e = LittleEndian;
         write!(
@@ -1820,12 +1809,12 @@ struct SectionInfo {
 /// Applies the relocation `rel` at `offset_in_section`, where the section bytes are `out`. See "ELF
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
-fn apply_relocation<S: StorageModel, A: Arch>(
+fn apply_relocation<A: Arch>(
     object_layout: &ObjectLayout,
     mut offset_in_section: u64,
     rel: &elf::Rela,
     section_info: SectionInfo,
-    layout: &Layout<S>,
+    layout: &Layout,
     out: &mut [u8],
     table_writer: &mut TableWriter,
 ) -> Result<RelocationModifier> {
@@ -1885,7 +1874,7 @@ fn apply_relocation<S: StorageModel, A: Arch>(
     let value = match rel_info.kind {
         RelocationKind::Absolute => {
             assert!(rel_info.mask.is_none());
-            write_absolute_relocation::<S, A>(
+            write_absolute_relocation::<A>(
                 table_writer,
                 resolution,
                 place,
@@ -2042,11 +2031,11 @@ fn apply_relocation<S: StorageModel, A: Arch>(
     Ok(next_modifier)
 }
 
-fn apply_debug_relocation<S: StorageModel, A: Arch>(
+fn apply_debug_relocation<A: Arch>(
     object_layout: &ObjectLayout,
     offset_in_section: u64,
     rel: &elf::Rela,
-    layout: &Layout<S>,
+    layout: &Layout,
     section_tombstone_value: u64,
     out: &mut [u8],
 ) -> Result<()> {
@@ -2108,7 +2097,7 @@ fn apply_debug_relocation<S: StorageModel, A: Arch>(
     Ok(())
 }
 
-fn write_absolute_relocation<S: StorageModel, A: Arch>(
+fn write_absolute_relocation<A: Arch>(
     table_writer: &mut TableWriter,
     resolution: Resolution,
     place: u64,
@@ -2116,7 +2105,7 @@ fn write_absolute_relocation<S: StorageModel, A: Arch>(
     section_info: SectionInfo,
     symbol_index: object::SymbolIndex,
     object_layout: &ObjectLayout,
-    layout: &Layout<S>,
+    layout: &Layout,
 ) -> Result<u64> {
     if resolution.value_flags.contains(ValueFlags::DYNAMIC) && section_info.is_writable {
         table_writer.write_dynamic_symbol_relocation::<A>(
@@ -2149,16 +2138,16 @@ fn write_absolute_relocation<S: StorageModel, A: Arch>(
 }
 
 impl PreludeLayout {
-    fn write_file<S: StorageModel, A: Arch>(
+    fn write_file<A: Arch>(
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
-        layout: &Layout<S>,
+        layout: &Layout,
     ) -> Result {
         let header: &mut FileHeader = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
             .map_err(|_| anyhow!("Invalid file header allocation"))?
             .0;
-        populate_file_header::<S, A>(layout, &self.header_info, header)?;
+        populate_file_header::<A>(layout, &self.header_info, header)?;
 
         let mut program_headers =
             ProgramHeaderWriter::new(buffers.get_mut(part_id::PROGRAM_HEADERS));
@@ -2168,7 +2157,7 @@ impl PreludeLayout {
 
         write_section_header_strings(buffers.get_mut(part_id::SHSTRTAB), &layout.output_sections);
 
-        self.write_plt_got_entries::<S, A>(layout, table_writer)?;
+        self.write_plt_got_entries::<A>(layout, table_writer)?;
 
         if !layout.args().strip_all {
             self.write_symbol_table_entries(&mut table_writer.debug_symbol_writer, layout)?;
@@ -2208,11 +2197,7 @@ impl PreludeLayout {
         }
     }
 
-    fn write_merged_strings<S: StorageModel>(
-        &self,
-        buffers: &mut OutputSectionPartMap<&mut [u8]>,
-        layout: &Layout<S>,
-    ) {
+    fn write_merged_strings(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>, layout: &Layout) {
         layout.merged_strings.for_each(|section_id, merged| {
             if merged.len() > 0 {
                 let buffer =
@@ -2240,9 +2225,9 @@ impl PreludeLayout {
             .copy_from_slice(self.identity.as_bytes());
     }
 
-    fn write_plt_got_entries<S: StorageModel, A: Arch>(
+    fn write_plt_got_entries<A: Arch>(
         &self,
-        layout: &Layout<S>,
+        layout: &Layout,
         table_writer: &mut TableWriter,
     ) -> Result {
         // Write a pair of GOT entries for use by any TLSLD or TLSGD relocations.
@@ -2270,18 +2255,14 @@ impl PreludeLayout {
             })?;
         }
 
-        write_internal_symbols_plt_got_entries::<S, A>(
-            &self.internal_symbols,
-            table_writer,
-            layout,
-        )?;
+        write_internal_symbols_plt_got_entries::<A>(&self.internal_symbols, table_writer, layout)?;
         Ok(())
     }
 
-    fn write_symbol_table_entries<S: StorageModel>(
+    fn write_symbol_table_entries(
         &self,
         symbol_writer: &mut SymbolTableWriter,
-        layout: &Layout<S>,
+        layout: &Layout,
     ) -> Result {
         // Define symbol 0. This needs to be a null placeholder.
         symbol_writer.define_symbol(true, 0, 0, 0, &[])?;
@@ -2293,10 +2274,7 @@ impl PreludeLayout {
     }
 }
 
-fn write_epilogue_dynamic_entries<S: StorageModel>(
-    layout: &Layout<S>,
-    table_writer: &mut TableWriter,
-) -> Result {
+fn write_epilogue_dynamic_entries(layout: &Layout, table_writer: &mut TableWriter) -> Result {
     for rpath in &layout.args().rpaths {
         let offset = table_writer
             .dynsym_writer
@@ -2332,17 +2310,13 @@ fn write_epilogue_dynamic_entries<S: StorageModel>(
 }
 
 impl EpilogueLayout<'_> {
-    fn write_file<S: StorageModel, A: Arch>(
+    fn write_file<A: Arch>(
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
-        layout: &Layout<S>,
+        layout: &Layout,
     ) -> Result {
-        write_internal_symbols_plt_got_entries::<S, A>(
-            &self.internal_symbols,
-            table_writer,
-            layout,
-        )?;
+        write_internal_symbols_plt_got_entries::<A>(&self.internal_symbols, table_writer, layout)?;
 
         if !layout.args().strip_all {
             write_internal_symbols(
@@ -2460,10 +2434,10 @@ fn write_gnu_hash_tables(
     Ok(())
 }
 
-fn write_dynamic_symbol_definitions<S: StorageModel>(
+fn write_dynamic_symbol_definitions(
     epilogue: &EpilogueLayout,
     table_writer: &mut TableWriter,
-    layout: &Layout<S>,
+    layout: &Layout,
 ) -> Result {
     for sym_def in &epilogue.dynamic_symbol_definitions {
         let file_id = layout.symbol_db.file_id_for_symbol(sym_def.symbol_id);
@@ -2513,10 +2487,10 @@ fn write_dynamic_symbol_definitions<S: StorageModel>(
     Ok(())
 }
 
-fn write_copy_relocation_dynamic_symbol_definition<S: StorageModel>(
+fn write_copy_relocation_dynamic_symbol_definition(
     sym_def: &crate::layout::DynamicSymbolDefinition,
     object: &DynamicLayout,
-    layout: &Layout<S>,
+    layout: &Layout,
     dynamic_symbol_writer: &mut SymbolTableWriter,
 ) -> Result {
     debug_assert_bail!(
@@ -2546,10 +2520,10 @@ fn write_copy_relocation_dynamic_symbol_definition<S: StorageModel>(
     Ok(())
 }
 
-fn write_regular_object_dynamic_symbol_definition<S: StorageModel>(
+fn write_regular_object_dynamic_symbol_definition(
     sym_def: &crate::layout::DynamicSymbolDefinition,
     object: &ObjectLayout,
-    layout: &Layout<S>,
+    layout: &Layout,
     dynamic_symbol_writer: &mut SymbolTableWriter,
 ) -> Result {
     let sym_index = sym_def.symbol_id.to_input(object.symbol_id_range);
@@ -2593,9 +2567,9 @@ fn write_regular_object_dynamic_symbol_definition<S: StorageModel>(
     Ok(())
 }
 
-fn write_internal_symbols<S: StorageModel>(
+fn write_internal_symbols(
     internal_symbols: &InternalSymbols,
-    layout: &Layout<S>,
+    layout: &Layout,
     symbol_writer: &mut SymbolTableWriter<'_, '_, '_>,
 ) -> Result {
     for (local_index, def_info) in internal_symbols.symbol_definitions.iter().enumerate() {
@@ -2645,10 +2619,7 @@ fn write_internal_symbols<S: StorageModel>(
     Ok(())
 }
 
-fn write_eh_frame_hdr<S: StorageModel>(
-    table_writer: &mut TableWriter,
-    layout: &Layout<S>,
-) -> Result {
+fn write_eh_frame_hdr(table_writer: &mut TableWriter, layout: &Layout) -> Result {
     let header = table_writer.take_eh_frame_hdr();
     header.version = 1;
 
@@ -2666,7 +2637,7 @@ fn write_eh_frame_hdr<S: StorageModel>(
     Ok(())
 }
 
-fn eh_frame_hdr_entry_count<S: StorageModel>(layout: &Layout<S>) -> Result<u32> {
+fn eh_frame_hdr_entry_count(layout: &Layout) -> Result<u32> {
     let hdr_sec = layout.section_layouts.get(output_section_id::EH_FRAME_HDR);
     u32::try_from(
         (hdr_sec.mem_size - size_of::<elf::EhFrameHdr>() as u64)
@@ -2677,7 +2648,7 @@ fn eh_frame_hdr_entry_count<S: StorageModel>(layout: &Layout<S>) -> Result<u32> 
 
 /// Returns the address of .eh_frame relative to the location in .eh_frame_hdr where the frame
 /// pointer is stored.
-fn eh_frame_ptr<S: StorageModel>(layout: &Layout<S>) -> Result<i32> {
+fn eh_frame_ptr(layout: &Layout) -> Result<i32> {
     let eh_frame_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME);
     let eh_frame_hdr_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME_HDR);
     i32::try_from(
@@ -2930,7 +2901,7 @@ impl DynamicEntriesWriter<'_> {
     }
 }
 
-fn write_section_headers<S: StorageModel>(out: &mut [u8], layout: &Layout<S>) {
+fn write_section_headers(out: &mut [u8], layout: &Layout) {
     let entries: &mut [SectionHeader] = slice_from_all_bytes_mut(out);
     let output_sections = &layout.output_sections;
     let mut entries = entries.iter_mut();
@@ -3020,10 +2991,10 @@ impl<'out> ProgramHeaderWriter<'out> {
     }
 }
 
-fn write_internal_symbols_plt_got_entries<S: StorageModel, A: Arch>(
+fn write_internal_symbols_plt_got_entries<A: Arch>(
     internal_symbols: &InternalSymbols,
     table_writer: &mut TableWriter,
-    layout: &Layout<S>,
+    layout: &Layout,
 ) -> Result {
     for i in 0..internal_symbols.symbol_definitions.len() {
         let symbol_id = internal_symbols.start_symbol_id.add_usize(i);
@@ -3040,10 +3011,10 @@ fn write_internal_symbols_plt_got_entries<S: StorageModel, A: Arch>(
 }
 
 impl<'data> DynamicLayout<'data> {
-    fn write_file<'symbol_db, S: StorageModel, A: Arch>(
+    fn write_file<'symbol_db, A: Arch>(
         &self,
         table_writer: &mut TableWriter,
-        layout: &Layout<'data, 'symbol_db, S>,
+        layout: &Layout<'data, 'symbol_db>,
     ) -> Result {
         self.write_so_name(table_writer)?;
 
@@ -3216,13 +3187,13 @@ impl StrTabWriter<'_> {
     }
 }
 
-fn write_layout<S: StorageModel>(layout: &Layout<S>) -> Result {
+fn write_layout(layout: &Layout) -> Result {
     let layout_path = linker_layout::layout_path(&layout.args().output);
     write_layout_to(layout, &layout_path)
         .with_context(|| format!("Failed to write layout to `{}`", layout_path.display()))
 }
 
-fn write_layout_to<S: StorageModel>(layout: &Layout<S>, path: &Path) -> Result {
+fn write_layout_to(layout: &Layout, path: &Path) -> Result {
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
     layout.layout_data().write(&mut file)?;
     Ok(())
