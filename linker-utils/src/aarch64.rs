@@ -117,13 +117,14 @@ impl RelaxationKind {
 
 #[must_use]
 pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
-    let (kind, size, mask, range) = match r_type {
+    let (kind, size, mask, range, alignment) = match r_type {
         // 5.7.4   Static miscellaneous relocations
         object::elf::R_AARCH64_NONE => (
             RelocationKind::None,
             RelocationSize::ByteSize(0),
             None,
             AllowedRange::no_check(),
+            1,
         ),
 
         // 5.7.5   Static Data relocations
@@ -133,36 +134,42 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::ByteSize(8),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_ABS32 => (
             RelocationKind::Absolute,
             RelocationSize::ByteSize(4),
             None,
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
+            1,
         ),
         object::elf::R_AARCH64_ABS16 => (
             RelocationKind::Absolute,
             RelocationSize::ByteSize(2),
             None,
             AllowedRange::new(-(2i64.pow(15)), 2i64.pow(16)),
+            1,
         ),
         object::elf::R_AARCH64_PREL64 => (
             RelocationKind::Relative,
             RelocationSize::ByteSize(8),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_PREL32 => (
             RelocationKind::Relative,
             RelocationSize::ByteSize(4),
             None,
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(32)),
+            1,
         ),
         object::elf::R_AARCH64_PREL16 => (
             RelocationKind::Relative,
             RelocationSize::ByteSize(2),
             None,
             AllowedRange::new(-(2i64.pow(15)), 2i64.pow(16)),
+            1,
         ),
 
         // TODO: missing in upstream header file (as well as in Object crate):
@@ -175,42 +182,49 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movkz),
             None,
             AllowedRange::new(0, 2i64.pow(16)),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_UABS_G0_NC => (
             RelocationKind::Absolute,
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_UABS_G1 => (
             RelocationKind::Absolute,
             RelocationSize::bit_mask(16, 32, RelocationInstruction::Movkz),
             None,
             AllowedRange::new(0, 2i64.pow(32)),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_UABS_G1_NC => (
             RelocationKind::Absolute,
             RelocationSize::bit_mask(16, 32, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_UABS_G2 => (
             RelocationKind::Absolute,
             RelocationSize::bit_mask(32, 48, RelocationInstruction::Movkz),
             None,
             AllowedRange::new(0, 2i64.pow(48)),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_UABS_G2_NC => (
             RelocationKind::Absolute,
             RelocationSize::bit_mask(32, 48, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_UABS_G3 => (
             RelocationKind::Absolute,
             RelocationSize::bit_mask(48, 64, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         // Group relocations to create a 16, 32, 48, or 64 bit signed data or offset value inline
         object::elf::R_AARCH64_MOVW_SABS_G0 => (
@@ -218,18 +232,21 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movnz),
             None,
             AllowedRange::new(-(2i64.pow(16)), 2i64.pow(16)),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_SABS_G1 => (
             RelocationKind::Absolute,
             RelocationSize::bit_mask(16, 32, RelocationInstruction::Movnz),
             None,
             AllowedRange::new(-(2i64.pow(32)), 2i64.pow(32)),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_SABS_G2 => (
             RelocationKind::Absolute,
             RelocationSize::bit_mask(32, 48, RelocationInstruction::Movnz),
             None,
             AllowedRange::new(-(2i64.pow(48)), 2i64.pow(48)),
+            1,
         ),
         // Relocations to generate 19, 21 and 33 bit PC-relative addresses
         object::elf::R_AARCH64_LD_PREL_LO19 => (
@@ -237,60 +254,70 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(2, 21, RelocationInstruction::Ldr),
             None,
             AllowedRange::new(-(2i64.pow(20)), 2i64.pow(20)),
+            4,
         ),
         object::elf::R_AARCH64_ADR_PREL_LO21 => (
             RelocationKind::Relative,
             RelocationSize::bit_mask(0, 21, RelocationInstruction::Adr),
             None,
             AllowedRange::new(-(2i64.pow(20)), 2i64.pow(20)),
+            1,
         ),
         object::elf::R_AARCH64_ADR_PREL_PG_HI21 => (
             RelocationKind::Relative,
             RelocationSize::bit_mask(12, 33, RelocationInstruction::Adr),
             Some(PageMask::SymbolPlusAddendAndPosition),
             AllowedRange::new(-(2i64.pow(32)), 2i64.pow(32)),
+            1,
         ),
         object::elf::R_AARCH64_ADR_PREL_PG_HI21_NC => (
             RelocationKind::Relative,
             RelocationSize::bit_mask(12, 33, RelocationInstruction::Adr),
             Some(PageMask::SymbolPlusAddendAndPosition),
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_ADD_ABS_LO12_NC => (
             RelocationKind::AbsoluteAArch64,
             RelocationSize::bit_mask(0, 12, RelocationInstruction::Add),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_LDST8_ABS_LO12_NC => (
             RelocationKind::AbsoluteAArch64,
             RelocationSize::bit_mask(0, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_LDST16_ABS_LO12_NC => (
             RelocationKind::AbsoluteAArch64,
             RelocationSize::bit_mask(1, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            2,
         ),
         object::elf::R_AARCH64_LDST32_ABS_LO12_NC => (
             RelocationKind::AbsoluteAArch64,
             RelocationSize::bit_mask(2, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            4,
         ),
         object::elf::R_AARCH64_LDST64_ABS_LO12_NC => (
             RelocationKind::AbsoluteAArch64,
             RelocationSize::bit_mask(3, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            8,
         ),
         object::elf::R_AARCH64_LDST128_ABS_LO12_NC => (
             RelocationKind::AbsoluteAArch64,
             RelocationSize::bit_mask(4, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            16,
         ),
 
         // Relocations for control-flow instructions - all offsets are a multiple of 4
@@ -299,24 +326,28 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(2, 16, RelocationInstruction::TstBr),
             None,
             AllowedRange::new(-(2i64.pow(15)), 2i64.pow(15)),
+            4,
         ),
         object::elf::R_AARCH64_CONDBR19 => (
             RelocationKind::Relative,
             RelocationSize::bit_mask(2, 21, RelocationInstruction::Bcond),
             None,
             AllowedRange::new(-(2i64.pow(20)), 2i64.pow(20)),
+            4,
         ),
         object::elf::R_AARCH64_JUMP26 => (
             RelocationKind::PltRelative,
             RelocationSize::bit_mask(2, 28, RelocationInstruction::JumpCall),
             None,
             AllowedRange::new(-(2i64.pow(27)), 2i64.pow(27)),
+            4,
         ),
         object::elf::R_AARCH64_CALL26 => (
             RelocationKind::PltRelative,
             RelocationSize::bit_mask(2, 28, RelocationInstruction::JumpCall),
             None,
             AllowedRange::new(-(2i64.pow(27)), 2i64.pow(27)),
+            4,
         ),
 
         // Group relocations to create a 16, 32, 48, or 64 bit PC-relative offset inline
@@ -325,42 +356,49 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_PREL_G0_NC => (
             RelocationKind::Relative,
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_PREL_G1 => (
             RelocationKind::Relative,
             RelocationSize::bit_mask(16, 32, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_PREL_G1_NC => (
             RelocationKind::Relative,
             RelocationSize::bit_mask(16, 32, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_PREL_G2 => (
             RelocationKind::Relative,
             RelocationSize::bit_mask(32, 48, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_PREL_G2_NC => (
             RelocationKind::Relative,
             RelocationSize::bit_mask(32, 48, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_PREL_G3 => (
             RelocationKind::Relative,
             RelocationSize::bit_mask(48, 64, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
 
         // Group relocations to create a 16, 32, 48, or 64 bit GOT-relative offsets inline
@@ -369,42 +407,49 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_GOTOFF_G0_NC => (
             RelocationKind::GotRelGotBase,
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_GOTOFF_G1 => (
             RelocationKind::GotRelGotBase,
             RelocationSize::bit_mask(16, 32, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_GOTOFF_G1_NC => (
             RelocationKind::GotRelGotBase,
             RelocationSize::bit_mask(16, 32, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_GOTOFF_G2 => (
             RelocationKind::GotRelGotBase,
             RelocationSize::bit_mask(32, 48, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_GOTOFF_G2_NC => (
             RelocationKind::GotRelGotBase,
             RelocationSize::bit_mask(32, 48, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_MOVW_GOTOFF_G3 => (
             RelocationKind::GotRelGotBase,
             RelocationSize::bit_mask(48, 64, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
 
         // GOT-relative data relocations
@@ -413,12 +458,14 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::ByteSize(4),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_GOTREL32 => (
             RelocationKind::SymRelGotBase,
             RelocationSize::ByteSize(8),
             None,
             AllowedRange::new(-(2i64.pow(31)), 2i64.pow(31)),
+            1,
         ),
         // TODO: missing in upstream header file (as well as in Object crate)
         // object::elf::R_AARCH64_GOTPCREL32
@@ -427,30 +474,35 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(2, 21, RelocationInstruction::LdSt),
             None,
             AllowedRange::new(-(2i64.pow(20)), 2i64.pow(20)),
+            4,
         ),
         object::elf::R_AARCH64_LD64_GOTOFF_LO15 => (
             RelocationKind::GotRelGotBase,
             RelocationSize::bit_mask(3, 15, RelocationInstruction::LdSt),
             None,
             AllowedRange::new(0, 2i64.pow(15)),
+            8,
         ),
         object::elf::R_AARCH64_ADR_GOT_PAGE => (
             RelocationKind::GotRelative,
             RelocationSize::bit_mask(12, 33, RelocationInstruction::Adr),
             Some(PageMask::GotEntryAndPosition),
             AllowedRange::new(-(2i64.pow(32)), 2i64.pow(32)),
+            1,
         ),
         object::elf::R_AARCH64_LD64_GOT_LO12_NC => (
             RelocationKind::Got,
             RelocationSize::bit_mask(3, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            8,
         ),
         object::elf::R_AARCH64_LD64_GOTPAGE_LO15 => (
             RelocationKind::GotRelGotBase,
             RelocationSize::bit_mask(3, 15, RelocationInstruction::LdSt),
             Some(PageMask::GotBase),
             AllowedRange::new(0, 2i64.pow(15)),
+            8,
         ),
 
         // 5.7.11.1   General Dynamic thread-local storage model
@@ -459,30 +511,35 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(0, 21, RelocationInstruction::Adr),
             None,
             AllowedRange::new(-(2i64.pow(20)), 2i64.pow(20)),
+            1,
         ),
         object::elf::R_AARCH64_TLSGD_ADR_PAGE21 => (
             RelocationKind::TlsGd,
             RelocationSize::bit_mask(12, 33, RelocationInstruction::Adr),
             Some(PageMask::GotEntryAndPosition),
             AllowedRange::new(-(2i64.pow(32)), 2i64.pow(32)),
+            1,
         ),
         object::elf::R_AARCH64_TLSGD_ADD_LO12_NC => (
             RelocationKind::TlsGdGot,
             RelocationSize::bit_mask(0, 12, RelocationInstruction::Add),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSGD_MOVW_G1 => (
             RelocationKind::TlsGdGotBase,
             RelocationSize::bit_mask(16, 33, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSGD_MOVW_G0_NC => (
             RelocationKind::TlsGdGotBase,
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
 
         // 5.7.11.2   Local Dynamic thread-local storage model
@@ -491,138 +548,161 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(0, 21, RelocationInstruction::Adr),
             None,
             AllowedRange::new(-(2i64.pow(20)), 2i64.pow(20)),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_ADR_PAGE21 => (
             RelocationKind::TlsLd,
             RelocationSize::bit_mask(12, 33, RelocationInstruction::Adr),
             Some(PageMask::GotEntryAndPosition),
             AllowedRange::new(-(2i64.pow(32)), 2i64.pow(32)),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_ADD_LO12_NC => (
             RelocationKind::TlsLdGot,
             RelocationSize::bit_mask(0, 12, RelocationInstruction::Add),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_MOVW_G1 => (
             RelocationKind::TlsLdGotBase,
             RelocationSize::bit_mask(16, 32, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_MOVW_G0_NC => (
             RelocationKind::TlsLdGotBase,
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_LD_PREL19 => (
             RelocationKind::TlsLd,
             RelocationSize::bit_mask(0, 21, RelocationInstruction::Ldr),
             None,
             AllowedRange::new(-(2i64.pow(20)), 2i64.pow(20)),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_MOVW_DTPREL_G2 => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(32, 48, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_MOVW_DTPREL_G1 => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(16, 32, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_MOVW_DTPREL_G1_NC => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(16, 32, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_MOVW_DTPREL_G0 => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_MOVW_DTPREL_G0_NC => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_ADD_DTPREL_HI12 => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(12, 24, RelocationInstruction::Add),
             None,
             AllowedRange::new(0, 2i64.pow(24)),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_ADD_DTPREL_LO12 => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(0, 12, RelocationInstruction::Add),
             None,
             AllowedRange::new(0, 2i64.pow(12)),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_ADD_DTPREL_LO12_NC => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(0, 12, RelocationInstruction::Add),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_LDST8_DTPREL_LO12 => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(0, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::new(0, 2i64.pow(12)),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_LDST8_DTPREL_LO12_NC => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(0, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLD_LDST16_DTPREL_LO12 => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(1, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::new(0, 2i64.pow(12)),
+            2,
         ),
         object::elf::R_AARCH64_TLSLD_LDST16_DTPREL_LO12_NC => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(1, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            2,
         ),
         object::elf::R_AARCH64_TLSLD_LDST32_DTPREL_LO12 => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(2, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::new(0, 2i64.pow(12)),
+            4,
         ),
         object::elf::R_AARCH64_TLSLD_LDST32_DTPREL_LO12_NC => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(2, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            4,
         ),
         object::elf::R_AARCH64_TLSLD_LDST64_DTPREL_LO12 => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(3, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::new(0, 2i64.pow(12)),
+            8,
         ),
         object::elf::R_AARCH64_TLSLD_LDST64_DTPREL_LO12_NC => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(3, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            8,
         ),
         object::elf::R_AARCH64_TLSLD_LDST128_DTPREL_LO12 => (
             RelocationKind::DtpOff,
             RelocationSize::bit_mask(4, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::new(0, 2i64.pow(12)),
+            16,
         ),
 
         object::elf::R_AARCH64_TLSLD_LDST128_DTPREL_LO12_NC => (
@@ -630,6 +710,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(4, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            16,
         ),
 
         // 5.7.11.3   Initial Exec thread-local storage model
@@ -638,30 +719,35 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(16, 32, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSIE_MOVW_GOTTPREL_G0_NC => (
             RelocationKind::GotTpOffGotBase,
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 => (
             RelocationKind::GotTpOff,
             RelocationSize::bit_mask(12, 33, RelocationInstruction::Adr),
             Some(PageMask::GotEntryAndPosition),
             AllowedRange::new(-(2i64.pow(32)), 2i64.pow(32)),
+            1,
         ),
         object::elf::R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC => (
             RelocationKind::GotTpOffGot,
             RelocationSize::bit_mask(3, 12, RelocationInstruction::LdrRegister),
             None,
             AllowedRange::no_check(),
+            8,
         ),
         object::elf::R_AARCH64_TLSIE_LD_GOTTPREL_PREL19 => (
             RelocationKind::GotTpOff,
             RelocationSize::bit_mask(2, 21, RelocationInstruction::Ldr),
             None,
             AllowedRange::new(-(2i64.pow(20)), 2i64.pow(20)),
+            4,
         ),
 
         // 5.7.11.4   Local Exec thread-local storage model
@@ -670,66 +756,77 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(32, 48, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1 => (
             RelocationKind::TpOffAArch64,
             RelocationSize::bit_mask(16, 32, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1_NC => (
             RelocationKind::TpOffAArch64,
             RelocationSize::bit_mask(16, 32, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G0 => (
             RelocationKind::TpOffAArch64,
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movnz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G0_NC => (
             RelocationKind::TpOffAArch64,
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLE_ADD_TPREL_HI12 => (
             RelocationKind::TpOffAArch64,
             RelocationSize::bit_mask(12, 24, RelocationInstruction::Add),
             None,
             AllowedRange::new(0, 2i64.pow(24)),
+            1,
         ),
         object::elf::R_AARCH64_TLSLE_ADD_TPREL_LO12 => (
             RelocationKind::TpOffAArch64,
             RelocationSize::bit_mask(0, 12, RelocationInstruction::Add),
             None,
             AllowedRange::new(0, 2i64.pow(12)),
+            1,
         ),
         object::elf::R_AARCH64_TLSLE_ADD_TPREL_LO12_NC => (
             RelocationKind::TpOffAArch64,
             RelocationSize::bit_mask(0, 12, RelocationInstruction::Add),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLE_LDST8_TPREL_LO12 => (
             RelocationKind::TpOffAArch64,
             RelocationSize::bit_mask(0, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::new(0, 2i64.pow(12)),
+            1,
         ),
         object::elf::R_AARCH64_TLSLE_LDST8_TPREL_LO12_NC => (
             RelocationKind::TpOffAArch64,
             RelocationSize::bit_mask(0, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSLE_LDST16_TPREL_LO12 => (
             RelocationKind::TpOffAArch64,
             RelocationSize::bit_mask(1, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::new(0, 2i64.pow(12)),
+            2,
         ),
 
         object::elf::R_AARCH64_TLSLE_LDST16_TPREL_LO12_NC => (
@@ -737,12 +834,14 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(1, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            2,
         ),
         object::elf::R_AARCH64_TLSLE_LDST32_TPREL_LO12 => (
             RelocationKind::TpOffAArch64,
             RelocationSize::bit_mask(2, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::new(0, 2i64.pow(12)),
+            4,
         ),
 
         object::elf::R_AARCH64_TLSLE_LDST32_TPREL_LO12_NC => (
@@ -750,24 +849,28 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(2, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            4,
         ),
         object::elf::R_AARCH64_TLSLE_LDST64_TPREL_LO12 => (
             RelocationKind::TpOffAArch64,
             RelocationSize::bit_mask(3, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::new(0, 2i64.pow(12)),
+            8,
         ),
         object::elf::R_AARCH64_TLSLE_LDST64_TPREL_LO12_NC => (
             RelocationKind::TpOffAArch64,
             RelocationSize::bit_mask(3, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            8,
         ),
         object::elf::R_AARCH64_TLSLE_LDST128_TPREL_LO12 => (
             RelocationKind::TpOffAArch64,
             RelocationSize::bit_mask(4, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::new(0, 2i64.pow(12)),
+            16,
         ),
 
         object::elf::R_AARCH64_TLSLE_LDST128_TPREL_LO12_NC => (
@@ -775,6 +878,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(4, 12, RelocationInstruction::LdSt),
             None,
             AllowedRange::no_check(),
+            16,
         ),
 
         // 5.7.11.5 Thread-local storage descriptors
@@ -783,18 +887,21 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(2, 21, RelocationInstruction::Ldr),
             None,
             AllowedRange::new(-(2i64.pow(20)), 2i64.pow(20)),
+            4,
         ),
         object::elf::R_AARCH64_TLSDESC_ADR_PREL21 => (
             RelocationKind::TlsDesc,
             RelocationSize::bit_mask(0, 21, RelocationInstruction::Adr),
             None,
             AllowedRange::new(-(2i64.pow(20)), 2i64.pow(20)),
+            1,
         ),
         object::elf::R_AARCH64_TLSDESC_ADR_PAGE21 => (
             RelocationKind::TlsDesc,
             RelocationSize::bit_mask(12, 33, RelocationInstruction::Adr),
             Some(PageMask::GotEntryAndPosition),
             AllowedRange::new(-(2i64.pow(32)), 2i64.pow(32)),
+            1,
         ),
 
         object::elf::R_AARCH64_TLSDESC_LD64_LO12 => (
@@ -802,24 +909,28 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::bit_mask(3, 12, RelocationInstruction::LdrRegister),
             None,
             AllowedRange::no_check(),
+            8,
         ),
         object::elf::R_AARCH64_TLSDESC_ADD_LO12 => (
             RelocationKind::TlsDescGot,
             RelocationSize::bit_mask(0, 12, RelocationInstruction::Add),
             None,
             AllowedRange::no_check(),
+            1,
         ),
         object::elf::R_AARCH64_TLSDESC_OFF_G1 => (
             RelocationKind::TlsDescGotBase,
             RelocationSize::bit_mask(16, 32, RelocationInstruction::Movnz),
             None,
             AllowedRange::new(-(2i64.pow(32)), 2i64.pow(32)),
+            1,
         ),
         object::elf::R_AARCH64_TLSDESC_OFF_G0_NC => (
             RelocationKind::TlsDescGotBase,
             RelocationSize::bit_mask(0, 16, RelocationInstruction::Movkz),
             None,
             AllowedRange::no_check(),
+            1,
         ),
 
         // Misc relocations
@@ -828,6 +939,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             RelocationSize::ByteSize(0),
             None,
             AllowedRange::no_check(),
+            1,
         ),
 
         _ => return None,
@@ -838,6 +950,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         size,
         mask,
         range,
+        alignment,
     })
 }
 

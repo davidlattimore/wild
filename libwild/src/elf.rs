@@ -475,7 +475,7 @@ pub(crate) fn write_relocation_to_buffer(
     value: u64,
     output: &mut [u8],
 ) -> Result<()> {
-    rel_info.range.verify(value as i64)?;
+    rel_info.verify(value as i64)?;
 
     match rel_info.size {
         RelocationSize::ByteSize(byte_size) => {

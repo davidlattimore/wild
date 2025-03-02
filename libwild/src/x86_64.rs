@@ -51,6 +51,7 @@ impl crate::arch::Arch for X86_64 {
             size: RelocationSize::ByteSize(size),
             mask: None,
             range: AllowedRange::no_check(),
+            alignment: 1,
         })
     }
 
