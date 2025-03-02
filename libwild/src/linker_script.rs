@@ -243,14 +243,11 @@ fn parse_version_section<'data>(
             section = Some(VersionRuleSection::Local);
         } else if let Some(pattern) = line.strip_suffix(';') {
             match section {
-                Some(VersionRuleSection::Global) => {
+                Some(VersionRuleSection::Global) | None => {
                     globals.push(SymbolMatcher::from_pattern(pattern)?);
                 }
                 Some(VersionRuleSection::Local) => {
                     locals.push(SymbolMatcher::from_pattern(pattern)?);
-                }
-                None => {
-                    globals.push(SymbolMatcher::from_pattern(pattern)?);
                 }
             }
             if let Some(versioned_symbols) = versioned_symbols.as_deref_mut() {
