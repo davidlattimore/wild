@@ -84,7 +84,6 @@ pub fn resolve_symbols_and_sections<'data>(
         canonicalise_undefined_symbols(undefined_symbols, &output_sections, &groups, symbol_db)?;
 
     crate::symbol_db::resolve_alternative_symbol_definitions(symbol_db, &groups)?;
-    crate::symbol_db::resolve_alternative_versioned_symbol_definitions(symbol_db, &groups)?;
 
     groups[PRELUDE_FILE_ID.group()].files[PRELUDE_FILE_ID.file()] =
         ResolvedFile::Prelude(ResolvedPrelude {
