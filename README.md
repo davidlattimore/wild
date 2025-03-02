@@ -5,7 +5,7 @@ Wild is a linker with the goal of being very fast for iterative development.
 The plan is to eventually make it incremental, however that isn't yet implemented. It is however
 already pretty fast even without incremental linking.
 
-For production builds, its recommended to use a more mature linker like GNU ld or LLD.
+For production builds, it's recommended to use a more mature linker like GNU ld or LLD.
 
 During development, if you'd like faster warm build times, then you could give Wild a try. It's at
 the point now where it should be usable for development purposes provided you're developing on
