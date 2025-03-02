@@ -16,23 +16,24 @@ use crate::output_section_id::OutputSectionId;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ParsedInput;
 use crate::parsing::Prelude;
+use crate::resolution::ResolvedFile;
+use crate::resolution::ResolvedGroup;
 use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
 use crate::symbol::PreHashedSymbolName;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol::VersionedSymbolName;
-use ahash::HashMap;
-use ahash::RandomState;
 use anyhow::Context;
 use itertools::Itertools;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
+use rustc_hash::FxHashMap;
 use std::collections::hash_map;
 use std::fmt::Display;
-use std::mem::replace;
 use std::mem::take;
 
 pub struct SymbolDb<'data> {
@@ -40,12 +41,7 @@ pub struct SymbolDb<'data> {
 
     pub(crate) groups: &'data [Group<'data>],
 
-    /// Mapping from global symbol names to a symbol ID with that name. If there are multiple
-    /// globals with the same name, then this will point to the one we encountered first, which may
-    /// not be the selected definition. In order to find the selected definition, you still need to
-    /// look a `symbol_definitions`.
-    name_to_id: PassThroughHashMap<UnversionedSymbolName<'data>, SymbolId>,
-    versioned_name_to_id: PassThroughHashMap<VersionedSymbolName<'data>, SymbolId>,
+    buckets: Vec<SymbolBucket<'data>>,
 
     /// Which file each symbol ID belongs to. Indexes past the end are assumed to be for custom
     /// section start/stop symbols.
@@ -58,24 +54,6 @@ pub struct SymbolDb<'data> {
 
     symbol_value_flags: Vec<ValueFlags>,
 
-    /// Global symbols that have multiple definitions. Indexed by symbol ID. It'd be nice if we
-    /// didn't need to store this and could just determine the canonical definition as we add
-    /// symbols. Unfortunately archive semantics make that impossible because we don't yet know
-    /// which archive entries will and won't be loaded. For the first symbol with a name, this
-    /// points to the last symbol with that name. That in turn then points to each previous
-    /// alternate definition with that name until the undefined symbol is reached.
-    pub(crate) alternative_definitions: Vec<SymbolId>,
-
-    /// Alternative definitions, but only for versioned symbols. This might be more efficient with a
-    /// proper multi-map that doesn't need a separate Vec for each value, however we don't expect
-    /// many entries here.
-    pub(crate) alternative_versioned_definitions: HashMap<SymbolId, Vec<SymbolId>>,
-
-    /// The symbol IDs of the first symbol with each name for which there are alternative
-    /// definitions. This can be used to find the head of a linked list in
-    /// `alternative_definitions`.
-    pub(crate) symbols_with_alternatives: Vec<SymbolId>,
-
     /// The number of symbols in each group, keyed by the index of the group.
     pub(crate) num_symbols_per_group: Vec<usize>,
 
@@ -84,6 +62,24 @@ pub struct SymbolDb<'data> {
     /// The names of symbols that mark the start / stop of sections. These are indexed by the offset
     /// into the epilogue's symbol IDs.
     start_stop_symbol_names: Vec<UnversionedSymbolName<'data>>,
+}
+
+struct SymbolBucket<'data> {
+    /// Mapping from global symbol names to a symbol ID with that name. If there are multiple
+    /// globals with the same name, then this will point to the one we encountered first, which may
+    /// not be the selected definition. In order to find the selected definition, you still need to
+    /// look a `symbol_definitions`.
+    name_to_id: PassThroughHashMap<UnversionedSymbolName<'data>, SymbolId>,
+
+    versioned_name_to_id: PassThroughHashMap<VersionedSymbolName<'data>, SymbolId>,
+
+    /// Global symbols that have multiple definitions keyed by the first symbol with that name.
+    pub(crate) alternative_definitions: FxHashMap<SymbolId, Vec<SymbolId>>,
+
+    /// Alternative definitions, but only for versioned symbols. This might be more efficient with a
+    /// proper multi-map that doesn't need a separate Vec for each value, however we don't expect
+    /// many entries here.
+    alternative_versioned_definitions: FxHashMap<SymbolId, Vec<SymbolId>>,
 }
 
 /// A global symbol that hasn't been put into our database yet.
@@ -224,10 +220,16 @@ impl Iterator for SymbolIdRangeIterator {
     }
 }
 
-#[derive(Default)]
 struct SymbolLoadOutputs<'data> {
-    pending_symbols: Vec<PendingSymbol<'data>>,
-    pending_versioned_symbols: Vec<PendingVersionedSymbol<'data>>,
+    /// Pending non-versioned symbols, grouped by hash bucket.
+    pending_symbols_by_bucket: Vec<PendingSymbolHashBucket<'data>>,
+}
+
+#[derive(Default, Clone)]
+struct PendingSymbolHashBucket<'data> {
+    symbols: Vec<PendingSymbol<'data>>,
+
+    versioned_symbols: Vec<PendingVersionedSymbol<'data>>,
 }
 
 impl<'data> SymbolDb<'data> {
@@ -272,7 +274,8 @@ impl<'data> SymbolDb<'data> {
             })
             .collect_vec();
 
-        let symbol_per_file = read_symbols(groups, &version_script, &mut per_group_writers, args)?;
+        let per_group_outputs =
+            read_symbols(groups, &version_script, &mut per_group_writers, args)?;
 
         for writer in per_group_writers {
             symbol_definitions_writer.return_shard(writer.resolutions);
@@ -281,13 +284,19 @@ impl<'data> SymbolDb<'data> {
         }
 
         let epilogue_file_id = groups.last().unwrap().files.last().unwrap().file_id();
-        let mut index = SymbolDb {
-            args,
+
+        let num_buckets = num_symbol_hash_buckets(args);
+        let mut buckets = Vec::new();
+        buckets.resize_with(num_buckets, || SymbolBucket {
             name_to_id: Default::default(),
             versioned_name_to_id: Default::default(),
-            alternative_definitions: vec![SymbolId::undefined(); num_symbols],
-            alternative_versioned_definitions: HashMap::with_hasher(RandomState::new()),
-            symbols_with_alternatives: Vec::new(),
+            alternative_definitions: FxHashMap::default(),
+            alternative_versioned_definitions: FxHashMap::default(),
+        });
+
+        let mut index = SymbolDb {
+            args,
+            buckets,
             epilogue_file_id,
             symbol_file_ids,
             symbol_definitions,
@@ -296,78 +305,41 @@ impl<'data> SymbolDb<'data> {
             start_stop_symbol_names: Default::default(),
             symbol_value_flags,
         };
-        index.populate_symbol_db(symbol_per_file)?;
+
+        index.populate_symbol_db(&per_group_outputs)?;
+
         Ok(index)
     }
 
     #[tracing::instrument(skip_all, name = "Populate symbol map")]
-    fn populate_symbol_db(&mut self, symbol_per_file: Vec<SymbolLoadOutputs<'data>>) -> Result {
-        // The following approximation should be an upper bound on the number of global names we'll
-        // have. There will likely be at least a few global symbols with the same name, in which
-        // case the actual number will be slightly smaller.
-        let approx_num_symbols = symbol_per_file
-            .iter()
-            .map(|s| s.pending_symbols.len())
-            .sum();
-        self.name_to_id.reserve(approx_num_symbols);
+    fn populate_symbol_db(&mut self, per_group_outputs: &[SymbolLoadOutputs<'data>]) -> Result {
+        self.buckets
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(b, bucket)| {
+                // The following approximation should be an upper bound on the number of global
+                // names we'll have. There will likely be at least a few global symbols with the
+                // same name, in which case the actual number will be slightly smaller.
+                let approx_num_symbols = per_group_outputs
+                    .iter()
+                    .map(|s| s.pending_symbols_by_bucket[b].symbols.len())
+                    .sum();
+                bucket.name_to_id.reserve(approx_num_symbols);
 
-        for pending in symbol_per_file {
-            for symbol in pending.pending_symbols {
-                self.add_symbol(symbol);
-            }
+                for outputs in per_group_outputs {
+                    let pending = &outputs.pending_symbols_by_bucket[b];
 
-            for symbol in pending.pending_versioned_symbols {
-                self.add_versioned_symbol(symbol);
-            }
-        }
+                    for symbol in &pending.symbols {
+                        bucket.add_symbol(symbol);
+                    }
+
+                    for symbol in &pending.versioned_symbols {
+                        bucket.add_versioned_symbol(symbol);
+                    }
+                }
+            });
 
         Ok(())
-    }
-
-    fn add_symbol(&mut self, pending: PendingSymbol<'data>) {
-        match self.name_to_id.entry(pending.name) {
-            hash_map::Entry::Occupied(entry) => {
-                let first_symbol_id = *entry.get();
-                self.add_extra_symbol_definition(first_symbol_id, pending.symbol_id);
-            }
-            hash_map::Entry::Vacant(entry) => {
-                entry.insert(pending.symbol_id);
-            }
-        }
-    }
-
-    fn add_versioned_symbol(&mut self, pending: PendingVersionedSymbol<'data>) {
-        match self.versioned_name_to_id.entry(pending.name) {
-            hash_map::Entry::Occupied(entry) => {
-                let first_symbol_id = *entry.get();
-                self.alternative_versioned_definitions
-                    .entry(first_symbol_id)
-                    .or_default()
-                    .push(pending.symbol_id);
-            }
-            hash_map::Entry::Vacant(entry) => {
-                entry.insert(pending.symbol_id);
-            }
-        }
-    }
-
-    fn add_extra_symbol_definition(&mut self, first_symbol_id: SymbolId, new_symbol_id: SymbolId) {
-        // Update the entry at `first_symbol_id` to point to the new last symbol (the
-        // pending symbol).
-        let previous_last = replace(
-            &mut self.alternative_definitions[first_symbol_id.as_usize()],
-            new_symbol_id,
-        );
-
-        // Our pending symbol is now last. Update its entry to point to the previous last
-        // symbol.
-        self.alternative_definitions[new_symbol_id.as_usize()] = previous_last;
-
-        if previous_last.is_undefined() {
-            // This is the first alternative definition for this name, note the first symbol
-            // ID for later when we resolve alternatives.
-            self.symbols_with_alternatives.push(first_symbol_id);
-        }
     }
 
     pub(crate) fn add_start_stop_symbol(
@@ -375,15 +347,20 @@ impl<'data> SymbolDb<'data> {
         symbol_name: PreHashed<UnversionedSymbolName<'data>>,
     ) -> SymbolId {
         let symbol_id = SymbolId::from_usize(self.symbol_definitions.len());
-        self.add_symbol(PendingSymbol {
+
+        let num_buckets = self.buckets.len();
+        self.buckets[symbol_name.hash() as usize % num_buckets].add_symbol(&PendingSymbol {
             symbol_id,
             name: symbol_name,
         });
+
         self.symbol_definitions.push(symbol_id);
         self.start_stop_symbol_names.push(*symbol_name);
         self.num_symbols_per_group[self.epilogue_file_id.group()] += 1;
+
         self.symbol_value_flags
             .push(ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT);
+
         symbol_id
     }
 
@@ -486,21 +463,208 @@ impl<'data> SymbolDb<'data> {
         &self,
         prehashed: &PreHashed<UnversionedSymbolName>,
     ) -> Option<SymbolId> {
-        self.name_to_id.get(prehashed).copied()
+        let num_buckets = self.buckets.len();
+        self.buckets[prehashed.hash() as usize % num_buckets]
+            .name_to_id
+            .get(prehashed)
+            .copied()
     }
 
     pub(crate) fn get(&self, key: &PreHashedSymbolName) -> Option<SymbolId> {
+        let num_buckets = self.buckets.len();
+
         match key {
-            PreHashedSymbolName::Unversioned(key) => self.name_to_id.get(key).copied(),
-            PreHashedSymbolName::Versioned(key) => self.versioned_name_to_id.get(key).copied(),
+            PreHashedSymbolName::Unversioned(key) => self.buckets
+                [key.hash() as usize % num_buckets]
+                .name_to_id
+                .get(key)
+                .copied(),
+            PreHashedSymbolName::Versioned(key) => self.buckets[key.hash() as usize % num_buckets]
+                .versioned_name_to_id
+                .get(key)
+                .copied(),
         }
     }
 
     pub(crate) fn all_unversioned_symbols(
         &self,
     ) -> impl Iterator<Item = (&PreHashed<UnversionedSymbolName>, &SymbolId)> {
-        self.name_to_id.iter()
+        self.buckets.iter().flat_map(|b| b.name_to_id.iter())
     }
+
+    fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> SymbolStrength {
+        let file_id = self.file_id_for_symbol(symbol_id);
+        if let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] {
+            let local_index = symbol_id.to_input(obj.symbol_id_range);
+            let Ok(obj_symbol) = obj.object.symbol(local_index) else {
+                // Errors from this function should have been reported elsewhere.
+                return SymbolStrength::Undefined;
+            };
+            let e = LittleEndian;
+            if obj_symbol.is_weak() {
+                SymbolStrength::Weak
+            } else if obj_symbol.is_common(e) {
+                SymbolStrength::Common(obj_symbol.st_size(e))
+            } else {
+                SymbolStrength::Strong
+            }
+        } else {
+            SymbolStrength::Undefined
+        }
+    }
+}
+
+impl<'data> SymbolBucket<'data> {
+    fn add_symbol(&mut self, pending: &PendingSymbol<'data>) {
+        match self.name_to_id.entry(pending.name) {
+            hash_map::Entry::Occupied(entry) => {
+                let first_symbol_id = *entry.get();
+                self.add_extra_symbol_definition(first_symbol_id, pending.symbol_id);
+            }
+            hash_map::Entry::Vacant(entry) => {
+                entry.insert(pending.symbol_id);
+            }
+        }
+    }
+
+    fn add_versioned_symbol(&mut self, pending: &PendingVersionedSymbol<'data>) {
+        match self.versioned_name_to_id.entry(pending.name) {
+            hash_map::Entry::Occupied(entry) => {
+                let first_symbol_id = *entry.get();
+                self.alternative_versioned_definitions
+                    .entry(first_symbol_id)
+                    .or_default()
+                    .push(pending.symbol_id);
+            }
+            hash_map::Entry::Vacant(entry) => {
+                entry.insert(pending.symbol_id);
+            }
+        }
+    }
+
+    fn add_extra_symbol_definition(&mut self, first_symbol_id: SymbolId, new_symbol_id: SymbolId) {
+        self.alternative_definitions
+            .entry(first_symbol_id)
+            .or_default()
+            .push(new_symbol_id);
+    }
+}
+
+/// For each symbol that has multiple definitions, some of which may be weak, some strong, some
+/// "common" symbols and some in archive entries that weren't loaded, resolve which version of the
+/// symbol we're using. The symbol we select will be the first strongly defined symbol in a loaded
+/// object, or if there are no strong definitions, then the first definition in a loaded object. If
+/// a symbol definition is a common symbol, then the largest definition will be used.
+#[tracing::instrument(skip_all, name = "Resolve alternative symbol definitions")]
+pub(crate) fn resolve_alternative_symbol_definitions<'data>(
+    symbol_db: &mut SymbolDb<'data>,
+    resolved: &[ResolvedGroup],
+) -> Result {
+    let mut buckets = take(&mut symbol_db.buckets);
+
+    let replacements: Vec<Vec<(SymbolId, SymbolId)>> = buckets
+        .par_iter_mut()
+        .map(|bucket| {
+            let mut replacements = Vec::new();
+
+            let mut add_replacement = |a, b| {
+                replacements.push((a, b));
+            };
+
+            for (first, alternatives) in take(&mut bucket.alternative_definitions) {
+                let selected = select_symbol(symbol_db, first, &alternatives, resolved);
+                add_replacement(first, selected);
+
+                for alt in alternatives {
+                    add_replacement(alt, selected);
+                }
+            }
+
+            for (first, alternatives) in take(&mut bucket.alternative_versioned_definitions) {
+                let selected = select_symbol(symbol_db, first, &alternatives, resolved);
+                add_replacement(first, selected);
+
+                for alt in alternatives {
+                    add_replacement(alt, selected);
+                }
+            }
+
+            replacements
+        })
+        .collect();
+
+    for (a, b) in replacements.iter().flat_map(|r| r.iter()) {
+        symbol_db.replace_definition(*a, *b);
+    }
+
+    symbol_db.buckets = buckets;
+
+    Ok(())
+}
+
+/// Selects which version of the symbol to use.
+fn select_symbol(
+    symbol_db: &SymbolDb,
+    symbol_id: SymbolId,
+    alternatives: &[SymbolId],
+    resolved: &[ResolvedGroup],
+) -> SymbolId {
+    let first_strength = symbol_db.symbol_strength(symbol_id, resolved);
+    if first_strength == SymbolStrength::Strong {
+        return symbol_id;
+    }
+    let mut max_common = None;
+    for &alt in alternatives.iter().rev() {
+        // Dynamic symbols, even strong ones, don't override non-dynamic weak symbols.
+        if symbol_db
+            .symbol_value_flags(alt)
+            .contains(ValueFlags::DYNAMIC)
+        {
+            continue;
+        }
+        let strength = symbol_db.symbol_strength(alt, resolved);
+        match strength {
+            SymbolStrength::Strong => return alt,
+            SymbolStrength::Common(size) => {
+                if let Some((previous_size, _)) = max_common {
+                    if size <= previous_size {
+                        continue;
+                    }
+                }
+                max_common = Some((size, alt));
+            }
+            _ => {}
+        }
+    }
+    if let Some((_, alt)) = max_common {
+        return alt;
+    }
+    if first_strength != SymbolStrength::Undefined {
+        return symbol_id;
+    }
+    for &alt in alternatives.iter().rev() {
+        let strength = symbol_db.symbol_strength(alt, resolved);
+        if strength != SymbolStrength::Undefined {
+            return alt;
+        }
+    }
+    symbol_id
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum SymbolStrength {
+    /// The object containing this symbol wasn't loaded, so the definition can be ignored.
+    Undefined,
+
+    /// The object weakly defines the symbol.
+    Weak,
+
+    /// The object strongly defines the symbol.
+    Strong,
+
+    /// The symbol is a "common" symbol with the specified size. The definition with the largest
+    /// size will be selected.
+    Common(u64),
 }
 
 /// Returns whether the supplied symbol name is for a [mapping
@@ -516,11 +680,15 @@ fn read_symbols<'data, 'out>(
     symbols_out_by_file: &mut [SymbolInfoWriter],
     args: &Args,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
+    let num_buckets = num_symbol_hash_buckets(args);
+
     groups
         .par_iter()
         .zip(symbols_out_by_file)
         .map(|(group, symbols_out)| {
-            let mut outputs = SymbolLoadOutputs::default();
+            let mut outputs = SymbolLoadOutputs {
+                pending_symbols_by_bucket: vec![PendingSymbolHashBucket::default(); num_buckets],
+            };
 
             for file in &group.files {
                 let filename = file.filename();
@@ -674,12 +842,12 @@ trait SymbolLoader<'data> {
 
             if info.is_default {
                 let pending = PendingSymbol::from_prehashed(symbol_id, name);
-                outputs.pending_symbols.push(pending);
+                outputs.add_non_versioned(pending);
             }
 
             if let Some(version) = info.version_name {
                 let pending = PendingVersionedSymbol::from_prehashed(symbol_id, name, version);
-                outputs.pending_versioned_symbols.push(pending);
+                outputs.add_versioned(pending);
             }
 
             symbols_out.set_next(value_flags, resolution, file_id);
@@ -967,9 +1135,6 @@ impl Prelude {
         outputs: &mut SymbolLoadOutputs,
         output_kind: OutputKind,
     ) {
-        outputs
-            .pending_symbols
-            .reserve(self.symbol_definitions.len());
         for definition in &self.symbol_definitions {
             let symbol_id = symbols_out.next;
             let value_flags = match definition {
@@ -977,17 +1142,13 @@ impl Prelude {
                 InternalSymDefInfo::SectionStart(section_id) => {
                     let def = section_id.built_in_details();
                     let name = def.start_symbol_name(output_kind).unwrap().as_bytes();
-                    outputs
-                        .pending_symbols
-                        .push(PendingSymbol::new(symbol_id, name));
+                    outputs.add_non_versioned(PendingSymbol::new(symbol_id, name));
                     ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT
                 }
                 InternalSymDefInfo::SectionEnd(section_id) => {
                     let def = section_id.built_in_details();
                     let name = def.end_symbol_name(output_kind).unwrap().as_bytes();
-                    outputs
-                        .pending_symbols
-                        .push(PendingSymbol::new(symbol_id, name));
+                    outputs.add_non_versioned(PendingSymbol::new(symbol_id, name));
                     ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT
                 }
             };
@@ -1035,6 +1196,29 @@ impl<'data> PendingVersionedSymbol<'data> {
             symbol_id,
             name: VersionedSymbolName::prehashed(name, version),
         }
+    }
+}
+
+/// Decides how many buckets we should use for symbol names.
+fn num_symbol_hash_buckets(args: &Args) -> usize {
+    args.num_threads.get()
+}
+
+impl<'data> SymbolLoadOutputs<'data> {
+    fn add_non_versioned(&mut self, pending: PendingSymbol<'data>) {
+        let num_buckets = self.pending_symbols_by_bucket.len();
+
+        self.pending_symbols_by_bucket[pending.name.hash() as usize % num_buckets]
+            .symbols
+            .push(pending);
+    }
+
+    fn add_versioned(&mut self, pending: PendingVersionedSymbol<'data>) {
+        let num_buckets = self.pending_symbols_by_bucket.len();
+
+        self.pending_symbols_by_bucket[pending.name.hash() as usize % num_buckets]
+            .versioned_symbols
+            .push(pending);
     }
 }
 
