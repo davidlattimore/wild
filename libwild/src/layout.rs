@@ -2484,6 +2484,7 @@ fn process_relocation<A: Arch>(
             symbol_value_flags,
             args.output_kind(),
             SectionFlags::from_header(section),
+            true,
         ) {
             next_modifier = relaxation.next_modifier();
             relaxation.rel_info()

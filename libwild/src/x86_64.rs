@@ -91,6 +91,7 @@ impl crate::arch::Relaxation for Relaxation {
         value_flags: ValueFlags,
         output_kind: OutputKind,
         section_flags: SectionFlags,
+        _non_zero_address: bool,
     ) -> Option<Self> {
         // TODO: Consider removing Option. There are a few callers though, so need to see how this
         // looks.
@@ -372,6 +373,7 @@ fn test_relaxation() {
             ValueFlags::ADDRESS,
             OutputKind::StaticExecutable(RelocationModel::Relocatable),
             shf::EXECINSTR,
+            true,
         ) {
             r.apply(&mut out, &mut offset, &mut 0);
 
@@ -387,6 +389,7 @@ fn test_relaxation() {
             ValueFlags::ABSOLUTE,
             OutputKind::StaticExecutable(RelocationModel::Relocatable),
             shf::EXECINSTR,
+            true,
         ) {
             out.copy_from_slice(bytes_in);
             r.apply(&mut out, &mut offset, &mut 0);
