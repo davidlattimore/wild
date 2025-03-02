@@ -168,7 +168,6 @@ impl<'data> VersionScript<'data> {
         }
     }
 
-    // TODO: Surely not u64
     pub(crate) fn version_count(&self) -> u16 {
         let inner = if let Some(inner) = &self.inner {
             inner

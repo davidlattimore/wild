@@ -3322,6 +3322,8 @@ impl<'data> EpilogueLayoutState<'data> {
             verdefs.reserve(verdef_info.version_count.into());
 
             // TODO: this is a lazy hack, do it right
+            // If soname is provided, this will needlessly allocate it again in .dynstr.
+            // LD and LLD can skip second allocation.
             let base_name = resources.symbol_db.args.soname.as_ref().map_or_else(
                 || {
                     resources
