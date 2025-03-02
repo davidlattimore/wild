@@ -99,6 +99,7 @@ impl crate::arch::Relaxation for Relaxation {
         value_flags: crate::resolution::ValueFlags,
         output_kind: crate::args::OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
+        non_zero_address: bool,
     ) -> Option<Self>
     where
         Self: std::marker::Sized,
@@ -133,10 +134,17 @@ impl crate::arch::Relaxation for Relaxation {
 
         match relocation_kind {
             object::elf::R_AARCH64_CALL26 | object::elf::R_AARCH64_JUMP26 if can_bypass_got => {
-                relocation.kind = RelocationKind::Relative;
+                if non_zero_address {
+                    relocation.kind = RelocationKind::Relative;
+                    return Some(Relaxation {
+                        kind: RelaxationKind::NoOp,
+                        rel_info: relocation,
+                    });
+                }
+                // GNU ld replaces: 'bl 0' with 'nop'
                 return Some(Relaxation {
-                    kind: RelaxationKind::NoOp,
-                    rel_info: relocation,
+                    kind: RelaxationKind::ReplaceWithNop,
+                    rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
                 });
             }
 

@@ -195,8 +195,6 @@ impl Config {
                 // We don't yet support emitting warnings.
                 "section.gnu.warning",
                 // GNU ld sometimes applies relaxations that we don't yet.
-                "rel.missing-opt.R_AARCH64_CALL26.ReplaceWithNop.static-non-pie",
-                "rel.missing-opt.R_AARCH64_JUMP26.ReplaceWithNop.static-non-pie",
                 "rel.match_failed.R_AARCH64_TLSDESC_ADR_PAGE21",
                 "rel.match_failed.R_AARCH64_TLSDESC_LD64_LO12",
                 "rel.match_failed.R_AARCH64_TLSGD_ADD_LO12_NC",

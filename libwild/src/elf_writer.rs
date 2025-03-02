@@ -1857,6 +1857,7 @@ fn apply_relocation<A: Arch>(
         value_flags,
         output_kind,
         section_info.section_flags,
+        resolution.raw_value != 0,
     );
     if let Some(relaxation) = &relaxation {
         rel_info = relaxation.rel_info();
