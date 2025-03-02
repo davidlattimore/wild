@@ -7,17 +7,13 @@
 //! work in the forked process then when we're done, signal the parent process that we're done, it
 //! can then exit while the forked process cleans up.
 
-use crate::storage::StorageModel;
-
 #[tracing::instrument(skip_all, name = "Drop layout")]
-pub(crate) fn free_layout<'data, 'symbol_db, S: StorageModel>(
-    d: crate::layout::Layout<'data, 'symbol_db, S>,
-) {
+pub(crate) fn free_layout<'data, 'symbol_db>(d: crate::layout::Layout<'data, 'symbol_db>) {
     drop(d);
 }
 
 #[tracing::instrument(skip_all, name = "Drop symbol DB")]
-pub(crate) fn free_symbol_db<'data, S: StorageModel>(d: crate::symbol_db::SymbolDb<'data, S>) {
+pub(crate) fn free_symbol_db<'data>(d: crate::symbol_db::SymbolDb<'data>) {
     drop(d);
 }
 

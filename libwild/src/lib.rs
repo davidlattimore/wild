@@ -37,7 +37,6 @@ pub(crate) mod save_dir;
 pub(crate) mod sharding;
 pub(crate) mod shutdown;
 pub(crate) mod slice;
-pub(crate) mod storage;
 pub(crate) mod string_merging;
 #[cfg(feature = "fork")]
 pub(crate) mod subprocess;
@@ -95,12 +94,8 @@ impl Linker {
             }
         }
         match args.arch {
-            arch::Architecture::X86_64 => {
-                link::<storage::InMemory, x86_64::X86_64>(args, done_closure)
-            }
-            arch::Architecture::AArch64 => {
-                link::<storage::InMemory, aarch64::AArch64>(args, done_closure)
-            }
+            arch::Architecture::X86_64 => link::<x86_64::X86_64>(args, done_closure),
+            arch::Architecture::AArch64 => link::<aarch64::AArch64>(args, done_closure),
         }
     }
 
@@ -110,10 +105,7 @@ impl Linker {
 }
 
 #[tracing::instrument(skip_all, name = "Link")]
-fn link<S: storage::StorageModel, A: arch::Arch>(
-    args: &Args,
-    done_closure: Option<Box<dyn FnOnce()>>,
-) -> error::Result {
+fn link<A: arch::Arch>(args: &Args, done_closure: Option<Box<dyn FnOnce()>>) -> error::Result {
     args.setup_thread_pool()?;
     let mut output = elf_writer::Output::new(args);
     let input_data = input_data::InputData::from_args(args)?;
@@ -122,10 +114,10 @@ fn link<S: storage::StorageModel, A: arch::Arch>(
     let groups = grouping::group_files(files, args);
     let herd = bumpalo_herd::Herd::new();
     let mut symbol_db =
-        symbol_db::SymbolDb::<S>::build(&groups, input_data.version_script_data.as_ref(), args)?;
+        symbol_db::SymbolDb::build(&groups, input_data.version_script_data.as_ref(), args)?;
     let resolved = resolution::resolve_symbols_and_sections(&groups, &mut symbol_db, &herd)?;
-    let layout = layout::compute::<S, A>(&symbol_db, resolved, &mut output)?;
-    let output_file = output.write::<S, A>(&layout)?;
+    let layout = layout::compute::<A>(&symbol_db, resolved, &mut output)?;
+    let output_file = output.write::<A>(&layout)?;
     diff::maybe_diff()?;
 
     let scope = tracing::info_span!("Shutdown");
