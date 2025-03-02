@@ -3316,7 +3316,8 @@ impl<'data> EpilogueLayoutState<'data> {
             memory_offsets.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
-        // TODO: avoid this
+        // TODO: Is it possible avoid this allocation?
+        // I don't think so
         let mut verdefs = Vec::new();
 
         if let Some(verdef_info) = &self.verdef_info {
