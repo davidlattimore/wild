@@ -3213,8 +3213,9 @@ impl<'data> EpilogueLayoutState<'data> {
             common.allocate(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
+        // If we got only the base version, skip verdefs
         let verdef_entries = symbol_db.version_script.version_count();
-        if verdef_entries > 0 {
+        if verdef_entries > 1 {
             let base_name = symbol_db.args.soname.as_ref().map_or_else(
                 || {
                     symbol_db

@@ -68,11 +68,6 @@ pub(crate) fn maybe_forced_sysroot(path: &Path, sysroot: &Path) -> Option<Box<Pa
 /// A version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
 #[derive(Default)]
 pub(crate) struct VersionScript<'data> {
-    inner: Option<Inner<'data>>,
-}
-
-#[derive(Default)]
-struct Inner<'data> {
     /// For symbol visibility we only need to know whether the symbol is global or local.
     globals: MatchRules<'data>,
     locals: MatchRules<'data>,
@@ -125,15 +120,20 @@ impl<'data> VersionScript<'data> {
     #[tracing::instrument(skip_all, name = "Parse version script")]
     pub(crate) fn parse(data: &'data VersionScriptData) -> Result<VersionScript<'data>> {
         let mut tokens = Tokeniser::new(&data.raw);
-        let mut inner = Inner::default();
+        let mut version_script = Self::default();
 
         tokens.text = tokens.text.trim();
 
         let mut token = tokens.next().unwrap();
         // Simple version script, only defines symbols visibility
         if token.starts_with('{') {
-            parse_version_section(&mut tokens, &mut inner.locals, &mut inner.globals, None)?;
-            return Ok(VersionScript { inner: Some(inner) });
+            parse_version_section(
+                &mut tokens,
+                &mut version_script.locals,
+                &mut version_script.globals,
+                None,
+            )?;
+            return Ok(version_script);
         }
 
         loop {
@@ -142,12 +142,12 @@ impl<'data> VersionScript<'data> {
             let mut version_symbols = MatchRules::default();
             let parent = parse_version_section(
                 &mut tokens,
-                &mut inner.locals,
-                &mut inner.globals,
+                &mut version_script.locals,
+                &mut version_script.globals,
                 Some(&mut version_symbols),
             )?;
 
-            inner.versions.push(Version {
+            version_script.versions.push(Version {
                 name: token,
                 parent,
                 symbols: version_symbols,
@@ -161,53 +161,35 @@ impl<'data> VersionScript<'data> {
             };
         }
 
-        Ok(VersionScript { inner: Some(inner) })
+        Ok(version_script)
     }
 
     pub(crate) fn is_local(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
-        // TODO: Probably not the most efficient way to do this
-        let inner = if let Some(inner) = &self.inner {
-            inner
-        } else {
+        if self.globals.matches(name) {
             return false;
-        };
-        inner.is_local(name)
+        }
+        self.locals.matches(name)
     }
 
+    /// Number of versions in the Version Script, incremented to factor in the base version.
     pub(crate) fn version_count(&self) -> u16 {
-        let inner = if let Some(inner) = &self.inner {
-            inner
+        if self.versions.len() > 1 {
+            self.versions.len() as u16 + 1
         } else {
-            return 0;
-        };
-        inner.versions.len() as u16 + 1
+            0
+        }
     }
     pub(crate) fn parent_count(&self) -> u16 {
-        let inner = if let Some(inner) = &self.inner {
-            inner
-        } else {
-            return 0;
-        };
-        inner.versions.iter().filter(|v| v.parent.is_some()).count() as u16
+        self.versions.iter().filter(|v| v.parent.is_some()).count() as u16
     }
     pub(crate) fn version_iter(&self) -> impl Iterator<Item = &Version> {
-        let inner = if let Some(inner) = &self.inner {
-            inner
-        } else {
-            return [].iter();
-        };
-        inner.versions.iter()
+        self.versions.iter()
     }
     pub(crate) fn version_for_symbol(
         &self,
         name: &PreHashed<UnversionedSymbolName>,
     ) -> Option<u16> {
-        let inner = if let Some(inner) = &self.inner {
-            inner
-        } else {
-            return None;
-        };
-        inner.versions.iter().enumerate().find_map(|(number, ver)| {
+        self.versions.iter().enumerate().find_map(|(number, ver)| {
             // local: 0, global: 1, base: 2, actual version: X
             ver.is_present(name)
                 .then(|| number as u16 + object::elf::VER_NDX_GLOBAL + 1)
@@ -279,15 +261,6 @@ fn parse_version_section<'data>(
         }
     }
     bail!("Missing close '}}' in version script");
-}
-
-impl Inner<'_> {
-    fn is_local(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
-        if self.globals.matches(name) {
-            return false;
-        }
-        self.locals.matches(name)
-    }
 }
 
 impl Version<'_> {
@@ -572,9 +545,8 @@ mod tests {
             .into(),
         };
         let script = VersionScript::parse(&data).unwrap();
-        let inner = script.inner.unwrap();
         assert_equal(
-            inner
+            script
                 .globals
                 .exact
                 .iter()
@@ -582,14 +554,14 @@ mod tests {
             ["foo"],
         );
         assert_equal(
-            inner
+            script
                 .globals
                 .prefixes
                 .iter()
                 .map(|s| std::str::from_utf8(s).unwrap()),
             ["bar"],
         );
-        assert!(inner.locals.matches_all);
+        assert!(script.locals.matches_all);
     }
 
     #[test]
@@ -610,10 +582,9 @@ mod tests {
             .into(),
         };
         let script = VersionScript::parse(&data).unwrap();
-        let inner = script.inner.unwrap();
-        assert_eq!(inner.versions.len(), 2);
+        assert_eq!(script.versions.len(), 2);
         assert_equal(
-            inner
+            script
                 .globals
                 .exact
                 .iter()
@@ -622,7 +593,7 @@ mod tests {
             ["foo1", "foo2"],
         );
         assert_equal(
-            inner
+            script
                 .locals
                 .prefixes
                 .iter()
@@ -630,7 +601,7 @@ mod tests {
             ["old"],
         );
 
-        let version = &inner.versions[0];
+        let version = &script.versions[0];
         assert_eq!(version.name, "VERS_1.1");
         assert_eq!(version.parent, None);
         assert_equal(
@@ -650,7 +621,7 @@ mod tests {
             ["old"],
         );
 
-        let version = &inner.versions[1];
+        let version = &script.versions[1];
         assert_eq!(version.name, "VERS_1.2");
         assert_eq!(version.parent, Some("VERS_1.1"));
         assert_equal(
