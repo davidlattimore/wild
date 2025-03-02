@@ -424,6 +424,7 @@ impl crate::arch::RType for RType {
                 size: linker_utils::elf::RelocationSize::ByteSize(size_in_bytes),
                 mask: None,
                 range: linker_utils::elf::AllowedRange::no_check(),
+                alignment: 1,
             }
         })
     }
