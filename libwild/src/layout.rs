@@ -3165,8 +3165,8 @@ impl<'data> EpilogueLayoutState<'data> {
                 dependencies_count,
             });
 
-            for (_, name, _) in symbol_db.version_script.version_iter() {
-                common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
+            for version in symbol_db.version_script.version_iter() {
+                common.allocate(part_id::DYNSTR, version.name.len() as u64 + 1);
             }
         }
 
@@ -3268,16 +3268,16 @@ impl<'data> EpilogueLayoutState<'data> {
                 is_base: true,
             });
 
-            for (i, (_, name, parent)) in resources
+            for (i, version) in resources
                 .symbol_db
                 .version_script
                 .version_iter()
                 .enumerate()
             {
                 verdefs.push(VersionDef {
-                    name: name.as_bytes().to_vec(),
+                    name: version.name.as_bytes().to_vec(),
                     index: (i + 2) as u16,
-                    parent_name: parent.map(|p| p.as_bytes().to_vec()),
+                    parent_name: version.parent.map(|p| p.as_bytes().to_vec()),
                     is_base: false,
                 });
             }
