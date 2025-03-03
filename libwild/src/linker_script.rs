@@ -457,7 +457,8 @@ fn take_up_to<'a>(input: &mut &'a str, pattern: &str) -> Result<&'a str> {
 mod tests {
     use super::*;
     use crate::args::InputSpec;
-    use itertools::{Itertools, assert_equal};
+    use itertools::Itertools;
+    use itertools::assert_equal;
 
     #[test]
     fn test_tokenisation() {
