@@ -23,7 +23,7 @@ dhat = { version = "0.3.3", optional = true }
 os_info = "3.10.0"
 
 [dev-dependencies]
-anyhow = "1.0.95"
+anyhow = "1.0.97"
 wait-timeout = "0.2.1"
 itertools = "0.14.0"
 object = { version = "0.36.7", default-features = false, features = [
@@ -34,7 +34,7 @@ object = { version = "0.36.7", default-features = false, features = [
 ] }
 linker-diff = { path = "../linker-diff", version = "0.4.0" }
 which = "7.0.2"
-rstest = "0.24.0"
+rstest = "0.25.0"
 fd-lock = "4.0.2"
 strum = { version = "0.27.1", features = ["derive"] }
 strum_macros = "0.27.1"
