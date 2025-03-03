@@ -9,9 +9,9 @@ edition.workspace = true
 
 [dependencies]
 ahash = { version = "0.8.11", default-features = false, features = ["std"] }
-anyhow = "1.0.95"
-bitflags = "2.8.0"
-bytemuck = { version = "1.21.0", features = ["derive"] }
+anyhow = "1.0.97"
+bitflags = "2.9.0"
+bytemuck = { version = "1.22.0", features = ["derive"] }
 crossbeam-queue = "0.3.12"
 crossbeam-utils = "0.8.21"
 libc = "0.2"
@@ -39,12 +39,12 @@ tracing-subscriber = { version = "0.3.19", default-features = false, features = 
 sharded-offset-map = "0.2.0"
 sharded-vec-writer = "0.3.0"
 itertools = "0.14.0"
-bytesize = "2.0.0"
-flate2 = "1.0.35"
+bytesize = "2.0.1"
+flate2 = "1.1.0"
 bumpalo-herd = "0.1.2"
-zstd = "0.13.2"
-blake3 = { version = "1.5.5", features = ["rayon"] }
-uuid = { version = "1.13.1", features = ["v4"] }
+zstd = "0.13.3"
+blake3 = { version = "1.6.1", features = ["rayon"] }
+uuid = { version = "1.15.1", features = ["v4"] }
 hex = "0.4.3"
 atomic-take = "1.1.0"
 normalize-path = "0.2.1"
