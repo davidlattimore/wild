@@ -595,6 +595,9 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                 }
                 "ExpectError" => {
                     config.expect_error = Some(arg.trim().to_owned());
+                    // If there are errors, then there's nothing to run and nothing to diff.
+                    config.should_run = false;
+                    config.should_diff = false;
                 }
                 "SecEquiv" => config.section_equiv.push(
                     arg.trim()
