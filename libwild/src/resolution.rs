@@ -28,7 +28,6 @@ use crate::part_id;
 use crate::part_id::PartId;
 use crate::part_id::TemporaryPartId;
 use crate::part_id::UnresolvedSection;
-use crate::sharding::ShardKey;
 use crate::string_merging::MergedStringsSection;
 use crate::string_merging::StringMergeSectionExtra;
 use crate::string_merging::StringMergeSectionSlot;
@@ -39,7 +38,6 @@ use crate::symbol_db::RawSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
-use ahash::RandomState;
 use anyhow::Context;
 use anyhow::bail;
 use atomic_take::AtomicTake;
@@ -54,9 +52,6 @@ use object::LittleEndian;
 use object::read::elf::Sym as _;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
-use std::collections::HashMap;
-use std::mem::replace;
-use std::mem::take;
 use std::num::NonZeroU32;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
@@ -88,8 +83,8 @@ pub fn resolve_symbols_and_sections<'data>(
     let custom_start_stop_defs =
         canonicalise_undefined_symbols(undefined_symbols, &output_sections, &groups, symbol_db)?;
 
-    resolve_alternative_symbol_definitions(symbol_db, &groups)?;
-    resolve_alternative_versioned_symbol_definitions(symbol_db, &groups)?;
+    crate::symbol_db::resolve_alternative_symbol_definitions(symbol_db, &groups)?;
+    crate::symbol_db::resolve_alternative_versioned_symbol_definitions(symbol_db, &groups)?;
 
     groups[PRELUDE_FILE_ID.group()].files[PRELUDE_FILE_ID.file()] =
         ResolvedFile::Prelude(ResolvedPrelude {
@@ -356,139 +351,6 @@ impl ResolutionResources<'_, '_, '_> {
             thread.unpark();
         }
     }
-}
-
-/// For each symbol that has multiple definitions, some of which may be weak, some strong, some
-/// "common" symbols and some in archive entries that weren't loaded, resolve which version of the
-/// symbol we're using. The symbol we select will be the first strongly defined symbol in a loaded
-/// object, or if there are no strong definitions, then the first definition in a loaded object. If
-/// a symbol definition is a common symbol, then the largest definition will be used.
-#[tracing::instrument(skip_all, name = "Resolve alternative symbol definitions")]
-fn resolve_alternative_symbol_definitions<'data>(
-    symbol_db: &mut SymbolDb<'data>,
-    resolved: &[ResolvedGroup],
-) -> Result {
-    // For now, we do this from a single thread since we don't expect a lot of symbols will have
-    // multiple definitions. If it turns out that there are cases where it's actually taking
-    // significant time, then we could parallelise this without too much work.
-    let previous_definitions = take(&mut symbol_db.alternative_definitions);
-    let symbols_with_alternatives = take(&mut symbol_db.symbols_with_alternatives);
-    let mut alternatives = Vec::new();
-
-    for first in symbols_with_alternatives {
-        alternatives.clear();
-        let mut symbol_id = first;
-
-        loop {
-            symbol_id = previous_definitions[symbol_id.as_usize()];
-            if symbol_id.is_undefined() {
-                break;
-            }
-
-            debug_assert_bail!(
-                !alternatives.contains(&symbol_id),
-                "Loop in symbol replacements for symbol {symbol_id}: {alternatives:?}"
-            );
-
-            alternatives.push(symbol_id);
-        }
-
-        let selected = select_symbol(symbol_db, first, &alternatives, resolved);
-        symbol_db.replace_definition(first, selected);
-
-        for &alt in &alternatives {
-            symbol_db.replace_definition(alt, selected);
-        }
-    }
-
-    Ok(())
-}
-
-#[tracing::instrument(skip_all, name = "Resolve alternative versioned symbol definitions")]
-fn resolve_alternative_versioned_symbol_definitions<'data>(
-    symbol_db: &mut SymbolDb<'data>,
-    resolved: &[ResolvedGroup],
-) -> Result {
-    let all_alternatives = replace(
-        &mut symbol_db.alternative_versioned_definitions,
-        HashMap::with_hasher(RandomState::new()),
-    );
-
-    for (first, alternatives) in all_alternatives {
-        let selected = select_symbol(symbol_db, first, &alternatives, resolved);
-        symbol_db.replace_definition(first, selected);
-
-        for &alt in &alternatives {
-            symbol_db.replace_definition(alt, selected);
-        }
-    }
-
-    Ok(())
-}
-
-/// Selects which version of the symbol to use.
-fn select_symbol(
-    symbol_db: &SymbolDb,
-    symbol_id: SymbolId,
-    alternatives: &[SymbolId],
-    resolved: &[ResolvedGroup],
-) -> SymbolId {
-    let first_strength = symbol_db.symbol_strength(symbol_id, resolved);
-    if first_strength == SymbolStrength::Strong {
-        return symbol_id;
-    }
-    let mut max_common = None;
-    for &alt in alternatives.iter().rev() {
-        // Dynamic symbols, even strong ones, don't override non-dynamic weak symbols.
-        if symbol_db
-            .symbol_value_flags(alt)
-            .contains(ValueFlags::DYNAMIC)
-        {
-            continue;
-        }
-        let strength = symbol_db.symbol_strength(alt, resolved);
-        match strength {
-            SymbolStrength::Strong => return alt,
-            SymbolStrength::Common(size) => {
-                if let Some((previous_size, _)) = max_common {
-                    if size <= previous_size {
-                        continue;
-                    }
-                }
-                max_common = Some((size, alt));
-            }
-            _ => {}
-        }
-    }
-    if let Some((_, alt)) = max_common {
-        return alt;
-    }
-    if first_strength != SymbolStrength::Undefined {
-        return symbol_id;
-    }
-    for &alt in alternatives.iter().rev() {
-        let strength = symbol_db.symbol_strength(alt, resolved);
-        if strength != SymbolStrength::Undefined {
-            return alt;
-        }
-    }
-    symbol_id
-}
-
-#[derive(PartialEq, Eq, Clone, Copy)]
-enum SymbolStrength {
-    /// The object containing this symbol wasn't loaded, so the definition can be ignored.
-    Undefined,
-
-    /// The object weakly defines the symbol.
-    Weak,
-
-    /// The object strongly defines the symbol.
-    Strong,
-
-    /// The symbol is a "common" symbol with the specified size. The definition with the largest
-    /// size will be selected.
-    Common(u64),
 }
 
 pub(crate) struct ResolvedGroup<'data> {
@@ -1104,29 +966,6 @@ impl ValueFlags {
 impl std::fmt::Display for ValueFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         bitflags::parser::to_writer(self, f)
-    }
-}
-
-impl SymbolDb<'_> {
-    fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> SymbolStrength {
-        let file_id = self.file_id_for_symbol(symbol_id);
-        if let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] {
-            let local_index = symbol_id.to_input(obj.symbol_id_range);
-            let Ok(obj_symbol) = obj.object.symbol(local_index) else {
-                // Errors from this function should have been reported elsewhere.
-                return SymbolStrength::Undefined;
-            };
-            let e = LittleEndian;
-            if obj_symbol.is_weak() {
-                SymbolStrength::Weak
-            } else if obj_symbol.is_common(e) {
-                SymbolStrength::Common(obj_symbol.st_size(e))
-            } else {
-                SymbolStrength::Strong
-            }
-        } else {
-            SymbolStrength::Undefined
-        }
     }
 }
 
