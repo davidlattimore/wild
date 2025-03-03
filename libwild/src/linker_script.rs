@@ -190,7 +190,6 @@ impl<'data> VersionScript<'data> {
         name: &PreHashed<UnversionedSymbolName>,
     ) -> Option<u16> {
         self.versions.iter().enumerate().find_map(|(number, ver)| {
-            // local: 0, global: 1, base: 2, actual version: X
             ver.is_present(name)
                 .then(|| number as u16 + object::elf::VER_NDX_GLOBAL + 1)
         })
