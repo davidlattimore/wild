@@ -229,17 +229,33 @@ impl<'data> ArchiveContent<'data> {
     pub(crate) fn data_range(&self) -> Range<usize> {
         self.data_offset..self.data_offset + self.entry_data.len()
     }
+
+    // Parse the identifier as a reference to extended filenames
+    pub(crate) fn parse_as_thin_reference(&self, filenames: ExtendedFilenames<'data>) -> Result<&'data str> {
+        // TODO: dedupe?
+        let content = self.ident.strip_prefix("/")
+            .with_context(|| format!("Not a thin entry: {}", &self.ident))?;
+        let addr: usize = content.parse()
+            .with_context(|| format!("Invalid offset: {}", content))?;
+
+        if addr >= filenames.data.len() {
+            bail!("Thin entry filename offset ({}) exceeds extended filenames length ({})", addr, filenames.data.len());
+        }
+        let rest = &filenames.data[addr..];
+        let end = memchr::memchr(b'\n', rest)
+            .with_context(|| "Malformed filename")?;
+        if rest[end-1] != b'/' {
+            bail!("Malformed filename");
+        }
+        let res = std::str::from_utf8(&rest[..end-1])
+            .with_context(|| "Invalid UTF-8 in filename")?;
+        Ok(&res)
+    }
 }
 
 impl<'data> Identifier<'data> {
     pub(crate) fn as_slice(&self) -> &'data [u8] {
         let end = memchr::memchr(b'/', self.data).unwrap_or(self.data.len());
-        &self.data[..end]
-    }
-
-    // Get the filename indicated by this identifier
-    pub(crate) fn as_filename(&self) -> &'data [u8] {
-        let end = memchr::memchr(b'\n', self.data).unwrap_or(self.data.len());
         &self.data[..end]
     }
 }

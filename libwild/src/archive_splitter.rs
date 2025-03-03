@@ -6,14 +6,26 @@ use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::InputData;
 use crate::input_data::InputRef;
+use crate::input_data::mmap_file;
+use memmap2::Mmap;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use std::fmt::Display;
+use std::path::PathBuf;
+
+pub(crate) enum DataKind<'data> {
+    // Data originating from the archive itself,
+    // e.g. typical archive contents
+    InlineData(&'data [u8]),
+    // Data originating from a freshly opened file,
+    // e.g. files referenced by thin archive
+    NewFileData(Mmap),
+}
 
 pub(crate) struct InputBytes<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) kind: FileKind,
-    pub(crate) data: &'data [u8],
+    pub(crate) data: DataKind<'data>,
     pub(crate) modifiers: Modifiers,
 }
 
@@ -41,14 +53,22 @@ pub fn split_archives<'data>(input_data: &'data InputData) -> Result<Vec<InputBy
                                         from: archive_entry.data_range(),
                                     }),
                                 },
-                                data: archive_entry.entry_data,
+                                data: DataKind::InlineData(archive_entry.entry_data),
                                 modifiers: f.modifiers,
                             });
                         },
                         ArchiveEntry::FileReference(archive_entry) => {
-                            let filename = archive_entry.identifier(extended_filenames).as_filename();
-                            let filename = std::str::from_utf8(filename).unwrap_or("<invalid filename>");
-                            println!("TODO: read referenced file `{}`", filename);
+                            let fname = archive_entry.parse_as_thin_reference(extended_filenames.unwrap())?;
+                            let bytes = mmap_file(&PathBuf::from(fname), false)?;
+                            outputs.push(InputBytes {
+                                kind: f.kind,
+                                input: InputRef {
+                                    file: f,
+                                    entry: None, // TODO: Populate?
+                                },
+                                data: DataKind::NewFileData(bytes),
+                                modifiers: f.modifiers,
+                            });
                         },
                     }
                 }
@@ -60,7 +80,7 @@ pub fn split_archives<'data>(input_data: &'data InputData) -> Result<Vec<InputBy
                     entry: None,
                 },
                 kind: f.kind,
-                data: f.data(),
+                data: DataKind::InlineData(f.data()),
                 modifiers: f.modifiers,
             }]),
         })
