@@ -1,9 +1,10 @@
 //#AbstractConfig:default
-//#DiffEnabled:false
-//#RunEnabled:false
 
 //#Config:shared-lib:default
-//#LinkArgs:--shared
+//#LinkArgs:--shared -z now
+//#RunEnabled:false
+//#DiffIgnore:.dynamic.DT_RELA*
+//#DiffIgnore:file-header.entry
 
 //#Config:no-undefined:default
 //#LinkArgs:--shared --no-undefined
