@@ -33,7 +33,7 @@ cargo install --locked wild-linker
 
 ### Build from git head
 
-To build and install, you can run:
+To build and install the latest, unreleased code:
 
 ```sh
 cargo install --locked --bin wild --git https://github.com/davidlattimore/wild.git wild-linker
@@ -120,7 +120,7 @@ The goal of Wild is to eventually be very fast via incremental linking. However,
 as fast as we can be for non-incremental linking and for the initial link when incremental linking
 is enabled.
 
-See [BENCHMARKING.md](BENCHMARKING.md) for more details on running benchmarking.
+See [BENCHMARKING.md](BENCHMARKING.md) for more details on running benchmarks.
 
 All benchmarks are run with output to a tmpfs.
 
@@ -163,12 +163,12 @@ Summary
 Throttle pkg: 0 core: 0 ms: 0 temp: +59.0°C
 ```
 
-Note, the user and system CPU times for mold and wild by when run with default flags are
-meaningless, since these linkers fork by default and hyperfine doesn't see the CPU usage of the
-forked subprocess. For accurate CPU usage, see the no-fork variants. For later benchmarks, we always
-include `--no-fork` for these linkers.
+Note, the user and system CPU times for mold and wild when run with default flags are meaningless,
+since these linkers fork by default and hyperfine doesn't see the CPU usage of the forked
+subprocess. For accurate CPU usage, see the no-fork variants. For later benchmarks, we always
+include `--no-fork` for these linkers. This makes each of these linkers slower by about 10%.
 
-GNU ld is excluded from the benchmarks because it's speed is so totally different to the other
+GNU ld is excluded from the benchmarks because its speed is so totally different to the other
 linkers that it makes it hard to compare. But for reference, here is the time for GNU ld for this
 benchmark:
 

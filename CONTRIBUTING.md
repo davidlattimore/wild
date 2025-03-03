@@ -13,6 +13,7 @@ You're also welcome to reach out directly to the following people:
 
 * [David Lattimore](https://davidlattimore.github.io/about/) - original author and primary
   maintainer. I love talking about this stuff, so feel free to set up a video call to discuss.
+  You're also welcome to PM me on the [rust-lang zulip](https://rust-lang.zulipchat.com/).
 
 ## Ways you can contribute
 
@@ -115,7 +116,7 @@ why it happened, then switching to returning an error is recommended.
 
 ## Building wild with wild
 
-You can add or modify a `.cargo/config.toml` file to change the linked used to build `wild` to be `wild`!
+You can add or modify a `.cargo/config.toml` file to change the linker used to build `wild` to be `wild`!
 
 The below example has entries for `musl` and `gnu` ABI targets:
 
@@ -169,9 +170,11 @@ linkers need to do.
 * If you'd like to work on something that someone said they're working on, but they haven't provided
   an update in a while, feel free to politely ask if they're still working on it and mention that if
   they're not, you'd like to have a go.
-* You can find issues that have been tagged with [detailed
-  instructions](https://github.com/davidlattimore/wild/issues?q=is%3Aissue+is%3Aopen+label%3A%22detailed+instructions%22).
 * We may on occasion tag issues as [good first
   issue](https://github.com/davidlattimore/wild/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22).
-  One person's good first issue might be too hard or too easy for another person, so this is a
+  One person's good-first-issue might be too hard or too easy for another person, so this is a
   somewhat hard judgement to make.
+* You're welcome to help out with other unassigned issues too, even if they don't have tags. If
+  you're interested in possibly working on such an issue, comment on it and we'll see what guidance
+  we can provide. This will also allow us to assign the issue to you so that other's don't duplicate
+  efforts.
