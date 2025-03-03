@@ -134,8 +134,8 @@ Benchmark 3 (56 runs): /tmp/wild/ripgrep/6/run-with wild
 ```
 
 NOTE: Both `mold` and `wild` fork a child process and perform linking in it. Thus, the values for
-`peak_rss`, `User` and `System`  corresponds to the parent process only, and hence are not
-representative of real use by the linker.
+`peak_rss`, `User` and `System` are for the parent process only, and hence are not representative of
+real use by the linker. To avoid this problem, pass `--no-fork` to mold and wild.
 
 NOTE: `poop` uses the first command as the reference the others are compared against, so if focusing
 on wild, you might want to re-order the commands and invoke `poop` thus:
@@ -180,7 +180,7 @@ section.
 ### Tmpfs
 
 As discussed in the last section, writing to a physical disk can cause inconsistent benchmark
-results. It can also contribute wearing out your SSD. For these reasons, it's recommended to
+results. It can also contribute to wearing out your SSD. For these reasons, it's recommended to
 benchmark with the output file on tmpfs.
 
 If you don't already have a suitable tmpfs to use, you can create one something like the following:
