@@ -150,17 +150,21 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         &mut group_states,
         &symbol_resolution_flags,
     )?;
-    let symbol_resolution_flags: Vec<ResolutionFlags> = symbol_resolution_flags
+
+    let mut symbol_resolution_flags: Vec<ResolutionFlags> = symbol_resolution_flags
         .into_iter()
         .map(|f| f.into_non_atomic())
         .collect();
     let non_addressable_counts = apply_non_addressable_indexes(&mut group_states, symbol_db.args)?;
+
     let section_part_sizes = compute_total_section_part_sizes(
         &mut group_states,
         &mut output_sections,
-        &symbol_resolution_flags,
+        &mut symbol_resolution_flags,
         gc_outputs.sections_with_content,
-    );
+        symbol_db,
+    )?;
+
     let section_part_layouts =
         layout_section_parts(&section_part_sizes, &output_sections, symbol_db.args);
     let section_layouts = layout_sections(&section_part_layouts);
@@ -176,11 +180,13 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
 
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(&section_part_layouts);
     let starting_mem_offsets_by_group = compute_start_offsets_by_group(&group_states, mem_offsets);
+
     let merged_string_start_addresses = MergedStringStartAddresses::compute(
         &output_sections,
         &starting_mem_offsets_by_group,
         &merged_strings,
     );
+
     let mut symbol_resolutions = SymbolResolutions {
         resolutions: Vec::with_capacity(symbol_db.num_symbols()),
     };
@@ -200,17 +206,20 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         merged_string_start_addresses: &merged_string_start_addresses,
         merged_strings: &merged_strings,
     };
+
     let group_layouts = compute_symbols_and_layouts(
         group_states,
         starting_mem_offsets_by_group,
         &mut per_group_res_writers,
         &resources,
     )?;
+
     for shard in per_group_res_writers {
         res_writer
             .try_return_shard(shard)
             .context("Group resolutions not filled")?;
     }
+
     update_dynamic_symbol_resolutions(&group_layouts, &mut symbol_resolutions.resolutions);
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, symbol_db.args)?;
 
@@ -1705,25 +1714,30 @@ fn compute_segment_layout(
 fn compute_total_section_part_sizes(
     group_states: &mut [GroupState],
     output_sections: &mut OutputSections,
-    symbol_resolution_flags: &[ResolutionFlags],
+    symbol_resolution_flags: &mut [ResolutionFlags],
     sections_with_content: OutputSectionMap<bool>,
-) -> OutputSectionPartMap<u64> {
+    symbol_db: &SymbolDb,
+) -> Result<OutputSectionPartMap<u64>> {
     let mut total_sizes: OutputSectionPartMap<u64> = output_sections.new_part_map();
     for group_state in group_states.iter() {
         total_sizes.merge(&group_state.common.mem_sizes);
     }
+
     let first_group = group_states.first_mut().unwrap();
     let Some(FileLayoutState::Prelude(internal_layout)) = first_group.files.first_mut() else {
         unreachable!();
     };
-    internal_layout.determine_header_sizes(
+
+    internal_layout.apply_late_size_adjustments(
         &mut first_group.common,
         &mut total_sizes,
         sections_with_content,
         output_sections,
         symbol_resolution_flags,
-    );
-    total_sizes
+        symbol_db,
+    )?;
+
+    Ok(total_sizes)
 }
 
 /// This is similar to computing start addresses, but is used for things that aren't addressable,
@@ -2170,7 +2184,6 @@ impl<'data> FileLayoutState<'data> {
                 s.finalise_symbol_sizes(common, symbol_db, symbol_resolution_flags)?;
             }
             FileLayoutState::Prelude(s) => {
-                s.finalise_sizes(common, symbol_db, symbol_resolution_flags)?;
                 s.finalise_symbol_sizes(common, symbol_db, symbol_resolution_flags)?;
             }
             FileLayoutState::Epilogue(s) => {
@@ -2717,36 +2730,99 @@ impl PreludeLayoutState {
                 common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
             }
         }
-    }
 
-    fn finalise_sizes(
-        &self,
-        common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'_>,
-        symbol_resolution_flags: &[AtomicResolutionFlags],
-    ) -> Result {
-        if !symbol_db.args.strip_all {
-            self.internal_symbols.allocate_symbol_table_sizes(
-                common,
-                symbol_db,
-                symbol_resolution_flags,
-            )?;
-        }
-
-        if symbol_db.args.should_write_eh_frame_hdr {
+        if args.should_write_eh_frame_hdr {
             common.allocate(part_id::EH_FRAME_HDR, size_of::<elf::EhFrameHdr>() as u64);
         }
+    }
+
+    /// This function is where we determine sizes that depend on other sizes. For example, the size
+    /// of the section headers table, which depends on which sections we're writing which depends on
+    /// which sections are non-empty. We also decide which internal symtab entries we'll write here,
+    /// since that also depends on which sections we're writing.
+    fn apply_late_size_adjustments(
+        &mut self,
+        common: &mut CommonGroupState,
+        total_sizes: &mut OutputSectionPartMap<u64>,
+        sections_with_content: OutputSectionMap<bool>,
+        output_sections: &mut OutputSections,
+        symbol_resolution_flags: &mut [ResolutionFlags],
+        symbol_db: &SymbolDb,
+    ) -> Result {
+        // Total section  sizes have already been computed. So any allocations we do need to update
+        // both `total_sizes` and the size records in `common`. We track the extra sizes in
+        // `extra_sizes` which we can then later add to both.
+        let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.num_parts());
+
+        self.determine_header_sizes(
+            total_sizes,
+            &mut extra_sizes,
+            sections_with_content,
+            output_sections,
+            symbol_resolution_flags,
+        );
+
+        self.allocate_symbol_table_sizes(
+            output_sections,
+            symbol_resolution_flags,
+            symbol_db,
+            &mut extra_sizes,
+        )?;
+
+        // We need to allocate both our own size record and the group totals, since they've already
+        // been computed.
+        common.mem_sizes.merge(&extra_sizes);
+        total_sizes.merge(&extra_sizes);
 
         Ok(())
     }
 
-    /// This function is where we determine sizes that depend on other sizes. For example, the size
-    /// of the section headers table depends on which sections we're writing which depends on which
-    /// sections are non-empty.
+    /// Allocates space for our internal symbols. For unreferenced symbols, we also update the
+    /// symbol so that it is treated as referenced, but only for symbols in sections that we're
+    /// going to emit.
+    fn allocate_symbol_table_sizes(
+        &self,
+        output_sections: &OutputSections,
+        symbol_resolution_flags: &mut [ResolutionFlags],
+        symbol_db: &SymbolDb<'_>,
+        extra_sizes: &mut OutputSectionPartMap<u64>,
+    ) -> Result<(), Error> {
+        if symbol_db.args.strip_all {
+            return Ok(());
+        }
+
+        self.internal_symbols.allocate_symbol_table_sizes(
+            extra_sizes,
+            symbol_db,
+            |symbol_id, def_info| {
+                let resolution_flags = &mut symbol_resolution_flags[symbol_id.as_usize()];
+
+                // If the symbol is referenced, then we keep it.
+                if !resolution_flags.is_empty() {
+                    return true;
+                }
+
+                // Keep the symbol if we're going to write the section, even though the symbol isn't
+                // referenced. It can be useful to have symbols like _GLOBAL_OFFSET_TABLE_ when
+                // using a debugger.
+                if def_info.section_id().is_some_and(|output_section_id| {
+                    output_sections.will_emit_section(output_section_id)
+                }) {
+                    // Mark the symbol as referenced so that we later generate a resolution for
+                    // it and subsequently write it to the symbol table.
+                    *resolution_flags |= ResolutionFlags::DIRECT;
+                    true
+                } else {
+                    false
+                }
+            },
+        )
+    }
+
     fn determine_header_sizes(
         &mut self,
-        common: &mut CommonGroupState,
-        total_sizes: &mut OutputSectionPartMap<u64>,
+        total_sizes: &OutputSectionPartMap<u64>,
+        extra_sizes: &mut OutputSectionPartMap<u64>,
         sections_with_content: OutputSectionMap<bool>,
         output_sections: &mut OutputSections,
         symbol_resolution_flags: &[ResolutionFlags],
@@ -2756,20 +2832,20 @@ impl PreludeLayoutState {
         // Determine which sections to keep. To start with, we keep all sections into which we've
         // loaded an input section. Note, this includes where the input section and even the output
         // section is empty. We still need the output section as it may contain symbols.
-        let mut keep_sections = sections_with_content.into_raw_values();
+        let mut keep_sections = sections_with_content;
 
         // Next, keep any sections for which we've recorded a non-zero size, even if we didn't
         // record the loading of an input section. This covers sections where we generate content.
         total_sizes.map(|part_id, size| {
             if *size > 0 {
-                keep_sections[part_id.output_section_id().as_usize()] = true;
+                *keep_sections.get_mut(part_id.output_section_id()) = true;
             }
         });
 
         // Keep any sections that we've said we want to keep regardless.
         for section_id in output_section_id::built_in_section_ids() {
             if section_id.built_in_details().keep_if_empty {
-                keep_sections[section_id.as_usize()] = true;
+                *keep_sections.get_mut(section_id) = true;
             }
         }
 
@@ -2780,18 +2856,18 @@ impl PreludeLayoutState {
             .for_each(|(symbol_state, definition)| {
                 if !symbol_state.is_empty() {
                     if let Some(section_id) = definition.section_id() {
-                        keep_sections[section_id.as_usize()] = true;
+                        *keep_sections.get_mut(section_id) = true;
                     }
                 }
             });
-        let num_sections = keep_sections.iter().filter(|p| **p).count();
+        let num_sections = keep_sections.values_iter().filter(|p| **p).count();
 
         // Compute output indexes of each of section.
         let mut next_output_index = 0;
         let mut output_section_indexes = vec![None; output_sections.num_sections()];
         for event in output_sections.sections_and_segments_events() {
             if let OrderEvent::Section(id) = event {
-                if keep_sections[id.as_usize()] {
+                if *keep_sections.get(id) {
                     output_section_indexes[id.as_usize()] = Some(next_output_index);
                     next_output_index += 1;
                 }
@@ -2807,7 +2883,7 @@ impl PreludeLayoutState {
                 OrderEvent::SegmentStart(segment_id) => active_segments.push(segment_id),
                 OrderEvent::SegmentEnd(segment_id) => active_segments.retain(|a| *a != segment_id),
                 OrderEvent::Section(section_id) => {
-                    if keep_sections[section_id.as_usize()] {
+                    if *keep_sections.get(section_id) {
                         for segment_id in &active_segments {
                             keep_segments[segment_id.as_usize()] = true;
                         }
@@ -2830,8 +2906,6 @@ impl PreludeLayoutState {
         };
 
         // Allocate space for headers based on segment and section counts.
-        let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.num_parts());
-
         extra_sizes.increment(part_id::FILE_HEADER, u64::from(elf::FILE_HEADER_SIZE));
         extra_sizes.increment(part_id::PROGRAM_HEADERS, header_info.program_headers_size());
         extra_sizes.increment(part_id::SECTION_HEADERS, header_info.section_headers_size());
@@ -2841,11 +2915,6 @@ impl PreludeLayoutState {
             .map(|(_id, info)| info.name.len() as u64 + 1)
             .sum::<u64>();
         extra_sizes.increment(part_id::SHSTRTAB, self.shstrtab_size);
-
-        // We need to allocate both our own size record and the file totals, since they've already
-        // been computed.
-        common.mem_sizes.merge(&extra_sizes);
-        total_sizes.merge(&extra_sizes);
 
         self.header_info = Some(header_info);
     }
@@ -2905,27 +2974,24 @@ impl PreludeLayoutState {
 impl InternalSymbols {
     fn allocate_symbol_table_sizes(
         &self,
-        common: &mut CommonGroupState,
+        sizes: &mut OutputSectionPartMap<u64>,
         symbol_db: &SymbolDb<'_>,
-        symbol_resolution_flags: &[AtomicResolutionFlags],
+        mut should_keep_symbol: impl FnMut(SymbolId, &InternalSymDefInfo) -> bool,
     ) -> Result {
         // Allocate space in the symbol table for the symbols that we define.
-        for index in 0..self.symbol_definitions.len() {
+        for (index, def_info) in self.symbol_definitions.iter().enumerate() {
             let symbol_id = self.start_symbol_id.add_usize(index);
             if !symbol_db.is_canonical(symbol_id) || symbol_id.is_undefined() {
                 continue;
             }
-            // We don't put internal symbols in the symbol table if they aren't referenced.
-            if symbol_resolution_flags[symbol_id.as_usize()]
-                .get()
-                .is_empty()
-            {
+
+            if !should_keep_symbol(symbol_id, def_info) {
                 continue;
             }
 
-            common.allocate(part_id::SYMTAB_GLOBAL, size_of::<elf::SymtabEntry>() as u64);
+            sizes.increment(part_id::SYMTAB_GLOBAL, size_of::<elf::SymtabEntry>() as u64);
             let symbol_name = symbol_db.symbol_name(symbol_id)?;
-            common.allocate(part_id::STRTAB, symbol_name.len() as u64 + 1);
+            sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
         }
         Ok(())
     }
@@ -2965,7 +3031,7 @@ fn create_start_end_symbol_resolution(
     if !resources.symbol_db.is_canonical(symbol_id) {
         return None;
     }
-    // We don't put internal symbols in the symbol table if they aren't referenced.
+
     if resources.symbol_resolution_flags[symbol_id.as_usize()].is_empty() {
         return None;
     }
@@ -3065,9 +3131,14 @@ impl<'data> EpilogueLayoutState<'data> {
     ) -> Result {
         if !symbol_db.args.strip_all {
             self.internal_symbols.allocate_symbol_table_sizes(
-                common,
+                &mut common.mem_sizes,
                 symbol_db,
-                symbol_resolution_flags,
+                |symbol_id, _| {
+                    // For user-defined start/stop symbols, we only emit them if they're referenced.
+                    !symbol_resolution_flags[symbol_id.as_usize()]
+                        .get()
+                        .is_empty()
+                },
             )?;
         }
 

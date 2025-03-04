@@ -901,6 +901,11 @@ impl<'data> OutputSections<'data> {
             .flatten()
     }
 
+    /// Returns whether we're going to emit the specified section.
+    pub(crate) fn will_emit_section(&self, id: OutputSectionId) -> bool {
+        self.output_index_of_section(id).is_some()
+    }
+
     pub(crate) fn loadable_segment_id_for(&self, id: OutputSectionId) -> Option<ProgramSegmentId> {
         self.output_info(id).loadable_segment_id
     }

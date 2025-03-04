@@ -402,14 +402,14 @@ struct Assertions {
 #[derive(Clone, PartialEq, Eq)]
 struct ExpectedSymtabEntry {
     name: String,
-    section_name: String,
+    section_name: Option<String>,
 }
 
 impl ExpectedSymtabEntry {
     fn parse(s: &str) -> Result<Self> {
         let mut parts = s.split(' ').map(str::to_owned);
-        let (Some(name), Some(section), None) = (parts.next(), parts.next(), parts.next()) else {
-            bail!("ExpectSym requires {{symbol name}}, {{symbol section}}");
+        let (Some(name), section, None) = (parts.next(), parts.next(), parts.next()) else {
+            bail!("ExpectSym requires {{symbol name}} [{{symbol section}}]");
         };
         Ok(Self {
             name,
@@ -1406,12 +1406,13 @@ impl Assertions {
                     if let object::SymbolSection::Section(index) = sym.section() {
                         let section = obj.section_by_index(index)?;
                         let section_name = section.name()?;
-                        let exp_name = &exp.section_name;
-                        if section_name != exp_name {
-                            bail!(
-                                "Expected symbol `{name}` to be in section `{exp_name}`, but it was in \
-                                 `{section_name}`"
-                            );
+                        if let Some(exp_name) = exp.section_name.as_ref() {
+                            if section_name != exp_name {
+                                bail!(
+                                    "Expected symbol `{name}` to be in section `{exp_name}`, \
+                                    but it was in `{section_name}`"
+                                );
+                            }
                         }
                     }
                 }
