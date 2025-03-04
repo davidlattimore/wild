@@ -512,6 +512,16 @@ pub(crate) struct EpilogueLayoutState<'data> {
     gnu_hash_layout: Option<GnuHashLayout>,
     gnu_property_notes: Vec<GnuProperty>,
     build_id_size: Option<usize>,
+
+    verdef_info: Option<VerdefInfo>,
+}
+
+pub(crate) struct VerdefInfo {
+    /// Number of symbol versions and verdef entries that we're going to emit.
+    version_count: u16,
+    /// Verdef entry may depend zero or more other verdef entries. We only need
+    /// to know their count at this point.
+    dependencies_count: u16,
 }
 
 #[derive(Default, Debug)]
@@ -528,6 +538,7 @@ pub(crate) struct EpilogueLayout<'data> {
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     dynsym_start_index: u32,
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
+    pub(crate) verdefs: Vec<VersionDef>,
 }
 
 pub(crate) struct ObjectLayout<'data> {
@@ -570,7 +581,7 @@ pub(crate) struct DynamicLayout<'data> {
     /// Mapping from input versions to output versions. Input version 1 is at index 0.
     pub(crate) version_mapping: Vec<u16>,
 
-    pub(crate) verdef_info: Option<VerdefInfo<'data>>,
+    pub(crate) verneed_info: Option<VerneedInfo<'data>>,
 
     /// Whether this is the last DynamicLayout that puts content into .gnu.version_r.
     pub(crate) is_last_verneed: bool,
@@ -1169,12 +1180,12 @@ struct DynamicLayoutState<'data> {
     /// The contents of the .gnu.version section. Maps from symbol index to symbol version index.
     symbol_versions: &'data [Versym],
 
-    verdef_info: Option<VerdefInfo<'data>>,
+    verneed_info: Option<VerneedInfo<'data>>,
 
     non_addressable_indexes: NonAddressableIndexes,
 }
 
-pub(crate) struct VerdefInfo<'data> {
+pub(crate) struct VerneedInfo<'data> {
     pub(crate) defs: VerdefIterator<'data, FileHeader>,
     pub(crate) string_table_index: object::SectionIndex,
 
@@ -1738,12 +1749,22 @@ fn apply_non_addressable_indexes(
         // Allocate version indexes starting from after the local and global indexes.
         gnu_version_r_index: object::elf::VER_NDX_GLOBAL + 1,
     };
-    let mut counts = NonAddressableCounts { verneed_count: 0 };
+    let mut counts = NonAddressableCounts {
+        verneed_count: 0,
+        verdef_count: 0,
+    };
     for g in group_states.iter_mut() {
         for s in &mut g.files {
             match s {
                 FileLayoutState::Dynamic(s) => {
                     s.apply_non_addressable_indexes(&mut indexes, &mut counts)?;
+                }
+                FileLayoutState::Epilogue(s) => {
+                    counts.verdef_count += s
+                        .verdef_info
+                        .as_ref()
+                        .map(|v| v.version_count)
+                        .unwrap_or_default();
                 }
                 _ => {}
             }
@@ -1753,7 +1774,9 @@ fn apply_non_addressable_indexes(
     // If we were going to output symbol versions, but we didn't actually use any, then we drop all
     // versym allocations. This is partly to avoid wasting unnecessary space in the output file, but
     // mostly in order match what GNU ld does.
-    if counts.verneed_count == 0 && args.should_output_symbol_versions() {
+    if (counts.verneed_count == 0 && counts.verdef_count == 0)
+        && args.should_output_symbol_versions()
+    {
         for g in group_states {
             *g.common.mem_sizes.get_mut(part_id::GNU_VERSION) = 0;
         }
@@ -1770,6 +1793,8 @@ struct NonAddressableIndexes {
 pub(crate) struct NonAddressableCounts {
     /// The number of shared objects that want to emit a verneed record.
     pub(crate) verneed_count: u64,
+    /// The number of verdef records provided in version script.
+    pub(crate) verdef_count: u16,
 }
 
 /// Returns the starting memory address for each alignment within each segment.
@@ -2050,7 +2075,7 @@ fn set_last_verneed(
     if is_last_verneed {
         for file in files.iter_mut().rev() {
             if let FileLayout::Dynamic(d) = file {
-                if d.verdef_info.is_some() {
+                if d.verneed_info.is_some() {
                     d.is_last_verneed = true;
                     break;
                 }
@@ -2854,7 +2879,7 @@ impl PreludeLayoutState {
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
-        resources: &FinaliseLayoutResources,
+        resources: &FinaliseLayoutResources<'_, '_>,
     ) -> Result<PreludeLayout> {
         let header_layout = resources
             .section_layouts
@@ -3040,6 +3065,7 @@ impl<'data> EpilogueLayoutState<'data> {
             gnu_hash_layout: None,
             gnu_property_notes: Default::default(),
             build_id_size: Default::default(),
+            verdef_info: Default::default(),
         }
     }
 
@@ -3110,6 +3136,34 @@ impl<'data> EpilogueLayoutState<'data> {
             common.allocate(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
+        // If we got only the base version, skip verdefs
+        let verdef_entries = symbol_db.version_script.version_count();
+        if verdef_entries > 1 {
+            // TODO: I don't like having to keep in sync in two places (three if you count elf_writer.rs)
+            // If soname is not provided, allocate space for file name as the base version
+            if symbol_db.args.soname.is_none() {
+                let file_name_length = symbol_db.args.output.file_name().unwrap().len();
+                common.allocate(part_id::DYNSTR, file_name_length as u64 + 1);
+            }
+
+            let dependencies_count = symbol_db.version_script.parent_count();
+            common.allocate(
+                part_id::GNU_VERSION_D,
+                (size_of::<crate::elf::Verdef>() as u16 * verdef_entries
+                    + size_of::<crate::elf::Verdaux>() as u16
+                        * (verdef_entries + dependencies_count))
+                    .into(),
+            );
+            self.verdef_info = Some(VerdefInfo {
+                version_count: verdef_entries,
+                dependencies_count,
+            });
+
+            for version in symbol_db.version_script.version_iter() {
+                common.allocate(part_id::DYNSTR, version.name.len() as u64 + 1);
+            }
+        }
+
         Ok(())
     }
 
@@ -3178,12 +3232,63 @@ impl<'data> EpilogueLayoutState<'data> {
             memory_offsets.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
+        // TODO: Is it possible avoid this allocation?
+        // I don't think so
+        let mut verdefs = Vec::new();
+
+        if let Some(verdef_info) = &self.verdef_info {
+            verdefs.reserve(verdef_info.version_count.into());
+
+            let base_name = if resources.symbol_db.args.soname.is_some() {
+                &[]
+            } else {
+                resources
+                    .symbol_db
+                    .args
+                    .output
+                    .file_name()
+                    .unwrap()
+                    .as_encoded_bytes()
+            };
+
+            // Base version
+            verdefs.push(VersionDef {
+                name: base_name.to_vec(),
+                index: 1,
+                parent_name: None,
+                is_base: true,
+            });
+
+            for (i, version) in resources
+                .symbol_db
+                .version_script
+                .version_iter()
+                .enumerate()
+            {
+                verdefs.push(VersionDef {
+                    name: version.name.as_bytes().to_vec(),
+                    index: (i + 2) as u16,
+                    parent_name: version.parent.map(|p| p.as_bytes().to_vec()),
+                    is_base: false,
+                });
+            }
+
+            memory_offsets.increment(
+                part_id::GNU_VERSION_D,
+                (size_of::<crate::elf::Verdef>() as u16 * verdef_info.version_count
+                    + size_of::<crate::elf::Verdaux>() as u16
+                        * (verdef_info.version_count + verdef_info.dependencies_count))
+                    .into(),
+            );
+        }
+
         Ok(EpilogueLayout {
             internal_symbols: self.internal_symbols,
             gnu_hash_layout: self.gnu_hash_layout,
             dynamic_symbol_definitions: self.dynamic_symbol_definitions,
             dynsym_start_index,
             gnu_property_notes: self.gnu_property_notes,
+            verdefs,
         })
     }
 }
@@ -3235,7 +3340,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             symbol_versions_needed: Default::default(),
 
             // These fields are filled in when we finalise sizes.
-            verdef_info: None,
+            verneed_info: None,
             non_addressable_indexes: Default::default(),
         })
     }
@@ -4344,7 +4449,7 @@ impl<'data> DynamicLayoutState<'data> {
                         + u64::from(version_count) * size_of::<crate::elf::Vernaux>() as u64,
                 );
 
-                self.verdef_info = Some(VerdefInfo {
+                self.verneed_info = Some(VerneedInfo {
                     defs,
                     string_table_index: link,
                     version_count,
@@ -4361,7 +4466,7 @@ impl<'data> DynamicLayoutState<'data> {
         counts: &mut NonAddressableCounts,
     ) -> Result {
         self.non_addressable_indexes = *indexes;
-        if let Some(info) = self.verdef_info.as_ref() {
+        if let Some(info) = self.verneed_info.as_ref() {
             if info.version_count > 0 {
                 counts.verneed_count += 1;
                 indexes.gnu_version_r_index = indexes
@@ -4424,7 +4529,7 @@ impl<'data> DynamicLayoutState<'data> {
             resolutions_out.write(Some(resolution))?;
         }
 
-        if let Some(v) = self.verdef_info.as_ref() {
+        if let Some(v) = self.verneed_info.as_ref() {
             memory_offsets.increment(
                 part_id::GNU_VERSION_R,
                 size_of::<crate::elf::Verneed>() as u64
@@ -4440,7 +4545,7 @@ impl<'data> DynamicLayoutState<'data> {
             symbol_id_range: self.symbol_id_range,
             input_symbol_versions: self.symbol_versions,
             version_mapping,
-            verdef_info: self.verdef_info,
+            verneed_info: self.verneed_info,
             // We set this to true later for one object.
             is_last_verneed: false,
         })
@@ -4799,4 +4904,12 @@ fn verify_consistent_allocation_handling(
         )
     })?;
     Ok(())
+}
+
+// TODO: Avoid allocations
+pub(crate) struct VersionDef {
+    pub(crate) name: Vec<u8>,
+    pub(crate) index: u16,
+    pub(crate) parent_name: Option<Vec<u8>>,
+    pub(crate) is_base: bool,
 }
