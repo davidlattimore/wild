@@ -579,32 +579,51 @@ fn output() -> impl Parser<Arc<PathBuf>> {
         .map(Arc::new)
 }
 
-fn long_arg_flag(name: &'static str) -> impl Parser<bool> {
-    let long = bpaf::long(name)
-        .switch();
-
-    let single_dash = bpaf::any::<String, _, _>("", move |s| {
+fn single_dash_flag(name: &'static str) -> impl Parser<bool> {
+    bpaf::any::<String, _, _>("", move |s| {
         if let Some(rest) = s.strip_prefix('-') {
             (rest == name).then_some(true)
         } else {
             None
         }
     })
-        .hide();
+        .anywhere()
+        .hide()
+}
+
+fn long_arg_flag(name: &'static str) -> impl Parser<bool> {
+    let long = bpaf::long(name)
+        .switch();
+
+    let single_dash = single_dash_flag(name);
 
     bpaf::construct!([long, single_dash])
+}
+
+fn short_long_arg_flag(short: char, long: &'static str) -> impl Parser<bool> {
+    let short_long_parser = bpaf::short(short)
+        .long(long)
+        .switch();
+
+    let single_dash = single_dash_flag(long);
+
+    bpaf::construct!([short_long_parser, single_dash])
 }
 
 #[derive(Debug, Clone)]
 struct BpafArgs {
     output: Arc<PathBuf>,
     time_phases: bool,
+    strip_all: bool,
 }
 
 fn bpaf_main_parser() -> impl Parser<BpafArgs> {
     let time_phases = long_arg_flag("time").fallback(false);
 
-    bpaf::construct!(BpafArgs { output(), time_phases })
+    // TODO: We should also set strip_debug = true in this case.
+    let strip_all = short_long_arg_flag('s', "strip-all").fallback(false);
+
+    bpaf::construct!(BpafArgs { output(), time_phases, strip_all })
 }
 
 fn bpaf_options() -> bpaf::OptionParser<BpafArgs> {
@@ -1095,5 +1114,37 @@ mod tests {
             .run_inner(&[])
             .unwrap();
         assert_eq!(args.time_phases, false);
+    }
+
+    #[test]
+    fn test_bpaf_strip_all_with_two_dashes() {
+        let args = bpaf_options()
+            .run_inner(&["--strip-all"])
+            .unwrap();
+        assert_eq!(args.strip_all, true);
+    }
+
+    #[test]
+    fn test_bpaf_strip_all_with_single_dash() {
+        let args = bpaf_options()
+            .run_inner(&["-strip-all"])
+            .unwrap();
+        assert_eq!(args.strip_all, true);
+    }
+
+    #[test]
+    fn test_bpaf_strip_all_with_short() {
+        let args = bpaf_options()
+            .run_inner(&["-s"])
+            .unwrap();
+        assert_eq!(args.strip_all, true);
+    }
+
+    #[test]
+    fn test_bpaf_strip_all_fallback() {
+        let args = bpaf_options()
+            .run_inner(&[])
+            .unwrap();
+        assert_eq!(args.strip_all, false);
     }
 }
