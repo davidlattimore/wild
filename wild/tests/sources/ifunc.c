@@ -9,6 +9,8 @@
 
 //#Config:pie:default
 //#CompArgs:-fpie -ffunction-sections
+// This can be in any test that's x86_64 only.
+//#ExpectSym:_GLOBAL_OFFSET_TABLE_
 
 //#Config:no-pie:default
 //#CompArgs:-fno-pie

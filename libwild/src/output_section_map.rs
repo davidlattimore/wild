@@ -15,8 +15,8 @@ impl<T: Default> OutputSectionMap<T> {
         Self { values }
     }
 
-    pub(crate) fn into_raw_values(self) -> Vec<T> {
-        self.values
+    pub(crate) fn values_iter(&self) -> impl Iterator<Item = &T> {
+        self.values.iter()
     }
 }
 
