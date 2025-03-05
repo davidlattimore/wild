@@ -579,13 +579,32 @@ fn output() -> impl Parser<Arc<PathBuf>> {
         .map(Arc::new)
 }
 
+fn long_arg_flag(name: &'static str) -> impl Parser<bool> {
+    let long = bpaf::long(name)
+        .switch();
+
+    let single_dash = bpaf::any::<String, _, _>("", move |s| {
+        if let Some(rest) = s.strip_prefix('-') {
+            (rest == name).then_some(true)
+        } else {
+            None
+        }
+    })
+        .hide();
+
+    bpaf::construct!([long, single_dash])
+}
+
 #[derive(Debug, Clone)]
 struct BpafArgs {
     output: Arc<PathBuf>,
+    time_phases: bool,
 }
 
 fn bpaf_main_parser() -> impl Parser<BpafArgs> {
-    bpaf::construct!(BpafArgs { output() })
+    let time_phases = long_arg_flag("time").fallback(false);
+
+    bpaf::construct!(BpafArgs { output(), time_phases })
 }
 
 fn bpaf_options() -> bpaf::OptionParser<BpafArgs> {
@@ -1052,5 +1071,29 @@ mod tests {
             .run_inner(&[])
             .unwrap();
         assert_eq!(args.output, Arc::new(PathBuf::from("a.out")));
+    }
+
+    #[test]
+    fn test_bpaf_time_with_two_dashes() {
+        let args = bpaf_options()
+            .run_inner(&["--time"])
+            .unwrap();
+        assert_eq!(args.time_phases, true);
+    }
+
+    #[test]
+    fn test_bpaf_time_with_single_dash() {
+        let args = bpaf_options()
+            .run_inner(&["-time"])
+            .unwrap();
+        assert_eq!(args.time_phases, true);
+    }
+
+    #[test]
+    fn test_bpaf_time_fallback() {
+        let args = bpaf_options()
+            .run_inner(&[])
+            .unwrap();
+        assert_eq!(args.time_phases, false);
     }
 }
