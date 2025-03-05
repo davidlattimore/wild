@@ -579,10 +579,10 @@ fn output() -> impl Parser<Arc<PathBuf>> {
         .map(Arc::new)
 }
 
-fn single_dash_flag(name: &'static str) -> impl Parser<bool> {
+fn single_dash_flag(name: &'static str, flag_present_value: bool) -> impl Parser<bool> {
     bpaf::any::<String, _, _>("", move |s| {
         if let Some(rest) = s.strip_prefix('-') {
-            (rest == name).then_some(true)
+            (rest == name).then_some(flag_present_value)
         } else {
             None
         }
@@ -591,21 +591,21 @@ fn single_dash_flag(name: &'static str) -> impl Parser<bool> {
         .hide()
 }
 
-fn long_arg_flag(name: &'static str) -> impl Parser<bool> {
+fn long_arg_flag(name: &'static str, flag_present_value: bool) -> impl Parser<bool> {
     let long = bpaf::long(name)
-        .switch();
+        .flag(flag_present_value, !flag_present_value);
 
-    let single_dash = single_dash_flag(name);
+    let single_dash = single_dash_flag(name, flag_present_value);
 
     bpaf::construct!([long, single_dash])
 }
 
-fn short_long_arg_flag(short: char, long: &'static str) -> impl Parser<bool> {
+fn short_long_arg_flag(short: char, long: &'static str, flag_present_value: bool) -> impl Parser<bool> {
     let short_long_parser = bpaf::short(short)
         .long(long)
-        .switch();
+        .flag(flag_present_value, !flag_present_value);
 
-    let single_dash = single_dash_flag(long);
+    let single_dash = single_dash_flag(long, flag_present_value);
 
     bpaf::construct!([short_long_parser, single_dash])
 }
@@ -616,17 +616,20 @@ struct BpafArgs {
     time_phases: bool,
     strip_all: bool,
     strip_debug: bool,
+    should_fork: bool,
 }
 
 fn bpaf_main_parser() -> impl Parser<BpafArgs> {
-    let time_phases = long_arg_flag("time").fallback(false);
+    let time_phases = long_arg_flag("time", true);
 
     // TODO: We should also set strip_debug = true in this case.
-    let strip_all = short_long_arg_flag('s', "strip-all").fallback(false);
+    let strip_all = short_long_arg_flag('s', "strip-all", true);
 
-    let strip_debug = short_long_arg_flag('S', "strip-debug").fallback(false);
+    let strip_debug = short_long_arg_flag('S', "strip-debug", true);
 
-    bpaf::construct!(BpafArgs { output(), time_phases, strip_all, strip_debug })
+    let should_fork = long_arg_flag("no-fork", false);
+
+    bpaf::construct!(BpafArgs { output(), time_phases, strip_all, strip_debug, should_fork })
 }
 
 fn bpaf_options() -> bpaf::OptionParser<BpafArgs> {
@@ -1181,5 +1184,29 @@ mod tests {
             .run_inner(&[])
             .unwrap();
         assert_eq!(args.strip_debug, false);
+    }
+
+    #[test]
+    fn test_bpaf_should_fork_with_two_dashes() {
+        let args = bpaf_options()
+            .run_inner(&["--no-fork"])
+            .unwrap();
+        assert_eq!(args.should_fork, false);
+    }
+
+    #[test]
+    fn test_bpaf_should_fork_with_single_dash() {
+        let args = bpaf_options()
+            .run_inner(&["-no-fork"])
+            .unwrap();
+        assert_eq!(args.should_fork, false);
+    }
+
+    #[test]
+    fn test_bpaf_should_fork_fallback() {
+        let args = bpaf_options()
+            .run_inner(&[])
+            .unwrap();
+        assert_eq!(args.should_fork, true);
     }
 }
