@@ -2406,65 +2406,57 @@ fn write_verdef(
 ) -> Result {
     let e = LittleEndian;
 
-    // TODO: Maybe we can do better here?
-    let mut strings = AHashMap::new();
+    let mut version_string_offsets = Vec::with_capacity(verdefs.len());
 
     for (i, verdef) in verdefs.iter().enumerate() {
         let verdef_out = table_writer.version_writer.take_verdef()?;
-        // Base version may use (already allocated)
+
+        // Base version may use (already allocated) soname
         let (name, name_offset) = match (soname, soname_offset) {
             (Some(soname), Some(offset)) if i == 0 => (soname, offset),
             _ => {
-                let offset = *strings.entry(&verdef.name).or_insert_with(|| {
-                    table_writer
-                        .dynsym_writer
-                        .strtab_writer
-                        .write_str(&verdef.name)
-                });
+                let offset = table_writer
+                    .dynsym_writer
+                    .strtab_writer
+                    .write_str(&verdef.name);
+                version_string_offsets.push(offset);
                 (verdef.name.as_slice(), offset)
             }
         };
 
         verdef_out.vd_version.set(e, object::elf::VER_DEF_CURRENT);
-        verdef_out.vd_flags.set(
-            e,
-            if verdef.is_base {
-                object::elf::VER_FLG_BASE
-            } else {
-                0
-            },
-        );
-        verdef_out.vd_ndx.set(e, verdef.index);
-        let aux_count = if verdef.parent_name.is_some() { 2 } else { 1 };
+        // Mark first entry as base version
+        verdef_out
+            .vd_flags
+            .set(e, if i == 0 { object::elf::VER_FLG_BASE } else { 0 });
+        verdef_out
+            .vd_ndx
+            .set(e, i as u16 + object::elf::VER_NDX_GLOBAL);
+        let aux_count = if verdef.parent_index.is_some() { 2 } else { 1 };
         verdef_out.vd_cnt.set(e, aux_count);
         verdef_out.vd_hash.set(e, object::elf::hash(name));
         verdef_out
             .vd_aux
             .set(e, size_of::<crate::elf::Verdef>() as u32);
-        let next_verdef_offset = if i == verdefs.len() - 1 {
-            0
-        } else {
-            (size_of::<crate::elf::Verdef>()
-                + size_of::<crate::elf::Verdaux>() * aux_count as usize) as u32
+        // Offset to the next entry, unless it's the last one
+        if i < verdefs.len() - 1 {
+            let offset = (size_of::<crate::elf::Verdef>()
+                + size_of::<crate::elf::Verdaux>() * aux_count as usize)
+                as u32;
+            verdef_out.vd_next.set(e, offset);
         };
-        verdef_out.vd_next.set(e, next_verdef_offset);
 
         let verdaux = table_writer.version_writer.take_verdaux()?;
         verdaux.vda_name.set(e, name_offset);
-        let next_vda = if verdef.parent_name.is_some() {
+        let next_vda = if verdef.parent_index.is_some() {
             size_of::<crate::elf::Verdaux>() as u32
         } else {
             0
         };
         verdaux.vda_next.set(e, next_vda);
 
-        if let Some(parent_name) = &verdef.parent_name {
-            let name_offset = *strings.entry(parent_name).or_insert_with(|| {
-                table_writer
-                    .dynsym_writer
-                    .strtab_writer
-                    .write_str(parent_name)
-            });
+        if let Some(parent_index) = &verdef.parent_index {
+            let name_offset = *version_string_offsets.get(*parent_index as usize).unwrap();
             let verdaux = table_writer.version_writer.take_verdaux()?;
             verdaux.vda_name.set(e, name_offset);
             verdaux.vda_next.set(e, 0);
@@ -2543,9 +2535,9 @@ impl EpilogueLayout<'_> {
             write_gnu_property_notes(self, buffers)?;
         }
 
-        if !self.verdefs.is_empty() {
+        if let Some(verdefs) = &self.verdefs {
             write_verdef(
-                &self.verdefs,
+                verdefs,
                 table_writer,
                 layout.args().soname.as_ref().map(|s| s.as_bytes()),
                 soname_offset,
@@ -2667,8 +2659,6 @@ fn write_dynamic_symbol_definitions(
                     &mut table_writer.dynsym_writer,
                 )?;
 
-                // We don't yet support setting symbol versions for symbols that we export, so right
-                // now we just set them all to the global version.
                 if let Some(versym) = table_writer.version_writer.versym.as_mut() {
                     if let Some(version_out) = crate::slice::take_first_mut(versym) {
                         let version = layout

@@ -76,7 +76,7 @@ pub(crate) struct VersionScript<'data> {
 
 pub(crate) struct Version<'data> {
     pub(crate) name: &'data str,
-    pub(crate) parent: Option<&'data str>,
+    pub(crate) parent_index: Option<u16>,
     symbols: MatchRules<'data>,
 }
 
@@ -122,6 +122,9 @@ impl<'data> VersionScript<'data> {
         let mut tokens = Tokeniser::new(&data.raw);
         let mut version_script = Self::default();
 
+        // List of version names in the script, used to map parent version to version indexes
+        let mut version_names = Vec::new();
+
         tokens.text = tokens.text.trim();
 
         let mut token = tokens.next().unwrap();
@@ -136,8 +139,17 @@ impl<'data> VersionScript<'data> {
             return Ok(version_script);
         }
 
+        // Base version placeholder
+        version_names.push("");
+        version_script.versions.push(Version {
+            name: "",
+            symbols: MatchRules::default(),
+            parent_index: None,
+        });
+
         loop {
             tokens.expect("{")?;
+            version_names.push(token);
 
             let mut version_symbols = MatchRules::default();
             let parent = parse_version_section(
@@ -146,10 +158,22 @@ impl<'data> VersionScript<'data> {
                 &mut version_script.globals,
                 Some(&mut version_symbols),
             )?;
+            let parent_index = if let Some(parent) = parent {
+                // TODO: For longer version scripts IndexSet, but is it even realistic use case?
+                Some(
+                    version_names
+                        .iter()
+                        .position(|v| v == &parent)
+                        .with_context(|| format!("Could not find version {parent}"))?
+                        as u16,
+                )
+            } else {
+                None
+            };
 
             version_script.versions.push(Version {
                 name: token,
-                parent,
+                parent_index,
                 symbols: version_symbols,
             });
 
@@ -171,16 +195,15 @@ impl<'data> VersionScript<'data> {
         self.locals.matches(name)
     }
 
-    /// Number of versions in the Version Script, incremented to factor in the base version.
+    /// Number of versions in the Version Script, including the base version.
     pub(crate) fn version_count(&self) -> u16 {
-        if self.versions.len() > 1 {
-            self.versions.len() as u16 + 1
-        } else {
-            0
-        }
+        self.versions.len() as u16
     }
     pub(crate) fn parent_count(&self) -> u16 {
-        self.versions.iter().filter(|v| v.parent.is_some()).count() as u16
+        self.versions
+            .iter()
+            .filter(|v| v.parent_index.is_some())
+            .count() as u16
     }
     pub(crate) fn version_iter(&self) -> impl Iterator<Item = &Version> {
         self.versions.iter()
@@ -191,7 +214,7 @@ impl<'data> VersionScript<'data> {
     ) -> Option<u16> {
         self.versions.iter().enumerate().find_map(|(number, ver)| {
             ver.is_present(name)
-                .then(|| number as u16 + object::elf::VER_NDX_GLOBAL + 1)
+                .then(|| number as u16 + object::elf::VER_NDX_GLOBAL)
         })
     }
 }
@@ -579,7 +602,7 @@ mod tests {
             .into(),
         };
         let script = VersionScript::parse(&data).unwrap();
-        assert_eq!(script.versions.len(), 2);
+        assert_eq!(script.versions.len(), 3);
         assert_equal(
             script
                 .globals
@@ -598,9 +621,9 @@ mod tests {
             ["old"],
         );
 
-        let version = &script.versions[0];
+        let version = &script.versions[1];
         assert_eq!(version.name, "VERS_1.1");
-        assert_eq!(version.parent, None);
+        assert_eq!(version.parent_index, None);
         assert_equal(
             version
                 .symbols
@@ -618,9 +641,9 @@ mod tests {
             ["old"],
         );
 
-        let version = &script.versions[1];
+        let version = &script.versions[2];
         assert_eq!(version.name, "VERS_1.2");
-        assert_eq!(version.parent, Some("VERS_1.1"));
+        assert_eq!(version.parent_index, Some(1));
         assert_equal(
             version
                 .symbols

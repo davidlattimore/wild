@@ -521,15 +521,7 @@ pub(crate) struct EpilogueLayoutState<'data> {
     gnu_property_notes: Vec<GnuProperty>,
     build_id_size: Option<usize>,
 
-    verdef_info: Option<VerdefInfo>,
-}
-
-pub(crate) struct VerdefInfo {
-    /// Number of symbol versions and verdef entries that we're going to emit.
-    version_count: u16,
-    /// Verdef entry may depend zero or more other verdef entries. We only need
-    /// to know their count at this point.
-    dependencies_count: u16,
+    verdefs: Option<Vec<VersionDef>>,
 }
 
 #[derive(Default, Debug)]
@@ -546,7 +538,7 @@ pub(crate) struct EpilogueLayout<'data> {
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     dynsym_start_index: u32,
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
-    pub(crate) verdefs: Vec<VersionDef>,
+    pub(crate) verdefs: Option<Vec<VersionDef>>,
 }
 
 pub(crate) struct ObjectLayout<'data> {
@@ -1777,9 +1769,9 @@ fn apply_non_addressable_indexes(
                 }
                 FileLayoutState::Epilogue(s) => {
                     counts.verdef_count += s
-                        .verdef_info
+                        .verdefs
                         .as_ref()
-                        .map(|v| v.version_count)
+                        .map(|v| v.len() as u16)
                         .unwrap_or_default();
                 }
                 _ => {}
@@ -3137,7 +3129,7 @@ impl<'data> EpilogueLayoutState<'data> {
             gnu_hash_layout: None,
             gnu_property_notes: Default::default(),
             build_id_size: Default::default(),
-            verdef_info: Default::default(),
+            verdefs: Default::default(),
         }
     }
 
@@ -3213,32 +3205,49 @@ impl<'data> EpilogueLayoutState<'data> {
             common.allocate(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
-        // If we got only the base version, skip verdefs
-        let verdef_entries = symbol_db.version_script.version_count();
-        if verdef_entries > 1 {
-            // TODO: I don't like having to keep in sync in two places (three if you count elf_writer.rs)
+        let version_count = symbol_db.version_script.version_count();
+        if version_count > 0 {
             // If soname is not provided, allocate space for file name as the base version
-            if symbol_db.args.soname.is_none() {
-                let file_name_length = symbol_db.args.output.file_name().unwrap().len();
-                common.allocate(part_id::DYNSTR, file_name_length as u64 + 1);
+            let base_version_name = if symbol_db.args.soname.is_none() {
+                let file_name = symbol_db
+                    .args
+                    .output
+                    .file_name()
+                    .expect("File name should be present at this point")
+                    .to_string_lossy()
+                    .to_string();
+                common.allocate(part_id::DYNSTR, file_name.len() as u64 + 1);
+                file_name
+            } else {
+                String::new()
+            };
+
+            let mut verdefs = Vec::with_capacity(version_count.into());
+
+            // Base version
+            verdefs.push(VersionDef {
+                name: base_version_name.into_bytes(),
+                parent_index: None,
+            });
+
+            // Take all but the base version
+            for version in symbol_db.version_script.version_iter().skip(1) {
+                verdefs.push(VersionDef {
+                    name: version.name.as_bytes().to_vec(),
+                    parent_index: version.parent_index,
+                });
+                common.allocate(part_id::DYNSTR, version.name.len() as u64 + 1);
             }
 
             let dependencies_count = symbol_db.version_script.parent_count();
             common.allocate(
                 part_id::GNU_VERSION_D,
-                (size_of::<crate::elf::Verdef>() as u16 * verdef_entries
+                (size_of::<crate::elf::Verdef>() as u16 * version_count
                     + size_of::<crate::elf::Verdaux>() as u16
-                        * (verdef_entries + dependencies_count))
+                        * (version_count + dependencies_count))
                     .into(),
             );
-            self.verdef_info = Some(VerdefInfo {
-                version_count: verdef_entries,
-                dependencies_count,
-            });
-
-            for version in symbol_db.version_script.version_iter() {
-                common.allocate(part_id::DYNSTR, version.name.len() as u64 + 1);
-            }
+            self.verdefs.replace(verdefs);
         }
 
         Ok(())
@@ -3309,53 +3318,14 @@ impl<'data> EpilogueLayoutState<'data> {
             memory_offsets.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
-        // TODO: Is it possible avoid this allocation?
-        // I don't think so
-        let mut verdefs = Vec::new();
-
-        if let Some(verdef_info) = &self.verdef_info {
-            verdefs.reserve(verdef_info.version_count.into());
-
-            let base_name = if resources.symbol_db.args.soname.is_some() {
-                &[]
-            } else {
-                resources
-                    .symbol_db
-                    .args
-                    .output
-                    .file_name()
-                    .unwrap()
-                    .as_encoded_bytes()
-            };
-
-            // Base version
-            verdefs.push(VersionDef {
-                name: base_name.to_vec(),
-                index: 1,
-                parent_name: None,
-                is_base: true,
-            });
-
-            for (i, version) in resources
-                .symbol_db
-                .version_script
-                .version_iter()
-                .enumerate()
-            {
-                verdefs.push(VersionDef {
-                    name: version.name.as_bytes().to_vec(),
-                    index: (i + 2) as u16,
-                    parent_name: version.parent.map(|p| p.as_bytes().to_vec()),
-                    is_base: false,
-                });
-            }
-
+        if let Some(verdefs) = &self.verdefs {
             memory_offsets.increment(
                 part_id::GNU_VERSION_D,
-                (size_of::<crate::elf::Verdef>() as u16 * verdef_info.version_count
-                    + size_of::<crate::elf::Verdaux>() as u16
-                        * (verdef_info.version_count + verdef_info.dependencies_count))
-                    .into(),
+                (size_of::<crate::elf::Verdef>() * verdefs.len()
+                    + size_of::<crate::elf::Verdaux>()
+                        * (verdefs.len()
+                            + resources.symbol_db.version_script.parent_count() as usize))
+                    as u64,
             );
         }
 
@@ -3365,7 +3335,7 @@ impl<'data> EpilogueLayoutState<'data> {
             dynamic_symbol_definitions: self.dynamic_symbol_definitions,
             dynsym_start_index,
             gnu_property_notes: self.gnu_property_notes,
-            verdefs,
+            verdefs: self.verdefs,
         })
     }
 }
@@ -4997,7 +4967,5 @@ fn verify_consistent_allocation_handling(
 // TODO: Avoid allocations
 pub(crate) struct VersionDef {
     pub(crate) name: Vec<u8>,
-    pub(crate) index: u16,
-    pub(crate) parent_name: Option<Vec<u8>>,
-    pub(crate) is_base: bool,
+    pub(crate) parent_index: Option<u16>,
 }
