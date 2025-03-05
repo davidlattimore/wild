@@ -578,14 +578,13 @@ const _: () = {
 /// Returns the total size of our input sections. Each input section's size is rounded up to a block
 /// size.
 fn total_input_size(input_sections: &[StringMergeInputSection<'_>]) -> LinearInputOffset {
-    let input_size = input_sections
+    input_sections
         .last()
         .map(|sec| {
             sec.start_input_offset
                 + (sec.section_data.len() as u64).next_multiple_of(MAP_BLOCK_SIZE)
         })
-        .unwrap_or_default();
-    input_size
+        .unwrap_or_default()
 }
 
 fn do_splitting_work(resources: &SplitResources, reuse_pool: &ReusePool) -> Result {
