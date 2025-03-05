@@ -169,6 +169,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "bpaf"
+version = "0.9.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd343f000c4472dc4557e093f314c5210375d3e9349ad866fee0ddb7f4ed10bf"
+
+[[package]]
 name = "bumpalo"
 version = "3.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -649,6 +655,7 @@ dependencies = [
  "atomic-take",
  "bitflags",
  "blake3",
+ "bpaf",
  "bumpalo-herd",
  "bytemuck",
  "bytesize",

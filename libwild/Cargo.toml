@@ -11,6 +11,7 @@ edition.workspace = true
 ahash = { version = "0.8.11", default-features = false, features = ["std"] }
 anyhow = "1.0.97"
 bitflags = "2.9.0"
+bpaf = "0.9"
 bytemuck = { version = "1.22.0", features = ["derive"] }
 crossbeam-queue = "0.3.12"
 crossbeam-utils = "0.8.21"
