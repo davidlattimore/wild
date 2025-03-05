@@ -35,6 +35,7 @@ pub(crate) const PROGRAM_HEADER_ENTRY: Alignment = Alignment { exponent: 3 };
 /// The minimum alignment of a PLT entry.
 pub(crate) const PLT: Alignment = Alignment { exponent: 4 };
 
+pub(crate) const VERSION_D: Alignment = Alignment { exponent: 3 };
 pub(crate) const VERSION_R: Alignment = Alignment { exponent: 3 };
 pub(crate) const VERSYM: Alignment = Alignment { exponent: 1 };
 
