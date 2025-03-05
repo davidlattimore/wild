@@ -95,7 +95,6 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt::Display;
-use std::mem::replace;
 use std::mem::size_of;
 use std::mem::swap;
 use std::mem::take;
@@ -3899,8 +3898,7 @@ fn process_eh_frame_data<'data, A: Arch>(
 
                     // Update our unloaded section to point to our new frame. Our frame will then in
                     // turn point to whatever the section pointed to before.
-                    let previous_frame_for_section =
-                        replace(&mut unloaded.last_frame_index, Some(frame_index));
+                    let previous_frame_for_section = unloaded.last_frame_index.replace(frame_index);
 
                     common.exception_frames.push(ExceptionFrame {
                         relocations: &relocations[rel_start_index..rel_end_index],
