@@ -100,6 +100,10 @@ impl Arch for AArch64 {
 
         match r_type.0 {
             object::elf::R_AARCH64_TLSDESC_ADR_PAGE21 => {
+                relax(
+                    RelaxationKind::MovzX0Lsl16,
+                    object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1,
+                );
                 relax(RelaxationKind::ReplaceWithNop, object::elf::R_AARCH64_NONE);
             }
             object::elf::R_AARCH64_TLSDESC_LD64_LO12 => {
