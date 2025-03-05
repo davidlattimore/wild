@@ -90,6 +90,13 @@ pub(crate) struct Relaxation {
     rel_info: RelocationKindInfo,
 }
 
+const TLSDESC_CALL_INSN_SEQUENCE: &[u8] = &[
+    0x0, 0x0, 0x0, 0x90, // adrp    x0, 0
+    0x1, 0x0, 0x40, 0xf9, // ldr     x1, [x0]
+    0x0, 0x0, 0x0, 0x91, // add     x0, x0, #0x0
+    0x20, 0x0, 0x3f, 0xd6, // blr     x1
+];
+
 impl crate::arch::Relaxation for Relaxation {
     #[allow(unused_variables)]
     fn new(
@@ -149,7 +156,10 @@ impl crate::arch::Relaxation for Relaxation {
             }
 
             object::elf::R_AARCH64_TLSDESC_ADR_PAGE21 if can_bypass_got => {
-                // TODO: check we met all consecutive 4 instructions!
+                debug_assert!(
+                    section_bytes[offset..].starts_with(TLSDESC_CALL_INSN_SEQUENCE),
+                    "Unknown TLSDESC call sequence"
+                );
                 return Some(Relaxation {
                     kind: RelaxationKind::ReplaceWithNop,
                     rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
@@ -180,7 +190,10 @@ impl crate::arch::Relaxation for Relaxation {
 
             // Relax TLSDESC to initial exec
             object::elf::R_AARCH64_TLSDESC_ADR_PAGE21 if output_kind.is_executable() => {
-                // TODO: check we met all consecutive 4 instructions!
+                debug_assert!(
+                    section_bytes[offset..].starts_with(TLSDESC_CALL_INSN_SEQUENCE),
+                    "Unknown TLSDESC call sequence"
+                );
                 return Some(Relaxation {
                     kind: RelaxationKind::ReplaceWithNop,
                     rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
