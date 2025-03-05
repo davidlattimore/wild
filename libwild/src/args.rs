@@ -615,6 +615,7 @@ struct BpafArgs {
     output: Arc<PathBuf>,
     time_phases: bool,
     strip_all: bool,
+    strip_debug: bool,
 }
 
 fn bpaf_main_parser() -> impl Parser<BpafArgs> {
@@ -623,7 +624,9 @@ fn bpaf_main_parser() -> impl Parser<BpafArgs> {
     // TODO: We should also set strip_debug = true in this case.
     let strip_all = short_long_arg_flag('s', "strip-all").fallback(false);
 
-    bpaf::construct!(BpafArgs { output(), time_phases, strip_all })
+    let strip_debug = short_long_arg_flag('S', "strip-debug").fallback(false);
+
+    bpaf::construct!(BpafArgs { output(), time_phases, strip_all, strip_debug })
 }
 
 fn bpaf_options() -> bpaf::OptionParser<BpafArgs> {
@@ -1146,5 +1149,37 @@ mod tests {
             .run_inner(&[])
             .unwrap();
         assert_eq!(args.strip_all, false);
+    }
+
+    #[test]
+    fn test_bpaf_strip_debug_with_two_dashes() {
+        let args = bpaf_options()
+            .run_inner(&["--strip-debug"])
+            .unwrap();
+        assert_eq!(args.strip_debug, true);
+    }
+
+    #[test]
+    fn test_bpaf_strip_debug_with_single_dash() {
+        let args = bpaf_options()
+            .run_inner(&["-strip-debug"])
+            .unwrap();
+        assert_eq!(args.strip_debug, true);
+    }
+
+    #[test]
+    fn test_bpaf_strip_debug_with_short() {
+        let args = bpaf_options()
+            .run_inner(&["-S"])
+            .unwrap();
+        assert_eq!(args.strip_debug, true);
+    }
+
+    #[test]
+    fn test_bpaf_strip_debug_fallback() {
+        let args = bpaf_options()
+            .run_inner(&[])
+            .unwrap();
+        assert_eq!(args.strip_debug, false);
     }
 }
