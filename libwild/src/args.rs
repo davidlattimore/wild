@@ -21,6 +21,7 @@ use crate::save_dir::SaveDir;
 use anyhow::Context as _;
 use anyhow::bail;
 use anyhow::ensure;
+use bpaf::Parser;
 use rayon::ThreadPoolBuilder;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -571,6 +572,32 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
     Ok(args)
 }
 
+fn output() -> impl Parser<Arc<PathBuf>> {
+    bpaf::short('o')
+        .argument("OUTPUT")
+        .fallback(PathBuf::from("a.out"))
+        .map(Arc::new)
+}
+
+#[derive(Debug, Clone)]
+struct BpafArgs {
+    output: Arc<PathBuf>,
+}
+
+fn bpaf_main_parser() -> impl Parser<BpafArgs> {
+    bpaf::construct!(BpafArgs { output() })
+}
+
+fn bpaf_options() -> bpaf::OptionParser<BpafArgs> {
+    bpaf_main_parser()
+        .to_options()
+}
+
+pub(crate) fn parse_with_bpaf<S: AsRef<str>, I: Iterator<Item = S>>(mut _input: I) -> Result<Args> {
+    println!("{:?}", bpaf_options().run());
+    bail!("parse_with_bpaf is not fully implemented")
+}
+
 const fn default_target_arch() -> Architecture {
     // We default to targeting the architecture that we're running on. We don't support running on
     // architectures that we can't target.
@@ -820,6 +847,7 @@ fn warn_unsupported(opt: &str) -> Result {
 #[cfg(test)]
 mod tests {
     use super::SILENTLY_IGNORED_FLAGS;
+    use super::*;
     use crate::args::InputSpec;
     use itertools::Itertools;
     use std::num::NonZeroUsize;
@@ -1008,5 +1036,21 @@ mod tests {
         for flag in SILENTLY_IGNORED_FLAGS {
             assert!(!flag.starts_with('-'));
         }
+    }
+
+    #[test]
+    fn test_bpaf_output() {
+        let args = bpaf_options()
+            .run_inner(&["-o", "output_name"])
+            .unwrap();
+        assert_eq!(args.output, Arc::new(PathBuf::from("output_name")));
+    }
+
+    #[test]
+    fn test_bpaf_output_fallback() {
+        let args = bpaf_options()
+            .run_inner(&[])
+            .unwrap();
+        assert_eq!(args.output, Arc::new(PathBuf::from("a.out")));
     }
 }
