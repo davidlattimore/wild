@@ -175,6 +175,9 @@ impl Config {
                 "section.plt.sec",
                 // We don't yet write this.
                 ".dynamic.DT_HASH",
+                // aarch64-linux-gnu-ld on arch linux emits DT_BIND_NOW instead of DT_FLAGS.BIND_NOW
+                ".dynamic.DT_BIND_NOW",
+                ".dynamic.DT_FLAGS.BIND_NOW",
                 // We do support this. TODO: Should definitely look into why we're seeing this missing
                 // in our output.
                 "section.rela.plt",
