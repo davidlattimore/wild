@@ -1438,6 +1438,7 @@ dependencies = [
  "dhat",
  "fd-lock",
  "itertools",
+ "libc",
  "libwild",
  "linker-diff",
  "mimalloc",
