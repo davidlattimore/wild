@@ -23,7 +23,6 @@ use crate::output_section_map::OutputSectionMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ParsedInput;
 use crate::parsing::ParsedInputObject;
-use crate::parsing::Prelude;
 use crate::part_id;
 use crate::part_id::PartId;
 use crate::part_id::TemporaryPartId;
@@ -71,7 +70,7 @@ pub fn resolve_symbols_and_sections<'data>(
     symbol_db: &mut SymbolDb<'data>,
     herd: &'data bumpalo_herd::Herd,
 ) -> Result<ResolutionOutputs<'data>> {
-    let (mut groups, undefined_symbols, internal) = resolve_symbols_in_files(groups, symbol_db)?;
+    let (mut groups, undefined_symbols) = resolve_symbols_in_files(groups, symbol_db)?;
 
     resolve_sections(&mut groups, herd, symbol_db.args)?;
 
@@ -85,10 +84,6 @@ pub fn resolve_symbols_and_sections<'data>(
 
     crate::symbol_db::resolve_alternative_symbol_definitions(symbol_db, &groups)?;
 
-    groups[PRELUDE_FILE_ID.group()].files[PRELUDE_FILE_ID.file()] =
-        ResolvedFile::Prelude(ResolvedPrelude {
-            symbol_definitions: &internal.symbol_definitions,
-        });
     Ok(ResolutionOutputs {
         groups,
         output_sections,
@@ -101,11 +96,7 @@ pub fn resolve_symbols_and_sections<'data>(
 pub(crate) fn resolve_symbols_in_files<'data>(
     groups: &'data [Group<'data>],
     symbol_db: &mut SymbolDb<'data>,
-) -> Result<(
-    Vec<ResolvedGroup<'data>>,
-    SegQueue<UndefinedSymbol<'data>>,
-    &'data Prelude,
-)> {
+) -> Result<(Vec<ResolvedGroup<'data>>, SegQueue<UndefinedSymbol<'data>>)> {
     let mut num_objects = 0;
 
     let mut symbol_definitions = symbol_db.take_definitions();
@@ -128,7 +119,6 @@ pub(crate) fn resolve_symbols_in_files<'data>(
         .collect_vec();
 
     let work_queue = SegQueue::new();
-    let mut prelude = None;
 
     let mut resolved: Vec<ResolvedGroup<'_>> = groups
         .iter()
@@ -140,12 +130,12 @@ pub(crate) fn resolve_symbols_in_files<'data>(
                 .zip(definitions_per_file)
                 .map(|(file, definitions)| match file {
                     ParsedInput::Prelude(s) => {
-                        // We don't yet have all the information we need to construct
-                        // ResolvedPrelude, so we stash away our input for now and let the caller
-                        // construct it later.
-                        prelude = Some(s);
-                        ResolvedFile::NotLoaded(NotLoaded {
-                            symbol_id_range: SymbolIdRange::prelude(0),
+                        work_queue.push(LoadObjectRequest {
+                            file_id: PRELUDE_FILE_ID,
+                            definitions_out: definitions.take().unwrap(),
+                        });
+                        ResolvedFile::Prelude(ResolvedPrelude {
+                            symbol_definitions: &s.symbol_definitions,
                         })
                     }
                     ParsedInput::Object(s) => {
@@ -248,7 +238,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
         resolved[file_id.group()].files[file_id.file()] = ResolvedFile::Object(obj);
     }
 
-    Ok((resolved, outputs.undefined_symbols, prelude.unwrap()))
+    Ok((resolved, outputs.undefined_symbols))
 }
 
 #[tracing::instrument(skip_all, name = "Resolve sections")]
