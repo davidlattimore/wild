@@ -81,6 +81,13 @@ impl Linker {
         }
     }
 
+    /// Sets up the global thread pool based on the supplied arguments, in particular --threads.
+    /// This can only be called once. Calling this at all is optional. If it isn't called, then a
+    /// default thread pool will be used - i.e. any argument to --threads will be ignored.
+    pub fn setup_thread_pool(&self) -> error::Result {
+        self.args.setup_thread_pool()
+    }
+
     pub fn run(&self) -> error::Result {
         self.run_with_callback(None)
     }
@@ -114,7 +121,6 @@ impl Linker {
 
 #[tracing::instrument(skip_all, name = "Link")]
 fn link<A: arch::Arch>(args: &Args, done_closure: Option<Box<dyn FnOnce()>>) -> error::Result {
-    args.setup_thread_pool()?;
     let mut output = elf_writer::Output::new(args);
     let input_data = input_data::InputData::from_args(args)?;
     let inputs = archive_splitter::split_archives(&input_data)?;
