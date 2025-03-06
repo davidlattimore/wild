@@ -1136,7 +1136,7 @@ impl TryFrom<usize> for SymbolId {
     }
 }
 
-impl Prelude {
+impl Prelude<'_> {
     fn load_symbols(
         &self,
         symbols_out: &mut SymbolInfoWriter,
@@ -1146,7 +1146,9 @@ impl Prelude {
         for definition in &self.symbol_definitions {
             let symbol_id = symbols_out.next;
             let value_flags = match definition {
-                InternalSymDefInfo::Undefined => ValueFlags::ABSOLUTE,
+                InternalSymDefInfo::Undefined | InternalSymDefInfo::ForceUndefined(_) => {
+                    ValueFlags::ABSOLUTE
+                }
                 InternalSymDefInfo::SectionStart(section_id) => {
                     let def = section_id.built_in_details();
                     let name = def.start_symbol_name(output_kind).unwrap().as_bytes();
@@ -1174,7 +1176,7 @@ impl std::fmt::Display for SymbolId {
 impl InternalSymDefInfo {
     pub(crate) fn section_id(self) -> Option<OutputSectionId> {
         match self {
-            InternalSymDefInfo::Undefined => None,
+            InternalSymDefInfo::Undefined | InternalSymDefInfo::ForceUndefined(_) => None,
             InternalSymDefInfo::SectionStart(i) => Some(i),
             InternalSymDefInfo::SectionEnd(i) => Some(i),
         }

@@ -2801,19 +2801,23 @@ impl PreludeLayoutState {
                     return true;
                 }
 
+                // We always emit symbols that the user requested be undefined.
+                let mut should_emit = matches!(def_info, InternalSymDefInfo::ForceUndefined(_));
+
                 // Keep the symbol if we're going to write the section, even though the symbol isn't
                 // referenced. It can be useful to have symbols like _GLOBAL_OFFSET_TABLE_ when
                 // using a debugger.
-                if def_info.section_id().is_some_and(|output_section_id| {
+                should_emit |= def_info.section_id().is_some_and(|output_section_id| {
                     output_sections.will_emit_section(output_section_id)
-                }) {
+                });
+
+                if should_emit {
                     // Mark the symbol as referenced so that we later generate a resolution for
                     // it and subsequently write it to the symbol table.
                     *resolution_flags |= ResolutionFlags::DIRECT;
-                    true
-                } else {
-                    false
                 }
+
+                should_emit
             },
         )
     }
@@ -3036,7 +3040,9 @@ fn create_start_end_symbol_resolution(
     }
 
     let (raw_value, value_flags) = match def_info {
-        InternalSymDefInfo::Undefined => (0, ValueFlags::ABSOLUTE),
+        InternalSymDefInfo::Undefined | InternalSymDefInfo::ForceUndefined(_) => {
+            (0, ValueFlags::ABSOLUTE)
+        }
         InternalSymDefInfo::SectionStart(section_id) => (
             resources.section_layouts.get(section_id).mem_offset,
             ValueFlags::ADDRESS,

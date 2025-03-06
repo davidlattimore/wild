@@ -1820,6 +1820,7 @@ fn integration_test(
         "trivial_asm.s",
         "non-alloc.s",
         "symbol-versions.c",
+        "force-undefined.c",
         "libc-integration.c",
         "rust-integration.rs",
         "rust-integration-dynamic.rs",

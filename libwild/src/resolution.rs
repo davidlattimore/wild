@@ -489,16 +489,22 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
     definitions_out: &mut [SymbolId],
     resources: &'scope ResolutionResources<'data, 'definitions, 'scope>,
 ) -> Result {
-    if let ParsedInput::Object(obj) = &resources.groups[file_id.group()].files[file_id.file()] {
-        let input = obj.input.clone();
-        let res = ResolvedObject::new(
-            obj,
-            resources,
-            definitions_out,
-            &resources.outputs.undefined_symbols,
-        )
-        .with_context(|| format!("Failed to process {input}"))?;
-        let _ = resources.outputs.loaded.push(res);
+    match &resources.groups[file_id.group()].files[file_id.file()] {
+        ParsedInput::Object(obj) => {
+            let input = obj.input.clone();
+            let res = ResolvedObject::new(
+                obj,
+                resources,
+                definitions_out,
+                &resources.outputs.undefined_symbols,
+            )
+            .with_context(|| format!("Failed to process {input}"))?;
+            let _ = resources.outputs.loaded.push(res);
+        }
+        ParsedInput::Prelude(prelude) => {
+            load_prelude(prelude, definitions_out, resources);
+        }
+        ParsedInput::Epilogue(_) => {}
     }
     Ok(())
 }
@@ -509,6 +515,34 @@ struct UndefinedSymbol<'data> {
     ignore_if_loaded: Option<FileId>,
     name: PreHashedSymbolName<'data>,
     symbol_id: SymbolId,
+}
+
+fn load_prelude(
+    prelude: &crate::parsing::Prelude,
+    definitions_out: &mut [SymbolId],
+    resources: &ResolutionResources,
+) {
+    // Try to resolve any symbols that the user requested be undefined (e.g. via --undefined). If an
+    // object defines such a symbol, request that the object be loaded. Also, point our undefined
+    // symbol record to the definition.
+    for (def_info, definition_out) in prelude.symbol_definitions.iter().zip(definitions_out) {
+        match def_info {
+            InternalSymDefInfo::ForceUndefined(undefined_symbol_index) => {
+                let name = prelude.get_undefined_name(*undefined_symbol_index);
+
+                if let Some(symbol_id) = resources
+                    .symbol_db
+                    .get_unversioned(&UnversionedSymbolName::prehashed(name))
+                {
+                    *definition_out = symbol_id;
+
+                    let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
+                    resources.request_file_id(symbol_file_id);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 #[tracing::instrument(skip_all, name = "Canonicalise undefined symbols")]

@@ -61,13 +61,14 @@ fn set_start_symbol_ids(objects: &mut [ParsedInput]) {
 // the two smaller variants, so it doesn't matter.
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum ParsedInput<'data> {
-    Prelude(Prelude),
+    Prelude(Prelude<'data>),
     Object(ParsedInputObject<'data>),
     Epilogue(Epilogue),
 }
 
-pub(crate) struct Prelude {
+pub(crate) struct Prelude<'data> {
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
+    undefined: &'data [String],
 }
 
 pub(crate) struct ParsedInputObject<'data> {
@@ -105,7 +106,14 @@ pub(crate) enum InternalSymDefInfo {
     /// Defines a symbol that points at the non-inclusive end of the section. i.e. 1 byte past the
     /// last byte of the section.
     SectionEnd(OutputSectionId),
+
+    /// An undefined symbol supplied by the user, e.g. via `--undefined=symbol-name`.
+    ForceUndefined(UndefinedSymbolIndex),
 }
+
+/// The index of an undefined symbol supplied by the user, e.g. via the `--undefined=symbol-name`.
+#[derive(Clone, Copy)]
+pub(crate) struct UndefinedSymbolIndex(u32);
 
 impl<'data> ParsedInputObject<'data> {
     fn new(input: &'data InputBytes, is_dynamic: bool) -> Result<Self> {
@@ -228,10 +236,11 @@ impl<'data> ParsedInput<'data> {
     }
 }
 
-impl Prelude {
-    fn new(args: &Args) -> Self {
+impl<'data> Prelude<'data> {
+    fn new(args: &'data Args) -> Self {
         // The undefined symbol must always be symbol 0.
         let mut symbol_definitions = vec![InternalSymDefInfo::Undefined];
+
         for section_id in output_section_id::built_in_section_ids() {
             // If we're producing non-relocatable, static executable, then don't define any symbols
             // for the .dynamic section.
@@ -260,14 +269,23 @@ impl Prelude {
                 symbol_definitions.push(InternalSymDefInfo::SectionEnd(section_id));
             }
         }
-        Self { symbol_definitions }
+
+        symbol_definitions.extend(
+            (0..args.undefined.len())
+                .map(|i| InternalSymDefInfo::ForceUndefined(UndefinedSymbolIndex(i as u32))),
+        );
+
+        Self {
+            symbol_definitions,
+            undefined: &args.undefined,
+        }
     }
 
     pub(crate) fn symbol_name(
         &self,
         symbol_id: SymbolId,
         output_kind: OutputKind,
-    ) -> UnversionedSymbolName<'static> {
+    ) -> UnversionedSymbolName<'data> {
         let def = &self.symbol_definitions[symbol_id.as_usize()];
         let name = match def {
             InternalSymDefInfo::Undefined => Some(""),
@@ -277,9 +295,17 @@ impl Prelude {
             InternalSymDefInfo::SectionEnd(section_id) => {
                 section_id.built_in_details().end_symbol_name(output_kind)
             }
+            InternalSymDefInfo::ForceUndefined(i) => Some(self.undefined[i.0 as usize].as_str()),
         }
         .unwrap();
         UnversionedSymbolName::new(name.as_bytes())
+    }
+
+    pub(crate) fn get_undefined_name(
+        &self,
+        undefined_symbol_index: UndefinedSymbolIndex,
+    ) -> &'data [u8] {
+        self.undefined[undefined_symbol_index.0 as usize].as_bytes()
     }
 }
 
