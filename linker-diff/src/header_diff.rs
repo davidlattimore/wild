@@ -34,17 +34,46 @@ pub(crate) enum Converter {
     SymAddress,
     SectionIndex,
     SectionFlags,
+    BitFlags(&'static [Option<&'static str>]),
+}
+
+enum ConvertedValue {
+    Single(String),
+    Flags(Vec<String>),
 }
 
 impl Converter {
-    fn convert(self, value: u64, obj: &Binary) -> String {
-        self.try_convert(value, obj)
-            .unwrap_or_else(|e| e.to_string())
+    fn insert_into(
+        &self,
+        key: Cow<'static, str>,
+        value: u64,
+        obj: &Binary<'_>,
+        values_out: &mut FieldValues,
+    ) {
+        match self.try_convert(value, obj) {
+            Ok(ConvertedValue::Single(converted)) => {
+                values_out.values.entry(key).or_default().push(converted);
+            }
+            Ok(ConvertedValue::Flags(set_flags)) => {
+                for name in set_flags {
+                    values_out
+                        .values
+                        .entry(Cow::Owned(format!("{key}.{name}")))
+                        .or_default()
+                        .push("1".to_string());
+                }
+            }
+            Err(error) => values_out
+                .values
+                .entry(key)
+                .or_default()
+                .push(error.to_string()),
+        }
     }
 
-    fn try_convert(self, value: u64, obj: &Binary) -> Result<String> {
+    fn try_convert(self, value: u64, obj: &Binary) -> Result<ConvertedValue> {
         match self {
-            Converter::None => Ok(format!("0x{value:x}")),
+            Converter::None => Ok(ConvertedValue::Single(format!("0x{value:x}"))),
             Converter::SectionAddress => {
                 // Find the first non-empty, section at that address. Only return an empty section if
                 // there is no non-empty sections at that address.
@@ -58,12 +87,12 @@ impl Converter {
                         if section.data().map(<[u8]>::len).unwrap_or(0) == 0 {
                             empty_section_name = Some(section.name()?.to_owned());
                         } else {
-                            return Ok(section.name()?.to_owned());
+                            return Ok(ConvertedValue::Single(section.name()?.to_owned()));
                         }
                     }
                 }
                 if let Some(name) = empty_section_name {
-                    return Ok(name);
+                    return Ok(ConvertedValue::Single(name));
                 }
                 bail!("No section at 0x{value:x}");
             }
@@ -79,7 +108,9 @@ impl Converter {
                 }
                 let rest = &data[start..];
                 let len = rest.iter().position(|b| *b == 0).unwrap_or(0);
-                Ok(String::from_utf8_lossy(&rest[..len]).into_owned())
+                Ok(ConvertedValue::Single(
+                    String::from_utf8_lossy(&rest[..len]).into_owned(),
+                ))
             }
             Converter::SymAddress => {
                 // Find a symbol with the specified address. Give preference to symbols with
@@ -87,13 +118,37 @@ impl Converter {
                 symbol_with_address(obj, value, false)
                     .or_else(|| symbol_with_address(obj, value, true))
                     .ok_or_else(|| anyhow!("No symbol at 0x{value:x}"))
+                    .map(ConvertedValue::Single)
             }
-            Converter::SectionIndex => Ok(obj
-                .elf_file
-                .section_by_index(object::SectionIndex(value as usize))?
-                .name()?
-                .to_owned()),
-            Converter::SectionFlags => Ok(SectionFlags::from(value).to_string()),
+            Converter::SectionIndex => Ok(ConvertedValue::Single(
+                obj.elf_file
+                    .section_by_index(object::SectionIndex(value as usize))?
+                    .name()?
+                    .to_owned(),
+            )),
+            Converter::SectionFlags => Ok(ConvertedValue::Single(
+                SectionFlags::from(value).to_string(),
+            )),
+            Converter::BitFlags(items) => {
+                let mut bits = value;
+                let mut bit_names = items;
+                let mut out = Vec::new();
+                let mut bit_number = 0;
+                while bits != 0 {
+                    if bits & 1 != 0 {
+                        out.push(
+                            bit_names[0]
+                                .map_or_else(|| format!("bit-{bit_number}"), |n| n.to_owned()),
+                        );
+                    }
+                    bits >>= 1;
+                    if !bit_names.is_empty() {
+                        bit_names = &bit_names[1..];
+                    }
+                    bit_number += 1;
+                }
+                Ok(ConvertedValue::Flags(out))
+            }
         }
     }
 }
@@ -290,16 +345,13 @@ pub(crate) struct FieldValues {
 impl FieldValues {
     pub(crate) fn insert(
         &mut self,
-        key: &'static str,
+        key: impl Into<Cow<'static, str>>,
         value: impl Into<u64>,
         converter: Converter,
         obj: &Binary,
     ) {
         let value = value.into();
-        self.values
-            .entry(Cow::Borrowed(key))
-            .or_default()
-            .push(converter.convert(value, obj));
+        converter.insert_into(key.into(), value, obj, self);
     }
 
     pub(crate) fn insert_string_owned(&mut self, key: String, value: String) {
@@ -348,7 +400,7 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
         .section_by_name(DYNAMIC_SECTION_NAME_STR)
         .with_context(|| format!("`{obj}` is missing .dynamic"))?;
 
-    let mut values: HashMap<Cow<'static, str>, Vec<String>> = HashMap::new();
+    let mut values = FieldValues::default();
     let e = LittleEndian;
 
     let entries: &[object::elf::Dyn64<LittleEndian>] = slice_from_all_bytes(dynamic.data()?);
@@ -401,11 +453,52 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
             DT_INIT_ARRAYSZ => (Cow::Borrowed("DT_INIT_ARRAYSZ"), Converter::None),
             DT_FINI_ARRAYSZ => (Cow::Borrowed("DT_FINI_ARRAYSZ"), Converter::None),
             DT_RUNPATH => (Cow::Borrowed("DT_RUNPATH"), Converter::DynStrOffset),
-            DT_FLAGS => (Cow::Borrowed("DT_FLAGS"), Converter::None),
+            DT_FLAGS => (
+                Cow::Borrowed("DT_FLAGS"),
+                Converter::BitFlags(&[
+                    Some("ORIGIN"),
+                    Some("SYMBOLIC"),
+                    Some("TEXTREL"),
+                    Some("BIND_NOW"),
+                    Some("STATIC_TLS"),
+                ]),
+            ),
             DT_PREINIT_ARRAY => (Cow::Borrowed("DT_PREINIT_ARRAY"), Converter::None),
             DT_PREINIT_ARRAYSZ => (Cow::Borrowed("DT_PREINIT_ARRAYSZ"), Converter::None),
             DT_SYMTAB_SHNDX => (Cow::Borrowed("DT_SYMTAB_SHNDX"), Converter::None),
-            DT_FLAGS_1 => (Cow::Borrowed("DT_FLAGS_1"), Converter::None),
+            DT_FLAGS_1 => (
+                Cow::Borrowed("DT_FLAGS_1"),
+                Converter::BitFlags(&[
+                    Some("NOW"),
+                    Some("GLOBAL"),
+                    Some("GROUP"),
+                    Some("NODELETE"),
+                    Some("LOADFLTR"),
+                    Some("INITFIRST"),
+                    Some("NOOPEN"),
+                    Some("ORIGIN"),
+                    Some("DIRECT"),
+                    Some("TRANS"),
+                    Some("INTERPOSE"),
+                    Some("NODEFLIB"),
+                    Some("NODUMP"),
+                    Some("CONFALT"),
+                    Some("ENDFILTEE"),
+                    Some("DISPRELDNE"),
+                    Some("DISPRELPND"),
+                    Some("NODIRECT"),
+                    Some("IGNMULDEF"),
+                    Some("NOKSYMS"),
+                    Some("NOHDR"),
+                    Some("EDITED"),
+                    Some("NORELOC"),
+                    Some("SYMINTPOSE"),
+                    Some("GLOBAUDIT"),
+                    Some("SINGLETON"),
+                    Some("STUB"),
+                    Some("PIE"),
+                ]),
+            ),
             DT_RELACOUNT => {
                 // Ignore sizes for now.
                 continue;
@@ -451,17 +544,17 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
                 Converter::None,
             ),
         };
+
         if got_null {
             bail!("Found {tag_name} after DT_NULL");
         }
-        values
-            .entry(tag_name)
-            .or_default()
-            .push(converter.convert(entry.d_val(e), obj));
+
+        values.insert(tag_name, entry.d_val(e), converter, obj);
     }
+
     if !got_null {
         bail!("Missing DT_NULL entry");
     }
 
-    Ok(FieldValues { values })
+    Ok(values)
 }
