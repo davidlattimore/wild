@@ -29,6 +29,7 @@ use std::fmt::Display;
 use std::fs::File;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::io::ErrorKind;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -37,6 +38,7 @@ use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::Once;
 use std::sync::OnceLock;
+use std::time::Duration;
 use std::time::Instant;
 use strum::EnumString;
 use wait_timeout::ChildExt;
@@ -161,7 +163,7 @@ struct LinkCommand {
     output_path: PathBuf,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LinkerInvocationMode {
     /// We just call the linker directly. This means that we won't be linking against libc.
     Direct,
@@ -723,7 +725,9 @@ impl Program<'_> {
             Command::new(&self.link_output.binary)
         };
 
-        let mut child = command.spawn().with_context(|| {
+        let spawn_result = spawn_with_retry(&mut command, 10);
+
+        let mut child = spawn_result.with_context(|| {
             format!(
                 "Command `{}` failed",
                 command.get_program().to_string_lossy()
@@ -747,6 +751,37 @@ impl Program<'_> {
         }
 
         Ok(())
+    }
+}
+
+/// Attempts to spawn `command`. If that fails due to ETXTBSY, then retries until we've tried
+/// `max_attempts` times. Other errors do not result in retries. This works around the fact that
+/// writing then executing a file from a multi-threaded program on Linux is inherently racy and
+/// there's not currently any way to truly fix it. The problem occurs if other threads are spawning
+/// subprocesses at the same time as our thread is writing the executable. When that happens the
+/// subprocess from the other thread inherits the file descriptor and potentially also the mmaps for
+/// the executable that we're writing. That means that once we close the file, the other subprocess
+/// still has it open, so when we attempt to execute it, we can't because it's locked due to the
+/// other process still having it open. Linux 6.11 fixed this problem by removing ETXTBSY, but
+/// unfortunately that got reverted. Someday, we might get O_CLOFORK, but that would only help if
+/// the associated mmap isn't cloned. In the meantime, our options are (a) only write executables
+/// from subprocesses - but then we don't get to test in-process use of libwild or (b) this retry
+/// logic. See also https://github.com/rust-lang/rust/issues/114554
+fn spawn_with_retry(command: &mut Command, max_attempts: u32) -> Result<std::process::Child> {
+    let mut attempts_remaining = max_attempts;
+    loop {
+        match command.spawn() {
+            Ok(child) => return Ok(child),
+            Err(error) => {
+                attempts_remaining -= 1;
+
+                if attempts_remaining == 0 || error.kind() != ErrorKind::ExecutableFileBusy {
+                    return Err(error.into());
+                }
+
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
     }
 }
 
@@ -1313,11 +1348,28 @@ impl LinkCommand {
                 command.arg(&input.path);
             }
         }
-        command.env(libwild::args::WILD_UNSUPPORTED_ENV, "ignore");
-        command.env(libwild::args::VALIDATE_ENV, "1");
-        if config.should_diff {
-            command.env(libwild::args::WRITE_LAYOUT_ENV, "1");
-            command.env(libwild::args::WRITE_TRACE_ENV, "1");
+
+        if linker.is_wild() {
+            if matches!(config.linker_driver, LinkerDriver::Direct(_)) {
+                command.arg("--validate-output");
+                // TODO: Add a flag or do something so that unsupported flags get ignored. i.e. the
+                // equivalent of the line below, but for directly calling libwild. Perhaps rather
+                // than printing warnings, libwild should return them, then we as the caller can
+                // just choose to not print them.
+            } else {
+                command.env(libwild::args::WILD_UNSUPPORTED_ENV, "ignore");
+                command.env(libwild::args::VALIDATE_ENV, "1");
+            }
+
+            if config.should_diff {
+                if matches!(config.linker_driver, LinkerDriver::Direct(_)) {
+                    command.arg("--write-layout");
+                    command.arg("--write-trace");
+                } else {
+                    command.env(libwild::args::WRITE_LAYOUT_ENV, "1");
+                    command.env(libwild::args::WRITE_TRACE_ENV, "1");
+                }
+            }
         }
 
         let mut link_command = LinkCommand {
@@ -1368,6 +1420,28 @@ impl LinkCommand {
             }
 
             return Ok(());
+        }
+
+        // If we're linking with wild and we're going to be invoking the linker directly, then just
+        // use libwild as a library. This is marginally faster, since we avoid the process startup
+        // costs. It also allows us to exercise wild as a library. We still exercise wild from the
+        // command-line via the shell-script-based tests.
+        if self.linker.is_wild() && self.invocation_mode == LinkerInvocationMode::Direct {
+            let args = self
+                .command
+                .get_args()
+                .map(|a| a.to_str())
+                .collect::<Option<Vec<&str>>>()
+                .context("Linker args must be valid utf-8")?;
+
+            let linker = libwild::Linker::from_args(args.iter())?;
+
+            // This call is expected to error for all but the first call.
+            let _ = linker.setup_tracing();
+
+            return linker
+                .run()
+                .with_context(|| format!("Failed to internally run command: {:?}", self.command));
         }
 
         let status = self
