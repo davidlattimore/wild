@@ -3,11 +3,11 @@
 # docker build --progress=plain -t wild-dev-arch . -f docker/arch.Dockerfile
 # docker run -it wild-dev-arch
 
-FROM archlinux:base-20241222.0.291122 AS chef
+FROM archlinux:base-20250302.0.316047 AS chef
 
 RUN pacman --noconfirm -Syu wget less gcc clang lld
 
-RUN wget -qO- https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.68/cargo-chef-x86_64-unknown-linux-musl.tar.gz | tar -xzf- && \
+RUN wget -qO- https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.71/cargo-chef-x86_64-unknown-linux-musl.tar.gz | tar -xzf- && \
     mv cargo-chef /usr/local/bin
 
 RUN wget https://sh.rustup.rs -O rustup-installer && \

@@ -69,10 +69,15 @@ fn decode_insn_with_objdump(insn: &[u8], address: u64) -> Result<String> {
 
 #[test]
 fn test_align_up() {
-    assert_eq!(
-        decode_insn_with_objdump(&[0xe3, 0x93, 0x44, 0xa9], 0x1000).unwrap(),
-        "ldp\tx3, x4, [sp, #72]"
-    );
+    // Some distributions don't enable the features in objdump required for disassembly of aarch64,
+    // so we only check that we can disassemble if we're running on aarch64 or if test
+    // cross-compilation is enabled.
+    if cfg!(target_arch = "aarch64") || std::env::var("WILD_TEST_CROSS").is_ok() {
+        assert_eq!(
+            decode_insn_with_objdump(&[0xe3, 0x93, 0x44, 0xa9], 0x1000).unwrap(),
+            "ldp\tx3, x4, [sp, #72]"
+        );
+    }
 }
 
 impl Arch for AArch64 {
