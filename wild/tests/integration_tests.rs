@@ -1027,7 +1027,12 @@ fn build_obj(
         return Ok(output_path);
     }
 
-    let status = command.status()?;
+    let status = command.status().with_context(|| {
+        format!(
+            "Failed to run `{}`",
+            command.get_program().to_string_lossy()
+        )
+    })?;
 
     if output_path.is_dir() {
         post_process_run_script(&output_path)?;
