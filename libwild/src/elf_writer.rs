@@ -2581,23 +2581,24 @@ fn write_internal_symbols(
         let Some(resolution) = layout.local_symbol_resolution(symbol_id) else {
             continue;
         };
-        let Some(section_id) = def_info.section_id() else {
-            // The null symbol is currently handled elsewhere. TODO: See if the code would be
-            // simpler if we just handled it here.
-            continue;
-        };
 
         let symbol_name = layout.symbol_db.symbol_name(symbol_id)?;
-        let mut shndx = layout
-            .output_sections
-            .output_index_of_section(section_id)
-            .with_context(|| {
-                format!(
-                    "symbol `{}` in section `{}` that we're not going to output {resolution:?}",
-                    layout.symbol_db.symbol_name_for_display(symbol_id),
-                    layout.output_sections.display_name(section_id)
-                )
-            })?;
+        let mut shndx = def_info
+            .section_id()
+            .map(|section_id| {
+                layout
+                .output_sections
+                .output_index_of_section(section_id)
+                .with_context(|| {
+                    format!(
+                        "symbol `{}` in section `{}` that we're not going to output {resolution:?}",
+                        layout.symbol_db.symbol_name_for_display(symbol_id),
+                        layout.output_sections.display_name(section_id)
+                    )
+                })
+            })
+            .transpose()?
+            .unwrap_or(0);
 
         // Move symbols that are in our header (section 0) into the first section, otherwise they'll
         // show up as undefined.
@@ -2605,7 +2606,7 @@ fn write_internal_symbols(
             shndx = 1;
         }
 
-        let address = resolution.address()?;
+        let address = resolution.value();
         let entry = symbol_writer
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;

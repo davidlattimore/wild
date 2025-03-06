@@ -59,6 +59,7 @@ pub(crate) struct Args {
     pub(crate) no_undefined: bool,
     pub(crate) allow_copy_relocations: bool,
     pub(crate) sysroot: Option<Box<Path>>,
+    pub(crate) undefined: Vec<String>,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -255,6 +256,7 @@ impl Default for Args {
             should_print_version: false,
             sysroot: None,
             demangle: true,
+            undefined: Vec::new(),
         }
     }
 }
@@ -521,6 +523,16 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             args.num_threads = NonZeroUsize::new(1).unwrap();
         } else if long_arg_eq("no-undefined") {
             args.no_undefined = true;
+        } else if let Some(rest) = long_arg_split_prefix("undefined=") {
+            args.undefined.push(rest.to_owned());
+        } else if arg == "-u" {
+            args.undefined.push(
+                input
+                    .next()
+                    .context("Missing argument to -u")?
+                    .as_ref()
+                    .to_owned(),
+            );
         } else if long_arg_eq("demangle") {
             args.demangle = true;
         } else if long_arg_eq("no-demangle") {
