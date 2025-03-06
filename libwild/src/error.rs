@@ -1,6 +1,12 @@
 pub(crate) use anyhow::Error;
+use std::fmt::Display;
 
 pub type Result<T = (), E = Error> = core::result::Result<T, E>;
+
+/// An error indicating that we attempted to initialise global state that can only be initialised
+/// once.
+#[derive(Debug, Clone, Copy)]
+pub struct AlreadyInitialised;
 
 /// Like debug_assert, but bails instead of panicking.
 ///
@@ -21,3 +27,11 @@ macro_rules! debug_assert_bail {
 pub(crate) fn warning(message: &str) {
     println!("WARNING: wild: {message}");
 }
+
+impl Display for AlreadyInitialised {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Attempted to initialise global state more than once")
+    }
+}
+
+impl core::error::Error for AlreadyInitialised {}

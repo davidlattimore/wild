@@ -1,5 +1,6 @@
 //! Code for reporting how long each phase of linking takes when the --time argument is supplied.
 
+use crate::error::AlreadyInitialised;
 use std::fmt::Display;
 use std::time::Instant;
 use tracing::field::Visit;
@@ -110,11 +111,11 @@ where
     }
 }
 
-pub(crate) fn init_tracing() {
+pub(crate) fn init_tracing() -> Result<(), AlreadyInitialised> {
     use tracing_subscriber::prelude::*;
     let layer = TimingLayer::default();
     let subscriber = tracing_subscriber::Registry::default().with(layer);
-    tracing::subscriber::set_global_default(subscriber).unwrap();
+    tracing::subscriber::set_global_default(subscriber).map_err(|_| AlreadyInitialised)
 }
 
 struct Indent {
