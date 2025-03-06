@@ -18,6 +18,7 @@ fn main() -> libwild::error::Result {
     } else {
         // Run the linker in this process without forking.
         linker.setup_tracing()?;
+        linker.setup_thread_pool()?;
         linker.run()
     }
 }
