@@ -50,6 +50,7 @@ pub(crate) mod validation;
 pub(crate) mod verification;
 pub(crate) mod x86_64;
 
+use error::AlreadyInitialised;
 pub use subprocess::run_in_subprocess;
 
 pub struct Linker {
@@ -59,6 +60,25 @@ pub struct Linker {
 impl Linker {
     pub fn from_args<S: AsRef<str>, I: Iterator<Item = S>>(args: I) -> error::Result<Self> {
         Ok(Linker { args: parse(args)? })
+    }
+
+    /// Sets up whatever tracing, if any, is indicated by the supplied arguments. This can only be
+    /// called once and only if nothing else has already set the global tracing dispatcher. Calling
+    /// this is optional. If it isn't called, no tracing-based features will function. e.g. --time,
+    /// writing .trace files etc.
+    pub fn setup_tracing(&self) -> Result<(), AlreadyInitialised> {
+        let args = &self.args;
+        if args.time_phases {
+            timing::init_tracing()
+        } else if args.print_allocations.is_some() {
+            debug_trace::init()
+        } else {
+            tracing_subscriber::registry()
+                .with(fmt::layer())
+                .with(EnvFilter::from_default_env())
+                .try_init()
+                .map_err(|_| AlreadyInitialised)
+        }
     }
 
     pub fn run(&self) -> error::Result {
@@ -72,16 +92,6 @@ impl Linker {
         done_closure: Option<Box<dyn FnOnce()>>,
     ) -> error::Result {
         let args = &self.args;
-        if args.time_phases {
-            timing::init_tracing();
-        } else if args.print_allocations.is_some() {
-            debug_trace::init();
-        } else {
-            tracing_subscriber::registry()
-                .with(fmt::layer())
-                .with(EnvFilter::from_default_env())
-                .init();
-        }
         if args.should_print_version {
             println!(
                 "Wild version {} (compatible with GNU linkers)",

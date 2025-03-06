@@ -17,6 +17,7 @@ fn main() -> libwild::error::Result {
         unsafe { libwild::run_in_subprocess(&linker) };
     } else {
         // Run the linker in this process without forking.
+        linker.setup_tracing()?;
         linker.run()
     }
 }
