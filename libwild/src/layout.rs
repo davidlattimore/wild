@@ -1857,43 +1857,41 @@ fn find_required_sections<'data, A: Arch>(
         })?;
 
     rayon::scope(|scope| {
-        for _ in 0..num_threads {
-            scope.spawn(|_| {
-                let panic_result = std::panic::catch_unwind(|| {
-                    let mut idle = false;
-                    while !resources.done.load(atomic::Ordering::SeqCst) {
-                        while let Some(worker) = resources.waiting_workers.pop() {
-                            worker.do_pending_work::<A>(resources_ref);
-                        }
-                        if idle {
-                            // Wait until there's more work to do or until we shut down.
-                            std::thread::park();
-                            idle = false;
-                        } else {
-                            if resources.idle_threads.as_ref().is_none_or(|idle_threads| {
-                                idle_threads.push(std::thread::current()).is_err()
-                            }) {
-                                // We're the only thread running. Either because there is only one
-                                // thread (resources.idle_threads is None) or because all other threads
-                                // are sleeping (resources.idle_threads is full). We're idle and all the
-                                // other threads are too. Time to shut down.
-                                resources.shut_down();
-                                break;
-                            }
-                            idle = true;
-                            // Go around the loop again before we park the thread. This ensures that we
-                            // check for waiting workers in between when we added our thread to the idle
-                            // list and when we park.
-                        }
+        scope.spawn_broadcast(|_, _| {
+            let panic_result = std::panic::catch_unwind(|| {
+                let mut idle = false;
+                while !resources.done.load(atomic::Ordering::SeqCst) {
+                    while let Some(worker) = resources.waiting_workers.pop() {
+                        worker.do_pending_work::<A>(resources_ref);
                     }
-                });
-                // Make sure we shut down if one of our threads panics, otherwise our other threads
-                // will wait indefinitely for the thread that panicked to finish its work.
-                if panic_result.is_err() {
-                    resources.shut_down();
+                    if idle {
+                        // Wait until there's more work to do or until we shut down.
+                        std::thread::park();
+                        idle = false;
+                    } else {
+                        if resources.idle_threads.as_ref().is_none_or(|idle_threads| {
+                            idle_threads.push(std::thread::current()).is_err()
+                        }) {
+                            // We're the only thread running. Either because there is only one
+                            // thread (resources.idle_threads is None) or because all other threads
+                            // are sleeping (resources.idle_threads is full). We're idle and all the
+                            // other threads are too. Time to shut down.
+                            resources.shut_down();
+                            break;
+                        }
+                        idle = true;
+                        // Go around the loop again before we park the thread. This ensures that we
+                        // check for waiting workers in between when we added our thread to the idle
+                        // list and when we park.
+                    }
                 }
             });
-        }
+            // Make sure we shut down if one of our threads panics, otherwise our other threads
+            // will wait indefinitely for the thread that panicked to finish its work.
+            if panic_result.is_err() {
+                resources.shut_down();
+            }
+        });
     });
 
     let mut errors: Vec<Error> = take(resources.errors.lock().unwrap().as_mut());

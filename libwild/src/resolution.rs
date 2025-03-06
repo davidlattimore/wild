@@ -181,48 +181,43 @@ pub(crate) fn resolve_symbols_in_files<'data>(
     let done = AtomicBool::new(false);
 
     rayon::scope(|s| {
-        for _ in 0..symbol_db.args.num_threads.get() {
-            s.spawn(|_| {
-                let mut idle = false;
-                while !done.load(Ordering::Relaxed) {
-                    while let Some(work_item) = resources.work_queue.pop() {
-                        let r = process_object(
-                            work_item.file_id,
-                            work_item.definitions_out,
-                            &resources,
-                        );
-                        if let Err(e) = r {
-                            // We currently only store the first error.
-                            let _ = resources.outputs.errors.push(e);
-                        }
-                    }
-                    if idle {
-                        // Wait until there's more work to do or until we shut down.
-                        std::thread::park();
-                        idle = false;
-                    } else {
-                        if let Some(idle_threads) = resources.idle_threads.as_ref() {
-                            if idle_threads.push(std::thread::current()).is_err() {
-                                // No space left in our idle queue means that all other threads are idle, so
-                                // we're done.
-                                done.store(true, Ordering::Relaxed);
-                                while let Some(thread) = idle_threads.pop() {
-                                    thread.unpark();
-                                }
-                                break;
-                            }
-                        } else {
-                            // We're running on a single thread, so we're done.
-                            break;
-                        }
-                        idle = true;
-                        // Go around the loop again before we park the thread. This ensures that we
-                        // check for waiting work in between when we added our thread to the idle
-                        // list and when we park.
+        s.spawn_broadcast(|_, _| {
+            let mut idle = false;
+            while !done.load(Ordering::Relaxed) {
+                while let Some(work_item) = resources.work_queue.pop() {
+                    let r =
+                        process_object(work_item.file_id, work_item.definitions_out, &resources);
+                    if let Err(e) = r {
+                        // We currently only store the first error.
+                        let _ = resources.outputs.errors.push(e);
                     }
                 }
-            });
-        }
+                if idle {
+                    // Wait until there's more work to do or until we shut down.
+                    std::thread::park();
+                    idle = false;
+                } else {
+                    if let Some(idle_threads) = resources.idle_threads.as_ref() {
+                        if idle_threads.push(std::thread::current()).is_err() {
+                            // No space left in our idle queue means that all other threads are idle, so
+                            // we're done.
+                            done.store(true, Ordering::Relaxed);
+                            while let Some(thread) = idle_threads.pop() {
+                                thread.unpark();
+                            }
+                            break;
+                        }
+                    } else {
+                        // We're running on a single thread, so we're done.
+                        break;
+                    }
+                    idle = true;
+                    // Go around the loop again before we park the thread. This ensures that we
+                    // check for waiting work in between when we added our thread to the idle
+                    // list and when we park.
+                }
+            }
+        });
     });
 
     drop(resources);
