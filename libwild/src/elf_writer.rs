@@ -50,6 +50,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
+use crate::output_trace::TraceOutput;
 use crate::part_id;
 use crate::program_segments::STACK;
 use crate::resolution::SectionSlot;
@@ -120,6 +121,7 @@ pub struct Output {
     path: Arc<Path>,
     creator: FileCreator,
     file_write_mode: FileWriteMode,
+    should_write_trace: bool,
 }
 
 enum FileCreator {
@@ -136,6 +138,7 @@ pub(crate) struct SizedOutput {
     file: std::fs::File,
     out: OutputBuffer,
     path: Arc<Path>,
+    trace: TraceOutput,
 }
 
 enum OutputBuffer {
@@ -194,12 +197,14 @@ impl Output {
                     sized_output_recv,
                 },
                 file_write_mode: args.file_write_mode,
+                should_write_trace: args.write_trace,
             }
         } else {
             Output {
                 path: args.output.clone(),
                 creator: FileCreator::Regular { file_size: None },
                 file_write_mode: args.file_write_mode,
+                should_write_trace: args.write_trace,
             }
         }
     }
@@ -216,6 +221,7 @@ impl Output {
                 let path = self.path.clone();
 
                 let write_mode = self.file_write_mode;
+                let should_write_trace = self.should_write_trace;
 
                 rayon::spawn(move || {
                     if write_mode == FileWriteMode::UnlinkAndReplace {
@@ -241,7 +247,7 @@ impl Output {
                     }
 
                     // Create the output file.
-                    let sized_output = SizedOutput::new(path, size, write_mode);
+                    let sized_output = SizedOutput::new(path, size, write_mode, should_write_trace);
 
                     // Pass it to the main thread, so that it can start writing it once layout finishes.
                     let _ = sender.send(sized_output);
@@ -275,14 +281,18 @@ impl Output {
         };
         sized_output.write::<A>(layout)?;
         sized_output.flush()?;
-        // This triggers writing our .trace file if any. See output_trace module.
-        tracing::trace!(output_write_complete = true);
+        sized_output.trace.close()?;
         Ok(sized_output)
     }
 
     #[tracing::instrument(skip_all, name = "Create output file")]
     fn create_file_non_lazily(&mut self, file_size: u64) -> Result<SizedOutput> {
-        SizedOutput::new(self.path.clone(), file_size, self.file_write_mode)
+        SizedOutput::new(
+            self.path.clone(),
+            file_size,
+            self.file_write_mode,
+            self.should_write_trace,
+        )
     }
 }
 
@@ -298,7 +308,12 @@ fn wait_for_sized_output(sized_output_recv: &Receiver<Result<SizedOutput>>) -> R
 }
 
 impl SizedOutput {
-    fn new(path: Arc<Path>, file_size: u64, write_mode: FileWriteMode) -> Result<SizedOutput> {
+    fn new(
+        path: Arc<Path>,
+        file_size: u64,
+        write_mode: FileWriteMode,
+        should_write_trace: bool,
+    ) -> Result<SizedOutput> {
         let mut open_options = std::fs::OpenOptions::new();
         match write_mode {
             FileWriteMode::UnlinkAndReplace => {
@@ -308,14 +323,24 @@ impl SizedOutput {
                 open_options.truncate(false);
             }
         }
+
         let file = open_options
             .read(true)
             .write(true)
             .create(true)
             .open(&path)
             .with_context(|| format!("Failed to open `{}`", path.display()))?;
+
         let out = OutputBuffer::new(&file, file_size);
-        Ok(SizedOutput { file, out, path })
+
+        let trace = TraceOutput::new(should_write_trace, &path);
+
+        Ok(SizedOutput {
+            file,
+            out,
+            path,
+            trace,
+        })
     }
 
     pub(crate) fn write<A: Arch>(&mut self, layout: &Layout) -> Result {
@@ -412,7 +437,7 @@ impl SizedOutput {
                 );
 
                 for file in &group.files {
-                    file.write::<A>(&mut buffers, &mut table_writer, layout)
+                    file.write::<A>(&mut buffers, &mut table_writer, layout, &self.trace)
                         .with_context(|| format!("Failed copying from {file} to output file"))?;
                 }
                 table_writer
@@ -615,9 +640,10 @@ impl<'data> FileLayout<'data> {
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
         layout: &Layout<'data, 'symbol_db>,
+        trace: &TraceOutput,
     ) -> Result {
         match self {
-            FileLayout::Object(s) => s.write_file::<A>(buffers, table_writer, layout)?,
+            FileLayout::Object(s) => s.write_file::<A>(buffers, table_writer, layout, trace)?,
             FileLayout::Prelude(s) => s.write_file::<A>(buffers, table_writer, layout)?,
             FileLayout::Epilogue(s) => s.write_file::<A>(buffers, table_writer, layout)?,
             FileLayout::NotLoaded => {}
@@ -1317,19 +1343,20 @@ impl<'data> ObjectLayout<'data> {
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
         layout: &Layout<'data, 'symbol_db>,
+        trace: &TraceOutput,
     ) -> Result {
         let _span = debug_span!("write_file", filename = %self.input).entered();
         let _file_span = layout.args().trace_span_for_file(self.file_id);
         for sec in &self.sections {
             match sec {
                 SectionSlot::Loaded(sec) => {
-                    self.write_section::<A>(layout, sec, buffers, table_writer)?;
+                    self.write_section::<A>(layout, sec, buffers, table_writer, trace)?;
                 }
                 SectionSlot::LoadedDebugInfo(sec) => {
                     self.write_debug_section::<A>(layout, sec, buffers)?;
                 }
                 SectionSlot::EhFrameData(section_index) => {
-                    self.write_eh_frame_data::<A>(*section_index, layout, table_writer)?;
+                    self.write_eh_frame_data::<A>(*section_index, layout, table_writer, trace)?;
                 }
                 _ => (),
             }
@@ -1376,9 +1403,10 @@ impl<'data> ObjectLayout<'data> {
         sec: &Section,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
+        trace: &TraceOutput,
     ) -> Result {
         let out = self.write_section_raw(layout, sec, buffers)?;
-        self.apply_relocations::<A>(out, sec, layout, table_writer)
+        self.apply_relocations::<A>(out, sec, layout, table_writer, trace)
             .with_context(|| {
                 format!(
                     "Failed to apply relocations in section `{}` of {}",
@@ -1517,6 +1545,7 @@ impl<'data> ObjectLayout<'data> {
         section: &Section,
         layout: &Layout<'data, 'symbol_db>,
         table_writer: &mut TableWriter,
+        trace: &TraceOutput,
     ) -> Result {
         let section_address = self.section_resolutions[section.index.0]
             .address()
@@ -1548,6 +1577,7 @@ impl<'data> ObjectLayout<'data> {
                 layout,
                 out,
                 table_writer,
+                trace,
             )
             .with_context(|| {
                 format!(
@@ -1603,6 +1633,7 @@ impl<'data> ObjectLayout<'data> {
         eh_frame_section_index: object::SectionIndex,
         layout: &Layout<'data, 'symbol_db>,
         table_writer: &mut TableWriter,
+        trace: &TraceOutput,
     ) -> Result {
         let eh_frame_section = self.object.section(eh_frame_section_index)?;
         let data = self.object.raw_section_data(eh_frame_section)?;
@@ -1720,6 +1751,7 @@ impl<'data> ObjectLayout<'data> {
                         layout,
                         entry_out,
                         table_writer,
+                        trace,
                     )
                     .with_context(|| {
                         format!(
@@ -1817,6 +1849,7 @@ fn apply_relocation<A: Arch>(
     layout: &Layout,
     out: &mut [u8],
     table_writer: &mut TableWriter,
+    trace: &TraceOutput,
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
     let original_place = section_address + offset_in_section;
@@ -2022,8 +2055,24 @@ fn apply_relocation<A: Arch>(
     };
 
     if let Some(relaxation) = relaxation {
-        tracing::trace!(kind = ?relaxation.debug_kind(), %value_flags, %resolution_flags, ?rel_info.kind, value, value_hex = %HexU64::new(value), %symbol_name, "relaxation applied");
+        trace.emit(original_place, || {
+            format!(
+                "relaxation applied relaxation={kind:?}, value_flags={value_flags},\n\
+                resolution_flags={resolution_flags}, rel_kind={rel_kind:?},\n\
+                value=0x{value:x}, symbol_name={symbol_name}",
+                kind = relaxation.debug_kind(),
+                rel_kind = rel_info.kind
+            )
+        });
     } else {
+        trace.emit(original_place, || {
+            format!(
+                "relocation applied value_flags={value_flags},\n\
+                resolution_flags={resolution_flags}, rel_kind={rel_kind:?},\n\
+                value=0x{value:x}, symbol_name={symbol_name}",
+                rel_kind = rel_info.kind
+            )
+        });
         tracing::trace!(%value_flags, %resolution_flags, ?rel_info.kind, value, value_hex = %HexU64::new(value), %symbol_name, "relocation applied");
     }
 
