@@ -74,8 +74,6 @@ impl Linker {
         let args = &self.args;
         if args.time_phases {
             timing::init_tracing();
-        } else if args.write_trace {
-            output_trace::init(args);
         } else if args.print_allocations.is_some() {
             debug_trace::init();
         } else {

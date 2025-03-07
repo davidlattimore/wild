@@ -1145,33 +1145,9 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
     fn write_traces(&self, f: &mut String, maximum_widths: &ColumnWidths) -> Result {
         let name_width = maximum_widths.name;
         let prefix = " TRACE: ";
-        let margin = name_width + prefix.len();
-        const WRAP_COLUMN: usize = 80;
 
         for trace in &self.trace_messages {
-            write!(f, "{:name_width$}{prefix}", self.name.blue())?;
-
-            // Crude word wrapping should be sufficient for a trace message. TODO: Consider changing
-            // our tracing code (in wild) to emit fields separated by newlines, then get rid of this
-            // word wrapping and just indent the lines appropriately.
-            let mut line_length = 0;
-            for word in trace.split(' ') {
-                if line_length > 0 && margin + line_length + word.len() > WRAP_COLUMN {
-                    writeln!(f)?;
-                    write!(f, "{:margin$}", "")?;
-                    line_length = 0;
-                }
-
-                if line_length > 0 {
-                    write!(f, " ")?;
-                    line_length += 1;
-                }
-
-                write!(f, "{word}")?;
-                line_length += word.len();
-            }
-
-            writeln!(f)?;
+            writeln!(f, "{:name_width$}{prefix}{trace}", self.name.blue())?;
         }
 
         Ok(())
