@@ -15,6 +15,9 @@ use std::io::Error;
 /// from the sub-process (via a pipe) when the main link task is done (the output file has been
 /// written, but some shutdown tasks remain.
 ///
+/// Don't call `setup_tracing` or `setup_thread_pool` if using this function, these will be called
+/// for you in the subprocess.
+///
 /// # Safety
 /// Must not be called once threads have been spawned. Calling this function from main is generally
 /// the best way to ensure this.
@@ -40,6 +43,8 @@ fn subprocess_result(linker: &Linker) -> Result<i32> {
     match unsafe { fork() } {
         0 => {
             // Fork success in child - Run linker in this process.
+            linker.setup_tracing()?;
+            linker.setup_thread_pool()?;
             let done_closure = move || inform_parent_done(&fds);
             linker.run_with_callback(Some(Box::new(done_closure)))?;
             Ok(0)
