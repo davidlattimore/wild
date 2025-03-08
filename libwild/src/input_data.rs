@@ -121,32 +121,8 @@ impl<'config> InputData<'config> {
             // File has already been added.
             return Ok(());
         }
-        let file = std::fs::File::open(absolute_path)
-            .with_context(|| format!("Failed to open input file `{}`", absolute_path.display()))?;
 
-        // Safety: Unfortunately, this is a bit of a compromise. Basically this is only safe if our
-        // users manage to avoid editing the input files while we've got them mapped. It'd be great
-        // if there were a way to protect against unsoundness when the input files were modified
-        // externally, but there isn't - at least on Linux. Not only could the bytes change without
-        // notice, but the mapped file could be truncated causing any access to result in a SIGBUS.
-        //
-        // For our use case, mmap just has too many advantages. There are likely large parts of our
-        // input files that we don't need to read, so reading all our input files up front isn't
-        // really an option. Reading just the parts we need might be an option, but would add
-        // substantial complexity. Also, using mmap means that if the system needs to reclaim
-        // memory, it can just release some of our pages.
-
-        let mut mmap_options = memmap2::MmapOptions::new();
-
-        // Prepopulating maps generally slows things down, so is off by default, however it's useful
-        // when profiling, since it means that you don't see false positive slowness in the parts of
-        // the code that first read a bit of memory.
-        if self.config.prepopulate_maps {
-            mmap_options.populate();
-        }
-
-        let bytes = unsafe { mmap_options.map(&file) }
-            .with_context(|| format!("Failed to mmap input file `{}`", absolute_path.display()))?;
+        let bytes = mmap_file(absolute_path, self.config.prepopulate_maps)?;
 
         let kind = FileKind::identify_bytes(&bytes)?;
         if matches!(kind, FileKind::Text) {
@@ -227,6 +203,37 @@ impl Input {
             }
         }
     }
+}
+
+pub(crate) fn mmap_file(path: &PathBuf, prepopulate_maps: bool) -> Result<Mmap> {
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("Failed to open input file `{}`", path.display()))?;
+
+    // Safety: Unfortunately, this is a bit of a compromise. Basically this is only safe if our
+    // users manage to avoid editing the input files while we've got them mapped. It'd be great
+    // if there were a way to protect against unsoundness when the input files were modified
+    // externally, but there isn't - at least on Linux. Not only could the bytes change without
+    // notice, but the mapped file could be truncated causing any access to result in a SIGBUS.
+    //
+    // For our use case, mmap just has too many advantages. There are likely large parts of our
+    // input files that we don't need to read, so reading all our input files up front isn't
+    // really an option. Reading just the parts we need might be an option, but would add
+    // substantial complexity. Also, using mmap means that if the system needs to reclaim
+    // memory, it can just release some of our pages.
+
+    let mut mmap_options = memmap2::MmapOptions::new();
+
+    // Prepopulating maps generally slows things down, so is off by default, however it's useful
+    // when profiling, since it means that you don't see false positive slowness in the parts of
+    // the code that first read a bit of memory.
+    if prepopulate_maps {
+        mmap_options.populate();
+    }
+
+    let bytes = unsafe { mmap_options.map(&file) }
+        .with_context(|| format!("Failed to mmap input file `{}`", path.display()))?;
+
+    Ok(bytes)
 }
 
 fn search_for_file(

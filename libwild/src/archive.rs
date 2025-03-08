@@ -37,7 +37,9 @@ pub(crate) struct EntryMeta<'data> {
 
 pub(crate) struct ArchiveContent<'data> {
     ident: &'data str,
-    pub(crate) entry_data: &'data [u8],
+
+    /// `None` for file references in thin archives
+    pub(crate) entry_data: Option<&'data [u8]>,
 
     /// The offset in the archive at which the data is from.
     pub(crate) data_offset: usize,
@@ -46,6 +48,7 @@ pub(crate) struct ArchiveContent<'data> {
 pub(crate) struct ArchiveIterator<'data> {
     data: &'data [u8],
     offset: usize,
+    is_thin: bool,
 }
 
 #[derive(Zeroable, Pod, Clone, Copy)]
@@ -66,18 +69,34 @@ const _ASSERTS: () = {
 
 const HEADER_SIZE: usize = size_of::<EntryHeader>();
 
+enum IdentifierKind {
+    InlineContent, // Files in normal archives
+    FileReference, // Files in thin archives
+    Filenames,
+    SymbolTable,
+}
+
 impl<'data> ArchiveIterator<'data> {
     /// Create an iterator from the bytes of the whole archive. The supplied bytes should start with
     /// an archive entry.
     pub(crate) fn from_archive_bytes(data: &'data [u8]) -> Result<Self> {
         let magic = object::archive::MAGIC;
-        let Some(data) = data.strip_prefix(&magic) else {
+        let thin_magic = object::archive::THIN_MAGIC;
+        if let Some(data) = data.strip_prefix(&magic) {
+            Ok(Self {
+                data,
+                offset: magic.len(),
+                is_thin: false,
+            })
+        } else if let Some(data) = data.strip_prefix(&thin_magic) {
+            Ok(Self {
+                data,
+                offset: thin_magic.len(),
+                is_thin: true,
+            })
+        } else {
             bail!("Missing header");
-        };
-        Ok(Self {
-            data,
-            offset: magic.len(),
-        })
+        }
     }
 
     fn next_result(&mut self) -> Result<Option<ArchiveEntry<'data>>> {
@@ -97,27 +116,47 @@ impl<'data> ArchiveIterator<'data> {
         let size: usize = parse_decimal_int_16(&bytes);
         self.data = rest;
         self.offset += HEADER_SIZE;
-        if self.data.len() < size {
-            bail!(
-                "Entry size is {size}, but only {} bytes left",
-                self.data.len()
-            );
-        }
         let ident = std::str::from_utf8(&header.ident).context("archive ident is invalid UTF-8")?;
         let ident = ident.trim();
-        let entry_data = &self.data[..size];
-        let entry = match ident {
-            "/" => {
+        let ident_kind = match ident {
+            "/" => IdentifierKind::SymbolTable,
+            "//" => IdentifierKind::Filenames,
+            _ => match self.is_thin {
+                false => IdentifierKind::InlineContent,
+                true => IdentifierKind::FileReference,
+            },
+        };
+
+        let (entry_data, size) = match ident_kind {
+            IdentifierKind::InlineContent
+            | IdentifierKind::SymbolTable
+            | IdentifierKind::Filenames => {
+                if self.data.len() < size {
+                    bail!(
+                        "Entry size is {size}, but only {} bytes left",
+                        self.data.len()
+                    );
+                }
+                (Some(&self.data[..size]), size)
+            }
+            IdentifierKind::FileReference => (None, 0),
+        };
+        let entry = match ident_kind {
+            IdentifierKind::SymbolTable => {
                 // This is a symbol table provided by the archive. We don't use it because it isn't
                 // really helpful, we just use the symbol table from the individual objects.
                 ArchiveEntry::Ignored
             }
-            "//" => ArchiveEntry::Filenames(ExtendedFilenames { data: entry_data }),
-            _ => ArchiveEntry::Regular(ArchiveContent {
-                ident,
-                entry_data,
-                data_offset: self.offset,
+            IdentifierKind::Filenames => ArchiveEntry::Filenames(ExtendedFilenames {
+                data: entry_data.unwrap(),
             }),
+            IdentifierKind::InlineContent | IdentifierKind::FileReference => {
+                ArchiveEntry::Regular(ArchiveContent {
+                    ident,
+                    entry_data,
+                    data_offset: self.offset,
+                })
+            }
         };
         let size_with_padding = size.next_multiple_of(2).min(self.data.len());
         self.data = &self.data[size_with_padding..];
@@ -184,15 +223,51 @@ impl<'data> ArchiveContent<'data> {
         }
     }
 
-    pub(crate) fn data_range(&self) -> Range<usize> {
-        self.data_offset..self.data_offset + self.entry_data.len()
+    pub(crate) fn data_range(&self) -> Option<Range<usize>> {
+        self.entry_data
+            .map(|entry_data| self.data_offset..self.data_offset + entry_data.len())
+    }
+
+    // Parse the identifier as a reference to extended filenames
+    pub(crate) fn parse_as_thin_reference(
+        &self,
+        filenames: ExtendedFilenames<'data>,
+    ) -> Result<&'data str> {
+        // TODO: dedupe?
+        let content = self
+            .ident
+            .strip_prefix("/")
+            .with_context(|| format!("Not a thin entry: {}", &self.ident))?;
+        let addr: usize = content
+            .parse()
+            .with_context(|| format!("Invalid offset: {content}"))?;
+
+        if addr >= filenames.data.len() {
+            bail!(
+                "Thin entry filename offset ({}) exceeds extended filenames length ({})",
+                addr,
+                filenames.data.len()
+            );
+        }
+        let rest = &filenames.data[addr..];
+        let end = memchr::memchr(b'\n', rest).with_context(|| "Malformed filename")?;
+        if rest[end - 1] != b'/' {
+            bail!("Malformed filename");
+        }
+        let res =
+            std::str::from_utf8(&rest[..end - 1]).with_context(|| "Invalid UTF-8 in filename")?;
+        Ok(res)
     }
 }
 
 impl<'data> Identifier<'data> {
     pub(crate) fn as_slice(&self) -> &'data [u8] {
-        let end = memchr::memchr(b'/', self.data).unwrap_or(self.data.len());
-        &self.data[..end]
+        // TODO: Verify
+        // Scanning for '/' causes problems with absolute filenames.
+        // However, scanning for '\n' instead will only work if filenames
+        // are guaranteed to end with '/\n'.
+        let end = memchr::memchr(b'\n', self.data).unwrap_or(self.data.len());
+        &self.data[..end - 1]
     }
 }
 
@@ -282,15 +357,16 @@ mod tests {
                         our_entries.len()
                     );
                 }
+                // TODO: Run on thin archives too
                 for (a, b) in ar_summary.entries.iter().zip(our_entries.iter()) {
-                    if a.len() != b.entry_data.len() {
+                    if a.len() != b.entry_data.unwrap().len() {
                         bail!(
                             "Different data lengths {} vs {}",
                             a.len(),
-                            b.entry_data.len()
+                            b.entry_data.unwrap().len()
                         );
                     }
-                    if a != b.entry_data {
+                    if a != b.entry_data.unwrap() {
                         bail!("Different data");
                     }
                 }
