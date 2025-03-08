@@ -44,29 +44,24 @@ pub fn split_archives<'data>(input_data: &'data InputData) -> Result<Vec<InputBy
                         ArchiveEntry::Ignored => {}
                         ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
                         ArchiveEntry::Regular(archive_entry) => {
+                            let (from, data) = if let Some(entry_data) = archive_entry.entry_data {
+                                (archive_entry.data_range().unwrap(), DataKind::InlineData(entry_data))
+                            } else {
+                                // This is a thin archive entry
+                                let fname = archive_entry.parse_as_thin_reference(extended_filenames.unwrap())?;
+                                let bytes = mmap_file(&PathBuf::from(fname), false)?;
+                                (0..bytes.len(), DataKind::NewFileData(bytes))
+                            };
                             outputs.push(InputBytes {
                                 kind: f.kind,
                                 input: InputRef {
                                     file: f,
                                     entry: Some(EntryMeta {
                                         identifier: archive_entry.identifier(extended_filenames),
-                                        from: archive_entry.data_range(),
+                                        from,
                                     }),
                                 },
-                                data: DataKind::InlineData(archive_entry.entry_data),
-                                modifiers: f.modifiers,
-                            });
-                        },
-                        ArchiveEntry::FileReference(archive_entry) => {
-                            let fname = archive_entry.parse_as_thin_reference(extended_filenames.unwrap())?;
-                            let bytes = mmap_file(&PathBuf::from(fname), false)?;
-                            outputs.push(InputBytes {
-                                kind: f.kind,
-                                input: InputRef {
-                                    file: f,
-                                    entry: None, // TODO: Populate?
-                                },
-                                data: DataKind::NewFileData(bytes),
+                                data,
                                 modifiers: f.modifiers,
                             });
                         },

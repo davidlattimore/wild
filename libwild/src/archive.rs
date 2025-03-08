@@ -12,7 +12,6 @@ use std::ops::Range;
 pub(crate) enum ArchiveEntry<'data> {
     Ignored,
     Regular(ArchiveContent<'data>),
-    FileReference(ArchiveContent<'data>),
     Filenames(ExtendedFilenames<'data>),
 }
 
@@ -38,7 +37,9 @@ pub(crate) struct EntryMeta<'data> {
 
 pub(crate) struct ArchiveContent<'data> {
     ident: &'data str,
-    pub(crate) entry_data: &'data [u8],
+
+    /// `None` for file references in thin archives
+    pub(crate) entry_data: Option<&'data [u8]>,
 
     /// The offset in the archive at which the data is from.
     pub(crate) data_offset: usize,
@@ -91,7 +92,7 @@ impl<'data> ArchiveIterator<'data> {
             Ok(Self {
                 data,
                 offset: thin_magic.len(),
-               is_thin:true,
+                is_thin:true,
             })
         } else {
             bail!("Missing header");
@@ -134,13 +135,10 @@ impl<'data> ArchiveIterator<'data> {
                         self.data.len()
                     );
                 }
-                (&self.data[..size], size)
+                (Some(&self.data[..size]), size)
             },
             IdentifierKind::FileReference => {
-                // Return the identifier itself.
-                // This can be used along with an ArchiveEntry::Filenames to
-                // figure out which file to read.
-                (header.ident.as_slice(), 0)
+                (None, 0)
             },
         };
         let entry = match ident_kind {
@@ -149,13 +147,8 @@ impl<'data> ArchiveIterator<'data> {
                 // really helpful, we just use the symbol table from the individual objects.
                 ArchiveEntry::Ignored
             },
-            IdentifierKind::Filenames => ArchiveEntry::Filenames(ExtendedFilenames { data: entry_data }),
-            IdentifierKind::InlineContent => ArchiveEntry::Regular(ArchiveContent {
-                ident,
-                entry_data,
-                data_offset: self.offset,
-            }),
-            IdentifierKind::FileReference => ArchiveEntry::FileReference(ArchiveContent {
+            IdentifierKind::Filenames => ArchiveEntry::Filenames(ExtendedFilenames { data: entry_data.unwrap() }),
+            IdentifierKind::InlineContent | IdentifierKind::FileReference => ArchiveEntry::Regular(ArchiveContent {
                 ident,
                 entry_data,
                 data_offset: self.offset,
@@ -226,8 +219,11 @@ impl<'data> ArchiveContent<'data> {
         }
     }
 
-    pub(crate) fn data_range(&self) -> Range<usize> {
-        self.data_offset..self.data_offset + self.entry_data.len()
+    pub(crate) fn data_range(&self) -> Option<Range<usize>> {
+        match self.entry_data {
+            Some(entry_data) => Some(self.data_offset..self.data_offset + entry_data.len()),
+            None => None,
+        }
     }
 
     // Parse the identifier as a reference to extended filenames
@@ -249,14 +245,18 @@ impl<'data> ArchiveContent<'data> {
         }
         let res = std::str::from_utf8(&rest[..end-1])
             .with_context(|| "Invalid UTF-8 in filename")?;
-        Ok(&res)
+        Ok(res)
     }
 }
 
 impl<'data> Identifier<'data> {
     pub(crate) fn as_slice(&self) -> &'data [u8] {
-        let end = memchr::memchr(b'/', self.data).unwrap_or(self.data.len());
-        &self.data[..end]
+        // TODO: Verify
+        // Scanning for '/' causes problems with absolute filenames.
+        // However, scanning for '\n' instead will only work if filenames
+        // are guaranteed to end with '/\n'.
+        let end = memchr::memchr(b'\n', self.data).unwrap_or(self.data.len());
+        &self.data[..end-1]
     }
 }
 
@@ -332,9 +332,6 @@ mod tests {
                         ArchiveEntry::Regular(content) => {
                             our_entries.push(content);
                         }
-                        ArchiveEntry::FileReference(_) => {
-                            // TODO: Implement
-                        }
                         ArchiveEntry::Ignored => {}
                         ArchiveEntry::Filenames(table) => filenames = Some(table),
                     }
@@ -349,15 +346,16 @@ mod tests {
                         our_entries.len()
                     );
                 }
+                // TODO: Run on thin archives too
                 for (a, b) in ar_summary.entries.iter().zip(our_entries.iter()) {
-                    if a.len() != b.entry_data.len() {
+                    if a.len() != b.entry_data.unwrap().len() {
                         bail!(
                             "Different data lengths {} vs {}",
                             a.len(),
-                            b.entry_data.len()
+                            b.entry_data.unwrap().len()
                         );
                     }
-                    if a != b.entry_data {
+                    if a != b.entry_data.unwrap() {
                         bail!("Different data");
                     }
                 }
