@@ -70,8 +70,8 @@ const _ASSERTS: () = {
 const HEADER_SIZE: usize = size_of::<EntryHeader>();
 
 enum IdentifierKind {
-    InlineContent,  // Files in normal archives
-    FileReference,  // Files in thin archives
+    InlineContent, // Files in normal archives
+    FileReference, // Files in thin archives
     Filenames,
     SymbolTable,
 }
@@ -92,7 +92,7 @@ impl<'data> ArchiveIterator<'data> {
             Ok(Self {
                 data,
                 offset: thin_magic.len(),
-                is_thin:true,
+                is_thin: true,
             })
         } else {
             bail!("Missing header");
@@ -128,7 +128,9 @@ impl<'data> ArchiveIterator<'data> {
         };
 
         let (entry_data, size) = match ident_kind {
-            IdentifierKind::InlineContent | IdentifierKind::SymbolTable | IdentifierKind::Filenames => {
+            IdentifierKind::InlineContent
+            | IdentifierKind::SymbolTable
+            | IdentifierKind::Filenames => {
                 if self.data.len() < size {
                     bail!(
                         "Entry size is {size}, but only {} bytes left",
@@ -136,23 +138,25 @@ impl<'data> ArchiveIterator<'data> {
                     );
                 }
                 (Some(&self.data[..size]), size)
-            },
-            IdentifierKind::FileReference => {
-                (None, 0)
-            },
+            }
+            IdentifierKind::FileReference => (None, 0),
         };
         let entry = match ident_kind {
             IdentifierKind::SymbolTable => {
                 // This is a symbol table provided by the archive. We don't use it because it isn't
                 // really helpful, we just use the symbol table from the individual objects.
                 ArchiveEntry::Ignored
-            },
-            IdentifierKind::Filenames => ArchiveEntry::Filenames(ExtendedFilenames { data: entry_data.unwrap() }),
-            IdentifierKind::InlineContent | IdentifierKind::FileReference => ArchiveEntry::Regular(ArchiveContent {
-                ident,
-                entry_data,
-                data_offset: self.offset,
+            }
+            IdentifierKind::Filenames => ArchiveEntry::Filenames(ExtendedFilenames {
+                data: entry_data.unwrap(),
             }),
+            IdentifierKind::InlineContent | IdentifierKind::FileReference => {
+                ArchiveEntry::Regular(ArchiveContent {
+                    ident,
+                    entry_data,
+                    data_offset: self.offset,
+                })
+            }
         };
         let size_with_padding = size.next_multiple_of(2).min(self.data.len());
         self.data = &self.data[size_with_padding..];
@@ -220,31 +224,38 @@ impl<'data> ArchiveContent<'data> {
     }
 
     pub(crate) fn data_range(&self) -> Option<Range<usize>> {
-        match self.entry_data {
-            Some(entry_data) => Some(self.data_offset..self.data_offset + entry_data.len()),
-            None => None,
-        }
+        self.entry_data
+            .map(|entry_data| self.data_offset..self.data_offset + entry_data.len())
     }
 
     // Parse the identifier as a reference to extended filenames
-    pub(crate) fn parse_as_thin_reference(&self, filenames: ExtendedFilenames<'data>) -> Result<&'data str> {
+    pub(crate) fn parse_as_thin_reference(
+        &self,
+        filenames: ExtendedFilenames<'data>,
+    ) -> Result<&'data str> {
         // TODO: dedupe?
-        let content = self.ident.strip_prefix("/")
+        let content = self
+            .ident
+            .strip_prefix("/")
             .with_context(|| format!("Not a thin entry: {}", &self.ident))?;
-        let addr: usize = content.parse()
-            .with_context(|| format!("Invalid offset: {}", content))?;
+        let addr: usize = content
+            .parse()
+            .with_context(|| format!("Invalid offset: {content}"))?;
 
         if addr >= filenames.data.len() {
-            bail!("Thin entry filename offset ({}) exceeds extended filenames length ({})", addr, filenames.data.len());
+            bail!(
+                "Thin entry filename offset ({}) exceeds extended filenames length ({})",
+                addr,
+                filenames.data.len()
+            );
         }
         let rest = &filenames.data[addr..];
-        let end = memchr::memchr(b'\n', rest)
-            .with_context(|| "Malformed filename")?;
-        if rest[end-1] != b'/' {
+        let end = memchr::memchr(b'\n', rest).with_context(|| "Malformed filename")?;
+        if rest[end - 1] != b'/' {
             bail!("Malformed filename");
         }
-        let res = std::str::from_utf8(&rest[..end-1])
-            .with_context(|| "Invalid UTF-8 in filename")?;
+        let res =
+            std::str::from_utf8(&rest[..end - 1]).with_context(|| "Invalid UTF-8 in filename")?;
         Ok(res)
     }
 }
@@ -256,7 +267,7 @@ impl<'data> Identifier<'data> {
         // However, scanning for '\n' instead will only work if filenames
         // are guaranteed to end with '/\n'.
         let end = memchr::memchr(b'\n', self.data).unwrap_or(self.data.len());
-        &self.data[..end-1]
+        &self.data[..end - 1]
     }
 }
 

@@ -45,10 +45,14 @@ pub fn split_archives<'data>(input_data: &'data InputData) -> Result<Vec<InputBy
                         ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
                         ArchiveEntry::Regular(archive_entry) => {
                             let (from, data) = if let Some(entry_data) = archive_entry.entry_data {
-                                (archive_entry.data_range().unwrap(), DataKind::InlineData(entry_data))
+                                (
+                                    archive_entry.data_range().unwrap(),
+                                    DataKind::InlineData(entry_data),
+                                )
                             } else {
                                 // This is a thin archive entry
-                                let fname = archive_entry.parse_as_thin_reference(extended_filenames.unwrap())?;
+                                let fname = archive_entry
+                                    .parse_as_thin_reference(extended_filenames.unwrap())?;
                                 let bytes = mmap_file(&PathBuf::from(fname), false)?;
                                 (0..bytes.len(), DataKind::NewFileData(bytes))
                             };
@@ -64,7 +68,7 @@ pub fn split_archives<'data>(input_data: &'data InputData) -> Result<Vec<InputBy
                                 data,
                                 modifiers: f.modifiers,
                             });
-                        },
+                        }
                     }
                 }
                 Ok(outputs)

@@ -18,7 +18,9 @@ pub(crate) enum FileKind {
 
 impl FileKind {
     pub(crate) fn identify_bytes(bytes: &[u8]) -> Result<FileKind> {
-        if bytes.starts_with(&object::archive::MAGIC) || bytes.starts_with(&object::archive::THIN_MAGIC) {
+        if bytes.starts_with(&object::archive::MAGIC)
+            || bytes.starts_with(&object::archive::THIN_MAGIC)
+        {
             Ok(FileKind::Archive)
         } else if bytes.starts_with(&object::elf::ELFMAG) {
             const HEADER_LEN: usize = size_of::<elf::FileHeader>();
