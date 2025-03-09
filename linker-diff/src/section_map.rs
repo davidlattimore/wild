@@ -100,6 +100,11 @@ impl<'data> IndexedLayout<'data> {
                 .get(&file.path)
                 .expect("We should have read all the files");
 
+            if mmap.starts_with(b"!<thin>") {
+                // We will encounter the files referenced by this
+                // archive in other iterations
+                continue;
+            }
             let object_bytes = if let Some(entry) = file.archive_entry.as_ref() {
                 &mmap[entry.range.clone()]
             } else {

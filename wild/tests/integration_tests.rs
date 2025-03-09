@@ -422,6 +422,7 @@ impl ExpectedSymtabEntry {
 enum InputType {
     Object,
     Archive,
+    ThinArchive,
     #[strum(serialize = "Shared")]
     SharedObject,
 }
@@ -605,7 +606,7 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                         .ok_or_else(|| anyhow!("DiffIgnore missing '='"))
                         .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
                 ),
-                input_type @ ("Object" | "Archive" | "Shared") => {
+                input_type @ ("Object" | "Archive" | "ThinArchive" | "Shared") => {
                     let input_type = InputType::from_str(input_type)?;
                     let files = arg
                         .split(",")
@@ -813,10 +814,11 @@ fn build_linker_input(
         .context("At least one object is required")?;
 
     match dep.input_type {
-        InputType::Archive => {
+        InputType::Archive | InputType::ThinArchive => {
+            let thin = matches!(dep.input_type, InputType::ThinArchive);
             let archive_path = first_obj_path.with_extension("a");
             if !is_newer(&archive_path, obj_paths.iter()) {
-                make_archive(&archive_path, &obj_paths)?;
+                make_archive(&archive_path, &obj_paths, thin)?;
             }
             Ok(LinkerInput::new(archive_path))
         }
@@ -1191,10 +1193,14 @@ impl Linker {
     }
 }
 
-fn make_archive(archive_path: &Path, paths: &[PathBuf]) -> Result {
+fn make_archive(archive_path: &Path, paths: &[PathBuf], thin: bool) -> Result {
     let _ = std::fs::remove_file(archive_path);
     let mut cmd = Command::new("ar");
-    cmd.arg("cr").arg(archive_path).args(paths);
+    if thin {
+        cmd.arg("cr").arg("--thin").arg(archive_path).args(paths);
+    } else {
+        cmd.arg("cr").arg(archive_path).args(paths);
+    }
     let status = cmd.status()?;
     if !status.success() {
         bail!("Failed to create archive");
@@ -1627,6 +1633,7 @@ impl Display for InputType {
         match self {
             InputType::Object => write!(f, "object"),
             InputType::Archive => write!(f, "archive"),
+            InputType::ThinArchive => write!(f, "thin archive"),
             InputType::SharedObject => write!(f, "shared"),
         }
     }

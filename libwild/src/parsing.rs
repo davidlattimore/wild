@@ -1,3 +1,4 @@
+use crate::archive_splitter::DataKind;
 use crate::archive_splitter::InputBytes;
 use crate::args::Args;
 use crate::args::Modifiers;
@@ -117,7 +118,11 @@ pub(crate) struct UndefinedSymbolIndex(u32);
 
 impl<'data> ParsedInputObject<'data> {
     fn new(input: &'data InputBytes, is_dynamic: bool) -> Result<Self> {
-        let object = File::parse(input.data, is_dynamic)
+        let input_data = match &input.data {
+            DataKind::InlineData(data_slice) => data_slice,
+            DataKind::NewFileData(data_mmap) => &(**data_mmap),
+        };
+        let object = File::parse(input_data, is_dynamic)
             .with_context(|| format!("Failed to parse object file `{input}`"))?;
         let num_symbols = object.symbols.len();
         Ok(Self {

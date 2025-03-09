@@ -1,9 +1,18 @@
+//#AbstractConfig:default
 //#CompArgs:-ffunction-sections
+//#EnableLinker:lld
+
+//#Config:regular:default
 //#Archive:archive_activation0.c
 //#Archive:archive_activation1.c
 //#Archive:exit.c
 //#Archive:empty.a
-//#EnableLinker:lld
+
+//#Config:thin:default
+//#ThinArchive:archive_activation0.c
+//#ThinArchive:archive_activation1.c
+//#ThinArchive:exit.c
+//#ThinArchive:empty.a
 
 #include "exit.h"
 

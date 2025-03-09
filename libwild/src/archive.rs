@@ -13,6 +13,7 @@ pub(crate) enum ArchiveEntry<'data> {
     Ignored,
     Regular(ArchiveContent<'data>),
     Filenames(ExtendedFilenames<'data>),
+    Thin(&'data str), // Stores the identifier
 }
 
 #[derive(Clone, Copy)]
@@ -37,6 +38,8 @@ pub(crate) struct EntryMeta<'data> {
 
 pub(crate) struct ArchiveContent<'data> {
     ident: &'data str,
+
+    /// `None` for file references in thin archives
     pub(crate) entry_data: &'data [u8],
 
     /// The offset in the archive at which the data is from.
@@ -46,6 +49,7 @@ pub(crate) struct ArchiveContent<'data> {
 pub(crate) struct ArchiveIterator<'data> {
     data: &'data [u8],
     offset: usize,
+    is_thin: bool,
 }
 
 #[derive(Zeroable, Pod, Clone, Copy)]
@@ -66,18 +70,34 @@ const _ASSERTS: () = {
 
 const HEADER_SIZE: usize = size_of::<EntryHeader>();
 
+enum IdentifierKind {
+    InlineContent, // Files in normal archives
+    FileReference, // Files in thin archives
+    Filenames,
+    SymbolTable,
+}
+
 impl<'data> ArchiveIterator<'data> {
     /// Create an iterator from the bytes of the whole archive. The supplied bytes should start with
     /// an archive entry.
     pub(crate) fn from_archive_bytes(data: &'data [u8]) -> Result<Self> {
         let magic = object::archive::MAGIC;
-        let Some(data) = data.strip_prefix(&magic) else {
+        let thin_magic = object::archive::THIN_MAGIC;
+        if let Some(data) = data.strip_prefix(&magic) {
+            Ok(Self {
+                data,
+                offset: magic.len(),
+                is_thin: false,
+            })
+        } else if let Some(data) = data.strip_prefix(&thin_magic) {
+            Ok(Self {
+                data,
+                offset: thin_magic.len(),
+                is_thin: true,
+            })
+        } else {
             bail!("Missing header");
-        };
-        Ok(Self {
-            data,
-            offset: magic.len(),
-        })
+        }
     }
 
     fn next_result(&mut self) -> Result<Option<ArchiveEntry<'data>>> {
@@ -97,29 +117,50 @@ impl<'data> ArchiveIterator<'data> {
         let size: usize = parse_decimal_int_16(&bytes);
         self.data = rest;
         self.offset += HEADER_SIZE;
-        if self.data.len() < size {
-            bail!(
-                "Entry size is {size}, but only {} bytes left",
-                self.data.len()
-            );
-        }
         let ident = std::str::from_utf8(&header.ident).context("archive ident is invalid UTF-8")?;
         let ident = ident.trim();
-        let entry_data = &self.data[..size];
-        let entry = match ident {
-            "/" => {
+        let ident_kind = match ident {
+            "/" => IdentifierKind::SymbolTable,
+            "//" => IdentifierKind::Filenames,
+            _ => match self.is_thin {
+                false => IdentifierKind::InlineContent,
+                true => IdentifierKind::FileReference,
+            },
+        };
+
+        let entry_size = match ident_kind {
+            IdentifierKind::FileReference => {
+                // The size field of a thin reference indicates size of
+                // the references file, not the entry itself
+                0
+            }
+            _ => {
+                if self.data.len() < size {
+                    bail!(
+                        "Entry size is {size}, but only {} bytes left",
+                        self.data.len()
+                    );
+                }
+                size
+            }
+        };
+        let entry = match ident_kind {
+            IdentifierKind::SymbolTable => {
                 // This is a symbol table provided by the archive. We don't use it because it isn't
                 // really helpful, we just use the symbol table from the individual objects.
                 ArchiveEntry::Ignored
             }
-            "//" => ArchiveEntry::Filenames(ExtendedFilenames { data: entry_data }),
-            _ => ArchiveEntry::Regular(ArchiveContent {
+            IdentifierKind::Filenames => ArchiveEntry::Filenames(ExtendedFilenames {
+                data: &self.data[..entry_size],
+            }),
+            IdentifierKind::InlineContent => ArchiveEntry::Regular(ArchiveContent {
                 ident,
-                entry_data,
+                entry_data: &self.data[..entry_size],
                 data_offset: self.offset,
             }),
+            IdentifierKind::FileReference => ArchiveEntry::Thin(ident),
         };
-        let size_with_padding = size.next_multiple_of(2).min(self.data.len());
+        let size_with_padding = entry_size.next_multiple_of(2).min(self.data.len());
         self.data = &self.data[size_with_padding..];
         self.offset += size_with_padding;
         Ok(Some(entry))
@@ -159,29 +200,36 @@ fn parse_decimal_int_16(bytes: &[u8; 16]) -> usize {
     process_16(num, check_len_16(num)) as usize
 }
 
+/// Returns the identifier (generally a filename) that identifies this entry. The entry's
+/// identifier may be stored in the entry's header, or it may be in the extended filenames
+/// entry, in which case it will be obtained from `extended_filenames` if present. Since we
+/// generally only need entry identifiers if there's an error, we avoid reading the actual bytes
+/// of the filename, deferring that work until we find that we actually need to, when
+/// `Identifier::as_slice` is called.
+pub(crate) fn evaluate_identifier<'data>(
+    ident: &'data str,
+    extended_filenames: Option<ExtendedFilenames<'data>>,
+) -> Identifier<'data> {
+    if let Some(filenames) = extended_filenames {
+        if let Some(rest) = ident.strip_prefix('/') {
+            if let Ok(offset) = rest.parse() {
+                return Identifier {
+                    data: &filenames.data[offset..],
+                };
+            }
+        }
+    }
+    Identifier {
+        data: ident.as_bytes(),
+    }
+}
+
 impl<'data> ArchiveContent<'data> {
-    /// Returns the identifier (generally a filename) that identifies this entry. The entry's
-    /// identifier may be stored in the entry's header, or it may be in the extended filenames
-    /// entry, in which case it will be obtained from `extended_filenames` if present. Since we
-    /// generally only need entry identifiers if there's an error, we avoid reading the actual bytes
-    /// of the filename, deferring that work until we find that we actually need to, when
-    /// `Identifier::as_slice` is called.
     pub(crate) fn identifier(
         &self,
         extended_filenames: Option<ExtendedFilenames<'data>>,
     ) -> Identifier<'data> {
-        if let Some(filenames) = extended_filenames {
-            if let Some(rest) = self.ident.strip_prefix('/') {
-                if let Ok(offset) = rest.parse() {
-                    return Identifier {
-                        data: &filenames.data[offset..],
-                    };
-                }
-            }
-        }
-        Identifier {
-            data: self.ident.as_bytes(),
-        }
+        evaluate_identifier(self.ident, extended_filenames)
     }
 
     pub(crate) fn data_range(&self) -> Range<usize> {
@@ -191,8 +239,13 @@ impl<'data> ArchiveContent<'data> {
 
 impl<'data> Identifier<'data> {
     pub(crate) fn as_slice(&self) -> &'data [u8] {
-        let end = memchr::memchr(b'/', self.data).unwrap_or(self.data.len());
-        &self.data[..end]
+        // Each filename in the extended filenames field ends with '/\n'.
+        // Scanning for '/' to determine the filename end will not work
+        // with paths that contain '/', so we scan for '\n' instead.
+        let end = memchr::memchr(b'\n', self.data).unwrap_or(self.data.len());
+
+        // The trailing '/' is at `end - 1` (just before '\n').
+        &self.data[..end - 1]
     }
 }
 
@@ -267,6 +320,9 @@ mod tests {
                     match entry {
                         ArchiveEntry::Regular(content) => {
                             our_entries.push(content);
+                        }
+                        ArchiveEntry::Thin(_) => {
+                            bail!("This test does not support thin archives");
                         }
                         ArchiveEntry::Ignored => {}
                         ArchiveEntry::Filenames(table) => filenames = Some(table),
