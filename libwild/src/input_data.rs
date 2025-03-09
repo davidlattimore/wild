@@ -122,7 +122,7 @@ impl<'config> InputData<'config> {
             return Ok(());
         }
 
-        let bytes = mmap_file(absolute_path, self.config.prepopulate_maps)?;
+        let bytes = mmap_file(absolute_path.as_path(), self.config.prepopulate_maps)?;
 
         let kind = FileKind::identify_bytes(&bytes)?;
         if matches!(kind, FileKind::Text) {
@@ -205,7 +205,7 @@ impl Input {
     }
 }
 
-pub(crate) fn mmap_file(path: &PathBuf, prepopulate_maps: bool) -> Result<Mmap> {
+pub(crate) fn mmap_file(path: &Path, prepopulate_maps: bool) -> Result<Mmap> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("Failed to open input file `{}`", path.display()))?;
 

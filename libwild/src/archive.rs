@@ -227,46 +227,16 @@ impl<'data> ArchiveContent<'data> {
         self.entry_data
             .map(|entry_data| self.data_offset..self.data_offset + entry_data.len())
     }
-
-    // Parse the identifier as a reference to extended filenames
-    pub(crate) fn parse_as_thin_reference(
-        &self,
-        filenames: ExtendedFilenames<'data>,
-    ) -> Result<&'data str> {
-        // TODO: dedupe?
-        let content = self
-            .ident
-            .strip_prefix("/")
-            .with_context(|| format!("Not a thin entry: {}", &self.ident))?;
-        let addr: usize = content
-            .parse()
-            .with_context(|| format!("Invalid offset: {content}"))?;
-
-        if addr >= filenames.data.len() {
-            bail!(
-                "Thin entry filename offset ({}) exceeds extended filenames length ({})",
-                addr,
-                filenames.data.len()
-            );
-        }
-        let rest = &filenames.data[addr..];
-        let end = memchr::memchr(b'\n', rest).with_context(|| "Malformed filename")?;
-        if rest[end - 1] != b'/' {
-            bail!("Malformed filename");
-        }
-        let res =
-            std::str::from_utf8(&rest[..end - 1]).with_context(|| "Invalid UTF-8 in filename")?;
-        Ok(res)
-    }
 }
 
 impl<'data> Identifier<'data> {
     pub(crate) fn as_slice(&self) -> &'data [u8] {
-        // TODO: Verify
-        // Scanning for '/' causes problems with absolute filenames.
-        // However, scanning for '\n' instead will only work if filenames
-        // are guaranteed to end with '/\n'.
+        // Each filename in the extended filenames field ends with '/\n'.
+        // Scanning for '/' to determine the filename end will not work
+        // with paths that contain '/', so we scan for '\n' instead.
         let end = memchr::memchr(b'\n', self.data).unwrap_or(self.data.len());
+
+        // The trailing '/' is at `end - 1` (just before '\n').
         &self.data[..end - 1]
     }
 }
@@ -357,7 +327,6 @@ mod tests {
                         our_entries.len()
                     );
                 }
-                // TODO: Run on thin archives too
                 for (a, b) in ar_summary.entries.iter().zip(our_entries.iter()) {
                     if a.len() != b.entry_data.unwrap().len() {
                         bail!(

@@ -10,8 +10,10 @@ use crate::input_data::mmap_file;
 use memmap2::Mmap;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
+use std::ffi::OsStr;
 use std::fmt::Display;
-use std::path::PathBuf;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 
 pub(crate) enum DataKind<'data> {
     // Data originating from the archive itself,
@@ -51,9 +53,8 @@ pub fn split_archives<'data>(input_data: &'data InputData) -> Result<Vec<InputBy
                                 )
                             } else {
                                 // This is a thin archive entry
-                                let fname = archive_entry
-                                    .parse_as_thin_reference(extended_filenames.unwrap())?;
-                                let bytes = mmap_file(&PathBuf::from(fname), false)?;
+                                let fname = archive_entry.identifier(extended_filenames).as_slice();
+                                let bytes = mmap_file(Path::new(OsStr::from_bytes(fname)), false)?;
                                 (0..bytes.len(), DataKind::NewFileData(bytes))
                             };
                             outputs.push(InputBytes {
