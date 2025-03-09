@@ -1,11 +1,4 @@
-//#Config:verneed
-//#Object:exit.c
-//#Object:symbol-versions-2.c
-//#ExpectSym: _start .text
-//#ExpectSym: exit_syscall .text
-//#EnableLinker:lld
-
-//#Config:verdef
+//#AbstractConfig:verdef
 //#RunEnabled:false
 //#DiffIgnore:.dynamic.DT_FLAGS*
 //#DiffIgnore:.dynamic.DT_RELA
@@ -13,7 +6,21 @@
 //#DiffIgnore:file-header.entry
 //#Object:exit.c
 //#EnableLinker:lld
+
+//#Config:verneed
+//#Object:exit.c
+//#Object:symbol-versions-2.c
+//#ExpectSym: _start .text
+//#ExpectSym: exit_syscall .text
+//#EnableLinker:lld
+
+//#Config:verdef-0:verdef
+//#DiffIgnore:version_d.verdef_1
 //#LinkArgs:--shared
+//#VersionScript:symbol-versions-script
+
+//#Config:verdef-1:verdef
+//#LinkArgs:--shared --soname=symbol-versions.so
 //#VersionScript:symbol-versions-script
 
 #include "exit.h"

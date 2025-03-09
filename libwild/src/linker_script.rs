@@ -159,7 +159,7 @@ impl<'data> VersionScript<'data> {
                 Some(&mut version_symbols),
             )?;
             let parent_index = if let Some(parent) = parent {
-                // TODO: For longer version scripts IndexSet, but is it even realistic use case?
+                // TODO: For longer version scripts IndexSet makes sense, but is it even realistic use case?
                 Some(
                     version_names
                         .iter()
