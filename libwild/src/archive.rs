@@ -13,6 +13,7 @@ pub(crate) enum ArchiveEntry<'data> {
     Ignored,
     Regular(ArchiveContent<'data>),
     Filenames(ExtendedFilenames<'data>),
+    Thin(&'data str), // Stores the identifier
 }
 
 #[derive(Clone, Copy)]
@@ -39,7 +40,7 @@ pub(crate) struct ArchiveContent<'data> {
     ident: &'data str,
 
     /// `None` for file references in thin archives
-    pub(crate) entry_data: Option<&'data [u8]>,
+    pub(crate) entry_data: &'data [u8],
 
     /// The offset in the archive at which the data is from.
     pub(crate) data_offset: usize,
@@ -127,19 +128,21 @@ impl<'data> ArchiveIterator<'data> {
             },
         };
 
-        let (entry_data, size) = match ident_kind {
-            IdentifierKind::InlineContent
-            | IdentifierKind::SymbolTable
-            | IdentifierKind::Filenames => {
+        let entry_size = match ident_kind {
+            IdentifierKind::FileReference => {
+                // The size field of a thin reference indicates size of
+                // the references file, not the entry itself
+                0
+            }
+            _ => {
                 if self.data.len() < size {
                     bail!(
                         "Entry size is {size}, but only {} bytes left",
                         self.data.len()
                     );
                 }
-                (Some(&self.data[..size]), size)
+                size
             }
-            IdentifierKind::FileReference => (None, 0),
         };
         let entry = match ident_kind {
             IdentifierKind::SymbolTable => {
@@ -148,17 +151,16 @@ impl<'data> ArchiveIterator<'data> {
                 ArchiveEntry::Ignored
             }
             IdentifierKind::Filenames => ArchiveEntry::Filenames(ExtendedFilenames {
-                data: entry_data.unwrap(),
+                data: &self.data[..entry_size],
             }),
-            IdentifierKind::InlineContent | IdentifierKind::FileReference => {
-                ArchiveEntry::Regular(ArchiveContent {
-                    ident,
-                    entry_data,
-                    data_offset: self.offset,
-                })
-            }
+            IdentifierKind::InlineContent => ArchiveEntry::Regular(ArchiveContent {
+                ident,
+                entry_data: &self.data[..entry_size],
+                data_offset: self.offset,
+            }),
+            IdentifierKind::FileReference => ArchiveEntry::Thin(ident),
         };
-        let size_with_padding = size.next_multiple_of(2).min(self.data.len());
+        let size_with_padding = entry_size.next_multiple_of(2).min(self.data.len());
         self.data = &self.data[size_with_padding..];
         self.offset += size_with_padding;
         Ok(Some(entry))
@@ -198,34 +200,40 @@ fn parse_decimal_int_16(bytes: &[u8; 16]) -> usize {
     process_16(num, check_len_16(num)) as usize
 }
 
+/// Returns the identifier (generally a filename) that identifies this entry. The entry's
+/// identifier may be stored in the entry's header, or it may be in the extended filenames
+/// entry, in which case it will be obtained from `extended_filenames` if present. Since we
+/// generally only need entry identifiers if there's an error, we avoid reading the actual bytes
+/// of the filename, deferring that work until we find that we actually need to, when
+/// `Identifier::as_slice` is called.
+pub(crate) fn evaluate_identifier<'data>(
+    ident: &'data str,
+    extended_filenames: Option<ExtendedFilenames<'data>>,
+) -> Identifier<'data> {
+    if let Some(filenames) = extended_filenames {
+        if let Some(rest) = ident.strip_prefix('/') {
+            if let Ok(offset) = rest.parse() {
+                return Identifier {
+                    data: &filenames.data[offset..],
+                };
+            }
+        }
+    }
+    Identifier {
+        data: ident.as_bytes(),
+    }
+}
+
 impl<'data> ArchiveContent<'data> {
-    /// Returns the identifier (generally a filename) that identifies this entry. The entry's
-    /// identifier may be stored in the entry's header, or it may be in the extended filenames
-    /// entry, in which case it will be obtained from `extended_filenames` if present. Since we
-    /// generally only need entry identifiers if there's an error, we avoid reading the actual bytes
-    /// of the filename, deferring that work until we find that we actually need to, when
-    /// `Identifier::as_slice` is called.
     pub(crate) fn identifier(
         &self,
         extended_filenames: Option<ExtendedFilenames<'data>>,
     ) -> Identifier<'data> {
-        if let Some(filenames) = extended_filenames {
-            if let Some(rest) = self.ident.strip_prefix('/') {
-                if let Ok(offset) = rest.parse() {
-                    return Identifier {
-                        data: &filenames.data[offset..],
-                    };
-                }
-            }
-        }
-        Identifier {
-            data: self.ident.as_bytes(),
-        }
+        evaluate_identifier(self.ident, extended_filenames)
     }
 
-    pub(crate) fn data_range(&self) -> Option<Range<usize>> {
-        self.entry_data
-            .map(|entry_data| self.data_offset..self.data_offset + entry_data.len())
+    pub(crate) fn data_range(&self) -> Range<usize> {
+        self.data_offset..self.data_offset + self.entry_data.len()
     }
 }
 
@@ -313,6 +321,9 @@ mod tests {
                         ArchiveEntry::Regular(content) => {
                             our_entries.push(content);
                         }
+                        ArchiveEntry::Thin(_) => {
+                            bail!("This test does not support thin archives");
+                        }
                         ArchiveEntry::Ignored => {}
                         ArchiveEntry::Filenames(table) => filenames = Some(table),
                     }
@@ -328,14 +339,14 @@ mod tests {
                     );
                 }
                 for (a, b) in ar_summary.entries.iter().zip(our_entries.iter()) {
-                    if a.len() != b.entry_data.unwrap().len() {
+                    if a.len() != b.entry_data.len() {
                         bail!(
                             "Different data lengths {} vs {}",
                             a.len(),
-                            b.entry_data.unwrap().len()
+                            b.entry_data.len()
                         );
                     }
-                    if a != b.entry_data.unwrap() {
+                    if a != b.entry_data {
                         bail!("Different data");
                     }
                 }

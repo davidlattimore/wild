@@ -1,6 +1,7 @@
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
 use crate::archive::EntryMeta;
+use crate::archive::evaluate_identifier;
 use crate::args::Modifiers;
 use crate::error::Result;
 use crate::file_kind::FileKind;
@@ -46,27 +47,33 @@ pub fn split_archives<'data>(input_data: &'data InputData) -> Result<Vec<InputBy
                         ArchiveEntry::Ignored => {}
                         ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
                         ArchiveEntry::Regular(archive_entry) => {
-                            let (from, data) = if let Some(entry_data) = archive_entry.entry_data {
-                                (
-                                    archive_entry.data_range().unwrap(),
-                                    DataKind::InlineData(entry_data),
-                                )
-                            } else {
-                                // This is a thin archive entry
-                                let fname = archive_entry.identifier(extended_filenames).as_slice();
-                                let bytes = mmap_file(Path::new(OsStr::from_bytes(fname)), false)?;
-                                (0..bytes.len(), DataKind::NewFileData(bytes))
-                            };
                             outputs.push(InputBytes {
                                 kind: f.kind,
                                 input: InputRef {
                                     file: f,
                                     entry: Some(EntryMeta {
                                         identifier: archive_entry.identifier(extended_filenames),
-                                        from,
+                                        from: archive_entry.data_range(),
                                     }),
                                 },
-                                data,
+                                data: DataKind::InlineData(archive_entry.entry_data),
+                                modifiers: f.modifiers,
+                            });
+                        }
+                        ArchiveEntry::Thin(ident) => {
+                            let fname = evaluate_identifier(ident, extended_filenames);
+                            let bytes =
+                                mmap_file(Path::new(OsStr::from_bytes(fname.as_slice())), false)?;
+                            outputs.push(InputBytes {
+                                kind: f.kind,
+                                input: InputRef {
+                                    file: f,
+                                    entry: Some(EntryMeta {
+                                        identifier: fname,
+                                        from: 0..bytes.len(),
+                                    }),
+                                },
+                                data: DataKind::NewFileData(bytes),
                                 modifiers: f.modifiers,
                             });
                         }
