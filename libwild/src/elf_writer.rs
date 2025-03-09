@@ -188,6 +188,10 @@ struct SectionAllocation {
 
 impl Output {
     pub(crate) fn new(args: &Args) -> Output {
+        let file_write_mode = args
+            .file_write_mode
+            .unwrap_or_else(|| default_file_write_mode(&args.output));
+
         if args.num_threads.get() > 1 {
             let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
             Output {
@@ -196,14 +200,14 @@ impl Output {
                     sized_output_sender: Some(sized_output_sender),
                     sized_output_recv,
                 },
-                file_write_mode: args.file_write_mode,
+                file_write_mode,
                 should_write_trace: args.write_trace,
             }
         } else {
             Output {
                 path: args.output.clone(),
                 creator: FileCreator::Regular { file_size: None },
-                file_write_mode: args.file_write_mode,
+                file_write_mode,
                 should_write_trace: args.write_trace,
             }
         }
@@ -294,6 +298,30 @@ impl Output {
             self.should_write_trace,
         )
     }
+}
+
+/// Returns the file write mode that we should use to write to the specified path.
+fn default_file_write_mode(path: &Path) -> FileWriteMode {
+    use std::os::unix::fs::FileTypeExt as _;
+
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return FileWriteMode::UnlinkAndReplace;
+    };
+
+    let file_type = metadata.file_type();
+
+    // If we've been asked to write to a path that currently holds some exotic kind of file, then we
+    // don't want to delete it, even if we have permission to. For example, we don't want to delete
+    // `/dev/null` if we're running in a container as root.
+    if file_type.is_char_device()
+        || file_type.is_block_device()
+        || file_type.is_socket()
+        || file_type.is_fifo()
+    {
+        return FileWriteMode::UpdateInPlace;
+    }
+
+    FileWriteMode::UnlinkAndReplace
 }
 
 /// Delete the old output file. Note, this is only used when running from a single thread.
