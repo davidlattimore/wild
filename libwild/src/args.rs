@@ -55,7 +55,7 @@ pub(crate) struct Args {
     pub(crate) gc_sections: bool,
     pub(crate) should_fork: bool,
     pub(crate) build_id: BuildIdOption,
-    pub(crate) file_write_mode: FileWriteMode,
+    pub(crate) file_write_mode: Option<FileWriteMode>,
     pub(crate) no_undefined: bool,
     pub(crate) allow_copy_relocations: bool,
     pub(crate) sysroot: Option<Box<Path>>,
@@ -249,7 +249,7 @@ impl Default for Args {
             soname: None,
             execstack: false,
             should_fork: true,
-            file_write_mode: FileWriteMode::UnlinkAndReplace,
+            file_write_mode: None,
             build_id: BuildIdOption::None,
             files_per_group: None,
             no_undefined: false,
@@ -409,7 +409,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         } else if long_arg_eq("no-fork") {
             args.should_fork = false;
         } else if long_arg_eq("update-in-place") {
-            args.file_write_mode = FileWriteMode::UpdateInPlace;
+            args.file_write_mode = Some(FileWriteMode::UpdateInPlace);
         } else if arg == "-m" {
             let arg_value = input.next().context("Missing argument to -m")?;
             let arg_value = arg_value.as_ref();
