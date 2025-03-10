@@ -36,7 +36,7 @@ libc = "0.2"
 linker-diff = { path = "../linker-diff", version = "0.4.0" }
 which = "7.0.2"
 rstest = "0.25.0"
-fd-lock = "4.0.2"
+fd-lock = "4.0.4"
 strum = { version = "0.27.1", features = ["derive"] }
 strum_macros = "0.27.1"
 
