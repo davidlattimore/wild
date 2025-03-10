@@ -517,6 +517,13 @@ fn load_prelude(
     definitions_out: &mut [SymbolId],
     resources: &ResolutionResources,
 ) {
+    if resources.symbol_db.args.output_kind().is_executable() {
+        // The _start symbol could be defined within an archive entry. If it is, then we need to
+        // load it. We don't currently store the resulting SymbolId, but instead look it up again
+        // during layout.
+        load_symbol_named(resources, &mut SymbolId::undefined(), b"_start");
+    }
+
     // Try to resolve any symbols that the user requested be undefined (e.g. via --undefined). If an
     // object defines such a symbol, request that the object be loaded. Also, point our undefined
     // symbol record to the definition.
@@ -525,18 +532,22 @@ fn load_prelude(
             InternalSymDefInfo::ForceUndefined(undefined_symbol_index) => {
                 let name = prelude.get_undefined_name(*undefined_symbol_index);
 
-                if let Some(symbol_id) = resources
-                    .symbol_db
-                    .get_unversioned(&UnversionedSymbolName::prehashed(name))
-                {
-                    *definition_out = symbol_id;
-
-                    let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
-                    resources.request_file_id(symbol_file_id);
-                }
+                load_symbol_named(resources, definition_out, name);
             }
             _ => {}
         }
+    }
+}
+
+fn load_symbol_named(resources: &ResolutionResources, definition_out: &mut SymbolId, name: &[u8]) {
+    if let Some(symbol_id) = resources
+        .symbol_db
+        .get_unversioned(&UnversionedSymbolName::prehashed(name))
+    {
+        *definition_out = symbol_id;
+
+        let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
+        resources.request_file_id(symbol_file_id);
     }
 }
 
