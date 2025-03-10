@@ -125,6 +125,9 @@ pub(crate) struct Modifiers {
     /// Whether object files in archives should be linked even if they do not contain symbols that
     /// are referenced.
     pub(crate) whole_archive: bool,
+
+    /// Whether archive semantics should be applied even for regular objects.
+    pub(crate) archive_semantics: bool,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -713,6 +716,7 @@ impl Default for Modifiers {
             as_needed: false,
             allow_shared: true,
             whole_archive: false,
+            archive_semantics: false,
         }
     }
 }

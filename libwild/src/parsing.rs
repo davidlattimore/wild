@@ -1,4 +1,3 @@
-use crate::archive_splitter::DataKind;
 use crate::archive_splitter::InputBytes;
 use crate::args::Args;
 use crate::args::Modifiers;
@@ -118,13 +117,11 @@ pub(crate) struct UndefinedSymbolIndex(u32);
 
 impl<'data> ParsedInputObject<'data> {
     fn new(input: &'data InputBytes, is_dynamic: bool) -> Result<Self> {
-        let input_data = match &input.data {
-            DataKind::InlineData(data_slice) => data_slice,
-            DataKind::NewFileData(data_mmap) => &(**data_mmap),
-        };
-        let object = File::parse(input_data, is_dynamic)
+        let object = File::parse(input.data, is_dynamic)
             .with_context(|| format!("Failed to parse object file `{input}`"))?;
+
         let num_symbols = object.symbols.len();
+
         Ok(Self {
             input: input.input.clone(),
             object,
@@ -147,7 +144,7 @@ impl<'data> ParsedInputObject<'data> {
     /// it defines. This is true for archive entries for which --whole-archive is false and shared
     /// objects for which --as-needed is true.
     pub(crate) fn is_optional(&self) -> bool {
-        (self.input.entry.is_some() && !self.modifiers.whole_archive)
+        (self.input.has_archive_semantics() && !self.modifiers.whole_archive)
             || (self.is_dynamic() && self.modifiers.as_needed)
     }
 
@@ -183,7 +180,9 @@ impl<'data> ParsedInput<'data> {
             }
             FileKind::Prelude => Self::Prelude(Prelude::new(args)),
             FileKind::ElfDynamic => Self::Object(ParsedInputObject::new(input, true)?),
-            FileKind::Text => unreachable!("Should have been handled earlier"),
+            FileKind::ThinArchive | FileKind::Text => {
+                unreachable!("{:?} should have been handled earlier", input.kind)
+            }
             FileKind::Epilogue => Self::Epilogue(Epilogue::new()),
         })
     }

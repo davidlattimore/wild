@@ -1,6 +1,8 @@
 //! Code for figuring out what input files we need to read then mapping them into memory.
 
 use crate::archive;
+use crate::archive::ArchiveEntry;
+use crate::archive::ArchiveIterator;
 use crate::args::Args;
 use crate::args::Input;
 use crate::args::InputSpec;
@@ -10,7 +12,10 @@ use crate::file_kind::FileKind;
 use anyhow::Context;
 use anyhow::bail;
 use memmap2::Mmap;
+use rayon::iter::IntoParallelRefIterator;
+use rayon::iter::ParallelIterator;
 use std::collections::HashSet;
+use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -40,10 +45,19 @@ pub(crate) struct InputFile {
 
     /// The filename prior to path search. If this is absolute, then `filename` will be the same.
     original_filename: PathBuf,
+
     pub(crate) kind: FileKind,
     pub(crate) modifiers: Modifiers,
 
-    bytes: Option<Mmap>,
+    data: Option<FileData>,
+}
+
+pub(crate) struct FileData {
+    bytes: Mmap,
+
+    /// The modification timestamp of the input file just before we opened it. We expect our input
+    /// files not to change while we're running.
+    modification_time: std::time::SystemTime,
 }
 
 /// Identifies an input object that may not be a regular file on disk, or may be an entry in an
@@ -56,7 +70,7 @@ pub(crate) struct InputRef<'data> {
 
 impl InputFile {
     pub(crate) fn data(&self) -> &[u8] {
-        self.bytes.as_deref().unwrap_or_default()
+        self.data.as_deref().unwrap_or_default()
     }
 }
 
@@ -81,7 +95,7 @@ impl<'config> InputData<'config> {
                 original_filename: PathBuf::new(),
                 kind: FileKind::Prelude,
                 modifiers: Default::default(),
-                bytes: None,
+                data: None,
             },
         ];
 
@@ -109,8 +123,9 @@ impl<'config> InputData<'config> {
             original_filename: PathBuf::new(),
             kind: FileKind::Epilogue,
             modifiers: Default::default(),
-            bytes: None,
+            data: None,
         });
+
         Ok(input_data)
     }
 
@@ -122,30 +137,90 @@ impl<'config> InputData<'config> {
             return Ok(());
         }
 
-        let bytes = mmap_file(absolute_path.as_path(), self.config.prepopulate_maps)?;
+        let data = FileData::new(absolute_path.as_path(), self.config.prepopulate_maps)?;
 
-        let kind = FileKind::identify_bytes(&bytes)?;
-        if matches!(kind, FileKind::Text) {
-            for input in crate::linker_script::linker_script_to_inputs(
-                &bytes,
-                absolute_path,
-                input.modifiers,
-                sysroot,
-            )? {
-                self.register_input(&input, sysroot)?;
+        let kind = FileKind::identify_bytes(&data.bytes)?;
+
+        match kind {
+            FileKind::Text => {
+                for input in crate::linker_script::linker_script_to_inputs(
+                    &data.bytes,
+                    absolute_path,
+                    input.modifiers,
+                    sysroot,
+                )? {
+                    self.register_input(&input, sysroot)?;
+                }
+                return Ok(());
             }
-            return Ok(());
+            FileKind::ThinArchive => {
+                let mut extended_filenames = None;
+                for entry in ArchiveIterator::from_archive_bytes(&data)? {
+                    match entry? {
+                        ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
+                        ArchiveEntry::Thin(entry) => {
+                            let path = entry.identifier(extended_filenames).as_path();
+
+                            self.files.push(InputFile {
+                                filename: path.to_owned(),
+                                original_filename: path.to_owned(),
+                                kind: FileKind::ElfObject,
+                                modifiers: Modifiers {
+                                    archive_semantics: true,
+                                    ..input.modifiers
+                                },
+                                data: Some(FileData::new(path, self.config.prepopulate_maps)?),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {
+                self.files.push(InputFile {
+                    filename: absolute_path.to_owned(),
+                    original_filename: paths.original,
+                    kind,
+                    modifiers: input.modifiers,
+                    data: Some(data),
+                });
+            }
         }
 
-        let file_info = InputFile {
-            filename: absolute_path.to_owned(),
-            original_filename: paths.original,
-            kind,
-            modifiers: input.modifiers,
-            bytes: Some(bytes),
-        };
-        self.files.push(file_info);
         Ok(())
+    }
+
+    /// Checks that the modification timestamp on all our input files hasn't changed since we opened
+    /// them. If they were modified while we were running, then we may fail with a SIGBUS if we try
+    /// to access part of the file that's no longer there, however if we don't, then we may have
+    /// read inconsistent data from the changed object, so we want to fail the link.
+    #[tracing::instrument(skip_all, name = "Verify inputs unchanged")]
+    pub(crate) fn verify_inputs_unchanged(&self) -> Result {
+        self.files.par_iter().try_for_each(|file| {
+            let Some(file_data) = &file.data else {
+                return Ok(());
+            };
+
+            let metadata = std::fs::metadata(&file.filename).with_context(|| {
+                format!("Failed to read metadata for `{}`", file.filename.display())
+            })?;
+
+            let new_modified = metadata.modified().with_context(|| {
+                format!(
+                    "Failed to get modification time for `{}`",
+                    file.filename.display()
+                )
+            })?;
+
+            if file_data.modification_time != new_modified {
+                bail!(
+                    "The file `{}` was changed while we were running",
+                    file.filename.display()
+                );
+            }
+
+            Ok(())
+        })
     }
 }
 
@@ -205,35 +280,46 @@ impl Input {
     }
 }
 
-pub(crate) fn mmap_file(path: &Path, prepopulate_maps: bool) -> Result<Mmap> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("Failed to open input file `{}`", path.display()))?;
+impl FileData {
+    pub(crate) fn new(path: &Path, prepopulate_maps: bool) -> Result<Self> {
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("Failed to open input file `{}`", path.display()))?;
 
-    // Safety: Unfortunately, this is a bit of a compromise. Basically this is only safe if our
-    // users manage to avoid editing the input files while we've got them mapped. It'd be great
-    // if there were a way to protect against unsoundness when the input files were modified
-    // externally, but there isn't - at least on Linux. Not only could the bytes change without
-    // notice, but the mapped file could be truncated causing any access to result in a SIGBUS.
-    //
-    // For our use case, mmap just has too many advantages. There are likely large parts of our
-    // input files that we don't need to read, so reading all our input files up front isn't
-    // really an option. Reading just the parts we need might be an option, but would add
-    // substantial complexity. Also, using mmap means that if the system needs to reclaim
-    // memory, it can just release some of our pages.
+        let modification_time = std::fs::metadata(path)
+            .and_then(|meta| meta.modified())
+            .with_context(|| {
+                format!("Failed to read file modification time `{}`", path.display())
+            })?;
 
-    let mut mmap_options = memmap2::MmapOptions::new();
+        // Safety: Unfortunately, this is a bit of a compromise. Basically this is only safe if our
+        // users manage to avoid editing the input files while we've got them mapped. It'd be great
+        // if there were a way to protect against unsoundness when the input files were modified
+        // externally, but there isn't - at least on Linux. Not only could the bytes change without
+        // notice, but the mapped file could be truncated causing any access to result in a SIGBUS.
+        //
+        // For our use case, mmap just has too many advantages. There are likely large parts of our
+        // input files that we don't need to read, so reading all our input files up front isn't
+        // really an option. Reading just the parts we need might be an option, but would add
+        // substantial complexity. Also, using mmap means that if the system needs to reclaim
+        // memory, it can just release some of our pages.
 
-    // Prepopulating maps generally slows things down, so is off by default, however it's useful
-    // when profiling, since it means that you don't see false positive slowness in the parts of
-    // the code that first read a bit of memory.
-    if prepopulate_maps {
-        mmap_options.populate();
+        let mut mmap_options = memmap2::MmapOptions::new();
+
+        // Prepopulating maps generally slows things down, so is off by default, however it's useful
+        // when profiling, since it means that you don't see false positive slowness in the parts of
+        // the code that first read a bit of memory.
+        if prepopulate_maps {
+            mmap_options.populate();
+        }
+
+        let bytes = unsafe { mmap_options.map(&file) }
+            .with_context(|| format!("Failed to mmap input file `{}`", path.display()))?;
+
+        Ok(FileData {
+            bytes,
+            modification_time,
+        })
     }
-
-    let bytes = unsafe { mmap_options.map(&file) }
-        .with_context(|| format!("Failed to mmap input file `{}`", path.display()))?;
-
-    Ok(bytes)
 }
 
 fn search_for_file(
@@ -255,6 +341,14 @@ fn search_for_file(
         }
     }
     None
+}
+
+impl Deref for FileData {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.bytes
+    }
 }
 
 const FILE_INDEX_BITS: u32 = 8;
@@ -304,5 +398,9 @@ impl std::fmt::Display for FileId {
 impl<'data> InputRef<'data> {
     pub(crate) fn lib_name(&self) -> &'data [u8] {
         self.file.original_filename.as_os_str().as_encoded_bytes()
+    }
+
+    pub(crate) fn has_archive_semantics(&self) -> bool {
+        self.entry.is_some() || self.file.modifiers.archive_semantics
     }
 }

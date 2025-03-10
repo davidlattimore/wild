@@ -7,13 +7,16 @@ use anyhow::Context;
 use anyhow::bail;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
+use std::ffi::OsStr;
 use std::ops::Range;
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::Path;
 
 pub(crate) enum ArchiveEntry<'data> {
     Ignored,
     Regular(ArchiveContent<'data>),
     Filenames(ExtendedFilenames<'data>),
-    Thin(&'data str), // Stores the identifier
+    Thin(ThinEntry<'data>),
 }
 
 #[derive(Clone, Copy)]
@@ -39,11 +42,14 @@ pub(crate) struct EntryMeta<'data> {
 pub(crate) struct ArchiveContent<'data> {
     ident: &'data str,
 
-    /// `None` for file references in thin archives
     pub(crate) entry_data: &'data [u8],
 
     /// The offset in the archive at which the data is from.
     pub(crate) data_offset: usize,
+}
+
+pub(crate) struct ThinEntry<'data> {
+    ident: &'data str,
 }
 
 pub(crate) struct ArchiveIterator<'data> {
@@ -158,7 +164,7 @@ impl<'data> ArchiveIterator<'data> {
                 entry_data: &self.data[..entry_size],
                 data_offset: self.offset,
             }),
-            IdentifierKind::FileReference => ArchiveEntry::Thin(ident),
+            IdentifierKind::FileReference => ArchiveEntry::Thin(ThinEntry { ident }),
         };
         let size_with_padding = entry_size.next_multiple_of(2).min(self.data.len());
         self.data = &self.data[size_with_padding..];
@@ -206,7 +212,7 @@ fn parse_decimal_int_16(bytes: &[u8; 16]) -> usize {
 /// generally only need entry identifiers if there's an error, we avoid reading the actual bytes
 /// of the filename, deferring that work until we find that we actually need to, when
 /// `Identifier::as_slice` is called.
-pub(crate) fn evaluate_identifier<'data>(
+fn evaluate_identifier<'data>(
     ident: &'data str,
     extended_filenames: Option<ExtendedFilenames<'data>>,
 ) -> Identifier<'data> {
@@ -237,6 +243,15 @@ impl<'data> ArchiveContent<'data> {
     }
 }
 
+impl<'data> ThinEntry<'data> {
+    pub(crate) fn identifier(
+        &self,
+        extended_filenames: Option<ExtendedFilenames<'data>>,
+    ) -> Identifier<'data> {
+        evaluate_identifier(self.ident, extended_filenames)
+    }
+}
+
 impl<'data> Identifier<'data> {
     pub(crate) fn as_slice(&self) -> &'data [u8] {
         // Each filename in the extended filenames field ends with '/\n'.
@@ -246,6 +261,10 @@ impl<'data> Identifier<'data> {
 
         // The trailing '/' is at `end - 1` (just before '\n').
         &self.data[..end - 1]
+    }
+
+    pub(crate) fn as_path(&self) -> &'data std::path::Path {
+        Path::new(OsStr::from_bytes(self.as_slice()))
     }
 }
 

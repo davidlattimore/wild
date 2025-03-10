@@ -6,22 +6,23 @@ use anyhow::bail;
 use object::LittleEndian;
 use object::read::elf::FileHeader;
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum FileKind {
     Prelude,
     ElfObject,
     ElfDynamic,
     Archive,
+    ThinArchive,
     Text,
     Epilogue,
 }
 
 impl FileKind {
     pub(crate) fn identify_bytes(bytes: &[u8]) -> Result<FileKind> {
-        if bytes.starts_with(&object::archive::MAGIC)
-            || bytes.starts_with(&object::archive::THIN_MAGIC)
-        {
+        if bytes.starts_with(&object::archive::MAGIC) {
             Ok(FileKind::Archive)
+        } else if bytes.starts_with(&object::archive::THIN_MAGIC) {
+            Ok(FileKind::ThinArchive)
         } else if bytes.starts_with(&object::elf::ELFMAG) {
             const HEADER_LEN: usize = size_of::<elf::FileHeader>();
             if bytes.len() < HEADER_LEN {

@@ -51,6 +51,7 @@ pub(crate) mod verification;
 pub(crate) mod x86_64;
 
 use error::AlreadyInitialised;
+use input_data::InputData;
 pub use subprocess::run_in_subprocess;
 
 pub struct Linker {
@@ -121,9 +122,29 @@ impl Linker {
 
 #[tracing::instrument(skip_all, name = "Link")]
 fn link<A: arch::Arch>(args: &Args, done_closure: Option<Box<dyn FnOnce()>>) -> error::Result {
-    let mut output = elf_writer::Output::new(args);
+    let shutdown_span = tracing::info_span!("Shutdown");
+    let output = elf_writer::Output::new(args);
     let input_data = input_data::InputData::from_args(args)?;
-    let inputs = archive_splitter::split_archives(&input_data)?;
+
+    // Note, we propagate errors from `link_with_input_data` after we've checked if any files
+    // changed. We want inputs-changed errors to take precedence over all other errors.
+    let result = link_with_input_data::<A>(output, &input_data, args, done_closure, &shutdown_span);
+    input_data.verify_inputs_unchanged()?;
+    let _shutdown_scope = result?;
+
+    shutdown::free_input_data(input_data);
+
+    Ok(())
+}
+
+fn link_with_input_data<'shutdown_span, A: arch::Arch>(
+    mut output: elf_writer::Output,
+    input_data: &InputData,
+    args: &Args,
+    done_closure: Option<Box<dyn FnOnce()>>,
+    shutdown_span: &'shutdown_span tracing::Span,
+) -> error::Result<tracing::span::Entered<'shutdown_span>> {
+    let inputs = archive_splitter::split_archives(input_data)?;
     let files = parsing::parse_input_files(&inputs, args)?;
     let groups = grouping::group_files(files, args);
     let herd = bumpalo_herd::Herd::new();
@@ -134,8 +155,7 @@ fn link<A: arch::Arch>(args: &Args, done_closure: Option<Box<dyn FnOnce()>>) -> 
     let output_file = output.write::<A>(&layout)?;
     diff::maybe_diff()?;
 
-    let scope = tracing::info_span!("Shutdown");
-    let _scope = scope.enter();
+    let shutdown_scope = shutdown_span.enter();
     shutdown::free_output(output_file);
     // If there is a parent process waiting on this, inform it that linking is done and output ready
     if let Some(done_callback) = done_closure {
@@ -143,6 +163,6 @@ fn link<A: arch::Arch>(args: &Args, done_closure: Option<Box<dyn FnOnce()>>) -> 
     }
     shutdown::free_layout(layout);
     shutdown::free_symbol_db(symbol_db);
-    shutdown::free_input_data(input_data);
-    Ok(())
+
+    Ok(shutdown_scope)
 }

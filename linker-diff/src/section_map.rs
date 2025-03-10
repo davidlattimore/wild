@@ -100,7 +100,7 @@ impl<'data> IndexedLayout<'data> {
                 .get(&file.path)
                 .expect("We should have read all the files");
 
-            if mmap.starts_with(b"!<thin>") {
+            if mmap.starts_with(&object::archive::THIN_MAGIC) {
                 // We will encounter the files referenced by this
                 // archive in other iterations
                 continue;
