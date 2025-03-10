@@ -2406,22 +2406,31 @@ fn write_verdef(
 ) -> Result {
     let e = LittleEndian;
 
-    let mut version_string_offsets = Vec::with_capacity(verdefs.len());
+    // Offsets of version strings except the base version
+    let mut version_string_offsets = Vec::with_capacity(verdefs.len() - 1);
 
     for (i, verdef) in verdefs.iter().enumerate() {
         let verdef_out = table_writer.version_writer.take_verdef()?;
 
         // Base version may use (already allocated) soname
-        let (name, name_offset) = match (soname, soname_offset) {
-            (Some(soname), Some(offset)) if i == 0 => (soname, offset),
-            _ => {
-                let offset = table_writer
-                    .dynsym_writer
-                    .strtab_writer
-                    .write_str(&verdef.name);
-                version_string_offsets.push(offset);
-                (verdef.name.as_slice(), offset)
+        let (name, name_offset) = if i == 0 {
+            match (soname, soname_offset) {
+                (Some(soname), Some(offset)) => (soname, offset),
+                _ => {
+                    let offset = table_writer
+                        .dynsym_writer
+                        .strtab_writer
+                        .write_str(&verdef.name);
+                    (verdef.name.as_slice(), offset)
+                }
             }
+        } else {
+            let offset = table_writer
+                .dynsym_writer
+                .strtab_writer
+                .write_str(&verdef.name);
+            version_string_offsets.push(offset);
+            (verdef.name.as_slice(), offset)
         };
 
         verdef_out.vd_version.set(e, object::elf::VER_DEF_CURRENT);
@@ -2456,7 +2465,9 @@ fn write_verdef(
         verdaux.vda_next.set(e, next_vda);
 
         if let Some(parent_index) = &verdef.parent_index {
-            let name_offset = *version_string_offsets.get(*parent_index as usize).unwrap();
+            let name_offset = *version_string_offsets
+                .get(*parent_index as usize - 1)
+                .unwrap();
             let verdaux = table_writer.version_writer.take_verdaux()?;
             verdaux.vda_name.set(e, name_offset);
             verdaux.vda_next.set(e, 0);
