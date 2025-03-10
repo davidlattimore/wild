@@ -14,6 +14,16 @@
 //#ThinArchive:exit.c
 //#ThinArchive:empty.a
 
+//#Config:lib:default
+// GNU ld doesn't yet support --start-lib
+//#SkipLinker:ld
+//#Cross:false
+//#LinkArgs:--start-lib
+//#Object:archive_activation0.c
+//#Object:archive_activation1.c
+//#Object:exit.c
+//#Object:empty.a
+
 #include "exit.h"
 
 int bar(void);

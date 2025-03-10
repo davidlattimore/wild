@@ -439,6 +439,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             modifier_stack.last_mut().unwrap().whole_archive = true;
         } else if long_arg_eq("no-whole-archive") {
             modifier_stack.last_mut().unwrap().whole_archive = false;
+        } else if long_arg_eq("start-lib") {
+            modifier_stack.last_mut().unwrap().archive_semantics = true;
+        } else if long_arg_eq("end-lib") {
+            modifier_stack.last_mut().unwrap().archive_semantics = false;
         } else if long_arg_eq("push-state") {
             modifier_stack.push(*modifier_stack.last().unwrap());
         } else if long_arg_eq("pop-state") {
