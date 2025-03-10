@@ -22,6 +22,8 @@ use crate::elf::GnuHashHeader;
 use crate::elf::ProgramHeader;
 use crate::elf::SectionHeader;
 use crate::elf::SymtabEntry;
+use crate::elf::Verdaux;
+use crate::elf::Verdef;
 use crate::elf::Vernaux;
 use crate::elf::Verneed;
 use crate::elf::Versym;
@@ -43,6 +45,7 @@ use crate::layout::Resolution;
 use crate::layout::ResolutionFlags;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
+use crate::layout::VersionDef;
 use crate::layout::compute_allocations;
 use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
@@ -59,6 +62,7 @@ use crate::sharding::ShardKey;
 use crate::slice::slice_take_prefix_mut;
 use crate::slice::take_first_mut;
 use crate::string_merging::get_merged_string_output_address;
+use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use ahash::AHashMap;
 use anyhow::Context;
@@ -691,6 +695,7 @@ impl<'data> FileLayout<'data> {
 
 #[derive(Default)]
 struct VersionWriter<'out> {
+    version_d: &'out mut [u8],
     version_r: &'out mut [u8],
 
     /// None if versioning is disabled, which we do if no symbols have versions.
@@ -698,8 +703,16 @@ struct VersionWriter<'out> {
 }
 
 impl<'out> VersionWriter<'out> {
-    fn new(version_r: &'out mut [u8], versym: Option<&'out mut [Versym]>) -> Self {
-        Self { version_r, versym }
+    fn new(
+        version_d: &'out mut [u8],
+        version_r: &'out mut [u8],
+        versym: Option<&'out mut [Versym]>,
+    ) -> Self {
+        Self {
+            version_d,
+            version_r,
+            versym,
+        }
     }
 
     fn set_next_symbol_version(&mut self, index: u16) -> Result {
@@ -729,6 +742,25 @@ impl<'out> VersionWriter<'out> {
             .map_err(|_| anyhow!("Invalid .gnu.version_r allocation"))
     }
 
+    fn take_bytes_d(&mut self, size: usize) -> Result<&'out mut [u8]> {
+        crate::slice::try_slice_take_prefix_mut(&mut self.version_d, size)
+            .ok_or_else(|| insufficient_allocation(".gnu.version_d"))
+    }
+
+    fn take_verdef(&mut self) -> Result<&'out mut Verdef> {
+        let bytes = self.take_bytes_d(size_of::<Verdef>())?;
+        Ok(object::from_bytes_mut::<Verdef>(bytes)
+            .map_err(|_| anyhow!("Incorrect .gnu.version_d alignment"))?
+            .0)
+    }
+
+    fn take_verdaux(&mut self) -> Result<&'out mut Verdaux> {
+        let bytes = self.take_bytes_d(size_of::<Verdaux>())?;
+        Ok(object::from_bytes_mut::<Verdaux>(bytes)
+            .map_err(|_| anyhow!("Incorrect .gnu.version_d aux alignment"))?
+            .0)
+    }
+
     fn check_exhausted(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
         if let Some(versym) = self.versym.as_ref() {
             if !versym.is_empty() {
@@ -744,6 +776,13 @@ impl<'out> VersionWriter<'out> {
                 "Allocated too much space in .gnu.version_r. {} of {} bytes remain",
                 self.version_r.len(),
                 mem_sizes.get(part_id::GNU_VERSION_R)
+            );
+        }
+        if !self.version_d.is_empty() {
+            bail!(
+                "Allocated too much space in .gnu.version_d. {} of {} bytes remain",
+                self.version_d.len(),
+                mem_sizes.get(part_id::GNU_VERSION_D)
             );
         }
         Ok(())
@@ -807,6 +846,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         let dynamic = DynamicEntriesWriter::new(buffers.take(part_id::DYNAMIC));
         let versym = slice_from_all_bytes_mut(buffers.take(part_id::GNU_VERSION));
         let version_writer = VersionWriter::new(
+            buffers.take(part_id::GNU_VERSION_D),
             buffers.take(part_id::GNU_VERSION_R),
             versym.is_empty().not().then_some(versym),
         );
@@ -2360,7 +2400,91 @@ impl PreludeLayout {
     }
 }
 
-fn write_epilogue_dynamic_entries(layout: &Layout, table_writer: &mut TableWriter) -> Result {
+fn write_verdef(
+    verdefs: &[VersionDef],
+    table_writer: &mut TableWriter,
+    soname: Option<&[u8]>,
+    soname_offset: Option<u32>,
+) -> Result {
+    let e = LittleEndian;
+
+    // Offsets of version strings except the base version
+    let mut version_string_offsets = Vec::with_capacity(verdefs.len() - 1);
+
+    for (i, verdef) in verdefs.iter().enumerate() {
+        let verdef_out = table_writer.version_writer.take_verdef()?;
+
+        // Base version may use (already allocated) soname
+        let (name, name_offset) = if i == 0 {
+            match (soname, soname_offset) {
+                (Some(soname), Some(offset)) => (soname, offset),
+                _ => {
+                    let offset = table_writer
+                        .dynsym_writer
+                        .strtab_writer
+                        .write_str(&verdef.name);
+                    (verdef.name.as_slice(), offset)
+                }
+            }
+        } else {
+            let offset = table_writer
+                .dynsym_writer
+                .strtab_writer
+                .write_str(&verdef.name);
+            version_string_offsets.push(offset);
+            (verdef.name.as_slice(), offset)
+        };
+
+        verdef_out.vd_version.set(e, object::elf::VER_DEF_CURRENT);
+        // Mark first entry as base version
+        verdef_out
+            .vd_flags
+            .set(e, if i == 0 { object::elf::VER_FLG_BASE } else { 0 });
+        verdef_out
+            .vd_ndx
+            .set(e, i as u16 + object::elf::VER_NDX_GLOBAL);
+        let aux_count = if verdef.parent_index.is_some() { 2 } else { 1 };
+        verdef_out.vd_cnt.set(e, aux_count);
+        verdef_out.vd_hash.set(e, object::elf::hash(name));
+        verdef_out
+            .vd_aux
+            .set(e, size_of::<crate::elf::Verdef>() as u32);
+        // Offset to the next entry, unless it's the last one
+        if i < verdefs.len() - 1 {
+            let offset = (size_of::<crate::elf::Verdef>()
+                + size_of::<crate::elf::Verdaux>() * aux_count as usize)
+                as u32;
+            verdef_out.vd_next.set(e, offset);
+        };
+
+        let verdaux = table_writer.version_writer.take_verdaux()?;
+        verdaux.vda_name.set(e, name_offset);
+        let next_vda = if verdef.parent_index.is_some() {
+            size_of::<crate::elf::Verdaux>() as u32
+        } else {
+            0
+        };
+        verdaux.vda_next.set(e, next_vda);
+
+        if let Some(parent_index) = &verdef.parent_index {
+            let name_offset = *version_string_offsets
+                .get(*parent_index as usize - 1)
+                .unwrap();
+            let verdaux = table_writer.version_writer.take_verdaux()?;
+            verdaux.vda_name.set(e, name_offset);
+            verdaux.vda_next.set(e, 0);
+        }
+    }
+
+    Ok(())
+}
+
+fn write_epilogue_dynamic_entries(
+    layout: &Layout,
+    table_writer: &mut TableWriter,
+    // TODO: Do it better?
+    soname_offset: &mut Option<u32>,
+) -> Result {
     for rpath in &layout.args().rpaths {
         let offset = table_writer
             .dynsym_writer
@@ -2378,6 +2502,7 @@ fn write_epilogue_dynamic_entries(layout: &Layout, table_writer: &mut TableWrite
         table_writer
             .dynamic
             .write(object::elf::DT_SONAME, offset.into())?;
+        soname_offset.replace(offset);
     }
 
     let inputs = DynamicEntryInputs {
@@ -2411,8 +2536,9 @@ impl EpilogueLayout<'_> {
                 &mut table_writer.debug_symbol_writer,
             )?;
         }
+        let mut soname_offset = None;
         if layout.args().needs_dynamic() {
-            write_epilogue_dynamic_entries(layout, table_writer)?;
+            write_epilogue_dynamic_entries(layout, table_writer, &mut soname_offset)?;
         }
         write_gnu_hash_tables(self, buffers)?;
 
@@ -2420,6 +2546,15 @@ impl EpilogueLayout<'_> {
 
         if !&self.gnu_property_notes.is_empty() {
             write_gnu_property_notes(self, buffers)?;
+        }
+
+        if let Some(verdefs) = &self.verdefs {
+            write_verdef(
+                verdefs,
+                table_writer,
+                layout.args().soname.as_ref().map(|s| s.as_bytes()),
+                soname_offset,
+            )?;
         }
 
         Ok(())
@@ -2537,11 +2672,15 @@ fn write_dynamic_symbol_definitions(
                     &mut table_writer.dynsym_writer,
                 )?;
 
-                // We don't yet support setting symbol versions for symbols that we export, so right
-                // now we just set them all to the global version.
                 if let Some(versym) = table_writer.version_writer.versym.as_mut() {
                     if let Some(version_out) = crate::slice::take_first_mut(versym) {
-                        version_out.0.set(LittleEndian, object::elf::VER_NDX_GLOBAL);
+                        let version = layout
+                            .symbol_db
+                            .version_script
+                            // TODO: can we avoid rehashing?
+                            .version_for_symbol(&UnversionedSymbolName::prehashed(sym_def.name))
+                            .unwrap_or(object::elf::VER_NDX_GLOBAL);
+                        version_out.0.set(LittleEndian, version);
                     }
                 }
             }
@@ -2791,6 +2930,28 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     DynamicEntryWriter::new(object::elf::DT_SYMENT, |_inputs| {
         size_of::<elf::SymtabEntry>() as u64
     }),
+    DynamicEntryWriter::optional(
+        object::elf::DT_VERDEF,
+        |inputs| {
+            inputs
+                .section_part_layouts
+                .get(part_id::GNU_VERSION_D)
+                .mem_size
+                > 0
+        },
+        |inputs| inputs.vma_of_section(output_section_id::GNU_VERSION_D),
+    ),
+    DynamicEntryWriter::optional(
+        object::elf::DT_VERDEFNUM,
+        |inputs| {
+            inputs
+                .section_part_layouts
+                .get(part_id::GNU_VERSION_D)
+                .mem_size
+                > 0
+        },
+        |inputs| inputs.non_addressable_counts.verdef_count.into(),
+    ),
     DynamicEntryWriter::optional(
         object::elf::DT_VERNEED,
         |inputs| {
