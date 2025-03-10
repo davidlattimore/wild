@@ -10,7 +10,7 @@ edition.workspace = true
 [dependencies]
 anyhow = "1.0.97"
 postcard = { version = "1.1.1", features = ["use-std"] }
-serde = { version = "1.0.218", features = ["derive"] }
+serde = { version = "1.0.219", features = ["derive"] }
 
 [lints]
 workspace = true

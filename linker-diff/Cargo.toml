@@ -22,7 +22,7 @@ iced-x86 = { version = "1.21.0", default-features = false, features = [
     "decoder",
     "gas",
 ] }
-symbolic-demangle = "12.13.4"
+symbolic-demangle = "12.14.1"
 anyhow = "1.0.97"
 clap = { version = "4.5.31", features = ["derive"] }
 rayon = "1.10.0"
@@ -35,7 +35,7 @@ tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 memmap2 = "0.9.5"
 memchr = "2.7.4"
-tempfile = "3.17.1"
+tempfile = "3.18.0"
 which = "7.0.2"
 
 [lints]
