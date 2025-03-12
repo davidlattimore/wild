@@ -5,11 +5,85 @@
 //! that are tested by examining the resulting binaries. Directives have the format '//#Directive:
 //! Args'.
 //!
+//! Config:{name}[:{inherits}] Starts a new configuration with the specified name. Optionally
+//! inherits from configuration with name in the second argument.
+//!
+//! AbstractConfig:{name}[:{inherits}] Starts an abstract configuration. This is the same as
+//! `Config`, however the configuration will not be run and is only used for inheritance purposes.
+//!
+//! Variant:{number} Can be specified multiple times. Each specified variant is a separate test
+//! which is compiled with `-DVARIANT={number}`. Only works for C/C++.
+//!
+//! LinkerDriver:gcc|g++|clang|clang++|none Specifies how we should invoke the linker. The default,
+//! `none` means that we invoke the linker directly. For the other options, we invoke it via the
+//! specified compiler. This option doesn't apply to Rust code, which always uses the Rust compiler.
+//!
+//! LinkArgs:... Arguments to pass to the linker. If using a LinkerDriver, these arguments should be
+//! whatever the linker driver expects. e.g. `-Wl,--strip-all` rather than `--strip-all`.
+//!
+//! LinkSoArgs:... Arguments to pass when linking a shared object.
+//!
+//! WildExtraLinkArgs:... Extra linker arguments that should only be passed to the Wild linker.
+//!
+//! CompArgs:... Arguments to be passed to the compiler when building object files.
+//!
+//! CompSoArgs:... Arguments to be passed to the compiler when building shared objects.
+//!
+//! ExpectSym:symbol-name [section] Checks that the specified symbol is defined in the output file
+//! and, if specified that it's in the specified section.
+//!
 //! ExpectComment: Checks that the comment in the .comment section is equal to the supplied
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
 //! end with '*' which matches anything.
 //!
-//! TODO: Document the rest of the directives.
+//! DoesNotContain:{string} Checks that the output binary doesn't contain the specified string.
+//!
+//! Contains:{string} Checks that the output binary does contain the specified string.
+//!
+//! Static:{bool} Only applicable when LinkerDriver=none. Defaults to true. Set to false to disable
+//! passing `-static` to the linker.
+//!
+//! DiffIgnore:{diff-key} Add an extra linker-diff ignore directive.
+//!
+//! DiffEnabled:{bool} Defaults to true. Set to false to disable diffing of output files with
+//! linker-diff.
+//!
+//! RunEnabled:{bool} Defaults to true. Set to false to disable execution of the resulting binary.
+//!
+//! SkipLinker:{linker-name} Don't link with the specified linker. Mostly useful if testing a flag
+//! that isn't supported by GNU ld.
+//!
+//! EnableLinker:{linker-name} Enables a linker that isn't enabled by default. e.g. lld.
+//!
+//! Cross:{bool} Defaults to true. Set to false to disable cross-compilation testing for this test.
+//!
+//! ExpectError:{error string} Verifies that the link fails and that the error message includes the
+//! specified string. Implies `RunEnabled:false` and `DiffEnabled:false`.
+//!
+//! SecEquiv:{sec-name}={sec-name} Tells linker-diff that the two section names should be considered
+//! as equivalent.
+//!
+//! Object:{source-filename} Builds the specified filename as a regular object and adds it to the
+//! link.
+//!
+//! Archive:{source-filename} Builds the specified filename as an archive and adds it to the link.
+//!
+//! ThinArchive:{source-filename} Builds the specified filename as a thin archive and adds it to the
+//! link.
+//!
+//! Shared:{source-filename} Builds the specified filename as a shared object and adds it to the
+//! link.
+//!
+//! Compiler:gcc|g++|clang|clang++ Specifies what compiler should be used to compile C/C++ code.
+//!
+//! Arch:{arch1}[,{arch2}...] Specifies which architectures this test should be run with. Defaults
+//! to all supported architectures.
+//!
+//! RequiresGlibc:{bool} Defaults to false. Set to true to disable this test if we're running on a
+//! system without glibc.
+//!
+//! RequiresClangWithTlsDesc:{bool} Defaults to false. Set to true to disable this test if we detect
+//! that the version of clang available to us doesn't support TLSDESC.
 
 use anyhow::Context;
 use anyhow::anyhow;
