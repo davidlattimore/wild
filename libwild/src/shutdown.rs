@@ -16,8 +16,3 @@ pub(crate) fn free_layout<'data>(d: crate::layout::Layout<'data>) {
 pub(crate) fn free_input_data(d: crate::input_data::InputData) {
     drop(d);
 }
-
-#[tracing::instrument(skip_all, name = "Unmap output file")]
-pub(crate) fn free_output(d: crate::elf_writer::SizedOutput) {
-    drop(d);
-}

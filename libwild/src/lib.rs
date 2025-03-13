@@ -152,11 +152,10 @@ fn link_with_input_data<'shutdown_span, A: arch::Arch>(
         symbol_db::SymbolDb::build(&groups, input_data.version_script_data.as_ref(), args)?;
     let resolved = resolution::resolve_symbols_and_sections(&groups, &mut symbol_db, &herd)?;
     let layout = layout::compute::<A>(symbol_db, resolved, &mut output)?;
-    let output_file = output.write::<A>(&layout)?;
+    output.write::<A>(&layout)?;
     diff::maybe_diff()?;
 
     let shutdown_scope = shutdown_span.enter();
-    shutdown::free_output(output_file);
     // If there is a parent process waiting on this, inform it that linking is done and output ready
     if let Some(done_callback) = done_closure {
         done_callback();
