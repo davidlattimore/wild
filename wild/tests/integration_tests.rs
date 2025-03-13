@@ -257,6 +257,8 @@ enum Architecture {
     AArch64,
 }
 
+const ALL_ARCHITECTURES: &[Architecture] = &[Architecture::X86_64, Architecture::AArch64];
+
 impl Architecture {
     fn name(&self) -> &'static str {
         match self {
@@ -419,6 +421,14 @@ impl Default for DirectConfig {
 }
 
 impl Config {
+    fn should_skip(&self, arch: Architecture) -> bool {
+        !self.support_architectures.contains(&arch)
+            || self.requires_glibc && !cfg!(target_env = "gnu")
+            || (self.requires_clang_with_tlsdesc && !host_supports_clang_with_tls_desc())
+            || (arch != get_host_architecture()
+                && (self.compiler == "clang" || !self.cross_enabled))
+    }
+
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
         if self.skip_linkers.contains(linker.name()) {
             return false;
@@ -558,7 +568,7 @@ impl Default for Config {
             should_run: true,
             expect_error: None,
             cross_enabled: true,
-            support_architectures: vec![Architecture::X86_64, Architecture::AArch64],
+            support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
             requires_clang_with_tlsdesc: false,
         }
@@ -1948,6 +1958,128 @@ fn setup_symlink() {
     });
 }
 
+fn should_print_timing() -> bool {
+    static VALUE: OnceLock<bool> = OnceLock::new();
+    *VALUE.get_or_init(|| std::env::var("WILD_TEST_PRINT_TIMING").is_ok())
+}
+
+fn available_linkers() -> Result<Vec<Linker>> {
+    let mut linkers = vec![
+        Linker::ThirdParty(ThirdPartyLinker {
+            name: "ld",
+            gcc_name: "bfd",
+            path: find_bin(&["ld"])?,
+            cross_paths: find_cross_paths("ld"),
+            enabled_by_default: true,
+        }),
+        Linker::ThirdParty(ThirdPartyLinker {
+            name: "lld",
+            gcc_name: "lld",
+            path: find_bin(&["ld.lld"])?,
+            cross_paths: find_cross_paths("ld.lld"),
+            enabled_by_default: false,
+        }),
+    ];
+
+    // We don't need gold and mold for our tests, they're just there for the odd occasion when we're
+    // curious and looking for extra data points as to how other linkers handle a particular case.
+    if let Ok(path) = find_bin(&["gold"]) {
+        linkers.push(Linker::ThirdParty(ThirdPartyLinker {
+            name: "gold",
+            gcc_name: "gold",
+            path,
+            cross_paths: find_cross_paths("gold"),
+            enabled_by_default: false,
+        }));
+    }
+    if let Ok(path) = find_bin(&["mold"]) {
+        linkers.push(Linker::ThirdParty(ThirdPartyLinker {
+            name: "mold",
+            gcc_name: "mold",
+            path,
+            cross_paths: find_cross_paths("mold"),
+            enabled_by_default: false,
+        }));
+    }
+
+    linkers.push(Linker::Wild);
+
+    Ok(linkers)
+}
+
+fn run_with_config(
+    program_inputs: &ProgramInputs,
+    config: &Config,
+    arch: Architecture,
+    linkers: &[Linker],
+) -> Result {
+    let mut config = config.clone();
+
+    let cross_arch = (arch != get_host_architecture()).then_some(arch);
+
+    // GCC cross compilers, when passed `-fuse-ld=lld` won't look for `ld.lld` on the path.
+    // Instead it'll look for `aarch64-linux-gnu-ld.lld` on the path and look for `ld.lld`
+    // only in the sysroot (e.g. `aarch64-linux-gnu`). We could hack around this by creating
+    // a temporary directory containing a symlink with the appropriate name, but for now, we
+    // just skip running with lld when cross compiling.
+    if cross_arch.is_some() {
+        config.enabled_linkers.remove("lld");
+    }
+
+    let programs = linkers
+        .iter()
+        .filter(|linker| config.is_linker_enabled(linker))
+        .map(|linker| {
+            let start = Instant::now();
+            let result = program_inputs
+                .build(linker, &config, cross_arch)
+                .with_context(|| {
+                    format!(
+                        "Failed to build program `{program_inputs}` \
+                        with linker `{linker}` config `{}`",
+                        config.name
+                    )
+                });
+            let is_cache_hit = result
+                .as_ref()
+                .is_ok_and(|p| p.link_output.command.can_skip);
+            if !is_cache_hit && should_print_timing() {
+                println!(
+                    "{program_inputs}-{config} with {linker} took {} ms",
+                    start.elapsed().as_millis()
+                );
+            }
+            result
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    // If we expected an error, then don't try to diff or run the output.
+    if config.expect_error.is_some() {
+        return Ok(());
+    }
+
+    let start = Instant::now();
+    diff_shared_objects(&config, &programs)?;
+    diff_executables(&config, &programs)?;
+
+    if should_print_timing() {
+        println!(
+            "{program_inputs}-{config} diff took {} ms",
+            start.elapsed().as_millis()
+        );
+    }
+
+    if config.should_run {
+        for program in programs {
+            program
+                .run(cross_arch)
+                .with_context(|| format!("Failed to run program. {program}"))?;
+        }
+    }
+
+    Ok(())
+}
+
 #[rstest]
 fn integration_test(
     #[values(
@@ -1998,46 +2130,7 @@ fn integration_test(
 ) -> Result {
     let program_inputs = ProgramInputs::new(program_name)?;
 
-    let mut linkers = vec![
-        Linker::ThirdParty(ThirdPartyLinker {
-            name: "ld",
-            gcc_name: "bfd",
-            path: find_bin(&["ld"])?,
-            cross_paths: find_cross_paths("ld"),
-            enabled_by_default: true,
-        }),
-        Linker::ThirdParty(ThirdPartyLinker {
-            name: "lld",
-            gcc_name: "lld",
-            path: find_bin(&["ld.lld"])?,
-            cross_paths: find_cross_paths("ld.lld"),
-            enabled_by_default: false,
-        }),
-    ];
-
-    // We don't need gold and mold for our tests, they're just there for the odd occasion when we're
-    // curious and looking for extra data points as to how other linkers handle a particular case.
-    if let Ok(path) = find_bin(&["gold"]) {
-        linkers.push(Linker::ThirdParty(ThirdPartyLinker {
-            name: "gold",
-            gcc_name: "gold",
-            path,
-            cross_paths: find_cross_paths("gold"),
-            enabled_by_default: false,
-        }));
-    }
-    if let Ok(path) = find_bin(&["mold"]) {
-        linkers.push(Linker::ThirdParty(ThirdPartyLinker {
-            name: "mold",
-            gcc_name: "mold",
-            path,
-            cross_paths: find_cross_paths("mold"),
-            enabled_by_default: false,
-        }));
-    }
-
-    linkers.push(Linker::Wild);
-    let print_timing = std::env::var("WILD_TEST_PRINT_TIMING").is_ok();
+    let linkers = available_linkers()?;
 
     let filename = &program_inputs.source_file;
     let configs = parse_configs(&src_path(filename))
@@ -2049,81 +2142,15 @@ fn integration_test(
     // which targets are enabled, since there's only one.
     let cross_enabled = std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v == "aarch64");
 
-    for mut config in configs {
-        for &arch in &config.support_architectures {
-            let cross_arch = (arch != host_arch).then_some(arch);
+    for &arch in ALL_ARCHITECTURES {
+        if arch != host_arch && !cross_enabled {
+            continue;
+        }
 
-            if config.requires_glibc && !cfg!(target_env = "gnu")
-                || (config.requires_clang_with_tlsdesc && !host_supports_clang_with_tls_desc())
-                || (cross_arch.is_some()
-                    && (config.compiler == "clang" || !config.cross_enabled || !cross_enabled))
-            {
-                eprintln!(
-                    "Skipping config: {} for arch {}",
-                    config.name,
-                    cross_arch.map(|arch| arch.name()).unwrap_or("host")
-                );
-                continue;
-            }
+        let config_it = configs.iter().filter(|config| !config.should_skip(arch));
 
-            // GCC cross compilers, when passed `-fuse-ld=lld` won't look for `ld.lld` on the path.
-            // Instead it'll look for `aarch64-linux-gnu-ld.lld` on the path and look for `ld.lld`
-            // only in the sysroot (e.g. `aarch64-linux-gnu`). We could hack around this by creating
-            // a temporary directory containing a symlink with the appropriate name, but for now, we
-            // just skip running with lld when cross compiling.
-            if cross_arch.is_some() {
-                config.enabled_linkers.remove("lld");
-            }
-
-            let programs = linkers
-                .iter()
-                .filter(|linker| config.is_linker_enabled(linker))
-                .map(|linker| {
-                    let start = Instant::now();
-                    let result = program_inputs
-                        .build(linker, &config, cross_arch)
-                        .with_context(|| {
-                            format!(
-                                "Failed to build program `{program_inputs}` \
-                                with linker `{linker}` config `{}`",
-                                config.name
-                            )
-                        });
-                    let is_cache_hit = result
-                        .as_ref()
-                        .is_ok_and(|p| p.link_output.command.can_skip);
-                    if !is_cache_hit && print_timing {
-                        println!(
-                            "{program_inputs}-{config} with {linker} took {} ms",
-                            start.elapsed().as_millis()
-                        );
-                    }
-                    result
-                })
-                .collect::<Result<Vec<_>>>()?;
-
-            // If we expected an error, then don't try to diff or run the output.
-            if config.expect_error.is_some() {
-                continue;
-            }
-
-            let start = Instant::now();
-            diff_shared_objects(&config, &programs)?;
-            diff_executables(&config, &programs)?;
-            if print_timing {
-                println!(
-                    "{program_inputs}-{config} diff took {} ms",
-                    start.elapsed().as_millis()
-                );
-            }
-
-            if config.should_run {
-                for program in programs {
-                    program
-                        .run(cross_arch)
-                        .with_context(|| format!("Failed to run program. {program}"))?;
-                }
-            }
+        for config in config_it {
+            run_with_config(&program_inputs, config, arch, &linkers)?
         }
     }
 
