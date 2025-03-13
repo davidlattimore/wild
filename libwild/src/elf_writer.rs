@@ -262,7 +262,7 @@ impl Output {
     }
 
     #[tracing::instrument(skip_all, name = "Write output file")]
-    pub fn write<'data, A: Arch>(&mut self, layout: &Layout<'data>) -> Result<SizedOutput> {
+    pub fn write<'data, A: Arch>(&mut self, layout: &Layout<'data>) -> Result {
         if layout.args().write_layout {
             write_layout(layout)?;
         }
@@ -283,7 +283,15 @@ impl Output {
         sized_output.write::<A>(layout)?;
         sized_output.flush()?;
         sized_output.trace.close()?;
-        Ok(sized_output)
+
+        // While we have the output file mmapped with write permission, the file will be locked and
+        // unusable, so we can't really say that we've finished writing it until we've unmapped it.
+        {
+            let _span = tracing::info_span!("Unmap output file").entered();
+            drop(sized_output);
+        }
+
+        Ok(())
     }
 
     #[tracing::instrument(skip_all, name = "Create output file")]
