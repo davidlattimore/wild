@@ -83,6 +83,7 @@ use object::elf::Rela64;
 use object::elf::gnu_hash;
 use object::read::elf::Dyn as _;
 use object::read::elf::Rela as _;
+use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader;
 use object::read::elf::Sym as _;
 use object::read::elf::VerdefIterator;
@@ -543,6 +544,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) file_id: FileId,
     pub(crate) object: &'data File<'data>,
     pub(crate) sections: Vec<SectionSlot>,
+    pub(crate) relocations: RelocationSections,
     pub(crate) section_resolutions: Vec<SectionResolution>,
     pub(crate) symbol_id_range: SymbolIdRange,
 }
@@ -1043,9 +1045,11 @@ struct ObjectLayoutState<'data> {
     symbol_id_range: SymbolIdRange,
     object: &'data File<'data>,
 
-    /// Info about each of our sections. Empty until this object has been activated. Indexed the
-    /// same as the sections in the input object.
+    /// Info about each of our sections. Indexed the same as the sections in the input object.
     sections: Vec<SectionSlot>,
+
+    /// Mapping from sections to their corresponding relocation section.
+    relocations: object::read::elf::RelocationSections,
 
     cies: SmallVec<[CieAtOffset<'data>; 2]>,
 
@@ -3293,6 +3297,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             eh_frame_section: None,
             eh_frame_size: 0,
             sections: non_dynamic.sections,
+            relocations: non_dynamic.relocations,
             cies: Default::default(),
             gnu_property_notes: Default::default(),
         })
@@ -3432,7 +3437,7 @@ impl<'data> ObjectLayoutState<'data> {
         let part_id = unloaded.part_id;
         let section = Section::create(self, section_id, part_id)?;
         let mut modifier = RelocationModifier::Normal;
-        for rel in self.object.relocations(section.index)? {
+        for rel in self.relocations(section.index)? {
             if modifier == RelocationModifier::SkipNextRelocation {
                 modifier = RelocationModifier::Normal;
                 continue;
@@ -3657,6 +3662,7 @@ impl<'data> ObjectLayoutState<'data> {
             file_id: self.file_id,
             object: self.object,
             sections: self.sections,
+            relocations: self.relocations,
             section_resolutions,
             symbol_id_range,
         })
@@ -3824,6 +3830,10 @@ impl<'data> ObjectLayoutState<'data> {
 
         Ok(())
     }
+
+    fn relocations(&self, index: SectionIndex) -> Result<&'data [elf::Rela]> {
+        self.object.relocations(index, &self.relocations)
+    }
 }
 
 pub(crate) struct SymbolCopyInfo<'data> {
@@ -3894,7 +3904,7 @@ fn process_eh_frame_data<'data, A: Arch>(
     let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
     let e = LittleEndian;
-    let relocations = object.object.relocations(eh_frame_section_index)?;
+    let relocations = object.relocations(eh_frame_section_index)?;
     let mut rel_iter = relocations.iter().enumerate().peekable();
     let mut offset = 0;
 
@@ -4722,6 +4732,12 @@ fn needs_tlsld(relocation_kind: RelocationKind) -> bool {
         relocation_kind,
         RelocationKind::TlsLd | RelocationKind::TlsLdGot | RelocationKind::TlsLdGotBase
     )
+}
+
+impl<'data> ObjectLayout<'data> {
+    pub(crate) fn relocations(&self, index: SectionIndex) -> Result<&'data [elf::Rela]> {
+        self.object.relocations(index, &self.relocations)
+    }
 }
 
 /// Performs layout of sections and segments then makes sure that the loadable segments don't

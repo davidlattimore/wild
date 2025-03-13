@@ -1584,7 +1584,7 @@ impl<'data> ObjectLayout<'data> {
         let object_section = self.object.section(section.index)?;
         let section_flags = SectionFlags::from_header(object_section);
         let mut modifier = RelocationModifier::Normal;
-        let relocations = self.object.relocations(section.index)?;
+        let relocations = self.relocations(section.index)?;
         layout
             .relocation_statistics
             .get(section.part_id.output_section_id())
@@ -1640,7 +1640,7 @@ impl<'data> ObjectLayout<'data> {
                 0
             };
 
-        let relocations = self.object.relocations(section.index)?;
+        let relocations = self.relocations(section.index)?;
         layout
             .relocation_statistics
             .get(section.part_id.output_section_id())
@@ -1670,11 +1670,7 @@ impl<'data> ObjectLayout<'data> {
         const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
         let e = LittleEndian;
         let section_flags = SectionFlags::from_header(eh_frame_section);
-        let mut relocations = self
-            .object
-            .relocations(eh_frame_section_index)?
-            .iter()
-            .peekable();
+        let mut relocations = self.relocations(eh_frame_section_index)?.iter().peekable();
         let mut input_pos = 0;
         let mut output_pos = 0;
         let frame_info_ptr_base = table_writer.eh_frame_start_address;
