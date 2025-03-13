@@ -6,6 +6,7 @@
 //#DiffIgnore:file-header.entry
 //#Object:exit.c
 //#EnableLinker:lld
+//#VersionScript:symbol-versions-script.map
 
 //#Config:verneed
 //#Object:exit.c
@@ -17,11 +18,9 @@
 //#Config:verdef-0:verdef
 //#DiffIgnore:version_d.verdef_1
 //#LinkArgs:--shared
-//#VersionScript:symbol-versions-script
 
 //#Config:verdef-1:verdef
 //#LinkArgs:--shared --soname=symbol-versions.so
-//#VersionScript:symbol-versions-script
 
 #include "exit.h"
 
