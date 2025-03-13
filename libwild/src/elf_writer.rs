@@ -2406,7 +2406,7 @@ fn write_verdef(
 ) -> Result {
     let e = LittleEndian;
 
-    // Offsets of version strings except the base version
+    // Offsets of version strings, except the base version
     let mut version_string_offsets = Vec::with_capacity(verdefs.len() - 1);
 
     for (i, verdef) in verdefs.iter().enumerate() {
