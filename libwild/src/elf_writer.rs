@@ -2682,10 +2682,10 @@ fn write_dynamic_symbol_definitions(
 
                 if let Some(versym) = table_writer.version_writer.versym.as_mut() {
                     if let Some(version_out) = crate::slice::take_first_mut(versym) {
+                        // TODO: avoid rehashing
                         let version = layout
                             .symbol_db
                             .version_script
-                            // TODO: can we avoid rehashing?
                             .version_for_symbol(&UnversionedSymbolName::prehashed(sym_def.name))
                             .unwrap_or(object::elf::VER_NDX_GLOBAL);
                         version_out.0.set(LittleEndian, version);
