@@ -2402,7 +2402,7 @@ fn write_verdef(
     verdefs: &[VersionDef],
     table_writer: &mut TableWriter,
     soname: Option<&[u8]>,
-    soname_offset: Option<u32>,
+    epilogue_offsets: &EpilogueOffsets,
 ) -> Result {
     let e = LittleEndian;
 
@@ -2414,15 +2414,19 @@ fn write_verdef(
 
         // Base version may use (already allocated) soname
         let (name, name_offset) = if i == 0 {
-            match (soname, soname_offset) {
-                (Some(soname), Some(offset)) => (soname, offset),
-                _ => {
-                    let offset = table_writer
-                        .dynsym_writer
-                        .strtab_writer
-                        .write_str(&verdef.name);
-                    (verdef.name.as_slice(), offset)
-                }
+            if let Some(soname) = soname {
+                (
+                    soname,
+                    epilogue_offsets
+                        .soname
+                        .expect("Soname offset must be present at this point"),
+                )
+            } else {
+                let offset = table_writer
+                    .dynsym_writer
+                    .strtab_writer
+                    .write_str(&verdef.name);
+                (verdef.name.as_slice(), offset)
             }
         } else {
             let offset = table_writer
@@ -2480,8 +2484,7 @@ fn write_verdef(
 fn write_epilogue_dynamic_entries(
     layout: &Layout,
     table_writer: &mut TableWriter,
-    // TODO: Do it better?
-    soname_offset: &mut Option<u32>,
+    epilogue_offsets: &mut EpilogueOffsets,
 ) -> Result {
     for rpath in &layout.args().rpaths {
         let offset = table_writer
@@ -2500,7 +2503,7 @@ fn write_epilogue_dynamic_entries(
         table_writer
             .dynamic
             .write(object::elf::DT_SONAME, offset.into())?;
-        soname_offset.replace(offset);
+        epilogue_offsets.soname.replace(offset);
     }
 
     let inputs = DynamicEntryInputs {
@@ -2518,6 +2521,12 @@ fn write_epilogue_dynamic_entries(
     Ok(())
 }
 
+#[derive(Default)]
+pub(crate) struct EpilogueOffsets {
+    /// The offset of the shared object name in .dynsym.
+    pub(crate) soname: Option<u32>,
+}
+
 impl EpilogueLayout<'_> {
     fn write_file<A: Arch>(
         &self,
@@ -2525,6 +2534,8 @@ impl EpilogueLayout<'_> {
         table_writer: &mut TableWriter,
         layout: &Layout,
     ) -> Result {
+        let mut epilogue_offsets = EpilogueOffsets::default();
+
         write_internal_symbols_plt_got_entries::<A>(&self.internal_symbols, table_writer, layout)?;
 
         if !layout.args().strip_all {
@@ -2534,9 +2545,8 @@ impl EpilogueLayout<'_> {
                 &mut table_writer.debug_symbol_writer,
             )?;
         }
-        let mut soname_offset = None;
         if layout.args().needs_dynamic() {
-            write_epilogue_dynamic_entries(layout, table_writer, &mut soname_offset)?;
+            write_epilogue_dynamic_entries(layout, table_writer, &mut epilogue_offsets)?;
         }
         write_gnu_hash_tables(self, buffers)?;
 
@@ -2551,7 +2561,7 @@ impl EpilogueLayout<'_> {
                 verdefs,
                 table_writer,
                 layout.args().soname.as_ref().map(|s| s.as_bytes()),
-                soname_offset,
+                &epilogue_offsets,
             )?;
         }
 
