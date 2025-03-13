@@ -2624,12 +2624,12 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
 }
 
 impl PreludeLayoutState {
-    fn new(input_state: resolution::ResolvedPrelude<'_>) -> Self {
+    fn new(input_state: resolution::ResolvedPrelude) -> Self {
         Self {
             file_id: PRELUDE_FILE_ID,
             symbol_id_range: SymbolIdRange::prelude(input_state.symbol_definitions.len()),
             internal_symbols: InternalSymbols {
-                symbol_definitions: input_state.symbol_definitions.to_owned(),
+                symbol_definitions: input_state.symbol_definitions,
                 start_symbol_id: SymbolId::zero(),
             },
             entry_symbol_id: None,

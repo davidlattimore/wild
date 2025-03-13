@@ -1,10 +1,3 @@
-use crate::args::parse;
-use args::Args;
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-
 pub(crate) mod aarch64;
 pub(crate) mod alignment;
 pub(crate) mod arch;
@@ -35,7 +28,6 @@ pub(crate) mod program_segments;
 pub(crate) mod resolution;
 pub(crate) mod save_dir;
 pub(crate) mod sharding;
-pub(crate) mod shutdown;
 pub(crate) mod slice;
 pub(crate) mod string_merging;
 #[cfg(feature = "fork")]
@@ -50,117 +42,162 @@ pub(crate) mod validation;
 pub(crate) mod verification;
 pub(crate) mod x86_64;
 
+pub use args::Args;
+use crossbeam_utils::atomic::AtomicCell;
 use error::AlreadyInitialised;
 use input_data::InputData;
 pub use subprocess::run_in_subprocess;
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use typed_arena::Arena;
 
+/// Sets up whatever tracing, if any, is indicated by the supplied arguments. This can only be
+/// called once and only if nothing else has already set the global tracing dispatcher. Calling this
+/// is optional. If it isn't called, no tracing-based features will function. e.g. --time.
+pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
+    if args.time_phases {
+        timing::init_tracing()
+    } else if args.print_allocations.is_some() {
+        debug_trace::init()
+    } else {
+        tracing_subscriber::registry()
+            .with(fmt::layer())
+            .with(EnvFilter::from_default_env())
+            .try_init()
+            .map_err(|_| AlreadyInitialised)
+    }
+}
+
+/// Sets up the global thread pool based on the supplied arguments, in particular --threads. This
+/// can only be called once. Calling this at all is optional. If it isn't called, then a default
+/// thread pool will be used - i.e. any argument to --threads will be ignored.
+pub fn setup_thread_pool(args: &Args) -> error::Result {
+    args.setup_thread_pool()
+}
+
+/// This is effectively a data store for use while linking. It takes ownership of all the input data
+/// that we read, which allows the linking stages to borrow that data. Dropping this struct might be
+/// expensive, so the caller of the linker might want to think about when best to drop it - probably
+/// together with the `LinkerOutput`. Note, calling `exit` without dropping this struct is an
+/// option, but likely won't save any time, since the bulk of the work done during drop (unmapping
+/// pages) will still happen anyway.
 pub struct Linker {
-    args: Args,
+    /// We store our input files here once we've read them.
+    inputs: Arena<InputData>,
+
+    /// Anything that doesn't need a custom Drop implementation can go in here. In practice, it's
+    /// mostly just the decompressed copy of compressed string-merge sections.
+    herd: bumpalo_herd::Herd,
+
+    /// We'll fill this in when we're done linking and start shutting down. Once this is dropped,
+    /// that signals the end of shutdown for the purposes of timing measurement.
+    shutdown_scope: AtomicCell<Option<Box<tracing::span::EnteredSpan>>>,
+
+    /// A timing scope that exists for the whole time we're linking.
+    _link_scope: tracing::span::EnteredSpan,
+}
+
+pub struct LinkerOutput<'layout_inputs> {
+    /// This is just here so that we defer its destruction. This allows us to (a) measure how long
+    /// it takes to drop and (b) if we forked, signal our parent that we're done, then drop it in
+    /// the background.
+    layout: Option<layout::Layout<'layout_inputs>>,
 }
 
 impl Linker {
-    pub fn from_args<S: AsRef<str>, I: Iterator<Item = S>>(args: I) -> error::Result<Self> {
-        Ok(Linker { args: parse(args)? })
-    }
-
-    /// Sets up whatever tracing, if any, is indicated by the supplied arguments. This can only be
-    /// called once and only if nothing else has already set the global tracing dispatcher. Calling
-    /// this is optional. If it isn't called, no tracing-based features will function. e.g. --time,
-    /// writing .trace files etc.
-    pub fn setup_tracing(&self) -> Result<(), AlreadyInitialised> {
-        let args = &self.args;
-        if args.time_phases {
-            timing::init_tracing()
-        } else if args.print_allocations.is_some() {
-            debug_trace::init()
-        } else {
-            tracing_subscriber::registry()
-                .with(fmt::layer())
-                .with(EnvFilter::from_default_env())
-                .try_init()
-                .map_err(|_| AlreadyInitialised)
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self {
+            inputs: Default::default(),
+            herd: Default::default(),
+            shutdown_scope: Default::default(),
+            _link_scope: tracing::info_span!("Link").entered(),
         }
     }
 
-    /// Sets up the global thread pool based on the supplied arguments, in particular --threads.
-    /// This can only be called once. Calling this at all is optional. If it isn't called, then a
-    /// default thread pool will be used - i.e. any argument to --threads will be ignored.
-    pub fn setup_thread_pool(&self) -> error::Result {
-        self.args.setup_thread_pool()
-    }
-
-    pub fn run(&self) -> error::Result {
-        self.run_with_callback(None)
-    }
-
-    /// Runs the linker, calling `done_closure` when linking is complete, but before cleanup is
-    /// performed.
-    pub(crate) fn run_with_callback(
-        &self,
-        done_closure: Option<Box<dyn FnOnce()>>,
-    ) -> error::Result {
-        let args = &self.args;
+    /// Runs the linker. The returned value isn't useful for anything, but is somewhat expensive to
+    /// drop, so we leave it up to the caller to decide when to drop it. At the point at which we
+    /// return, the output file should be usable.
+    pub fn run<'layout_inputs>(
+        &'layout_inputs self,
+        args: &'layout_inputs Args,
+    ) -> error::Result<LinkerOutput<'layout_inputs>> {
         if args.should_print_version {
             println!(
                 "Wild version {} (compatible with GNU linkers)",
                 env!("CARGO_PKG_VERSION")
             );
             if args.inputs.is_empty() {
-                return Ok(());
+                return Ok(LinkerOutput { layout: None });
             }
         }
+
         match args.arch {
-            arch::Architecture::X86_64 => link::<x86_64::X86_64>(args, done_closure),
-            arch::Architecture::AArch64 => link::<aarch64::AArch64>(args, done_closure),
+            arch::Architecture::X86_64 => self.link_for_arch::<x86_64::X86_64>(args),
+            arch::Architecture::AArch64 => self.link_for_arch::<aarch64::AArch64>(args),
         }
     }
 
-    pub fn should_fork(&self) -> bool {
-        self.args.should_fork()
+    fn link_for_arch<'layout_inputs, A: arch::Arch>(
+        &'layout_inputs self,
+        args: &'layout_inputs Args,
+    ) -> error::Result<LinkerOutput<'layout_inputs>> {
+        let output = elf_writer::Output::new(args);
+        let input_data = self.inputs.alloc(input_data::InputData::from_args(args)?);
+
+        // Note, we propagate errors from `link_with_input_data` after we've checked if any files
+        // changed. We want inputs-changed errors to take precedence over all other errors.
+        let result = self.link_with_input_data::<A>(output, input_data, args);
+        input_data.verify_inputs_unchanged()?;
+        result
+    }
+
+    fn link_with_input_data<'layout_inputs, A: arch::Arch>(
+        &'layout_inputs self,
+        mut output: elf_writer::Output,
+        input_data: &'layout_inputs InputData,
+        args: &'layout_inputs Args,
+    ) -> error::Result<LinkerOutput<'layout_inputs>> {
+        let inputs = archive_splitter::split_archives(input_data)?;
+        let parsed_inputs = parsing::parse_input_files(&inputs, args, &self.herd.get())?;
+        let groups = grouping::group_files(parsed_inputs, args);
+        let mut symbol_db =
+            symbol_db::SymbolDb::build(groups, input_data.version_script_data.as_ref(), args)?;
+        let resolved = resolution::resolve_symbols_and_sections(&mut symbol_db, &self.herd)?;
+        let layout = layout::compute::<A>(symbol_db, resolved, &mut output)?;
+        output.write::<A>(&layout)?;
+        diff::maybe_diff()?;
+
+        // We've finished linking. We consider everything from this point onwards as shutdown.
+        let shutdown_span = tracing::info_span!("Shutdown");
+        self.shutdown_scope
+            .store(Some(Box::new(shutdown_span.entered())));
+
+        Ok(LinkerOutput {
+            layout: Some(layout),
+        })
     }
 }
 
-#[tracing::instrument(skip_all, name = "Link")]
-fn link<A: arch::Arch>(args: &Args, done_closure: Option<Box<dyn FnOnce()>>) -> error::Result {
-    let shutdown_span = tracing::info_span!("Shutdown");
-    let output = elf_writer::Output::new(args);
-    let input_data = input_data::InputData::from_args(args)?;
-
-    // Note, we propagate errors from `link_with_input_data` after we've checked if any files
-    // changed. We want inputs-changed errors to take precedence over all other errors.
-    let result = link_with_input_data::<A>(output, &input_data, args, done_closure, &shutdown_span);
-    input_data.verify_inputs_unchanged()?;
-    let _shutdown_scope = result?;
-
-    shutdown::free_input_data(input_data);
-
-    Ok(())
+impl Default for Linker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-fn link_with_input_data<'shutdown_span, A: arch::Arch>(
-    mut output: elf_writer::Output,
-    input_data: &InputData,
-    args: &Args,
-    done_closure: Option<Box<dyn FnOnce()>>,
-    shutdown_span: &'shutdown_span tracing::Span,
-) -> error::Result<tracing::span::Entered<'shutdown_span>> {
-    let inputs = archive_splitter::split_archives(input_data)?;
-    let files = parsing::parse_input_files(&inputs, args)?;
-    let groups = grouping::group_files(files, args);
-    let herd = bumpalo_herd::Herd::new();
-    let mut symbol_db =
-        symbol_db::SymbolDb::build(&groups, input_data.version_script_data.as_ref(), args)?;
-    let resolved = resolution::resolve_symbols_and_sections(&groups, &mut symbol_db, &herd)?;
-    let layout = layout::compute::<A>(symbol_db, resolved, &mut output)?;
-    output.write::<A>(&layout)?;
-    diff::maybe_diff()?;
-
-    let shutdown_scope = shutdown_span.enter();
-    // If there is a parent process waiting on this, inform it that linking is done and output ready
-    if let Some(done_callback) = done_closure {
-        done_callback();
+impl Drop for Linker {
+    fn drop(&mut self) {
+        let _span = tracing::info_span!("Drop inputs").entered();
+        self.inputs = Default::default();
+        self.herd = Default::default();
     }
-    shutdown::free_layout(layout);
+}
 
-    Ok(shutdown_scope)
+impl Drop for LinkerOutput<'_> {
+    fn drop(&mut self) {
+        let _span = tracing::info_span!("Drop layout").entered();
+        self.layout.take();
+    }
 }

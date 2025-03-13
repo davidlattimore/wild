@@ -1,63 +1,94 @@
 use crate::args::Args;
 use crate::input_data::FileId;
-use crate::parsing::ParsedInput;
-use crate::sharding::ShardKey as _;
+use crate::parsing::Epilogue;
+use crate::parsing::ParsedInputObject;
+use crate::parsing::ParsedInputs;
+use crate::parsing::Prelude;
 use crate::symbol_db::SymbolId;
-use std::mem::replace;
+use crate::symbol_db::SymbolIdRange;
 
-pub(crate) struct Group<'data> {
-    pub(crate) files: Vec<ParsedInput<'data>>,
+pub(crate) enum Group<'data> {
+    Prelude(Prelude<'data>),
+    Objects(&'data [ParsedInputObject<'data>]),
+    Epilogue(Epilogue),
 }
-impl<'data> Group<'data> {
+
+impl Group<'_> {
     pub(crate) fn start_symbol_id(&self) -> SymbolId {
-        self.files[0].symbol_id_range().start()
+        self.symbol_id_range().start()
     }
 
-    fn empty() -> Self {
-        Self {
-            files: Default::default(),
+    pub(crate) fn symbol_id_range(&self) -> SymbolIdRange {
+        match self {
+            Group::Prelude(o) => SymbolIdRange::prelude(o.symbol_definitions.len()),
+            Group::Objects(objects) => SymbolIdRange::covering(
+                objects[0].symbol_id_range,
+                objects[objects.len() - 1].symbol_id_range,
+            ),
+            Group::Epilogue(o) => SymbolIdRange::epilogue(o.start_symbol_id, 0),
         }
     }
 
-    fn add_file(&mut self, file: ParsedInput<'data>) {
-        self.files.push(file);
+    pub(crate) fn num_symbols(&self) -> usize {
+        self.symbol_id_range().len()
     }
 }
 
-pub(crate) fn group_files<'data>(files: Vec<ParsedInput<'data>>, args: &Args) -> Vec<Group<'data>> {
+pub(crate) fn group_files<'data>(
+    parsed_inputs: ParsedInputs<'data>,
+    args: &Args,
+) -> Vec<Group<'data>> {
     let files_per_group = determine_max_files_per_group(args);
-    let symbols_per_group = determine_symbols_per_group(&files, args);
+    let symbols_per_group = determine_symbols_per_group(&parsed_inputs, args);
 
-    let mut groups = Vec::with_capacity(files.len() / files_per_group + 1);
-    let mut group = Group::empty();
+    let mut groups = Vec::with_capacity(parsed_inputs.objects.len() / files_per_group + 3);
+
+    groups.push(Group::Prelude(parsed_inputs.prelude));
+
     let mut num_symbols = 0;
-    for mut file in files {
-        let mut num_symbols_with_file = num_symbols + file.symbol_id_range().len();
+    let mut num_files = 0;
 
-        // Start a new group if we've reached the maximum number of files for the group, or more
-        // likely if the new file would put us over the per-group symbol limit.
-        if group.files.len() >= files_per_group
-            || (!group.files.is_empty() && num_symbols_with_file > symbols_per_group)
-        {
-            // Start a new group.
-            groups.push(replace(&mut group, Group::empty()));
-            num_symbols_with_file = file.symbol_id_range().len();
-        }
-        num_symbols = num_symbols_with_file;
-        file.set_file_id(FileId::new(groups.len() as u32, group.files.len() as u32));
-        group.add_file(file);
-    }
-    if !group.files.is_empty() {
-        groups.push(group);
-    }
+    groups.extend(
+        parsed_inputs
+            .objects
+            .chunk_by_mut(|_, obj| {
+                let num_file_symbols = obj.symbol_id_range.len();
+
+                // Finish the current group if we've reached the maximum number of files for the group, if
+                // the new file would put us over the per-group symbol limit.
+                let start_new = num_files >= files_per_group
+                    || (num_files > 0 && num_symbols + num_file_symbols > symbols_per_group);
+
+                if start_new {
+                    num_files = 0;
+                    num_symbols = 0;
+                }
+
+                num_files += 1;
+                num_symbols += num_file_symbols;
+
+                !start_new
+            })
+            .enumerate()
+            .map(|(i, group_objects)| {
+                for (file_number, obj) in group_objects.iter_mut().enumerate() {
+                    obj.set_file_id(FileId::new(i as u32 + 1, file_number as u32));
+                }
+
+                Group::Objects(group_objects)
+            }),
+    );
+
+    let mut epilogue = parsed_inputs.epilogue;
+    epilogue.file_id = FileId::new(groups.len() as u32, 0);
+    groups.push(Group::Epilogue(epilogue));
+
     groups
 }
 
 /// Decides after many symbols, we should start a new group.
-fn determine_symbols_per_group(files: &[ParsedInput], args: &Args) -> usize {
-    let num_symbols = files.last().map_or(0, |f| {
-        f.symbol_id_range().start().as_usize() + f.symbol_id_range().len()
-    });
+fn determine_symbols_per_group(parsed_inputs: &ParsedInputs, args: &Args) -> usize {
+    let num_symbols = parsed_inputs.num_symbols();
 
     let num_threads = args.num_threads.get();
 

@@ -1518,14 +1518,17 @@ impl LinkCommand {
                 .collect::<Option<Vec<&str>>>()
                 .context("Linker args must be valid utf-8")?;
 
-            let linker = libwild::Linker::from_args(args.iter())?;
+            let linker = libwild::Linker::new();
+            let parsed_args = libwild::Args::parse(args.iter())?;
 
             // This call is expected to error for all but the first call.
-            let _ = linker.setup_tracing();
+            let _ = libwild::setup_tracing(&parsed_args);
 
-            return linker
-                .run()
-                .with_context(|| format!("Failed to internally run command: {:?}", self.command));
+            linker
+                .run(&parsed_args)
+                .with_context(|| format!("Failed to internally run command: {:?}", self.command))?;
+
+            return Ok(());
         }
 
         let status = self
