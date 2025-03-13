@@ -108,10 +108,10 @@ use std::sync::atomic::AtomicU64;
 
 #[tracing::instrument(skip_all, name = "Layout")]
 pub fn compute<'data, 'symbol_db, A: Arch>(
-    symbol_db: &'symbol_db SymbolDb<'data>,
+    symbol_db: SymbolDb<'data>,
     resolved: ResolutionOutputs<'data>,
     output: &mut elf_writer::Output,
-) -> Result<Layout<'data, 'symbol_db>> {
+) -> Result<Layout<'data>> {
     let ResolutionOutputs {
         groups,
         mut output_sections,
@@ -123,7 +123,7 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
 
     let gc_outputs = find_required_sections::<A>(
         groups,
-        symbol_db,
+        &symbol_db,
         &output_sections,
         &symbol_resolution_flags,
         &merged_strings,
@@ -132,7 +132,7 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
 
     if let Some(sym_info) = symbol_db.args.sym_info.as_deref() {
         print_symbol_info(
-            symbol_db,
+            &symbol_db,
             sym_info,
             &symbol_resolution_flags,
             &gc_outputs.group_states,
@@ -144,7 +144,7 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
     merge_dynamic_symbol_definitions(&mut group_states)?;
     merge_gnu_property_notes(&mut group_states)?;
     finalise_all_sizes(
-        symbol_db,
+        &symbol_db,
         &output_sections,
         &mut group_states,
         &symbol_resolution_flags,
@@ -161,7 +161,7 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         &mut output_sections,
         &mut symbol_resolution_flags,
         gc_outputs.sections_with_content,
-        symbol_db,
+        &symbol_db,
     )?;
 
     let section_part_layouts =
@@ -198,7 +198,7 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         .collect_vec();
 
     let resources = FinaliseLayoutResources {
-        symbol_db,
+        symbol_db: &symbol_db,
         symbol_resolution_flags: &symbol_resolution_flags,
         output_sections: &output_sections,
         section_layouts: &section_layouts,
@@ -395,8 +395,8 @@ fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout
 
 /// Information about what goes where. Also includes relocation data, since that's computed at the
 /// same time.
-pub struct Layout<'data, 'symbol_db> {
-    pub(crate) symbol_db: &'symbol_db SymbolDb<'data>,
+pub struct Layout<'data> {
+    pub(crate) symbol_db: SymbolDb<'data>,
     pub(crate) symbol_resolutions: SymbolResolutions,
     pub(crate) section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
     pub(crate) section_layouts: OutputSectionMap<OutputRecordLayout>,
@@ -1331,7 +1331,7 @@ impl WorkItem {
     }
 }
 
-impl<'data> Layout<'data, '_> {
+impl<'data> Layout<'data> {
     pub(crate) fn prelude(&self) -> &PreludeLayout {
         let Some(FileLayout::Prelude(i)) = self.group_layouts.first().and_then(|g| g.files.first())
         else {
@@ -4596,7 +4596,7 @@ fn take_dynsym_index(
     Ok(index)
 }
 
-impl Layout<'_, '_> {
+impl Layout<'_> {
     pub(crate) fn mem_address_of_built_in(&self, section_id: OutputSectionId) -> u64 {
         self.section_layouts.get(section_id).mem_offset
     }

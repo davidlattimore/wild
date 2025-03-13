@@ -8,12 +8,7 @@
 //! can then exit while the forked process cleans up.
 
 #[tracing::instrument(skip_all, name = "Drop layout")]
-pub(crate) fn free_layout<'data, 'symbol_db>(d: crate::layout::Layout<'data, 'symbol_db>) {
-    drop(d);
-}
-
-#[tracing::instrument(skip_all, name = "Drop symbol DB")]
-pub(crate) fn free_symbol_db<'data>(d: crate::symbol_db::SymbolDb<'data>) {
+pub(crate) fn free_layout<'data>(d: crate::layout::Layout<'data>) {
     drop(d);
 }
 

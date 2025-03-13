@@ -262,10 +262,7 @@ impl Output {
     }
 
     #[tracing::instrument(skip_all, name = "Write output file")]
-    pub fn write<'data, 'symbol_db, A: Arch>(
-        &mut self,
-        layout: &Layout<'data, 'symbol_db>,
-    ) -> Result<SizedOutput> {
+    pub fn write<'data, A: Arch>(&mut self, layout: &Layout<'data>) -> Result<SizedOutput> {
         if layout.args().write_layout {
             write_layout(layout)?;
         }
@@ -453,10 +450,7 @@ impl SizedOutput {
     }
 
     #[tracing::instrument(skip_all, name = "Write data to file")]
-    pub(crate) fn write_file_contents<'data, 'symbol_db, A: Arch>(
-        &mut self,
-        layout: &Layout<'data, 'symbol_db>,
-    ) -> Result {
+    pub(crate) fn write_file_contents<'data, A: Arch>(&mut self, layout: &Layout<'data>) -> Result {
         let mut section_buffers = split_output_into_sections(layout, &mut self.out);
 
         let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
@@ -520,8 +514,8 @@ fn verify_allocations_message() -> String {
 }
 
 #[tracing::instrument(skip_all, name = "Split output buffers by group")]
-fn split_output_by_group<'layout, 'data, 'symbol_db, 'out>(
-    layout: &'layout Layout<'data, 'symbol_db>,
+fn split_output_by_group<'layout, 'data, 'out>(
+    layout: &'layout Layout<'data>,
     writable_buckets: &'out mut OutputSectionPartMap<&mut [u8]>,
 ) -> Vec<(
     &'layout GroupLayout<'data>,
@@ -671,11 +665,11 @@ fn populate_file_header<A: Arch>(
 }
 
 impl<'data> FileLayout<'data> {
-    fn write<'symbol_db, A: Arch>(
+    fn write<A: Arch>(
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
-        layout: &Layout<'data, 'symbol_db>,
+        layout: &Layout<'data>,
         trace: &TraceOutput,
     ) -> Result {
         match self {
@@ -772,8 +766,8 @@ struct TableWriter<'data, 'layout, 'out> {
 }
 
 impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
-    fn from_layout<'symbol_db>(
-        layout: &'layout Layout<'data, 'symbol_db>,
+    fn from_layout(
+        layout: &'layout Layout<'data>,
         dynstr_start_offset: u32,
         strtab_start_offset: u32,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
@@ -1374,11 +1368,11 @@ impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
 }
 
 impl<'data> ObjectLayout<'data> {
-    fn write_file<'symbol_db, A: Arch>(
+    fn write_file<A: Arch>(
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
-        layout: &Layout<'data, 'symbol_db>,
+        layout: &Layout<'data>,
         trace: &TraceOutput,
     ) -> Result {
         let _span = debug_span!("write_file", filename = %self.input).entered();
@@ -1433,9 +1427,9 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn write_section<'symbol_db, A: Arch>(
+    fn write_section<A: Arch>(
         &self,
-        layout: &Layout<'data, 'symbol_db>,
+        layout: &Layout<'data>,
         sec: &Section,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
@@ -1458,9 +1452,9 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn write_debug_section<'symbol_db, A: Arch>(
+    fn write_debug_section<A: Arch>(
         &self,
-        layout: &Layout<'data, 'symbol_db>,
+        layout: &Layout<'data>,
         sec: &Section,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
     ) -> Result {
@@ -1476,9 +1470,9 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn write_section_raw<'symbol_db, 'out>(
+    fn write_section_raw<'out>(
         &self,
-        layout: &Layout<'data, 'symbol_db>,
+        layout: &Layout<'data>,
         sec: &Section,
         buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
     ) -> Result<&'out mut [u8]> {
@@ -1509,10 +1503,10 @@ impl<'data> ObjectLayout<'data> {
     }
 
     /// Writes debug symbols.
-    fn write_symbols<'symbol_db>(
+    fn write_symbols(
         &self,
         symbol_writer: &mut SymbolTableWriter,
-        layout: &Layout<'data, 'symbol_db>,
+        layout: &Layout<'data>,
     ) -> Result {
         for ((sym_index, sym), sym_state) in self
             .object
@@ -1526,7 +1520,7 @@ impl<'data> ObjectLayout<'data> {
                 sym_index,
                 sym,
                 symbol_id,
-                layout.symbol_db,
+                &layout.symbol_db,
                 *sym_state,
                 &self.sections,
             ) {
@@ -1575,11 +1569,11 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn apply_relocations<'symbol_db, A: Arch>(
+    fn apply_relocations<A: Arch>(
         &self,
         out: &mut [u8],
         section: &Section,
-        layout: &Layout<'data, 'symbol_db>,
+        layout: &Layout<'data>,
         table_writer: &mut TableWriter,
         trace: &TraceOutput,
     ) -> Result {
@@ -1625,11 +1619,11 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn apply_debug_relocations<'symbol_db, A: Arch>(
+    fn apply_debug_relocations<A: Arch>(
         &self,
         out: &mut [u8],
         section: &Section,
-        layout: &Layout<'data, 'symbol_db>,
+        layout: &Layout<'data>,
     ) -> Result {
         let object_section = self.object.section(section.index)?;
         let section_name = self.object.section_name(object_section)?;
@@ -1664,10 +1658,10 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn write_eh_frame_data<'symbol_db, A: Arch>(
+    fn write_eh_frame_data<A: Arch>(
         &self,
         eh_frame_section_index: object::SectionIndex,
-        layout: &Layout<'data, 'symbol_db>,
+        layout: &Layout<'data>,
         table_writer: &mut TableWriter,
         trace: &TraceOutput,
     ) -> Result {
@@ -1827,14 +1821,14 @@ impl<'data> ObjectLayout<'data> {
         Ok(())
     }
 
-    fn display_relocation<'a, 'symbol_db, A: Arch>(
+    fn display_relocation<'a, A: Arch>(
         &'a self,
         rel: &'a elf::Rela,
-        layout: &'a Layout<'data, 'symbol_db>,
+        layout: &'a Layout<'data>,
     ) -> DisplayRelocation<'a, 'data, A> {
         DisplayRelocation::<'a, 'data, A> {
             rel,
-            symbol_db: layout.symbol_db,
+            symbol_db: &layout.symbol_db,
             object: self,
             phantom: PhantomData,
         }
@@ -3098,10 +3092,10 @@ fn write_internal_symbols_plt_got_entries<A: Arch>(
 }
 
 impl<'data> DynamicLayout<'data> {
-    fn write_file<'symbol_db, A: Arch>(
+    fn write_file<A: Arch>(
         &self,
         table_writer: &mut TableWriter,
-        layout: &Layout<'data, 'symbol_db>,
+        layout: &Layout<'data>,
     ) -> Result {
         self.write_so_name(table_writer)?;
 

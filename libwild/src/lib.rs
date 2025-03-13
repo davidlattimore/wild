@@ -151,7 +151,7 @@ fn link_with_input_data<'shutdown_span, A: arch::Arch>(
     let mut symbol_db =
         symbol_db::SymbolDb::build(&groups, input_data.version_script_data.as_ref(), args)?;
     let resolved = resolution::resolve_symbols_and_sections(&groups, &mut symbol_db, &herd)?;
-    let layout = layout::compute::<A>(&symbol_db, resolved, &mut output)?;
+    let layout = layout::compute::<A>(symbol_db, resolved, &mut output)?;
     let output_file = output.write::<A>(&layout)?;
     diff::maybe_diff()?;
 
@@ -162,7 +162,6 @@ fn link_with_input_data<'shutdown_span, A: arch::Arch>(
         done_callback();
     }
     shutdown::free_layout(layout);
-    shutdown::free_symbol_db(symbol_db);
 
     Ok(shutdown_scope)
 }
