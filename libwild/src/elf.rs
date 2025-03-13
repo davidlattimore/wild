@@ -58,7 +58,6 @@ pub(crate) struct File<'data> {
     pub(crate) sections: SectionTable<'data>,
     /// This may be symtab or dynsym depending on the file type.
     pub(crate) symbols: SymbolTable<'data>,
-    pub(crate) relocations: RelocationSections,
     pub(crate) program_headers: &'data [ProgramHeader],
     pub(crate) versym: &'data [Versym],
 
@@ -68,6 +67,10 @@ pub(crate) struct File<'data> {
     /// Number of verdef versions according to the dynamic table.
     pub(crate) verdefnum: u64,
 }
+
+// Not needing Drop opens the option of storing this type in an arena that doesn't support dropping
+// its contents.
+const _: () = assert!(!core::mem::needs_drop::<File>());
 
 impl<'data> File<'data> {
     pub(crate) fn parse(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
@@ -113,12 +116,6 @@ impl<'data> File<'data> {
             }
         }
 
-        let relocations = if is_dynamic {
-            RelocationSections::default()
-        } else {
-            sections.relocation_sections(endian, symbols.section())?
-        };
-
         let program_headers = get_entries(
             data,
             header.e_phoff(endian) as usize,
@@ -131,7 +128,6 @@ impl<'data> File<'data> {
             data,
             sections,
             symbols,
-            relocations,
             program_headers,
             versym,
             verdef,
@@ -224,8 +220,12 @@ impl<'data> File<'data> {
         ))
     }
 
-    pub(crate) fn relocations(&self, index: object::SectionIndex) -> Result<&'data [Rela]> {
-        let Some(rela_index) = self.relocations.get(index) else {
+    pub(crate) fn relocations(
+        &self,
+        index: object::SectionIndex,
+        relocations: &RelocationSections,
+    ) -> Result<&'data [Rela]> {
+        let Some(rela_index) = relocations.get(index) else {
             return Ok(&[]);
         };
         let rela_section = self.sections.section(rela_index)?;
@@ -264,6 +264,12 @@ impl<'data> File<'data> {
             }
         }
         Ok(&[])
+    }
+
+    pub(crate) fn parse_relocations(&self) -> Result<RelocationSections> {
+        Ok(self
+            .sections
+            .relocation_sections(LittleEndian, self.symbols.section())?)
     }
 }
 

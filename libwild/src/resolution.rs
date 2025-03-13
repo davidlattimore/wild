@@ -264,6 +264,8 @@ fn resolve_sections<'data>(
                     &loaded_metrics,
                 )?;
 
+                non_dynamic.relocations = obj.object.parse_relocations()?;
+
                 obj.non_dynamic = Some(non_dynamic);
             }
             Ok(())
@@ -426,6 +428,8 @@ pub(crate) struct ResolvedObject<'data> {
 /// Parts of a resolved object that are only applicable to non-dynamic objects.
 pub(crate) struct NonDynamicResolved<'data> {
     pub(crate) sections: Vec<SectionSlot>,
+    pub(crate) relocations: object::read::elf::RelocationSections,
+
     pub(crate) string_merge_extras: Vec<StringMergeSectionExtra<'data>>,
 
     /// Details about each custom section that is defined in this object.
@@ -675,6 +679,7 @@ impl<'data> ResolvedObject<'data> {
             // We'll fill this in during section resolution.
             non_dynamic = Some(NonDynamicResolved {
                 sections: Default::default(),
+                relocations: Default::default(),
                 string_merge_extras: Default::default(),
                 custom_sections: Default::default(),
             });
