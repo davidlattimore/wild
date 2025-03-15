@@ -40,7 +40,7 @@ sharded-offset-map = "0.2.0"
 sharded-vec-writer = "0.3.0"
 itertools = "0.14.0"
 bytesize = "2.0.1"
-flate2 = "1.1.0"
+flate2 = { version = "1.1.0", features = ["zlib-rs"] }
 bumpalo-herd = "0.1.2"
 zstd = "0.13.3"
 blake3 = { version = "1.6.1", features = ["rayon"] }
