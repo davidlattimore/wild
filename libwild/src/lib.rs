@@ -53,6 +53,16 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use typed_arena::Arena;
 
+/// Runs the linker and cleans up associated resources. Only use this function if you've OK with
+/// waiting for cleanup.
+pub fn run(args: &Args) -> error::Result {
+    setup_tracing(args)?;
+    setup_thread_pool(args)?;
+    let linker = Linker::new();
+    linker.run(args)?;
+    Ok(())
+}
+
 /// Sets up whatever tracing, if any, is indicated by the supplied arguments. This can only be
 /// called once and only if nothing else has already set the global tracing dispatcher. Calling this
 /// is optional. If it isn't called, no tracing-based features will function. e.g. --time.
