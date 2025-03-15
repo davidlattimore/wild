@@ -84,6 +84,8 @@
 //!
 //! RequiresClangWithTlsDesc:{bool} Defaults to false. Set to true to disable this test if we detect
 //! that the version of clang available to us doesn't support TLSDESC.
+//!
+//! VersionScript:{filename} Specifies a version script file that will be passed to the linker.
 
 use anyhow::Context;
 use anyhow::anyhow;
@@ -407,6 +409,7 @@ struct Config {
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_clang_with_tlsdesc: bool,
+    version_script: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -571,6 +574,7 @@ impl Default for Config {
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
             requires_clang_with_tlsdesc: false,
+            version_script: None,
         }
     }
 }
@@ -725,6 +729,9 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                 "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
                 "RequiresClangWithTlsDesc" => {
                     config.requires_clang_with_tlsdesc = arg.to_lowercase().parse()?;
+                }
+                "VersionScript" => {
+                    config.version_script = Some(src_path(&arg.trim().to_lowercase()))
                 }
                 other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
             }
@@ -1405,6 +1412,11 @@ impl LinkCommand {
                         // Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
                         command.arg("-mno-fix-cortex-a53-835769");
                     }
+
+                    if let Some(version_script) = &config.version_script {
+                        command.arg(format!("-Wl,--version-script={}", version_script.display()));
+                    }
+
                     command.args(&linker_args.args);
                 }
                 LinkerDriver::Direct(direct_config) => {
@@ -1420,6 +1432,10 @@ impl LinkCommand {
                         command
                             .arg("-dynamic-linker")
                             .arg(dynamic_linker_path(cross_arch));
+                    }
+
+                    if let Some(version_script) = &config.version_script {
+                        command.arg(format!("--version-script={}", version_script.display()));
                     }
 
                     command.arg("--gc-sections").args(&linker_args.args);
@@ -1468,11 +1484,13 @@ impl LinkCommand {
             opt_save_dir,
             output_path: output_path.to_owned(),
         };
-        // We allow skipping linking if all the object files are the unchanged and are older than
-        // our output file, but not if we're linking with our linker, since we're always changing
-        // that. We also require that the command we're going to run hasn't changed.
+        // We allow skipping linking if all the object files and the version script
+        // are unchanged and are older than our output file, but not if we're linking
+        // with our linker, since we're always changing that. We also require that the
+        // command we're going to run hasn't changed.
         let can_skip = !matches!(linker, Linker::Wild)
             && is_newer(output_path, inputs.iter().map(|i| i.path.as_path()))
+            && is_newer(output_path, config.version_script.iter())
             && cmd_file_is_current(output_path, &link_command.to_string());
         link_command.can_skip = can_skip;
 
