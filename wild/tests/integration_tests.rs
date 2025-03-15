@@ -84,6 +84,8 @@
 //!
 //! RequiresClangWithTlsDesc:{bool} Defaults to false. Set to true to disable this test if we detect
 //! that the version of clang available to us doesn't support TLSDESC.
+//!
+//! VersionScript:{filename} Specifies a version script file that will be passed to the linker.
 
 use anyhow::Context;
 use anyhow::anyhow;
