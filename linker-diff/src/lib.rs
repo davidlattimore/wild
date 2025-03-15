@@ -199,7 +199,6 @@ impl Config {
                 // We don't yet support emitting warnings.
                 "section.gnu.warning",
                 // GNU ld sometimes applies relaxations that we don't yet.
-                "rel.match_failed.R_AARCH64_TLSDESC_LD64_LO12",
                 "rel.match_failed.R_AARCH64_TLSGD_ADD_LO12_NC",
                 "rel.missing-opt.R_X86_64_TLSGD.TlsGdToInitialExec.shared-object",
                 // GNU ld sometimes relaxes an adrp instruction to an adr instruction when the
