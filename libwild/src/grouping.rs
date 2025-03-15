@@ -86,7 +86,7 @@ pub(crate) fn group_files<'data>(
     groups
 }
 
-/// Decides after many symbols, we should start a new group.
+/// Decides after how many symbols, we should start a new group.
 fn determine_symbols_per_group(parsed_inputs: &ParsedInputs, args: &Args) -> usize {
     let num_symbols = parsed_inputs.num_symbols();
 

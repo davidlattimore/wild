@@ -30,7 +30,7 @@
 //! CompSoArgs:... Arguments to be passed to the compiler when building shared objects.
 //!
 //! ExpectSym:symbol-name [section] Checks that the specified symbol is defined in the output file
-//! and, if specified that it's in the specified section.
+//! and, if specified, that it's in the specified section.
 //!
 //! ExpectComment: Checks that the comment in the .comment section is equal to the supplied
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
@@ -2056,7 +2056,7 @@ fn run_with_config(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    // If we expected an error, then don't try to diff or run the output.
+    // If we expect an error, then don't try to diff or run the output.
     if config.expect_error.is_some() {
         return Ok(());
     }

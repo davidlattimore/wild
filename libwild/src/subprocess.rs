@@ -93,7 +93,7 @@ fn wait_for_child_done(fds: &[c_int], child_pid: pid_t) -> i32 {
         let mut response: [u8; 1] = [0u8; 1];
         match libc::fread(response.as_mut_ptr() as *mut c_void, 1, 1, stream) {
             1 => {
-                // Child sent a byte, which indicates that it succeeded and is now shutting done in
+                // Child sent a byte, which indicates that it succeeded and is now shutting down in
                 // the background.
                 0
             }

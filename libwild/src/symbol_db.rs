@@ -72,7 +72,7 @@ struct SymbolBucket<'data> {
     /// Mapping from global symbol names to a symbol ID with that name. If there are multiple
     /// globals with the same name, then this will point to the one we encountered first, which may
     /// not be the selected definition. In order to find the selected definition, you still need to
-    /// look a `symbol_definitions`.
+    /// look at `symbol_definitions`.
     name_to_id: PassThroughHashMap<UnversionedSymbolName<'data>, SymbolId>,
 
     versioned_name_to_id: PassThroughHashMap<VersionedSymbolName<'data>, SymbolId>,

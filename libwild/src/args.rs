@@ -164,7 +164,7 @@ pub(crate) const WRITE_VERIFY_ALLOCATIONS_ENV: &str = "WILD_VERIFY_ALLOCATIONS";
 // other linkers. On the other, we should perhaps somehow let the user know that we don't support a
 // feature.
 const SILENTLY_IGNORED_FLAGS: &[&str] = &[
-    // Just like other modern linkers, we don't need groups in order resolve cycles.
+    // Just like other modern linkers, we don't need groups in order to resolve cycles.
     "start-group",
     "end-group",
     "(",

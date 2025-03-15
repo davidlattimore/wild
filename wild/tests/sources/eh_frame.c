@@ -23,7 +23,7 @@ void _start(void) {
     if (frame1->length == 0) {
         exit_syscall(101);
     }
-    // Since it's a CIE, it's cie_ptr should be zero.
+    // Since it's a CIE, its cie_ptr should be zero.
     if (frame1->cie_ptr != 0) {
         exit_syscall(102);
     }
@@ -33,8 +33,8 @@ void _start(void) {
     if (frame2->length == 0) {
         exit_syscall(103);
     }
-    // Its CIE pointer should point back to the start of first entry. This pointer is relative to
-    // the position of the pointer, so we need to add the offset of the pointer within the entry
+    // Its CIE pointer should point back to the start of the first entry. This pointer is relative
+    // to the position of the pointer, so we need to add the offset of the pointer within the entry
     // (4). The length field doesn't include the size of the length (4 bytes), so we need to add
     // that too.
     if (frame2->cie_ptr != frame1->length + 8) {

@@ -377,7 +377,7 @@ pub(crate) enum ExceptionHeaderApplication {
     /// Value is relative to the location of the pointer.
     Relative = 0x10,
 
-    /// Value is relative to start of the .eh_frame_hdr section.
+    /// Value is relative to the start of the .eh_frame_hdr section.
     EhFrameHdrRelative = 0x30,
 }
 
