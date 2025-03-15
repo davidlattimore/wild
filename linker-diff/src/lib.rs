@@ -44,6 +44,7 @@ mod header_diff;
 pub(crate) mod section_map;
 mod symtab;
 mod trace;
+mod version_diff;
 mod x86_64;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
@@ -543,6 +544,7 @@ impl Report {
         asm_diff::report_section_diffs(self, objects);
         header_diff::report_section_diffs(self, objects);
         eh_frame_diff::report_diffs(self, objects);
+        version_diff::report_diffs(self, objects);
         debug_info_diff::check_debug_info(self, objects);
     }
 

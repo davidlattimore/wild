@@ -2458,6 +2458,7 @@ pub(crate) struct AddressIndex<'data> {
     got_base_address: Option<u64>,
 
     /// Version names by their index.
+    verdef: Vec<Option<&'data [u8]>>,
     verneed: Vec<Option<&'data [u8]>>,
 
     /// Dynamic symbol names by their index.
@@ -2540,6 +2541,7 @@ impl<'data> AddressIndex<'data> {
             got_base_address: None,
             plt_indexes: Default::default(),
             got_tables: Default::default(),
+            verdef: Default::default(),
             verneed: Default::default(),
             dynamic_symbol_names: Default::default(),
             jmprel_got_addresses: Vec::new(),
@@ -2562,12 +2564,46 @@ impl<'data> AddressIndex<'data> {
 
     fn build_indexes(&mut self, elf_file: &ElfFile64<'data>) -> Result {
         self.index_dynamic(elf_file);
+        self.verdef = Self::index_verdef(elf_file)?;
         self.verneed = Self::index_verneed(elf_file)?;
         self.dynamic_symbol_names = self.index_dynamic_symbols(elf_file)?;
         self.index_got_tables(elf_file).unwrap();
         self.index_relocations(elf_file);
         self.index_plt_sections(elf_file)?;
         Ok(())
+    }
+
+    fn index_verdef(elf_file: &ElfFile64<'data>) -> Result<Vec<Option<&'data [u8]>>> {
+        let e = LittleEndian;
+        let mut versions = Vec::new();
+
+        let maybe_verdef = elf_file
+            .sections()
+            .find_map(|section| {
+                section
+                    .elf_section_header()
+                    .gnu_verdef(e, elf_file.data())
+                    .transpose()
+            })
+            .transpose()?;
+
+        let Some((mut verdef_iterator, strings_index)) = maybe_verdef else {
+            return Ok(versions);
+        };
+
+        let strings = elf_file
+            .elf_section_table()
+            .strings(e, elf_file.data(), strings_index)?;
+
+        while let Some((_verdef, mut aux_iterator)) = verdef_iterator.next()? {
+            // We don't need verdef parent here, so take only the first entry
+            if let Some(aux) = aux_iterator.next()? {
+                let name = aux.name(e, strings)?;
+                versions.push(Some(name));
+            }
+        }
+
+        Ok(versions)
     }
 
     fn index_verneed(elf_file: &ElfFile64<'data>) -> Result<Vec<Option<&'data [u8]>>> {
@@ -2627,13 +2663,17 @@ impl<'data> AddressIndex<'data> {
                 .and_then(|indexes| indexes.get(sym_index))
                 .copied();
 
-            let version = version_index
-                .and_then(|ver_index| self.verneed.get(ver_index as usize).copied().flatten())
-                .or(match version_index {
-                    Some(object::elf::VER_NDX_LOCAL) => Some(b"*local*"),
-                    Some(object::elf::VER_NDX_GLOBAL) => Some(b"*global*"),
-                    _ => None,
-                });
+            let version: Option<&[u8]> = match version_index {
+                Some(object::elf::VER_NDX_LOCAL) => Some(b"*local*"),
+                Some(object::elf::VER_NDX_GLOBAL) => Some(b"*global*"),
+                Some(version_index) if version_index > object::elf::VER_NDX_GLOBAL => self
+                    .verdef
+                    .get(version_index as usize - 1)
+                    .or_else(|| self.verneed.get(version_index as usize))
+                    .copied()
+                    .flatten(),
+                _ => None,
+            };
 
             while dynamic_symbol_names.len() < sym_index {
                 dynamic_symbol_names.push(SymbolName {

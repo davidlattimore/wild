@@ -85,6 +85,7 @@ pub(crate) const DYNSYM: OutputSectionId = part_id::DYNSYM.output_section_id();
 pub(crate) const DYNSTR: OutputSectionId = part_id::DYNSTR.output_section_id();
 pub(crate) const INTERP: OutputSectionId = part_id::INTERP.output_section_id();
 pub(crate) const GNU_VERSION: OutputSectionId = part_id::GNU_VERSION.output_section_id();
+pub(crate) const GNU_VERSION_D: OutputSectionId = part_id::GNU_VERSION_D.output_section_id();
 pub(crate) const GNU_VERSION_R: OutputSectionId = part_id::GNU_VERSION_R.output_section_id();
 pub(crate) const PLT_GOT: OutputSectionId = part_id::PLT_GOT.output_section_id();
 pub(crate) const NOTE_GNU_PROPERTY: OutputSectionId =
@@ -399,6 +400,15 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         element_size: size_of::<Versym>() as u64,
         min_alignment: alignment::VERSYM,
         link: &[DYNSYM],
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        name: SectionName(GNU_VERSION_D_SECTION_NAME),
+        ty: sht::GNU_VERDEF,
+        section_flags: shf::ALLOC,
+        info_fn: Some(version_d_info),
+        min_alignment: alignment::VERSION_D,
+        link: &[DYNSTR],
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -807,6 +817,7 @@ impl CustomSectionIds {
         events.push(DYNSYM.event());
         events.push(DYNSTR.event());
         events.push(GNU_VERSION.event());
+        events.push(GNU_VERSION_D.event());
         events.push(GNU_VERSION_R.event());
         events.push(RELA_DYN.event());
         events.push(RELA_PLT.event());
@@ -955,6 +966,10 @@ fn symtab_info(info: &InfoInputs) -> u32 {
         / size_of::<elf::SymtabEntry>()) as u32
 }
 
+fn version_d_info(info: &InfoInputs) -> u32 {
+    info.non_addressable_counts.verdef_count.into()
+}
+
 fn version_r_info(info: &InfoInputs) -> u32 {
     info.non_addressable_counts.verneed_count as u32
 }
@@ -1007,6 +1022,7 @@ fn test_constant_ids() {
         (GCC_EXCEPT_TABLE, GCC_EXCEPT_TABLE_SECTION_NAME),
         (INTERP, INTERP_SECTION_NAME),
         (GNU_VERSION, GNU_VERSION_SECTION_NAME),
+        (GNU_VERSION_D, GNU_VERSION_D_SECTION_NAME),
         (GNU_VERSION_R, GNU_VERSION_R_SECTION_NAME),
         (PROGRAM_HEADERS, PROGRAM_HEADERS_SECTION_NAME),
         (SECTION_HEADERS, SECTION_HEADERS_SECTION_NAME),
