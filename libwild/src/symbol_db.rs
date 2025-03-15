@@ -67,7 +67,6 @@ pub struct SymbolDb<'data> {
     /// into the epilogue's symbol IDs.
     start_stop_symbol_names: Vec<UnversionedSymbolName<'data>>,
 
-    // TODO: find better place or way
     pub(crate) version_script: VersionScript<'data>,
 }
 

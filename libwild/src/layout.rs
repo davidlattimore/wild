@@ -4964,7 +4964,6 @@ fn verify_consistent_allocation_handling(
     Ok(())
 }
 
-// TODO: Avoid allocations
 pub(crate) struct VersionDef {
     pub(crate) name: Vec<u8>,
     pub(crate) parent_index: Option<u16>,

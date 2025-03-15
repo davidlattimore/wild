@@ -38,7 +38,7 @@ void bar_global(void) {
     exit_syscall(42);
 }
 
-// TODO: doesn't work, is global
+// TODO: doesn't work, the symbol is global
 void bar_local(void) {
     exit_syscall(42);
 }
