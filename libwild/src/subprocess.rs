@@ -52,10 +52,7 @@ fn subprocess_result(args: &Args) -> Result<i32> {
         }
         -1 => {
             // Fork failure in the parent - Fallback to running linker in this process
-            crate::setup_tracing(args)?;
-            crate::setup_thread_pool(args)?;
-            let linker = crate::Linker::new();
-            linker.run(args)?;
+            crate::run(args)?;
             Ok(0)
         }
         pid => {
