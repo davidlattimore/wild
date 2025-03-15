@@ -285,7 +285,7 @@ impl PartId {
 
 impl PartId {
     /// Returns whether we should skip adding padding after this section. This is a special rule
-    /// that's just for `.init` and `.fini`. The `.init` section `crti.o` contains the starts of a
+    /// that's just for `.init` and `.fini`. The `.init` section `crti.o` contains the start of a
     /// function and `crtn.o` contains the end of that function. If `.init` has say alignment = 4
     /// and we add padding after it to bring it up to a multiple of 4 bytes, then we'll break the
     /// function, since the padding bytes won't be valid instructions.

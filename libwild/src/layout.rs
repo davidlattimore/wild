@@ -297,13 +297,13 @@ fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) -> Result {
 
 enum PropertyClass {
     // A bit in the output pr_data is set if it is set in any relocatable input.
-    // If all bits in the the output pr_data field are zero, this property should be removed from output.
+    // If all bits in the output pr_data field are zero, this property should be removed from output.
     Or,
     // A bit in the output pr_data field is set only if it is set in all relocatable input pr_data fields.
-    // If all bits in the the output pr_data field are zero, this property should be removed from output.
+    // If all bits in the output pr_data field are zero, this property should be removed from output.
     And,
     // A bit in the output pr_data field is set if it is set in any relocatable input pr_data fields
-    // and this property is present in all relocatable input files. When all bits in the the output pr_data
+    // and this property is present in all relocatable input files. When all bits in the output pr_data
     // field are zero, this property should not be removed from output to indicate it has
     // zero in all bits.
     AndOr,
@@ -709,8 +709,8 @@ fn allocate_symbol_resolution(
     allocate_resolution(value_flags, r, mem_sizes, output_kind);
 }
 
-/// Computes how much to allocation for a particular resolution. This is intended for debug
-/// assertions when we're writing, to make sure that we would have allocated memory before we write.
+/// Computes how much to allocate for a particular resolution. This is intended for debug assertions
+/// when we're writing, to make sure that we would have allocated memory before we write.
 pub(crate) fn compute_allocations(
     resolution: &Resolution,
     output_kind: OutputKind,
@@ -1835,7 +1835,7 @@ fn find_required_sections<'data, A: Arch>(
         errors: Mutex::new(Vec::new()),
         waiting_workers: ArrayQueue::new(num_workers),
         // NB, the -1 is because we never want all our threads to be idle. Once the last thread is
-        // about to go idle, we're done and need to wake up and terminate all the the threads.
+        // about to go idle, we're done and need to wake up and terminate all the threads.
         idle_threads,
         done: AtomicBool::new(false),
         symbol_resolution_flags,
@@ -2656,7 +2656,7 @@ impl PreludeLayoutState {
             }
         });
 
-        // Allocate space to store the identify of the linker in the .comment section.
+        // Allocate space to store the identity of the linker in the .comment section.
         common.allocate(
             output_section_id::COMMENT.part_id_with_alignment(alignment::MIN),
             self.identity.len() as u64,
@@ -2738,9 +2738,9 @@ impl PreludeLayoutState {
     }
 
     /// This function is where we determine sizes that depend on other sizes. For example, the size
-    /// of the section headers table, which depends on which sections we're writing which depends on
-    /// which sections are non-empty. We also decide which internal symtab entries we'll write here,
-    /// since that also depends on which sections we're writing.
+    /// of the section headers table, which depends on which sections we're writing, which depends
+    /// on which sections are non-empty. We also decide which internal symtab entries we'll write
+    /// here, since that also depends on which sections we're writing.
     fn apply_late_size_adjustments(
         &mut self,
         common: &mut CommonGroupState,
@@ -2867,7 +2867,7 @@ impl PreludeLayoutState {
             });
         let num_sections = keep_sections.values_iter().filter(|p| **p).count();
 
-        // Compute output indexes of each of section.
+        // Compute output indexes of each section.
         let mut next_output_index = 0;
         let mut output_section_indexes = vec![None; output_sections.num_sections()];
         for event in output_sections.sections_and_segments_events() {
@@ -3204,9 +3204,9 @@ impl<'data> EpilogueLayoutState<'data> {
             // `symbol_base` is set later in `finalise_layout`.
             symbol_base: 0,
         };
-        // Sort by bucket. Tie-break by name for determinism. We can use an unstable sort
-        // because name should be unique. We use a parallel sort because we're processing
-        // symbols from potentially many input objects, so there can be a lot.
+        // Sort by bucket. Tie-break by name for determinism. We can use an unstable sort because
+        // names should be unique. We use a parallel sort because we're processing symbols from
+        // potentially many input objects, so there can be a lot.
         self.dynamic_symbol_definitions
             .par_sort_unstable_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
         let num_blume = 1;
@@ -3860,7 +3860,7 @@ impl<'data> SymbolCopyInfo<'data> {
 
         if let Ok(Some(section)) = object.symbol_section(sym, sym_index) {
             if !sections[section.0].is_loaded() {
-                // Symbol is in discarded section.
+                // Symbol is in a discarded section.
                 return None;
             }
         }
@@ -4020,7 +4020,7 @@ fn process_gnu_property_note(
         {
             let gnu_property = gnu_property?;
 
-            // Right now, skip all properties other than the with size equal to 4.
+            // Right now, skip all properties other than those with size equal to 4.
             // There are existing properties, but unused right now:
             // GNU_PROPERTY_STACK_SIZE, GNU_PROPERTY_NO_COPY_ON_PROTECTED
             // TODO: support in the future

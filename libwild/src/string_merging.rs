@@ -107,7 +107,7 @@ impl std::ops::Add<u64> for LinearInputOffset {
 struct StringMergeInputSection<'data> {
     section_data: &'data [u8],
 
-    /// The sum of the sizes of the input sections prior to this one with the same `part_id`.`
+    /// The sum of the sizes of the input sections prior to this one with the same `part_id`.
     start_input_offset: LinearInputOffset,
 }
 
@@ -156,7 +156,7 @@ pub(crate) struct MergeStringsSectionBucket<'data> {
     /// non-deterministic results. This is the index of the next input group that should be added.
     next_input_group_index: usize,
 
-    /// The strings in this section in order. Includes null terminators.
+    /// The strings in this section, in order. Includes null terminators.
     pub(crate) strings: Vec<&'data [u8]>,
 
     /// The offset within the section of the next string to be added, or if we're done adding
@@ -169,7 +169,7 @@ pub(crate) struct MergeStringsSectionBucket<'data> {
     /// The total number of all added strings, used for statistics.
     input_string_count: usize,
 
-    /// The offsets of each string in the output section keyed by the string contents.
+    /// The offsets of each string in the output section, keyed by the string contents.
     string_offsets: PassThroughHashMap<MergeString<'data>, u32>,
 }
 
@@ -412,7 +412,7 @@ struct SplitResources<'data, 'offsets, 'sections> {
     unprocessed: ArrayQueue<SectionGroup<'data, 'offsets, 'sections>>,
 
     // The shards that we've finished processing in their correct order. Note, this `AtomicCell`
-    // isn't lock-free, since the shard is larger then a usize. This doesn't seem to make any
+    // isn't lock-free, since the shard is larger than a usize. This doesn't seem to make any
     // measurable difference to performance for our use-case.
     finished_shards:
         Vec<AtomicCell<Option<sharded_offset_map::Shard<'offsets, BucketOffset, MAP_BLOCK_SIZE>>>>,

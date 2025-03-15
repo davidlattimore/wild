@@ -210,7 +210,7 @@ pub fn relocation_kind_and_size(r_type: u32) -> Option<(RelocationKind, usize)> 
         object::elf::R_X86_64_GOTPCREL => (RelocationKind::GotRelative, 4),
 
         // For now, we rely on GOTPC64 and GOTPC32 always referencing the symbol
-        // _GLOBAL_OFFSET_TABLE_, which means that we can just treat these a normal relative
+        // _GLOBAL_OFFSET_TABLE_, which means that we can just treat these as normal relative
         // relocations and avoid any special processing when writing.
         object::elf::R_X86_64_GOTPC64 => (RelocationKind::Relative, 8),
         object::elf::R_X86_64_GOTPC32 => (RelocationKind::Relative, 4),

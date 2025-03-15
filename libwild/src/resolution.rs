@@ -396,7 +396,7 @@ pub(crate) enum SectionSlot {
     /// We've already loaded the section.
     Loaded(crate::layout::Section),
 
-    /// The section contain .eh_frame data.
+    /// The section contains .eh_frame data.
     EhFrameData(object::SectionIndex),
 
     /// The section is a string-merge section.
@@ -982,16 +982,16 @@ bitflags! {
         /// Something with an address. e.g. a regular symbol, a section etc.
         const ADDRESS = 1 << 0;
 
-        /// An absolute value that won't be change depending on load address. This could be a symbol
-        /// with an absolute value or an undefined symbol, which needs to always resolve to 0 regardless
-        /// of load address.
+        /// An absolute value that won't change depending on load address. This could be a symbol
+        /// with an absolute value or an undefined symbol, which needs to always resolve to 0
+        /// regardless of load address.
         const ABSOLUTE = 1 << 1;
 
         /// The value is from a shared (dynamic) object, so although it may have an address, it
-        /// won't be know until runtime. If combined with `ABSOLUTE`, then the symbol isn't actually
-        /// defined by any shared object. We'll emit a dynamic relocation for it on a best-effort
-        /// basis only. e.g. if there are direct references to it from a read-only section we'll
-        /// fill them in as zero.
+        /// won't be known until runtime. If combined with `ABSOLUTE`, then the symbol isn't
+        /// actually defined by any shared object. We'll emit a dynamic relocation for it on a
+        /// best-effort basis only. e.g. if there are direct references to it from a read-only
+        /// section we'll fill them in as zero.
         const DYNAMIC = 1 << 2;
 
         /// The value refers to an ifunc. The actual address won't be known until runtime.
@@ -1006,8 +1006,8 @@ bitflags! {
         /// local.
         const DOWNGRADE_TO_LOCAL = 1 << 5;
 
-        /// Set when the value is function. Currently only set for dynamic symbols, since that's all
-        /// we need it for.
+        /// Set when the value is a function. Currently only set for dynamic symbols, since that's
+        /// all we need it for.
         const FUNCTION = 1 << 6;
     }
 }
@@ -1015,7 +1015,7 @@ bitflags! {
 impl ValueFlags {
     /// Returns self merged with `other` which should be the flags for the local (possibly
     /// non-canonical symbol definition). Sometimes an object will reference a symbol that it
-    /// doesn't define and will mark that symbol as hidden however the object that defines the
+    /// doesn't define and will mark that symbol as hidden, however the object that defines the
     /// symbol gives the symbol default visibility. In this case, we want references in the object
     /// defining it as hidden to be allowed to bypass the GOT/PLT.
     pub(crate) fn merge(&mut self, other: ValueFlags) {

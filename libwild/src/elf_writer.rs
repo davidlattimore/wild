@@ -3023,7 +3023,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         let e = LittleEndian;
         entry.sh_name.set(e, name_offset);
         entry.sh_type.set(e, section_type.raw());
-        // TODO: Section are always uncompressed and the output compression is not supported yet.
+        // TODO: Sections are always uncompressed and the output compression is not supported yet.
         entry.sh_flags.set(
             e,
             output_sections
