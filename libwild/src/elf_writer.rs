@@ -1955,7 +1955,6 @@ fn apply_relocation<A: Arch>(
     let r_type = rel.r_type(e, false);
     let rel_info;
     let output_kind = layout.args().output_kind();
-    let symbol_name = layout.symbol_db.symbol_name(local_symbol_id)?;
 
     let relaxation = A::Relaxation::new(
         r_type,
@@ -2135,7 +2134,8 @@ fn apply_relocation<A: Arch>(
                 resolution_flags={resolution_flags}, rel_kind={rel_kind:?},\n\
                 value=0x{value:x}, symbol_name={symbol_name}",
                 kind = relaxation.debug_kind(),
-                rel_kind = rel_info.kind
+                rel_kind = rel_info.kind,
+                symbol_name = layout.symbol_db.symbol_name_for_display(local_symbol_id),
             )
         });
     } else {
@@ -2144,10 +2144,18 @@ fn apply_relocation<A: Arch>(
                 "relocation applied value_flags={value_flags},\n\
                 resolution_flags={resolution_flags}, rel_kind={rel_kind:?},\n\
                 value=0x{value:x}, symbol_name={symbol_name}",
-                rel_kind = rel_info.kind
+                rel_kind = rel_info.kind,
+                symbol_name = layout.symbol_db.symbol_name_for_display(local_symbol_id),
             )
         });
-        tracing::trace!(%value_flags, %resolution_flags, ?rel_info.kind, value, value_hex = %HexU64::new(value), %symbol_name, "relocation applied");
+        tracing::trace!(
+            %value_flags,
+            %resolution_flags,
+            ?rel_info.kind,
+            value,
+            value_hex = %HexU64::new(value),
+            symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
+            "relocation applied");
     }
 
     write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section as usize..])?;
