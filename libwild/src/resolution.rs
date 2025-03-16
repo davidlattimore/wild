@@ -341,6 +341,7 @@ struct ResolutionResources<'data, 'definitions, 'outer_scope> {
 
 impl ResolutionResources<'_, '_, '_> {
     /// Request loading of `file_id`.
+    #[inline(always)]
     fn request_file_id(&self, file_id: FileId) {
         let Some(definitions_out) =
             self.definitions_per_file[file_id.group()][file_id.file()].take()
@@ -871,6 +872,7 @@ fn resolve_dynamic_symbols<'data>(
     Ok(())
 }
 
+#[inline(always)]
 fn resolve_symbol<'data>(
     local_symbol_index: object::SymbolIndex,
     local_symbol: &crate::elf::SymtabEntry,
