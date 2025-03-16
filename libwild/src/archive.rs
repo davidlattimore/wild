@@ -218,7 +218,9 @@ fn evaluate_identifier<'data>(
 ) -> Identifier<'data> {
     if let Some(filenames) = extended_filenames {
         if let Some(rest) = ident.strip_prefix('/') {
-            if let Ok(offset) = rest.parse() {
+            // TODO: What is this for exactly?
+            // See: https://github.com/davidlattimore/wild/issues/361#issuecomment-2727250152
+            if let Ok(offset) = rest.trim_end_matches('/').trim().parse() {
                 return Identifier {
                     data: &filenames.data[offset..],
                 };
