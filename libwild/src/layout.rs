@@ -1354,6 +1354,7 @@ impl<'data> Layout<'data> {
         self.symbol_db.symbol_debug(symbol_id)
     }
 
+    #[inline(always)]
     pub(crate) fn merged_symbol_resolution(&self, symbol_id: SymbolId) -> Option<Resolution> {
         self.local_symbol_resolution(self.symbol_db.definition(symbol_id))
             .copied()
@@ -4314,6 +4315,7 @@ impl Resolution {
             .get())
     }
 
+    #[inline(always)]
     pub(crate) fn value_with_addend(
         &self,
         addend: i64,

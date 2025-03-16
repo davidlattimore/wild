@@ -34,6 +34,7 @@ impl TraceOutput {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn emit(&self, address: u64, message_cb: impl Fn() -> String) {
         if let Some(state) = self.state.as_ref() {
             let message = message_cb();

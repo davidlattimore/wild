@@ -478,6 +478,7 @@ pub(crate) fn get_page_mask(mask: Option<PageMask>) -> PageMaskValue {
     }
 }
 
+#[inline(always)]
 pub(crate) fn write_relocation_to_buffer(
     rel_info: RelocationKindInfo,
     value: u64,

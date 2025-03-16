@@ -38,6 +38,7 @@ impl crate::arch::Arch for AArch64 {
 
     // The table of the relocations is documented here:
     // https://github.com/ARM-software/abi-aa/blob/main/aaelf64/aaelf64.rst.
+    #[inline(always)]
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
         linker_utils::aarch64::relocation_type_from_raw(r_type).ok_or_else(|| {
             anyhow!(
@@ -99,6 +100,7 @@ const TLSDESC_CALL_INSN_SEQUENCE: &[u8] = &[
 
 impl crate::arch::Relaxation for Relaxation {
     #[allow(unused_variables)]
+    #[inline(always)]
     fn new(
         relocation_kind: u32,
         section_bytes: &[u8],

@@ -752,6 +752,7 @@ pub struct RelocationKindInfo {
 }
 
 impl RelocationKindInfo {
+    #[inline(always)]
     pub fn verify(&self, value: i64) -> Result<()> {
         anyhow::ensure!(
             (value as usize) & (self.alignment - 1) == 0,

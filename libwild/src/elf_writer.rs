@@ -2229,6 +2229,7 @@ fn apply_debug_relocation<A: Arch>(
     Ok(())
 }
 
+#[inline(always)]
 fn write_absolute_relocation<A: Arch>(
     table_writer: &mut TableWriter,
     resolution: Resolution,
