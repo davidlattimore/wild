@@ -20,18 +20,18 @@ jobs:
     strategy:
       matrix:
         runs-on:
-          - ubuntu-latest
+          - ubuntu-24.04
           - ubuntu-24.04-arm
         container:
           - 'ubuntu:22.04'
-          - 'ubuntu:latest'
-          - 'ubuntu:rolling'
+          - 'ubuntu:24.04'
+          - 'ubuntu:24.10'
           - 'opensuse/tumbleweed:latest'
         test-qemu:
           - false
         include:
-          - runs-on: ubuntu-latest
-            container: 'ubuntu:rolling'
+          - runs-on: ubuntu-24.04
+            container: 'ubuntu:24.10'
             test-qemu: true
       fail-fast: false
 
