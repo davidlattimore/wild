@@ -137,7 +137,7 @@ impl<'data> ArchiveIterator<'data> {
         let entry_size = match ident_kind {
             IdentifierKind::FileReference => {
                 // The size field of a thin reference indicates size of
-                // the references file, not the entry itself
+                // the referenced file, not the entry itself
                 0
             }
             _ => {

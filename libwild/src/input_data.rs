@@ -154,22 +154,24 @@ impl<'config> InputData<'config> {
                 return Ok(());
             }
             FileKind::ThinArchive => {
+                let parent_path = absolute_path.parent().unwrap();
                 let mut extended_filenames = None;
                 for entry in ArchiveIterator::from_archive_bytes(&data)? {
                     match entry? {
                         ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
                         ArchiveEntry::Thin(entry) => {
                             let path = entry.identifier(extended_filenames).as_path();
-
+                            let entry_path = parent_path.join(path);
+                            let file_data = FileData::new(&entry_path, self.config.prepopulate_maps)?;
                             self.files.push(InputFile {
-                                filename: path.to_owned(),
-                                original_filename: path.to_owned(),
+                                filename: entry_path.to_owned(),
+                                original_filename: entry_path,
                                 kind: FileKind::ElfObject,
                                 modifiers: Modifiers {
                                     archive_semantics: true,
                                     ..input.modifiers
                                 },
-                                data: Some(FileData::new(path, self.config.prepopulate_maps)?),
+                                data: Some(file_data),
                             });
                         }
                         _ => {}
