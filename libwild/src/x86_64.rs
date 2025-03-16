@@ -38,6 +38,7 @@ impl crate::arch::Arch for X86_64 {
         object::elf::EM_X86_64
     }
 
+    #[inline(always)]
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
         let (kind, size) =
             linker_utils::x86_64::relocation_kind_and_size(r_type).ok_or_else(|| {
@@ -84,6 +85,7 @@ pub(crate) struct Relaxation {
 }
 
 impl crate::arch::Relaxation for Relaxation {
+    #[inline(always)]
     fn new(
         relocation_kind: u32,
         section_bytes: &[u8],
