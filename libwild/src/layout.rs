@@ -2108,6 +2108,7 @@ fn activate<'data, A: Arch>(
 }
 
 impl LocalWorkQueue {
+    #[inline(always)]
     fn send_work(&mut self, resources: &GraphResources, file_id: FileId, work: WorkItem) {
         if file_id.group() == self.index {
             self.local_work.push(work);
@@ -2123,6 +2124,7 @@ impl LocalWorkQueue {
         }
     }
 
+    #[inline(always)]
     fn send_symbol_request(&mut self, symbol_id: SymbolId, resources: &GraphResources) {
         debug_assert!(resources.symbol_db.is_canonical(symbol_id));
         let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
@@ -2151,6 +2153,7 @@ impl GraphResources<'_, '_> {
 
     /// Sends all work in `work` to the worker for `file_id`. Leaves `work` empty so that it can be
     /// reused.
+    #[inline(always)]
     fn send_work(&self, file_id: FileId, work: WorkItem) {
         let worker;
         {
@@ -2491,6 +2494,7 @@ impl Section {
     }
 }
 
+#[inline(always)]
 fn process_relocation<A: Arch>(
     object: &mut ObjectLayoutState,
     common: &mut CommonGroupState,
@@ -3919,6 +3923,7 @@ impl<'data> SymbolCopyInfo<'data> {
     /// The primary purpose of this function is to determine whether a symbol should be copied into
     /// the symtab. In the process, we also return the name of the symbol, to avoid needing to read
     /// it again.
+    #[inline(always)]
     pub(crate) fn new(
         object: &crate::elf::File<'data>,
         sym_index: object::SymbolIndex,
@@ -4161,6 +4166,7 @@ impl ResolutionWriter<'_, '_> {
     }
 }
 
+#[inline(always)]
 fn create_resolution(
     res_kind: ResolutionFlags,
     raw_value: u64,

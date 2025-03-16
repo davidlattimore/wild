@@ -769,6 +769,7 @@ impl<'data> MergeString<'data> {
 
 /// Looks for a merged string at `symbol_index` + `addend` in the input and if found, returns its
 /// address in the output.
+#[inline(always)]
 pub(crate) fn get_merged_string_output_address(
     symbol_index: object::SymbolIndex,
     addend: i64,

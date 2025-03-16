@@ -503,6 +503,7 @@ impl<'data> SymbolDb<'data> {
             .copied()
     }
 
+    #[inline(always)]
     pub(crate) fn get(&self, key: &PreHashedSymbolName) -> Option<SymbolId> {
         let num_buckets = self.buckets.len();
 
@@ -525,6 +526,7 @@ impl<'data> SymbolDb<'data> {
         self.buckets.iter().flat_map(|b| b.name_to_id.iter())
     }
 
+    #[inline(always)]
     fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
         if let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] {
@@ -642,6 +644,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
 }
 
 /// Selects which version of the symbol to use.
+#[inline(always)]
 fn select_symbol(
     symbol_db: &SymbolDb,
     symbol_id: SymbolId,

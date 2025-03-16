@@ -98,6 +98,7 @@ impl crate::arch::Relaxation for Relaxation {
         // TODO: Consider removing Option. There are a few callers though, so need to see how this
         // looks.
         #[allow(clippy::unnecessary_wraps)]
+        #[inline(always)]
         fn create(kind: RelaxationKind, new_r_type: u32) -> Option<Relaxation> {
             // This only fails for relocation types that we don't support and if we relax to a type
             // we don't support, then that's a bug.

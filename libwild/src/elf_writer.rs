@@ -1162,6 +1162,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         )
     }
 
+    #[inline(always)]
     fn write_address_relocation<A: Arch>(&mut self, place: u64, relative_address: i64) -> Result {
         debug_assert_bail!(
             self.output_kind.is_relocatable(),
@@ -1303,6 +1304,7 @@ impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
         }
     }
 
+    #[inline(always)]
     fn copy_symbol(
         &mut self,
         sym: &crate::elf::Symbol,
@@ -1324,6 +1326,7 @@ impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
         self.copy_symbol_shndx(sym, name, shndx, value)
     }
 
+    #[inline(always)]
     fn copy_symbol_shndx(
         &mut self,
         sym: &crate::elf::Symbol,
@@ -1351,6 +1354,7 @@ impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
         Ok(())
     }
 
+    #[inline(always)]
     fn define_symbol(
         &mut self,
         is_local: bool,
@@ -1915,6 +1919,7 @@ struct SectionInfo {
 /// Applies the relocation `rel` at `offset_in_section`, where the section bytes are `out`. See "ELF
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
+#[inline(always)]
 fn apply_relocation<A: Arch>(
     object_layout: &ObjectLayout,
     mut offset_in_section: u64,
