@@ -23,7 +23,6 @@ jobs:
           - ubuntu-24.04
           - ubuntu-24.04-arm
         container:
-          - 'ubuntu:22.04'
           - 'ubuntu:24.04'
           - 'ubuntu:24.10'
           - 'ubuntu:25.04'
@@ -34,6 +33,9 @@ jobs:
           - runs-on: ubuntu-24.04
             container: 'ubuntu:24.10'
             test-qemu: true
+          # Ubuntu 22.04 contains an old lld linker which cannot do a relaxation on AArch64 (required by linker-diff)
+          - runs-on: ubuntu-24.04
+            container: 'ubuntu:22.04'
       fail-fast: false
 
     runs-on: ${{ matrix.runs-on }}

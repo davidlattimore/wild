@@ -202,9 +202,6 @@ impl Config {
                 "rel.match_failed.R_AARCH64_TLSDESC_LD64_LO12",
                 "rel.match_failed.R_AARCH64_TLSGD_ADD_LO12_NC",
                 "rel.missing-opt.R_X86_64_TLSGD.TlsGdToInitialExec.shared-object",
-                // We seem to do an optimisation here where GNU ld doesn't. TODO: Look into if this
-                // is OK.
-                "rel.extra-opt.R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21.MovzXnLsl16.*",
                 // GNU ld sometimes relaxes an adrp instruction to an adr instruction when the
                 // address is known and within +/-1MB. We don't as yet.
                 "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.AdrpToAdr.*",
