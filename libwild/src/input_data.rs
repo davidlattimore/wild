@@ -147,8 +147,7 @@ impl InputData {
                         ArchiveEntry::Thin(entry) => {
                             let path = entry.identifier(extended_filenames).as_path();
                             let entry_path = parent_path.join(path);
-                            let file_data =
-                                FileData::new(&entry_path, args.prepopulate_maps)?;
+                            let file_data = FileData::new(&entry_path, args.prepopulate_maps)?;
                             self.files.push(InputFile {
                                 filename: entry_path.clone(),
                                 original_filename: entry_path,
