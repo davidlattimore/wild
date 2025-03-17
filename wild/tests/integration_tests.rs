@@ -1322,10 +1322,22 @@ impl Linker {
 fn make_archive(archive_path: &Path, paths: &[PathBuf], thin: bool) -> Result {
     let _ = std::fs::remove_file(archive_path);
     let mut cmd = Command::new("ar");
+    cmd.arg("cr");
+
     if thin {
-        cmd.arg("cr").arg("--thin").arg(archive_path).args(paths);
+        cmd.arg("--thin");
+
+        // For thin archives, we want to test that we properly handle relative paths, so we pass
+        // paths that are relative to the directory in which we're creating the archive.
+        let archive_dir = archive_path.parent().unwrap();
+        cmd.current_dir(archive_dir);
+        cmd.arg(archive_path.strip_prefix(archive_dir).unwrap());
+
+        for path in paths {
+            cmd.arg(path.strip_prefix(archive_dir).unwrap_or(path));
+        }
     } else {
-        cmd.arg("cr").arg(archive_path).args(paths);
+        cmd.arg(archive_path).args(paths);
     }
     let status = cmd.status()?;
     if !status.success() {
