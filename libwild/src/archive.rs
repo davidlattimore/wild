@@ -218,8 +218,10 @@ fn evaluate_identifier<'data>(
 ) -> Identifier<'data> {
     if let Some(filenames) = extended_filenames {
         if let Some(rest) = ident.strip_prefix('/') {
-            // TODO: What is this for exactly?
-            // See: https://github.com/davidlattimore/wild/issues/361#issuecomment-2727250152
+            // GNU ar puts a trailing '/' as the last byte of the identifier, but only if
+            // the filename (excl. leading path components) is exactly 15 bytes long - e.g.
+            // /path/to/src_utils.cpp.o => '/48            /'
+            // /dir/of/src_utils.o      => '/48             '
             if let Ok(offset) = rest.trim_end_matches('/').trim().parse() {
                 return Identifier {
                     data: &filenames.data[offset..],

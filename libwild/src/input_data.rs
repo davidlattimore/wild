@@ -162,9 +162,10 @@ impl<'config> InputData<'config> {
                         ArchiveEntry::Thin(entry) => {
                             let path = entry.identifier(extended_filenames).as_path();
                             let entry_path = parent_path.join(path);
-                            let file_data = FileData::new(&entry_path, self.config.prepopulate_maps)?;
+                            let file_data =
+                                FileData::new(&entry_path, self.config.prepopulate_maps)?;
                             self.files.push(InputFile {
-                                filename: entry_path.to_owned(),
+                                filename: entry_path.clone(),
                                 original_filename: entry_path,
                                 kind: FileKind::ElfObject,
                                 modifiers: Modifiers {
