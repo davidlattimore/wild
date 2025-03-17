@@ -8,7 +8,6 @@ use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
-use crate::input_data::PRELUDE_FILE_ID;
 use crate::input_data::UNINITIALISED_FILE_ID;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
@@ -20,50 +19,57 @@ use anyhow::Context;
 use anyhow::bail;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
-use std::path::Path;
 
 #[tracing::instrument(skip_all, name = "Parse input files")]
 pub(crate) fn parse_input_files<'data>(
-    inputs: &'data [InputBytes],
+    inputs: &[InputBytes<'data>],
     args: &'data Args,
-) -> Result<Vec<ParsedInput<'data>>> {
-    let mut objects = inputs
+    allocator: &bumpalo_herd::Member<'data>,
+) -> Result<ParsedInputs<'data>> {
+    let objects = inputs
         .par_iter()
-        .map(|f| ParsedInput::new(f, args))
-        .collect::<Result<Vec<ParsedInput>>>()?;
+        .map(|f| ParsedInputObject::new(f, args))
+        .collect::<Result<Vec<ParsedInputObject>>>()?;
 
-    set_start_symbol_ids(&mut objects);
+    let objects = allocator.alloc_slice_fill_iter(objects.into_iter());
 
-    Ok(objects)
+    let mut parsed_inputs = ParsedInputs {
+        prelude: Prelude::new(args),
+        objects,
+        epilogue: Epilogue::new(),
+    };
+
+    set_start_symbol_ids(&mut parsed_inputs);
+
+    Ok(parsed_inputs)
 }
 
-fn set_start_symbol_ids(objects: &mut [ParsedInput]) {
-    let mut next_symbol_id = SymbolId::undefined();
-    for obj in objects {
-        match obj {
-            ParsedInput::Prelude(_) => {
-                // No need to store the symbol ID, since internal always starts from the undefined
-                // symbol.
-                assert_eq!(next_symbol_id, SymbolId::undefined());
-            }
-            ParsedInput::Object(o) => {
-                o.symbol_id_range.set_start(next_symbol_id);
-            }
-            ParsedInput::Epilogue(o) => {
-                o.start_symbol_id = next_symbol_id;
-            }
-        }
-        next_symbol_id = next_symbol_id.add_usize(obj.num_symbols());
+pub(crate) struct ParsedInputs<'data> {
+    pub(crate) prelude: Prelude<'data>,
+    pub(crate) objects: &'data mut [ParsedInputObject<'data>],
+    pub(crate) epilogue: Epilogue,
+}
+
+impl ParsedInputs<'_> {
+    pub(crate) fn num_symbols(&self) -> usize {
+        self.epilogue.start_symbol_id.as_usize()
     }
 }
 
-// Object is much larger than the other two, but there's many objects and only ever one of each of
-// the two smaller variants, so it doesn't matter.
-#[allow(clippy::large_enum_variant)]
+fn set_start_symbol_ids(objects: &mut ParsedInputs) {
+    let mut next_symbol_id = SymbolId::undefined();
+    next_symbol_id = next_symbol_id.add_usize(objects.prelude.symbol_definitions.len());
+    for obj in objects.objects.iter_mut() {
+        obj.symbol_id_range.set_start(next_symbol_id);
+        next_symbol_id = next_symbol_id.add_usize(obj.symbol_id_range.len());
+    }
+    objects.epilogue.start_symbol_id = next_symbol_id;
+}
+
 pub(crate) enum ParsedInput<'data> {
-    Prelude(Prelude<'data>),
-    Object(ParsedInputObject<'data>),
-    Epilogue(Epilogue),
+    Prelude(&'data Prelude<'data>),
+    Object(&'data ParsedInputObject<'data>),
+    Epilogue(&'data Epilogue),
 }
 
 pub(crate) struct Prelude<'data> {
@@ -116,9 +122,20 @@ pub(crate) enum InternalSymDefInfo {
 pub(crate) struct UndefinedSymbolIndex(u32);
 
 impl<'data> ParsedInputObject<'data> {
-    fn new(input: &'data InputBytes, is_dynamic: bool) -> Result<Self> {
+    fn new(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
+        let is_dynamic = input.kind == FileKind::ElfDynamic;
+
         let object = File::parse(input.data, is_dynamic)
             .with_context(|| format!("Failed to parse object file `{input}`"))?;
+
+        if object.arch != args.arch {
+            bail!(
+                "`{}` has incompatible architecture: {:?}, expecting {:?}",
+                input.input,
+                object.arch,
+                args.arch,
+            )
+        }
 
         let num_symbols = object.symbols.len();
 
@@ -148,8 +165,8 @@ impl<'data> ParsedInputObject<'data> {
             || (self.is_dynamic() && self.modifiers.as_needed)
     }
 
-    fn filename(&self) -> &'data Path {
-        &self.input.file.filename
+    pub(crate) fn set_file_id(&mut self, file_id: FileId) {
+        self.file_id = file_id;
     }
 
     pub(crate) fn symbol_name(
@@ -162,80 +179,12 @@ impl<'data> ParsedInputObject<'data> {
     }
 }
 
-impl<'data> ParsedInput<'data> {
-    fn new(input: &'data InputBytes, args: &'data Args) -> Result<Self> {
-        Ok(match input.kind {
-            FileKind::ElfObject | FileKind::Archive => {
-                let obj = ParsedInputObject::new(input, false)?;
-                if obj.object.arch == args.arch {
-                    Self::Object(obj)
-                } else {
-                    bail!(
-                        "`{}` has incompatible architecture: {:?}, expecting {:?}",
-                        obj.filename().display(),
-                        obj.object.arch,
-                        args.arch,
-                    )
-                }
-            }
-            FileKind::Prelude => Self::Prelude(Prelude::new(args)),
-            FileKind::ElfDynamic => Self::Object(ParsedInputObject::new(input, true)?),
-            FileKind::ThinArchive | FileKind::Text => {
-                unreachable!("{:?} should have been handled earlier", input.kind)
-            }
-            FileKind::Epilogue => Self::Epilogue(Epilogue::new()),
-        })
-    }
-
-    pub(crate) fn num_symbols(&self) -> usize {
-        match self {
-            ParsedInput::Prelude(o) => o.symbol_definitions.len(),
-            ParsedInput::Object(o) => o.symbol_id_range.len(),
-            ParsedInput::Epilogue(_) => {
-                // Initially, we report 0 symbols because we don't know what symbols we'll define
-                // until after archives have been processed. We're the last input file, so we can
-                // allocate symbols at the end.
-                0
-            }
-        }
-    }
-
-    pub(crate) fn filename(&self) -> &'data Path {
-        match self {
-            ParsedInput::Object(s) => s.filename(),
-            ParsedInput::Prelude(_) => Path::new("<<prelude>>"),
-            ParsedInput::Epilogue(_) => Path::new("<<epilogue>>"),
-        }
-    }
-
+impl ParsedInput<'_> {
     pub(crate) fn symbol_id_range(&self) -> SymbolIdRange {
         match self {
             ParsedInput::Prelude(o) => SymbolIdRange::prelude(o.symbol_definitions.len()),
             ParsedInput::Object(o) => o.symbol_id_range,
             ParsedInput::Epilogue(o) => SymbolIdRange::epilogue(o.start_symbol_id, 0),
-        }
-    }
-
-    pub(crate) fn file_id(&self) -> FileId {
-        let file_id = match self {
-            ParsedInput::Prelude(_) => PRELUDE_FILE_ID,
-            ParsedInput::Object(s) => s.file_id,
-            ParsedInput::Epilogue(s) => s.file_id,
-        };
-        debug_assert_ne!(
-            file_id, UNINITIALISED_FILE_ID,
-            "Called ParsedInput::file_id before set_file_id was called"
-        );
-        file_id
-    }
-
-    pub(crate) fn set_file_id(&mut self, file_id: FileId) {
-        match self {
-            ParsedInput::Prelude(_) => {
-                assert_eq!(file_id, PRELUDE_FILE_ID);
-            }
-            ParsedInput::Object(s) => s.file_id = file_id,
-            ParsedInput::Epilogue(s) => s.file_id = file_id,
         }
     }
 }

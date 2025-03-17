@@ -1,4 +1,4 @@
-use crate::Linker;
+use crate::Args;
 use crate::error::Result;
 use anyhow::Context as _;
 use anyhow::anyhow;
@@ -21,8 +21,8 @@ use std::io::Error;
 /// # Safety
 /// Must not be called once threads have been spawned. Calling this function from main is generally
 /// the best way to ensure this.
-pub unsafe fn run_in_subprocess(linker: &Linker) -> ! {
-    let exit_code = match subprocess_result(linker) {
+pub unsafe fn run_in_subprocess(args: &Args) -> ! {
+    let exit_code = match subprocess_result(args) {
         Ok(code) => code,
         Err(error) => {
             eprintln!("Error: {error:?}");
@@ -32,7 +32,7 @@ pub unsafe fn run_in_subprocess(linker: &Linker) -> ! {
     std::process::exit(exit_code);
 }
 
-fn subprocess_result(linker: &Linker) -> Result<i32> {
+fn subprocess_result(args: &Args) -> Result<i32> {
     let mut fds: [c_int; 2] = [0; 2];
     // create the pipe used to communicate between the parent and child processes - exit on failure
     make_pipe(&mut fds).context("make_pipe")?;
@@ -43,15 +43,16 @@ fn subprocess_result(linker: &Linker) -> Result<i32> {
     match unsafe { fork() } {
         0 => {
             // Fork success in child - Run linker in this process.
-            linker.setup_tracing()?;
-            linker.setup_thread_pool()?;
-            let done_closure = move || inform_parent_done(&fds);
-            linker.run_with_callback(Some(Box::new(done_closure)))?;
+            crate::setup_tracing(args)?;
+            crate::setup_thread_pool(args)?;
+            let linker = crate::Linker::new();
+            let _outputs = linker.run(args)?;
+            inform_parent_done(&fds);
             Ok(0)
         }
         -1 => {
             // Fork failure in the parent - Fallback to running linker in this process
-            linker.run()?;
+            crate::run(args)?;
             Ok(0)
         }
         pid => {
@@ -89,7 +90,7 @@ fn wait_for_child_done(fds: &[c_int], child_pid: pid_t) -> i32 {
         let mut response: [u8; 1] = [0u8; 1];
         match libc::fread(response.as_mut_ptr() as *mut c_void, 1, 1, stream) {
             1 => {
-                // Child sent a byte, which indicates that it succeeded and is now shutting done in
+                // Child sent a byte, which indicates that it succeeded and is now shutting down in
                 // the background.
                 0
             }

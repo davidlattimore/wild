@@ -8,13 +8,11 @@ use object::read::elf::FileHeader;
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(crate) enum FileKind {
-    Prelude,
     ElfObject,
     ElfDynamic,
     Archive,
     ThinArchive,
     Text,
-    Epilogue,
 }
 
 impl FileKind {

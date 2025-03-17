@@ -25,6 +25,7 @@
 //#LinkArgs:-static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
+//#EnableLinker:lld
 
 //#Config:clang-static-pie:default
 //#CompArgs:-fPIE -fPIC
@@ -39,6 +40,7 @@
 //#LinkArgs:-static -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
+//#EnableLinker:lld
 
 //#Config:gcc-static-pie:default
 //#CompArgs:-fPIE

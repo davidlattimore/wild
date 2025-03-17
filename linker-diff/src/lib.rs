@@ -44,6 +44,7 @@ mod header_diff;
 pub(crate) mod section_map;
 mod symtab;
 mod trace;
+mod version_diff;
 mod x86_64;
 
 type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
@@ -201,9 +202,6 @@ impl Config {
                 "rel.match_failed.R_AARCH64_TLSDESC_LD64_LO12",
                 "rel.match_failed.R_AARCH64_TLSGD_ADD_LO12_NC",
                 "rel.missing-opt.R_X86_64_TLSGD.TlsGdToInitialExec.shared-object",
-                // We seem to do an optimisation here where GNU ld doesn't. TODO: Look into if this
-                // is OK.
-                "rel.extra-opt.R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21.MovzXnLsl16.*",
                 // GNU ld sometimes relaxes an adrp instruction to an adr instruction when the
                 // address is known and within +/-1MB. We don't as yet.
                 "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.AdrpToAdr.*",
@@ -543,6 +541,7 @@ impl Report {
         asm_diff::report_section_diffs(self, objects);
         header_diff::report_section_diffs(self, objects);
         eh_frame_diff::report_diffs(self, objects);
+        version_diff::report_diffs(self, objects);
         debug_info_diff::check_debug_info(self, objects);
     }
 

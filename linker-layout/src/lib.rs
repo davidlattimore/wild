@@ -24,8 +24,8 @@ pub struct InputFile {
     /// came from.
     pub archive_entry: Option<ArchiveEntryInfo>,
 
-    /// Sections that were written to the output. Indexes correspond the sections in the input file.
-    /// Contains None for sections that were discarded or weren't fully copied.
+    /// Sections that were written to the output. Indexes correspond to the sections in the input
+    /// file. Contains None for sections that were discarded or weren't fully copied.
     pub sections: Vec<Option<Section>>,
 }
 

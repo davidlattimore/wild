@@ -15,6 +15,7 @@ use crate::linker_script::VersionScript;
 use crate::output_section_id::OutputSectionId;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ParsedInput;
+use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
@@ -26,6 +27,7 @@ use crate::symbol::VersionedSymbolName;
 use ahash::HashMap;
 use ahash::RandomState;
 use anyhow::Context;
+use anyhow::bail;
 use itertools::Itertools;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
@@ -41,7 +43,7 @@ use std::mem::take;
 pub struct SymbolDb<'data> {
     pub(crate) args: &'data Args,
 
-    pub(crate) groups: &'data [Group<'data>],
+    pub(crate) groups: Vec<Group<'data>>,
 
     buckets: Vec<SymbolBucket<'data>>,
 
@@ -64,13 +66,15 @@ pub struct SymbolDb<'data> {
     /// The names of symbols that mark the start / stop of sections. These are indexed by the offset
     /// into the epilogue's symbol IDs.
     start_stop_symbol_names: Vec<UnversionedSymbolName<'data>>,
+
+    pub(crate) version_script: VersionScript<'data>,
 }
 
 struct SymbolBucket<'data> {
     /// Mapping from global symbol names to a symbol ID with that name. If there are multiple
     /// globals with the same name, then this will point to the one we encountered first, which may
     /// not be the selected definition. In order to find the selected definition, you still need to
-    /// look a `symbol_definitions`.
+    /// look at `symbol_definitions`.
     name_to_id: PassThroughHashMap<UnversionedSymbolName<'data>, SymbolId>,
 
     versioned_name_to_id: PassThroughHashMap<VersionedSymbolName<'data>, SymbolId>,
@@ -191,6 +195,14 @@ impl SymbolIdRange {
     pub(crate) fn id_to_input(&self, symbol_id: SymbolId) -> object::SymbolIndex {
         self.offset_to_input(self.id_to_offset(symbol_id))
     }
+
+    /// Returns a range that covers from the start of `a` to the end of `b`.
+    pub(crate) fn covering(a: SymbolIdRange, b: SymbolIdRange) -> SymbolIdRange {
+        SymbolIdRange {
+            start_symbol_id: a.start_symbol_id,
+            num_symbols: b.start_symbol_id.as_usize() + b.len() - a.start_symbol_id.as_usize(),
+        }
+    }
 }
 
 impl IntoIterator for SymbolIdRange {
@@ -237,8 +249,8 @@ struct PendingSymbolHashBucket<'data> {
 impl<'data> SymbolDb<'data> {
     #[tracing::instrument(skip_all, name = "Build symbol DB")]
     pub fn build(
-        groups: &'data [Group],
-        version_script_data: Option<&VersionScriptData>,
+        groups: Vec<Group<'data>>,
+        version_script_data: Option<&'data VersionScriptData>,
         args: &'data Args,
     ) -> Result<Self> {
         let version_script = version_script_data
@@ -246,10 +258,7 @@ impl<'data> SymbolDb<'data> {
             .transpose()?
             .unwrap_or_default();
 
-        let num_symbols_per_group = groups
-            .iter()
-            .map(|g| g.files.iter().map(|f| f.num_symbols()).sum())
-            .collect_vec();
+        let num_symbols_per_group = groups.iter().map(|g| g.num_symbols()).collect_vec();
 
         let num_symbols = num_symbols_per_group.iter().sum();
 
@@ -277,7 +286,7 @@ impl<'data> SymbolDb<'data> {
             .collect_vec();
 
         let per_group_outputs =
-            read_symbols(groups, &version_script, &mut per_group_writers, args)?;
+            read_symbols(&groups, &version_script, &mut per_group_writers, args)?;
 
         for writer in per_group_writers {
             symbol_definitions_writer.return_shard(writer.resolutions);
@@ -285,7 +294,10 @@ impl<'data> SymbolDb<'data> {
             symbol_file_ids_writer.return_shard(writer.file_ids);
         }
 
-        let epilogue_file_id = groups.last().unwrap().files.last().unwrap().file_id();
+        let Some(Group::Epilogue(epilogue)) = groups.last() else {
+            bail!("Epilogue should always be last");
+        };
+        let epilogue_file_id = epilogue.file_id;
 
         let num_buckets = num_symbol_hash_buckets(args);
         let mut buckets = Vec::new();
@@ -306,6 +318,7 @@ impl<'data> SymbolDb<'data> {
             num_symbols_per_group,
             start_stop_symbol_names: Default::default(),
             symbol_value_flags,
+            version_script,
         };
 
         index.populate_symbol_db(&per_group_outputs)?;
@@ -383,12 +396,13 @@ impl<'data> SymbolDb<'data> {
 
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> Result<UnversionedSymbolName<'data>> {
         let file_id = self.file_id_for_symbol(symbol_id);
-        let input_object = self.file(file_id);
-        match input_object {
-            ParsedInput::Prelude(o) => Ok(o.symbol_name(symbol_id, self.args.output_kind())),
-            ParsedInput::Object(o) => o.symbol_name(symbol_id),
-            ParsedInput::Epilogue(o) => {
-                Ok(self.start_stop_symbol_names[symbol_id.offset_from(o.start_symbol_id)])
+        match &self.groups[file_id.group()] {
+            Group::Prelude(prelude) => Ok(prelude.symbol_name(symbol_id, self.args.output_kind())),
+            Group::Objects(parsed_input_objects) => {
+                parsed_input_objects[file_id.file()].symbol_name(symbol_id)
+            }
+            Group::Epilogue(epilogue) => {
+                Ok(self.start_stop_symbol_names[symbol_id.offset_from(epilogue.start_symbol_id)])
             }
         }
     }
@@ -407,6 +421,17 @@ impl<'data> SymbolDb<'data> {
 
     pub(crate) fn num_symbols(&self) -> usize {
         self.symbol_definitions.len()
+    }
+
+    pub(crate) fn num_objects(&self) -> usize {
+        self.groups
+            .iter()
+            .map(|group| match group {
+                Group::Prelude(_) => 0,
+                Group::Objects(parsed_input_objects) => parsed_input_objects.len(),
+                Group::Epilogue(_) => 0,
+            })
+            .sum()
     }
 
     /// Returns our mapping from symbol IDs to the IDs that define them. Definitions should be
@@ -448,8 +473,14 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions[symbol_id.as_usize()] = new_definition;
     }
 
-    pub(crate) fn file(&self, file_id: FileId) -> &ParsedInput<'data> {
-        &self.groups[file_id.group()].files[file_id.file()]
+    pub(crate) fn file(&self, file_id: FileId) -> ParsedInput {
+        match &self.groups[file_id.group()] {
+            Group::Prelude(prelude) => ParsedInput::Prelude(prelude),
+            Group::Objects(parsed_input_objects) => {
+                ParsedInput::Object(&parsed_input_objects[file_id.file()])
+            }
+            Group::Epilogue(epilogue) => ParsedInput::Epilogue(epilogue),
+        }
     }
 
     pub(crate) fn is_mapping_symbol(&self, symbol_id: SymbolId) -> bool {
@@ -472,6 +503,7 @@ impl<'data> SymbolDb<'data> {
             .copied()
     }
 
+    #[inline(always)]
     pub(crate) fn get(&self, key: &PreHashedSymbolName) -> Option<SymbolId> {
         let num_buckets = self.buckets.len();
 
@@ -494,6 +526,7 @@ impl<'data> SymbolDb<'data> {
         self.buckets.iter().flat_map(|b| b.name_to_id.iter())
     }
 
+    #[inline(always)]
     fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
         if let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] {
@@ -611,6 +644,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
 }
 
 /// Selects which version of the symbol to use.
+#[inline(always)]
 fn select_symbol(
     symbol_db: &SymbolDb,
     symbol_id: SymbolId,
@@ -685,26 +719,38 @@ pub(crate) fn is_mapping_symbol_name(name: &[u8]) -> bool {
 fn read_symbols<'data, 'out>(
     groups: &[Group<'data>],
     version_script: &VersionScript,
-    symbols_out_by_file: &mut [SymbolInfoWriter],
+    symbols_out_by_group: &mut [SymbolInfoWriter],
     args: &Args,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
     let num_buckets = num_symbol_hash_buckets(args);
 
     groups
         .par_iter()
-        .zip(symbols_out_by_file)
+        .zip(symbols_out_by_group)
         .map(|(group, symbols_out)| {
             let mut outputs = SymbolLoadOutputs {
                 pending_symbols_by_bucket: vec![PendingSymbolHashBucket::default(); num_buckets],
             };
 
-            for file in &group.files {
-                let filename = file.filename();
-
-                load_symbols_from_file(file, version_script, symbols_out, &mut outputs, args)
-                    .with_context(|| {
-                        format!("Failed to load symbols from `{}`", filename.display())
-                    })?;
+            match group {
+                Group::Prelude(prelude) => {
+                    prelude.load_symbols(symbols_out, &mut outputs, args.output_kind());
+                }
+                Group::Objects(parsed_input_objects) => {
+                    for obj in *parsed_input_objects {
+                        load_symbols_from_file(
+                            obj,
+                            version_script,
+                            symbols_out,
+                            &mut outputs,
+                            args,
+                        )
+                        .with_context(|| format!("Failed to load symbols from `{}`", obj.input))?;
+                    }
+                }
+                Group::Epilogue(_) => {
+                    // Custom section start/stop symbols are generated after archive handling.
+                }
             }
 
             Ok(outputs)
@@ -713,35 +759,22 @@ fn read_symbols<'data, 'out>(
 }
 
 fn load_symbols_from_file<'data>(
-    reader: &ParsedInput<'data>,
+    s: &ParsedInputObject<'data>,
     version_script: &VersionScript,
     symbols_out: &mut SymbolInfoWriter,
     outputs: &mut SymbolLoadOutputs<'data>,
     args: &Args,
 ) -> Result {
-    match reader {
-        ParsedInput::Object(s) => {
-            if s.is_dynamic() {
-                DynamicObjectSymbolLoader::new(&s.object)?.load_symbols(
-                    s.file_id,
-                    symbols_out,
-                    outputs,
-                )?;
-            } else {
-                RegularObjectSymbolLoader {
-                    object: &s.object,
-                    args,
-                    version_script,
-                }
-                .load_symbols(s.file_id, symbols_out, outputs)?;
-            }
+    if s.is_dynamic() {
+        DynamicObjectSymbolLoader::new(&s.object)?.load_symbols(s.file_id, symbols_out, outputs)
+    } else {
+        RegularObjectSymbolLoader {
+            object: &s.object,
+            args,
+            version_script,
         }
-        ParsedInput::Prelude(s) => s.load_symbols(symbols_out, outputs, args.output_kind()),
-        ParsedInput::Epilogue(_) => {
-            // Custom section start/stop symbols are generated after archive handling.
-        }
+        .load_symbols(s.file_id, symbols_out, outputs)
     }
-    Ok(())
 }
 
 fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFlags {

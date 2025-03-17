@@ -22,6 +22,8 @@ use crate::elf::GnuHashHeader;
 use crate::elf::ProgramHeader;
 use crate::elf::SectionHeader;
 use crate::elf::SymtabEntry;
+use crate::elf::Verdaux;
+use crate::elf::Verdef;
 use crate::elf::Vernaux;
 use crate::elf::Verneed;
 use crate::elf::Versym;
@@ -43,6 +45,7 @@ use crate::layout::Resolution;
 use crate::layout::ResolutionFlags;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
+use crate::layout::VersionDef;
 use crate::layout::compute_allocations;
 use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
@@ -59,6 +62,7 @@ use crate::sharding::ShardKey;
 use crate::slice::slice_take_prefix_mut;
 use crate::slice::take_first_mut;
 use crate::string_merging::get_merged_string_output_address;
+use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use ahash::AHashMap;
 use anyhow::Context;
@@ -262,7 +266,7 @@ impl Output {
     }
 
     #[tracing::instrument(skip_all, name = "Write output file")]
-    pub fn write<'data, A: Arch>(&mut self, layout: &Layout<'data>) -> Result<SizedOutput> {
+    pub fn write<'data, A: Arch>(&mut self, layout: &Layout<'data>) -> Result {
         if layout.args().write_layout {
             write_layout(layout)?;
         }
@@ -283,7 +287,15 @@ impl Output {
         sized_output.write::<A>(layout)?;
         sized_output.flush()?;
         sized_output.trace.close()?;
-        Ok(sized_output)
+
+        // While we have the output file mmapped with write permission, the file will be locked and
+        // unusable, so we can't really say that we've finished writing it until we've unmapped it.
+        {
+            let _span = tracing::info_span!("Unmap output file").entered();
+            drop(sized_output);
+        }
+
+        Ok(())
     }
 
     #[tracing::instrument(skip_all, name = "Create output file")]
@@ -685,6 +697,7 @@ impl<'data> FileLayout<'data> {
 
 #[derive(Default)]
 struct VersionWriter<'out> {
+    version_d: &'out mut [u8],
     version_r: &'out mut [u8],
 
     /// None if versioning is disabled, which we do if no symbols have versions.
@@ -692,8 +705,16 @@ struct VersionWriter<'out> {
 }
 
 impl<'out> VersionWriter<'out> {
-    fn new(version_r: &'out mut [u8], versym: Option<&'out mut [Versym]>) -> Self {
-        Self { version_r, versym }
+    fn new(
+        version_d: &'out mut [u8],
+        version_r: &'out mut [u8],
+        versym: Option<&'out mut [Versym]>,
+    ) -> Self {
+        Self {
+            version_d,
+            version_r,
+            versym,
+        }
     }
 
     fn set_next_symbol_version(&mut self, index: u16) -> Result {
@@ -723,6 +744,25 @@ impl<'out> VersionWriter<'out> {
             .map_err(|_| anyhow!("Invalid .gnu.version_r allocation"))
     }
 
+    fn take_bytes_d(&mut self, size: usize) -> Result<&'out mut [u8]> {
+        crate::slice::try_slice_take_prefix_mut(&mut self.version_d, size)
+            .ok_or_else(|| insufficient_allocation(".gnu.version_d"))
+    }
+
+    fn take_verdef(&mut self) -> Result<&'out mut Verdef> {
+        let bytes = self.take_bytes_d(size_of::<Verdef>())?;
+        Ok(object::from_bytes_mut::<Verdef>(bytes)
+            .map_err(|_| anyhow!("Incorrect .gnu.version_d alignment"))?
+            .0)
+    }
+
+    fn take_verdaux(&mut self) -> Result<&'out mut Verdaux> {
+        let bytes = self.take_bytes_d(size_of::<Verdaux>())?;
+        Ok(object::from_bytes_mut::<Verdaux>(bytes)
+            .map_err(|_| anyhow!("Incorrect .gnu.version_d aux alignment"))?
+            .0)
+    }
+
     fn check_exhausted(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
         if let Some(versym) = self.versym.as_ref() {
             if !versym.is_empty() {
@@ -738,6 +778,13 @@ impl<'out> VersionWriter<'out> {
                 "Allocated too much space in .gnu.version_r. {} of {} bytes remain",
                 self.version_r.len(),
                 mem_sizes.get(part_id::GNU_VERSION_R)
+            );
+        }
+        if !self.version_d.is_empty() {
+            bail!(
+                "Allocated too much space in .gnu.version_d. {} of {} bytes remain",
+                self.version_d.len(),
+                mem_sizes.get(part_id::GNU_VERSION_D)
             );
         }
         Ok(())
@@ -801,6 +848,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         let dynamic = DynamicEntriesWriter::new(buffers.take(part_id::DYNAMIC));
         let versym = slice_from_all_bytes_mut(buffers.take(part_id::GNU_VERSION));
         let version_writer = VersionWriter::new(
+            buffers.take(part_id::GNU_VERSION_D),
             buffers.take(part_id::GNU_VERSION_R),
             versym.is_empty().not().then_some(versym),
         );
@@ -1114,6 +1162,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         )
     }
 
+    #[inline(always)]
     fn write_address_relocation<A: Arch>(&mut self, place: u64, relative_address: i64) -> Result {
         debug_assert_bail!(
             self.output_kind.is_relocatable(),
@@ -1255,6 +1304,7 @@ impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
         }
     }
 
+    #[inline(always)]
     fn copy_symbol(
         &mut self,
         sym: &crate::elf::Symbol,
@@ -1276,6 +1326,7 @@ impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
         self.copy_symbol_shndx(sym, name, shndx, value)
     }
 
+    #[inline(always)]
     fn copy_symbol_shndx(
         &mut self,
         sym: &crate::elf::Symbol,
@@ -1303,6 +1354,7 @@ impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
         Ok(())
     }
 
+    #[inline(always)]
     fn define_symbol(
         &mut self,
         is_local: bool,
@@ -1584,7 +1636,7 @@ impl<'data> ObjectLayout<'data> {
         let object_section = self.object.section(section.index)?;
         let section_flags = SectionFlags::from_header(object_section);
         let mut modifier = RelocationModifier::Normal;
-        let relocations = self.object.relocations(section.index)?;
+        let relocations = self.relocations(section.index)?;
         layout
             .relocation_statistics
             .get(section.part_id.output_section_id())
@@ -1640,7 +1692,7 @@ impl<'data> ObjectLayout<'data> {
                 0
             };
 
-        let relocations = self.object.relocations(section.index)?;
+        let relocations = self.relocations(section.index)?;
         layout
             .relocation_statistics
             .get(section.part_id.output_section_id())
@@ -1670,11 +1722,7 @@ impl<'data> ObjectLayout<'data> {
         const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
         let e = LittleEndian;
         let section_flags = SectionFlags::from_header(eh_frame_section);
-        let mut relocations = self
-            .object
-            .relocations(eh_frame_section_index)?
-            .iter()
-            .peekable();
+        let mut relocations = self.relocations(eh_frame_section_index)?.iter().peekable();
         let mut input_pos = 0;
         let mut output_pos = 0;
         let frame_info_ptr_base = table_writer.eh_frame_start_address;
@@ -1871,6 +1919,7 @@ struct SectionInfo {
 /// Applies the relocation `rel` at `offset_in_section`, where the section bytes are `out`. See "ELF
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
+#[inline(always)]
 fn apply_relocation<A: Arch>(
     object_layout: &ObjectLayout,
     mut offset_in_section: u64,
@@ -1911,7 +1960,6 @@ fn apply_relocation<A: Arch>(
     let r_type = rel.r_type(e, false);
     let rel_info;
     let output_kind = layout.args().output_kind();
-    let symbol_name = layout.symbol_db.symbol_name(local_symbol_id)?;
 
     let relaxation = A::Relaxation::new(
         r_type,
@@ -2091,7 +2139,8 @@ fn apply_relocation<A: Arch>(
                 resolution_flags={resolution_flags}, rel_kind={rel_kind:?},\n\
                 value=0x{value:x}, symbol_name={symbol_name}",
                 kind = relaxation.debug_kind(),
-                rel_kind = rel_info.kind
+                rel_kind = rel_info.kind,
+                symbol_name = layout.symbol_db.symbol_name_for_display(local_symbol_id),
             )
         });
     } else {
@@ -2100,10 +2149,18 @@ fn apply_relocation<A: Arch>(
                 "relocation applied value_flags={value_flags},\n\
                 resolution_flags={resolution_flags}, rel_kind={rel_kind:?},\n\
                 value=0x{value:x}, symbol_name={symbol_name}",
-                rel_kind = rel_info.kind
+                rel_kind = rel_info.kind,
+                symbol_name = layout.symbol_db.symbol_name_for_display(local_symbol_id),
             )
         });
-        tracing::trace!(%value_flags, %resolution_flags, ?rel_info.kind, value, value_hex = %HexU64::new(value), %symbol_name, "relocation applied");
+        tracing::trace!(
+            %value_flags,
+            %resolution_flags,
+            ?rel_info.kind,
+            value,
+            value_hex = %HexU64::new(value),
+            symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
+            "relocation applied");
     }
 
     write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section as usize..])?;
@@ -2177,6 +2234,7 @@ fn apply_debug_relocation<A: Arch>(
     Ok(())
 }
 
+#[inline(always)]
 fn write_absolute_relocation<A: Arch>(
     table_writer: &mut TableWriter,
     resolution: Resolution,
@@ -2354,7 +2412,94 @@ impl PreludeLayout {
     }
 }
 
-fn write_epilogue_dynamic_entries(layout: &Layout, table_writer: &mut TableWriter) -> Result {
+fn write_verdef(
+    verdefs: &[VersionDef],
+    table_writer: &mut TableWriter,
+    soname: Option<&[u8]>,
+    epilogue_offsets: &EpilogueOffsets,
+) -> Result {
+    let e = LittleEndian;
+
+    // Offsets of version strings, except the base version
+    let mut version_string_offsets = Vec::with_capacity(verdefs.len() - 1);
+
+    for (i, verdef) in verdefs.iter().enumerate() {
+        let verdef_out = table_writer.version_writer.take_verdef()?;
+
+        // Base version may use (already allocated) soname
+        let (name, name_offset) = if i == 0 {
+            if let Some(soname) = soname {
+                (
+                    soname,
+                    epilogue_offsets
+                        .soname
+                        .expect("Soname offset must be present at this point"),
+                )
+            } else {
+                let offset = table_writer
+                    .dynsym_writer
+                    .strtab_writer
+                    .write_str(&verdef.name);
+                (verdef.name.as_slice(), offset)
+            }
+        } else {
+            let offset = table_writer
+                .dynsym_writer
+                .strtab_writer
+                .write_str(&verdef.name);
+            version_string_offsets.push(offset);
+            (verdef.name.as_slice(), offset)
+        };
+
+        verdef_out.vd_version.set(e, object::elf::VER_DEF_CURRENT);
+        // Mark first entry as base version
+        verdef_out
+            .vd_flags
+            .set(e, if i == 0 { object::elf::VER_FLG_BASE } else { 0 });
+        verdef_out
+            .vd_ndx
+            .set(e, i as u16 + object::elf::VER_NDX_GLOBAL);
+        let aux_count = if verdef.parent_index.is_some() { 2 } else { 1 };
+        verdef_out.vd_cnt.set(e, aux_count);
+        verdef_out.vd_hash.set(e, object::elf::hash(name));
+        verdef_out
+            .vd_aux
+            .set(e, size_of::<crate::elf::Verdef>() as u32);
+        // Offset to the next entry, unless it's the last one
+        if i < verdefs.len() - 1 {
+            let offset = (size_of::<crate::elf::Verdef>()
+                + size_of::<crate::elf::Verdaux>() * aux_count as usize)
+                as u32;
+            verdef_out.vd_next.set(e, offset);
+        };
+
+        let verdaux = table_writer.version_writer.take_verdaux()?;
+        verdaux.vda_name.set(e, name_offset);
+        let next_vda = if verdef.parent_index.is_some() {
+            size_of::<crate::elf::Verdaux>() as u32
+        } else {
+            0
+        };
+        verdaux.vda_next.set(e, next_vda);
+
+        if let Some(parent_index) = &verdef.parent_index {
+            let name_offset = *version_string_offsets
+                .get(*parent_index as usize - 1)
+                .unwrap();
+            let verdaux = table_writer.version_writer.take_verdaux()?;
+            verdaux.vda_name.set(e, name_offset);
+            verdaux.vda_next.set(e, 0);
+        }
+    }
+
+    Ok(())
+}
+
+fn write_epilogue_dynamic_entries(
+    layout: &Layout,
+    table_writer: &mut TableWriter,
+    epilogue_offsets: &mut EpilogueOffsets,
+) -> Result {
     for rpath in &layout.args().rpaths {
         let offset = table_writer
             .dynsym_writer
@@ -2372,6 +2517,7 @@ fn write_epilogue_dynamic_entries(layout: &Layout, table_writer: &mut TableWrite
         table_writer
             .dynamic
             .write(object::elf::DT_SONAME, offset.into())?;
+        epilogue_offsets.soname.replace(offset);
     }
 
     let inputs = DynamicEntryInputs {
@@ -2389,6 +2535,12 @@ fn write_epilogue_dynamic_entries(layout: &Layout, table_writer: &mut TableWrite
     Ok(())
 }
 
+#[derive(Default)]
+pub(crate) struct EpilogueOffsets {
+    /// The offset of the shared object name in .dynsym.
+    pub(crate) soname: Option<u32>,
+}
+
 impl EpilogueLayout<'_> {
     fn write_file<A: Arch>(
         &self,
@@ -2396,6 +2548,8 @@ impl EpilogueLayout<'_> {
         table_writer: &mut TableWriter,
         layout: &Layout,
     ) -> Result {
+        let mut epilogue_offsets = EpilogueOffsets::default();
+
         write_internal_symbols_plt_got_entries::<A>(&self.internal_symbols, table_writer, layout)?;
 
         if !layout.args().strip_all {
@@ -2406,7 +2560,7 @@ impl EpilogueLayout<'_> {
             )?;
         }
         if layout.args().needs_dynamic() {
-            write_epilogue_dynamic_entries(layout, table_writer)?;
+            write_epilogue_dynamic_entries(layout, table_writer, &mut epilogue_offsets)?;
         }
         write_gnu_hash_tables(self, buffers)?;
 
@@ -2414,6 +2568,15 @@ impl EpilogueLayout<'_> {
 
         if !&self.gnu_property_notes.is_empty() {
             write_gnu_property_notes(self, buffers)?;
+        }
+
+        if let Some(verdefs) = &self.verdefs {
+            write_verdef(
+                verdefs,
+                table_writer,
+                layout.args().soname.as_ref().map(|s| s.as_bytes()),
+                &epilogue_offsets,
+            )?;
         }
 
         Ok(())
@@ -2531,11 +2694,15 @@ fn write_dynamic_symbol_definitions(
                     &mut table_writer.dynsym_writer,
                 )?;
 
-                // We don't yet support setting symbol versions for symbols that we export, so right
-                // now we just set them all to the global version.
                 if let Some(versym) = table_writer.version_writer.versym.as_mut() {
                     if let Some(version_out) = crate::slice::take_first_mut(versym) {
-                        version_out.0.set(LittleEndian, object::elf::VER_NDX_GLOBAL);
+                        // TODO: avoid rehashing
+                        let version = layout
+                            .symbol_db
+                            .version_script
+                            .version_for_symbol(&UnversionedSymbolName::prehashed(sym_def.name))
+                            .unwrap_or(object::elf::VER_NDX_GLOBAL);
+                        version_out.0.set(LittleEndian, version);
                     }
                 }
             }
@@ -2786,6 +2953,28 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         size_of::<elf::SymtabEntry>() as u64
     }),
     DynamicEntryWriter::optional(
+        object::elf::DT_VERDEF,
+        |inputs| {
+            inputs
+                .section_part_layouts
+                .get(part_id::GNU_VERSION_D)
+                .mem_size
+                > 0
+        },
+        |inputs| inputs.vma_of_section(output_section_id::GNU_VERSION_D),
+    ),
+    DynamicEntryWriter::optional(
+        object::elf::DT_VERDEFNUM,
+        |inputs| {
+            inputs
+                .section_part_layouts
+                .get(part_id::GNU_VERSION_D)
+                .mem_size
+                > 0
+        },
+        |inputs| inputs.non_addressable_counts.verdef_count.into(),
+    ),
+    DynamicEntryWriter::optional(
         object::elf::DT_VERNEED,
         |inputs| {
             inputs
@@ -3019,7 +3208,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         let e = LittleEndian;
         entry.sh_name.set(e, name_offset);
         entry.sh_type.set(e, section_type.raw());
-        // TODO: Section are always uncompressed and the output compression is not supported yet.
+        // TODO: Sections are always uncompressed and the output compression is not supported yet.
         entry.sh_flags.set(
             e,
             output_sections

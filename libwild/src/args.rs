@@ -29,7 +29,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI64;
 
-pub(crate) struct Args {
+pub struct Args {
     pub(crate) arch: Architecture,
     pub(crate) lib_search_path: Vec<Box<Path>>,
     pub(crate) inputs: Vec<Input>,
@@ -164,7 +164,7 @@ pub(crate) const WRITE_VERIFY_ALLOCATIONS_ENV: &str = "WILD_VERIFY_ALLOCATIONS";
 // other linkers. On the other, we should perhaps somehow let the user know that we don't support a
 // feature.
 const SILENTLY_IGNORED_FLAGS: &[&str] = &[
-    // Just like other modern linkers, we don't need groups in order resolve cycles.
+    // Just like other modern linkers, we don't need groups in order to resolve cycles.
     "start-group",
     "end-group",
     "(",
@@ -610,6 +610,10 @@ fn parse_from_argument_file(path: &Path) -> Result<Args> {
 }
 
 impl Args {
+    pub fn parse<S: AsRef<str>, I: Iterator<Item = S>>(input: I) -> Result<Args> {
+        parse(input)
+    }
+
     pub(crate) fn setup_thread_pool(&self) -> Result {
         ThreadPoolBuilder::new()
             .num_threads(self.num_threads.get())
@@ -684,7 +688,7 @@ impl Args {
         should_trace.then(|| tracing::trace_span!(crate::debug_trace::TRACE_SPAN_NAME).entered())
     }
 
-    pub(crate) fn should_fork(&self) -> bool {
+    pub fn should_fork(&self) -> bool {
         self.should_fork
     }
 

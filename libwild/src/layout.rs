@@ -83,6 +83,7 @@ use object::elf::Rela64;
 use object::elf::gnu_hash;
 use object::read::elf::Dyn as _;
 use object::read::elf::Rela as _;
+use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader;
 use object::read::elf::Sym as _;
 use object::read::elf::VerdefIterator;
@@ -155,7 +156,6 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         .map(|f| f.into_non_atomic())
         .collect();
     let non_addressable_counts = apply_non_addressable_indexes(&mut group_states, symbol_db.args)?;
-
     let section_part_sizes = compute_total_section_part_sizes(
         &mut group_states,
         &mut output_sections,
@@ -296,13 +296,13 @@ fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) -> Result {
 
 enum PropertyClass {
     // A bit in the output pr_data is set if it is set in any relocatable input.
-    // If all bits in the the output pr_data field are zero, this property should be removed from output.
+    // If all bits in the output pr_data field are zero, this property should be removed from output.
     Or,
     // A bit in the output pr_data field is set only if it is set in all relocatable input pr_data fields.
-    // If all bits in the the output pr_data field are zero, this property should be removed from output.
+    // If all bits in the output pr_data field are zero, this property should be removed from output.
     And,
     // A bit in the output pr_data field is set if it is set in any relocatable input pr_data fields
-    // and this property is present in all relocatable input files. When all bits in the the output pr_data
+    // and this property is present in all relocatable input files. When all bits in the output pr_data
     // field are zero, this property should not be removed from output to indicate it has
     // zero in all bits.
     AndOr,
@@ -520,6 +520,8 @@ pub(crate) struct EpilogueLayoutState<'data> {
     gnu_hash_layout: Option<GnuHashLayout>,
     gnu_property_notes: Vec<GnuProperty>,
     build_id_size: Option<usize>,
+
+    verdefs: Option<Vec<VersionDef>>,
 }
 
 #[derive(Default, Debug)]
@@ -536,6 +538,7 @@ pub(crate) struct EpilogueLayout<'data> {
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     dynsym_start_index: u32,
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
+    pub(crate) verdefs: Option<Vec<VersionDef>>,
 }
 
 pub(crate) struct ObjectLayout<'data> {
@@ -543,6 +546,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) file_id: FileId,
     pub(crate) object: &'data File<'data>,
     pub(crate) sections: Vec<SectionSlot>,
+    pub(crate) relocations: RelocationSections,
     pub(crate) section_resolutions: Vec<SectionResolution>,
     pub(crate) symbol_id_range: SymbolIdRange,
 }
@@ -707,8 +711,8 @@ fn allocate_symbol_resolution(
     allocate_resolution(value_flags, r, mem_sizes, output_kind);
 }
 
-/// Computes how much to allocation for a particular resolution. This is intended for debug
-/// assertions when we're writing, to make sure that we would have allocated memory before we write.
+/// Computes how much to allocate for a particular resolution. This is intended for debug assertions
+/// when we're writing, to make sure that we would have allocated memory before we write.
 pub(crate) fn compute_allocations(
     resolution: &Resolution,
     output_kind: OutputKind,
@@ -1043,9 +1047,11 @@ struct ObjectLayoutState<'data> {
     symbol_id_range: SymbolIdRange,
     object: &'data File<'data>,
 
-    /// Info about each of our sections. Empty until this object has been activated. Indexed the
-    /// same as the sections in the input object.
+    /// Info about each of our sections. Indexed the same as the sections in the input object.
     sections: Vec<SectionSlot>,
+
+    /// Mapping from sections to their corresponding relocation section.
+    relocations: object::read::elf::RelocationSections,
 
     cies: SmallVec<[CieAtOffset<'data>; 2]>,
 
@@ -1348,6 +1354,7 @@ impl<'data> Layout<'data> {
         self.symbol_db.symbol_debug(symbol_id)
     }
 
+    #[inline(always)]
     pub(crate) fn merged_symbol_resolution(&self, symbol_id: SymbolId) -> Option<Resolution> {
         self.local_symbol_resolution(self.symbol_db.definition(symbol_id))
             .copied()
@@ -1751,12 +1758,22 @@ fn apply_non_addressable_indexes(
         // Allocate version indexes starting from after the local and global indexes.
         gnu_version_r_index: object::elf::VER_NDX_GLOBAL + 1,
     };
-    let mut counts = NonAddressableCounts { verneed_count: 0 };
+    let mut counts = NonAddressableCounts {
+        verneed_count: 0,
+        verdef_count: 0,
+    };
     for g in group_states.iter_mut() {
         for s in &mut g.files {
             match s {
                 FileLayoutState::Dynamic(s) => {
                     s.apply_non_addressable_indexes(&mut indexes, &mut counts)?;
+                }
+                FileLayoutState::Epilogue(s) => {
+                    counts.verdef_count += s
+                        .verdefs
+                        .as_ref()
+                        .map(|v| v.len() as u16)
+                        .unwrap_or_default();
                 }
                 _ => {}
             }
@@ -1766,7 +1783,9 @@ fn apply_non_addressable_indexes(
     // If we were going to output symbol versions, but we didn't actually use any, then we drop all
     // versym allocations. This is partly to avoid wasting unnecessary space in the output file, but
     // mostly in order match what GNU ld does.
-    if counts.verneed_count == 0 && args.should_output_symbol_versions() {
+    if (counts.verneed_count == 0 && counts.verdef_count == 0)
+        && args.should_output_symbol_versions()
+    {
         for g in group_states {
             *g.common.mem_sizes.get_mut(part_id::GNU_VERSION) = 0;
         }
@@ -1783,6 +1802,8 @@ struct NonAddressableIndexes {
 pub(crate) struct NonAddressableCounts {
     /// The number of shared objects that want to emit a verneed record.
     pub(crate) verneed_count: u64,
+    /// The number of verdef records provided in version script.
+    pub(crate) verdef_count: u16,
 }
 
 /// Returns the starting memory address for each alignment within each segment.
@@ -1831,7 +1852,7 @@ fn find_required_sections<'data, A: Arch>(
         errors: Mutex::new(Vec::new()),
         waiting_workers: ArrayQueue::new(num_workers),
         // NB, the -1 is because we never want all our threads to be idle. Once the last thread is
-        // about to go idle, we're done and need to wake up and terminate all the the threads.
+        // about to go idle, we're done and need to wake up and terminate all the threads.
         idle_threads,
         done: AtomicBool::new(false),
         symbol_resolution_flags,
@@ -2087,6 +2108,7 @@ fn activate<'data, A: Arch>(
 }
 
 impl LocalWorkQueue {
+    #[inline(always)]
     fn send_work(&mut self, resources: &GraphResources, file_id: FileId, work: WorkItem) {
         if file_id.group() == self.index {
             self.local_work.push(work);
@@ -2102,6 +2124,7 @@ impl LocalWorkQueue {
         }
     }
 
+    #[inline(always)]
     fn send_symbol_request(&mut self, symbol_id: SymbolId, resources: &GraphResources) {
         debug_assert!(resources.symbol_db.is_canonical(symbol_id));
         let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
@@ -2130,6 +2153,7 @@ impl GraphResources<'_, '_> {
 
     /// Sends all work in `work` to the worker for `file_id`. Leaves `work` empty so that it can be
     /// reused.
+    #[inline(always)]
     fn send_work(&self, file_id: FileId, work: WorkItem) {
         let worker;
         {
@@ -2470,6 +2494,7 @@ impl Section {
     }
 }
 
+#[inline(always)]
 fn process_relocation<A: Arch>(
     object: &mut ObjectLayoutState,
     common: &mut CommonGroupState,
@@ -2620,12 +2645,12 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
 }
 
 impl PreludeLayoutState {
-    fn new(input_state: resolution::ResolvedPrelude<'_>) -> Self {
+    fn new(input_state: resolution::ResolvedPrelude) -> Self {
         Self {
             file_id: PRELUDE_FILE_ID,
             symbol_id_range: SymbolIdRange::prelude(input_state.symbol_definitions.len()),
             internal_symbols: InternalSymbols {
-                symbol_definitions: input_state.symbol_definitions.to_owned(),
+                symbol_definitions: input_state.symbol_definitions,
                 start_symbol_id: SymbolId::zero(),
             },
             entry_symbol_id: None,
@@ -2652,7 +2677,7 @@ impl PreludeLayoutState {
             }
         });
 
-        // Allocate space to store the identify of the linker in the .comment section.
+        // Allocate space to store the identity of the linker in the .comment section.
         common.allocate(
             output_section_id::COMMENT.part_id_with_alignment(alignment::MIN),
             self.identity.len() as u64,
@@ -2734,9 +2759,9 @@ impl PreludeLayoutState {
     }
 
     /// This function is where we determine sizes that depend on other sizes. For example, the size
-    /// of the section headers table, which depends on which sections we're writing which depends on
-    /// which sections are non-empty. We also decide which internal symtab entries we'll write here,
-    /// since that also depends on which sections we're writing.
+    /// of the section headers table, which depends on which sections we're writing, which depends
+    /// on which sections are non-empty. We also decide which internal symtab entries we'll write
+    /// here, since that also depends on which sections we're writing.
     fn apply_late_size_adjustments(
         &mut self,
         common: &mut CommonGroupState,
@@ -2863,7 +2888,7 @@ impl PreludeLayoutState {
             });
         let num_sections = keep_sections.values_iter().filter(|p| **p).count();
 
-        // Compute output indexes of each of section.
+        // Compute output indexes of each section.
         let mut next_output_index = 0;
         let mut output_section_indexes = vec![None; output_sections.num_sections()];
         for event in output_sections.sections_and_segments_events() {
@@ -2924,7 +2949,7 @@ impl PreludeLayoutState {
         self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
-        resources: &FinaliseLayoutResources,
+        resources: &FinaliseLayoutResources<'_, '_>,
     ) -> Result<PreludeLayout> {
         let header_layout = resources
             .section_layouts
@@ -3109,6 +3134,7 @@ impl<'data> EpilogueLayoutState<'data> {
             gnu_hash_layout: None,
             gnu_property_notes: Default::default(),
             build_id_size: Default::default(),
+            verdefs: Default::default(),
         }
     }
 
@@ -3184,6 +3210,51 @@ impl<'data> EpilogueLayoutState<'data> {
             common.allocate(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
+        let version_count = symbol_db.version_script.version_count();
+        if version_count > 0 {
+            // If soname is not provided, allocate space for file name as the base version
+            let base_version_name = if symbol_db.args.soname.is_none() {
+                let file_name = symbol_db
+                    .args
+                    .output
+                    .file_name()
+                    .expect("File name should be present at this point")
+                    .to_string_lossy()
+                    .to_string();
+                common.allocate(part_id::DYNSTR, file_name.len() as u64 + 1);
+                file_name
+            } else {
+                String::new()
+            };
+
+            let mut verdefs = Vec::with_capacity(version_count.into());
+
+            // Base version
+            verdefs.push(VersionDef {
+                name: base_version_name.into_bytes(),
+                parent_index: None,
+            });
+
+            // Take all but the base version
+            for version in symbol_db.version_script.version_iter().skip(1) {
+                verdefs.push(VersionDef {
+                    name: version.name.as_bytes().to_vec(),
+                    parent_index: version.parent_index,
+                });
+                common.allocate(part_id::DYNSTR, version.name.len() as u64 + 1);
+            }
+
+            let dependencies_count = symbol_db.version_script.parent_count();
+            common.allocate(
+                part_id::GNU_VERSION_D,
+                (size_of::<crate::elf::Verdef>() as u16 * version_count
+                    + size_of::<crate::elf::Verdaux>() as u16
+                        * (version_count + dependencies_count))
+                    .into(),
+            );
+            self.verdefs.replace(verdefs);
+        }
+
         Ok(())
     }
 
@@ -3200,9 +3271,9 @@ impl<'data> EpilogueLayoutState<'data> {
             // `symbol_base` is set later in `finalise_layout`.
             symbol_base: 0,
         };
-        // Sort by bucket. Tie-break by name for determinism. We can use an unstable sort
-        // because name should be unique. We use a parallel sort because we're processing
-        // symbols from potentially many input objects, so there can be a lot.
+        // Sort by bucket. Tie-break by name for determinism. We can use an unstable sort because
+        // names should be unique. We use a parallel sort because we're processing symbols from
+        // potentially many input objects, so there can be a lot.
         self.dynamic_symbol_definitions
             .par_sort_unstable_by_key(|d| (gnu_hash_layout.bucket_for_hash(d.hash), d.name));
         let num_blume = 1;
@@ -3252,12 +3323,24 @@ impl<'data> EpilogueLayoutState<'data> {
             memory_offsets.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
         }
 
+        if let Some(verdefs) = &self.verdefs {
+            memory_offsets.increment(
+                part_id::GNU_VERSION_D,
+                (size_of::<crate::elf::Verdef>() * verdefs.len()
+                    + size_of::<crate::elf::Verdaux>()
+                        * (verdefs.len()
+                            + resources.symbol_db.version_script.parent_count() as usize))
+                    as u64,
+            );
+        }
+
         Ok(EpilogueLayout {
             internal_symbols: self.internal_symbols,
             gnu_hash_layout: self.gnu_hash_layout,
             dynamic_symbol_definitions: self.dynamic_symbol_definitions,
             dynsym_start_index,
             gnu_property_notes: self.gnu_property_notes,
+            verdefs: self.verdefs,
         })
     }
 }
@@ -3293,6 +3376,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             eh_frame_section: None,
             eh_frame_size: 0,
             sections: non_dynamic.sections,
+            relocations: non_dynamic.relocations,
             cies: Default::default(),
             gnu_property_notes: Default::default(),
         })
@@ -3432,7 +3516,7 @@ impl<'data> ObjectLayoutState<'data> {
         let part_id = unloaded.part_id;
         let section = Section::create(self, section_id, part_id)?;
         let mut modifier = RelocationModifier::Normal;
-        for rel in self.object.relocations(section.index)? {
+        for rel in self.relocations(section.index)? {
             if modifier == RelocationModifier::SkipNextRelocation {
                 modifier = RelocationModifier::Normal;
                 continue;
@@ -3657,6 +3741,7 @@ impl<'data> ObjectLayoutState<'data> {
             file_id: self.file_id,
             object: self.object,
             sections: self.sections,
+            relocations: self.relocations,
             section_resolutions,
             symbol_id_range,
         })
@@ -3824,6 +3909,10 @@ impl<'data> ObjectLayoutState<'data> {
 
         Ok(())
     }
+
+    fn relocations(&self, index: SectionIndex) -> Result<&'data [elf::Rela]> {
+        self.object.relocations(index, &self.relocations)
+    }
 }
 
 pub(crate) struct SymbolCopyInfo<'data> {
@@ -3834,6 +3923,7 @@ impl<'data> SymbolCopyInfo<'data> {
     /// The primary purpose of this function is to determine whether a symbol should be copied into
     /// the symtab. In the process, we also return the name of the symbol, to avoid needing to read
     /// it again.
+    #[inline(always)]
     pub(crate) fn new(
         object: &crate::elf::File<'data>,
         sym_index: object::SymbolIndex,
@@ -3850,7 +3940,7 @@ impl<'data> SymbolCopyInfo<'data> {
 
         if let Ok(Some(section)) = object.symbol_section(sym, sym_index) {
             if !sections[section.0].is_loaded() {
-                // Symbol is in discarded section.
+                // Symbol is in a discarded section.
                 return None;
             }
         }
@@ -3894,7 +3984,7 @@ fn process_eh_frame_data<'data, A: Arch>(
     let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
     let e = LittleEndian;
-    let relocations = object.object.relocations(eh_frame_section_index)?;
+    let relocations = object.relocations(eh_frame_section_index)?;
     let mut rel_iter = relocations.iter().enumerate().peekable();
     let mut offset = 0;
 
@@ -4010,7 +4100,7 @@ fn process_gnu_property_note(
         {
             let gnu_property = gnu_property?;
 
-            // Right now, skip all properties other than the with size equal to 4.
+            // Right now, skip all properties other than those with size equal to 4.
             // There are existing properties, but unused right now:
             // GNU_PROPERTY_STACK_SIZE, GNU_PROPERTY_NO_COPY_ON_PROTECTED
             // TODO: support in the future
@@ -4076,6 +4166,7 @@ impl ResolutionWriter<'_, '_> {
     }
 }
 
+#[inline(always)]
 fn create_resolution(
     res_kind: ResolutionFlags,
     raw_value: u64,
@@ -4230,6 +4321,7 @@ impl Resolution {
             .get())
     }
 
+    #[inline(always)]
     pub(crate) fn value_with_addend(
         &self,
         addend: i64,
@@ -4724,6 +4816,12 @@ fn needs_tlsld(relocation_kind: RelocationKind) -> bool {
     )
 }
 
+impl<'data> ObjectLayout<'data> {
+    pub(crate) fn relocations(&self, index: SectionIndex) -> Result<&'data [elf::Rela]> {
+        self.object.relocations(index, &self.relocations)
+    }
+}
+
 /// Performs layout of sections and segments then makes sure that the loadable segments don't
 /// overlap and that sections don't overlap.
 #[test]
@@ -4872,4 +4970,9 @@ fn verify_consistent_allocation_handling(
         )
     })?;
     Ok(())
+}
+
+pub(crate) struct VersionDef {
+    pub(crate) name: Vec<u8>,
+    pub(crate) parent_index: Option<u16>,
 }

@@ -506,6 +506,8 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
             }
             DT_GNU_HASH => (Cow::Borrowed("DT_GNU_HASH"), Converter::SectionAddress),
             DT_VERSYM => (Cow::Borrowed("DT_VERSYM"), Converter::SectionAddress),
+            DT_VERDEF => (Cow::Borrowed("DT_VERDEF"), Converter::SectionAddress),
+            DT_VERDEFNUM => (Cow::Borrowed("DT_VERDEFNUM"), Converter::None),
             DT_VERNEEDNUM => (Cow::Borrowed("DT_VERNEEDNUM"), Converter::None),
             DT_VERNEED => (Cow::Borrowed("DT_VERNEED"), Converter::SectionAddress),
             DT_LOOS => (Cow::Borrowed("DT_LOOS"), Converter::None),
@@ -536,8 +538,6 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
             DT_MOVETAB => (Cow::Borrowed("DT_MOVETAB"), Converter::None),
             DT_SYMINFO => (Cow::Borrowed("DT_SYMINFO"), Converter::None),
             DT_RELCOUNT => (Cow::Borrowed("DT_RELCOUNT"), Converter::None),
-            DT_VERDEF => (Cow::Borrowed("DT_VERDEF"), Converter::None),
-            DT_VERDEFNUM => (Cow::Borrowed("DT_VERDEFNUM"), Converter::None),
             DT_AUXILIARY => (Cow::Borrowed("DT_AUXILIARY"), Converter::None),
             other => (
                 Cow::Owned(format!("Unknown (0x{other:x})")),

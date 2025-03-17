@@ -59,11 +59,12 @@ pub(crate) const DYNSYM: PartId = PartId(12);
 pub(crate) const DYNSTR: PartId = PartId(13);
 pub(crate) const INTERP: PartId = PartId(14);
 pub(crate) const GNU_VERSION: PartId = PartId(15);
-pub(crate) const GNU_VERSION_R: PartId = PartId(16);
-pub(crate) const NOTE_GNU_PROPERTY: PartId = PartId(17);
-pub(crate) const NOTE_GNU_BUILD_ID: PartId = PartId(18);
+pub(crate) const GNU_VERSION_D: PartId = PartId(16);
+pub(crate) const GNU_VERSION_R: PartId = PartId(17);
+pub(crate) const NOTE_GNU_PROPERTY: PartId = PartId(18);
+pub(crate) const NOTE_GNU_BUILD_ID: PartId = PartId(19);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 19;
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 20;
 
 // Generated sections that have more than one part. Fortunately they all have exactly 2 parts.
 pub(crate) const SYMTAB_LOCAL: PartId = PartId::multi(0);
@@ -285,7 +286,7 @@ impl PartId {
 
 impl PartId {
     /// Returns whether we should skip adding padding after this section. This is a special rule
-    /// that's just for `.init` and `.fini`. The `.init` section `crti.o` contains the starts of a
+    /// that's just for `.init` and `.fini`. The `.init` section `crti.o` contains the start of a
     /// function and `crtn.o` contains the end of that function. If `.init` has say alignment = 4
     /// and we add padding after it to bring it up to a multiple of 4 bytes, then we'll break the
     /// function, since the padding bytes won't be valid instructions.

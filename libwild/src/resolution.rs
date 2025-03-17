@@ -21,7 +21,6 @@ use crate::output_section_id::OutputSectionsBuilder;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::parsing::InternalSymDefInfo;
-use crate::parsing::ParsedInput;
 use crate::parsing::ParsedInputObject;
 use crate::part_id;
 use crate::part_id::PartId;
@@ -43,7 +42,6 @@ use atomic_take::AtomicTake;
 use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
-use itertools::Itertools;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use linker_utils::elf::shf;
@@ -66,26 +64,32 @@ pub(crate) struct ResolutionOutputs<'data> {
 
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
 pub fn resolve_symbols_and_sections<'data>(
-    groups: &'data [Group<'data>],
     symbol_db: &mut SymbolDb<'data>,
     herd: &'data bumpalo_herd::Herd,
 ) -> Result<ResolutionOutputs<'data>> {
-    let (mut groups, undefined_symbols) = resolve_symbols_in_files(groups, symbol_db)?;
+    let (mut resolved_groups, undefined_symbols) = resolve_symbols_in_files(symbol_db)?;
 
-    resolve_sections(&mut groups, herd, symbol_db.args)?;
+    resolve_sections(&mut resolved_groups, herd, symbol_db.args)?;
 
-    let output_sections = assign_section_ids(&mut groups, symbol_db.args)?;
+    let output_sections = assign_section_ids(&mut resolved_groups, symbol_db.args)?;
 
-    let merged_strings =
-        crate::string_merging::merge_strings(&mut groups, &output_sections, symbol_db.args)?;
+    let merged_strings = crate::string_merging::merge_strings(
+        &mut resolved_groups,
+        &output_sections,
+        symbol_db.args,
+    )?;
 
-    let custom_start_stop_defs =
-        canonicalise_undefined_symbols(undefined_symbols, &output_sections, &groups, symbol_db)?;
+    let custom_start_stop_defs = canonicalise_undefined_symbols(
+        undefined_symbols,
+        &output_sections,
+        &resolved_groups,
+        symbol_db,
+    )?;
 
-    crate::symbol_db::resolve_alternative_symbol_definitions(symbol_db, &groups)?;
+    crate::symbol_db::resolve_alternative_symbol_definitions(symbol_db, &resolved_groups)?;
 
     Ok(ResolutionOutputs {
-        groups,
+        groups: resolved_groups,
         output_sections,
         merged_strings,
         custom_start_stop_defs,
@@ -94,83 +98,39 @@ pub fn resolve_symbols_and_sections<'data>(
 
 #[tracing::instrument(skip_all, name = "Resolve symbols")]
 pub(crate) fn resolve_symbols_in_files<'data>(
-    groups: &'data [Group<'data>],
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result<(Vec<ResolvedGroup<'data>>, SegQueue<UndefinedSymbol<'data>>)> {
-    let mut num_objects = 0;
-
     let mut symbol_definitions = symbol_db.take_definitions();
     let mut symbol_definitions_slice = symbol_definitions.as_mut();
 
-    let mut definitions_per_group_and_file = groups
-        .iter()
-        .map(|group| {
-            group
-                .files
-                .iter()
-                .map(|file| {
-                    AtomicTake::new(crate::slice::slice_take_prefix_mut(
-                        &mut symbol_definitions_slice,
-                        file.num_symbols(),
-                    ))
-                })
-                .collect_vec()
-        })
-        .collect_vec();
+    let mut definitions_per_group_and_file = Vec::new();
+    definitions_per_group_and_file.resize_with(symbol_db.groups.len(), Vec::new);
 
     let work_queue = SegQueue::new();
 
-    let mut resolved: Vec<ResolvedGroup<'_>> = groups
+    let mut resolved: Vec<ResolvedGroup<'_>> = symbol_db
+        .groups
         .iter()
         .zip(&mut definitions_per_group_and_file)
-        .map(|(group, definitions_per_file)| {
-            let files = group
-                .files
-                .iter()
-                .zip(definitions_per_file)
-                .map(|(file, definitions)| match file {
-                    ParsedInput::Prelude(s) => {
-                        work_queue.push(LoadObjectRequest {
-                            file_id: PRELUDE_FILE_ID,
-                            definitions_out: definitions.take().unwrap(),
-                        });
-                        ResolvedFile::Prelude(ResolvedPrelude {
-                            symbol_definitions: &s.symbol_definitions,
-                        })
-                    }
-                    ParsedInput::Object(s) => {
-                        if !s.is_optional() {
-                            work_queue.push(LoadObjectRequest {
-                                file_id: s.file_id,
-                                definitions_out: definitions.take().unwrap(),
-                            });
-                        }
-                        num_objects += 1;
-                        ResolvedFile::NotLoaded(NotLoaded {
-                            symbol_id_range: s.symbol_id_range,
-                        })
-                    }
-                    ParsedInput::Epilogue(s) => ResolvedFile::Epilogue(ResolvedEpilogue {
-                        file_id: UNINITIALISED_FILE_ID,
-                        start_symbol_id: s.start_symbol_id,
-                    }),
-                })
-                .collect();
-
-            ResolvedGroup { files }
+        .map(|(group, definitions_out_per_file)| {
+            resolve_group(
+                group,
+                &work_queue,
+                definitions_out_per_file,
+                &mut symbol_definitions_slice,
+            )
         })
         .collect();
 
+    let num_objects = symbol_db.num_objects();
     if num_objects == 0 {
         bail!("Cannot link with 0 input files");
     }
-
     let outputs = Outputs::new(num_objects);
 
     let num_threads = symbol_db.args.num_threads.get();
 
     let resources = ResolutionResources {
-        groups,
         definitions_per_file: &definitions_per_group_and_file,
         idle_threads: (num_threads > 1).then(|| ArrayQueue::new(num_threads - 1)),
         symbol_db,
@@ -236,6 +196,74 @@ pub(crate) fn resolve_symbols_in_files<'data>(
     Ok((resolved, outputs.undefined_symbols))
 }
 
+fn resolve_group<'data, 'definitions>(
+    group: &Group<'data>,
+    work_queue: &SegQueue<LoadObjectRequest<'definitions>>,
+    definitions_out_per_file: &mut Vec<AtomicTake<&'definitions mut [SymbolId]>>,
+    symbol_definitions_slice: &mut &'definitions mut [SymbolId],
+) -> ResolvedGroup<'data> {
+    match group {
+        Group::Prelude(prelude) => {
+            let definitions_out = crate::slice::slice_take_prefix_mut(
+                symbol_definitions_slice,
+                prelude.symbol_definitions.len(),
+            );
+
+            work_queue.push(LoadObjectRequest {
+                file_id: PRELUDE_FILE_ID,
+                definitions_out,
+            });
+
+            definitions_out_per_file.push(AtomicTake::empty());
+
+            ResolvedGroup {
+                files: vec![ResolvedFile::Prelude(ResolvedPrelude {
+                    symbol_definitions: prelude.symbol_definitions.clone(),
+                })],
+            }
+        }
+        Group::Objects(parsed_input_objects) => {
+            definitions_out_per_file.reserve(parsed_input_objects.len());
+
+            let files = parsed_input_objects
+                .iter()
+                .map(|s| {
+                    let definitions_out = crate::slice::slice_take_prefix_mut(
+                        symbol_definitions_slice,
+                        s.symbol_id_range.len(),
+                    );
+
+                    if s.is_optional() {
+                        definitions_out_per_file.push(AtomicTake::new(definitions_out));
+                    } else {
+                        work_queue.push(LoadObjectRequest {
+                            file_id: s.file_id,
+                            definitions_out,
+                        });
+                        definitions_out_per_file.push(AtomicTake::empty());
+                    }
+
+                    ResolvedFile::NotLoaded(NotLoaded {
+                        symbol_id_range: s.symbol_id_range,
+                    })
+                })
+                .collect();
+
+            ResolvedGroup { files }
+        }
+        Group::Epilogue(epilogue) => {
+            definitions_out_per_file.push(AtomicTake::empty());
+
+            ResolvedGroup {
+                files: vec![ResolvedFile::Epilogue(ResolvedEpilogue {
+                    file_id: UNINITIALISED_FILE_ID,
+                    start_symbol_id: epilogue.start_symbol_id,
+                })],
+            }
+        }
+    }
+}
+
 #[tracing::instrument(skip_all, name = "Resolve sections")]
 fn resolve_sections<'data>(
     groups: &mut [ResolvedGroup<'data>],
@@ -263,6 +291,8 @@ fn resolve_sections<'data>(
                     allocator,
                     &loaded_metrics,
                 )?;
+
+                non_dynamic.relocations = obj.object.parse_relocations()?;
 
                 obj.non_dynamic = Some(non_dynamic);
             }
@@ -302,7 +332,6 @@ impl LoadedMetrics {
 }
 
 struct ResolutionResources<'data, 'definitions, 'outer_scope> {
-    groups: &'data [Group<'data>],
     definitions_per_file: &'outer_scope Vec<Vec<AtomicTake<&'definitions mut [SymbolId]>>>,
     idle_threads: Option<ArrayQueue<Thread>>,
     symbol_db: &'outer_scope SymbolDb<'data>,
@@ -312,6 +341,7 @@ struct ResolutionResources<'data, 'definitions, 'outer_scope> {
 
 impl ResolutionResources<'_, '_, '_> {
     /// Request loading of `file_id`.
+    #[inline(always)]
     fn request_file_id(&self, file_id: FileId) {
         let Some(definitions_out) =
             self.definitions_per_file[file_id.group()][file_id.file()].take()
@@ -343,7 +373,7 @@ pub(crate) struct ResolvedGroup<'data> {
 
 pub(crate) enum ResolvedFile<'data> {
     NotLoaded(NotLoaded),
-    Prelude(ResolvedPrelude<'data>),
+    Prelude(ResolvedPrelude),
     Object(ResolvedObject<'data>),
     Epilogue(ResolvedEpilogue),
 }
@@ -367,7 +397,7 @@ pub(crate) enum SectionSlot {
     /// We've already loaded the section.
     Loaded(crate::layout::Section),
 
-    /// The section contain .eh_frame data.
+    /// The section contains .eh_frame data.
     EhFrameData(object::SectionIndex),
 
     /// The section is a string-merge section.
@@ -409,9 +439,9 @@ impl UnloadedSection {
 #[derive(Clone, Copy)]
 pub(crate) struct FrameIndex(NonZeroU32);
 
-#[derive(Clone, Copy)]
-pub(crate) struct ResolvedPrelude<'data> {
-    pub(crate) symbol_definitions: &'data [InternalSymDefInfo],
+#[derive(Clone)]
+pub(crate) struct ResolvedPrelude {
+    pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
 }
 
 pub(crate) struct ResolvedObject<'data> {
@@ -426,6 +456,8 @@ pub(crate) struct ResolvedObject<'data> {
 /// Parts of a resolved object that are only applicable to non-dynamic objects.
 pub(crate) struct NonDynamicResolved<'data> {
     pub(crate) sections: Vec<SectionSlot>,
+    pub(crate) relocations: object::read::elf::RelocationSections,
+
     pub(crate) string_merge_extras: Vec<StringMergeSectionExtra<'data>>,
 
     /// Details about each custom section that is defined in this object.
@@ -484,8 +516,12 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
     definitions_out: &mut [SymbolId],
     resources: &'scope ResolutionResources<'data, 'definitions, 'scope>,
 ) -> Result {
-    match &resources.groups[file_id.group()].files[file_id.file()] {
-        ParsedInput::Object(obj) => {
+    match &resources.symbol_db.groups[file_id.group()] {
+        Group::Prelude(prelude) => {
+            load_prelude(prelude, definitions_out, resources);
+        }
+        Group::Objects(parsed_input_objects) => {
+            let obj = &parsed_input_objects[file_id.file()];
             let input = obj.input.clone();
             let res = ResolvedObject::new(
                 obj,
@@ -496,10 +532,7 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
             .with_context(|| format!("Failed to process {input}"))?;
             let _ = resources.outputs.loaded.push(res);
         }
-        ParsedInput::Prelude(prelude) => {
-            load_prelude(prelude, definitions_out, resources);
-        }
-        ParsedInput::Epilogue(_) => {}
+        Group::Epilogue(_) => {}
     }
     Ok(())
 }
@@ -675,6 +708,7 @@ impl<'data> ResolvedObject<'data> {
             // We'll fill this in during section resolution.
             non_dynamic = Some(NonDynamicResolved {
                 sections: Default::default(),
+                relocations: Default::default(),
                 string_merge_extras: Default::default(),
                 custom_sections: Default::default(),
             });
@@ -838,6 +872,7 @@ fn resolve_dynamic_symbols<'data>(
     Ok(())
 }
 
+#[inline(always)]
 fn resolve_symbol<'data>(
     local_symbol_index: object::SymbolIndex,
     local_symbol: &crate::elf::SymtabEntry,
@@ -949,16 +984,16 @@ bitflags! {
         /// Something with an address. e.g. a regular symbol, a section etc.
         const ADDRESS = 1 << 0;
 
-        /// An absolute value that won't be change depending on load address. This could be a symbol
-        /// with an absolute value or an undefined symbol, which needs to always resolve to 0 regardless
-        /// of load address.
+        /// An absolute value that won't change depending on load address. This could be a symbol
+        /// with an absolute value or an undefined symbol, which needs to always resolve to 0
+        /// regardless of load address.
         const ABSOLUTE = 1 << 1;
 
         /// The value is from a shared (dynamic) object, so although it may have an address, it
-        /// won't be know until runtime. If combined with `ABSOLUTE`, then the symbol isn't actually
-        /// defined by any shared object. We'll emit a dynamic relocation for it on a best-effort
-        /// basis only. e.g. if there are direct references to it from a read-only section we'll
-        /// fill them in as zero.
+        /// won't be known until runtime. If combined with `ABSOLUTE`, then the symbol isn't
+        /// actually defined by any shared object. We'll emit a dynamic relocation for it on a
+        /// best-effort basis only. e.g. if there are direct references to it from a read-only
+        /// section we'll fill them in as zero.
         const DYNAMIC = 1 << 2;
 
         /// The value refers to an ifunc. The actual address won't be known until runtime.
@@ -973,8 +1008,8 @@ bitflags! {
         /// local.
         const DOWNGRADE_TO_LOCAL = 1 << 5;
 
-        /// Set when the value is function. Currently only set for dynamic symbols, since that's all
-        /// we need it for.
+        /// Set when the value is a function. Currently only set for dynamic symbols, since that's
+        /// all we need it for.
         const FUNCTION = 1 << 6;
     }
 }
@@ -982,7 +1017,7 @@ bitflags! {
 impl ValueFlags {
     /// Returns self merged with `other` which should be the flags for the local (possibly
     /// non-canonical symbol definition). Sometimes an object will reference a symbol that it
-    /// doesn't define and will mark that symbol as hidden however the object that defines the
+    /// doesn't define and will mark that symbol as hidden, however the object that defines the
     /// symbol gives the symbol default visibility. In this case, we want references in the object
     /// defining it as hidden to be allowed to bypass the GOT/PLT.
     pub(crate) fn merge(&mut self, other: ValueFlags) {

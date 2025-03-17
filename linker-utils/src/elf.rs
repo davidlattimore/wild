@@ -445,6 +445,8 @@ pub mod secnames {
     pub const INTERP_SECTION_NAME: &[u8] = INTERP_SECTION_NAME_STR.as_bytes();
     pub const GNU_VERSION_SECTION_NAME_STR: &str = ".gnu.version";
     pub const GNU_VERSION_SECTION_NAME: &[u8] = GNU_VERSION_SECTION_NAME_STR.as_bytes();
+    pub const GNU_VERSION_D_SECTION_NAME_STR: &str = ".gnu.version_d";
+    pub const GNU_VERSION_D_SECTION_NAME: &[u8] = GNU_VERSION_D_SECTION_NAME_STR.as_bytes();
     pub const GNU_VERSION_R_SECTION_NAME_STR: &str = ".gnu.version_r";
     pub const GNU_VERSION_R_SECTION_NAME: &[u8] = GNU_VERSION_R_SECTION_NAME_STR.as_bytes();
     pub const PROGRAM_HEADERS_SECTION_NAME_STR: &str = ".phdr";
@@ -512,7 +514,7 @@ pub enum RelocationKind {
 
     /// The address of a TLSGD structure, relative to the place of the relocation. A TLSGD
     /// (thread-local storage general dynamic) structure is a pair of values containing a module ID
-    /// and the offset within that modules TLS storage.
+    /// and the offset within that module's TLS storage.
     TlsGd,
 
     /// The address of the symbol's TLSGD GOT entry.
@@ -652,7 +654,7 @@ impl DynamicRelocationKind {
     }
 }
 
-// Half-opened range bounded inclusively below and exclusively above: [`start``, `end`)
+// Half-opened range bounded inclusively below and exclusively above: [`start`, `end`)
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub struct BitRange {
     pub start: u32,
@@ -750,6 +752,7 @@ pub struct RelocationKindInfo {
 }
 
 impl RelocationKindInfo {
+    #[inline(always)]
     pub fn verify(&self, value: i64) -> Result<()> {
         anyhow::ensure!(
             (value as usize) & (self.alignment - 1) == 0,

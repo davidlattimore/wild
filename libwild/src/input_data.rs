@@ -9,19 +9,18 @@ use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::error::Result;
 use crate::file_kind::FileKind;
+use ahash::HashSet;
+use ahash::RandomState;
 use anyhow::Context;
 use anyhow::bail;
 use memmap2::Mmap;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
-use std::collections::HashSet;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
 
-pub(crate) struct InputData<'config> {
-    pub config: &'config Args,
-    pub filenames: HashSet<PathBuf>,
+pub(crate) struct InputData {
     pub(crate) files: Vec<InputFile>,
     pub(crate) version_script_data: Option<VersionScriptData>,
 }
@@ -84,60 +83,46 @@ struct InputPath {
     original: PathBuf,
 }
 
-impl<'config> InputData<'config> {
+impl InputData {
     #[tracing::instrument(skip_all, name = "Open input files")]
-    pub fn from_args(config: &'config Args) -> Result<Self> {
-        let files = vec![
-            // Our first "file" is a special input that we use internally to emit various symbols
-            // and other things that don't come from any actual file.
-            InputFile {
-                filename: PathBuf::new(),
-                original_filename: PathBuf::new(),
-                kind: FileKind::Prelude,
-                modifiers: Default::default(),
-                data: None,
-            },
-        ];
+    pub fn from_args(args: &Args) -> Result<Self> {
+        let files = Vec::new();
 
-        let version_script_data = config
+        let version_script_data = args
             .version_script_path
             .as_ref()
             .map(|path| read_version_script(path))
             .transpose()?;
 
+        let mut filenames = HashSet::with_hasher(RandomState::new());
+
         let mut input_data = Self {
-            config,
-            filenames: Default::default(),
             files,
             version_script_data,
         };
 
-        for input in &config.inputs {
-            input_data.register_input(input, config.sysroot.as_deref())?;
+        for input in &args.inputs {
+            input_data.register_input(input, args.sysroot.as_deref(), args, &mut filenames)?;
         }
-
-        // Our last "file", similar to the prelude is responsible for internal stuff, but this time
-        // at the end.
-        input_data.files.push(InputFile {
-            filename: PathBuf::new(),
-            original_filename: PathBuf::new(),
-            kind: FileKind::Epilogue,
-            modifiers: Default::default(),
-            data: None,
-        });
 
         Ok(input_data)
     }
 
-    fn register_input(&mut self, input: &Input, sysroot: Option<&Path>) -> Result {
-        let paths = input.path(self.config)?;
+    fn register_input(
+        &mut self,
+        input: &Input,
+        sysroot: Option<&Path>,
+        args: &Args,
+        filenames: &mut HashSet<PathBuf>,
+    ) -> Result {
+        let paths = input.path(args)?;
         let absolute_path = &paths.absolute;
-        if !self.filenames.insert(absolute_path.clone()) {
+        if !filenames.insert(absolute_path.clone()) {
             // File has already been added.
             return Ok(());
         }
 
-        let data = FileData::new(absolute_path.as_path(), self.config.prepopulate_maps)?;
+        let data = FileData::new(absolute_path.as_path(), args.prepopulate_maps)?;
 
         let kind = FileKind::identify_bytes(&data.bytes)?;
 
@@ -149,7 +134,7 @@ impl<'config> InputData<'config> {
                     input.modifiers,
                     sysroot,
                 )? {
-                    self.register_input(&input, sysroot)?;
+                    self.register_input(&input, sysroot, args, filenames)?;
                 }
                 return Ok(());
             }
@@ -163,7 +148,7 @@ impl<'config> InputData<'config> {
                             let path = entry.identifier(extended_filenames).as_path();
                             let entry_path = parent_path.join(path);
                             let file_data =
-                                FileData::new(&entry_path, self.config.prepopulate_maps)?;
+                                FileData::new(&entry_path, args.prepopulate_maps)?;
                             self.files.push(InputFile {
                                 filename: entry_path.clone(),
                                 original_filename: entry_path,

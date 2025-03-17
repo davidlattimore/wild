@@ -1,4 +1,4 @@
-// This test checks that we correctly handle the .init and .fini sections. These section is a bit
+// This test checks that we correctly handle the .init and .fini sections. These sections are a bit
 // different to other sections in that glibc defines the start of the _init function in one file
 // (crti.o) and then any other objects that define code for the .init section need to appear after
 // this with no padding in between. The end of the function is then from crtn.o which has the return

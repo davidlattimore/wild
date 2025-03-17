@@ -17,7 +17,7 @@ pub(crate) struct OutputSectionPartMap<T> {
     // TODO: We used to store all the generated parts in separate instance variables. When we
     // switched to instead storing them in this Vec, we saw a small drop in performance (about 2%).
     // This may be due to an extra pointer indirection and/or bounds checking. Experiment with
-    // storing all our built-in parts an an array.
+    // storing all our built-in parts in an array.
     pub(crate) parts: Vec<T>,
 }
 
@@ -74,7 +74,7 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
 
     /// Iterate through all contained T in output order, producing a new map of U from the values
     /// returned by the callback. Note, the alignment is the alignment of the PartId, but capped at
-    /// the maximum alignment of highest alignment PartId with a non-default value.
+    /// the maximum alignment of the highest alignment PartId with a non-default value.
     pub(crate) fn output_order_map<U: Default>(
         &self,
         output_sections: &OutputSections,
@@ -249,8 +249,8 @@ fn test_merge_with_custom_sections() {
 }
 
 /// output_order_map and `OutputSections::sections_and_segments_events` used to each independently
-/// define the output order. This test made sure that they were consistent. Now the former is uses
-/// the latter, so this test is less important. It's kept for the time being anyway.
+/// define the output order. This test made sure that they were consistent. Now the former uses the
+/// latter, so this test is less important. It's kept for the time being anyway.
 #[test]
 fn test_output_order_map_consistent() {
     use itertools::Itertools;

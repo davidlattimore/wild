@@ -1,9 +1,7 @@
-use crate::Linker;
-
 /// # Safety
 /// See function of the same name in `subprocess.rs`
-pub unsafe fn run_in_subprocess(linker: &Linker) -> ! {
-    let exit_code = match linker.run() {
+pub unsafe fn run_in_subprocess(args: &crate::Args) -> ! {
+    let exit_code = match crate::run(args) {
         Ok(()) => 0,
         Err(error) => {
             eprintln!("{error}");

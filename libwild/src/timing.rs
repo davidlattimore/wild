@@ -77,6 +77,13 @@ where
         });
     }
 
+    fn on_enter(&self, id: &tracing::span::Id, ctx: tracing_subscriber::layer::Context<S>) {
+        let span = ctx.span(id).expect("valid span ID");
+        if let Some(data) = span.extensions_mut().get_mut::<Data>() {
+            data.start = Instant::now();
+        }
+    }
+
     fn on_close(&self, id: tracing::span::Id, ctx: tracing_subscriber::layer::Context<S>) {
         let span = ctx.span(&id).expect("valid span ID");
         let metadata = span.metadata();
