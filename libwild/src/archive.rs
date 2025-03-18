@@ -137,7 +137,7 @@ impl<'data> ArchiveIterator<'data> {
         let entry_size = match ident_kind {
             IdentifierKind::FileReference => {
                 // The size field of a thin reference indicates size of
-                // the references file, not the entry itself
+                // the referenced file, not the entry itself
                 0
             }
             _ => {
@@ -218,7 +218,11 @@ fn evaluate_identifier<'data>(
 ) -> Identifier<'data> {
     if let Some(filenames) = extended_filenames {
         if let Some(rest) = ident.strip_prefix('/') {
-            if let Ok(offset) = rest.parse() {
+            // GNU ar puts a trailing '/' as the last byte of the identifier, but only if
+            // the filename (excl. leading path components) is exactly 15 bytes long - e.g.
+            // /path/to/src_utils.cpp.o => '/48            /'
+            // /dir/of/src_utils.o      => '/48             '
+            if let Ok(offset) = rest.trim_end_matches('/').trim().parse() {
                 return Identifier {
                     data: &filenames.data[offset..],
                 };
