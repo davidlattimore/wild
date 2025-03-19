@@ -505,4 +505,8 @@ impl crate::arch::RelaxationKind for RelaxationKind {
     fn is_no_op(self) -> bool {
         matches!(self, RelaxationKind::NoOp)
     }
+
+    fn is_replace_with_no_op(self) -> bool {
+        matches!(self, RelaxationKind::ReplaceWithNop)
+    }
 }

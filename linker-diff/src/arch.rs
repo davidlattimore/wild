@@ -140,6 +140,9 @@ pub(crate) trait RType: Copy + Debug + Display + Eq + PartialEq {
 pub(crate) trait RelaxationKind: Copy + Clone + Debug + Eq + PartialEq {
     /// Returns whether this relaxation does nothing.
     fn is_no_op(self) -> bool;
+
+    /// Returns whether this relaxation replaces an instruction with a nop.
+    fn is_replace_with_no_op(self) -> bool;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
