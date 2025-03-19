@@ -386,6 +386,13 @@ impl<'data, A: Arch> RelaxationGroup<'data, A> {
             .collect::<Result<Vec<RelaxationMatch<A>>, ()>>()
             .ok()
     }
+
+    fn matches_skipping_nops(&self) -> Vec<&RelaxationMatchResult<A>> {
+        self.match_results
+            .iter()
+            .filter(|result| !matches!(result, RelaxationMatchResult::Matched(m) if m.relaxation.relaxation_kind.is_replace_with_no_op()))
+            .collect()
+    }
 }
 
 impl<'data, A: Arch> RelocationGroup<'data, A> {
@@ -1315,13 +1322,17 @@ fn relaxations_match<A: Arch>(
         (Some(_), None) => false,
         (None, Some(_)) => false,
         (Some(a), Some(b)) => {
-            if a.match_results.len() != b.match_results.len() {
+            // Ignore replace with NOP relaxations.
+            let a_match_results = a.matches_skipping_nops();
+            let b_match_results = b.matches_skipping_nops();
+
+            if a_match_results.len() != b_match_results.len() {
                 return false;
             }
 
-            a.match_results
+            a_match_results
                 .iter()
-                .zip(&b.match_results)
+                .zip(&b_match_results)
                 .all(|(a, b)| a.matches(b))
         }
     }

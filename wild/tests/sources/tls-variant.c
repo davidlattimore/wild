@@ -29,6 +29,9 @@
 //#CompArgs:-fpic
 //#Shared:tls-variant-1.c,tls-variant-2.c:-ftls-model=global-dynamic -mtls-dialect=trad,tls-variant-3.c:-ftls-model=initial-exec -mtls-dialect=trad
 //#Arch: aarch64
+// TODO: ld.bfd supports relaxation where TLSDESC is replaced with R_AARCH64_TLS_TPREL64
+// if initial-exec mode is used for one of the compilation units.
+//#DiffIgnore:rel.match_failed.R_AARCH64_TLSDESC_LD64_LO12
 
 int foo();
 int bar();
