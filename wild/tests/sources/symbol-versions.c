@@ -5,7 +5,6 @@
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:file-header.entry
 //#Object:exit.c
-//#EnableLinker:lld
 //#VersionScript:symbol-versions-script.map
 
 //#Config:verneed
@@ -25,28 +24,44 @@
 #include "exit.h"
 
 int foo(void);
+int bar_global(void);
+int bar_local(void);
+int bar_v2(void);
+int bar_v2_1(void);
 
 void _start(void) {
     if (foo() != 2) {
         exit_syscall(foo());
     }
+    if (bar_global() != 10) {
+        exit_syscall(bar_global());
+    }
+    if (bar_local() != 11) {
+        exit_syscall(bar_local());
+    }
+    if (bar_v2() != 12) {
+        exit_syscall(bar_v2());
+    }
+    if (bar_v2_1() != 13) {
+        exit_syscall(bar_v2_1());
+    }
 
     exit_syscall(42);
 }
 
-void bar_global(void) {
-    exit_syscall(42);
+int bar_global(void) {
+    return 10;
 }
 
 // TODO: doesn't work, the symbol is global
-void bar_local(void) {
-    exit_syscall(42);
+int bar_local(void) {
+    return 11;
 }
 
-void bar_v2(void) {
-    exit_syscall(42);
+int bar_v2(void) {
+    return 12;
 }
 
-void bar_v2_1(void) {
-    exit_syscall(42);
+int bar_v2_1(void) {
+    return 13;
 }
