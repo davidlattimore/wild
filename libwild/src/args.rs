@@ -585,6 +585,11 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         bail!("Unrecognised argument(s): {}", unrecognised.join(" "));
     }
 
+    // Copy relocations are only permitted when building executables.
+    if args.output_kind() == OutputKind::SharedObject {
+        args.allow_copy_relocations = false;
+    }
+
     save_dir.finish()?;
 
     Ok(args)
