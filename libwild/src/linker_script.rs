@@ -127,7 +127,7 @@ impl<'data> VersionScript<'data> {
 
         tokens.text = tokens.text.trim();
 
-        let mut token = tokens.next().unwrap();
+        let mut token = tokens.next().ok_or_else(|| anyhow!("No tokens found"))?;
         // Simple version script, only defines symbols visibility
         if token.starts_with('{') {
             parse_version_section(
