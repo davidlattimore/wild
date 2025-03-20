@@ -64,6 +64,7 @@ use crate::slice::take_first_mut;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
+use crate::symbol_db::SymbolId;
 use ahash::AHashMap;
 use anyhow::Context;
 use anyhow::anyhow;
@@ -875,17 +876,11 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         let is_copy_relocation = res
             .resolution_flags
             .contains(ResolutionFlags::COPY_RELOCATION);
-        if is_copy_relocation {
-            self.write_rela_dyn_general(
-                res.raw_value,
-                res.dynamic_symbol_index()?,
-                A::get_dynamic_relocation_type(DynamicRelocationKind::Copy),
-                0,
-            )?;
-        }
+
         let Some(got_address) = res.got_address else {
             return Ok(());
         };
+
         let mut got_address = got_address.get();
         let resolution_flags = res.resolution_flags;
 
@@ -3288,6 +3283,8 @@ impl<'data> DynamicLayout<'data> {
     ) -> Result {
         self.write_so_name(table_writer)?;
 
+        self.write_copy_relocations::<A>(table_writer, layout)?;
+
         for ((symbol_id, resolution), symbol) in layout
             .resolutions_in_range(self.symbol_id_range)
             .zip(self.object.symbols.iter())
@@ -3413,6 +3410,42 @@ impl<'data> DynamicLayout<'data> {
             .write(object::elf::DT_NEEDED, needed_offset.into())?;
         Ok(())
     }
+
+    fn write_copy_relocations<A: Arch>(
+        &self,
+        table_writer: &mut TableWriter,
+        layout: &Layout<'data>,
+    ) -> Result {
+        for &symbol_id in &self.copy_relocation_symbols {
+            write_copy_relocation_for_symbol::<A>(symbol_id, table_writer, layout).with_context(
+                || {
+                    format!(
+                        "Failed to write copy relocation for {}",
+                        layout.symbol_debug(symbol_id)
+                    )
+                },
+            )?;
+        }
+
+        Ok(())
+    }
+}
+
+fn write_copy_relocation_for_symbol<A: Arch>(
+    symbol_id: SymbolId,
+    table_writer: &mut TableWriter,
+    layout: &Layout,
+) -> Result {
+    let res = layout
+        .local_symbol_resolution(symbol_id)
+        .context("Internal error: Missing resolution for copy-relocated symbol")?;
+
+    table_writer.write_rela_dyn_general(
+        res.raw_value,
+        res.dynamic_symbol_index()?,
+        A::get_dynamic_relocation_type(DynamicRelocationKind::Copy),
+        0,
+    )
 }
 
 fn write_symbol_version(

@@ -85,7 +85,7 @@ use object::read::elf::Dyn as _;
 use object::read::elf::Rela as _;
 use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader;
-use object::read::elf::Sym as _;
+use object::read::elf::Sym;
 use object::read::elf::VerdefIterator;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
@@ -142,8 +142,10 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
 
     let mut group_states = gc_outputs.group_states;
 
+    finalise_copy_relocations(&mut group_states, &symbol_db, &symbol_resolution_flags)?;
     merge_dynamic_symbol_definitions(&mut group_states)?;
     merge_gnu_property_notes(&mut group_states)?;
+
     finalise_all_sizes(
         &symbol_db,
         &output_sections,
@@ -155,7 +157,9 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         .into_iter()
         .map(|f| f.into_non_atomic())
         .collect();
+
     let non_addressable_counts = apply_non_addressable_indexes(&mut group_states, symbol_db.args)?;
+
     let section_part_sizes = compute_total_section_part_sizes(
         &mut group_states,
         &mut output_sections,
@@ -257,6 +261,31 @@ fn update_dynamic_symbol_resolutions(
             res.dynamic_symbol_index = Some(dynamic_symbol_index);
         }
     }
+}
+
+/// Where we've decided that we need copy relocations, look for symbols with the same address as the
+/// symbols with copy relocations. If the other symbol is non-weak, then we do the copy relocation
+/// for that symbol instead. We also request dynamic symbol definitions for each copy relocation.
+/// For that reason, this needs to be done before we merge dynamic symbol definitions.
+#[tracing::instrument(skip_all, name = "Finalise copy relocations")]
+fn finalise_copy_relocations<'data>(
+    group_states: &mut [GroupState<'data>],
+    symbol_db: &SymbolDb<'data>,
+    symbol_resolution_flags: &[AtomicResolutionFlags],
+) -> Result {
+    group_states.par_iter_mut().try_for_each(|group| {
+        for file in &mut group.files {
+            if let FileLayoutState::Dynamic(dynamic) = file {
+                dynamic.finalise_copy_relocations(
+                    &mut group.common,
+                    symbol_db,
+                    symbol_resolution_flags,
+                )?;
+            }
+        }
+
+        Ok(())
+    })
 }
 
 #[tracing::instrument(skip_all, name = "Finalise per-object sizes")]
@@ -586,6 +615,8 @@ pub(crate) struct DynamicLayout<'data> {
 
     /// Whether this is the last DynamicLayout that puts content into .gnu.version_r.
     pub(crate) is_last_verneed: bool,
+
+    pub(crate) copy_relocation_symbols: Vec<SymbolId>,
 }
 
 trait HandlerData {
@@ -619,16 +650,15 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
             // however regular objects can own dynamic symbols too if the symbol is an undefined
             // weak symbol.
             if value_flags.contains(ValueFlags::DYNAMIC) && !current_res_flags.is_empty() {
+                let name = symbol_db.symbol_name(symbol_id)?;
+
                 if current_res_flags.contains(ResolutionFlags::COPY_RELOCATION) {
-                    self.allocate_copy_relocation(common, symbol_db, symbol_id)
-                        .with_context(|| {
-                            format!(
-                                "Failed to apply copy relocation for symbol `{}`",
-                                symbol_db.symbol_name_for_display(symbol_id)
-                            )
-                        })?;
+                    // The dynamic symbol is a definition, so is handled by the epilogue. We only
+                    // need to deal with the symtab entry here.
+                    let entry_size = size_of::<elf::SymtabEntry>() as u64;
+                    common.allocate(part_id::SYMTAB_GLOBAL, entry_size);
+                    common.allocate(part_id::STRTAB, name.len() as u64 + 1);
                 } else {
-                    let name = symbol_db.symbol_name(symbol_id)?;
                     common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
                     common.allocate(part_id::DYNSYM, crate::elf::SYMTAB_ENTRY_SIZE);
                 }
@@ -670,26 +700,14 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result;
-
-    fn allocate_copy_relocation(
-        &mut self,
-        _common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'data>,
-        symbol_id: SymbolId,
-    ) -> Result {
-        bail!(
-            "Cannot perform copy relocation for undefined symbol `{}`",
-            symbol_db.symbol_name_for_display(symbol_id)
-        );
-    }
 }
 
 fn export_dynamic<'data>(
     common: &mut CommonGroupState<'data>,
     symbol_id: SymbolId,
-    graph_resources: &GraphResources<'data, '_>,
+    symbol_db: &SymbolDb<'data>,
 ) -> Result {
-    let name = graph_resources.symbol_db.symbol_name(symbol_id)?;
+    let name = symbol_db.symbol_name(symbol_id)?;
     common
         .dynamic_symbol_definitions
         .push(DynamicSymbolDefinition::new(symbol_id, name.bytes()));
@@ -735,10 +753,6 @@ fn allocate_resolution(
 ) {
     let has_dynamic_symbol = value_flags.contains(ValueFlags::DYNAMIC)
         || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC);
-    if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
-        // Allocate space required for a copy relocation.
-        mem_sizes.increment(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
-    }
     if resolution_flags.contains(ResolutionFlags::GOT) {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
         if resolution_flags.contains(ResolutionFlags::PLT) {
@@ -859,51 +873,6 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
                     true;
             }
         }
-        Ok(())
-    }
-
-    /// Allocate the space required to perform a copy relocation for `symbol_id`. Copy relocations
-    /// are used when a direct reference is made to a symbol that is defined by a dynamic object.
-    fn allocate_copy_relocation(
-        &mut self,
-        common: &mut CommonGroupState,
-        symbol_db: &SymbolDb<'data>,
-        symbol_id: SymbolId,
-    ) -> Result {
-        if symbol_db.args.output_kind() == OutputKind::SharedObject {
-            bail!("Cannot directly access dynamic symbol when building a shared object",);
-        }
-
-        let symbol = self
-            .object
-            .symbol(self.symbol_id_range().id_to_input(symbol_id))?;
-
-        let section_index = symbol.st_shndx(LittleEndian);
-
-        if section_index == 0 {
-            bail!("Cannot apply copy relocation for symbol");
-        }
-
-        let section = self
-            .object
-            .section(SectionIndex(usize::from(section_index)))?;
-
-        let alignment = Alignment::new(self.object.section_alignment(section)?)?;
-
-        // Allocate space in BSS for the copy of the symbol.
-        let st_size = symbol.st_size(LittleEndian);
-        common.allocate(
-            output_section_id::BSS.part_id_with_alignment(alignment),
-            st_size,
-        );
-
-        let entry_size = size_of::<elf::SymtabEntry>() as u64;
-        common.allocate(part_id::SYMTAB_GLOBAL, entry_size);
-        common.allocate(
-            part_id::STRTAB,
-            symbol_db.symbol_name(symbol_id)?.len() as u64 + 1,
-        );
-
         Ok(())
     }
 }
@@ -1120,7 +1089,11 @@ bitflags! {
         const EXPORT_DYNAMIC = 1 << 6;
 
         /// We encountered a direct reference to a symbol from a non-writable section and so we're
-        /// going to need to do a copy relocation.
+        /// going to need to do a copy relocation. Note that multiple symbols can have this flag
+        /// set, however if they all point at the same address in the shared object from which they
+        /// originate, only a single copy relocation will be emitted. This flags indicates that the
+        /// symbol requires a copy relocation not necessarily that a copy relocation will be emitted
+        /// with the exact name of this symbol.
         const COPY_RELOCATION = 1 << 7;
     }
 }
@@ -1186,6 +1159,18 @@ struct DynamicLayoutState<'data> {
     verneed_info: Option<VerneedInfo<'data>>,
 
     non_addressable_indexes: NonAddressableIndexes,
+
+    /// Maps from addresses within the shared object to copy relocations at that address.
+    copy_relocations: HashMap<u64, CopyRelocationInfo>,
+}
+
+struct CopyRelocationInfo {
+    /// The symbol ID for which we'll actually generate the copy relocation. Initially, this is just
+    /// the first symbol at a particular address for which we requested a copy relocation, then
+    /// later we may update it to point to a different symbol if that first symbol was weak.
+    symbol_id: SymbolId,
+
+    is_weak: bool,
 }
 
 pub(crate) struct VerneedInfo<'data> {
@@ -1306,7 +1291,7 @@ enum WorkItem {
 
     /// A direct reference to a dynamic symbol has been encountered. The symbol should be defined in
     /// BSS with a copy relocation.
-    ExportCopyRelocation(SymbolId),
+    CopyRelocateSymbol(SymbolId),
 
     /// A request to load a particular section.
     LoadSection(SectionLoadRequest),
@@ -1328,7 +1313,7 @@ struct SectionLoadRequest {
 impl WorkItem {
     fn file_id(self, symbol_db: &SymbolDb) -> FileId {
         match self {
-            WorkItem::LoadGlobalSymbol(s) | WorkItem::ExportCopyRelocation(s) => {
+            WorkItem::LoadGlobalSymbol(s) | WorkItem::CopyRelocateSymbol(s) => {
                 symbol_db.file_id_for_symbol(s)
             }
             WorkItem::LoadSection(s) => s.file_id,
@@ -2141,7 +2126,7 @@ impl LocalWorkQueue {
         self.send_work(
             resources,
             symbol_file_id,
-            WorkItem::ExportCopyRelocation(symbol_id),
+            WorkItem::CopyRelocateSymbol(symbol_id),
         );
     }
 }
@@ -2232,8 +2217,9 @@ impl<'data> FileLayoutState<'data> {
                         resources.symbol_db.symbol_debug(symbol_id),
                     )
                 }),
-            WorkItem::ExportCopyRelocation(symbol_id) => match self {
-                FileLayoutState::Dynamic(_) => export_dynamic(common, symbol_id, resources),
+            WorkItem::CopyRelocateSymbol(symbol_id) => match self {
+                FileLayoutState::Dynamic(state) => state.copy_relocate_symbol(symbol_id, resources),
+
                 _ => {
                     bail!(
                         "Internal error: ExportCopyRelocation sent to non-dynamic object for: {}",
@@ -3388,6 +3374,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             symbol_versions: input_state.object.versym,
             object: input_state.object,
             input: input_state.input,
+            copy_relocations: Default::default(),
 
             // These fields are filled in properly when we activate.
             symbol_versions_needed: Default::default(),
@@ -3528,7 +3515,13 @@ impl<'data> ObjectLayoutState<'data> {
                 self.object.section(section.index)?,
                 resources,
                 queue,
-            )?;
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to copy section `{}` from file {self}",
+                    section_debug(self.object, section.index)
+                )
+            })?;
         }
         tracing::debug!(loaded_section = %self.object.section_display_name(section_id),);
         common.allocate(part_id, section.capacity());
@@ -3882,7 +3875,7 @@ impl<'data> ObjectLayoutState<'data> {
                 }
 
                 if !old_flags.contains(ResolutionFlags::EXPORT_DYNAMIC) {
-                    export_dynamic(common, symbol_id, resources)?;
+                    export_dynamic(common, symbol_id, resources.symbol_db)?;
                 }
             }
         }
@@ -3904,7 +3897,7 @@ impl<'data> ObjectLayoutState<'data> {
         }
 
         if !old_flags.contains(ResolutionFlags::EXPORT_DYNAMIC) {
-            export_dynamic(common, symbol_id, resources)?;
+            export_dynamic(common, symbol_id, resources.symbol_db)?;
         }
 
         Ok(())
@@ -4462,7 +4455,29 @@ impl<'data> DynamicLayoutState<'data> {
         }
     }
 
+    fn finalise_copy_relocations(
+        &mut self,
+        common: &mut CommonGroupState<'data>,
+        symbol_db: &SymbolDb<'data>,
+        symbol_resolution_flags: &[AtomicResolutionFlags],
+    ) -> Result {
+        // Skip iterating over our symbol table if we don't have any copy relocations.
+        if self.copy_relocations.is_empty() {
+            return Ok(());
+        }
+
+        self.select_copy_relocation_alternatives(symbol_resolution_flags);
+        self.request_copy_relocation_dynamic_symbols(common, symbol_db)?;
+
+        Ok(())
+    }
+
     fn finalise_sizes(&mut self, common: &mut CommonGroupState<'data>) -> Result {
+        self.allocate_for_copy_relocations(common)?;
+        self.allocate_for_versions(common)
+    }
+
+    fn allocate_for_versions(&mut self, common: &mut CommonGroupState<'data>) -> Result {
         let e = LittleEndian;
         let mut version_count = 0;
 
@@ -4520,6 +4535,75 @@ impl<'data> DynamicLayoutState<'data> {
         Ok(())
     }
 
+    /// Looks for any non-weak symbols at the same addresses as any of our copy relocations. If
+    /// found, we'll generate the copy relocation for the strong symbol instead of weak symbol at
+    /// the same address.
+    fn select_copy_relocation_alternatives(
+        &mut self,
+        symbol_resolution_flags: &[AtomicResolutionFlags],
+    ) {
+        for (i, symbol) in self.object.symbols.iter().enumerate() {
+            let address = symbol.st_value(LittleEndian);
+            let Some(info) = self.copy_relocations.get_mut(&address) else {
+                continue;
+            };
+
+            let symbol_id = self.symbol_id_range.offset_to_id(i);
+
+            if symbol.is_weak() || !info.is_weak || info.symbol_id == symbol_id {
+                continue;
+            }
+
+            info.symbol_id = symbol_id;
+            info.is_weak = false;
+
+            symbol_resolution_flags[symbol_id.as_usize()]
+                .fetch_or(ResolutionFlags::COPY_RELOCATION);
+        }
+    }
+
+    fn request_copy_relocation_dynamic_symbols(
+        &self,
+        common: &mut CommonGroupState<'data>,
+        symbol_db: &SymbolDb<'data>,
+    ) -> Result {
+        for info in self.copy_relocations.values() {
+            export_dynamic(common, info.symbol_id, symbol_db)?;
+        }
+
+        Ok(())
+    }
+
+    fn allocate_for_copy_relocations(&self, common: &mut CommonGroupState<'data>) -> Result {
+        for value in self.copy_relocations.values() {
+            let symbol_id = value.symbol_id;
+
+            let symbol = self
+                .object
+                .symbol(self.symbol_id_range().id_to_input(symbol_id))?;
+
+            let section_index = symbol.st_shndx(LittleEndian);
+
+            let section = self
+                .object
+                .section(SectionIndex(usize::from(section_index)))?;
+
+            let alignment = Alignment::new(self.object.section_alignment(section)?)?;
+
+            // Allocate space in BSS for the copy of the symbol.
+            let st_size = symbol.st_size(LittleEndian);
+            common.allocate(
+                output_section_id::BSS.part_id_with_alignment(alignment),
+                st_size,
+            );
+
+            // Allocate space required for the copy relocation itself.
+            common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
+        }
+
+        Ok(())
+    }
+
     fn apply_non_addressable_indexes(
         &mut self,
         indexes: &mut NonAddressableIndexes,
@@ -4546,6 +4630,15 @@ impl<'data> DynamicLayoutState<'data> {
     ) -> Result<DynamicLayout<'data>> {
         let version_mapping = self.compute_version_mapping();
 
+        let copy_relocation_symbols = self
+            .copy_relocations
+            .values()
+            .map(|info| info.symbol_id)
+            .collect_vec();
+
+        let copy_relocation_addresses =
+            self.assign_copy_relocation_addresses(&copy_relocation_symbols, memory_offsets)?;
+
         for (local_symbol, &resolution_flags) in self
             .object
             .symbols
@@ -4557,13 +4650,15 @@ impl<'data> DynamicLayoutState<'data> {
                 continue;
             }
 
-            let needs_copy_relocation = resolution_flags.contains(ResolutionFlags::COPY_RELOCATION);
             let address;
             let dynamic_symbol_index;
 
-            if needs_copy_relocation {
-                address =
-                    assign_copy_relocation_address(self.object, local_symbol, memory_offsets)?;
+            if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
+                let input_address = local_symbol.st_value(LittleEndian);
+
+                address = *copy_relocation_addresses
+                    .get(&input_address)
+                    .context("Internal error: Missing copy relocation address")?;
 
                 // Since this is a definition, the dynamic symbol index will be determined by the
                 // epilogue and set by `update_dynamic_symbol_resolutions`.
@@ -4604,6 +4699,7 @@ impl<'data> DynamicLayoutState<'data> {
             object: self.object,
             symbol_id_range: self.symbol_id_range,
             input_symbol_versions: self.symbol_versions,
+            copy_relocation_symbols,
             version_mapping,
             verneed_info: self.verneed_info,
             // We set this to true later for one object.
@@ -4622,6 +4718,76 @@ impl<'data> DynamicLayoutState<'data> {
             }
         }
         out
+    }
+
+    fn copy_relocate_symbol<'scope>(
+        &mut self,
+        symbol_id: SymbolId,
+        resources: &GraphResources<'data, 'scope>,
+    ) -> std::result::Result<(), Error> {
+        let symbol = self
+            .object
+            .symbol(self.symbol_id_range().id_to_input(symbol_id))?;
+
+        // Note, we're a shared object, so this is the address relative to the load address of the
+        // shared object, not an offset within a section like with regular input objects. That means
+        // that we don't need to take the section into account.
+        let address = symbol.st_value(LittleEndian);
+
+        let info = self
+            .copy_relocations
+            .entry(address)
+            .or_insert_with(|| CopyRelocationInfo {
+                symbol_id,
+                is_weak: symbol.is_weak(),
+            });
+
+        info.add_symbol(symbol_id, symbol.is_weak(), resources.symbol_db)?;
+
+        Ok(())
+    }
+
+    fn assign_copy_relocation_addresses(
+        &self,
+        copy_relocation_symbols: &[SymbolId],
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+    ) -> Result<HashMap<u64, u64>> {
+        copy_relocation_symbols
+            .iter()
+            .map(|symbol_id| {
+                let symbol = self
+                    .object
+                    .symbol(self.symbol_id_range.id_to_input(*symbol_id))?;
+
+                let input_address = symbol.st_value(LittleEndian);
+
+                let output_address =
+                    assign_copy_relocation_address(self.object, symbol, memory_offsets)?;
+
+                Ok((input_address, output_address))
+            })
+            .try_collect()
+    }
+}
+
+impl CopyRelocationInfo {
+    fn add_symbol(&mut self, symbol_id: SymbolId, is_weak: bool, symbol_db: &SymbolDb) -> Result {
+        if self.symbol_id == symbol_id || is_weak {
+            return Ok(());
+        }
+
+        if !self.is_weak {
+            bail!(
+                "Multiple non-weak symbols at the same address have copy relocations: {}, {}",
+                symbol_db.symbol_debug(self.symbol_id),
+                symbol_db.symbol_debug(symbol_id)
+            );
+        }
+
+        self.symbol_id = symbol_id;
+        self.is_weak = false;
+
+        Ok(())
     }
 }
 

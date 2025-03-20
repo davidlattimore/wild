@@ -2145,6 +2145,7 @@ fn integration_test(
         "trivial_asm.s",
         "non-alloc.s",
         "symbol-versions.c",
+        "copy-relocations.c",
         "force-undefined.c",
         "libc-integration.c",
         "rust-integration.rs",
