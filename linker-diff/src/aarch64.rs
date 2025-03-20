@@ -112,6 +112,10 @@ impl Arch for AArch64 {
                 relax(RelaxationKind::ReplaceWithNop, object::elf::R_AARCH64_NONE);
             }
             object::elf::R_AARCH64_TLSDESC_LD64_LO12 => {
+                relax(
+                    RelaxationKind::MovkX0,
+                    object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G0_NC,
+                );
                 relax(RelaxationKind::ReplaceWithNop, object::elf::R_AARCH64_NONE);
             }
             object::elf::R_AARCH64_TLSDESC_ADD_LO12 => {
@@ -123,6 +127,7 @@ impl Arch for AArch64 {
                     RelaxationKind::AdrpX0,
                     object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21,
                 );
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_AARCH64_NONE);
             }
             object::elf::R_AARCH64_TLSDESC_CALL => {
                 relax(
@@ -133,6 +138,7 @@ impl Arch for AArch64 {
                     RelaxationKind::LdrX0,
                     object::elf::R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC,
                 );
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_AARCH64_NONE);
             }
             object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 => {
                 relax(
