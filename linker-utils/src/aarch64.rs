@@ -1029,7 +1029,7 @@ impl RelocationInstruction {
                 low_bits(value >> 29, 2) | ((low_bits_signed(value >> 5, 19)) << 2)
             }
             // C6.2.252, C6.2.254
-            RelocationInstruction::Movkz => u64::from(value >> 5),
+            RelocationInstruction::Movkz => low_bits_signed(value >> 5, 16),
             // C6.2.253, C6.2.254
             RelocationInstruction::Movnz => {
                 negative = (value & (1 << 30)) == 0;
