@@ -1761,7 +1761,7 @@ impl<'data> RelaxationTester<'data> {
         &self,
         relaxations_matches: &[RelaxationMatch<A>],
     ) -> Result<Reference<'data, A::RType>> {
-        let mut merged_value = 0;
+        let mut merged_value: u64 = 0;
         let mut addend = 0;
         let mut referent = None;
 
@@ -1820,7 +1820,7 @@ impl<'data> RelaxationTester<'data> {
                 allow_got_dereference = false;
             }
 
-            merged_value += value;
+            merged_value = merged_value.wrapping_add(value);
         }
 
         // The relocation info for our primary and alt r-types should be the same for our purposes
