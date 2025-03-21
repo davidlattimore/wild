@@ -164,7 +164,16 @@ impl Arch for AArch64 {
                     object::elf::R_AARCH64_ADR_PREL_LO21,
                 );
             }
-            object::elf::R_AARCH64_ADR_PREL_PG_HI21 => {
+            object::elf::R_AARCH64_ADR_PREL_PG_HI21
+            | object::elf::R_AARCH64_ADR_PREL_PG_HI21_NC => {
+                relax(
+                    RelaxationKind::AdrpToAdr,
+                    object::elf::R_AARCH64_ADR_PREL_LO21,
+                );
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_AARCH64_NONE);
+            }
+            object::elf::R_AARCH64_ADD_ABS_LO12_NC => {
+                relax(RelaxationKind::ReplaceWithNop, object::elf::R_AARCH64_NONE);
                 relax(
                     RelaxationKind::AdrpToAdr,
                     object::elf::R_AARCH64_ADR_PREL_LO21,
