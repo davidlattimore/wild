@@ -696,5 +696,15 @@ mod tests {
             ),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
         );
+        // Relative sysroot path
+        let relative_sysroot = Path::new("foo");
+        assert_equal(
+            maybe_apply_sysroot(
+                &relative_sysroot.join("lib/libc.so"),
+                Path::new("/lib/libc.so.6"),
+                relative_sysroot,
+            ),
+            Some(Box::from(relative_sysroot.join("lib/libc.so.6"))),
+        );
     }
 }
