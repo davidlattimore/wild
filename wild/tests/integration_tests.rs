@@ -1557,7 +1557,7 @@ impl LinkCommand {
 
             linker
                 .run(&parsed_args)
-                .with_context(|| format!("Failed to internally run command: {:?}", self.command))?;
+                .with_context(|| format!("libwild reported error. Rerun command(s):\n {self}"))?;
 
             return Ok(());
         }
