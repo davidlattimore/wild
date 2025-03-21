@@ -113,6 +113,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
 
 [[package]]
+name = "ascii_table"
+version = "4.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bc070afe45e3d9e628b82d77d61c90531dc6997b341d57715b82461af415669"
+
+[[package]]
 name = "atomic-polyfill"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -692,6 +698,7 @@ name = "linker-diff"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "ascii_table",
  "bytemuck",
  "clap",
  "colored",

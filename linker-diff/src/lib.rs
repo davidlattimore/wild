@@ -41,6 +41,7 @@ mod diagnostics;
 mod eh_frame_diff;
 mod gnu_hash;
 mod header_diff;
+mod init_order;
 pub(crate) mod section_map;
 mod symtab;
 mod trace;
@@ -51,8 +52,10 @@ type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
 type ElfSymbol64<'data, 'file> = object::read::elf::ElfSymbol64<'data, 'file, LittleEndian>;
 
+use arch::Arch;
 use colored::Colorize;
 pub use diagnostics::enable_diagnostics;
+use object::read::elf::FileHeader as _;
 use section_map::InputSectionId;
 use section_map::OwnedFileIdentifier;
 
@@ -179,6 +182,9 @@ impl Config {
                 // aarch64-linux-gnu-ld on arch linux emits DT_BIND_NOW instead of DT_FLAGS.BIND_NOW
                 ".dynamic.DT_BIND_NOW",
                 ".dynamic.DT_FLAGS.BIND_NOW",
+                // TODO: Implement proper ordering of .init .ctors etc
+                "init_array",
+                "fini_array",
                 // We do support this. TODO: Should definitely look into why we're seeing this missing
                 // in our output.
                 "section.rela.plt",
@@ -538,11 +544,25 @@ impl Report {
         );
         header_diff::check_dynamic_headers(self, objects);
         header_diff::check_file_headers(self, objects);
-        asm_diff::report_section_diffs(self, objects);
         header_diff::report_section_diffs(self, objects);
         eh_frame_diff::report_diffs(self, objects);
         version_diff::report_diffs(self, objects);
         debug_info_diff::check_debug_info(self, objects);
+
+        match objects[0].elf_file.elf_header().e_machine(LittleEndian) {
+            object::elf::EM_X86_64 => {
+                self.report_arch_specific_diffs::<crate::x86_64::X86_64>(objects);
+            }
+            object::elf::EM_AARCH64 => {
+                self.report_arch_specific_diffs::<crate::aarch64::AArch64>(objects);
+            }
+            _ => {}
+        }
+    }
+
+    fn report_arch_specific_diffs<A: Arch>(&mut self, binaries: &[Binary]) {
+        asm_diff::report_section_diffs::<A>(self, binaries);
+        init_order::report_diffs::<A>(self, binaries);
     }
 
     fn add_diff(&mut self, diff: Diff) {
@@ -813,4 +833,11 @@ fn parse_string_equality(
         .split_once('=')
         .ok_or_else(|| format!("invalid key-value pair. No '=' found in `{s}`"))?;
     Ok((a.to_owned(), b.to_owned()))
+}
+
+fn get_r_type<R: arch::RType>(rel: &object::Relocation) -> R {
+    let object::RelocationFlags::Elf { r_type } = rel.flags() else {
+        panic!("Unsupported object type (relocation flags)");
+    };
+    R::from_raw(r_type)
 }

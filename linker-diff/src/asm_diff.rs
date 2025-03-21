@@ -55,6 +55,7 @@ use crate::arch::RType;
 use crate::arch::Relaxation;
 use crate::arch::RelaxationKind;
 use crate::diagnostics::TraceOutput;
+use crate::get_r_type;
 use crate::section_map;
 use anyhow::Context as _;
 use anyhow::anyhow;
@@ -74,7 +75,6 @@ use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
-use object::RelocationFlags;
 use object::RelocationTarget;
 use object::SectionKind;
 use object::read::elf::ElfSection64;
@@ -92,19 +92,7 @@ const SHOW_FUNCTION_ENV: &str = "LINKER_DIFF_FOCUS_FUNCTION";
 
 /// Reports differences in sections in particular differences in the relocations that were applied
 /// to those sections, although the literal bytes between the relocations are also diffed.
-pub(crate) fn report_section_diffs(report: &mut Report, binaries: &[Binary]) {
-    match binaries[0].elf_file.elf_header().e_machine(LittleEndian) {
-        object::elf::EM_X86_64 => {
-            report_function_diffs_for_arch::<crate::x86_64::X86_64>(report, binaries);
-        }
-        object::elf::EM_AARCH64 => {
-            report_function_diffs_for_arch::<crate::aarch64::AArch64>(report, binaries);
-        }
-        _ => {}
-    }
-}
-
-pub(crate) fn report_function_diffs_for_arch<A: Arch>(report: &mut Report, binaries: &[Binary]) {
+pub(crate) fn report_section_diffs<A: Arch>(report: &mut Report, binaries: &[Binary]) {
     let Some(layout) = binaries[0].indexed_layout.as_ref() else {
         report.add_error("A .layout file is required");
         return;
@@ -557,13 +545,6 @@ fn diff_literal_bytes<'data, A: Arch>(
     }
 
     Ok(())
-}
-
-fn get_r_type<R: RType>(rel: &object::Relocation) -> R {
-    let RelocationFlags::Elf { r_type } = rel.flags() else {
-        panic!("Unsupported object type (relocation flags)");
-    };
-    R::from_raw(r_type)
 }
 
 /// Represents a diff found in executable code.
@@ -2867,6 +2848,10 @@ impl<'data> AddressIndex<'data> {
             .get(&address)
             .map(|s| s.as_slice())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn relocation_at_address(&self, address: u64) -> Option<&object::Relocation> {
+        self.dynamic_relocations_by_address.get(&address)
     }
 
     fn dereference_got_address<R: RType>(
