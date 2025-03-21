@@ -4630,11 +4630,15 @@ impl<'data> DynamicLayoutState<'data> {
     ) -> Result<DynamicLayout<'data>> {
         let version_mapping = self.compute_version_mapping();
 
-        let copy_relocation_symbols = self
+        let mut copy_relocation_symbols = self
             .copy_relocations
             .values()
             .map(|info| info.symbol_id)
             .collect_vec();
+
+        // We'll write the copy relocations in this order, so we need to sort it to ensure
+        // deterministic output.
+        copy_relocation_symbols.sort();
 
         let copy_relocation_addresses =
             self.assign_copy_relocation_addresses(&copy_relocation_symbols, memory_offsets)?;
