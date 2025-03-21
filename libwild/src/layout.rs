@@ -760,11 +760,6 @@ fn allocate_resolution(
         }
         if value_flags.contains(ValueFlags::IFUNC) {
             mem_sizes.increment(part_id::RELA_PLT, elf::RELA_ENTRY_SIZE);
-        } else if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
-            // Copy relocation means that we know the relative address.
-            if output_kind.is_relocatable() {
-                mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
-            }
         } else if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         } else if value_flags.contains(ValueFlags::ADDRESS) && output_kind.is_relocatable() {

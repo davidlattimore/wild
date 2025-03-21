@@ -873,10 +873,6 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
     }
 
     fn process_resolution<A: Arch>(&mut self, res: &Resolution) -> Result {
-        let is_copy_relocation = res
-            .resolution_flags
-            .contains(ResolutionFlags::COPY_RELOCATION);
-
         let Some(got_address) = res.got_address else {
             return Ok(());
         };
@@ -905,7 +901,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
 
         let got_entry = self.take_next_got_entry()?;
 
-        if (res.value_flags.contains(ValueFlags::DYNAMIC) && !is_copy_relocation)
+        if res.value_flags.contains(ValueFlags::DYNAMIC)
             || (resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
                 && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
                 && !res.value_flags.contains(ValueFlags::IFUNC)
@@ -920,9 +916,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
             self.write_ifunc_relocation::<A>(res)?;
         } else {
             *got_entry = res.raw_value;
-            if (res.value_flags.contains(ValueFlags::ADDRESS) || is_copy_relocation)
-                && self.output_kind.is_relocatable()
-            {
+            if res.value_flags.contains(ValueFlags::ADDRESS) && self.output_kind.is_relocatable() {
                 self.write_address_relocation::<A>(got_address, res.raw_value as i64)?;
             }
         }
