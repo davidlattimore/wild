@@ -63,16 +63,17 @@
 //! SecEquiv:{sec-name}={sec-name} Tells linker-diff that the two section names should be considered
 //! as equivalent.
 //!
-//! Object:{source-filename} Builds the specified filename as a regular object and adds it to the
-//! link.
+//! Object:{source-filename}[:extra-compilation-args] Builds the specified filename as a regular
+//! object and adds it to the link.
 //!
-//! Archive:{source-filename} Builds the specified filename as an archive and adds it to the link.
+//! Archive:{source-filename}[:extra-compilation-args] Builds the specified filename as an archive
+//! and adds it to the link.
 //!
-//! ThinArchive:{source-filename} Builds the specified filename as a thin archive and adds it to the
-//! link.
+//! ThinArchive:{source-filename}[:extra-compilation-args] Builds the specified filename as a thin
+//! archive and adds it to the link.
 //!
-//! Shared:{source-filename} Builds the specified filename as a shared object and adds it to the
-//! link.
+//! Shared:{source-filename}[:extra-compilation-args] Builds the specified filename as a shared
+//! object and adds it to the link.
 //!
 //! Compiler:gcc|g++|clang|clang++ Specifies what compiler should be used to compile C/C++ code.
 //!
