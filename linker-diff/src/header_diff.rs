@@ -157,8 +157,10 @@ fn symbol_with_address(obj: &Binary, address: u64, allow_empty: bool) -> Option<
     if address == 0 {
         return None;
     }
-    // If we want this to be faster, we could build an index ahead of time.
-    for sym in obj.elf_file.symbols() {
+
+    for symbol_index in obj.address_index.symbols_at_address(address) {
+        let sym = obj.elf_file.symbol_by_index(*symbol_index).ok()?;
+
         if !allow_empty && sym.size() == 0 {
             continue;
         }
@@ -170,6 +172,7 @@ fn symbol_with_address(obj: &Binary, address: u64, allow_empty: bool) -> Option<
             }
         }
     }
+
     None
 }
 
