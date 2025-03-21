@@ -38,6 +38,7 @@ memmap2 = "0.9.5"
 memchr = "2.7.4"
 tempfile = "3.18.0"
 which = "7.0.2"
+ascii_table = "4.0.6"
 
 [lints]
 workspace = true
