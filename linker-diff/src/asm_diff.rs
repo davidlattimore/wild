@@ -2476,6 +2476,8 @@ pub(crate) struct AddressIndex<'data> {
     dynamic_symbol_names: Vec<SymbolName<'data>>,
     is_relocatable: bool,
     bin_attributes: BinAttributes,
+
+    symbols_by_address: HashMap<u64, Vec<object::SymbolIndex>>,
 }
 
 struct PltIndex<'data> {
@@ -2565,6 +2567,7 @@ impl<'data> AddressIndex<'data> {
                 link_type: LinkType::Static,
             },
             dynamic_relocations_by_symbol_index: Default::default(),
+            symbols_by_address: index_symbols_by_address(elf_file),
         };
 
         if let Err(error) = info.build_indexes(elf_file) {
@@ -2859,6 +2862,13 @@ impl<'data> AddressIndex<'data> {
             .any(|t| t.address_range.contains(&address))
     }
 
+    pub(crate) fn symbols_at_address(&self, address: u64) -> &[object::SymbolIndex] {
+        self.symbols_by_address
+            .get(&address)
+            .map(|s| s.as_slice())
+            .unwrap_or_default()
+    }
+
     fn dereference_got_address<R: RType>(
         &self,
         got_address: u64,
@@ -2873,6 +2883,16 @@ impl<'data> AddressIndex<'data> {
 
         table.dereference_got_address(got_address, relocation_kind, index)
     }
+}
+
+fn index_symbols_by_address(elf_file: &ElfFile64) -> HashMap<u64, Vec<object::SymbolIndex>> {
+    let mut out: HashMap<u64, Vec<object::SymbolIndex>> = HashMap::new();
+
+    for sym in elf_file.symbols() {
+        out.entry(sym.address()).or_default().push(sym.index());
+    }
+
+    out
 }
 
 struct GotIndex<'data> {
