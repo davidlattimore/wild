@@ -109,6 +109,7 @@ impl crate::arch::Relaxation for Relaxation {
         output_kind: crate::args::OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,
+        relative_value: Option<i64>,
     ) -> Option<Self>
     where
         Self: std::marker::Sized,
@@ -243,7 +244,34 @@ impl crate::arch::Relaxation for Relaxation {
                 });
             }
 
-            _ => (),
+            // ADRP can be replaced with ADR if the relative distance to the location is within +- 1MiB
+            object::elf::R_AARCH64_ADR_PREL_PG_HI21
+            | object::elf::R_AARCH64_ADR_PREL_PG_HI21_NC => {
+                if let Some(relative_value) = relative_value {
+                    if relative_value.abs() <= (1 << 20) &&
+                    // next instruction must be: add
+                    section_bytes.get(offset + 7) == Some(&0x91)
+                    {
+                        return Some(Relaxation {
+                            kind: RelaxationKind::AdrpToAdr,
+                            rel_info: relocation_type_from_raw(
+                                object::elf::R_AARCH64_ADR_PREL_LO21,
+                            )
+                            .unwrap(),
+                        });
+                    }
+                }
+            }
+            object::elf::R_AARCH64_ADD_ABS_LO12_NC => {
+                // previous instruction must be replaced with adr
+                //debug_assert_eq!(section_bytes.get(offset - 1), Some(&0x10));
+                return Some(Relaxation {
+                    kind: RelaxationKind::ReplaceWithNop,
+                    rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
+                });
+            }
+
+            _ => {}
         }
 
         None

@@ -205,7 +205,6 @@ impl Config {
                 // GNU ld sometimes relaxes an adrp instruction to an adr instruction when the
                 // address is known and within +/-1MB. We don't as yet.
                 "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.AdrpToAdr.*",
-                "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.AdrpToAdr.*",
                 // The other linkers set properties on sections if all input sections have that
                 // property. For sections like .rodata, this seems like an unimportant behaviour to
                 // replicate.

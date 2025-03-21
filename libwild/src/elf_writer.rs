@@ -1953,8 +1953,29 @@ fn apply_relocation<A: Arch>(
     let mut addend = rel.r_addend.get(e);
     let mut next_modifier = RelocationModifier::Normal;
     let r_type = rel.r_type(e, false);
-    let rel_info;
+    let mut rel_info = A::relocation_from_raw(r_type)?;
     let output_kind = layout.args().output_kind();
+
+    // Compute place to which IP-relative relocations will be relative. This is different to
+    // `original_place` in that our `offset_in_section` may have been adjusted by a relaxation.
+    let place = section_address + offset_in_section;
+
+    // On AArch64, we can relax a Relative relocation if the destination is within the range of +- 1MiB:
+    let relative_value = if rel_info.kind == RelocationKind::Relative {
+        Some(
+            resolution
+                .value_with_addend(
+                    addend,
+                    symbol_index,
+                    object_layout,
+                    &layout.merged_strings,
+                    &layout.merged_string_start_addresses,
+                )?
+                .wrapping_sub(place) as i64,
+        )
+    } else {
+        None
+    };
 
     let relaxation = A::Relaxation::new(
         r_type,
@@ -1964,18 +1985,13 @@ fn apply_relocation<A: Arch>(
         output_kind,
         section_info.section_flags,
         resolution.raw_value != 0,
+        relative_value,
     );
     if let Some(relaxation) = &relaxation {
         rel_info = relaxation.rel_info();
         relaxation.apply(out, &mut offset_in_section, &mut addend);
         next_modifier = relaxation.next_modifier();
-    } else {
-        rel_info = A::relocation_from_raw(r_type)?;
     }
-
-    // Compute place to which IP-relative relocations will be relative. This is different to
-    // `original_place` in that our `offset_in_section` may have been adjusted by a relaxation.
-    let place = section_address + offset_in_section;
 
     let mask = get_page_mask(rel_info.mask);
     let value = match rel_info.kind {
