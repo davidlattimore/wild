@@ -1525,7 +1525,7 @@ impl<R: RType> DynamicRelocation<'_, R> {
         // we emit GLOB_DAT relocations. So we normalise to GLOB_DAT so as to treat them as
         // equivalent.
         if self.r_type.dynamic_relocation_kind() == Some(DynamicRelocationKind::JumpSlot) {
-            out.r_type = R::from_dynamic_relocation_kind(DynamicRelocationKind::DynamicSymbol);
+            out.r_type = R::from_dynamic_relocation_kind(DynamicRelocationKind::GotEntry);
         }
 
         out

@@ -911,7 +911,12 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
                 "Tried to write glob-dat with no allocation. {}",
                 ResFlagsDisplay(res)
             );
-            self.write_dynamic_symbol_relocation::<A>(got_address, 0, res.dynamic_symbol_index()?)?;
+            self.write_dynamic_symbol_relocation::<A>(
+                got_address,
+                0,
+                res.dynamic_symbol_index()?,
+                DynamicRelocationKind::GotEntry,
+            )?;
         } else if res.value_flags.contains(ValueFlags::IFUNC) {
             self.write_ifunc_relocation::<A>(res)?;
         } else {
@@ -1174,6 +1179,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         place: u64,
         addend: i64,
         symbol_index: u32,
+        kind: DynamicRelocationKind,
     ) -> Result {
         let _span = tracing::trace_span!("write_dynamic_symbol_relocation").entered();
         debug_assert_bail!(
@@ -1188,7 +1194,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
             LittleEndian,
             false,
             symbol_index,
-            A::get_dynamic_relocation_type(DynamicRelocationKind::DynamicSymbol),
+            A::get_dynamic_relocation_type(kind),
         );
         Ok(())
     }
@@ -2239,6 +2245,7 @@ fn write_absolute_relocation<A: Arch>(
             place,
             addend,
             resolution.dynamic_symbol_index()?,
+            DynamicRelocationKind::Absolute,
         )?;
         Ok(0)
     } else if table_writer.output_kind.is_relocatable() && !resolution.is_absolute() {
