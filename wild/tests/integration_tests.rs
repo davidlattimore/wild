@@ -2158,7 +2158,8 @@ fn integration_test(
         "tls-local-exec.c",
         "undefined_symbols.c",
         "whole_archive.c",
-        "shared.c"
+        "shared.c",
+        "duplicate_strong_symbols.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),

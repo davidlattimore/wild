@@ -28,6 +28,7 @@ use ahash::HashMap;
 use ahash::RandomState;
 use anyhow::Context;
 use anyhow::bail;
+use crossbeam_queue::SegQueue;
 use itertools::Itertools;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
@@ -37,6 +38,7 @@ use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use std::collections::hash_map;
 use std::fmt::Display;
+use std::fmt::Write;
 use std::mem::replace;
 use std::mem::take;
 
@@ -596,25 +598,27 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
     resolved: &[ResolvedGroup],
 ) -> Result {
     let mut buckets = take(&mut symbol_db.buckets);
+    let error_queue = SegQueue::new();
 
     let replacements: Vec<Vec<(SymbolId, SymbolId)>> = buckets
         .par_iter_mut()
         .map(|bucket| {
-            let mut replacements = Vec::new();
-
-            let mut add_replacement = |a, b| {
-                replacements.push((a, b));
-            };
+            let mut local_replacements = Vec::new();
 
             for (first, alternatives) in replace(
                 &mut bucket.alternative_definitions,
                 HashMap::with_hasher(RandomState::new()),
             ) {
-                let selected = select_symbol(symbol_db, first, &alternatives, resolved);
-                add_replacement(first, selected);
-
-                for alt in alternatives {
-                    add_replacement(alt, selected);
+                match select_symbol(symbol_db, first, &alternatives, resolved) {
+                    Ok(selected) => {
+                        local_replacements.push((first, selected));
+                        for alt in alternatives {
+                            local_replacements.push((alt, selected));
+                        }
+                    }
+                    Err(err) => {
+                        error_queue.push(err);
+                    }
                 }
             }
 
@@ -622,17 +626,35 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
                 &mut bucket.alternative_versioned_definitions,
                 HashMap::with_hasher(RandomState::new()),
             ) {
-                let selected = select_symbol(symbol_db, first, &alternatives, resolved);
-                add_replacement(first, selected);
-
-                for alt in alternatives {
-                    add_replacement(alt, selected);
+                match select_symbol(symbol_db, first, &alternatives, resolved) {
+                    Ok(selected) => {
+                        local_replacements.push((first, selected));
+                        for alt in alternatives {
+                            local_replacements.push((alt, selected));
+                        }
+                    }
+                    Err(err) => {
+                        error_queue.push(err);
+                    }
                 }
             }
-
-            replacements
+            local_replacements
         })
         .collect();
+
+    let mut duplicate_errors: Vec<anyhow::Error> = error_queue.into_iter().collect();
+    duplicate_errors.sort_by_key(|e| e.to_string());
+
+    if !duplicate_errors.is_empty() {
+        let error_details = duplicate_errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow::Error::msg(format!(
+            "Duplicate symbols detected: {error_details}"
+        )));
+    }
 
     for (a, b) in replacements.iter().flat_map(|r| r.iter()) {
         symbol_db.replace_definition(*a, *b);
@@ -650,23 +672,23 @@ fn select_symbol(
     symbol_id: SymbolId,
     alternatives: &[SymbolId],
     resolved: &[ResolvedGroup],
-) -> SymbolId {
-    let first_strength = symbol_db.symbol_strength(symbol_id, resolved);
-    if first_strength == SymbolStrength::Strong {
-        return symbol_id;
-    }
+) -> Result<SymbolId, anyhow::Error> {
     let mut max_common = None;
-    for &alt in alternatives.iter().rev() {
-        // Dynamic symbols, even strong ones, don't override non-dynamic weak symbols.
+    let mut strong_symbols = Vec::new();
+
+    let all_symbols = std::iter::once(symbol_id).chain(alternatives.iter().copied());
+
+    for alt in all_symbols {
         if symbol_db
             .symbol_value_flags(alt)
             .contains(ValueFlags::DYNAMIC)
         {
             continue;
         }
+
         let strength = symbol_db.symbol_strength(alt, resolved);
         match strength {
-            SymbolStrength::Strong => return alt,
+            SymbolStrength::Strong => strong_symbols.push(alt),
             SymbolStrength::Common(size) => {
                 if let Some((previous_size, _)) = max_common {
                     if size <= previous_size {
@@ -678,19 +700,46 @@ fn select_symbol(
             _ => {}
         }
     }
+
+    if strong_symbols.len() > 1 {
+        let already_defined_in = symbol_db.file_id_for_symbol(*strong_symbols.first().unwrap());
+
+        return Err(anyhow::Error::msg(format!(
+            "{}{}, previously defined in {}",
+            symbol_db.symbol_name_for_display(symbol_id),
+            strong_symbols
+                .iter()
+                .skip(1)
+                .fold(String::new(), |mut output, &s| {
+                    let fid = symbol_db.file_id_for_symbol(s);
+                    write!(output, ", defined in {}", symbol_db.file(fid)).unwrap();
+                    output
+                }),
+            symbol_db.file(already_defined_in)
+        )));
+    }
+
+    if let Some(&strong_symbol) = strong_symbols.first() {
+        return Ok(strong_symbol);
+    }
+
     if let Some((_, alt)) = max_common {
-        return alt;
+        return Ok(alt);
     }
+
+    let first_strength = symbol_db.symbol_strength(symbol_id, resolved);
     if first_strength != SymbolStrength::Undefined {
-        return symbol_id;
+        return Ok(symbol_id);
     }
+
     for &alt in alternatives.iter().rev() {
         let strength = symbol_db.symbol_strength(alt, resolved);
         if strength != SymbolStrength::Undefined {
-            return alt;
+            return Ok(alt);
         }
     }
-    symbol_id
+
+    Ok(symbol_id)
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
