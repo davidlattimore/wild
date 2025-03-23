@@ -217,6 +217,16 @@ impl Config {
                 // replicate.
                 "section.rodata.entsize",
                 "section.rodata.flags",
+                // We emit dynamic relocations for direct references to undefined weak symbols that
+                // might be provided at runtime as well as GOT entries for indirect references. GNU
+                // ld and lld only emit the GOT entries and leave direct references as null. Our
+                // behaviour seems more consistent with the description of
+                // `-zdynamic-undefined-weak`.
+                "rel.undefined-weak.dynamic.R_X86_64_64",
+                "rel.undefined-weak.dynamic.R_AARCH64_ABS64",
+                // On aarch64, GNU ld, at least sometimes, converts R_AARCH64_ABS64 to a PLT-forming
+                // relocation. We at present, don't.
+                "rel.dynamic-plt-bypass",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
@@ -384,12 +394,16 @@ impl<'data> Binary<'data> {
         self.elf_file.section_by_index(index).ok()
     }
 
-    /// Returns the name of the section that contains the supplied address. Does a linear scan, so
-    /// should only be used for error reporting.
-    fn section_containing_address(&self, address: u64) -> Option<&str> {
+    fn section_containing_address(&self, address: u64) -> Option<ElfSection64<LittleEndian>> {
         self.elf_file
             .sections()
             .find(|sec| (sec.address()..sec.address() + sec.size()).contains(&address))
+    }
+
+    /// Returns the name of the section that contains the supplied address. Does a linear scan, so
+    /// should only be used for error reporting.
+    fn section_name_containing_address(&self, address: u64) -> Option<&str> {
+        self.section_containing_address(address)
             .and_then(|sec| sec.name().ok())
     }
 }

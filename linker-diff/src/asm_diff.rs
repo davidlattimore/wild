@@ -91,6 +91,10 @@ use std::ops::Range;
 /// Set this environment variable to a function name to show only diffs for that function.
 const SHOW_FUNCTION_ENV: &str = "LINKER_DIFF_FOCUS_FUNCTION";
 
+/// The kinds of sections that we support diffing here. Note, some other kinds of sections are
+/// diffed elsewhere in linker-diff. e.g. `init_array` and `fini_array`.
+const SUPPORTED_SECTION_KINDS: &[SectionKind] = &[SectionKind::Text, SectionKind::Data];
+
 /// Reports differences in sections in particular differences in the relocations that were applied
 /// to those sections, although the literal bytes between the relocations are also diffed.
 pub(crate) fn report_section_diffs<A: Arch>(report: &mut Report, binaries: &[Binary]) {
@@ -155,6 +159,15 @@ fn compare_sections<A: Arch>(
         {
             sec_cov.diffed = true;
         }
+    }
+
+    // We already filtered input sections based on their kind. Now we filter based on the output
+    // section into which the input section was placed. If we don't do this, we're likely to end up
+    // diffing input sections like '.ctors' which are often just set to PROGBITS.
+    if determine_output_section_kind(binaries, &section_versions.addresses_by_binary)
+        .is_some_and(|output_section_kind| !SUPPORTED_SECTION_KINDS.contains(&output_section_kind))
+    {
+        return Ok(());
     }
 
     let mut testers = binaries
@@ -258,6 +271,20 @@ fn compare_sections<A: Arch>(
     )?;
 
     Ok(())
+}
+
+fn determine_output_section_kind(
+    binaries: &[Binary<'_>],
+    addresses_by_binary: &[u64],
+) -> Option<SectionKind> {
+    binaries
+        .iter()
+        .zip(addresses_by_binary)
+        .rev()
+        .find_map(|(bin, address)| {
+            bin.section_containing_address(*address)
+                .map(|section| section.kind())
+        })
 }
 
 /// If we got a match failure, then advance to the start of the next function, or if there is no
@@ -602,7 +629,8 @@ impl<A: Arch> ExecDiff<'_, A> {
             annotations,
             reference: self.original_annotations.last().map(|a| a.reference),
             trace_messages: Vec::new(),
-            section_bytes: original_section.data()?,
+            section_bytes: original_section.data().ok(),
+            section_size: original_section.size(),
             section_address: 0,
             range: range.start..range.end,
             function_info,
@@ -611,9 +639,7 @@ impl<A: Arch> ExecDiff<'_, A> {
         }];
 
         for (res, tester) in self.resolutions.iter().zip(self.testers) {
-            let section_bytes = tester
-                .section_bytes
-                .context("Missing executable section bytes")?;
+            let section_bytes = tester.section_bytes;
 
             let block = RelocationInstructionBlock {
                 name: &tester.bin.name,
@@ -623,6 +649,7 @@ impl<A: Arch> ExecDiff<'_, A> {
                     range.start + tester.section_address..range.end + tester.section_address,
                 ),
                 section_bytes,
+                section_size: tester.section_size,
                 section_address: tester.section_address,
                 range: range.start..range.end,
                 function_info,
@@ -633,14 +660,16 @@ impl<A: Arch> ExecDiff<'_, A> {
             blocks.push(block);
         }
 
-        for block in &mut blocks {
-            let mut trace = TraceOutput::default();
+        if original_section.kind() == SectionKind::Text {
+            for block in &mut blocks {
+                let mut trace = TraceOutput::default();
 
-            crate::diagnostics::trace_scope(&mut trace, || {
-                block.decode_instructions();
-            });
+                crate::diagnostics::trace_scope(&mut trace, || {
+                    block.decode_instructions();
+                });
 
-            block.trace.append(trace);
+                block.trace.append(trace);
+            }
         }
 
         let maximum_widths = blocks.iter().fold(ColumnWidths::default(), |widths, b| {
@@ -744,6 +773,32 @@ fn diff_key_for_res_mismatch<A: Arch>(
         return "missing-resolutions".to_owned();
     }
 
+    match (
+        &resolutions[0].reference.referent,
+        &resolutions[1].reference.referent,
+    ) {
+        (Referent::DynamicRelocation(d), Referent::UnmatchedAddress(unmatched)) => {
+            if d.entry.is_weak && unmatched.address == 0 {
+                // The reference linker emitted a null and we emitted a dynamic
+                // relocation for a weak symbol.
+                return format!("rel.undefined-weak.dynamic.{}", d.r_type);
+            }
+        }
+        (Referent::DynamicRelocation(ours), Referent::DynamicRelocation(theirs)) => {
+            if !resolutions[0].reference.props.via_plt
+                && resolutions[1].reference.props.via_plt
+                && ours.addend == 0
+                && theirs.addend == 0
+                && ours.entry == theirs.entry
+            {
+                // We used an in-place relocation where the reference linker emitted the address of
+                // a PLT entry for the same symbol.
+                return "rel.dynamic-plt-bypass".to_owned();
+            }
+        }
+        _ => {}
+    }
+
     // We might have failed to match one of the reference linker outputs, so find the first
     // reference linker output that we successfully matched.
     let reference = resolutions
@@ -845,7 +900,9 @@ struct RelocationInstructionBlock<'data, A: Arch> {
     trace_messages: Vec<&'data str>,
 
     /// The bytes of the section.
-    section_bytes: &'data [u8],
+    section_bytes: Option<&'data [u8]>,
+
+    section_size: u64,
 
     /// The base address of the section. For input files, this is just zero. This only affects how
     /// addresses are rendered.
@@ -1028,11 +1085,7 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
     fn widths(&self) -> ColumnWidths {
         ColumnWidths {
             name: self.name.len(),
-            address: format!(
-                "{:x}",
-                self.section_address + self.section_bytes.len() as u64
-            )
-            .len(),
+            address: format!("{:x}", self.section_address + self.section_size).len(),
             instruction_bytes: self
                 .instructions
                 .iter()
@@ -1044,8 +1097,12 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
 
     /// Decodes and stores the instructions that we're going to display.
     fn decode_instructions(&mut self) {
+        let Some(section_bytes) = self.section_bytes else {
+            return;
+        };
+
         self.instructions = A::decode_instructions_in_range(
-            self.section_bytes,
+            section_bytes,
             self.section_address,
             self.function_info.offset_in_section,
             self.range.clone(),
@@ -1100,23 +1157,40 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
                         + 7
                         + (annotation.offset_in_section - instruction_offset) as usize * 3;
 
-                    annotation.write(f, num_spaces)?;
+                    annotation.write(f, &format!("{:num_spaces$}", ""))?;
 
                     annotations.next();
                 }
             }
         }
 
-        // If we failed to match, then we might not have any instructions. In that case, print any
-        // remaining annotations.
-        for annotation in annotations {
-            write!(f, "{:name_width$} ", self.name.blue())?;
+        if self.instructions.is_empty() {
+            write!(
+                f,
+                "{name:name_width$} 0x{address:0address_width$x}: [ ",
+                name = self.name.blue(),
+                address = self.section_address + self.range.start,
+            )?;
 
-            annotation.write(f, 0)?;
+            for i in self.range.clone() {
+                let byte = self
+                    .section_bytes
+                    .and_then(|bytes| bytes.get(i as usize).copied())
+                    .unwrap_or(0);
+
+                write!(f, "{} ", format!("{byte:02x}").yellow())?;
+            }
+            writeln!(f, "]")?;
+        }
+
+        // Print any remaining annotations.
+        for annotation in annotations {
+            let num_spaces = name_width + address_width + 6;
+            annotation.write(f, &format!("{:num_spaces$} ", self.name.blue()))?;
         }
 
         if let Some(r) = self.reference {
-            write!(f, "{:name_width$} ", "")?;
+            write!(f, "{:name_width$} ", self.name.blue())?;
             r.write_to(f)?;
         }
 
@@ -1144,41 +1218,40 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
 }
 
 impl<A: Arch> Annotation<'_, A> {
-    fn write(&self, f: &mut String, num_spaces: usize) -> Result {
+    fn write(&self, f: &mut String, line_prefix: &str) -> Result {
         match &self.kind {
             AnnotationKind::MatchedRelaxation(inner) => {
-                inner.write_to(f, num_spaces)?;
+                inner.write_to(f, line_prefix)?;
+                writeln!(f)?;
             }
             AnnotationKind::Ambiguous(possible) => {
                 for a in possible {
-                    a.write_to(f, num_spaces)?;
+                    a.write_to(f, line_prefix)?;
                     writeln!(f)?;
                 }
             }
             AnnotationKind::MatchFailed(failures) => {
                 for m in failures {
-                    write!(f, "{:num_spaces$}", "")?;
+                    write!(f, "{line_prefix}")?;
                     m.write_to(f)?;
                     writeln!(f)?;
                 }
             }
             AnnotationKind::Error(error) => {
-                writeln!(f, "{:num_spaces$}{}", "", error.red())?;
+                writeln!(f, "{line_prefix}{}", error.red())?;
             }
             AnnotationKind::LiteralByteMismatch => {
                 return Ok(());
             }
         }
 
-        writeln!(f)?;
-
         Ok(())
     }
 }
 
 impl<A: Arch> MatchedRelaxation<A> {
-    fn write_to(&self, f: &mut String, num_spaces: usize) -> Result {
-        write!(f, "{:num_spaces$}", "")?;
+    fn write_to(&self, f: &mut String, line_prefix: &str) -> Result {
+        write!(f, "{line_prefix}")?;
         write_carets_for_r_type(f, self.r_type)?;
         write!(f, "{} ", self.r_type.to_string().green())?;
         if let Some(r) = self.relaxation_kind {
@@ -1190,10 +1263,10 @@ impl<A: Arch> MatchedRelaxation<A> {
 }
 
 impl<'data, A: Arch> RelaxationMatch<'data, A> {
-    fn write_to(&self, f: &mut String, num_spaces: usize) -> Result {
+    fn write_to(&self, f: &mut String, line_prefix: &str) -> Result {
         let rel = self.relaxation;
 
-        write!(f, "{:num_spaces$}", "")?;
+        write!(f, "{line_prefix}")?;
         write_carets_for_r_type(f, rel.new_r_type)?;
 
         write!(f, "{} ", rel.new_r_type.to_string().green())?;
@@ -1529,6 +1602,10 @@ impl<R: RType> DynamicRelocation<'_, R> {
             out.r_type = R::from_dynamic_relocation_kind(DynamicRelocationKind::GotEntry);
         }
 
+        // TODO: Remove this. We currently don't propagate symbol visibility correctly when emitting
+        // dynamic symbols.
+        out.entry.is_weak = false;
+
         out
     }
 }
@@ -1540,7 +1617,7 @@ impl<R: RType> DynamicRelocation<'_, R> {
             "{}{}{}",
             self.r_type.to_string().green().bold(),
             arrow(),
-            self.symbol.to_string().cyan()
+            self.entry.to_string().cyan()
         )?;
         if self.addend != 0 {
             write!(f, " {:+}", self.addend)?;
@@ -1561,6 +1638,8 @@ struct RelaxationTester<'data> {
     section_address: u64,
 
     section_bytes: Option<&'data [u8]>,
+
+    section_size: u64,
 
     /// The exclusive offset of the end of the previous resolution. Bytes from this offset should be
     /// checked when considering the next resolution.
@@ -1609,6 +1688,7 @@ impl<'data> RelaxationTester<'data> {
         Ok(RelaxationTester {
             original_data: original_section.data()?,
             section_bytes,
+            section_size: original_section.size(),
             previous_end: 0,
             next_modifier: RelocationModifier::Normal,
             bin,
@@ -1758,6 +1838,32 @@ impl<'data> RelaxationTester<'data> {
         let last_match = relaxations_matches.last().unwrap();
 
         for relaxation_match in relaxations_matches {
+            // If we get any runtime relocation, then use that. We should generally only see these
+            // in data sections (provided text relocations are disabled).
+            if let Some(runtime_relocation) = self
+                .bin
+                .address_index
+                .relocation_at_address(self.section_address + relaxation_match.start)
+            {
+                let r_type = get_r_type(runtime_relocation);
+                if let Some(symbol) = self.symtab_entry_for_relocation(runtime_relocation) {
+                    return Ok(Reference {
+                        referent: Referent::DynamicRelocation(DynamicRelocation {
+                            entry: *symbol,
+                            r_type,
+                            addend: runtime_relocation.addend(),
+                        }),
+                        props: ReferenceProperties {
+                            via_plt: false,
+                            via_got: false,
+                        },
+                    });
+                } else if r_type.is_relative() {
+                    merged_value = merged_value.wrapping_add(runtime_relocation.addend() as u64);
+                    continue;
+                }
+            }
+
             let mut value = relaxation_match.value;
 
             // We keep the addend separate from the value because we need to handle merged-strings
@@ -1821,11 +1927,12 @@ impl<'data> RelaxationTester<'data> {
                     bail!(
                         "PLT entry at 0x{pointer:x} points to non-GOT address 0x{got_address:x} in {}",
                         self.bin
-                            .section_containing_address(got_address)
+                            .section_name_containing_address(got_address)
                             .unwrap_or("??")
                     );
                 }
 
+                allow_got_dereference = true;
                 pointer = got_address;
             }
 
@@ -2132,10 +2239,22 @@ impl<'data> RelaxationTester<'data> {
     /// Returns whether section bytes are equal to the original input file from `self.previous_end`
     /// up to, but not including `offset`.
     fn is_equal_up_to(&self, offset: u64) -> bool {
-        self.section_bytes.is_some_and(|b| {
-            b[self.previous_end as usize..offset as usize]
-                == self.original_data[self.previous_end as usize..offset as usize]
-        })
+        (self.section_bytes.is_none() && self.original_data.is_empty())
+            || self.section_bytes.is_some_and(|b| {
+                b[self.previous_end as usize..offset as usize]
+                    == self.original_data[self.previous_end as usize..offset as usize]
+            })
+    }
+
+    fn symtab_entry_for_relocation(
+        &self,
+        runtime_relocation: &object::Relocation,
+    ) -> Option<&SymtabEntryInfo<'data>> {
+        if let object::RelocationTarget::Symbol(symbol_index) = runtime_relocation.target() {
+            return self.bin.address_index.dynamic_symbols.get(symbol_index.0);
+        }
+
+        None
     }
 }
 
@@ -2188,10 +2307,10 @@ fn symbol_versions_by_name<'data>(
             let section = layout.get_elf_section(symbol_info.section_id).ok()?;
 
             // Merge sections are ignored, since they're split before copying, so can't be compared
-            // 1:1 between output files. For now at least, we ignore non-text sections.
+            // 1:1 between output files.
             if is_merge_section(&section)
                 || section.size() == 0
-                || section.kind() != SectionKind::Text
+                || !SUPPORTED_SECTION_KINDS.contains(&section.kind())
             {
                 None
             } else {
@@ -2412,6 +2531,12 @@ pub(crate) fn validate_got_plt(bin: &Binary) -> Result {
 
 const ORIG: &str = "ORIG";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SymtabEntryInfo<'data> {
+    name: SymbolName<'data>,
+    is_weak: bool,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct SymbolName<'data> {
     bytes: &'data [u8],
@@ -2455,7 +2580,7 @@ pub(crate) struct AddressIndex<'data> {
     verneed: Vec<Option<&'data [u8]>>,
 
     /// Dynamic symbol names by their index.
-    dynamic_symbol_names: Vec<SymbolName<'data>>,
+    dynamic_symbols: Vec<SymtabEntryInfo<'data>>,
     is_relocatable: bool,
     bin_attributes: BinAttributes,
 
@@ -2538,7 +2663,7 @@ impl<'data> AddressIndex<'data> {
             got_tables: Default::default(),
             verdef: Default::default(),
             verneed: Default::default(),
-            dynamic_symbol_names: Default::default(),
+            dynamic_symbols: Default::default(),
             jmprel_got_addresses: Vec::new(),
             dynamic_relocations_by_address: Default::default(),
             is_relocatable: is_relocatable(elf_file),
@@ -2566,7 +2691,7 @@ impl<'data> AddressIndex<'data> {
         self.index_dynamic(elf_file);
         self.verdef = Self::index_verdef(elf_file)?;
         self.verneed = Self::index_verneed(elf_file)?;
-        self.dynamic_symbol_names = self.index_dynamic_symbols(elf_file)?;
+        self.dynamic_symbols = self.index_dynamic_symbols(elf_file)?;
         self.index_got_tables(elf_file).unwrap();
         self.index_relocations(elf_file);
         self.index_plt_sections(elf_file)?;
@@ -2642,7 +2767,10 @@ impl<'data> AddressIndex<'data> {
         Ok(versions)
     }
 
-    fn index_dynamic_symbols(&self, elf_file: &ElfFile64<'data>) -> Result<Vec<SymbolName<'data>>> {
+    fn index_dynamic_symbols(
+        &self,
+        elf_file: &ElfFile64<'data>,
+    ) -> Result<Vec<SymtabEntryInfo<'data>>> {
         let symbol_version_indexes: Option<&[u16]> = self
             .versym_address
             .and_then(|address| {
@@ -2676,16 +2804,22 @@ impl<'data> AddressIndex<'data> {
             };
 
             while dynamic_symbol_names.len() < sym_index {
-                dynamic_symbol_names.push(SymbolName {
-                    bytes: &[],
-                    version: None,
+                dynamic_symbol_names.push(SymtabEntryInfo {
+                    name: SymbolName {
+                        bytes: &[],
+                        version: None,
+                    },
+                    is_weak: false,
                 });
             }
 
             let name_bytes = sym.name_bytes()?;
-            dynamic_symbol_names.push(SymbolName {
-                bytes: name_bytes,
-                version,
+            dynamic_symbol_names.push(SymtabEntryInfo {
+                name: SymbolName {
+                    bytes: name_bytes,
+                    version,
+                },
+                is_weak: sym.is_weak(),
             });
         }
 
@@ -2917,7 +3051,7 @@ impl<'data> GotIndex<'data> {
             let symbol = if let object::RelocationTarget::Symbol(symbol_index) = rel.target() {
                 Some(
                     index
-                        .dynamic_symbol_names
+                        .dynamic_symbols
                         .get(symbol_index.0)
                         .context("Symbol index out of range")?,
                 )
@@ -2941,7 +3075,7 @@ impl<'data> GotIndex<'data> {
                     let symbol = symbol.with_context(|| format!("{r_type} without symbol"))?;
 
                     Ok(Referent::DynamicRelocation(DynamicRelocation {
-                        symbol: *symbol,
+                        entry: *symbol,
                         r_type,
                         addend: rel.addend(),
                     }))
@@ -2979,7 +3113,7 @@ impl<'data> GotIndex<'data> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DynamicRelocation<'data, R: RType> {
-    symbol: SymbolName<'data>,
+    entry: SymtabEntryInfo<'data>,
     r_type: R,
     addend: i64,
 }
@@ -3186,4 +3320,14 @@ fn populate_section_coverage(cov: &mut crate::Coverage, layout: &IndexedLayout<'
             },
         );
     });
+}
+
+impl Display for SymtabEntryInfo<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.name, f)?;
+        if self.is_weak {
+            write!(f, " (weak)")?;
+        }
+        Ok(())
+    }
 }
