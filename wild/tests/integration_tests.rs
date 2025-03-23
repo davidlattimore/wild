@@ -2123,6 +2123,7 @@ fn integration_test(
         "link_args.c",
         "global_definitions.c",
         "data.c",
+        "data-pointers.c",
         "weak-vars.c",
         "weak-vars-archive.c",
         "weak-fns.c",
