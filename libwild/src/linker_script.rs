@@ -58,11 +58,12 @@ fn maybe_apply_sysroot(
     }
 }
 
-pub(crate) fn maybe_forced_sysroot(path: &Path, sysroot: &Path) -> Option<Box<Path>> {
-    path.strip_prefix("=")
-        .or_else(|_| path.strip_prefix("$SYSROOT"))
-        .ok()
-        .map(|stripped| Box::from(sysroot.join(stripped)))
+pub(crate) fn maybe_forced_sysroot(lib_path: &Path, sysroot: &Path) -> Option<Box<Path>> {
+    let lib_path_str = lib_path.to_string_lossy();
+    lib_path_str
+        .strip_prefix('=')
+        .or_else(|| lib_path_str.strip_prefix("$SYSROOT"))
+        .map(|stripped| Box::from(sysroot.join(stripped.trim_start_matches('/'))))
 }
 
 /// A version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
@@ -678,11 +679,20 @@ mod tests {
             ),
             None,
         );
-        // Sysroot enforced by `=`
+        // Sysroot enforced by `=/`
         assert_equal(
             maybe_apply_sysroot(
                 Path::new("/lib/libc.so"),
                 Path::new("=/lib/libc.so.6"),
+                sysroot,
+            ),
+            Some(Box::from(sysroot.join("lib/libc.so.6"))),
+        );
+        // Sysroot enforced by `=`
+        assert_equal(
+            maybe_apply_sysroot(
+                Path::new("/lib/libc.so"),
+                Path::new("=lib/libc.so.6"),
                 sysroot,
             ),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
@@ -692,6 +702,15 @@ mod tests {
             maybe_apply_sysroot(
                 Path::new("/lib/libc.so"),
                 Path::new("$SYSROOT/lib/libc.so.6"),
+                sysroot,
+            ),
+            Some(Box::from(sysroot.join("lib/libc.so.6"))),
+        );
+        // Sysroot enforced by `$SYSROOT`
+        assert_equal(
+            maybe_apply_sysroot(
+                Path::new("/lib/libc.so"),
+                Path::new("$SYSROOTlib/libc.so.6"),
                 sysroot,
             ),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
