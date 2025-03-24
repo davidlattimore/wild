@@ -2154,6 +2154,7 @@ fn integration_test(
         "eh_frame.c",
         "trivial_asm.s",
         "non-alloc.s",
+        "gnu-unique.c",
         "symbol-versions.c",
         "copy-relocations.c",
         "force-undefined.c",

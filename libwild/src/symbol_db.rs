@@ -542,6 +542,8 @@ impl<'data> SymbolDb<'data> {
                 SymbolStrength::Weak
             } else if obj_symbol.is_common(e) {
                 SymbolStrength::Common(obj_symbol.st_size(e))
+            } else if obj_symbol.st_bind() == object::elf::STB_GNU_UNIQUE {
+                SymbolStrength::GnuUnique
             } else {
                 SymbolStrength::Strong
             }
@@ -749,6 +751,9 @@ enum SymbolStrength {
 
     /// The object weakly defines the symbol.
     Weak,
+
+    /// The object uses STB_GNU_UNIQUE binding.
+    GnuUnique,
 
     /// The object strongly defines the symbol.
     Strong,
