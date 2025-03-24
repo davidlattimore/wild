@@ -366,6 +366,10 @@ fn is_host_debian_based() -> bool {
     )
 }
 
+fn is_musl_used() -> bool {
+    os_info::get().os_type() == Type::Alpine
+}
+
 fn host_supports_clang_with_tls_desc() -> bool {
     static CLANG_SUPPORTS_TLS_DESC: OnceLock<bool> = OnceLock::new();
 
@@ -1105,6 +1109,10 @@ fn build_obj(
                 );
 
                 command.arg(format!("-Clink-arg=--target={target}"));
+            }
+
+            if is_musl_used() {
+                command.args(["-C", "target-feature=-crt-static"]);
             }
 
             if input_type == InputType::SharedObject {
