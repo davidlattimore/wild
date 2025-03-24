@@ -25,7 +25,7 @@ iced-x86 = { version = "1.21.0", default-features = false, features = [
 ] }
 symbolic-demangle = "12.14.1"
 anyhow = "1.0.97"
-clap = { version = "4.5.31", features = ["derive"] }
+clap = { version = "4.5.32", features = ["derive"] }
 rayon = "1.10.0"
 bytemuck = { version = "1.22.0", features = ["derive"] }
 itertools = "0.14.0"
@@ -36,7 +36,7 @@ tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
 memmap2 = "0.9.5"
 memchr = "2.7.4"
-tempfile = "3.18.0"
+tempfile = "3.19.1"
 which = "7.0.2"
 ascii_table = "4.0.6"
 
