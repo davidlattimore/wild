@@ -73,6 +73,7 @@ use linker_utils::elf::secnames::*;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::Object as _;
+use object::ObjectKind;
 use object::ObjectSection as _;
 use object::ObjectSymbol as _;
 use object::RelocationTarget;
@@ -2543,7 +2544,11 @@ impl<'data> AddressIndex<'data> {
             is_relocatable: is_relocatable(elf_file),
             bin_attributes: BinAttributes {
                 // These may be overridden in `index_dynamic`.
-                output_kind: OutputKind::Executable,
+                output_kind: if elf_file.kind() == ObjectKind::Executable {
+                    OutputKind::Executable
+                } else {
+                    OutputKind::SharedObject
+                },
                 relocatability: Relocatability::NonRelocatable,
                 link_type: LinkType::Static,
             },
@@ -2798,9 +2803,8 @@ impl<'data> AddressIndex<'data> {
             self.bin_attributes.relocatability = Relocatability::Relocatable;
         }
 
-        if dynamic_segment.is_some() {
-            // We'll change back to executable if the PIE flag is set below.
-            self.bin_attributes.output_kind = OutputKind::SharedObject;
+        if dynamic_segment.is_none() {
+            self.bin_attributes.output_kind = OutputKind::Executable;
         };
 
         dynamic_segment
