@@ -41,6 +41,7 @@ use std::fmt::Display;
 use std::fmt::Write;
 use std::mem::replace;
 use std::mem::take;
+use symbolic_demangle::demangle;
 
 pub struct SymbolDb<'data> {
     pub(crate) args: &'data Args,
@@ -434,6 +435,28 @@ impl<'data> SymbolDb<'data> {
                 Group::Epilogue(_) => 0,
             })
             .sum()
+    }
+
+    /// If we have a symbol that when demangled produces `target_name`, then return the mangled
+    /// name. Note, this scans every symbol, so should only be used for debugging / diagnostic
+    /// purposes.
+    pub(crate) fn find_mangled_name(&self, target_name: &str) -> Option<String> {
+        for i in 1..self.num_symbols() {
+            let symbol_id = SymbolId(i as u32);
+            let Ok(name) = self.symbol_name(symbol_id) else {
+                continue;
+            };
+
+            let Ok(name) = std::str::from_utf8(name.bytes()) else {
+                continue;
+            };
+
+            if demangle(name) == target_name {
+                return Some(name.to_owned());
+            }
+        }
+
+        None
     }
 
     /// Returns our mapping from symbol IDs to the IDs that define them. Definitions should be

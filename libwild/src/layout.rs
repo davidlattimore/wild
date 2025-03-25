@@ -4877,6 +4877,10 @@ fn print_symbol_info(
     resolution_flags: &[AtomicResolutionFlags],
     groups: &[GroupState],
 ) {
+    let name = symbol_db
+        .find_mangled_name(name)
+        .unwrap_or_else(|| name.to_owned());
+
     let symbol_id = symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()));
     println!("Global name `{name}` refers to: {symbol_id:?}",);
 
