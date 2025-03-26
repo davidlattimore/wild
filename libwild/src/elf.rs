@@ -513,3 +513,7 @@ pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut 
         .unwrap()
         .0
 }
+
+pub(crate) fn is_hidden_symbol(symbol: &crate::elf::Symbol) -> bool {
+    symbol.st_visibility() == object::elf::STV_HIDDEN
+}

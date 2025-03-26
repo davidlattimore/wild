@@ -883,8 +883,12 @@ fn resolve_symbol<'data>(
     is_from_shared_object: bool,
 ) -> Result {
     // Don't try to resolve symbols that are already defined, e.g. locals and globals that we
-    // define. Also don't try to resolve symbol zero - the undefined symbol.
-    if !definition_out.is_undefined() || local_symbol_index.0 == 0 {
+    // define. Also don't try to resolve symbol zero - the undefined symbol. Hidden symbols exported
+    // from shared objects don't make sense, so we skip resolving them as well.
+    if !definition_out.is_undefined()
+        || local_symbol_index.0 == 0
+        || (is_from_shared_object && crate::elf::is_hidden_symbol(local_symbol))
+    {
         return Ok(());
     }
 
