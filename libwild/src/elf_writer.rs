@@ -2247,6 +2247,7 @@ fn write_absolute_relocation<A: Arch>(
             resolution.dynamic_symbol_index()?,
             DynamicRelocationKind::Absolute,
         )?;
+
         Ok(0)
     } else if table_writer.output_kind.is_relocatable() && !resolution.is_absolute() {
         let address = resolution.value_with_addend(
@@ -2256,10 +2257,10 @@ fn write_absolute_relocation<A: Arch>(
             &layout.merged_strings,
             &layout.merged_string_start_addresses,
         )?;
+
         table_writer.write_address_relocation::<A>(place, address as i64)?;
+
         Ok(0)
-    } else if resolution.value_flags.contains(ValueFlags::IFUNC) {
-        Ok(resolution.plt_address()?.wrapping_add(addend as u64))
     } else {
         resolution.value_with_addend(
             addend,

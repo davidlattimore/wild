@@ -1866,6 +1866,7 @@ impl<'data> RelaxationTester<'data> {
                 .relocation_at_address(self.section_address + relaxation_match.start)
             {
                 let r_type = get_r_type(runtime_relocation);
+
                 if let Some(symbol) = self.symtab_entry_for_relocation(runtime_relocation) {
                     return Ok(Reference {
                         referent: Referent::DynamicRelocation(DynamicRelocation {
@@ -1875,9 +1876,26 @@ impl<'data> RelaxationTester<'data> {
                         }),
                         indirection: Indirection::Direct,
                     });
-                } else if r_type.is_relative() {
-                    merged_value = merged_value.wrapping_add(runtime_relocation.addend() as u64);
-                    continue;
+                }
+
+                match r_type.dynamic_relocation_kind() {
+                    Some(DynamicRelocationKind::Relative) => {
+                        merged_value =
+                            merged_value.wrapping_add(runtime_relocation.addend() as u64);
+                        continue;
+                    }
+                    Some(DynamicRelocationKind::Irelative) => {
+                        return Ok(Reference {
+                            referent: Referent::IFunc(determine_ifunc_name(
+                                runtime_relocation.addend() as u64,
+                                self.bin,
+                            )),
+                            indirection: Indirection::Direct,
+                        });
+                    }
+                    _ => {
+                        bail!("Unhandled dynamic relocation {r_type}");
+                    }
                 }
             }
 
@@ -1894,7 +1912,9 @@ impl<'data> RelaxationTester<'data> {
 
             let relative_to = self.get_relative_to::<A>(offset, relocation_info)?;
 
-            if is_non_pointer_relocation(relocation_info.kind) {
+            if is_non_pointer_relocation(relocation_info.kind)
+                || (self.bin.address_index.is_relocatable && relocation_info.kind.is_absolute())
+            {
                 is_pointer = false;
             }
 
@@ -3168,22 +3188,28 @@ impl<'data> GotIndex<'data> {
     }
 }
 
+/// Returns the name of the ifunc resolver given the resolver address. We choose to return the name
+/// of the resolver rather than the ifunc name because GNU ld and lld are inconsistent with where
+/// they point the symbol for the ifunc, whereas the resolver's symbol consistently points at the
+/// address of the resolver.
 fn determine_ifunc_name<'data>(address: u64, bin: &Binary<'data>) -> Option<SymbolName<'data>> {
     bin.address_index
         .symbols_at_address(address)
         .iter()
         .filter_map(|symbol_index| {
             let symbol = bin.elf_file.symbol_by_index(*symbol_index).ok()?;
-            if symbol.elf_symbol().st_type() == object::elf::STT_GNU_IFUNC {
-                Some(SymbolName {
-                    bytes: symbol.name_bytes().ok()?,
-                    version: None,
-                })
-            } else {
-                None
+
+            // We're likely to get symbols of type STT_GNU_IFUNC. The resolver should be just a
+            // regular function and that's what we want.
+            if symbol.elf_symbol().st_type() != object::elf::STT_FUNC {
+                return None;
             }
+
+            Some(SymbolName {
+                bytes: symbol.name_bytes().ok()?,
+                version: None,
+            })
         })
-        // If multiple symbols meet the criteria, we arbitrarily select the later one when sorted.
         .max()
 }
 

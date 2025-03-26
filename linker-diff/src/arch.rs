@@ -135,10 +135,6 @@ pub(crate) trait RType: Copy + Debug + Display + Eq + PartialEq {
     fn opt_relocation_info(self) -> Option<RelocationKindInfo>;
 
     fn dynamic_relocation_kind(self) -> Option<DynamicRelocationKind>;
-
-    fn is_relative(self) -> bool {
-        self.dynamic_relocation_kind() == Some(DynamicRelocationKind::Relative)
-    }
 }
 
 pub(crate) trait RelaxationKind: Copy + Clone + Debug + Eq + PartialEq {

@@ -575,6 +575,16 @@ pub enum RelocationKind {
     None,
 }
 
+impl RelocationKind {
+    #[must_use]
+    pub fn is_absolute(self) -> bool {
+        matches!(
+            self,
+            RelocationKind::Absolute | RelocationKind::AbsoluteAArch64
+        )
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DynamicRelocationKind {
     Copy,
