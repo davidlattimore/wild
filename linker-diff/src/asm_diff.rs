@@ -501,7 +501,7 @@ fn get_original_annotation<'data, A: Arch>(
         },
         reference: Reference {
             referent: original_referent,
-            props: ReferenceProperties::default(),
+            indirection: Indirection::default(),
         },
         trace: orig_trace,
         offset,
@@ -785,8 +785,8 @@ fn diff_key_for_res_mismatch<A: Arch>(
             }
         }
         (Referent::DynamicRelocation(ours), Referent::DynamicRelocation(theirs)) => {
-            if !resolutions[0].reference.props.via_plt
-                && resolutions[1].reference.props.via_plt
+            if !resolutions[0].reference.indirection.is_via_plt()
+                && resolutions[1].reference.indirection.is_via_plt()
                 && ours.addend == 0
                 && theirs.addend == 0
                 && ours.entry == theirs.entry
@@ -797,6 +797,16 @@ fn diff_key_for_res_mismatch<A: Arch>(
             }
         }
         _ => {}
+    }
+
+    if resolutions[0]
+        .reference
+        .referent
+        .matches(resolutions[1].reference.referent)
+        && resolutions[0].reference.indirection == Indirection::Got
+        && resolutions[1].reference.indirection == Indirection::GotPltGot
+    {
+        return "rel.missing-got-plt-got".to_owned();
     }
 
     // We might have failed to match one of the reference linker outputs, so find the first
@@ -1398,17 +1408,27 @@ fn relaxations_match<A: Arch>(
 struct Reference<'data, R: RType> {
     referent: Referent<'data, R>,
 
-    /// The parts of the reference that aren't the referent.
-    props: ReferenceProperties,
+    /// How we got to the referent.
+    indirection: Indirection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-struct ReferenceProperties {
-    /// Whether the reference was made via the PLT.
-    via_plt: bool,
+enum Indirection {
+    #[default]
+    Direct,
+    Got,
+    PltGot,
+    GotPltGot,
+}
 
-    /// Whether the reference was made via the GOT.
-    via_got: bool,
+impl Indirection {
+    fn is_via_plt(self) -> bool {
+        matches!(self, Indirection::PltGot)
+    }
+
+    fn is_via_got(self) -> bool {
+        matches!(self, Indirection::Got | Indirection::PltGot)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1430,8 +1450,8 @@ enum Referent<'data, R: RType> {
 
     MergedString(MergedStringRef<'data>),
 
-    /// A reference to an ifunc. TODO: Validate that we're pointing to the correct ifunc.
-    IFunc,
+    /// A reference to an ifunc.
+    IFunc(Option<SymbolName<'data>>),
     DtpMod,
     UncheckedRelocation(RelocationKind),
     TlsDescCall,
@@ -1456,12 +1476,11 @@ struct UnmatchedAddress {
 
 impl<'data, R: RType> Reference<'data, R> {
     fn write_to(&self, f: &mut String) -> Result {
-        if self.props.via_plt {
-            write!(f, "PLT{}", arrow())?;
-        }
-
-        if self.props.via_got {
-            write!(f, "GOT{}", arrow())?;
+        match self.indirection {
+            Indirection::Direct => {}
+            Indirection::Got => write!(f, "GOT{}", arrow())?,
+            Indirection::PltGot => write!(f, "PLT{}GOT{}", arrow(), arrow())?,
+            Indirection::GotPltGot => write!(f, "GOT{}PLT{}GOT{}", arrow(), arrow(), arrow())?,
         }
 
         self.referent.write_to(f)?;
@@ -1470,7 +1489,7 @@ impl<'data, R: RType> Reference<'data, R> {
     }
 
     fn matches(self, other: Reference<'_, R>) -> bool {
-        self.props == other.props && self.referent.matches(other.referent)
+        self.indirection == other.indirection && self.referent.matches(other.referent)
     }
 
     fn verify_consistent_with_r_type(&self, new_r_type: R) -> Result<()> {
@@ -1478,12 +1497,12 @@ impl<'data, R: RType> Reference<'data, R> {
 
         match rel_info.kind {
             RelocationKind::PltRelative | RelocationKind::PltRelGotBase => {
-                if !self.props.via_plt {
+                if !self.indirection.is_via_plt() {
                     bail!("PLT relocation with non-PLT address");
                 }
             }
             _ => {
-                if self.props.via_plt {
+                if self.indirection.is_via_plt() {
                     bail!("Non-PLT relocation with PLT address");
                 }
             }
@@ -1495,7 +1514,7 @@ impl<'data, R: RType> Reference<'data, R> {
     fn unknown() -> Reference<'data, R> {
         Reference {
             referent: Referent::Unknown,
-            props: Default::default(),
+            indirection: Default::default(),
         }
     }
 }
@@ -1530,7 +1549,8 @@ impl<R: RType> Referent<'_, R> {
                 merged.write_to(f)?;
             }
             Referent::DynamicRelocation(dynamic_relocation) => dynamic_relocation.write_to(f)?,
-            Referent::IFunc => write!(f, "IFunc")?,
+            Referent::IFunc(Some(name)) => write!(f, "IFunc({name})")?,
+            Referent::IFunc(None) => write!(f, "UnknownIFunc")?,
             Referent::DtpMod => write!(f, "DtpMod")?,
             Referent::TlsDescCall => write!(f, "TlsDescCall")?,
             Referent::UncheckedRelocation(kind) => write!(f, "UncheckedRelocation({kind:?})")?,
@@ -1853,10 +1873,7 @@ impl<'data> RelaxationTester<'data> {
                             r_type,
                             addend: runtime_relocation.addend(),
                         }),
-                        props: ReferenceProperties {
-                            via_plt: false,
-                            via_got: false,
-                        },
+                        indirection: Indirection::Direct,
                     });
                 } else if r_type.is_relative() {
                     merged_value = merged_value.wrapping_add(runtime_relocation.addend() as u64);
@@ -1915,13 +1932,28 @@ impl<'data> RelaxationTester<'data> {
         // here.
         let last_relocation_info = last_match.relaxation.new_r_type.relocation_info()?;
 
-        let mut reference_props = ReferenceProperties::default();
+        let mut indirection = Indirection::Direct;
 
         if is_pointer {
             let mut pointer = merged_value.wrapping_sub(addend as u64);
 
+            if allow_got_dereference {
+                self.try_got_dereference::<A>(
+                    &mut referent,
+                    last_relocation_info,
+                    &mut indirection,
+                    &mut pointer,
+                )?;
+
+                allow_got_dereference = false;
+            }
+
             if let Some(got_address) = self.bin.address_index.plt_to_got_address::<A>(pointer)? {
-                reference_props.via_plt = true;
+                if indirection == Indirection::Got {
+                    indirection = Indirection::GotPltGot;
+                } else {
+                    indirection = Indirection::PltGot;
+                }
 
                 if !self.bin.address_index.is_got_address(got_address) {
                     bail!(
@@ -1936,31 +1968,16 @@ impl<'data> RelaxationTester<'data> {
                 pointer = got_address;
             }
 
-            if allow_got_dereference && self.bin.address_index.is_got_address(pointer) {
-                reference_props.via_got = true;
-
-                let got_entry = self.bin.address_index.dereference_got_address(
-                    pointer,
-                    last_relocation_info.kind,
-                    &self.bin.address_index,
+            if allow_got_dereference {
+                self.try_got_dereference::<A>(
+                    &mut referent,
+                    last_relocation_info,
+                    &mut indirection,
+                    &mut pointer,
                 )?;
-
-                match got_entry {
-                    Referent::UnmatchedAddress(unmatched) => pointer = unmatched.address,
-                    Referent::Absolute(absolute_value)
-                        if !self.bin.address_index.is_relocatable =>
-                    {
-                        // Our binary is non-relocatable, so we can treat an absolute value like
-                        // an address.
-                        pointer = absolute_value;
-                    }
-                    other => {
-                        referent = Some(other);
-                    }
-                }
             }
 
-            if reference_props.via_plt || reference_props.via_got {
+            if indirection.is_via_plt() || indirection.is_via_got() {
                 addend = 0;
                 merged_value = pointer;
             }
@@ -1986,8 +2003,42 @@ impl<'data> RelaxationTester<'data> {
 
         Ok(Reference {
             referent,
-            props: reference_props,
+            indirection,
         })
+    }
+
+    fn try_got_dereference<A: Arch>(
+        &self,
+        referent: &mut Option<Referent<'data, <A as Arch>::RType>>,
+        last_relocation_info: RelocationKindInfo,
+        indirection: &mut Indirection,
+        pointer: &mut u64,
+    ) -> Result {
+        if self.bin.address_index.is_got_address(*pointer) {
+            if *indirection == Indirection::Direct {
+                *indirection = Indirection::Got;
+            }
+
+            let got_entry = self.bin.address_index.dereference_got_address(
+                *pointer,
+                last_relocation_info.kind,
+                self.bin,
+            )?;
+
+            match got_entry {
+                Referent::UnmatchedAddress(unmatched) => *pointer = unmatched.address,
+                Referent::Absolute(absolute_value) if !self.bin.address_index.is_relocatable => {
+                    // Our binary is non-relocatable, so we can treat an absolute value like
+                    // an address.
+                    *pointer = absolute_value;
+                }
+                other => {
+                    *referent = Some(other);
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Attempts to confirm that `merged_value` is a reference to `original_referent`, or if it
@@ -2225,7 +2276,7 @@ impl<'data> RelaxationTester<'data> {
             annotations,
             reference: reference.unwrap_or(Reference {
                 referent: Referent::Unknown,
-                props: Default::default(),
+                indirection: Default::default(),
             }),
             trace: TraceOutput::default(),
         }
@@ -2861,6 +2912,7 @@ impl<'data> AddressIndex<'data> {
         self.index_plt_named(elf_file, PLT_SECTION_NAME_STR)?;
         self.index_plt_named(elf_file, PLT_SEC_SECTION_NAME_STR)?;
         self.index_plt_named(elf_file, PLT_GOT_SECTION_NAME_STR)?;
+        self.index_plt_named(elf_file, IPLT_SECTION_NAME_STR)?;
         Ok(())
     }
 
@@ -2996,7 +3048,7 @@ impl<'data> AddressIndex<'data> {
         &self,
         got_address: u64,
         relocation_kind: RelocationKind,
-        index: &AddressIndex<'data>,
+        bin: &Binary<'data>,
     ) -> Result<Referent<'data, R>> {
         let table = self
             .got_tables
@@ -3004,7 +3056,7 @@ impl<'data> AddressIndex<'data> {
             .find(|table| table.address_range.contains(&got_address))
             .context("Address isn't in any GOT tables")?;
 
-        table.dereference_got_address(got_address, relocation_kind, index)
+        table.dereference_got_address(got_address, relocation_kind, bin)
     }
 }
 
@@ -3030,8 +3082,10 @@ impl<'data> GotIndex<'data> {
         &self,
         got_address: u64,
         relocation_kind: RelocationKind,
-        index: &AddressIndex<'data>,
+        bin: &Binary<'data>,
     ) -> Result<Referent<'data, R>> {
+        let index = &bin.address_index;
+
         let offset = got_address
             .checked_sub(self.address_range.start)
             .context("got_address outside index range")?;
@@ -3066,7 +3120,10 @@ impl<'data> GotIndex<'data> {
                         ..Default::default()
                     }))
                 }
-                DynamicRelocationKind::Irelative => Ok(Referent::IFunc),
+                DynamicRelocationKind::Irelative => Ok(Referent::IFunc(determine_ifunc_name(
+                    rel.addend() as u64,
+                    bin,
+                ))),
                 DynamicRelocationKind::DtpMod => Ok(Referent::DtpMod),
                 DynamicRelocationKind::TpOff if symbol.is_none() => {
                     Ok(Referent::Absolute(rel.addend() as u64))
@@ -3109,6 +3166,25 @@ impl<'data> GotIndex<'data> {
             }
         }
     }
+}
+
+fn determine_ifunc_name<'data>(address: u64, bin: &Binary<'data>) -> Option<SymbolName<'data>> {
+    bin.address_index
+        .symbols_at_address(address)
+        .iter()
+        .filter_map(|symbol_index| {
+            let symbol = bin.elf_file.symbol_by_index(*symbol_index).ok()?;
+            if symbol.elf_symbol().st_type() == object::elf::STT_GNU_IFUNC {
+                Some(SymbolName {
+                    bytes: symbol.name_bytes().ok()?,
+                    version: None,
+                })
+            } else {
+                None
+            }
+        })
+        // If multiple symbols meet the criteria, we arbitrarily select the later one when sorted.
+        .max()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
