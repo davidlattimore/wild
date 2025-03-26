@@ -3849,29 +3849,21 @@ impl<'data> ObjectLayoutState<'data> {
         queue: &mut LocalWorkQueue,
     ) -> Result {
         for (sym_index, sym) in self.object.symbols.enumerate() {
-            if can_export_symbol(sym) {
-                let symbol_id = self.symbol_id_range().input_to_id(sym_index);
+            let symbol_id = self.symbol_id_range().input_to_id(sym_index);
 
-                if !resources.symbol_db.is_canonical(symbol_id) {
-                    continue;
-                }
+            if !can_export_symbol(sym, symbol_id, resources.symbol_db) {
+                continue;
+            }
 
-                let value_flags = resources.symbol_db.local_symbol_value_flags(symbol_id);
+            let old_flags = resources.symbol_resolution_flags[symbol_id.as_usize()]
+                .fetch_or(ResolutionFlags::EXPORT_DYNAMIC);
 
-                if value_flags.contains(ValueFlags::DOWNGRADE_TO_LOCAL) {
-                    continue;
-                }
+            if old_flags.is_empty() {
+                self.load_symbol::<A>(common, symbol_id, resources, queue)?;
+            }
 
-                let old_flags = resources.symbol_resolution_flags[symbol_id.as_usize()]
-                    .fetch_or(ResolutionFlags::EXPORT_DYNAMIC);
-
-                if old_flags.is_empty() {
-                    self.load_symbol::<A>(common, symbol_id, resources, queue)?;
-                }
-
-                if !old_flags.contains(ResolutionFlags::EXPORT_DYNAMIC) {
-                    export_dynamic(common, symbol_id, resources.symbol_db)?;
-                }
+            if !old_flags.contains(ResolutionFlags::EXPORT_DYNAMIC) {
+                export_dynamic(common, symbol_id, resources.symbol_db)?;
             }
         }
         Ok(())
@@ -3884,6 +3876,19 @@ impl<'data> ObjectLayoutState<'data> {
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
+        let sym = self
+            .object
+            .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
+
+        // Shared objects that we're linking against sometimes define symbols that are also defined
+        // in regular object. When that happens, if we resolve the symbol to the definition from the
+        // regular object, then the shared object might send us a request to export the definition
+        // provided by the regular object. This isn't always possible, since the symbol might be
+        // hidden.
+        if !can_export_symbol(sym, symbol_id, resources.symbol_db) {
+            return Ok(());
+        }
+
         let old_flags = resources.symbol_resolution_flags[symbol_id.as_usize()]
             .fetch_or(ResolutionFlags::EXPORT_DYNAMIC);
 
@@ -3953,11 +3958,32 @@ impl<'data> SymbolCopyInfo<'data> {
 }
 
 /// Returns whether the supplied symbol can be exported when we're outputting a shared object.
-pub(crate) fn can_export_symbol(sym: &crate::elf::SymtabEntry) -> bool {
+fn can_export_symbol(
+    sym: &crate::elf::SymtabEntry,
+    symbol_id: SymbolId,
+    symbol_db: &SymbolDb,
+) -> bool {
+    if sym.is_undefined(LittleEndian) || sym.is_local() {
+        return false;
+    }
+
     let visibility = sym.st_visibility();
-    !sym.is_undefined(LittleEndian)
-        && !sym.is_local()
-        && (visibility == object::elf::STV_DEFAULT || visibility == object::elf::STV_PROTECTED)
+
+    if visibility != object::elf::STV_DEFAULT && visibility != object::elf::STV_PROTECTED {
+        return false;
+    }
+
+    if !symbol_db.is_canonical(symbol_id) {
+        return false;
+    }
+
+    let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
+
+    if value_flags.contains(ValueFlags::DOWNGRADE_TO_LOCAL) {
+        return false;
+    }
+
+    true
 }
 
 fn process_eh_frame_data<'data, A: Arch>(
