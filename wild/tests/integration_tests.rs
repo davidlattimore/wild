@@ -2158,6 +2158,7 @@ fn integration_test(
         "symbol-versions.c",
         "copy-relocations.c",
         "force-undefined.c",
+        "libc-ifunc.c",
         "libc-integration.c",
         "rust-integration.rs",
         "rust-integration-dynamic.rs",

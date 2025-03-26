@@ -2548,7 +2548,8 @@ fn process_relocation<A: Arch>(
 
         if args.is_relocatable()
             && rel_info.kind == RelocationKind::Absolute
-            && symbol_value_flags.contains(ValueFlags::ADDRESS)
+            && (symbol_value_flags.contains(ValueFlags::ADDRESS)
+                | symbol_value_flags.contains(ValueFlags::IFUNC))
         {
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
@@ -4344,6 +4345,10 @@ impl Resolution {
         merged_strings: &OutputSectionMap<MergedStringsSection>,
         merged_string_start_addresses: &MergedStringStartAddresses,
     ) -> Result<u64> {
+        if self.value_flags.contains(ValueFlags::IFUNC) {
+            return Ok(self.plt_address()?.wrapping_add(addend as u64));
+        }
+
         // For most symbols, `raw_value` won't be zero, so we can save ourselves from looking up the
         // section to see if it's a string-merge section. For string-merge symbols with names,
         // `raw_value` will have already been computed, so we can avoid computing it again.
