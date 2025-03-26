@@ -338,8 +338,13 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 args.lib_search_path.push(handle_sysroot(Path::new(rest)));
             }
         } else if let Some(rest) = arg.strip_prefix("-l") {
+            let spec = if let Some(stripped) = rest.strip_prefix(':') {
+                InputSpec::File(Box::from(Path::new(stripped)))
+            } else {
+                InputSpec::Lib(Box::from(rest))
+            };
             args.inputs.push(Input {
-                spec: InputSpec::Lib(Box::from(rest)),
+                spec,
                 search_first: None,
                 modifiers: *modifier_stack.last().unwrap(),
             });
@@ -953,6 +958,7 @@ mod tests {
         "--sysroot=/usr/aarch64-linux-gnu",
         "--demangle",
         "--no-demangle",
+        "-l:lib85caec4suo0pxg06jm2ma7b0o.so",
     ];
 
     #[track_caller]
@@ -991,6 +997,10 @@ mod tests {
             args.sysroot,
             Some(Box::from(Path::new("/usr/aarch64-linux-gnu")))
         );
+        assert!(args.inputs.iter().any(|i| match &i.spec {
+            InputSpec::File(f) => f.as_ref() == Path::new("lib85caec4suo0pxg06jm2ma7b0o.so"),
+            InputSpec::Lib(_) => false,
+        }));
     }
 
     #[test]
