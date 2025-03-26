@@ -306,5 +306,14 @@ int main() {
     }
 #endif
 
+    // We have a weak, hidden definition of atoi in libc-integration-0.c. Provided we're dynamically
+    // linking, that definition shouldn't be exported from the shared object on account if it being
+    // hidden. That means that we should get the proper definition from libc.
+#ifdef DYNAMIC_DEP
+    if (atoi("1000") != 1000) {
+        return 126;
+    }
+#endif
+
     return 42;
 }
