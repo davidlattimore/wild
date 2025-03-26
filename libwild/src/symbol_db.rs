@@ -932,10 +932,12 @@ trait SymbolLoader<'data> {
         for symbol in self.object().symbols.iter() {
             let symbol_id = symbols_out.next;
             let mut value_flags = self.compute_value_flags(symbol);
-            if symbol.is_undefined(e) {
+
+            if symbol.is_undefined(e) || self.should_ignore_symbol(symbol) {
                 symbols_out.set_next(value_flags, SymbolId::undefined(), file_id);
                 continue;
             }
+
             let resolution = symbol_id;
 
             let local_index = symbol_id.offset_from(base_symbol_id);
@@ -980,6 +982,11 @@ trait SymbolLoader<'data> {
 
     /// Returns whether we should downgrade a symbol with the specified name to be a local.
     fn should_downgrade_to_local(&self, _name: &PreHashed<UnversionedSymbolName>) -> bool {
+        false
+    }
+
+    /// Returns whether the supplied symbol should be ignore.
+    fn should_ignore_symbol(&self, _symbol: &crate::elf::Symbol) -> bool {
         false
     }
 
@@ -1140,6 +1147,11 @@ impl<'data> SymbolLoader<'data> for DynamicObjectSymbolLoader<'_, 'data> {
 
     fn object(&self) -> &crate::elf::File<'data> {
         self.object
+    }
+
+    fn should_ignore_symbol(&self, symbol: &crate::elf::Symbol) -> bool {
+        // Shared objects shouldn't export hidden symbols. If for some reason they do, ignore them.
+        crate::elf::is_hidden_symbol(symbol)
     }
 }
 
