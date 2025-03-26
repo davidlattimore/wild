@@ -457,6 +457,8 @@ pub mod secnames {
     pub const GNU_HASH_SECTION_NAME: &[u8] = GNU_HASH_SECTION_NAME_STR.as_bytes();
     pub const PLT_SECTION_NAME_STR: &str = ".plt";
     pub const PLT_SECTION_NAME: &[u8] = PLT_SECTION_NAME_STR.as_bytes();
+    pub const IPLT_SECTION_NAME_STR: &str = ".iplt";
+    pub const IPLT_SECTION_NAME: &[u8] = IPLT_SECTION_NAME_STR.as_bytes();
     pub const PLT_GOT_SECTION_NAME_STR: &str = ".plt.got";
     pub const PLT_GOT_SECTION_NAME: &[u8] = PLT_GOT_SECTION_NAME_STR.as_bytes();
     pub const GOT_PLT_SECTION_NAME_STR: &str = ".got.plt";
