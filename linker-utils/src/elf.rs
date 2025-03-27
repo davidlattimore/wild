@@ -583,6 +583,27 @@ impl RelocationKind {
             RelocationKind::Absolute | RelocationKind::AbsoluteAArch64
         )
     }
+
+    #[must_use]
+    pub fn is_tls(self) -> bool {
+        matches!(
+            self,
+            Self::DtpOff
+                | Self::GotTpOff
+                | Self::GotTpOffGotBase
+                | Self::TlsDesc
+                | Self::TlsDescCall
+                | Self::TlsDescGot
+                | Self::TlsDescGotBase
+                | Self::TlsGd
+                | Self::TlsGdGot
+                | Self::TlsGdGotBase
+                | Self::TlsLd
+                | Self::TlsLdGot
+                | Self::TlsLdGotBase
+                | Self::TpOffAArch64
+        )
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
