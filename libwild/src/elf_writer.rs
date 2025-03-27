@@ -2497,7 +2497,7 @@ fn write_epilogue_dynamic_entries(
     table_writer: &mut TableWriter,
     epilogue_offsets: &mut EpilogueOffsets,
 ) -> Result {
-    for rpath in &layout.args().rpaths {
+    if let Some(rpath) = &layout.args().rpath {
         let offset = table_writer
             .dynsym_writer
             .strtab_writer

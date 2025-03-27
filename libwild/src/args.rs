@@ -49,7 +49,7 @@ pub struct Args {
     pub(crate) write_layout: bool,
     pub(crate) should_write_eh_frame_hdr: bool,
     pub(crate) write_trace: bool,
-    pub(crate) rpaths: Vec<String>,
+    pub(crate) rpath: Option<String>,
     pub(crate) soname: Option<String>,
     pub(crate) files_per_group: Option<u32>,
     pub(crate) gc_sections: bool,
@@ -248,7 +248,7 @@ impl Default for Args {
             write_gc_stats: None,
             gc_stats_ignore: Vec::new(),
             verbose_gc_stats: false,
-            rpaths: Vec::new(),
+            rpath: None,
             soname: None,
             execstack: false,
             should_fork: true,
@@ -469,15 +469,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             save_dir.handle_file(script)?;
             args.version_script_path = Some(PathBuf::from(script));
         } else if long_arg_eq("rpath") {
-            args.rpaths.push(
-                input
-                    .next()
-                    .context("Missing argument to -rpath")?
-                    .as_ref()
-                    .to_owned(),
-            );
+            let value = input.next().context("Missing argument to -rpath")?;
+            append_rpath(&mut args.rpath, value.as_ref());
         } else if let Some(rest) = long_arg_split_prefix("rpath=") {
-            args.rpaths.push(rest.to_owned());
+            append_rpath(&mut args.rpath, rest);
         } else if long_arg_eq("no-string-merge") {
             args.merge_strings = false;
         } else if long_arg_eq("pie") {
@@ -728,6 +723,15 @@ fn parse_number(s: &str) -> Result<u64> {
     }
 }
 
+fn append_rpath(rpath: &mut Option<String>, rpath_value: &str) {
+    if let Some(rpath) = &mut *rpath {
+        rpath.push(':');
+        rpath.push_str(rpath_value);
+    } else {
+        *rpath = Some(rpath_value.to_string());
+    }
+}
+
 impl Default for Modifiers {
     fn default() -> Self {
         Self {
@@ -959,6 +963,9 @@ mod tests {
         "--demangle",
         "--no-demangle",
         "-l:lib85caec4suo0pxg06jm2ma7b0o.so",
+        "-rpath",
+        "foo/",
+        "-rpath=bar/",
     ];
 
     #[track_caller]
@@ -1001,6 +1008,7 @@ mod tests {
             InputSpec::File(f) => f.as_ref() == Path::new("lib85caec4suo0pxg06jm2ma7b0o.so"),
             InputSpec::Lib(_) => false,
         }));
+        assert_eq!(args.rpath.as_deref(), Some("foo/:bar/"));
     }
 
     #[test]
