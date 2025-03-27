@@ -3176,7 +3176,7 @@ impl<'data> EpilogueLayoutState<'data> {
                 part_id::DYNAMIC,
                 (elf_writer::NUM_EPILOGUE_DYNAMIC_ENTRIES * dynamic_entry_size) as u64,
             );
-            for rpath in &symbol_db.args.rpaths {
+            if let Some(rpath) = symbol_db.args.rpath.as_ref() {
                 common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
                 common.allocate(part_id::DYNSTR, rpath.len() as u64 + 1);
             }
