@@ -2234,7 +2234,7 @@ fn write_absolute_relocation<A: Arch>(
     object_layout: &ObjectLayout,
     layout: &Layout,
 ) -> Result<u64> {
-    if resolution.value_flags.is_dynamic() && section_info.is_writable {
+    if resolution.value_flags.is_interposable() && section_info.is_writable {
         table_writer.write_dynamic_symbol_relocation::<A>(
             place,
             addend,

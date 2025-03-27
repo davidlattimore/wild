@@ -69,6 +69,15 @@ int sometimes_weak_fn(void) {
     return 42;
 }
 
+typedef int(*get_int_fn_t)(void);
+
+get_int_fn_t sometimes_weak_fn_ptr = sometimes_weak_fn;
+
+get_int_fn_t get_sometimes_weak_fn_ptr(void) {
+    return sometimes_weak_fn_ptr;
+}
+
+
 int black_box(int v) {
     return v;
 }

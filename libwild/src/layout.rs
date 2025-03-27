@@ -2571,16 +2571,20 @@ fn process_relocation<A: Arch>(
             A::relocation_from_raw(r_type)?
         };
 
-        if does_relocation_require_static_tls(r_type) {
-            resources
-                .has_static_tls
-                .store(true, atomic::Ordering::Relaxed);
-        }
-
         let section_is_writable = SectionFlags::from_header(section).contains(shf::WRITE);
         let mut resolution_flags = resolution_flags(rel_info.kind);
 
-        if resolution_flags.needs_direct() && symbol_value_flags.is_dynamic() {
+        if rel_info.kind.is_tls() {
+            if does_relocation_require_static_tls(r_type) {
+                resources
+                    .has_static_tls
+                    .store(true, atomic::Ordering::Relaxed);
+            }
+
+            if needs_tlsld(rel_info.kind) && !resources.uses_tlsld.load(atomic::Ordering::Relaxed) {
+                resources.uses_tlsld.store(true, atomic::Ordering::Relaxed);
+            }
+        } else if resolution_flags.needs_direct() && symbol_value_flags.is_interposable() {
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             } else if symbol_value_flags.is_function() {
@@ -2600,16 +2604,7 @@ fn process_relocation<A: Arch>(
                     );
                 }
             }
-        }
-
-        if needs_tlsld(rel_info.kind) && !resources.uses_tlsld.load(atomic::Ordering::Relaxed) {
-            resources.uses_tlsld.store(true, atomic::Ordering::Relaxed);
-        }
-
-        let previous_flags =
-            resources.symbol_resolution_flags[symbol_id.as_usize()].fetch_or(resolution_flags);
-
-        if args.is_relocatable()
+        } else if args.is_relocatable()
             && rel_info.kind == RelocationKind::Absolute
             && (symbol_value_flags.is_address() | symbol_value_flags.is_ifunc())
         {
@@ -2623,6 +2618,9 @@ fn process_relocation<A: Arch>(
                 );
             }
         }
+
+        let previous_flags =
+            resources.symbol_resolution_flags[symbol_id.as_usize()].fetch_or(resolution_flags);
 
         if previous_flags.is_empty() {
             queue.send_symbol_request(symbol_id, resources);
