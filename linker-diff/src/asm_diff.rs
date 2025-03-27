@@ -60,6 +60,7 @@ use crate::section_map;
 use anyhow::Context as _;
 use anyhow::anyhow;
 use anyhow::bail;
+use anyhow::ensure;
 use colored::ColoredString;
 use colored::Colorize as _;
 use itertools::Itertools as _;
@@ -2874,6 +2875,17 @@ impl<'data> AddressIndex<'data> {
                 _ => None,
             };
 
+            let name_bytes = sym.name_bytes()?;
+            let name = SymbolName {
+                bytes: name_bytes,
+                version,
+            };
+
+            ensure!(
+                sym.elf_symbol().st_visibility() != object::elf::STV_HIDDEN,
+                "Dynamic symbol {name} has unexpected hidden visibility"
+            );
+
             while dynamic_symbol_names.len() < sym_index {
                 dynamic_symbol_names.push(SymtabEntryInfo {
                     name: SymbolName {
@@ -2884,12 +2896,8 @@ impl<'data> AddressIndex<'data> {
                 });
             }
 
-            let name_bytes = sym.name_bytes()?;
             dynamic_symbol_names.push(SymtabEntryInfo {
-                name: SymbolName {
-                    bytes: name_bytes,
-                    version,
-                },
+                name,
                 is_weak: sym.is_weak(),
             });
         }
