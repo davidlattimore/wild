@@ -77,10 +77,7 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
         if: ${{ !contains(matrix.container, 'alpine') }}
       - run: cargo build --profile ci --workspace --no-default-features
-      - run: cargo test --profile ci --workspace
-        if: ${{ contains(matrix.container, 'alpine') }}
       - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace
-        if: ${{ !contains(matrix.container, 'alpine') }}
 
   clippy:
     name: Clippy
