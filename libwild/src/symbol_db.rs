@@ -377,7 +377,7 @@ impl<'data> SymbolDb<'data> {
         self.num_symbols_per_group[self.epilogue_file_id.group()] += 1;
 
         self.symbol_value_flags
-            .push(ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT);
+            .push(ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE);
 
         symbol_id
     }
@@ -853,23 +853,20 @@ fn load_symbols_from_file<'data>(
 
 fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFlags {
     let is_undefined = sym.is_undefined(LittleEndian);
-    let mut can_bypass_got = sym.st_visibility() != object::elf::STV_DEFAULT
+
+    let non_interposable = sym.st_visibility() != object::elf::STV_DEFAULT
         || sym.is_local()
         || args.output_kind().is_static_executable()
         // Symbols defined in an executable cannot be interposed since the executable is always the
         // first place checked for a symbol by the dynamic loader.
         || (args.output_kind().is_executable() && !is_undefined);
-    // When writing a shared object, TLS variables should never bypass the GOT, even if they're
-    // local variables.
-    if args.output_kind() == OutputKind::SharedObject && sym.st_type() == object::elf::STT_TLS {
-        can_bypass_got = false;
-    }
+
     let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {
         ValueFlags::ABSOLUTE
     } else if sym.st_type() == object::elf::STT_GNU_IFUNC {
         ValueFlags::IFUNC
     } else if is_undefined {
-        if can_bypass_got {
+        if non_interposable {
             ValueFlags::ABSOLUTE
         } else {
             // If we can't bypass the GOT, then an undefined symbol might be able to be defined at
@@ -879,8 +876,9 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFl
     } else {
         ValueFlags::ADDRESS
     };
-    if can_bypass_got {
-        flags |= ValueFlags::CAN_BYPASS_GOT;
+
+    if non_interposable {
+        flags |= ValueFlags::NON_INTERPOSABLE;
     }
     flags
 }
@@ -953,7 +951,7 @@ trait SymbolLoader<'data> {
                 // If we're downgrading to a local, then we're writing a shared object. Shared
                 // objects should never bypass the GOT for TLS variables.
                 if symbol.st_type() != object::elf::STT_TLS {
-                    value_flags |= ValueFlags::CAN_BYPASS_GOT;
+                    value_flags |= ValueFlags::NON_INTERPOSABLE;
                 }
             }
 
@@ -1272,13 +1270,13 @@ impl Prelude<'_> {
                     let def = section_id.built_in_details();
                     let name = def.start_symbol_name(output_kind).unwrap().as_bytes();
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, name));
-                    ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT
+                    ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE
                 }
                 InternalSymDefInfo::SectionEnd(section_id) => {
                     let def = section_id.built_in_details();
                     let name = def.end_symbol_name(output_kind).unwrap().as_bytes();
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, name));
-                    ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT
+                    ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE
                 }
             };
             symbols_out.set_next(value_flags, symbol_id, PRELUDE_FILE_ID);

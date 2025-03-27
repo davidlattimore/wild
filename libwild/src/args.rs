@@ -750,6 +750,10 @@ impl OutputKind {
         !matches!(self, OutputKind::SharedObject)
     }
 
+    pub(crate) fn is_shared_object(self) -> bool {
+        matches!(self, OutputKind::SharedObject)
+    }
+
     pub(crate) fn is_static_executable(self) -> bool {
         matches!(self, OutputKind::StaticExecutable(_))
     }

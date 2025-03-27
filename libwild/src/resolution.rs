@@ -1003,9 +1003,8 @@ bitflags! {
         /// The value refers to an ifunc. The actual address won't be known until runtime.
         const IFUNC = 1 << 3;
 
-        /// Whether the GOT can be bypassed for this value. Always true for non-symbols. For symbols,
-        /// this indicates that the symbol cannot be interposed (overridden at runtime).
-        const CAN_BYPASS_GOT = 1 << 4;
+        /// Whether the definition of the symbol is final and cannot be overridden at runtime.
+        const NON_INTERPOSABLE = 1 << 4;
 
         /// We have a version script and the version script says that the symbol should be downgraded to
         /// a local. It's still treated as a global for name lookup purposes, but after that, it becomes
@@ -1025,8 +1024,8 @@ impl ValueFlags {
     /// symbol gives the symbol default visibility. In this case, we want references in the object
     /// defining it as hidden to be allowed to bypass the GOT/PLT.
     pub(crate) fn merge(&mut self, other: ValueFlags) {
-        if other.can_bypass_got() {
-            *self |= ValueFlags::CAN_BYPASS_GOT;
+        if other.contains(ValueFlags::NON_INTERPOSABLE) {
+            *self |= ValueFlags::NON_INTERPOSABLE;
         }
     }
 
@@ -1060,13 +1059,8 @@ impl ValueFlags {
     }
 
     #[must_use]
-    pub(crate) fn can_bypass_got(self) -> bool {
-        self.contains(ValueFlags::CAN_BYPASS_GOT)
-    }
-
-    #[must_use]
     pub(crate) fn is_interposable(self) -> bool {
-        !self.can_bypass_got()
+        !self.contains(ValueFlags::NON_INTERPOSABLE)
     }
 }
 

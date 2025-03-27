@@ -110,7 +110,7 @@ impl crate::arch::Relaxation for Relaxation {
         let is_absolute = value_flags.is_absolute() && !value_flags.is_dynamic();
         let non_relocatable = !output_kind.is_relocatable();
         let is_absolute_address = is_known_address && non_relocatable;
-        let can_bypass_got = value_flags.can_bypass_got();
+        let interposable = value_flags.is_interposable();
 
         // IFuncs cannot be referenced directly. They always need to go via the GOT. So if we've got
         // say a PLT32 relocation, we don't want to relax it even if we're in a static executable.
@@ -173,7 +173,7 @@ impl crate::arch::Relaxation for Relaxation {
                         }
                         _ => return None,
                     }
-                } else if can_bypass_got {
+                } else if !interposable {
                     match b1 {
                         // mov *x(%rip), reg
                         0x8b => {
@@ -195,7 +195,7 @@ impl crate::arch::Relaxation for Relaxation {
                                 RelaxationKind::MovIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
                             );
-                        } else if can_bypass_got {
+                        } else if !interposable {
                             return create(
                                 RelaxationKind::MovIndirectToLea,
                                 object::elf::R_X86_64_PC32,
@@ -204,7 +204,7 @@ impl crate::arch::Relaxation for Relaxation {
                     }
                     _ => {}
                 }
-                if can_bypass_got {
+                if !interposable {
                     match section_bytes.get(offset - 2..offset)? {
                         // call *x(%rip)
                         [0xff, 0x15] => {
@@ -225,7 +225,7 @@ impl crate::arch::Relaxation for Relaxation {
                 }
                 return None;
             }
-            object::elf::R_X86_64_GOTPCREL if can_bypass_got && offset >= 2 => {
+            object::elf::R_X86_64_GOTPCREL if !interposable && offset >= 2 => {
                 match section_bytes.get(offset - 2)? {
                     // mov *x(%rip), reg
                     0x8b => {
@@ -238,7 +238,7 @@ impl crate::arch::Relaxation for Relaxation {
                 }
                 return None;
             }
-            object::elf::R_X86_64_GOTTPOFF if can_bypass_got => {
+            object::elf::R_X86_64_GOTTPOFF if output_kind.is_executable() && !interposable => {
                 match section_bytes.get(offset - 3..offset - 1)? {
                     // mov *x(%rip), reg
                     [0x48 | 0x4c, 0x8b] => {
@@ -250,13 +250,13 @@ impl crate::arch::Relaxation for Relaxation {
                     _ => {}
                 }
             }
-            object::elf::R_X86_64_PLT32 if can_bypass_got => {
+            object::elf::R_X86_64_PLT32 if !interposable => {
                 return create(RelaxationKind::NoOp, object::elf::R_X86_64_PC32);
             }
-            object::elf::R_X86_64_PLTOFF64 if can_bypass_got => {
+            object::elf::R_X86_64_PLTOFF64 if !interposable => {
                 return create(RelaxationKind::NoOp, object::elf::R_X86_64_GOTOFF64);
             }
-            object::elf::R_X86_64_TLSGD if can_bypass_got && output_kind.is_executable() => {
+            object::elf::R_X86_64_TLSGD if !interposable && output_kind.is_executable() => {
                 let kind = match TlsGdForm::identify(section_bytes, offset)? {
                     TlsGdForm::Regular => RelaxationKind::TlsGdToLocalExec,
                     TlsGdForm::Large => RelaxationKind::TlsGdToLocalExecLarge,
@@ -288,7 +288,7 @@ impl crate::arch::Relaxation for Relaxation {
                 }
             }
             object::elf::R_X86_64_GOTPC32_TLSDESC
-                if can_bypass_got && output_kind.is_static_executable() =>
+                if !interposable && output_kind.is_static_executable() =>
             {
                 // lea    0x0(%rip),%rax
                 if section_bytes.get(offset - 3..offset)? == [0x48, 0x8d, 0x05] {
