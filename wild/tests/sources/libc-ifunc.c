@@ -6,6 +6,7 @@
 // we need to diff against lld, which isn't currently enabled for cross compilation.
 //#Cross:false
 //#EnableLinker:lld
+//#RequiresGlibc:true
 
 int foo() {
   return 42;
