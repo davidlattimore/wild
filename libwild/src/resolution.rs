@@ -1025,9 +1025,48 @@ impl ValueFlags {
     /// symbol gives the symbol default visibility. In this case, we want references in the object
     /// defining it as hidden to be allowed to bypass the GOT/PLT.
     pub(crate) fn merge(&mut self, other: ValueFlags) {
-        if other.contains(ValueFlags::CAN_BYPASS_GOT) {
+        if other.can_bypass_got() {
             *self |= ValueFlags::CAN_BYPASS_GOT;
         }
+    }
+
+    #[must_use]
+    pub(crate) fn is_dynamic(self) -> bool {
+        self.contains(ValueFlags::DYNAMIC)
+    }
+
+    #[must_use]
+    pub(crate) fn is_ifunc(self) -> bool {
+        self.contains(ValueFlags::IFUNC)
+    }
+
+    #[must_use]
+    pub(crate) fn is_address(self) -> bool {
+        self.contains(ValueFlags::ADDRESS)
+    }
+
+    #[must_use]
+    pub(crate) fn is_absolute(self) -> bool {
+        self.contains(ValueFlags::ABSOLUTE)
+    }
+
+    #[must_use]
+    pub(crate) fn is_function(self) -> bool {
+        self.contains(ValueFlags::FUNCTION)
+    }
+    #[must_use]
+    pub(crate) fn is_downgraded_to_local(self) -> bool {
+        self.contains(ValueFlags::DOWNGRADE_TO_LOCAL)
+    }
+
+    #[must_use]
+    pub(crate) fn can_bypass_got(self) -> bool {
+        self.contains(ValueFlags::CAN_BYPASS_GOT)
+    }
+
+    #[must_use]
+    pub(crate) fn is_interposable(self) -> bool {
+        !self.can_bypass_got()
     }
 }
 

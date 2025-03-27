@@ -106,18 +106,17 @@ impl crate::arch::Relaxation for Relaxation {
             Some(Relaxation { kind, rel_info })
         }
 
-        let is_known_address = value_flags.contains(ValueFlags::ADDRESS);
-        let is_absolute = value_flags.contains(ValueFlags::ABSOLUTE)
-            && !value_flags.contains(ValueFlags::DYNAMIC);
+        let is_known_address = value_flags.is_address();
+        let is_absolute = value_flags.is_absolute() && !value_flags.is_dynamic();
         let non_relocatable = !output_kind.is_relocatable();
         let is_absolute_address = is_known_address && non_relocatable;
-        let can_bypass_got = value_flags.contains(ValueFlags::CAN_BYPASS_GOT);
+        let can_bypass_got = value_flags.can_bypass_got();
 
         // IFuncs cannot be referenced directly. They always need to go via the GOT. So if we've got
         // say a PLT32 relocation, we don't want to relax it even if we're in a static executable.
         // Furthermore, if we encounter a relocation like PC32 to an ifunc, then we need to change
         // it so that it goes via the GOT. This is kind of the opposite of relaxation.
-        if value_flags.contains(ValueFlags::IFUNC) {
+        if value_flags.is_ifunc() {
             return match relocation_kind {
                 object::elf::R_X86_64_PC32 => {
                     return create(RelaxationKind::NoOp, object::elf::R_X86_64_PLT32);

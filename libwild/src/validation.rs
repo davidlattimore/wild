@@ -2,8 +2,6 @@
 
 use crate::error::Result;
 use crate::layout::Layout;
-use crate::layout::ResolutionFlags;
-use crate::resolution::ValueFlags;
 use anyhow::Context;
 use anyhow::bail;
 use linker_utils::elf::secnames::GOT_SECTION_NAME_STR;
@@ -73,10 +71,10 @@ fn validate_resolution(
 ) -> Result {
     let res_flags = resolution.resolution_flags;
     let value_flags = resolution.value_flags;
-    if value_flags.contains(ValueFlags::IFUNC)
-        || res_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
-        || res_flags.contains(ResolutionFlags::GOT_TLS_OFFSET)
-        || res_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR)
+    if value_flags.is_ifunc()
+        || res_flags.needs_got_tls_module()
+        || res_flags.needs_got_tls_offset()
+        || res_flags.needs_got_tls_descriptor()
     {
         return Ok(());
     };
@@ -86,9 +84,7 @@ fn validate_resolution(
         if end_offset > got_data.len() {
             bail!("GOT offset beyond end of GOT 0x{end_offset}");
         }
-        if resolution.value_flags.contains(ValueFlags::DYNAMIC)
-            || resolution.value_flags.contains(ValueFlags::IFUNC)
-        {
+        if resolution.value_flags.is_dynamic() || resolution.value_flags.is_ifunc() {
             return Ok(());
         }
         let expected = resolution.raw_value;

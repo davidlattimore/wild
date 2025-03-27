@@ -704,10 +704,7 @@ fn select_symbol(
     let all_symbols = std::iter::once(symbol_id).chain(alternatives.iter().copied());
 
     for alt in all_symbols {
-        if symbol_db
-            .symbol_value_flags(alt)
-            .contains(ValueFlags::DYNAMIC)
-        {
+        if symbol_db.symbol_value_flags(alt).is_dynamic() {
             continue;
         }
 

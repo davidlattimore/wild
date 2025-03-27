@@ -649,10 +649,10 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
             // It might be tempting to think that this code should only be run for dynamic objects,
             // however regular objects can own dynamic symbols too if the symbol is an undefined
             // weak symbol.
-            if value_flags.contains(ValueFlags::DYNAMIC) && !current_res_flags.is_empty() {
+            if value_flags.is_dynamic() && !current_res_flags.is_empty() {
                 let name = symbol_db.symbol_name(symbol_id)?;
 
-                if current_res_flags.contains(ResolutionFlags::COPY_RELOCATION) {
+                if current_res_flags.needs_copy_relocation() {
                     // The dynamic symbol is a definition, so is handled by the epilogue. We only
                     // need to deal with the symtab entry here.
                     let entry_size = size_of::<elf::SymtabEntry>() as u64;
@@ -721,7 +721,7 @@ fn allocate_symbol_resolution(
     output_kind: OutputKind,
 ) {
     let mut r = resolution_flags.get();
-    if !r.is_empty() && value_flags.contains(ValueFlags::IFUNC) {
+    if !r.is_empty() && value_flags.is_ifunc() {
         resolution_flags.fetch_or(ResolutionFlags::GOT | ResolutionFlags::PLT);
         r |= ResolutionFlags::GOT | ResolutionFlags::PLT;
     }
@@ -751,39 +751,42 @@ fn allocate_resolution(
     mem_sizes: &mut OutputSectionPartMap<u64>,
     output_kind: OutputKind,
 ) {
-    let has_dynamic_symbol = value_flags.contains(ValueFlags::DYNAMIC)
-        || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC);
-    if resolution_flags.contains(ResolutionFlags::GOT) {
+    let has_dynamic_symbol = value_flags.is_dynamic() || resolution_flags.needs_export_dynamic();
+
+    if resolution_flags.needs_got() {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
-        if resolution_flags.contains(ResolutionFlags::PLT) {
+        if resolution_flags.needs_plt() {
             mem_sizes.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
         }
-        if value_flags.contains(ValueFlags::IFUNC) {
+        if value_flags.is_ifunc() {
             mem_sizes.increment(part_id::RELA_PLT, elf::RELA_ENTRY_SIZE);
-        } else if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
+        } else if value_flags.is_interposable() && has_dynamic_symbol {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-        } else if value_flags.contains(ValueFlags::ADDRESS) && output_kind.is_relocatable() {
+        } else if value_flags.is_address() && output_kind.is_relocatable() {
             mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
         }
     }
-    if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+
+    if resolution_flags.needs_got_tls_offset() {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
-        if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) {
+        if value_flags.is_interposable() {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
     }
-    if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
+
+    if resolution_flags.needs_got_tls_module() {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
         // For executables, the TLS module ID is known at link time. For shared objects, we
         // need a runtime relocation to fill it in.
         if !output_kind.is_executable() {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
-        if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
+        if value_flags.is_interposable() && has_dynamic_symbol {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
     }
-    if resolution_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
+
+    if resolution_flags.needs_got_tls_descriptor() {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
         mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
     }
@@ -1097,6 +1100,48 @@ struct AtomicResolutionFlags {
     value: AtomicU8,
 }
 
+impl ResolutionFlags {
+    #[must_use]
+    pub(crate) fn needs_direct(self) -> bool {
+        self.contains(ResolutionFlags::DIRECT)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_copy_relocation(self) -> bool {
+        self.contains(ResolutionFlags::COPY_RELOCATION)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_export_dynamic(self) -> bool {
+        self.contains(ResolutionFlags::EXPORT_DYNAMIC)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_got(self) -> bool {
+        self.contains(ResolutionFlags::GOT)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_plt(self) -> bool {
+        self.contains(ResolutionFlags::PLT)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_got_tls_offset(self) -> bool {
+        self.contains(ResolutionFlags::GOT_TLS_OFFSET)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_got_tls_module(self) -> bool {
+        self.contains(ResolutionFlags::GOT_TLS_MODULE)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_got_tls_descriptor(self) -> bool {
+        self.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR)
+    }
+}
+
 impl AtomicResolutionFlags {
     fn empty() -> Self {
         Self::new(ResolutionFlags::empty())
@@ -1190,7 +1235,7 @@ pub(crate) struct Section {
     pub(crate) part_id: PartId,
     /// Size in memory.
     pub(crate) size: u64,
-    pub(crate) resolution_kind: ResolutionFlags,
+    pub(crate) resolution_flags: ResolutionFlags,
     pub(crate) is_writable: bool,
 }
 
@@ -1391,7 +1436,7 @@ impl<'data> Layout<'data> {
             )
         })?;
 
-        if !resolution.value_flags().contains(ValueFlags::ADDRESS) {
+        if !resolution.value_flags().is_address() {
             bail!(
                 "Entry point must be an address. {}",
                 self.symbol_debug(symbol_id)
@@ -2463,7 +2508,7 @@ impl Section {
             index: section_index,
             part_id,
             size,
-            resolution_kind: ResolutionFlags::empty(),
+            resolution_flags: ResolutionFlags::empty(),
             is_writable: SectionFlags::from_header(object_section).contains(shf::WRITE),
         };
         Ok(section)
@@ -2532,18 +2577,17 @@ fn process_relocation<A: Arch>(
         }
 
         let section_is_writable = SectionFlags::from_header(section).contains(shf::WRITE);
-        let mut resolution_kind = resolution_flags(rel_info.kind);
-        if resolution_kind.contains(ResolutionFlags::DIRECT)
-            && symbol_value_flags.contains(ValueFlags::DYNAMIC)
-        {
+        let mut resolution_flags = resolution_flags(rel_info.kind);
+
+        if resolution_flags.needs_direct() && symbol_value_flags.is_dynamic() {
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-            } else if symbol_value_flags.contains(ValueFlags::FUNCTION) {
-                resolution_kind.remove(ResolutionFlags::DIRECT);
-                resolution_kind |= ResolutionFlags::PLT | ResolutionFlags::GOT;
-            } else if !symbol_value_flags.contains(ValueFlags::ABSOLUTE) {
+            } else if symbol_value_flags.is_function() {
+                resolution_flags.remove(ResolutionFlags::DIRECT);
+                resolution_flags |= ResolutionFlags::PLT | ResolutionFlags::GOT;
+            } else if !symbol_value_flags.is_absolute() {
                 if args.allow_copy_relocations {
-                    resolution_kind |= ResolutionFlags::COPY_RELOCATION;
+                    resolution_flags |= ResolutionFlags::COPY_RELOCATION;
                 } else {
                     // We don't at present support text relocations, so if we can't apply a copy
                     // relocation, we error instead.
@@ -2562,12 +2606,11 @@ fn process_relocation<A: Arch>(
         }
 
         let previous_flags =
-            resources.symbol_resolution_flags[symbol_id.as_usize()].fetch_or(resolution_kind);
+            resources.symbol_resolution_flags[symbol_id.as_usize()].fetch_or(resolution_flags);
 
         if args.is_relocatable()
             && rel_info.kind == RelocationKind::Absolute
-            && (symbol_value_flags.contains(ValueFlags::ADDRESS)
-                | symbol_value_flags.contains(ValueFlags::IFUNC))
+            && (symbol_value_flags.is_address() | symbol_value_flags.is_ifunc())
         {
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
@@ -2597,9 +2640,7 @@ fn process_relocation<A: Arch>(
             }
         }
 
-        if resolution_kind.contains(ResolutionFlags::COPY_RELOCATION)
-            && !previous_flags.contains(ResolutionFlags::COPY_RELOCATION)
-        {
+        if resolution_flags.needs_copy_relocation() && !previous_flags.needs_copy_relocation() {
             queue.send_copy_relocation_request(symbol_id, resources);
         }
     }
@@ -3097,7 +3138,7 @@ fn is_symbol_undefined(
 
     sym_file_id == sym_def_file_id
         && symbol.is_undefined(LittleEndian)
-        && symbol_value_flags.contains(ValueFlags::ABSOLUTE)
+        && symbol_value_flags.is_absolute()
 }
 
 impl<'data> EpilogueLayoutState<'data> {
@@ -3625,7 +3666,7 @@ impl<'data> ObjectLayoutState<'data> {
             if let SectionSlot::Loaded(section) = slot {
                 allocate_resolution(
                     ValueFlags::ADDRESS,
-                    section.resolution_kind,
+                    section.resolution_flags,
                     &mut common.mem_sizes,
                     output_kind,
                 );
@@ -3841,7 +3882,7 @@ impl<'data> ObjectLayoutState<'data> {
         };
 
         let mut dynamic_symbol_index = None;
-        if value_flags.contains(ValueFlags::DYNAMIC) {
+        if value_flags.is_dynamic() {
             // This is an undefined weak symbol. Emit it as a dynamic symbol so that it can be
             // overridden at runtime.
             let dyn_sym_index = take_dynsym_index(memory_offsets, resources.section_layouts)?;
@@ -3880,7 +3921,7 @@ impl<'data> ObjectLayoutState<'data> {
                 self.load_symbol::<A>(common, symbol_id, resources, queue)?;
             }
 
-            if !old_flags.contains(ResolutionFlags::EXPORT_DYNAMIC) {
+            if !old_flags.needs_export_dynamic() {
                 export_dynamic(common, symbol_id, resources.symbol_db)?;
             }
         }
@@ -3914,7 +3955,7 @@ impl<'data> ObjectLayoutState<'data> {
             self.load_symbol::<A>(common, symbol_id, resources, queue)?;
         }
 
-        if !old_flags.contains(ResolutionFlags::EXPORT_DYNAMIC) {
+        if !old_flags.needs_export_dynamic() {
             export_dynamic(common, symbol_id, resources.symbol_db)?;
         }
 
@@ -3997,7 +4038,7 @@ fn can_export_symbol(
 
     let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
 
-    if value_flags.contains(ValueFlags::DOWNGRADE_TO_LOCAL) {
+    if value_flags.is_downgraded_to_local() {
         return false;
     }
 
@@ -4214,25 +4255,25 @@ fn create_resolution(
         resolution_flags: res_kind,
         value_flags,
     };
-    if res_kind.contains(ResolutionFlags::PLT) {
+    if res_kind.needs_plt() {
         let plt_address = allocate_plt(memory_offsets);
         resolution.plt_address = Some(plt_address);
-        if value_flags.contains(ValueFlags::DYNAMIC) {
+        if value_flags.is_dynamic() {
             resolution.raw_value = plt_address.get();
         }
         resolution.got_address = Some(allocate_got(1, memory_offsets));
-    } else if res_kind.contains(ResolutionFlags::GOT) {
+    } else if res_kind.needs_got() {
         resolution.got_address = Some(allocate_got(1, memory_offsets));
     } else {
         // Handle the TLS GOT addresses where we can combine up to 3 different access methods.
         let mut num_got_slots = 0;
-        if res_kind.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+        if res_kind.needs_got_tls_offset() {
             num_got_slots += 1;
         }
-        if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
+        if res_kind.needs_got_tls_module() {
             num_got_slots += 2;
         }
-        if res_kind.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
+        if res_kind.needs_got_tls_descriptor() {
             num_got_slots += 2;
         }
         if num_got_slots > 0 {
@@ -4279,16 +4320,12 @@ impl Resolution {
 
     pub(crate) fn tlsgd_got_address(&self) -> Result<u64> {
         debug_assert_bail!(
-            self.resolution_flags
-                .contains(ResolutionFlags::GOT_TLS_MODULE),
+            self.resolution_flags.needs_got_tls_module(),
             "Called tlsgd_got_address without GOT_TLS_MODULE being set"
         );
         // If we've got both a GOT_TLS_OFFSET and a GOT_TLS_MODULE, then the latter comes second.
         let mut got_address = self.got_address()?;
-        if self
-            .resolution_flags
-            .contains(ResolutionFlags::GOT_TLS_OFFSET)
-        {
+        if self.resolution_flags.needs_got_tls_offset() {
             got_address += elf::GOT_ENTRY_SIZE;
         }
         Ok(got_address)
@@ -4296,23 +4333,16 @@ impl Resolution {
 
     pub(crate) fn tls_descriptor_got_address(&self) -> Result<u64> {
         debug_assert_bail!(
-            self.resolution_flags
-                .contains(ResolutionFlags::GOT_TLS_DESCRIPTOR),
+            self.resolution_flags.needs_got_tls_descriptor(),
             "Called tls_descriptor_got_address without GOT_TLS_DESCRIPTOR being set"
         );
         // We might have both GOT_TLS_OFFSET, GOT_TLS_MODULE and GOT_TLS_DESCRIPTOR at the same time
         // for a single symbol. Then the TLS descriptor comes as the last one.
         let mut got_address = self.got_address()?;
-        if self
-            .resolution_flags
-            .contains(ResolutionFlags::GOT_TLS_OFFSET)
-        {
+        if self.resolution_flags.needs_got_tls_offset() {
             got_address += elf::GOT_ENTRY_SIZE;
         }
-        if self
-            .resolution_flags
-            .contains(ResolutionFlags::GOT_TLS_MODULE)
-        {
+        if self.resolution_flags.needs_got_tls_module() {
             got_address += 2 * elf::GOT_ENTRY_SIZE;
         }
 
@@ -4332,7 +4362,7 @@ impl Resolution {
     }
 
     pub(crate) fn address(&self) -> Result<u64> {
-        if !self.value_flags.contains(ValueFlags::ADDRESS) {
+        if !self.value_flags.is_address() {
             bail!("Expected address, found {}", self.value_flags);
         }
         Ok(self.raw_value)
@@ -4343,7 +4373,7 @@ impl Resolution {
     }
 
     pub(crate) fn is_absolute(&self) -> bool {
-        self.value_flags.contains(ValueFlags::ABSOLUTE)
+        self.value_flags.is_absolute()
     }
 
     pub(crate) fn dynamic_symbol_index(&self) -> Result<u32> {
@@ -4362,7 +4392,7 @@ impl Resolution {
         merged_strings: &OutputSectionMap<MergedStringsSection>,
         merged_string_start_addresses: &MergedStringStartAddresses,
     ) -> Result<u64> {
-        if self.value_flags.contains(ValueFlags::IFUNC) {
+        if self.value_flags.is_ifunc() {
             return Ok(self.plt_address()?.wrapping_add(addend as u64));
         }
 
@@ -4700,7 +4730,7 @@ impl<'data> DynamicLayoutState<'data> {
             let address;
             let dynamic_symbol_index;
 
-            if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
+            if resolution_flags.needs_copy_relocation() {
                 let input_address = local_symbol.st_value(LittleEndian);
 
                 address = *copy_relocation_addresses
@@ -5160,9 +5190,8 @@ fn verify_consistent_allocation_handling(
     let mut memory_offsets = output_sections.new_part_map();
     *memory_offsets.get_mut(part_id::GOT) = 0x10;
     *memory_offsets.get_mut(part_id::PLT_GOT) = 0x10;
-    let has_dynamic_symbol = value_flags.contains(ValueFlags::DYNAMIC)
-        || (resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
-            && !value_flags.contains(ValueFlags::CAN_BYPASS_GOT));
+    let has_dynamic_symbol = value_flags.is_dynamic()
+        || (resolution_flags.needs_export_dynamic() && value_flags.is_interposable());
     let dynamic_symbol_index = has_dynamic_symbol.then(|| NonZeroU32::new(1).unwrap());
     let resolution = create_resolution(
         resolution_flags,
