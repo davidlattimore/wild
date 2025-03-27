@@ -1364,22 +1364,40 @@ impl<'data> Layout<'data> {
             // Shared objects don't have an entry point.
             return Ok(0);
         }
-        let symbol_id = self
-            .prelude()
-            .entry_symbol_id
-            .context("Entry point is undefined")?;
+
+        let Some(symbol_id) = self.prelude().entry_symbol_id else {
+            // There's no entry point specified, set it to the start of .text. This is pretty weird,
+            // but it's what GNU ld does.
+            let text_layout = self.section_layouts.get(output_section_id::TEXT);
+            if text_layout.mem_size == 0 {
+                crate::error::warning(
+                    "cannot find entry symbol `_start` and .text is empty, not setting entry point",
+                );
+
+                return Ok(0);
+            }
+
+            crate::error::warning(&format!(
+                "cannot find entry symbol `_start`, defaulting to 0x{}",
+                text_layout.mem_offset
+            ));
+            return Ok(text_layout.mem_offset);
+        };
+
         let resolution = self.local_symbol_resolution(symbol_id).with_context(|| {
             format!(
                 "Entry point symbol was defined, but didn't get loaded. {}",
                 self.symbol_debug(symbol_id)
             )
         })?;
+
         if !resolution.value_flags().contains(ValueFlags::ADDRESS) {
             bail!(
                 "Entry point must be an address. {}",
                 self.symbol_debug(symbol_id)
             );
         }
+
         Ok(resolution.value())
     }
 
@@ -2673,7 +2691,7 @@ impl PreludeLayoutState {
         }
 
         if resources.symbol_db.args.output_kind().is_executable() {
-            self.load_entry_point(resources, queue)?;
+            self.load_entry_point(resources, queue);
         }
 
         if resources.symbol_db.args.needs_dynsym() {
@@ -2699,15 +2717,15 @@ impl PreludeLayoutState {
         Ok(())
     }
 
-    fn load_entry_point(
-        &mut self,
-        resources: &GraphResources,
-        queue: &mut LocalWorkQueue,
-    ) -> Result {
-        let symbol_id = resources
+    fn load_entry_point(&mut self, resources: &GraphResources, queue: &mut LocalWorkQueue) {
+        let Some(symbol_id) = resources
             .symbol_db
             .get_unversioned(&UnversionedSymbolName::prehashed(b"_start"))
-            .context("Missing _start symbol")?;
+        else {
+            // We'll emit a warning when writing the file.
+            return;
+        };
+
         self.entry_symbol_id = Some(symbol_id);
         let file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
         let old_flags = resources.symbol_resolution_flags[symbol_id.as_usize()]
@@ -2715,7 +2733,6 @@ impl PreludeLayoutState {
         if old_flags.is_empty() {
             queue.send_work(resources, file_id, WorkItem::LoadGlobalSymbol(symbol_id));
         }
-        Ok(())
     }
 
     fn pre_finalise_sizes(

@@ -2142,6 +2142,7 @@ fn integration_test(
         "tls.c",
         "tlsdesc.c",
         "tls-variant.c",
+        "no_start.c",
         "old_init.c",
         "custom_section.c",
         "stack_alignment.s",
