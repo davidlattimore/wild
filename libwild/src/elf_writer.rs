@@ -881,19 +881,19 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         let resolution_flags = res.resolution_flags;
 
         // For TLS variables, we'll generally only have one of these, but we might have all 3 combinations.
-        if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET)
-            || resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE)
-            || resolution_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR)
+        if resolution_flags.needs_got_tls_offset()
+            || resolution_flags.needs_got_tls_module()
+            || resolution_flags.needs_got_tls_descriptor()
         {
-            if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+            if resolution_flags.needs_got_tls_offset() {
                 self.process_got_tls_offset::<A>(res, got_address)?;
                 got_address += crate::elf::GOT_ENTRY_SIZE;
             }
-            if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
+            if resolution_flags.needs_got_tls_module() {
                 self.process_got_tls_mod::<A>(res, got_address)?;
                 got_address += 2 * crate::elf::GOT_ENTRY_SIZE;
             }
-            if resolution_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
+            if resolution_flags.needs_got_tls_descriptor() {
                 self.process_got_tls_descriptor::<A>(res, got_address)?;
             }
             return Ok(());
@@ -901,10 +901,9 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
 
         let got_entry = self.take_next_got_entry()?;
 
-        if res.value_flags.contains(ValueFlags::DYNAMIC)
-            || (resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
-                && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
-                && !res.value_flags.contains(ValueFlags::IFUNC)
+        if res.value_flags.is_dynamic()
+            || (resolution_flags.needs_export_dynamic() && res.value_flags.is_interposable())
+                && !res.value_flags.is_ifunc()
         {
             debug_assert_bail!(
                 *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
@@ -917,11 +916,11 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
                 res.dynamic_symbol_index()?,
                 DynamicRelocationKind::GotEntry,
             )?;
-        } else if res.value_flags.contains(ValueFlags::IFUNC) {
+        } else if res.value_flags.is_ifunc() {
             self.write_ifunc_relocation::<A>(res)?;
         } else {
             *got_entry = res.raw_value;
-            if res.value_flags.contains(ValueFlags::ADDRESS) && self.output_kind.is_relocatable() {
+            if res.value_flags.is_address() && self.output_kind.is_relocatable() {
                 self.write_address_relocation::<A>(got_address, res.raw_value as i64)?;
             }
         }
@@ -933,11 +932,8 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
 
     fn process_got_tls_offset<A: Arch>(&mut self, res: &Resolution, got_address: u64) -> Result {
         let got_entry = self.take_next_got_entry()?;
-        if res.value_flags.contains(ValueFlags::DYNAMIC)
-            || (res
-                .resolution_flags
-                .contains(ResolutionFlags::EXPORT_DYNAMIC)
-                && !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT))
+        if res.value_flags.is_dynamic()
+            || (res.resolution_flags.needs_export_dynamic() && res.value_flags.is_interposable())
         {
             return self.write_tpoff_relocation::<A>(got_address, res.dynamic_symbol_index()?, 0);
         }
@@ -984,7 +980,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         }
         let offset_entry = self.take_next_got_entry()?;
         if let Some(dynamic_symbol_index) = res.dynamic_symbol_index {
-            if !res.value_flags.contains(ValueFlags::CAN_BYPASS_GOT) {
+            if res.value_flags.is_interposable() {
                 self.write_dtpoff_relocation::<A>(
                     got_address + crate::elf::TLS_OFFSET_OFFSET,
                     dynamic_symbol_index.get(),
@@ -1451,7 +1447,7 @@ impl<'data> ObjectLayout<'data> {
                 // Dynamic symbols that we define are handled by the epilogue so that they can be
                 // written in the correct order. Here, we only need to handle weak symbols that we
                 // reference that aren't defined by any shared objects we're linking against.
-                if res.value_flags.contains(ValueFlags::DYNAMIC) {
+                if res.value_flags.is_dynamic() {
                     let symbol = self
                         .object
                         .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
@@ -1491,9 +1487,7 @@ impl<'data> ObjectLayout<'data> {
                     self.input
                 )
             })?;
-        if sec.resolution_kind.contains(ResolutionFlags::GOT)
-            || sec.resolution_kind.contains(ResolutionFlags::PLT)
-        {
+        if sec.resolution_flags.needs_got() || sec.resolution_flags.needs_plt() {
             bail!("Section has GOT or PLT");
         };
         Ok(())
@@ -2240,7 +2234,7 @@ fn write_absolute_relocation<A: Arch>(
     object_layout: &ObjectLayout,
     layout: &Layout,
 ) -> Result<u64> {
-    if resolution.value_flags.contains(ValueFlags::DYNAMIC) && section_info.is_writable {
+    if resolution.value_flags.is_dynamic() && section_info.is_writable {
         table_writer.write_dynamic_symbol_relocation::<A>(
             place,
             addend,
@@ -2740,7 +2734,7 @@ fn write_copy_relocation_dynamic_symbol_definition(
     debug_assert_bail!(
         layout
             .resolution_flags_for_symbol(sym_def.symbol_id)
-            .contains(ResolutionFlags::COPY_RELOCATION),
+            .needs_copy_relocation(),
         "Tried to write copy relocation for symbol without COPY_RELOCATION flag"
     );
     let sym_index = sym_def.symbol_id.to_input(object.symbol_id_range);
@@ -3294,10 +3288,7 @@ impl<'data> DynamicLayout<'data> {
             if let Some(res) = resolution {
                 let name = self.object.symbol_name(symbol)?;
 
-                if res
-                    .resolution_flags
-                    .contains(ResolutionFlags::COPY_RELOCATION)
-                {
+                if res.resolution_flags.needs_copy_relocation() {
                     // Symbol needs a copy relocation, which means that the dynamic symbol will be
                     // written by the epilogue not by us. However, we do need to write a regular
                     // symtab entry.
