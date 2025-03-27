@@ -769,7 +769,7 @@ fn allocate_resolution(
 
     if resolution_flags.needs_got_tls_offset() {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
-        if value_flags.is_interposable() {
+        if value_flags.is_interposable() || output_kind.is_shared_object() {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
     }
@@ -2570,6 +2570,7 @@ fn process_relocation<A: Arch>(
         } else {
             A::relocation_from_raw(r_type)?
         };
+
         if does_relocation_require_static_tls(r_type) {
             resources
                 .has_static_tls
