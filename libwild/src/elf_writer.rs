@@ -3079,18 +3079,30 @@ impl DynamicEntryInputs<'_> {
     fn dt_flags(&self) -> u64 {
         let mut flags = 0;
         flags |= object::elf::DF_BIND_NOW;
+
         if !self.args.output_kind().is_executable() && self.has_static_tls {
             flags |= object::elf::DF_STATIC_TLS;
         }
+
+        if self.args.needs_origin_handling {
+            flags |= object::elf::DF_ORIGIN;
+        }
+
         u64::from(flags)
     }
 
     fn dt_flags_1(&self) -> u64 {
         let mut flags = 0;
         flags |= object::elf::DF_1_NOW;
+
         if self.args.output_kind().is_executable() && self.args.is_relocatable() {
             flags |= object::elf::DF_1_PIE;
         }
+
+        if self.args.needs_origin_handling {
+            flags |= object::elf::DF_1_ORIGIN;
+        }
+
         u64::from(flags)
     }
 
