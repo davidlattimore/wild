@@ -57,6 +57,7 @@ pub struct Args {
     pub(crate) build_id: BuildIdOption,
     pub(crate) file_write_mode: Option<FileWriteMode>,
     pub(crate) no_undefined: bool,
+    pub(crate) needs_origin_handling: bool,
     pub(crate) allow_copy_relocations: bool,
     pub(crate) sysroot: Option<Box<Path>>,
     pub(crate) undefined: Vec<String>,
@@ -252,6 +253,7 @@ impl Default for Args {
             soname: None,
             execstack: false,
             should_fork: true,
+            needs_origin_handling: false,
             file_write_mode: None,
             build_id: BuildIdOption::None,
             files_per_group: None,
@@ -307,7 +309,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         let mut handle_z_option = |arg: &str| -> Result {
             match arg {
                 "now" => {}
-                "origin" => {}
+                "origin" => args.needs_origin_handling = true,
                 "relro" => {}
                 "notext" => {}
                 "nostart-stop-gc" => {}
