@@ -778,7 +778,7 @@ fn diff_key_for_res_mismatch<A: Arch>(
         &resolutions[0].reference.referent,
         &resolutions[1].reference.referent,
     ) {
-        (Referent::DynamicRelocation(d), Referent::UnmatchedAddress(unmatched)) => {
+        (Referent::DynamicRelocation(d), Referent::Undefined(unmatched)) => {
             if d.entry.is_weak && unmatched.address == 0 {
                 // The reference linker emitted a null and we emitted a dynamic
                 // relocation for a weak symbol.
@@ -1426,10 +1426,6 @@ impl Indirection {
     fn is_via_plt(self) -> bool {
         matches!(self, Indirection::PltGot)
     }
-
-    fn is_via_got(self) -> bool {
-        matches!(self, Indirection::Got | Indirection::PltGot)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1446,6 +1442,12 @@ enum Referent<'data, R: RType> {
     DynamicRelocation(DynamicRelocation<'data, R>),
 
     UnmatchedAddress(UnmatchedAddress),
+    UnmatchedTlsOffset(i64),
+
+    /// Like `UnmatchedAddress` but where the original referent is not defined in our output file,
+    /// either because it really is undefined, or because it's a local like `.Ldata1` that is
+    /// generally not included in the symbol table.
+    Undefined(UnmatchedAddress),
 
     Absolute(u64),
 
@@ -1453,9 +1455,10 @@ enum Referent<'data, R: RType> {
 
     /// A reference to an ifunc.
     IFunc(Option<SymbolName<'data>>),
-    DtpMod,
-    UncheckedRelocation(RelocationKind),
+
+    DtpMod(SymtabEntryInfo<'data>),
     TlsDescCall,
+    TlsDesc(SymtabEntryInfo<'data>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1540,8 +1543,11 @@ impl<R: RType> Referent<'_, R> {
 
                 write!(f, ")")?;
             }
-            Referent::UnmatchedAddress(unmatched) => {
+            Referent::UnmatchedAddress(unmatched) | Referent::Undefined(unmatched) => {
                 unmatched.write_to(f)?;
+            }
+            Referent::UnmatchedTlsOffset(offset) => {
+                write!(f, "UnmatchedTlsOffset({offset})")?;
             }
             Referent::Absolute(value) => {
                 write!(f, "#0x{value:x}")?;
@@ -1550,11 +1556,11 @@ impl<R: RType> Referent<'_, R> {
                 merged.write_to(f)?;
             }
             Referent::DynamicRelocation(dynamic_relocation) => dynamic_relocation.write_to(f)?,
-            Referent::IFunc(Some(name)) => write!(f, "IFunc({name})")?,
+            Referent::TlsDesc(symbol) => write!(f, "TlsDesc({symbol})")?,
+            Referent::IFunc(Some(symbol)) => write!(f, "IFunc({symbol})")?,
             Referent::IFunc(None) => write!(f, "UnknownIFunc")?,
-            Referent::DtpMod => write!(f, "DtpMod")?,
+            Referent::DtpMod(symbol) => write!(f, "DtpMod({symbol})")?,
             Referent::TlsDescCall => write!(f, "TlsDescCall")?,
-            Referent::UncheckedRelocation(kind) => write!(f, "UncheckedRelocation({kind:?})")?,
         }
 
         Ok(())
@@ -1562,20 +1568,13 @@ impl<R: RType> Referent<'_, R> {
 
     fn matches(self, other: Referent<'_, R>) -> bool {
         match (self, other) {
-            (Referent::UnmatchedAddress(_), Referent::UnmatchedAddress(_)) => {
+            (Referent::Undefined(_), Referent::Undefined(_)) => {
                 // We don't yet support matching things that don't have symbol names. So long as
                 // both files don't have a name for something, we accept it.
                 true
             }
             (Referent::DynamicRelocation(a), Referent::DynamicRelocation(b)) => a.matches(b),
             _ => self == other,
-        }
-    }
-
-    fn is_symbol_with_name(&self, name: &[u8]) -> bool {
-        match self {
-            Self::Named(n, _) => n.bytes == name,
-            _ => false,
         }
     }
 
@@ -1649,6 +1648,34 @@ impl<R: RType> DynamicRelocation<'_, R> {
 
 fn arrow() -> ColoredString {
     "->".bright_yellow()
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+enum BasicValueKind {
+    /// The value is a pointer. We can do things like check to see if it's pointing to a PLT or
+    /// GOT entry. If we tried to do that with things that weren't pointers, then we might get
+    /// false PLT/GOT matches.
+    Pointer,
+
+    AbsoluteValue,
+
+    TlsOffset,
+
+    Aarch64TlsOffset,
+
+    TlsGd,
+
+    TlsModuleId,
+
+    TlsDesc,
+}
+
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+enum ValueKind {
+    Unwrapped(BasicValueKind),
+    Got(BasicValueKind),
+    Plt,
+    OptionalPlt,
 }
 
 #[derive(Clone)]
@@ -1848,12 +1875,7 @@ impl<'data> RelaxationTester<'data> {
         let mut addend = 0;
         let mut referent = None;
 
-        // Whether the value should be considered a pointer. If it is, then we do things like check
-        // to see if it's pointing to a PLT or GOT entry. If we tried to do that with things that
-        // weren't pointers, then we might get false PLT/GOT matches.
-        let mut is_pointer = true;
-
-        let mut allow_got_dereference = true;
+        let mut value_kind = ValueKind::OptionalPlt;
 
         // Empty groups are not permitted.
         let last_match = relaxations_matches.last().unwrap();
@@ -1907,26 +1929,20 @@ impl<'data> RelaxationTester<'data> {
             addend = relaxation_match.addend;
 
             let offset = relaxation_match.offset;
-            let original_referent = relaxation_match.original_referent;
 
             let relocation_info = relaxation_match.relaxation.new_r_type.relocation_info()?;
 
             let relative_to = self.get_relative_to::<A>(offset, relocation_info)?;
 
-            if is_non_pointer_relocation(relocation_info.kind)
-                || (self.bin.address_index.is_relocatable && relocation_info.kind.is_absolute())
+            if let Some(kind) =
+                value_kind_for_relocation(relocation_info.kind, &self.bin.address_index)
             {
-                is_pointer = false;
+                value_kind = kind;
             }
 
             match relocation_info.kind {
                 RelocationKind::TlsDescCall => {
                     referent = Some(Referent::TlsDescCall);
-                }
-                RelocationKind::Relative | RelocationKind::Absolute => {
-                    // This is mostly to avoid falsely identifying a GOT dereference when there's an
-                    // end-of-section pointer to the section before the GOT.
-                    allow_got_dereference = false;
                 }
                 _ => {}
             }
@@ -1939,13 +1955,6 @@ impl<'data> RelaxationTester<'data> {
 
             value = relative_to.wrapping_add(value);
 
-            // Generally if we see a pointer to somewhere in the GOT we look to see what's at that
-            // location in the GOT. However, for relocations that are used to obtain a pointer to
-            // the base of the GOT, we don't want to do this.
-            if original_referent.is_symbol_with_name(b"_GLOBAL_OFFSET_TABLE_") {
-                allow_got_dereference = false;
-            }
-
             merged_value = merged_value.wrapping_add(value);
         }
 
@@ -1955,52 +1964,81 @@ impl<'data> RelaxationTester<'data> {
 
         let mut indirection = Indirection::Direct;
 
-        if is_pointer {
-            let mut pointer = merged_value.wrapping_sub(addend as u64);
+        loop {
+            match value_kind {
+                ValueKind::Plt | ValueKind::OptionalPlt => {
+                    let pointer = merged_value.wrapping_sub(addend as u64);
 
-            if allow_got_dereference {
-                self.try_got_dereference::<A>(
-                    &mut referent,
-                    last_relocation_info,
-                    &mut indirection,
-                    &mut pointer,
-                )?;
+                    let got_address = self.bin.address_index.plt_to_got_address::<A>(pointer)?;
 
-                allow_got_dereference = false;
-            }
+                    let Some(got_address) = got_address else {
+                        if value_kind == ValueKind::OptionalPlt {
+                            value_kind = ValueKind::Unwrapped(BasicValueKind::Pointer);
+                            continue;
+                        }
+                        bail!("Expected pointer to PLT");
+                    };
 
-            if let Some(got_address) = self.bin.address_index.plt_to_got_address::<A>(pointer)? {
-                if indirection == Indirection::Got {
-                    indirection = Indirection::GotPltGot;
-                } else {
-                    indirection = Indirection::PltGot;
+                    if indirection == Indirection::Got {
+                        indirection = Indirection::GotPltGot;
+                    } else {
+                        indirection = Indirection::PltGot;
+                    }
+
+                    if !self.bin.address_index.is_got_address(got_address) {
+                        bail!(
+                            "PLT entry at 0x{pointer:x} points to non-GOT address 0x{got_address:x} in {}",
+                            self.bin
+                                .section_name_containing_address(got_address)
+                                .unwrap_or("??")
+                        );
+                    }
+
+                    merged_value = got_address;
+                    addend = 0;
+                    value_kind = ValueKind::Got(BasicValueKind::Pointer);
                 }
+                ValueKind::Got(inner_kind) => {
+                    merged_value = merged_value.wrapping_sub(addend as u64);
+                    addend = 0;
 
-                if !self.bin.address_index.is_got_address(got_address) {
-                    bail!(
-                        "PLT entry at 0x{pointer:x} points to non-GOT address 0x{got_address:x} in {}",
-                        self.bin
-                            .section_name_containing_address(got_address)
-                            .unwrap_or("??")
-                    );
+                    if !self.bin.address_index.is_got_address(merged_value) {
+                        bail!("Expected GOT address, got 0x{merged_value:x}");
+                    }
+
+                    if indirection == Indirection::Direct {
+                        indirection = Indirection::Got;
+                    }
+
+                    let got_entry = self.bin.address_index.dereference_got_address(
+                        merged_value,
+                        last_relocation_info.kind,
+                        self.bin,
+                    )?;
+
+                    match got_entry {
+                        Referent::UnmatchedAddress(unmatched) => merged_value = unmatched.address,
+                        Referent::Absolute(absolute_value)
+                            if !self.bin.address_index.is_relocatable() =>
+                        {
+                            // Our binary is non-relocatable, so we can treat an absolute value like
+                            // an address.
+                            merged_value = absolute_value;
+                        }
+                        Referent::UnmatchedTlsOffset(offset) => {
+                            if inner_kind != BasicValueKind::TlsOffset {
+                                bail!("Expected {inner_kind:?}, got TLS offset");
+                            }
+                            merged_value = offset as u64;
+                        }
+                        other => {
+                            referent = Some(other);
+                        }
+                    }
+
+                    value_kind = ValueKind::Unwrapped(inner_kind);
                 }
-
-                allow_got_dereference = true;
-                pointer = got_address;
-            }
-
-            if allow_got_dereference {
-                self.try_got_dereference::<A>(
-                    &mut referent,
-                    last_relocation_info,
-                    &mut indirection,
-                    &mut pointer,
-                )?;
-            }
-
-            if indirection.is_via_plt() || indirection.is_via_got() {
-                addend = 0;
-                merged_value = pointer;
+                ValueKind::Unwrapped(_) => break,
             }
         }
 
@@ -2019,7 +2057,7 @@ impl<'data> RelaxationTester<'data> {
         merged_value = merged_value.wrapping_sub(addend as u64);
 
         let referent = referent.unwrap_or_else(|| {
-            self.resolve_by_symbol_name::<A>(merged_value, last_match.original_referent)
+            self.resolve_by_symbol_name::<A>(merged_value, last_match.original_referent, value_kind)
         });
 
         Ok(Reference {
@@ -2028,58 +2066,57 @@ impl<'data> RelaxationTester<'data> {
         })
     }
 
-    fn try_got_dereference<A: Arch>(
-        &self,
-        referent: &mut Option<Referent<'data, <A as Arch>::RType>>,
-        last_relocation_info: RelocationKindInfo,
-        indirection: &mut Indirection,
-        pointer: &mut u64,
-    ) -> Result {
-        if self.bin.address_index.is_got_address(*pointer) {
-            if *indirection == Indirection::Direct {
-                *indirection = Indirection::Got;
-            }
-
-            let got_entry = self.bin.address_index.dereference_got_address(
-                *pointer,
-                last_relocation_info.kind,
-                self.bin,
-            )?;
-
-            match got_entry {
-                Referent::UnmatchedAddress(unmatched) => *pointer = unmatched.address,
-                Referent::Absolute(absolute_value) if !self.bin.address_index.is_relocatable => {
-                    // Our binary is non-relocatable, so we can treat an absolute value like
-                    // an address.
-                    *pointer = absolute_value;
-                }
-                other => {
-                    *referent = Some(other);
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     /// Attempts to confirm that `merged_value` is a reference to `original_referent`, or if it
     /// isn't, tells us why.
     fn resolve_by_symbol_name<A: Arch>(
         &self,
-        merged_value: u64,
+        mut merged_value: u64,
         original_referent: Referent<'_, <A as Arch>::RType>,
+        expected_value_kind: ValueKind,
     ) -> Referent<'data, <A as Arch>::RType> {
         let reason;
 
-        if let Referent::Named(original_name, _) = original_referent {
-            match self.bin.symbol_by_name(original_name.bytes, merged_value) {
+        if let Referent::Named(original_name, original_addend) = original_referent {
+            let lookup_result = self.bin.symbol_by_name(original_name.bytes, merged_value);
+
+            match &lookup_result {
                 crate::NameLookupResult::Defined(elf_symbol) => {
-                    let offset = merged_value.wrapping_sub(elf_symbol.address()) as i64;
+                    let expected_value = match expected_value_kind {
+                        ValueKind::Unwrapped(BasicValueKind::TlsOffset) => {
+                            match self.bin.address_index.bin_attributes.output_kind {
+                                OutputKind::Executable => {
+                                    // The value will have been extracted from a u32, but since it's
+                                    // expected to be negative, we need to sign-extend it.
+                                    merged_value = i64::from(merged_value as i32) as u64;
+
+                                    // In executable TLS offsets are negative values that are
+                                    // relative to the TCB (thread control block), which is
+                                    // immediately after the TLS segment, possibly with padding to
+                                    // align it to the platforms pointer size.
+                                    elf_symbol.address().wrapping_sub(
+                                        self.bin
+                                            .address_index
+                                            .tls_segment_size
+                                            .next_multiple_of(size_of::<u64>() as u64),
+                                    )
+                                }
+                                OutputKind::SharedObject => elf_symbol.address(),
+                            }
+                        }
+                        ValueKind::Unwrapped(BasicValueKind::Aarch64TlsOffset) => {
+                            // Two words are reserved at the start of the TLS segment for the
+                            // runtime.
+                            elf_symbol.address() + 2 * 8
+                        }
+                        _ => elf_symbol.address(),
+                    };
+
+                    let offset = merged_value.wrapping_sub(expected_value) as i64;
 
                     if let Ok(mut bytes) = elf_symbol.name_bytes() {
                         // Strip versions from symbol names, since there are currently
                         // differences between the linkers in terms of whether version names are
-                        // added to debug symbols or not.
+                        // added to debug symbols or not. TODO: Look at changing this.
                         if let Some(at_index) = memchr::memchr(b'@', bytes) {
                             bytes = &bytes[..at_index];
                         }
@@ -2092,7 +2129,7 @@ impl<'data> RelaxationTester<'data> {
                                 version: None,
                             };
 
-                            if offset.abs() <= 8 {
+                            if offset.abs() <= 8 + original_addend.abs() {
                                 if has_copy_relocation_for_symbol_named::<A::RType>(
                                     original_name.bytes,
                                     self.bin,
@@ -2114,6 +2151,16 @@ impl<'data> RelaxationTester<'data> {
                 crate::NameLookupResult::Duplicate => {
                     reason = "symbol has multiple definitions";
                 }
+            }
+
+            if original_name.bytes.starts_with(b".L")
+                || original_name.bytes.is_empty()
+                || matches!(lookup_result, crate::NameLookupResult::Undefined)
+            {
+                return Referent::Undefined(UnmatchedAddress {
+                    address: merged_value,
+                    reason,
+                });
             }
         } else {
             reason = "original symbol has no name";
@@ -2353,16 +2400,51 @@ fn matches_are_compatible<A: Arch>(matches: &[RelaxationMatch<'_, A>]) -> bool {
     true
 }
 
-/// Returns whether the supplied relocation is not a pointer. e.g. a thread local.
-fn is_non_pointer_relocation(relocation_kind: RelocationKind) -> bool {
-    matches!(
-        relocation_kind,
-        RelocationKind::DtpOff
-            | RelocationKind::TpOff
-            | RelocationKind::TpOffAArch64
-            | RelocationKind::TlsDescCall
-            | RelocationKind::None
-    )
+/// Returns what kind of value we can expect when we extract the value written by a relocation.
+fn value_kind_for_relocation(
+    relocation_kind: RelocationKind,
+    address_index: &AddressIndex,
+) -> Option<ValueKind> {
+    let kind = match relocation_kind {
+        RelocationKind::Absolute | RelocationKind::AbsoluteAArch64 => {
+            if address_index.is_relocatable() {
+                ValueKind::Unwrapped(BasicValueKind::AbsoluteValue)
+            } else {
+                return None;
+            }
+        }
+        RelocationKind::Relative | RelocationKind::SymRelGotBase => {
+            return None;
+        }
+        RelocationKind::PltRelative | RelocationKind::PltRelGotBase => ValueKind::Plt,
+        RelocationKind::Got | RelocationKind::GotRelGotBase | RelocationKind::GotRelative => {
+            ValueKind::Got(BasicValueKind::Pointer)
+        }
+        RelocationKind::DtpOff | RelocationKind::TpOff => {
+            ValueKind::Unwrapped(BasicValueKind::TlsOffset)
+        }
+        RelocationKind::TpOffAArch64 => ValueKind::Unwrapped(BasicValueKind::Aarch64TlsOffset),
+        RelocationKind::GotTpOff
+        | RelocationKind::GotTpOffGot
+        | RelocationKind::GotTpOffGotBase => ValueKind::Got(BasicValueKind::TlsOffset),
+        RelocationKind::TlsDesc | RelocationKind::TlsDescGot | RelocationKind::TlsDescGotBase => {
+            // The TLSDESC structure is stored in the GOT. We should perhaps treat this as
+            // Unwrapped(TlsDesc), however the code to read dynamic relocations like TLSDESC is
+            // currently in the GOT-dereferencing code.
+            ValueKind::Got(BasicValueKind::TlsDesc)
+        }
+        RelocationKind::TlsLd | RelocationKind::TlsLdGot | RelocationKind::TlsLdGotBase => {
+            // Similar to TlsDesc, this is a value stored in the GOT.
+            ValueKind::Got(BasicValueKind::TlsModuleId)
+        }
+        RelocationKind::TlsGd | RelocationKind::TlsGdGot | RelocationKind::TlsGdGotBase => {
+            // Same as above.
+            ValueKind::Got(BasicValueKind::TlsGd)
+        }
+        RelocationKind::TlsDescCall | RelocationKind::None => return None,
+    };
+
+    Some(kind)
 }
 
 /// Returns a map from symbol name to `SymbolVersions`. This gives us the address of that symbol
@@ -2640,6 +2722,7 @@ pub(crate) struct AddressIndex<'data> {
     dynamic_segment_address: Option<u64>,
     dynamic_relocations_by_address: HashMap<u64, object::Relocation>,
     dynamic_relocations_by_symbol_index: HashMap<object::SymbolIndex, Vec<object::Relocation>>,
+    tls_segment_size: u64,
 
     /// GOT addresses for each JMPREL relocation by their index.
     jmprel_got_addresses: Vec<u64>,
@@ -2653,7 +2736,6 @@ pub(crate) struct AddressIndex<'data> {
 
     /// Dynamic symbol names by their index.
     dynamic_symbols: Vec<SymtabEntryInfo<'data>>,
-    is_relocatable: bool,
     bin_attributes: BinAttributes,
 
     symbols_by_address: HashMap<u64, Vec<object::SymbolIndex>>,
@@ -2731,6 +2813,7 @@ impl<'data> AddressIndex<'data> {
             versym_address: None,
             dynamic_segment_address: None,
             got_base_address: None,
+            tls_segment_size: get_tls_segment_size(elf_file),
             plt_indexes: Default::default(),
             got_tables: Default::default(),
             verdef: Default::default(),
@@ -2738,7 +2821,6 @@ impl<'data> AddressIndex<'data> {
             dynamic_symbols: Default::default(),
             jmprel_got_addresses: Vec::new(),
             dynamic_relocations_by_address: Default::default(),
-            is_relocatable: is_relocatable(elf_file),
             bin_attributes: BinAttributes {
                 // These may be overridden in `index_dynamic`.
                 output_kind: if elf_file.kind() == ObjectKind::Executable {
@@ -3086,6 +3168,21 @@ impl<'data> AddressIndex<'data> {
 
         table.dereference_got_address(got_address, relocation_kind, bin)
     }
+
+    fn is_relocatable(&self) -> bool {
+        self.bin_attributes.relocatability == Relocatability::Relocatable
+    }
+}
+
+fn get_tls_segment_size(elf_file: &ElfFile64) -> u64 {
+    elf_file
+        .elf_program_headers()
+        .iter()
+        .find_map(|header| {
+            (header.p_type(LittleEndian) == object::elf::PT_TLS)
+                .then(|| header.p_memsz(LittleEndian))
+        })
+        .unwrap_or(0)
 }
 
 fn index_symbols_by_address(elf_file: &ElfFile64) -> HashMap<u64, Vec<object::SymbolIndex>> {
@@ -3152,10 +3249,15 @@ impl<'data> GotIndex<'data> {
                     rel.addend() as u64,
                     bin,
                 ))),
-                DynamicRelocationKind::DtpMod => Ok(Referent::DtpMod),
-                DynamicRelocationKind::TpOff if symbol.is_none() => {
-                    Ok(Referent::Absolute(rel.addend() as u64))
+                DynamicRelocationKind::DtpMod => {
+                    Ok(Referent::DtpMod(*symbol.context("DTPMOD without symbol")?))
                 }
+                DynamicRelocationKind::TpOff if symbol.is_none() => {
+                    Ok(Referent::UnmatchedTlsOffset(rel.addend()))
+                }
+                DynamicRelocationKind::TlsDesc => Ok(Referent::TlsDesc(
+                    *symbol.context("TLSDESC without symbol")?,
+                )),
                 _ => {
                     let symbol = symbol.with_context(|| format!("{r_type} without symbol"))?;
 
@@ -3174,6 +3276,22 @@ impl<'data> GotIndex<'data> {
                 .context("got_address past end of index range")?;
 
             match relocation_kind {
+                RelocationKind::GotTpOff
+                | RelocationKind::GotTpOffGot
+                | RelocationKind::GotTpOffGotBase => {
+                    Ok(Referent::UnmatchedTlsOffset(*raw_value as i64))
+                }
+                RelocationKind::TlsDescCall => Ok(Referent::TlsDescCall),
+                RelocationKind::Absolute
+                | RelocationKind::AbsoluteAArch64
+                | RelocationKind::Relative
+                | RelocationKind::SymRelGotBase
+                | RelocationKind::GotRelGotBase
+                | RelocationKind::Got
+                | RelocationKind::PltRelGotBase
+                | RelocationKind::PltRelative
+                | RelocationKind::GotRelative
+                | RelocationKind::None => Ok(Referent::Absolute(*raw_value)),
                 RelocationKind::TlsGd
                 | RelocationKind::TlsGdGot
                 | RelocationKind::TlsGdGotBase
@@ -3181,16 +3299,13 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::TlsLdGot
                 | RelocationKind::TlsLdGotBase
                 | RelocationKind::DtpOff
-                | RelocationKind::GotTpOff
-                | RelocationKind::GotTpOffGot
-                | RelocationKind::GotTpOffGotBase
                 | RelocationKind::TpOff
                 | RelocationKind::TpOffAArch64
                 | RelocationKind::TlsDesc
                 | RelocationKind::TlsDescGot
-                | RelocationKind::TlsDescGotBase
-                | RelocationKind::TlsDescCall => Ok(Referent::UncheckedRelocation(relocation_kind)),
-                _ => Ok(Referent::Absolute(*raw_value)),
+                | RelocationKind::TlsDescGotBase => {
+                    bail!("Missing dynamic relocation for {relocation_kind:?}")
+                }
             }
         }
     }
@@ -3226,10 +3341,6 @@ struct DynamicRelocation<'data, R: RType> {
     entry: SymtabEntryInfo<'data>,
     r_type: R,
     addend: i64,
-}
-
-fn is_relocatable(elf_file: &ElfFile64) -> bool {
-    elf_file.elf_header().e_type(LittleEndian) == object::elf::ET_DYN
 }
 
 /// Attempts to read some data starting at `address` up to the end of the segment.

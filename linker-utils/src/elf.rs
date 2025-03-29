@@ -577,14 +577,6 @@ pub enum RelocationKind {
 
 impl RelocationKind {
     #[must_use]
-    pub fn is_absolute(self) -> bool {
-        matches!(
-            self,
-            RelocationKind::Absolute | RelocationKind::AbsoluteAArch64
-        )
-    }
-
-    #[must_use]
     pub fn is_tls(self) -> bool {
         matches!(
             self,
