@@ -455,11 +455,11 @@ pub struct Report {
     /// The configuration that was used.
     config: Config,
 
-    coverage: Option<Coverage>,
+    pub coverage: Option<Coverage>,
 }
 
 #[derive(Default)]
-struct Coverage {
+pub struct Coverage {
     sections: HashMap<InputSectionId, SectionCoverage>,
 }
 
@@ -661,10 +661,6 @@ impl Display for Report {
             }
 
             writeln!(f)?;
-        }
-
-        if let Some(coverage) = self.coverage.as_ref() {
-            Display::fmt(coverage, f)?;
         }
 
         Ok(())
