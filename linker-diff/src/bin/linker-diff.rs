@@ -11,5 +11,9 @@ fn main() -> anyhow::Result<()> {
         println!("No differences or validation failures detected");
     }
 
+    if let Some(coverage) = report.coverage.as_ref() {
+        println!("{coverage}");
+    }
+
     Ok(())
 }
