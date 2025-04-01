@@ -2170,6 +2170,7 @@ fn integration_test(
         "tls-local-exec.c",
         "undefined_symbols.c",
         "whole_archive.c",
+        "dynamic-bss-only.c",
         "shared.c",
         "duplicate_strong_symbols.c"
     )]
