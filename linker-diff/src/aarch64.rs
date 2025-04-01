@@ -495,6 +495,13 @@ impl crate::arch::RType for RType {
     fn dynamic_relocation_kind(self) -> Option<DynamicRelocationKind> {
         DynamicRelocationKind::from_aarch64_r_type(self.0)
     }
+
+    fn should_ignore_when_computing_referent(self) -> bool {
+        // This relocation is computing the address of the function to call. We should ideally be
+        // checking this as well, but for now we only check the that we're getting the right address
+        // for the TLSDESC struct.
+        self.0 == object::elf::R_AARCH64_TLSDESC_LD64_LO12
+    }
 }
 
 impl Display for RType {

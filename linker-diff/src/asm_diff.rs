@@ -237,7 +237,7 @@ fn compare_sections<A: Arch>(
             // Ideally we'd successfully match all binaries, however GNU ld when it has PLT
             // relocation for an undefined symbol emits a PLT entry that points to an invalid GOT
             // address. We don't have any good way to match something like that.
-            let first_has_match_failure = first.relaxations.is_none();
+            let first_has_match_failure = first.relaxations.is_none() || first.has_error();
 
             if !at_least_one_match || first_has_match_failure {
                 report.add_diff(resolution_diff_exec(
@@ -1377,6 +1377,12 @@ impl<A: Arch> ResolvedGroup<'_, A> {
         relaxations_match(self.relaxations.as_ref(), other.relaxations.as_ref())
             && self.reference.matches(other.reference)
     }
+
+    fn has_error(&self) -> bool {
+        self.annotations
+            .iter()
+            .any(|a| matches!(a.kind, AnnotationKind::Error(_)))
+    }
 }
 
 fn relaxations_match<A: Arch>(
@@ -1456,7 +1462,8 @@ enum Referent<'data, R: RType> {
     /// A reference to an ifunc.
     IFunc(Option<SymbolName<'data>>),
 
-    DtpMod(SymtabEntryInfo<'data>),
+    TlsGd(SymtabEntryInfo<'data>),
+    TlsModuleId,
     TlsDescCall,
     TlsDesc(SymtabEntryInfo<'data>),
 }
@@ -1559,7 +1566,8 @@ impl<R: RType> Referent<'_, R> {
             Referent::TlsDesc(symbol) => write!(f, "TlsDesc({symbol})")?,
             Referent::IFunc(Some(symbol)) => write!(f, "IFunc({symbol})")?,
             Referent::IFunc(None) => write!(f, "UnknownIFunc")?,
-            Referent::DtpMod(symbol) => write!(f, "DtpMod({symbol})")?,
+            Referent::TlsModuleId => write!(f, "TlsModuleId")?,
+            Referent::TlsGd(symbol) => write!(f, "TlsGd({symbol})")?,
             Referent::TlsDescCall => write!(f, "TlsDescCall")?,
         }
 
@@ -1674,7 +1682,6 @@ enum BasicValueKind {
 enum ValueKind {
     Unwrapped(BasicValueKind),
     Got(BasicValueKind),
-    Plt,
     OptionalPlt,
 }
 
@@ -1924,6 +1931,14 @@ impl<'data> RelaxationTester<'data> {
 
             let mut value = relaxation_match.value;
 
+            if relaxation_match
+                .relaxation
+                .new_r_type
+                .should_ignore_when_computing_referent()
+            {
+                value = 0;
+            }
+
             // We keep the addend separate from the value because we need to handle merged-strings
             // before we apply the addend.
             addend = relaxation_match.addend;
@@ -1966,17 +1981,14 @@ impl<'data> RelaxationTester<'data> {
 
         loop {
             match value_kind {
-                ValueKind::Plt | ValueKind::OptionalPlt => {
+                ValueKind::OptionalPlt => {
                     let pointer = merged_value.wrapping_sub(addend as u64);
 
                     let got_address = self.bin.address_index.plt_to_got_address::<A>(pointer)?;
 
                     let Some(got_address) = got_address else {
-                        if value_kind == ValueKind::OptionalPlt {
-                            value_kind = ValueKind::Unwrapped(BasicValueKind::Pointer);
-                            continue;
-                        }
-                        bail!("Expected pointer to PLT");
+                        value_kind = ValueKind::Unwrapped(BasicValueKind::Pointer);
+                        continue;
                     };
 
                     if indirection == Indirection::Got {
@@ -2014,6 +2026,7 @@ impl<'data> RelaxationTester<'data> {
                         merged_value,
                         last_relocation_info.kind,
                         self.bin,
+                        inner_kind,
                     )?;
 
                     match got_entry {
@@ -2026,9 +2039,6 @@ impl<'data> RelaxationTester<'data> {
                             merged_value = absolute_value;
                         }
                         Referent::UnmatchedTlsOffset(offset) => {
-                            if inner_kind != BasicValueKind::TlsOffset {
-                                bail!("Expected {inner_kind:?}, got TLS offset");
-                            }
                             merged_value = offset as u64;
                         }
                         other => {
@@ -2416,7 +2426,7 @@ fn value_kind_for_relocation(
         RelocationKind::Relative | RelocationKind::SymRelGotBase => {
             return None;
         }
-        RelocationKind::PltRelative | RelocationKind::PltRelGotBase => ValueKind::Plt,
+        RelocationKind::PltRelative | RelocationKind::PltRelGotBase => ValueKind::OptionalPlt,
         RelocationKind::Got | RelocationKind::GotRelGotBase | RelocationKind::GotRelative => {
             ValueKind::Got(BasicValueKind::Pointer)
         }
@@ -3159,6 +3169,7 @@ impl<'data> AddressIndex<'data> {
         got_address: u64,
         relocation_kind: RelocationKind,
         bin: &Binary<'data>,
+        expected_value_kind: BasicValueKind,
     ) -> Result<Referent<'data, R>> {
         let table = self
             .got_tables
@@ -3166,7 +3177,7 @@ impl<'data> AddressIndex<'data> {
             .find(|table| table.address_range.contains(&got_address))
             .context("Address isn't in any GOT tables")?;
 
-        table.dereference_got_address(got_address, relocation_kind, bin)
+        table.dereference_got_address(got_address, relocation_kind, bin, expected_value_kind)
     }
 
     fn is_relocatable(&self) -> bool {
@@ -3208,6 +3219,7 @@ impl<'data> GotIndex<'data> {
         got_address: u64,
         relocation_kind: RelocationKind,
         bin: &Binary<'data>,
+        expected_value_kind: BasicValueKind,
     ) -> Result<Referent<'data, R>> {
         let index = &bin.address_index;
 
@@ -3250,14 +3262,35 @@ impl<'data> GotIndex<'data> {
                     bin,
                 ))),
                 DynamicRelocationKind::DtpMod => {
-                    Ok(Referent::DtpMod(*symbol.context("DTPMOD without symbol")?))
+                    match (expected_value_kind, symbol) {
+                        (BasicValueKind::TlsModuleId, None) => Ok(Referent::TlsModuleId),
+                        (BasicValueKind::TlsModuleId, Some(symbol)) => {
+                            bail!("Expected TLSLD, but found DTPMOD with symbol (`{symbol}`)");
+                        }
+                        (BasicValueKind::TlsGd, Some(symbol)) => Ok(Referent::TlsGd(*symbol)),
+                        (BasicValueKind::TlsGd, None) => {
+                            // There's no symbol associated with the DTPMOD relocation, so it's a TLS
+                            // variable within the current DSO. Read the next word of data to get the
+                            // offset.
+                            let tls_offset =
+                                read_word_at(bin.elf_file, got_address + size_of::<u64>() as u64)
+                                    .context("Short read after DTPMOD")?
+                                    as i64;
+                            Ok(Referent::UnmatchedTlsOffset(tls_offset))
+                        }
+                        (other, _) => bail!("Unexpected DTPMOD when looking for {other:?}"),
+                    }
                 }
                 DynamicRelocationKind::TpOff if symbol.is_none() => {
                     Ok(Referent::UnmatchedTlsOffset(rel.addend()))
                 }
-                DynamicRelocationKind::TlsDesc => Ok(Referent::TlsDesc(
-                    *symbol.context("TLSDESC without symbol")?,
-                )),
+                DynamicRelocationKind::TlsDesc => {
+                    if let Some(symbol) = symbol {
+                        Ok(Referent::TlsDesc(*symbol))
+                    } else {
+                        Ok(Referent::UnmatchedTlsOffset(rel.addend()))
+                    }
+                }
                 _ => {
                     let symbol = symbol.with_context(|| format!("{r_type} without symbol"))?;
 
@@ -3369,6 +3402,11 @@ fn read_segment<'data>(elf_file: &ElfFile64<'data>, address: u64) -> Option<Data
         }
     }
     None
+}
+
+fn read_word_at(elf_file: &ElfFile64, address: u64) -> Option<u64> {
+    let bytes = read_bytes(elf_file, address, size_of::<u64>() as u64)?;
+    Some(u64::from_le_bytes(*bytes.first_chunk()?))
 }
 
 fn read_bytes<'data>(elf_file: &ElfFile64<'data>, address: u64, len: u64) -> Option<&'data [u8]> {
