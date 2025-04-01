@@ -120,12 +120,13 @@ pub(crate) fn report_section_diffs<A: Arch>(report: &mut Report, binaries: &[Bin
     let by_name = symbol_versions_by_name(binaries, layout);
     let matched_sections = unified_sections_from_symbols(report, by_name, layout, binaries);
 
-    let mut section_ids_to_process: Vec<InputSectionId> =
-        matched_sections.keys().copied().collect();
-
-    // Sort sections so that we process sections in a deterministic order, since that affects our
-    // output order.
-    section_ids_to_process.sort();
+    let mut section_ids_to_process = matched_sections
+        .keys()
+        .copied()
+        // Sort sections so that we process sections in a deterministic order, since that affects our
+        // output order.
+        .sorted()
+        .collect_vec();
 
     while let Some(section_id) = section_ids_to_process.pop() {
         let section_versions = matched_sections.get(&section_id).unwrap();

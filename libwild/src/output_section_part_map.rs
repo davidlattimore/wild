@@ -265,8 +265,7 @@ fn test_output_order_map_consistent() {
     part_map.map(|part_id, _| {
         missing.remove(&part_id);
     });
-    let mut missing = missing.into_iter().collect_vec();
-    missing.sort();
+    let missing = missing.into_iter().sorted().collect_vec();
     assert!(
         missing.is_empty(),
         "Built-in sections missing from output_order_map: {}",
