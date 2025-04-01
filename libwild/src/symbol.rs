@@ -99,7 +99,9 @@ impl Display for SymDebug<'_> {
             "Global"
         };
 
-        let kind = if sym.is_definition(e) {
+        let kind = if sym.is_undefined(e) {
+            "Undefined"
+        } else {
             match sym.st_type() {
                 object::elf::STT_FUNC => "Func",
                 object::elf::STT_GNU_IFUNC => "IFunc",
@@ -111,8 +113,6 @@ impl Display for SymDebug<'_> {
                 object::elf::STT_TLS => "Tls",
                 _ => "Unknown",
             }
-        } else {
-            "Undefined"
         };
 
         write!(f, "{vis} {kind}")
