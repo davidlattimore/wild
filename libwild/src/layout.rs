@@ -1447,8 +1447,8 @@ impl<'data> Layout<'data> {
     }
 
     pub(crate) fn tls_start_address(&self) -> u64 {
-        let tdata = self.section_layouts.get(output_section_id::TDATA);
-        tdata.mem_offset
+        // If we don't have a TLS segment then the value we return won't really matter.
+        self.segment_layouts.tls_start_address.unwrap_or(0)
     }
 
     /// Returns the memory address of the end of the TLS segment including any padding required to
