@@ -2843,16 +2843,19 @@ fn write_internal_symbols(
             shndx = 1;
         }
 
-        let address = resolution.value();
-        let entry = symbol_writer
-            .define_symbol(false, shndx, address, 0, symbol_name.bytes())
-            .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
+        let mut address = resolution.value();
 
         let st_type = if symbol_name.bytes() == TLS_MODULE_BASE_SYMBOL_NAME.as_bytes() {
+            address -= layout.tls_start_address();
             object::elf::STT_TLS
         } else {
             object::elf::STT_NOTYPE
         };
+
+        let entry = symbol_writer
+            .define_symbol(false, shndx, address, 0, symbol_name.bytes())
+            .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
+
         entry.set_st_info(object::elf::STB_GLOBAL, st_type);
     }
     Ok(())
