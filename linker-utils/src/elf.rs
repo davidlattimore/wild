@@ -471,9 +471,9 @@ pub mod secnames {
     pub const NOTE_GNU_PROPERTY_SECTION_NAME: &[u8] = NOTE_GNU_PROPERTY_SECTION_NAME_STR.as_bytes();
     pub const NOTE_GNU_BUILD_ID_SECTION_NAME_STR: &str = ".note.gnu.build-id";
     pub const NOTE_GNU_BUILD_ID_SECTION_NAME: &[u8] = NOTE_GNU_BUILD_ID_SECTION_NAME_STR.as_bytes();
-    pub const DEBUG_LOC_SECTION_NAME_STR: &str = ".debug.loc";
+    pub const DEBUG_LOC_SECTION_NAME_STR: &str = ".debug_loc";
     pub const DEBUG_LOC_SECTION_NAME: &[u8] = DEBUG_LOC_SECTION_NAME_STR.as_bytes();
-    pub const DEBUG_RANGES_SECTION_NAME_STR: &str = ".debug.ranges";
+    pub const DEBUG_RANGES_SECTION_NAME_STR: &str = ".debug_ranges";
     pub const DEBUG_RANGES_SECTION_NAME: &[u8] = DEBUG_RANGES_SECTION_NAME_STR.as_bytes();
     pub const GROUP_SECTION_NAME_STR: &str = ".group";
     pub const GROUP_SECTION_NAME: &[u8] = GROUP_SECTION_NAME_STR.as_bytes();
