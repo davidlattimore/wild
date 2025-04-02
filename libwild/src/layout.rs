@@ -2821,6 +2821,7 @@ impl PreludeLayoutState {
             sections_with_content,
             output_sections,
             symbol_resolution_flags,
+            symbol_db,
         );
 
         self.allocate_symbol_table_sizes(
@@ -2891,6 +2892,7 @@ impl PreludeLayoutState {
         sections_with_content: OutputSectionMap<bool>,
         output_sections: &mut OutputSections,
         symbol_resolution_flags: &[ResolutionFlags],
+        symbol_db: &SymbolDb,
     ) {
         use output_section_id::OrderEvent;
 
@@ -2957,6 +2959,11 @@ impl PreludeLayoutState {
                 }
             }
         }
+
+        if !symbol_db.args.relro {
+            keep_segments[crate::program_segments::RELRO.as_usize()] = false;
+        }
+
         let active_segment_ids = (0..crate::program_segments::MAX_SEGMENTS)
             .filter(|i| keep_segments[*i] || i == &STACK.as_usize())
             .map(ProgramSegmentId::new)

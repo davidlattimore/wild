@@ -61,6 +61,7 @@ pub struct Args {
     pub(crate) allow_copy_relocations: bool,
     pub(crate) sysroot: Option<Box<Path>>,
     pub(crate) undefined: Vec<String>,
+    pub(crate) relro: bool,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -262,6 +263,7 @@ impl Default for Args {
             sysroot: None,
             demangle: true,
             undefined: Vec::new(),
+            relro: true,
         }
     }
 }
@@ -310,7 +312,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             match arg {
                 "now" => {}
                 "origin" => args.needs_origin_handling = true,
-                "relro" => {}
+                "relro" => args.relro = true,
+                "norelro" => args.relro = false,
                 "notext" => {}
                 "nostart-stop-gc" => {}
                 "execstack" => args.execstack = true,
