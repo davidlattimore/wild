@@ -2,7 +2,7 @@
 //! entries are needed. We also resolve which output section, if any, each input section should be
 //! assigned to.
 
-use self::part_id::NOTE_GNU_PROPERTY;
+use crate::alignment::Alignment;
 use crate::args::Args;
 use crate::debug_assert_bail;
 use crate::elf::File;
@@ -15,6 +15,8 @@ use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::input_data::UNINITIALISED_FILE_ID;
+use crate::layout_rules::SectionRuleOutcome;
+use crate::layout_rules::SectionRules;
 use crate::output_section_id::CustomSectionDetails;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::OutputSectionsBuilder;
@@ -24,8 +26,6 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ParsedInputObject;
 use crate::part_id;
 use crate::part_id::PartId;
-use crate::part_id::TemporaryPartId;
-use crate::part_id::UnresolvedSection;
 use crate::string_merging::MergedStringsSection;
 use crate::string_merging::StringMergeSectionExtra;
 use crate::string_merging::StringMergeSectionSlot;
@@ -272,6 +272,8 @@ fn resolve_sections<'data>(
 ) -> Result {
     let loaded_metrics: LoadedMetrics = Default::default();
 
+    let rules = SectionRules::default();
+
     groups.par_iter_mut().try_for_each_init(
         || herd.get(),
         |allocator, group| -> Result {
@@ -290,6 +292,7 @@ fn resolve_sections<'data>(
                     args,
                     allocator,
                     &loaded_metrics,
+                    &rules,
                 )?;
 
                 non_dynamic.relocations = obj.object.parse_relocations()?;
@@ -731,90 +734,90 @@ fn resolve_sections_for_object<'data>(
     args: &Args,
     allocator: &bumpalo_herd::Member<'data>,
     loaded_metrics: &LoadedMetrics,
+    rules: &SectionRules,
 ) -> Result<Vec<SectionSlot>> {
     let sections = obj
         .object
         .sections
         .enumerate()
         .map(|(input_section_index, input_section)| {
-            if let Some(unloaded) =
-                UnresolvedSection::from_section(obj.object, input_section, args)?
-            {
-                let section_flags = SectionFlags::from_header(input_section);
-                let mut part_id = part_id::CUSTOM_PLACEHOLDER;
-                let mut custom_section = None;
-                match unloaded.part_id {
-                    TemporaryPartId::Custom(_, alignment) => {
-                        custom_section = Some(CustomSectionDetails {
-                            name: unloaded.name(),
-                            alignment,
-                            section_flags,
-                            ty: SectionType::from_header(input_section),
-                            index: input_section_index,
-                        });
-                    }
-                    TemporaryPartId::BuiltIn(p) => part_id = p,
-                    TemporaryPartId::EhFrameData => (),
+            let section_name = obj.object.section_name(input_section).unwrap_or_default();
+            let section_flags = SectionFlags::from_header(input_section);
+            let raw_alignment = obj.object.section_alignment(input_section)?;
+            let alignment = Alignment::new(raw_alignment.max(1))?;
+            let should_merge_strings =
+                part_id::should_merge_strings(section_flags, raw_alignment, args);
+
+            let mut unloaded_section;
+            let mut must_load = section_flags.should_retain();
+            let mut is_debug_info = false;
+
+            match rules.lookup(section_name, section_flags, input_section) {
+                SectionRuleOutcome::Section(output_section_id) => {
+                    let part_id = output_section_id.part_id_with_alignment(alignment);
+
+                    must_load |= part_id
+                        .output_section_id()
+                        .built_in_details()
+                        .section_flags
+                        .should_retain();
+
+                    unloaded_section = UnloadedSection::new(part_id);
                 }
-                let slot = if unloaded.is_string_merge {
-                    let section_data =
-                        obj.object
-                            .section_data(input_section, allocator, loaded_metrics)?;
-                    string_merge_extras.push(StringMergeSectionExtra {
-                        index: input_section_index,
-                        section_data,
-                    });
-                    SectionSlot::MergeStrings(StringMergeSectionSlot::new(part_id))
-                } else {
-                    match unloaded.part_id {
-                        TemporaryPartId::BuiltIn(id) if id == NOTE_GNU_PROPERTY => {
-                            SectionSlot::NoteGnuProperty(input_section_index)
-                        }
-                        TemporaryPartId::BuiltIn(id)
-                            if id
-                                .output_section_id()
-                                .built_in_details()
-                                .section_flags
-                                .should_retain() =>
-                        {
-                            SectionSlot::MustLoad(UnloadedSection::new(id))
-                        }
-                        TemporaryPartId::BuiltIn(id) => {
-                            SectionSlot::Unloaded(UnloadedSection::new(id))
-                        }
-                        TemporaryPartId::Custom(custom_section_id, _alignment) => {
-                            let section_name = custom_section_id.name.bytes();
-                            if section_name.starts_with(b".debug_")
-                                && !section_flags.contains(shf::ALLOC)
-                            {
-                                if args.strip_debug {
-                                    custom_section = None;
-                                    SectionSlot::Discard
-                                } else {
-                                    SectionSlot::UnloadedDebugInfo(part_id::CUSTOM_PLACEHOLDER)
-                                }
-                            } else if section_flags.should_retain() {
-                                SectionSlot::MustLoad(UnloadedSection::new(
-                                    part_id::CUSTOM_PLACEHOLDER,
-                                ))
-                            } else {
-                                let mut unloaded_section =
-                                    UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
-                                unloaded_section.start_stop_eligible =
-                                    !section_name.starts_with(b".");
-                                SectionSlot::Unloaded(unloaded_section)
-                            }
-                        }
-                        TemporaryPartId::EhFrameData => {
-                            SectionSlot::EhFrameData(input_section_index)
-                        }
+                SectionRuleOutcome::Discard => return Ok(SectionSlot::Discard),
+                SectionRuleOutcome::EhFrame => {
+                    return Ok(SectionSlot::EhFrameData(input_section_index));
+                }
+                SectionRuleOutcome::NoteGnuProperty => {
+                    return Ok(SectionSlot::NoteGnuProperty(input_section_index));
+                }
+                SectionRuleOutcome::Debug => {
+                    if args.strip_debug && !section_flags.contains(shf::ALLOC) {
+                        return Ok(SectionSlot::Discard);
                     }
+
+                    is_debug_info = !section_flags.contains(shf::ALLOC);
+
+                    unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
+                }
+                SectionRuleOutcome::Custom => {
+                    unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
+                    unloaded_section.start_stop_eligible = !section_name.starts_with(b".");
+                }
+            };
+
+            if unloaded_section.part_id == part_id::CUSTOM_PLACEHOLDER {
+                let custom_section = CustomSectionDetails {
+                    name: SectionName(section_name),
+                    alignment,
+                    section_flags,
+                    ty: SectionType::from_header(input_section),
+                    index: input_section_index,
                 };
-                custom_sections.extend(custom_section.into_iter());
-                Ok(slot)
-            } else {
-                Ok(SectionSlot::Discard)
+
+                custom_sections.push(custom_section);
             }
+
+            let slot = if should_merge_strings {
+                let section_data =
+                    obj.object
+                        .section_data(input_section, allocator, loaded_metrics)?;
+
+                string_merge_extras.push(StringMergeSectionExtra {
+                    index: input_section_index,
+                    section_data,
+                });
+
+                SectionSlot::MergeStrings(StringMergeSectionSlot::new(unloaded_section.part_id))
+            } else if is_debug_info {
+                SectionSlot::UnloadedDebugInfo(part_id::CUSTOM_PLACEHOLDER)
+            } else if must_load {
+                SectionSlot::MustLoad(unloaded_section)
+            } else {
+                SectionSlot::Unloaded(unloaded_section)
+            };
+
+            Ok(slot)
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(sections)
