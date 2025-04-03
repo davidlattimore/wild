@@ -17,6 +17,11 @@ use anyhow::bail;
 use normalize_path::NormalizePath;
 use std::collections::HashSet;
 use std::path::Path;
+use winnow::Parser as _;
+use winnow::ascii::multispace0;
+use winnow::combinator::repeat;
+use winnow::token::take_until;
+use winnow::token::take_while;
 
 /// Parse the kind of linker script that's put in place of a shared object to specify that the
 /// linker should load several files.
@@ -386,49 +391,61 @@ enum Command<'a> {
     Ignored,
 }
 
-fn parse_commands_up_to<'a>(
-    tokens: &mut Tokeniser<'a>,
-    end: Option<&str>,
-) -> Result<Vec<Command<'a>>> {
-    let mut out = Vec::new();
-    while let Some(token) = tokens.next() {
-        if end == Some(token) {
-            return Ok(out);
-        }
-        if token.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_') {
-            out.push(parse_command(tokens, token)?);
-        } else {
-            out.push(Command::Arg(token));
-        }
-    }
-    if let Some(expected) = end {
-        bail!("Got end of script, expected '{expected}'");
-    }
-    Ok(out)
+fn parse_token<'input>(input: &mut &'input str) -> winnow::Result<&'input str> {
+    take_while(1.., |ch| !" (){}".contains(ch)).parse_next(input)
 }
 
-fn parse_command<'a>(tokens: &mut Tokeniser<'a>, token: &str) -> Result<Command<'a>> {
-    match token {
-        "GROUP" | "INPUT" => {
-            tokens.expect("(")?;
-            Ok(Command::Group(parse_commands_up_to(tokens, Some(")"))?))
+fn skip_comments_and_whitespace(input: &mut &str) -> winnow::Result<()> {
+    loop {
+        multispace0(input)?;
+        if input.starts_with("/*") {
+            take_until(1.., "*/").parse_next(input)?;
+            "*/".parse_next(input)?;
+        } else {
+            return Ok(());
         }
-        "OUTPUT_FORMAT" => {
-            tokens.expect("(")?;
-            parse_commands_up_to(tokens, Some(")"))?;
-            Ok(Command::Ignored)
-        }
-        "AS_NEEDED" => {
-            tokens.expect("(")?;
-            Ok(Command::AsNeeded(parse_commands_up_to(tokens, Some(")"))?))
-        }
-        _ => bail!("Unsupported linker script command `{token}`"),
     }
+}
+
+fn parse_paren_group<'input>(input: &mut &'input str) -> winnow::Result<Vec<Command<'input>>> {
+    '('.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    let group_contents = repeat(0.., parse_command).parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    ')'.parse_next(input)?;
+    Ok(group_contents)
+}
+
+fn parse_command<'input>(input: &mut &'input str) -> winnow::Result<Command<'input>> {
+    skip_comments_and_whitespace(input)?;
+
+    let command_str = parse_token(input)?;
+
+    skip_comments_and_whitespace(input)?;
+
+    let command = match command_str {
+        "GROUP" | "INPUT" => Command::Group(parse_paren_group(input)?),
+        "OUTPUT_FORMAT" => {
+            parse_paren_group(input)?;
+            Command::Ignored
+        }
+        "AS_NEEDED" => Command::AsNeeded(parse_paren_group(input)?),
+        other => Command::Arg(other),
+    };
+
+    skip_comments_and_whitespace(input)?;
+
+    Ok(command)
+}
+
+fn parse_commands<'input>(input: &mut &'input str) -> winnow::Result<Vec<Command<'input>>> {
+    repeat(0.., parse_command).parse_next(input)
 }
 
 fn inputs_from_script(text: &str, starting_modifiers: Modifiers) -> Result<Vec<Input>> {
-    let mut tokens = Tokeniser::new(text);
-    let commands = parse_commands_up_to(&mut tokens, None)?;
+    let commands = parse_commands
+        .parse(text)
+        .map_err(|error| anyhow!("Failed to parse linker script:\n{error}"))?;
     let mut inputs = Vec::new();
     collect_inputs(&commands, &mut inputs, starting_modifiers);
     Ok(inputs)
