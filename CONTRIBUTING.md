@@ -36,7 +36,7 @@ then use `cargo test` as usual.
 
 ## Running aarch64 tests on x86_64
 
-Some, but currently not all, of the tests that run on aarch64 can be run on x64_64.
+Some, but currently not all, of the tests that run on aarch64 can be run on x86_64.
 
 Setup procedure:
 
@@ -59,7 +59,7 @@ disable cross compilation.
 
 Cross compilation is set up in docker/debian.Dockerfile.
 
-## Github workflow
+## GitHub workflow
 
 TL;DR: We're pretty relaxed. Feel free to force push or not. Squash, rebase, merge, whatever you
 like, we'll find ways to work with it.

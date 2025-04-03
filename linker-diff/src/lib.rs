@@ -41,6 +41,7 @@ mod diagnostics;
 mod eh_frame_diff;
 mod gnu_hash;
 mod header_diff;
+mod init_order;
 pub(crate) mod section_map;
 mod symtab;
 mod trace;
@@ -51,8 +52,10 @@ type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
 type ElfSymbol64<'data, 'file> = object::read::elf::ElfSymbol64<'data, 'file, LittleEndian>;
 
+use arch::Arch;
 use colored::Colorize;
 pub use diagnostics::enable_diagnostics;
+use object::read::elf::FileHeader as _;
 use section_map::InputSectionId;
 use section_map::OwnedFileIdentifier;
 
@@ -179,6 +182,13 @@ impl Config {
                 // aarch64-linux-gnu-ld on arch linux emits DT_BIND_NOW instead of DT_FLAGS.BIND_NOW
                 ".dynamic.DT_BIND_NOW",
                 ".dynamic.DT_FLAGS.BIND_NOW",
+                // TODO: Implement proper ordering of .init .ctors etc
+                "init_array",
+                "fini_array",
+                // When GNU ld encounters a GOT-forming reference to an ifunc, it generates a
+                // canonical PLT entry and points the GOT at that. This means that it ends up with
+                // GOT->PLT->GOT. We don't as yet support doing this.
+                "rel.missing-got-plt-got",
                 // We do support this. TODO: Should definitely look into why we're seeing this missing
                 // in our output.
                 "section.rela.plt",
@@ -210,6 +220,16 @@ impl Config {
                 // replicate.
                 "section.rodata.entsize",
                 "section.rodata.flags",
+                // We emit dynamic relocations for direct references to undefined weak symbols that
+                // might be provided at runtime as well as GOT entries for indirect references. GNU
+                // ld and lld only emit the GOT entries and leave direct references as null. Our
+                // behaviour seems more consistent with the description of
+                // `-zdynamic-undefined-weak`.
+                "rel.undefined-weak.dynamic.R_X86_64_64",
+                "rel.undefined-weak.dynamic.R_AARCH64_ABS64",
+                // On aarch64, GNU ld, at least sometimes, converts R_AARCH64_ABS64 to a PLT-forming
+                // relocation. We at present, don't.
+                "rel.dynamic-plt-bypass",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
@@ -377,12 +397,16 @@ impl<'data> Binary<'data> {
         self.elf_file.section_by_index(index).ok()
     }
 
-    /// Returns the name of the section that contains the supplied address. Does a linear scan, so
-    /// should only be used for error reporting.
-    fn section_containing_address(&self, address: u64) -> Option<&str> {
+    fn section_containing_address(&self, address: u64) -> Option<ElfSection64<LittleEndian>> {
         self.elf_file
             .sections()
             .find(|sec| (sec.address()..sec.address() + sec.size()).contains(&address))
+    }
+
+    /// Returns the name of the section that contains the supplied address. Does a linear scan, so
+    /// should only be used for error reporting.
+    fn section_name_containing_address(&self, address: u64) -> Option<&str> {
+        self.section_containing_address(address)
             .and_then(|sec| sec.name().ok())
     }
 }
@@ -430,11 +454,11 @@ pub struct Report {
     /// The configuration that was used.
     config: Config,
 
-    coverage: Option<Coverage>,
+    pub coverage: Option<Coverage>,
 }
 
 #[derive(Default)]
-struct Coverage {
+pub struct Coverage {
     sections: HashMap<InputSectionId, SectionCoverage>,
 }
 
@@ -537,11 +561,25 @@ impl Report {
         );
         header_diff::check_dynamic_headers(self, objects);
         header_diff::check_file_headers(self, objects);
-        asm_diff::report_section_diffs(self, objects);
         header_diff::report_section_diffs(self, objects);
         eh_frame_diff::report_diffs(self, objects);
         version_diff::report_diffs(self, objects);
         debug_info_diff::check_debug_info(self, objects);
+
+        match objects[0].elf_file.elf_header().e_machine(LittleEndian) {
+            object::elf::EM_X86_64 => {
+                self.report_arch_specific_diffs::<crate::x86_64::X86_64>(objects);
+            }
+            object::elf::EM_AARCH64 => {
+                self.report_arch_specific_diffs::<crate::aarch64::AArch64>(objects);
+            }
+            _ => {}
+        }
+    }
+
+    fn report_arch_specific_diffs<A: Arch>(&mut self, binaries: &[Binary]) {
+        asm_diff::report_section_diffs::<A>(self, binaries);
+        init_order::report_diffs::<A>(self, binaries);
     }
 
     fn add_diff(&mut self, diff: Diff) {
@@ -622,10 +660,6 @@ impl Display for Report {
             }
 
             writeln!(f)?;
-        }
-
-        if let Some(coverage) = self.coverage.as_ref() {
-            Display::fmt(coverage, f)?;
         }
 
         Ok(())
@@ -812,4 +846,11 @@ fn parse_string_equality(
         .split_once('=')
         .ok_or_else(|| format!("invalid key-value pair. No '=' found in `{s}`"))?;
     Ok((a.to_owned(), b.to_owned()))
+}
+
+fn get_r_type<R: arch::RType>(rel: &object::Relocation) -> R {
+    let object::RelocationFlags::Elf { r_type } = rel.flags() else {
+        panic!("Unsupported object type (relocation flags)");
+    };
+    R::from_raw(r_type)
 }

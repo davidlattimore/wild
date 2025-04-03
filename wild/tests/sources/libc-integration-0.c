@@ -69,6 +69,15 @@ int sometimes_weak_fn(void) {
     return 42;
 }
 
+typedef int(*get_int_fn_t)(void);
+
+get_int_fn_t sometimes_weak_fn_ptr = sometimes_weak_fn;
+
+get_int_fn_t get_sometimes_weak_fn_ptr(void) {
+    return sometimes_weak_fn_ptr;
+}
+
+
 int black_box(int v) {
     return v;
 }
@@ -76,4 +85,8 @@ int black_box(int v) {
 // This function is also defined in libc-integration-0b.c. The definition here should be used.
 int __attribute__ ((weak)) weak_fn3(void) {
     return 15;
+}
+
+__attribute__ ((weak, visibility(("hidden")))) int atoi(const char *bytes) {
+    return 77;
 }

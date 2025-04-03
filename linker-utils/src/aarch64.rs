@@ -980,7 +980,7 @@ impl RelocationInstruction {
                     // Set opcode for MOVZ instruction
                     mask |= 1 << 30;
                 }
-                mask |= extract_bits(value as u64, 0, 16) as u32;
+                mask |= (extract_bits(value as u64, 0, 16) as u32) << 5;
             }
             // C6.2.192
             RelocationInstruction::Ldr => {
@@ -1033,7 +1033,7 @@ impl RelocationInstruction {
             // C6.2.253, C6.2.254
             RelocationInstruction::Movnz => {
                 negative = (value & (1 << 30)) == 0;
-                let v = low_bits(value, 16);
+                let v = low_bits(value >> 5, 16);
                 if negative { !v } else { v }
             }
             // C6.2.192

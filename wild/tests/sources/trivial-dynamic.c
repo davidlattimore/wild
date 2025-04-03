@@ -1,3 +1,4 @@
+//#Config:default
 //#Object:exit.c
 //#EnableLinker:lld
 //#Static:false
@@ -11,6 +12,9 @@
 //#DiffIgnore:.dynamic.DT_RELAENT
 // On aarch64, GNU ld seems to emit a GOT in the shared object even though it isn't needed.
 //#DiffIgnore:section.got
+
+//#Config:origin:default
+//#LinkArgs:-z now -z origin
 
 #include "exit.h"
 

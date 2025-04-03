@@ -27,6 +27,7 @@ jobs:
           - 'ubuntu:24.10'
           - 'ubuntu:25.04'
           - 'opensuse/tumbleweed:latest'
+          - 'rust:1.85-alpine'
         test-qemu:
           - false
         include:
@@ -36,6 +37,9 @@ jobs:
           # Ubuntu 22.04 contains an old lld linker which cannot do a relaxation on AArch64 (required by linker-diff)
           - runs-on: ubuntu-24.04
             container: 'ubuntu:22.04'
+        exclude: # TODO: https://github.com/actions/runner/issues/1637
+          - runs-on: ubuntu-24.04-arm
+            container: 'rust:1.85-alpine'
       fail-fast: false
 
     runs-on: ${{ matrix.runs-on }}
@@ -52,7 +56,8 @@ jobs:
         if: ${{ matrix.test-qemu }}
       - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
         if: ${{ contains(matrix.container, 'opensuse') }}
-      - run: useradd -m -g users user && su user && cd ~
+      - run: apk add build-base lld clang bash curl
+        if: ${{ contains(matrix.container, 'alpine') }}
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -70,6 +75,7 @@ jobs:
             ~/.cargo/git/db/
             target/
           key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+        if: ${{ !contains(matrix.container, 'alpine') }}
       - run: cargo build --profile ci --workspace --no-default-features
       - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace
 
@@ -117,4 +123,4 @@ jobs:
         with:
           persist-credentials: false
       - name: Spell Check Repo
-        uses: crate-ci/typos@v1.30.2
+        uses: crate-ci/typos@v1.31.1

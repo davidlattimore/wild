@@ -1,6 +1,5 @@
 use crate::arch::Arch;
 use crate::elf::PLT_ENTRY_SIZE;
-use crate::resolution::ValueFlags;
 use anyhow::Result;
 use anyhow::anyhow;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
@@ -91,11 +90,12 @@ pub(crate) struct Relaxation {
     rel_info: RelocationKindInfo,
 }
 
-const TLSDESC_CALL_INSN_SEQUENCE: &[u8] = &[
+const TLSDESC_ADR_PAGE21_INSN_SEQUENCE: &[u8] = &[
     0x0, 0x0, 0x0, 0x90, // adrp    x0, 0
-    0x1, 0x0, 0x40, 0xf9, // ldr     x1, [x0]
+];
+
+const TLSDESC_ADD_LO12_INSN_SEQUENCE: &[u8] = &[
     0x0, 0x0, 0x0, 0x91, // add     x0, x0, #0x0
-    0x20, 0x0, 0x3f, 0xd6, // blr     x1
 ];
 
 impl crate::arch::Relaxation for Relaxation {
@@ -115,10 +115,10 @@ impl crate::arch::Relaxation for Relaxation {
         Self: std::marker::Sized,
     {
         let mut relocation = AArch64::relocation_from_raw(relocation_kind).unwrap();
-        let can_bypass_got = value_flags.contains(ValueFlags::CAN_BYPASS_GOT);
+        let interposable = value_flags.is_interposable();
 
         // IFuncs cannot be referenced directly, they always need to go via the GOT.
-        if value_flags.contains(ValueFlags::IFUNC) {
+        if value_flags.is_ifunc() {
             return match relocation_kind {
                 object::elf::R_AARCH64_CALL26 | object::elf::R_AARCH64_JUMP26 => {
                     relocation.kind = RelocationKind::PltRelative;
@@ -143,7 +143,7 @@ impl crate::arch::Relaxation for Relaxation {
         // away fetching it.
 
         match relocation_kind {
-            object::elf::R_AARCH64_CALL26 | object::elf::R_AARCH64_JUMP26 if can_bypass_got => {
+            object::elf::R_AARCH64_CALL26 | object::elf::R_AARCH64_JUMP26 if !interposable => {
                 if non_zero_address {
                     relocation.kind = RelocationKind::Relative;
                     return Some(Relaxation {
@@ -158,30 +158,40 @@ impl crate::arch::Relaxation for Relaxation {
                 });
             }
 
-            object::elf::R_AARCH64_TLSDESC_ADR_PAGE21 if can_bypass_got => {
+            object::elf::R_AARCH64_TLSDESC_ADR_PAGE21
+                if output_kind.is_executable() && !interposable =>
+            {
                 debug_assert!(
-                    section_bytes[offset..].starts_with(TLSDESC_CALL_INSN_SEQUENCE),
-                    "Unknown TLSDESC call sequence"
+                    section_bytes[offset..].starts_with(TLSDESC_ADR_PAGE21_INSN_SEQUENCE),
+                    "Unknown R_AARCH64_TLSDESC_ADR_PAGE21 instruction"
                 );
                 return Some(Relaxation {
                     kind: RelaxationKind::ReplaceWithNop,
                     rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
                 });
             }
-            object::elf::R_AARCH64_TLSDESC_LD64_LO12 if can_bypass_got => {
+            object::elf::R_AARCH64_TLSDESC_LD64_LO12
+                if output_kind.is_executable() && !interposable =>
+            {
                 return Some(Relaxation {
                     kind: RelaxationKind::ReplaceWithNop,
                     rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
                 });
             }
-            object::elf::R_AARCH64_TLSDESC_ADD_LO12 if can_bypass_got => {
+            object::elf::R_AARCH64_TLSDESC_ADD_LO12
+                if output_kind.is_executable() && !interposable =>
+            {
+                debug_assert!(
+                    section_bytes[offset..].starts_with(TLSDESC_ADD_LO12_INSN_SEQUENCE),
+                    "Unknown R_AARCH64_TLSDESC_ADD_LO12 instruction"
+                );
                 return Some(Relaxation {
                     kind: RelaxationKind::MovzX0Lsl16,
                     rel_info: relocation_type_from_raw(object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1)
                         .unwrap(),
                 });
             }
-            object::elf::R_AARCH64_TLSDESC_CALL if can_bypass_got => {
+            object::elf::R_AARCH64_TLSDESC_CALL if output_kind.is_executable() && !interposable => {
                 return Some(Relaxation {
                     kind: RelaxationKind::MovkX0,
                     rel_info: relocation_type_from_raw(
@@ -194,8 +204,8 @@ impl crate::arch::Relaxation for Relaxation {
             // Relax TLSDESC to initial exec
             object::elf::R_AARCH64_TLSDESC_ADR_PAGE21 if output_kind.is_executable() => {
                 debug_assert!(
-                    section_bytes[offset..].starts_with(TLSDESC_CALL_INSN_SEQUENCE),
-                    "Unknown TLSDESC call sequence"
+                    section_bytes[offset..].starts_with(TLSDESC_ADR_PAGE21_INSN_SEQUENCE),
+                    "Unknown R_AARCH64_TLSDESC_ADR_PAGE21 instruction"
                 );
                 return Some(Relaxation {
                     kind: RelaxationKind::ReplaceWithNop,
@@ -209,6 +219,10 @@ impl crate::arch::Relaxation for Relaxation {
                 });
             }
             object::elf::R_AARCH64_TLSDESC_ADD_LO12 if output_kind.is_executable() => {
+                debug_assert!(
+                    section_bytes[offset..].starts_with(TLSDESC_ADD_LO12_INSN_SEQUENCE),
+                    "Unknown R_AARCH64_TLSDESC_ADD_LO12 instruction"
+                );
                 return Some(Relaxation {
                     kind: RelaxationKind::AdrpX0,
                     rel_info: relocation_type_from_raw(
@@ -227,14 +241,18 @@ impl crate::arch::Relaxation for Relaxation {
                 });
             }
 
-            object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21 if can_bypass_got => {
+            object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21
+                if output_kind.is_executable() && !interposable =>
+            {
                 return Some(Relaxation {
                     kind: RelaxationKind::MovzXnLsl16,
                     rel_info: relocation_type_from_raw(object::elf::R_AARCH64_TLSLE_MOVW_TPREL_G1)
                         .unwrap(),
                 });
             }
-            object::elf::R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC if can_bypass_got => {
+            object::elf::R_AARCH64_TLSIE_LD64_GOTTPREL_LO12_NC
+                if output_kind.is_executable() && !interposable =>
+            {
                 return Some(Relaxation {
                     kind: RelaxationKind::MovkXn,
                     rel_info: relocation_type_from_raw(

@@ -221,7 +221,7 @@ impl Input {
     fn path(&self, args: &Args) -> Result<InputPath> {
         match &self.spec {
             InputSpec::File(p) => {
-                if self.search_first.is_some() {
+                if self.search_first.is_some() || p.parent() == Some(Path::new("")) {
                     if let Some(absolute) = search_for_file(
                         &args.lib_search_path,
                         self.search_first.as_ref(),

@@ -49,7 +49,7 @@ pub struct Args {
     pub(crate) write_layout: bool,
     pub(crate) should_write_eh_frame_hdr: bool,
     pub(crate) write_trace: bool,
-    pub(crate) rpaths: Vec<String>,
+    pub(crate) rpath: Option<String>,
     pub(crate) soname: Option<String>,
     pub(crate) files_per_group: Option<u32>,
     pub(crate) gc_sections: bool,
@@ -57,9 +57,11 @@ pub struct Args {
     pub(crate) build_id: BuildIdOption,
     pub(crate) file_write_mode: Option<FileWriteMode>,
     pub(crate) no_undefined: bool,
+    pub(crate) needs_origin_handling: bool,
     pub(crate) allow_copy_relocations: bool,
     pub(crate) sysroot: Option<Box<Path>>,
     pub(crate) undefined: Vec<String>,
+    pub(crate) relro: bool,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -248,10 +250,11 @@ impl Default for Args {
             write_gc_stats: None,
             gc_stats_ignore: Vec::new(),
             verbose_gc_stats: false,
-            rpaths: Vec::new(),
+            rpath: None,
             soname: None,
             execstack: false,
             should_fork: true,
+            needs_origin_handling: false,
             file_write_mode: None,
             build_id: BuildIdOption::None,
             files_per_group: None,
@@ -260,6 +263,7 @@ impl Default for Args {
             sysroot: None,
             demangle: true,
             undefined: Vec::new(),
+            relro: true,
         }
     }
 }
@@ -307,8 +311,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
         let mut handle_z_option = |arg: &str| -> Result {
             match arg {
                 "now" => {}
-                "origin" => {}
-                "relro" => {}
+                "origin" => args.needs_origin_handling = true,
+                "relro" => args.relro = true,
+                "norelro" => args.relro = false,
                 "notext" => {}
                 "nostart-stop-gc" => {}
                 "execstack" => args.execstack = true,
@@ -338,8 +343,13 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 args.lib_search_path.push(handle_sysroot(Path::new(rest)));
             }
         } else if let Some(rest) = arg.strip_prefix("-l") {
+            let spec = if let Some(stripped) = rest.strip_prefix(':') {
+                InputSpec::File(Box::from(Path::new(stripped)))
+            } else {
+                InputSpec::Lib(Box::from(rest))
+            };
             args.inputs.push(Input {
-                spec: InputSpec::Lib(Box::from(rest)),
+                spec,
                 search_first: None,
                 modifiers: *modifier_stack.last().unwrap(),
             });
@@ -464,15 +474,10 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             save_dir.handle_file(script)?;
             args.version_script_path = Some(PathBuf::from(script));
         } else if long_arg_eq("rpath") {
-            args.rpaths.push(
-                input
-                    .next()
-                    .context("Missing argument to -rpath")?
-                    .as_ref()
-                    .to_owned(),
-            );
+            let value = input.next().context("Missing argument to -rpath")?;
+            append_rpath(&mut args.rpath, value.as_ref());
         } else if let Some(rest) = long_arg_split_prefix("rpath=") {
-            args.rpaths.push(rest.to_owned());
+            append_rpath(&mut args.rpath, rest);
         } else if long_arg_eq("no-string-merge") {
             args.merge_strings = false;
         } else if long_arg_eq("pie") {
@@ -723,6 +728,15 @@ fn parse_number(s: &str) -> Result<u64> {
     }
 }
 
+fn append_rpath(rpath: &mut Option<String>, rpath_value: &str) {
+    if let Some(rpath) = &mut *rpath {
+        rpath.push(':');
+        rpath.push_str(rpath_value);
+    } else {
+        *rpath = Some(rpath_value.to_string());
+    }
+}
+
 impl Default for Modifiers {
     fn default() -> Self {
         Self {
@@ -737,6 +751,10 @@ impl Default for Modifiers {
 impl OutputKind {
     pub(crate) fn is_executable(self) -> bool {
         !matches!(self, OutputKind::SharedObject)
+    }
+
+    pub(crate) fn is_shared_object(self) -> bool {
+        matches!(self, OutputKind::SharedObject)
     }
 
     pub(crate) fn is_static_executable(self) -> bool {
@@ -953,6 +971,10 @@ mod tests {
         "--sysroot=/usr/aarch64-linux-gnu",
         "--demangle",
         "--no-demangle",
+        "-l:lib85caec4suo0pxg06jm2ma7b0o.so",
+        "-rpath",
+        "foo/",
+        "-rpath=bar/",
     ];
 
     #[track_caller]
@@ -991,6 +1013,11 @@ mod tests {
             args.sysroot,
             Some(Box::from(Path::new("/usr/aarch64-linux-gnu")))
         );
+        assert!(args.inputs.iter().any(|i| match &i.spec {
+            InputSpec::File(f) => f.as_ref() == Path::new("lib85caec4suo0pxg06jm2ma7b0o.so"),
+            InputSpec::Lib(_) => false,
+        }));
+        assert_eq!(args.rpath.as_deref(), Some("foo/:bar/"));
     }
 
     #[test]

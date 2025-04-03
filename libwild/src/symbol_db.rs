@@ -28,6 +28,7 @@ use ahash::HashMap;
 use ahash::RandomState;
 use anyhow::Context;
 use anyhow::bail;
+use crossbeam_queue::SegQueue;
 use itertools::Itertools;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
@@ -37,8 +38,10 @@ use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use std::collections::hash_map;
 use std::fmt::Display;
+use std::fmt::Write;
 use std::mem::replace;
 use std::mem::take;
+use symbolic_demangle::demangle;
 
 pub struct SymbolDb<'data> {
     pub(crate) args: &'data Args,
@@ -374,7 +377,7 @@ impl<'data> SymbolDb<'data> {
         self.num_symbols_per_group[self.epilogue_file_id.group()] += 1;
 
         self.symbol_value_flags
-            .push(ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT);
+            .push(ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE);
 
         symbol_id
     }
@@ -432,6 +435,28 @@ impl<'data> SymbolDb<'data> {
                 Group::Epilogue(_) => 0,
             })
             .sum()
+    }
+
+    /// If we have a symbol that when demangled produces `target_name`, then return the mangled
+    /// name. Note, this scans every symbol, so should only be used for debugging / diagnostic
+    /// purposes.
+    pub(crate) fn find_mangled_name(&self, target_name: &str) -> Option<String> {
+        for i in 1..self.num_symbols() {
+            let symbol_id = SymbolId(i as u32);
+            let Ok(name) = self.symbol_name(symbol_id) else {
+                continue;
+            };
+
+            let Ok(name) = std::str::from_utf8(name.bytes()) else {
+                continue;
+            };
+
+            if demangle(name) == target_name {
+                return Some(name.to_owned());
+            }
+        }
+
+        None
     }
 
     /// Returns our mapping from symbol IDs to the IDs that define them. Definitions should be
@@ -540,6 +565,8 @@ impl<'data> SymbolDb<'data> {
                 SymbolStrength::Weak
             } else if obj_symbol.is_common(e) {
                 SymbolStrength::Common(obj_symbol.st_size(e))
+            } else if obj_symbol.st_bind() == object::elf::STB_GNU_UNIQUE {
+                SymbolStrength::GnuUnique
             } else {
                 SymbolStrength::Strong
             }
@@ -596,25 +623,27 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
     resolved: &[ResolvedGroup],
 ) -> Result {
     let mut buckets = take(&mut symbol_db.buckets);
+    let error_queue = SegQueue::new();
 
     let replacements: Vec<Vec<(SymbolId, SymbolId)>> = buckets
         .par_iter_mut()
         .map(|bucket| {
-            let mut replacements = Vec::new();
-
-            let mut add_replacement = |a, b| {
-                replacements.push((a, b));
-            };
+            let mut local_replacements = Vec::new();
 
             for (first, alternatives) in replace(
                 &mut bucket.alternative_definitions,
                 HashMap::with_hasher(RandomState::new()),
             ) {
-                let selected = select_symbol(symbol_db, first, &alternatives, resolved);
-                add_replacement(first, selected);
-
-                for alt in alternatives {
-                    add_replacement(alt, selected);
+                match select_symbol(symbol_db, first, &alternatives, resolved) {
+                    Ok(selected) => {
+                        local_replacements.push((first, selected));
+                        for alt in alternatives {
+                            local_replacements.push((alt, selected));
+                        }
+                    }
+                    Err(err) => {
+                        error_queue.push(err);
+                    }
                 }
             }
 
@@ -622,17 +651,35 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
                 &mut bucket.alternative_versioned_definitions,
                 HashMap::with_hasher(RandomState::new()),
             ) {
-                let selected = select_symbol(symbol_db, first, &alternatives, resolved);
-                add_replacement(first, selected);
-
-                for alt in alternatives {
-                    add_replacement(alt, selected);
+                match select_symbol(symbol_db, first, &alternatives, resolved) {
+                    Ok(selected) => {
+                        local_replacements.push((first, selected));
+                        for alt in alternatives {
+                            local_replacements.push((alt, selected));
+                        }
+                    }
+                    Err(err) => {
+                        error_queue.push(err);
+                    }
                 }
             }
-
-            replacements
+            local_replacements
         })
         .collect();
+
+    let mut duplicate_errors: Vec<anyhow::Error> = error_queue.into_iter().collect();
+    duplicate_errors.sort_by_key(|e| e.to_string());
+
+    if !duplicate_errors.is_empty() {
+        let error_details = duplicate_errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(anyhow::Error::msg(format!(
+            "Duplicate symbols detected: {error_details}"
+        )));
+    }
 
     for (a, b) in replacements.iter().flat_map(|r| r.iter()) {
         symbol_db.replace_definition(*a, *b);
@@ -650,23 +697,20 @@ fn select_symbol(
     symbol_id: SymbolId,
     alternatives: &[SymbolId],
     resolved: &[ResolvedGroup],
-) -> SymbolId {
-    let first_strength = symbol_db.symbol_strength(symbol_id, resolved);
-    if first_strength == SymbolStrength::Strong {
-        return symbol_id;
-    }
+) -> Result<SymbolId, anyhow::Error> {
     let mut max_common = None;
-    for &alt in alternatives.iter().rev() {
-        // Dynamic symbols, even strong ones, don't override non-dynamic weak symbols.
-        if symbol_db
-            .symbol_value_flags(alt)
-            .contains(ValueFlags::DYNAMIC)
-        {
+    let mut strong_symbols = Vec::new();
+
+    let all_symbols = std::iter::once(symbol_id).chain(alternatives.iter().copied());
+
+    for alt in all_symbols {
+        if symbol_db.symbol_value_flags(alt).is_dynamic() {
             continue;
         }
+
         let strength = symbol_db.symbol_strength(alt, resolved);
         match strength {
-            SymbolStrength::Strong => return alt,
+            SymbolStrength::Strong => strong_symbols.push(alt),
             SymbolStrength::Common(size) => {
                 if let Some((previous_size, _)) = max_common {
                     if size <= previous_size {
@@ -678,19 +722,46 @@ fn select_symbol(
             _ => {}
         }
     }
+
+    if strong_symbols.len() > 1 {
+        let already_defined_in = symbol_db.file_id_for_symbol(*strong_symbols.first().unwrap());
+
+        return Err(anyhow::Error::msg(format!(
+            "{}{}, previously defined in {}",
+            symbol_db.symbol_name_for_display(symbol_id),
+            strong_symbols
+                .iter()
+                .skip(1)
+                .fold(String::new(), |mut output, &s| {
+                    let fid = symbol_db.file_id_for_symbol(s);
+                    write!(output, ", defined in {}", symbol_db.file(fid)).unwrap();
+                    output
+                }),
+            symbol_db.file(already_defined_in)
+        )));
+    }
+
+    if let Some(&strong_symbol) = strong_symbols.first() {
+        return Ok(strong_symbol);
+    }
+
     if let Some((_, alt)) = max_common {
-        return alt;
+        return Ok(alt);
     }
+
+    let first_strength = symbol_db.symbol_strength(symbol_id, resolved);
     if first_strength != SymbolStrength::Undefined {
-        return symbol_id;
+        return Ok(symbol_id);
     }
+
     for &alt in alternatives.iter().rev() {
         let strength = symbol_db.symbol_strength(alt, resolved);
         if strength != SymbolStrength::Undefined {
-            return alt;
+            return Ok(alt);
         }
     }
-    symbol_id
+
+    Ok(symbol_id)
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
@@ -700,6 +771,9 @@ enum SymbolStrength {
 
     /// The object weakly defines the symbol.
     Weak,
+
+    /// The object uses STB_GNU_UNIQUE binding.
+    GnuUnique,
 
     /// The object strongly defines the symbol.
     Strong,
@@ -779,23 +853,20 @@ fn load_symbols_from_file<'data>(
 
 fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFlags {
     let is_undefined = sym.is_undefined(LittleEndian);
-    let mut can_bypass_got = sym.st_visibility() != object::elf::STV_DEFAULT
+
+    let non_interposable = sym.st_visibility() != object::elf::STV_DEFAULT
         || sym.is_local()
         || args.output_kind().is_static_executable()
         // Symbols defined in an executable cannot be interposed since the executable is always the
         // first place checked for a symbol by the dynamic loader.
         || (args.output_kind().is_executable() && !is_undefined);
-    // When writing a shared object, TLS variables should never bypass the GOT, even if they're
-    // local variables.
-    if args.output_kind() == OutputKind::SharedObject && sym.st_type() == object::elf::STT_TLS {
-        can_bypass_got = false;
-    }
+
     let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {
         ValueFlags::ABSOLUTE
     } else if sym.st_type() == object::elf::STT_GNU_IFUNC {
         ValueFlags::IFUNC
     } else if is_undefined {
-        if can_bypass_got {
+        if non_interposable {
             ValueFlags::ABSOLUTE
         } else {
             // If we can't bypass the GOT, then an undefined symbol might be able to be defined at
@@ -805,8 +876,9 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFl
     } else {
         ValueFlags::ADDRESS
     };
-    if can_bypass_got {
-        flags |= ValueFlags::CAN_BYPASS_GOT;
+
+    if non_interposable {
+        flags |= ValueFlags::NON_INTERPOSABLE;
     }
     flags
 }
@@ -855,10 +927,12 @@ trait SymbolLoader<'data> {
         for symbol in self.object().symbols.iter() {
             let symbol_id = symbols_out.next;
             let mut value_flags = self.compute_value_flags(symbol);
-            if symbol.is_undefined(e) {
+
+            if symbol.is_undefined(e) || self.should_ignore_symbol(symbol) {
                 symbols_out.set_next(value_flags, SymbolId::undefined(), file_id);
                 continue;
             }
+
             let resolution = symbol_id;
 
             let local_index = symbol_id.offset_from(base_symbol_id);
@@ -877,7 +951,7 @@ trait SymbolLoader<'data> {
                 // If we're downgrading to a local, then we're writing a shared object. Shared
                 // objects should never bypass the GOT for TLS variables.
                 if symbol.st_type() != object::elf::STT_TLS {
-                    value_flags |= ValueFlags::CAN_BYPASS_GOT;
+                    value_flags |= ValueFlags::NON_INTERPOSABLE;
                 }
             }
 
@@ -903,6 +977,11 @@ trait SymbolLoader<'data> {
 
     /// Returns whether we should downgrade a symbol with the specified name to be a local.
     fn should_downgrade_to_local(&self, _name: &PreHashed<UnversionedSymbolName>) -> bool {
+        false
+    }
+
+    /// Returns whether the supplied symbol should be ignore.
+    fn should_ignore_symbol(&self, _symbol: &crate::elf::Symbol) -> bool {
         false
     }
 
@@ -1064,6 +1143,11 @@ impl<'data> SymbolLoader<'data> for DynamicObjectSymbolLoader<'_, 'data> {
     fn object(&self) -> &crate::elf::File<'data> {
         self.object
     }
+
+    fn should_ignore_symbol(&self, symbol: &crate::elf::Symbol) -> bool {
+        // Shared objects shouldn't export hidden symbols. If for some reason they do, ignore them.
+        crate::elf::is_hidden_symbol(symbol)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1186,13 +1270,13 @@ impl Prelude<'_> {
                     let def = section_id.built_in_details();
                     let name = def.start_symbol_name(output_kind).unwrap().as_bytes();
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, name));
-                    ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT
+                    ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE
                 }
                 InternalSymDefInfo::SectionEnd(section_id) => {
                     let def = section_id.built_in_details();
                     let name = def.end_symbol_name(output_kind).unwrap().as_bytes();
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, name));
-                    ValueFlags::ADDRESS | ValueFlags::CAN_BYPASS_GOT
+                    ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE
                 }
             };
             symbols_out.set_next(value_flags, symbol_id, PRELUDE_FILE_ID);

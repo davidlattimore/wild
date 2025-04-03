@@ -649,10 +649,10 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
             // It might be tempting to think that this code should only be run for dynamic objects,
             // however regular objects can own dynamic symbols too if the symbol is an undefined
             // weak symbol.
-            if value_flags.contains(ValueFlags::DYNAMIC) && !current_res_flags.is_empty() {
+            if value_flags.is_dynamic() && !current_res_flags.is_empty() {
                 let name = symbol_db.symbol_name(symbol_id)?;
 
-                if current_res_flags.contains(ResolutionFlags::COPY_RELOCATION) {
+                if current_res_flags.needs_copy_relocation() {
                     // The dynamic symbol is a definition, so is handled by the epilogue. We only
                     // need to deal with the symtab entry here.
                     let entry_size = size_of::<elf::SymtabEntry>() as u64;
@@ -721,7 +721,7 @@ fn allocate_symbol_resolution(
     output_kind: OutputKind,
 ) {
     let mut r = resolution_flags.get();
-    if !r.is_empty() && value_flags.contains(ValueFlags::IFUNC) {
+    if !r.is_empty() && value_flags.is_ifunc() {
         resolution_flags.fetch_or(ResolutionFlags::GOT | ResolutionFlags::PLT);
         r |= ResolutionFlags::GOT | ResolutionFlags::PLT;
     }
@@ -751,44 +751,42 @@ fn allocate_resolution(
     mem_sizes: &mut OutputSectionPartMap<u64>,
     output_kind: OutputKind,
 ) {
-    let has_dynamic_symbol = value_flags.contains(ValueFlags::DYNAMIC)
-        || resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC);
-    if resolution_flags.contains(ResolutionFlags::GOT) {
+    let has_dynamic_symbol = value_flags.is_dynamic() || resolution_flags.needs_export_dynamic();
+
+    if resolution_flags.needs_got() {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
-        if resolution_flags.contains(ResolutionFlags::PLT) {
+        if resolution_flags.needs_plt() {
             mem_sizes.increment(part_id::PLT_GOT, elf::PLT_ENTRY_SIZE);
         }
-        if value_flags.contains(ValueFlags::IFUNC) {
+        if value_flags.is_ifunc() {
             mem_sizes.increment(part_id::RELA_PLT, elf::RELA_ENTRY_SIZE);
-        } else if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
-            // Copy relocation means that we know the relative address.
-            if output_kind.is_relocatable() {
-                mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
-            }
-        } else if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
+        } else if value_flags.is_interposable() && has_dynamic_symbol {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-        } else if value_flags.contains(ValueFlags::ADDRESS) && output_kind.is_relocatable() {
+        } else if value_flags.is_address() && output_kind.is_relocatable() {
             mem_sizes.increment(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
         }
     }
-    if resolution_flags.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+
+    if resolution_flags.needs_got_tls_offset() {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE);
-        if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) {
+        if value_flags.is_interposable() || output_kind.is_shared_object() {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
     }
-    if resolution_flags.contains(ResolutionFlags::GOT_TLS_MODULE) {
+
+    if resolution_flags.needs_got_tls_module() {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
         // For executables, the TLS module ID is known at link time. For shared objects, we
         // need a runtime relocation to fill it in.
         if !output_kind.is_executable() {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
-        if !value_flags.contains(ValueFlags::CAN_BYPASS_GOT) && has_dynamic_symbol {
+        if value_flags.is_interposable() && has_dynamic_symbol {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
     }
-    if resolution_flags.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
+
+    if resolution_flags.needs_got_tls_descriptor() {
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
         mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
     }
@@ -1102,6 +1100,48 @@ struct AtomicResolutionFlags {
     value: AtomicU8,
 }
 
+impl ResolutionFlags {
+    #[must_use]
+    pub(crate) fn needs_direct(self) -> bool {
+        self.contains(ResolutionFlags::DIRECT)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_copy_relocation(self) -> bool {
+        self.contains(ResolutionFlags::COPY_RELOCATION)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_export_dynamic(self) -> bool {
+        self.contains(ResolutionFlags::EXPORT_DYNAMIC)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_got(self) -> bool {
+        self.contains(ResolutionFlags::GOT)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_plt(self) -> bool {
+        self.contains(ResolutionFlags::PLT)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_got_tls_offset(self) -> bool {
+        self.contains(ResolutionFlags::GOT_TLS_OFFSET)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_got_tls_module(self) -> bool {
+        self.contains(ResolutionFlags::GOT_TLS_MODULE)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_got_tls_descriptor(self) -> bool {
+        self.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR)
+    }
+}
+
 impl AtomicResolutionFlags {
     fn empty() -> Self {
         Self::new(ResolutionFlags::empty())
@@ -1195,7 +1235,7 @@ pub(crate) struct Section {
     pub(crate) part_id: PartId,
     /// Size in memory.
     pub(crate) size: u64,
-    pub(crate) resolution_kind: ResolutionFlags,
+    pub(crate) resolution_flags: ResolutionFlags,
     pub(crate) is_writable: bool,
 }
 
@@ -1369,28 +1409,46 @@ impl<'data> Layout<'data> {
             // Shared objects don't have an entry point.
             return Ok(0);
         }
-        let symbol_id = self
-            .prelude()
-            .entry_symbol_id
-            .context("Entry point is undefined")?;
+
+        let Some(symbol_id) = self.prelude().entry_symbol_id else {
+            // There's no entry point specified, set it to the start of .text. This is pretty weird,
+            // but it's what GNU ld does.
+            let text_layout = self.section_layouts.get(output_section_id::TEXT);
+            if text_layout.mem_size == 0 {
+                crate::error::warning(
+                    "cannot find entry symbol `_start` and .text is empty, not setting entry point",
+                );
+
+                return Ok(0);
+            }
+
+            crate::error::warning(&format!(
+                "cannot find entry symbol `_start`, defaulting to 0x{}",
+                text_layout.mem_offset
+            ));
+            return Ok(text_layout.mem_offset);
+        };
+
         let resolution = self.local_symbol_resolution(symbol_id).with_context(|| {
             format!(
                 "Entry point symbol was defined, but didn't get loaded. {}",
                 self.symbol_debug(symbol_id)
             )
         })?;
-        if !resolution.value_flags().contains(ValueFlags::ADDRESS) {
+
+        if !resolution.value_flags().is_address() {
             bail!(
                 "Entry point must be an address. {}",
                 self.symbol_debug(symbol_id)
             );
         }
+
         Ok(resolution.value())
     }
 
     pub(crate) fn tls_start_address(&self) -> u64 {
-        let tdata = self.section_layouts.get(output_section_id::TDATA);
-        tdata.mem_offset
+        // If we don't have a TLS segment then the value we return won't really matter.
+        self.segment_layouts.tls_start_address.unwrap_or(0)
     }
 
     /// Returns the memory address of the end of the TLS segment including any padding required to
@@ -2450,7 +2508,7 @@ impl Section {
             index: section_index,
             part_id,
             size,
-            resolution_kind: ResolutionFlags::empty(),
+            resolution_flags: ResolutionFlags::empty(),
             is_writable: SectionFlags::from_header(object_section).contains(shf::WRITE),
         };
         Ok(section)
@@ -2513,25 +2571,29 @@ fn process_relocation<A: Arch>(
         } else {
             A::relocation_from_raw(r_type)?
         };
-        if does_relocation_require_static_tls(r_type) {
-            resources
-                .has_static_tls
-                .store(true, atomic::Ordering::Relaxed);
-        }
 
         let section_is_writable = SectionFlags::from_header(section).contains(shf::WRITE);
-        let mut resolution_kind = resolution_flags(rel_info.kind);
-        if resolution_kind.contains(ResolutionFlags::DIRECT)
-            && symbol_value_flags.contains(ValueFlags::DYNAMIC)
-        {
+        let mut resolution_flags = resolution_flags(rel_info.kind);
+
+        if rel_info.kind.is_tls() {
+            if does_relocation_require_static_tls(r_type) {
+                resources
+                    .has_static_tls
+                    .store(true, atomic::Ordering::Relaxed);
+            }
+
+            if needs_tlsld(rel_info.kind) && !resources.uses_tlsld.load(atomic::Ordering::Relaxed) {
+                resources.uses_tlsld.store(true, atomic::Ordering::Relaxed);
+            }
+        } else if resolution_flags.needs_direct() && symbol_value_flags.is_interposable() {
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-            } else if symbol_value_flags.contains(ValueFlags::FUNCTION) {
-                resolution_kind.remove(ResolutionFlags::DIRECT);
-                resolution_kind |= ResolutionFlags::PLT | ResolutionFlags::GOT;
-            } else if !symbol_value_flags.contains(ValueFlags::ABSOLUTE) {
+            } else if symbol_value_flags.is_function() {
+                resolution_flags.remove(ResolutionFlags::DIRECT);
+                resolution_flags |= ResolutionFlags::PLT | ResolutionFlags::GOT;
+            } else if !symbol_value_flags.is_absolute() {
                 if args.allow_copy_relocations {
-                    resolution_kind |= ResolutionFlags::COPY_RELOCATION;
+                    resolution_flags |= ResolutionFlags::COPY_RELOCATION;
                 } else {
                     // We don't at present support text relocations, so if we can't apply a copy
                     // relocation, we error instead.
@@ -2543,18 +2605,9 @@ fn process_relocation<A: Arch>(
                     );
                 }
             }
-        }
-
-        if needs_tlsld(rel_info.kind) && !resources.uses_tlsld.load(atomic::Ordering::Relaxed) {
-            resources.uses_tlsld.store(true, atomic::Ordering::Relaxed);
-        }
-
-        let previous_flags =
-            resources.symbol_resolution_flags[symbol_id.as_usize()].fetch_or(resolution_kind);
-
-        if args.is_relocatable()
+        } else if args.is_relocatable()
             && rel_info.kind == RelocationKind::Absolute
-            && symbol_value_flags.contains(ValueFlags::ADDRESS)
+            && (symbol_value_flags.is_address() | symbol_value_flags.is_ifunc())
         {
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
@@ -2566,6 +2619,9 @@ fn process_relocation<A: Arch>(
                 );
             }
         }
+
+        let previous_flags =
+            resources.symbol_resolution_flags[symbol_id.as_usize()].fetch_or(resolution_flags);
 
         if previous_flags.is_empty() {
             queue.send_symbol_request(symbol_id, resources);
@@ -2584,9 +2640,7 @@ fn process_relocation<A: Arch>(
             }
         }
 
-        if resolution_kind.contains(ResolutionFlags::COPY_RELOCATION)
-            && !previous_flags.contains(ResolutionFlags::COPY_RELOCATION)
-        {
+        if resolution_flags.needs_copy_relocation() && !previous_flags.needs_copy_relocation() {
             queue.send_copy_relocation_request(symbol_id, resources);
         }
     }
@@ -2678,7 +2732,7 @@ impl PreludeLayoutState {
         }
 
         if resources.symbol_db.args.output_kind().is_executable() {
-            self.load_entry_point(resources, queue)?;
+            self.load_entry_point(resources, queue);
         }
 
         if resources.symbol_db.args.needs_dynsym() {
@@ -2704,15 +2758,15 @@ impl PreludeLayoutState {
         Ok(())
     }
 
-    fn load_entry_point(
-        &mut self,
-        resources: &GraphResources,
-        queue: &mut LocalWorkQueue,
-    ) -> Result {
-        let symbol_id = resources
+    fn load_entry_point(&mut self, resources: &GraphResources, queue: &mut LocalWorkQueue) {
+        let Some(symbol_id) = resources
             .symbol_db
             .get_unversioned(&UnversionedSymbolName::prehashed(b"_start"))
-            .context("Missing _start symbol")?;
+        else {
+            // We'll emit a warning when writing the file.
+            return;
+        };
+
         self.entry_symbol_id = Some(symbol_id);
         let file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
         let old_flags = resources.symbol_resolution_flags[symbol_id.as_usize()]
@@ -2720,7 +2774,6 @@ impl PreludeLayoutState {
         if old_flags.is_empty() {
             queue.send_work(resources, file_id, WorkItem::LoadGlobalSymbol(symbol_id));
         }
-        Ok(())
     }
 
     fn pre_finalise_sizes(
@@ -2769,6 +2822,7 @@ impl PreludeLayoutState {
             sections_with_content,
             output_sections,
             symbol_resolution_flags,
+            symbol_db,
         );
 
         self.allocate_symbol_table_sizes(
@@ -2839,6 +2893,7 @@ impl PreludeLayoutState {
         sections_with_content: OutputSectionMap<bool>,
         output_sections: &mut OutputSections,
         symbol_resolution_flags: &[ResolutionFlags],
+        symbol_db: &SymbolDb,
     ) {
         use output_section_id::OrderEvent;
 
@@ -2905,6 +2960,11 @@ impl PreludeLayoutState {
                 }
             }
         }
+
+        if !symbol_db.args.relro {
+            keep_segments[crate::program_segments::RELRO.as_usize()] = false;
+        }
+
         let active_segment_ids = (0..crate::program_segments::MAX_SEGMENTS)
             .filter(|i| keep_segments[*i] || i == &STACK.as_usize())
             .map(ProgramSegmentId::new)
@@ -3085,7 +3145,7 @@ fn is_symbol_undefined(
 
     sym_file_id == sym_def_file_id
         && symbol.is_undefined(LittleEndian)
-        && symbol_value_flags.contains(ValueFlags::ABSOLUTE)
+        && symbol_value_flags.is_absolute()
 }
 
 impl<'data> EpilogueLayoutState<'data> {
@@ -3164,7 +3224,7 @@ impl<'data> EpilogueLayoutState<'data> {
                 part_id::DYNAMIC,
                 (elf_writer::NUM_EPILOGUE_DYNAMIC_ENTRIES * dynamic_entry_size) as u64,
             );
-            for rpath in &symbol_db.args.rpaths {
+            if let Some(rpath) = symbol_db.args.rpath.as_ref() {
                 common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
                 common.allocate(part_id::DYNSTR, rpath.len() as u64 + 1);
             }
@@ -3613,7 +3673,7 @@ impl<'data> ObjectLayoutState<'data> {
             if let SectionSlot::Loaded(section) = slot {
                 allocate_resolution(
                     ValueFlags::ADDRESS,
-                    section.resolution_kind,
+                    section.resolution_flags,
                     &mut common.mem_sizes,
                     output_kind,
                 );
@@ -3829,7 +3889,7 @@ impl<'data> ObjectLayoutState<'data> {
         };
 
         let mut dynamic_symbol_index = None;
-        if value_flags.contains(ValueFlags::DYNAMIC) {
+        if value_flags.is_dynamic() {
             // This is an undefined weak symbol. Emit it as a dynamic symbol so that it can be
             // overridden at runtime.
             let dyn_sym_index = take_dynsym_index(memory_offsets, resources.section_layouts)?;
@@ -3855,29 +3915,21 @@ impl<'data> ObjectLayoutState<'data> {
         queue: &mut LocalWorkQueue,
     ) -> Result {
         for (sym_index, sym) in self.object.symbols.enumerate() {
-            if can_export_symbol(sym) {
-                let symbol_id = self.symbol_id_range().input_to_id(sym_index);
+            let symbol_id = self.symbol_id_range().input_to_id(sym_index);
 
-                if !resources.symbol_db.is_canonical(symbol_id) {
-                    continue;
-                }
+            if !can_export_symbol(sym, symbol_id, resources.symbol_db) {
+                continue;
+            }
 
-                let value_flags = resources.symbol_db.local_symbol_value_flags(symbol_id);
+            let old_flags = resources.symbol_resolution_flags[symbol_id.as_usize()]
+                .fetch_or(ResolutionFlags::EXPORT_DYNAMIC);
 
-                if value_flags.contains(ValueFlags::DOWNGRADE_TO_LOCAL) {
-                    continue;
-                }
+            if old_flags.is_empty() {
+                self.load_symbol::<A>(common, symbol_id, resources, queue)?;
+            }
 
-                let old_flags = resources.symbol_resolution_flags[symbol_id.as_usize()]
-                    .fetch_or(ResolutionFlags::EXPORT_DYNAMIC);
-
-                if old_flags.is_empty() {
-                    self.load_symbol::<A>(common, symbol_id, resources, queue)?;
-                }
-
-                if !old_flags.contains(ResolutionFlags::EXPORT_DYNAMIC) {
-                    export_dynamic(common, symbol_id, resources.symbol_db)?;
-                }
+            if !old_flags.needs_export_dynamic() {
+                export_dynamic(common, symbol_id, resources.symbol_db)?;
             }
         }
         Ok(())
@@ -3890,6 +3942,19 @@ impl<'data> ObjectLayoutState<'data> {
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
+        let sym = self
+            .object
+            .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
+
+        // Shared objects that we're linking against sometimes define symbols that are also defined
+        // in regular object. When that happens, if we resolve the symbol to the definition from the
+        // regular object, then the shared object might send us a request to export the definition
+        // provided by the regular object. This isn't always possible, since the symbol might be
+        // hidden.
+        if !can_export_symbol(sym, symbol_id, resources.symbol_db) {
+            return Ok(());
+        }
+
         let old_flags = resources.symbol_resolution_flags[symbol_id.as_usize()]
             .fetch_or(ResolutionFlags::EXPORT_DYNAMIC);
 
@@ -3897,7 +3962,7 @@ impl<'data> ObjectLayoutState<'data> {
             self.load_symbol::<A>(common, symbol_id, resources, queue)?;
         }
 
-        if !old_flags.contains(ResolutionFlags::EXPORT_DYNAMIC) {
+        if !old_flags.needs_export_dynamic() {
             export_dynamic(common, symbol_id, resources.symbol_db)?;
         }
 
@@ -3959,11 +4024,32 @@ impl<'data> SymbolCopyInfo<'data> {
 }
 
 /// Returns whether the supplied symbol can be exported when we're outputting a shared object.
-pub(crate) fn can_export_symbol(sym: &crate::elf::SymtabEntry) -> bool {
+fn can_export_symbol(
+    sym: &crate::elf::SymtabEntry,
+    symbol_id: SymbolId,
+    symbol_db: &SymbolDb,
+) -> bool {
+    if sym.is_undefined(LittleEndian) || sym.is_local() {
+        return false;
+    }
+
     let visibility = sym.st_visibility();
-    !sym.is_undefined(LittleEndian)
-        && !sym.is_local()
-        && (visibility == object::elf::STV_DEFAULT || visibility == object::elf::STV_PROTECTED)
+
+    if visibility != object::elf::STV_DEFAULT && visibility != object::elf::STV_PROTECTED {
+        return false;
+    }
+
+    if !symbol_db.is_canonical(symbol_id) {
+        return false;
+    }
+
+    let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
+
+    if value_flags.is_downgraded_to_local() {
+        return false;
+    }
+
+    true
 }
 
 fn process_eh_frame_data<'data, A: Arch>(
@@ -4176,25 +4262,25 @@ fn create_resolution(
         resolution_flags: res_kind,
         value_flags,
     };
-    if res_kind.contains(ResolutionFlags::PLT) {
+    if res_kind.needs_plt() {
         let plt_address = allocate_plt(memory_offsets);
         resolution.plt_address = Some(plt_address);
-        if value_flags.contains(ValueFlags::DYNAMIC) {
+        if value_flags.is_dynamic() {
             resolution.raw_value = plt_address.get();
         }
         resolution.got_address = Some(allocate_got(1, memory_offsets));
-    } else if res_kind.contains(ResolutionFlags::GOT) {
+    } else if res_kind.needs_got() {
         resolution.got_address = Some(allocate_got(1, memory_offsets));
     } else {
         // Handle the TLS GOT addresses where we can combine up to 3 different access methods.
         let mut num_got_slots = 0;
-        if res_kind.contains(ResolutionFlags::GOT_TLS_OFFSET) {
+        if res_kind.needs_got_tls_offset() {
             num_got_slots += 1;
         }
-        if res_kind.contains(ResolutionFlags::GOT_TLS_MODULE) {
+        if res_kind.needs_got_tls_module() {
             num_got_slots += 2;
         }
-        if res_kind.contains(ResolutionFlags::GOT_TLS_DESCRIPTOR) {
+        if res_kind.needs_got_tls_descriptor() {
             num_got_slots += 2;
         }
         if num_got_slots > 0 {
@@ -4241,16 +4327,12 @@ impl Resolution {
 
     pub(crate) fn tlsgd_got_address(&self) -> Result<u64> {
         debug_assert_bail!(
-            self.resolution_flags
-                .contains(ResolutionFlags::GOT_TLS_MODULE),
+            self.resolution_flags.needs_got_tls_module(),
             "Called tlsgd_got_address without GOT_TLS_MODULE being set"
         );
         // If we've got both a GOT_TLS_OFFSET and a GOT_TLS_MODULE, then the latter comes second.
         let mut got_address = self.got_address()?;
-        if self
-            .resolution_flags
-            .contains(ResolutionFlags::GOT_TLS_OFFSET)
-        {
+        if self.resolution_flags.needs_got_tls_offset() {
             got_address += elf::GOT_ENTRY_SIZE;
         }
         Ok(got_address)
@@ -4258,23 +4340,16 @@ impl Resolution {
 
     pub(crate) fn tls_descriptor_got_address(&self) -> Result<u64> {
         debug_assert_bail!(
-            self.resolution_flags
-                .contains(ResolutionFlags::GOT_TLS_DESCRIPTOR),
+            self.resolution_flags.needs_got_tls_descriptor(),
             "Called tls_descriptor_got_address without GOT_TLS_DESCRIPTOR being set"
         );
         // We might have both GOT_TLS_OFFSET, GOT_TLS_MODULE and GOT_TLS_DESCRIPTOR at the same time
         // for a single symbol. Then the TLS descriptor comes as the last one.
         let mut got_address = self.got_address()?;
-        if self
-            .resolution_flags
-            .contains(ResolutionFlags::GOT_TLS_OFFSET)
-        {
+        if self.resolution_flags.needs_got_tls_offset() {
             got_address += elf::GOT_ENTRY_SIZE;
         }
-        if self
-            .resolution_flags
-            .contains(ResolutionFlags::GOT_TLS_MODULE)
-        {
+        if self.resolution_flags.needs_got_tls_module() {
             got_address += 2 * elf::GOT_ENTRY_SIZE;
         }
 
@@ -4294,7 +4369,7 @@ impl Resolution {
     }
 
     pub(crate) fn address(&self) -> Result<u64> {
-        if !self.value_flags.contains(ValueFlags::ADDRESS) {
+        if !self.value_flags.is_address() {
             bail!("Expected address, found {}", self.value_flags);
         }
         Ok(self.raw_value)
@@ -4305,7 +4380,7 @@ impl Resolution {
     }
 
     pub(crate) fn is_absolute(&self) -> bool {
-        self.value_flags.contains(ValueFlags::ABSOLUTE)
+        self.value_flags.is_absolute()
     }
 
     pub(crate) fn dynamic_symbol_index(&self) -> Result<u32> {
@@ -4324,6 +4399,10 @@ impl Resolution {
         merged_strings: &OutputSectionMap<MergedStringsSection>,
         merged_string_start_addresses: &MergedStringStartAddresses,
     ) -> Result<u64> {
+        if self.value_flags.is_ifunc() {
+            return Ok(self.plt_address()?.wrapping_add(addend as u64));
+        }
+
         // For most symbols, `raw_value` won't be zero, so we can save ourselves from looking up the
         // section to see if it's a string-merge section. For string-merge symbols with names,
         // `raw_value` will have already been computed, so we can avoid computing it again.
@@ -4635,6 +4714,9 @@ impl<'data> DynamicLayoutState<'data> {
             .copy_relocations
             .values()
             .map(|info| info.symbol_id)
+            // We'll write the copy relocations in this order, so we need to sort it to ensure
+            // deterministic output.
+            .sorted()
             .collect_vec();
 
         let copy_relocation_addresses =
@@ -4654,7 +4736,7 @@ impl<'data> DynamicLayoutState<'data> {
             let address;
             let dynamic_symbol_index;
 
-            if resolution_flags.contains(ResolutionFlags::COPY_RELOCATION) {
+            if resolution_flags.needs_copy_relocation() {
                 let input_address = local_symbol.st_value(LittleEndian);
 
                 address = *copy_relocation_addresses
@@ -4879,6 +4961,10 @@ fn print_symbol_info(
     resolution_flags: &[AtomicResolutionFlags],
     groups: &[GroupState],
 ) {
+    let name = symbol_db
+        .find_mangled_name(name)
+        .unwrap_or_else(|| name.to_owned());
+
     let symbol_id = symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()));
     println!("Global name `{name}` refers to: {symbol_id:?}",);
 
@@ -5110,9 +5196,8 @@ fn verify_consistent_allocation_handling(
     let mut memory_offsets = output_sections.new_part_map();
     *memory_offsets.get_mut(part_id::GOT) = 0x10;
     *memory_offsets.get_mut(part_id::PLT_GOT) = 0x10;
-    let has_dynamic_symbol = value_flags.contains(ValueFlags::DYNAMIC)
-        || (resolution_flags.contains(ResolutionFlags::EXPORT_DYNAMIC)
-            && !value_flags.contains(ValueFlags::CAN_BYPASS_GOT));
+    let has_dynamic_symbol = value_flags.is_dynamic()
+        || (resolution_flags.needs_export_dynamic() && value_flags.is_interposable());
     let dynamic_symbol_index = has_dynamic_symbol.then(|| NonZeroU32::new(1).unwrap());
     let resolution = create_resolution(
         resolution_flags,

@@ -43,8 +43,8 @@ bytesize = "2.0.1"
 flate2 = { version = "1.1.0", features = ["zlib-rs"] }
 bumpalo-herd = "0.1.2"
 zstd = "0.13.3"
-blake3 = { version = "1.6.1", features = ["rayon"] }
-uuid = { version = "1.15.1", features = ["v4"] }
+blake3 = { version = "1.8.0", features = ["rayon"] }
+uuid = { version = "1.16.0", features = ["v4"] }
 hex = "0.4.3"
 atomic-take = "1.1.0"
 normalize-path = "0.2.1"

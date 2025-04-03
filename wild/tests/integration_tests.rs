@@ -63,16 +63,17 @@
 //! SecEquiv:{sec-name}={sec-name} Tells linker-diff that the two section names should be considered
 //! as equivalent.
 //!
-//! Object:{source-filename} Builds the specified filename as a regular object and adds it to the
-//! link.
+//! Object:{source-filename}[:extra-compilation-args] Builds the specified filename as a regular
+//! object and adds it to the link.
 //!
-//! Archive:{source-filename} Builds the specified filename as an archive and adds it to the link.
+//! Archive:{source-filename}[:extra-compilation-args] Builds the specified filename as an archive
+//! and adds it to the link.
 //!
-//! ThinArchive:{source-filename} Builds the specified filename as a thin archive and adds it to the
-//! link.
+//! ThinArchive:{source-filename}[:extra-compilation-args] Builds the specified filename as a thin
+//! archive and adds it to the link.
 //!
-//! Shared:{source-filename} Builds the specified filename as a shared object and adds it to the
-//! link.
+//! Shared:{source-filename}[:extra-compilation-args] Builds the specified filename as a shared
+//! object and adds it to the link.
 //!
 //! Compiler:gcc|g++|clang|clang++ Specifies what compiler should be used to compile C/C++ code.
 //!
@@ -363,6 +364,10 @@ fn is_host_debian_based() -> bool {
         os_info::get().os_type(),
         Type::Debian | Type::Ubuntu | Type::Pop
     )
+}
+
+fn is_musl_used() -> bool {
+    os_info::get().os_type() == Type::Alpine
 }
 
 fn host_supports_clang_with_tls_desc() -> bool {
@@ -1106,6 +1111,10 @@ fn build_obj(
                 command.arg(format!("-Clink-arg=--target={target}"));
             }
 
+            if is_musl_used() {
+                command.args(["-C", "target-feature=-crt-static"]);
+            }
+
             if input_type == InputType::SharedObject {
                 command.arg("--crate-type").arg("cdylib");
             }
@@ -1556,7 +1565,7 @@ impl LinkCommand {
 
             linker
                 .run(&parsed_args)
-                .with_context(|| format!("Failed to internally run command: {:?}", self.command))?;
+                .with_context(|| format!("libwild reported error. Rerun command(s):\n {self}"))?;
 
             return Ok(());
         }
@@ -2122,6 +2131,7 @@ fn integration_test(
         "link_args.c",
         "global_definitions.c",
         "data.c",
+        "data-pointers.c",
         "weak-vars.c",
         "weak-vars-archive.c",
         "weak-fns.c",
@@ -2132,6 +2142,7 @@ fn integration_test(
         "tls.c",
         "tlsdesc.c",
         "tls-variant.c",
+        "no_start.c",
         "old_init.c",
         "custom_section.c",
         "stack_alignment.s",
@@ -2144,9 +2155,11 @@ fn integration_test(
         "eh_frame.c",
         "trivial_asm.s",
         "non-alloc.s",
+        "gnu-unique.c",
         "symbol-versions.c",
         "copy-relocations.c",
         "force-undefined.c",
+        "libc-ifunc.c",
         "libc-integration.c",
         "rust-integration.rs",
         "rust-integration-dynamic.rs",
@@ -2157,7 +2170,9 @@ fn integration_test(
         "tls-local-exec.c",
         "undefined_symbols.c",
         "whole_archive.c",
-        "shared.c"
+        "dynamic-bss-only.c",
+        "shared.c",
+        "duplicate_strong_symbols.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),

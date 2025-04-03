@@ -107,18 +107,17 @@ impl crate::arch::Relaxation for Relaxation {
             Some(Relaxation { kind, rel_info })
         }
 
-        let is_known_address = value_flags.contains(ValueFlags::ADDRESS);
-        let is_absolute = value_flags.contains(ValueFlags::ABSOLUTE)
-            && !value_flags.contains(ValueFlags::DYNAMIC);
+        let is_known_address = value_flags.is_address();
+        let is_absolute = value_flags.is_absolute() && !value_flags.is_dynamic();
         let non_relocatable = !output_kind.is_relocatable();
         let is_absolute_address = is_known_address && non_relocatable;
-        let can_bypass_got = value_flags.contains(ValueFlags::CAN_BYPASS_GOT);
+        let interposable = value_flags.is_interposable();
 
         // IFuncs cannot be referenced directly. They always need to go via the GOT. So if we've got
         // say a PLT32 relocation, we don't want to relax it even if we're in a static executable.
         // Furthermore, if we encounter a relocation like PC32 to an ifunc, then we need to change
         // it so that it goes via the GOT. This is kind of the opposite of relaxation.
-        if value_flags.contains(ValueFlags::IFUNC) {
+        if value_flags.is_ifunc() {
             return match relocation_kind {
                 object::elf::R_X86_64_PC32 => {
                     return create(RelaxationKind::NoOp, object::elf::R_X86_64_PLT32);
@@ -175,7 +174,7 @@ impl crate::arch::Relaxation for Relaxation {
                         }
                         _ => return None,
                     }
-                } else if can_bypass_got {
+                } else if !interposable {
                     match b1 {
                         // mov *x(%rip), reg
                         0x8b => {
@@ -197,7 +196,7 @@ impl crate::arch::Relaxation for Relaxation {
                                 RelaxationKind::MovIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
                             );
-                        } else if can_bypass_got {
+                        } else if !interposable {
                             return create(
                                 RelaxationKind::MovIndirectToLea,
                                 object::elf::R_X86_64_PC32,
@@ -206,7 +205,7 @@ impl crate::arch::Relaxation for Relaxation {
                     }
                     _ => {}
                 }
-                if can_bypass_got {
+                if !interposable {
                     match section_bytes.get(offset - 2..offset)? {
                         // call *x(%rip)
                         [0xff, 0x15] => {
@@ -227,7 +226,7 @@ impl crate::arch::Relaxation for Relaxation {
                 }
                 return None;
             }
-            object::elf::R_X86_64_GOTPCREL if can_bypass_got && offset >= 2 => {
+            object::elf::R_X86_64_GOTPCREL if !interposable && offset >= 2 => {
                 match section_bytes.get(offset - 2)? {
                     // mov *x(%rip), reg
                     0x8b => {
@@ -240,7 +239,7 @@ impl crate::arch::Relaxation for Relaxation {
                 }
                 return None;
             }
-            object::elf::R_X86_64_GOTTPOFF if can_bypass_got => {
+            object::elf::R_X86_64_GOTTPOFF if output_kind.is_executable() && !interposable => {
                 match section_bytes.get(offset - 3..offset - 1)? {
                     // mov *x(%rip), reg
                     [0x48 | 0x4c, 0x8b] => {
@@ -252,13 +251,13 @@ impl crate::arch::Relaxation for Relaxation {
                     _ => {}
                 }
             }
-            object::elf::R_X86_64_PLT32 if can_bypass_got => {
+            object::elf::R_X86_64_PLT32 if !interposable => {
                 return create(RelaxationKind::NoOp, object::elf::R_X86_64_PC32);
             }
-            object::elf::R_X86_64_PLTOFF64 if can_bypass_got => {
+            object::elf::R_X86_64_PLTOFF64 if !interposable => {
                 return create(RelaxationKind::NoOp, object::elf::R_X86_64_GOTOFF64);
             }
-            object::elf::R_X86_64_TLSGD if can_bypass_got && output_kind.is_executable() => {
+            object::elf::R_X86_64_TLSGD if !interposable && output_kind.is_executable() => {
                 let kind = match TlsGdForm::identify(section_bytes, offset)? {
                     TlsGdForm::Regular => RelaxationKind::TlsGdToLocalExec,
                     TlsGdForm::Large => RelaxationKind::TlsGdToLocalExecLarge,
@@ -290,7 +289,7 @@ impl crate::arch::Relaxation for Relaxation {
                 }
             }
             object::elf::R_X86_64_GOTPC32_TLSDESC
-                if can_bypass_got && output_kind.is_static_executable() =>
+                if !interposable && output_kind.is_static_executable() =>
             {
                 // lea    0x0(%rip),%rax
                 if section_bytes.get(offset - 3..offset)? == [0x48, 0x8d, 0x05] {

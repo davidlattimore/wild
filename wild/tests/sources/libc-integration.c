@@ -137,6 +137,8 @@ get_int_fn_t fn_pointers[] = {
     weak_fn1,
 };
 
+get_int_fn_t get_sometimes_weak_fn_ptr(void);
+
 // Initialisation with .ctors currently seems to fail with lld (tested with 18.1.8). For that
 // reason, we only enable this part of the test for selected variants that don't enable lld.
 #ifdef VERIFY_CTORS
@@ -264,11 +266,15 @@ int main() {
     int expected = 42;
 #endif
     if (sometimes_weak_fn() != expected) {
-        return 116;
+        return 70;
+    }
+
+    if (get_sometimes_weak_fn_ptr()() != expected) {
+        return 71;
     }
 
     if (fn_pointers[2]() != 30) {
-        return 118;
+        return 116;
     }
 
     if (value42 != 42) {
@@ -303,6 +309,15 @@ int main() {
 #ifdef DYNAMIC_DEP
     if (&old_timer_gettime == NULL) {
         return 125;
+    }
+#endif
+
+    // We have a weak, hidden definition of atoi in libc-integration-0.c. Provided we're dynamically
+    // linking, that definition shouldn't be exported from the shared object on account if it being
+    // hidden. That means that we should get the proper definition from libc.
+#ifdef DYNAMIC_DEP
+    if (atoi("1000") != 1000) {
+        return 126;
     }
 #endif
 

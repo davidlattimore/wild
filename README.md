@@ -13,7 +13,7 @@ x86-64 Linux. If you hit any issues, please file a bug report.
 
 ## Installation
 
-### From github releases
+### From GitHub releases
 
 To install a pre-built binary, you can copy and paste the command from the [releases
 page](https://github.com/davidlattimore/wild/releases). Alternatively, you can download the tarball

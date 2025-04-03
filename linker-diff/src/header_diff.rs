@@ -8,6 +8,7 @@ use crate::slice_from_all_bytes;
 use anyhow::Context as _;
 use anyhow::anyhow;
 use anyhow::bail;
+use ascii_table::AsciiTable;
 use itertools::Itertools;
 use linker_utils::elf::SectionFlags;
 #[allow(clippy::wildcard_imports)]
@@ -157,8 +158,10 @@ fn symbol_with_address(obj: &Binary, address: u64, allow_empty: bool) -> Option<
     if address == 0 {
         return None;
     }
-    // If we want this to be faster, we could build an index ahead of time.
-    for sym in obj.elf_file.symbols() {
+
+    for symbol_index in obj.address_index.symbols_at_address(address) {
+        let sym = obj.elf_file.symbol_by_index(*symbol_index).ok()?;
+
         if !allow_empty && sym.size() == 0 {
             continue;
         }
@@ -170,6 +173,7 @@ fn symbol_with_address(obj: &Binary, address: u64, allow_empty: bool) -> Option<
             }
         }
     }
+
     None
 }
 
@@ -335,6 +339,81 @@ pub(crate) fn diff_fields(
         }
     }
     mismatches
+}
+
+pub(crate) fn diff_array(
+    binaries: &[Binary<'_>],
+    get_array_fn: impl Fn(&Binary<'_>) -> Result<Vec<ResolvedValue>>,
+    table_name: &str,
+) -> Vec<Diff> {
+    let mut arrays = Vec::new();
+    let mut errors = Vec::new();
+    let mut has_errors = false;
+
+    for bin in binaries {
+        match get_array_fn(bin) {
+            Ok(values) => {
+                arrays.push(values);
+                errors.push("OK".to_owned());
+            }
+            Err(err) => {
+                errors.push(err.to_string());
+                has_errors = true;
+            }
+        }
+    }
+
+    if has_errors {
+        return vec![Diff {
+            key: table_name.to_owned(),
+            values: DiffValues::PerObject(errors),
+        }];
+    }
+
+    if all_equal(&arrays) {
+        return vec![];
+    }
+
+    let mut table = AsciiTable::default();
+    let mut rows = Vec::new();
+
+    for ((i, bin), values) in binaries.iter().enumerate().zip(arrays) {
+        table.column(i).set_header(&bin.name);
+        if rows.len() < values.len() {
+            rows.resize_with(values.len(), || vec![String::new(); i]);
+        }
+        for (row, value) in rows.iter_mut().zip(values) {
+            assert_eq!(row.len(), i);
+            row.push(value.formatted);
+        }
+    }
+
+    vec![Diff {
+        key: table_name.to_owned(),
+        values: DiffValues::PreFormatted(table.format(rows)),
+    }]
+}
+
+pub(crate) struct ResolvedValue {
+    /// This value is used when comparing for equality.
+    pub(crate) for_comparison: String,
+
+    /// This value is used for display purposes, but not for equality, so can include extra
+    /// information like addresses that aren't expected to be equal.
+    pub(crate) formatted: String,
+}
+
+impl PartialEq for ResolvedValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.for_comparison == other.for_comparison
+    }
+}
+
+fn all_equal(arrays: &[Vec<ResolvedValue>]) -> bool {
+    let Some(first) = arrays.first() else {
+        return true;
+    };
+    arrays[1..].iter().all(|a| a == first)
 }
 
 #[derive(Default)]

@@ -457,6 +457,8 @@ pub mod secnames {
     pub const GNU_HASH_SECTION_NAME: &[u8] = GNU_HASH_SECTION_NAME_STR.as_bytes();
     pub const PLT_SECTION_NAME_STR: &str = ".plt";
     pub const PLT_SECTION_NAME: &[u8] = PLT_SECTION_NAME_STR.as_bytes();
+    pub const IPLT_SECTION_NAME_STR: &str = ".iplt";
+    pub const IPLT_SECTION_NAME: &[u8] = IPLT_SECTION_NAME_STR.as_bytes();
     pub const PLT_GOT_SECTION_NAME_STR: &str = ".plt.got";
     pub const PLT_GOT_SECTION_NAME: &[u8] = PLT_GOT_SECTION_NAME_STR.as_bytes();
     pub const GOT_PLT_SECTION_NAME_STR: &str = ".got.plt";
@@ -469,9 +471,9 @@ pub mod secnames {
     pub const NOTE_GNU_PROPERTY_SECTION_NAME: &[u8] = NOTE_GNU_PROPERTY_SECTION_NAME_STR.as_bytes();
     pub const NOTE_GNU_BUILD_ID_SECTION_NAME_STR: &str = ".note.gnu.build-id";
     pub const NOTE_GNU_BUILD_ID_SECTION_NAME: &[u8] = NOTE_GNU_BUILD_ID_SECTION_NAME_STR.as_bytes();
-    pub const DEBUG_LOC_SECTION_NAME_STR: &str = ".debug.loc";
+    pub const DEBUG_LOC_SECTION_NAME_STR: &str = ".debug_loc";
     pub const DEBUG_LOC_SECTION_NAME: &[u8] = DEBUG_LOC_SECTION_NAME_STR.as_bytes();
-    pub const DEBUG_RANGES_SECTION_NAME_STR: &str = ".debug.ranges";
+    pub const DEBUG_RANGES_SECTION_NAME_STR: &str = ".debug_ranges";
     pub const DEBUG_RANGES_SECTION_NAME: &[u8] = DEBUG_RANGES_SECTION_NAME_STR.as_bytes();
     pub const GROUP_SECTION_NAME_STR: &str = ".group";
     pub const GROUP_SECTION_NAME: &[u8] = GROUP_SECTION_NAME_STR.as_bytes();
@@ -573,6 +575,29 @@ pub enum RelocationKind {
     None,
 }
 
+impl RelocationKind {
+    #[must_use]
+    pub fn is_tls(self) -> bool {
+        matches!(
+            self,
+            Self::DtpOff
+                | Self::GotTpOff
+                | Self::GotTpOffGotBase
+                | Self::TlsDesc
+                | Self::TlsDescCall
+                | Self::TlsDescGot
+                | Self::TlsDescGotBase
+                | Self::TlsGd
+                | Self::TlsGdGot
+                | Self::TlsGdGotBase
+                | Self::TlsLd
+                | Self::TlsLdGot
+                | Self::TlsLdGotBase
+                | Self::TpOffAArch64
+        )
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DynamicRelocationKind {
     Copy,
@@ -582,7 +607,8 @@ pub enum DynamicRelocationKind {
     TlsDesc,
     TpOff,
     Relative,
-    DynamicSymbol,
+    Absolute,
+    GotEntry,
     JumpSlot,
 }
 
@@ -596,7 +622,8 @@ impl DynamicRelocationKind {
             object::elf::R_X86_64_DTPOFF64 => DynamicRelocationKind::DtpOff,
             object::elf::R_X86_64_TPOFF64 => DynamicRelocationKind::TpOff,
             object::elf::R_X86_64_RELATIVE => DynamicRelocationKind::Relative,
-            object::elf::R_X86_64_GLOB_DAT => DynamicRelocationKind::DynamicSymbol,
+            object::elf::R_X86_64_GLOB_DAT => DynamicRelocationKind::GotEntry,
+            object::elf::R_X86_64_64 => DynamicRelocationKind::Absolute,
             object::elf::R_X86_64_TLSDESC => DynamicRelocationKind::TlsDesc,
             object::elf::R_X86_64_JUMP_SLOT => DynamicRelocationKind::JumpSlot,
             _ => return None,
@@ -614,7 +641,8 @@ impl DynamicRelocationKind {
             DynamicRelocationKind::DtpOff => object::elf::R_X86_64_DTPOFF64,
             DynamicRelocationKind::TpOff => object::elf::R_X86_64_TPOFF64,
             DynamicRelocationKind::Relative => object::elf::R_X86_64_RELATIVE,
-            DynamicRelocationKind::DynamicSymbol => object::elf::R_X86_64_GLOB_DAT,
+            DynamicRelocationKind::Absolute => object::elf::R_X86_64_64,
+            DynamicRelocationKind::GotEntry => object::elf::R_X86_64_GLOB_DAT,
             DynamicRelocationKind::TlsDesc => object::elf::R_X86_64_TLSDESC,
             DynamicRelocationKind::JumpSlot => object::elf::R_X86_64_JUMP_SLOT,
         }
@@ -629,7 +657,8 @@ impl DynamicRelocationKind {
             object::elf::R_AARCH64_TLS_DTPREL => DynamicRelocationKind::DtpOff,
             object::elf::R_AARCH64_TLS_TPREL => DynamicRelocationKind::TpOff,
             object::elf::R_AARCH64_RELATIVE => DynamicRelocationKind::Relative,
-            object::elf::R_AARCH64_GLOB_DAT => DynamicRelocationKind::DynamicSymbol,
+            object::elf::R_AARCH64_ABS64 => DynamicRelocationKind::Absolute,
+            object::elf::R_AARCH64_GLOB_DAT => DynamicRelocationKind::GotEntry,
             object::elf::R_AARCH64_TLSDESC => DynamicRelocationKind::TlsDesc,
             object::elf::R_AARCH64_JUMP_SLOT => DynamicRelocationKind::JumpSlot,
             _ => return None,
@@ -647,7 +676,8 @@ impl DynamicRelocationKind {
             DynamicRelocationKind::DtpOff => object::elf::R_AARCH64_TLS_DTPREL,
             DynamicRelocationKind::TpOff => object::elf::R_AARCH64_TLS_TPREL,
             DynamicRelocationKind::Relative => object::elf::R_AARCH64_RELATIVE,
-            DynamicRelocationKind::DynamicSymbol => object::elf::R_AARCH64_GLOB_DAT,
+            DynamicRelocationKind::Absolute => object::elf::R_AARCH64_ABS64,
+            DynamicRelocationKind::GotEntry => object::elf::R_AARCH64_GLOB_DAT,
             DynamicRelocationKind::TlsDesc => object::elf::R_AARCH64_TLSDESC,
             DynamicRelocationKind::JumpSlot => object::elf::R_AARCH64_JUMP_SLOT,
         }

@@ -72,7 +72,9 @@ fn test_align_up() {
     // Some distributions don't enable the features in objdump required for disassembly of aarch64,
     // so we only check that we can disassemble if we're running on aarch64 or if test
     // cross-compilation is enabled.
-    if cfg!(target_arch = "aarch64") || std::env::var("WILD_TEST_CROSS").is_ok() {
+    if cfg!(target_arch = "aarch64")
+        || std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v == "aarch64")
+    {
         assert_eq!(
             decode_insn_with_objdump(&[0xe3, 0x93, 0x44, 0xa9], 0x1000).unwrap(),
             "ldp\tx3, x4, [sp, #72]"
@@ -501,6 +503,13 @@ impl crate::arch::RType for RType {
 
     fn dynamic_relocation_kind(self) -> Option<DynamicRelocationKind> {
         DynamicRelocationKind::from_aarch64_r_type(self.0)
+    }
+
+    fn should_ignore_when_computing_referent(self) -> bool {
+        // This relocation is computing the address of the function to call. We should ideally be
+        // checking this as well, but for now we only check the that we're getting the right address
+        // for the TLSDESC struct.
+        self.0 == object::elf::R_AARCH64_TLSDESC_LD64_LO12
     }
 }
 
