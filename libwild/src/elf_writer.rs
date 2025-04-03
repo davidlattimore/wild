@@ -1573,7 +1573,10 @@ impl<'data> ObjectLayout<'data> {
                         SectionSlot::Loaded(section) => section.output_section_id(),
                         SectionSlot::MergeStrings(section) => section.part_id.output_section_id(),
                         SectionSlot::EhFrameData(..) => output_section_id::EH_FRAME,
-                        _ => bail!("Tried to copy a symbol in a section we didn't load"),
+                        _ => bail!(
+                            "Tried to copy a symbol in a section we didn't load. {}",
+                            layout.symbol_db.symbol_debug(symbol_id)
+                        ),
                     }
                 } else if sym.is_common(e) {
                     output_section_id::BSS

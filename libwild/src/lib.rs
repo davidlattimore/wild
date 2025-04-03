@@ -17,6 +17,7 @@ pub(crate) mod hash;
 pub(crate) mod identity;
 pub(crate) mod input_data;
 pub(crate) mod layout;
+pub(crate) mod layout_rules;
 pub(crate) mod linker_script;
 pub(crate) mod output_section_id;
 pub(crate) mod output_section_map;
