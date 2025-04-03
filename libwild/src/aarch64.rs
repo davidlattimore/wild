@@ -280,15 +280,6 @@ impl crate::arch::Relaxation for Relaxation {
                     }
                 }
             }
-            object::elf::R_AARCH64_ADD_ABS_LO12_NC => {
-                // previous instruction must be replaced with adr
-                //debug_assert_eq!(section_bytes.get(offset - 1), Some(&0x10));
-                return Some(Relaxation {
-                    kind: RelaxationKind::ReplaceWithNop,
-                    rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
-                });
-            }
-
             _ => {}
         }
 
