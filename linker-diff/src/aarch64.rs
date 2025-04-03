@@ -90,7 +90,7 @@ impl Arch for AArch64 {
     type RawInstruction = Option<String>;
 
     const MAX_RELAX_MODIFY_BEFORE: u64 = 0;
-    const MAX_RELAX_MODIFY_AFTER: u64 = 4;
+    const MAX_RELAX_MODIFY_AFTER: u64 = 5;
 
     fn possible_relaxations_do(
         r_type: Self::RType,
