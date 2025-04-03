@@ -41,6 +41,7 @@ pub(crate) mod symbol_db;
 pub(crate) mod timing;
 pub(crate) mod validation;
 pub(crate) mod verification;
+pub(crate) mod version_script;
 pub(crate) mod x86_64;
 
 pub use args::Args;
