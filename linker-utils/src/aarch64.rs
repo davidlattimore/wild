@@ -95,6 +95,11 @@ impl RelaxationKind {
             RelaxationKind::AdrpToAdr => {
                 // Clear the op bit of the instruction. See C6.2.12 and C6.2.13.
                 section_bytes[offset + 3] &= !0x80;
+                // We must also take the destination register from the ADD instruction
+                // that follows this one:
+                // adrp    x0, 0
+                // add     x1, x0, #0x0
+                section_bytes[offset] = section_bytes[offset + 4];
             }
             RelaxationKind::AdrpX0 => {
                 section_bytes[offset..offset + 4].copy_from_slice(&[
