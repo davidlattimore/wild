@@ -12,3 +12,4 @@ heaptrack*.zst
 .idea
 .cargo/config.toml
 dhat-heap.json
+test-config.toml
