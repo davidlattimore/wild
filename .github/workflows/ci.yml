@@ -27,7 +27,7 @@ jobs:
           - 'ubuntu:24.10'
           - 'ubuntu:25.04'
           - 'opensuse/tumbleweed:latest'
-          - 'rust:1.85-alpine'
+          - 'rust:1.86-alpine'
         test-qemu:
           - false
         include:
@@ -39,7 +39,7 @@ jobs:
             container: 'ubuntu:22.04'
         exclude: # TODO: https://github.com/actions/runner/issues/1637
           - runs-on: ubuntu-24.04-arm
-            container: 'rust:1.85-alpine'
+            container: 'rust:1.86-alpine'
       fail-fast: false
 
     runs-on: ${{ matrix.runs-on }}
@@ -88,7 +88,7 @@ jobs:
         persist-credentials: false
     # This is where we check that we're not using features from a more recent rust version. When
     # updating this, please also update workspace.package.rust-version in `Cargo.toml`.
-    - uses: dtolnay/rust-toolchain@1.85.0
+    - uses: dtolnay/rust-toolchain@1.86.0
       id: rust-toolchain
       with:
         components: clippy
