@@ -83,6 +83,9 @@
 //! RequiresGlibc:{bool} Defaults to false. Set to true to disable this test if we're running on a
 //! system without glibc.
 //!
+//! RequiresNightlyRustc:{bool} Defaults to false. Set to true to disable this test if we detect that the
+//! version of rustc available to us is not nightly.
+//!
 //! RequiresClangWithTlsDesc:{bool} Defaults to false. Set to true to disable this test if we detect
 //! that the version of clang available to us doesn't support TLSDESC.
 //!
@@ -414,6 +417,7 @@ struct Config {
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_clang_with_tlsdesc: bool,
+    requires_nightly_rustc: bool,
     version_script: Option<PathBuf>,
     rustc_channel: Option<RustcChannel>,
 }
@@ -596,6 +600,7 @@ impl Default for Config {
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
             requires_clang_with_tlsdesc: false,
+            requires_nightly_rustc: false,
             version_script: None,
             rustc_channel: None,
         }
@@ -752,6 +757,9 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                 "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
                 "RequiresClangWithTlsDesc" => {
                     config.requires_clang_with_tlsdesc = arg.to_lowercase().parse()?;
+                }
+                "RequiresNightlyRustc" => {
+                    config.requires_nightly_rustc = arg.to_lowercase().parse()?;
                 }
                 "VersionScript" => {
                     config.version_script = Some(src_path(&arg.trim().to_lowercase()))
