@@ -59,6 +59,22 @@ disable cross compilation.
 
 Cross compilation is set up in docker/debian.Dockerfile.
 
+## Configuration file for tests
+
+Currently, the behavior for the following test options can be configured using the TOML format:
+
+- `rustc_channel`: Specifies which Rust compiler channel to use when running tests that build Rust code. The default value is "default", which means no explicit toolchain is specified.
+
+- `use_qemu`: Determines whether to run tests for architectures different from the host. This setting is overridden by the `$WILD_TEST_CROSS` environment variable. The default value is `false`.
+
+A sample configuration file is provided as `test-config.toml.sample`.
+By default, Wild uses `test-config.toml` as the configuration file.
+If you have written your configuration in a different file, specify its location using the `WILD_TEST_CONFIG` environment variable as follows:
+
+```sh
+WILD_TEST_CONFIG=path_to_config cargo test
+```
+
 ## GitHub workflow
 
 TL;DR: We're pretty relaxed. Feel free to force push or not. Squash, rebase, merge, whatever you
