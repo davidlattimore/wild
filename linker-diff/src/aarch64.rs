@@ -90,7 +90,7 @@ impl Arch for AArch64 {
     type RawInstruction = Option<String>;
 
     const MAX_RELAX_MODIFY_BEFORE: u64 = 0;
-    const MAX_RELAX_MODIFY_AFTER: u64 = 4;
+    const MAX_RELAX_MODIFY_AFTER: u64 = 8;
 
     fn possible_relaxations_do(
         r_type: Self::RType,
@@ -166,7 +166,8 @@ impl Arch for AArch64 {
                     object::elf::R_AARCH64_ADR_PREL_LO21,
                 );
             }
-            object::elf::R_AARCH64_ADR_PREL_PG_HI21 => {
+            object::elf::R_AARCH64_ADR_PREL_PG_HI21
+            | object::elf::R_AARCH64_ADR_PREL_PG_HI21_NC => {
                 relax(
                     RelaxationKind::AdrpToAdr,
                     object::elf::R_AARCH64_ADR_PREL_LO21,
@@ -178,10 +179,16 @@ impl Arch for AArch64 {
         relax(Self::RelaxationKind::NoOp, r_type.0);
     }
 
-    fn relaxation_byte_range(_relaxation: Relaxation<Self>) -> RelaxationByteRange {
-        RelaxationByteRange {
-            offset_shift: 0,
-            num_bytes: 4,
+    fn relaxation_byte_range(relaxation: Relaxation<Self>) -> RelaxationByteRange {
+        match relaxation.relaxation_kind {
+            RelaxationKind::AdrpToAdr => RelaxationByteRange {
+                offset_shift: 0,
+                num_bytes: 8,
+            },
+            _ => RelaxationByteRange {
+                offset_shift: 0,
+                num_bytes: 4,
+            },
         }
     }
 

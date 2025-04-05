@@ -12,6 +12,8 @@ pub const DEFAULT_AARCH64_PAGE_SIZE: u64 = 1 << DEFAULT_AARCH64_PAGE_SIZE_BITS;
 pub const DEFAULT_AARCH64_PAGE_MASK: u64 = DEFAULT_AARCH64_PAGE_SIZE - 1;
 pub const DEFAULT_AARCH64_PAGE_IGNORED_MASK: u64 = !DEFAULT_AARCH64_PAGE_MASK;
 
+const NOP_INSTRUCTION: &[u8] = &[0x1f, 0x20, 0x03, 0xd5];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelaxationKind {
     /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
@@ -48,9 +50,7 @@ impl RelaxationKind {
         match self {
             RelaxationKind::NoOp => {}
             RelaxationKind::ReplaceWithNop => {
-                section_bytes[offset..offset + 4].copy_from_slice(&[
-                    0x1f, 0x20, 0x03, 0xd5, // nop
-                ]);
+                section_bytes[offset..offset + 4].copy_from_slice(NOP_INSTRUCTION);
             }
             RelaxationKind::MovzX0Lsl16 => {
                 section_bytes[offset..offset + 4].copy_from_slice(&[
@@ -95,6 +95,12 @@ impl RelaxationKind {
             RelaxationKind::AdrpToAdr => {
                 // Clear the op bit of the instruction. See C6.2.12 and C6.2.13.
                 section_bytes[offset + 3] &= !0x80;
+                // We must also take the destination register from the ADD instruction
+                // that follows this one:
+                // adrp    x0, 0
+                // add     x1, x0, #0x0
+                section_bytes[offset] = section_bytes[offset + 4];
+                section_bytes[offset + 4..offset + 8].copy_from_slice(NOP_INSTRUCTION);
             }
             RelaxationKind::AdrpX0 => {
                 section_bytes[offset..offset + 4].copy_from_slice(&[
@@ -111,7 +117,10 @@ impl RelaxationKind {
 
     #[must_use]
     pub fn next_modifier(&self) -> RelocationModifier {
-        RelocationModifier::Normal
+        match self {
+            RelaxationKind::AdrpToAdr => RelocationModifier::SkipNextRelocation,
+            _ => RelocationModifier::Normal,
+        }
     }
 }
 

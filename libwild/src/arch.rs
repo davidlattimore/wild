@@ -73,6 +73,7 @@ pub(crate) trait Relaxation {
         output_kind: OutputKind,
         section_flags: SectionFlags,
         non_zero_address: bool,
+        relative_value: Option<i64>,
     ) -> Option<Self>
     where
         Self: std::marker::Sized;
