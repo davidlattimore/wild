@@ -419,21 +419,33 @@ struct Config {
     requires_clang_with_tlsdesc: bool,
     requires_nightly_rustc: bool,
     version_script: Option<PathBuf>,
-    rustc_channel: Option<RustcChannel>,
+    rustc_channel: RustcChannel,
 }
 
+/// These configs are used by the config file specified in `$WILD_TEST_CONFIG`
 #[derive(serde::Deserialize)]
 struct TestConfig {
-    // These configs are used by the config file specified in `$WILD_TEST_CONFIG`
+    #[serde(default)]
     rustc_channel: RustcChannel,
+
+    #[serde(default)]
     use_qemu: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, Debug, Default)]
 #[serde(rename_all = "snake_case")]
 enum RustcChannel {
+    /// Use whatever rustc is on the path and don't override the toolchain. Can be used without
+    /// rustup.
+    #[default]
+    Default,
+
     Stable,
+
     Beta,
+
+    /// Use the nightly toolchain. This enables nightly-only tests, including those that use the
+    /// cranelift backed. It thus requires that the cranelift backend is installed.
     Nightly,
 }
 
@@ -602,7 +614,7 @@ impl Default for Config {
             requires_clang_with_tlsdesc: false,
             requires_nightly_rustc: false,
             version_script: None,
-            rustc_channel: None,
+            rustc_channel: RustcChannel::Default,
         }
     }
 }
@@ -1099,11 +1111,12 @@ fn build_obj(
         }
         CompilerKind::Rust => {
             let wild = wild_path().to_str().context("Need UTF-8 path")?.to_owned();
+
             let rustc_channel = match config.rustc_channel {
-                Some(RustcChannel::Stable) => Some("+stable"),
-                Some(RustcChannel::Beta) => Some("+beta"),
-                Some(RustcChannel::Nightly) => Some("+nightly"),
-                None => None,
+                RustcChannel::Stable => Some("+stable"),
+                RustcChannel::Beta => Some("+beta"),
+                RustcChannel::Nightly => Some("+nightly"),
+                RustcChannel::Default => None,
             };
 
             command
@@ -2233,7 +2246,7 @@ fn integration_test(
 
         for config in config_it {
             let mut config = config.clone();
-            config.rustc_channel = Some(test_config.rustc_channel);
+            config.rustc_channel = test_config.rustc_channel;
             run_with_config(&program_inputs, &config, arch, &linkers)?
         }
     }
