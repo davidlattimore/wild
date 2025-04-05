@@ -1,4 +1,5 @@
 //#AbstractConfig:default
+//#RequiresNightlyRustc: true
 
 //#Config:global-dynamic:default
 //#CompArgs:-Ztls-model=global-dynamic

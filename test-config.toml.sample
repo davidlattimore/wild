@@ -1,0 +1,2 @@
+rustc_channel = FILLHERE # `"stable"`, `"beta"`, `"nightly"` or "default"
+use_qemu = FILLHERE # `true` or `false`

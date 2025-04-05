@@ -39,6 +39,8 @@ rstest = "0.25.0"
 fd-lock = "4.0.4"
 strum = { version = "0.27.1", features = ["derive"] }
 strum_macros = "0.27.1"
+toml = "0.8.20"
+serde = { version = "1.0.219", features = ["derive"] }
 
 [features]
 default = ["fork"]

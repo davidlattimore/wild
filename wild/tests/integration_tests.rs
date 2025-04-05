@@ -83,6 +83,9 @@
 //! RequiresGlibc:{bool} Defaults to false. Set to true to disable this test if we're running on a
 //! system without glibc.
 //!
+//! RequiresNightlyRustc:{bool} Defaults to false. Set to true to disable this test if we detect that the
+//! version of rustc available to us is not nightly.
+//!
 //! RequiresClangWithTlsDesc:{bool} Defaults to false. Set to true to disable this test if we detect
 //! that the version of clang available to us doesn't support TLSDESC.
 //!
@@ -414,7 +417,24 @@ struct Config {
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_clang_with_tlsdesc: bool,
+    requires_nightly_rustc: bool,
     version_script: Option<PathBuf>,
+    rustc_channel: Option<RustcChannel>,
+}
+
+#[derive(serde::Deserialize)]
+struct TestConfig {
+    // These configs are used by the config file specified in `$WILD_TEST_CONFIG`
+    rustc_channel: RustcChannel,
+    use_qemu: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+enum RustcChannel {
+    Stable,
+    Beta,
+    Nightly,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -429,12 +449,13 @@ impl Default for DirectConfig {
 }
 
 impl Config {
-    fn should_skip(&self, arch: Architecture) -> bool {
+    fn should_skip(&self, arch: Architecture, test_config: &TestConfig) -> bool {
         !self.support_architectures.contains(&arch)
             || self.requires_glibc && !cfg!(target_env = "gnu")
             || (self.requires_clang_with_tlsdesc && !host_supports_clang_with_tls_desc())
             || (arch != get_host_architecture()
                 && (self.compiler == "clang" || !self.cross_enabled))
+            || (test_config.rustc_channel != RustcChannel::Nightly && self.requires_nightly_rustc)
     }
 
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
@@ -579,7 +600,9 @@ impl Default for Config {
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
             requires_clang_with_tlsdesc: false,
+            requires_nightly_rustc: false,
             version_script: None,
+            rustc_channel: None,
         }
     }
 }
@@ -735,6 +758,9 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                 "RequiresClangWithTlsDesc" => {
                     config.requires_clang_with_tlsdesc = arg.to_lowercase().parse()?;
                 }
+                "RequiresNightlyRustc" => {
+                    config.requires_nightly_rustc = arg.to_lowercase().parse()?;
+                }
                 "VersionScript" => {
                     config.version_script = Some(src_path(&arg.trim().to_lowercase()))
                 }
@@ -742,6 +768,7 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
             }
         }
     }
+
     let mut configs = config_by_name
         .into_values()
         .filter(|c| !c.is_abstract)
@@ -1072,10 +1099,16 @@ fn build_obj(
         }
         CompilerKind::Rust => {
             let wild = wild_path().to_str().context("Need UTF-8 path")?.to_owned();
+            let rustc_channel = match config.rustc_channel {
+                Some(RustcChannel::Stable) => Some("+stable"),
+                Some(RustcChannel::Beta) => Some("+beta"),
+                Some(RustcChannel::Nightly) => Some("+nightly"),
+                None => None,
+            };
 
             command
                 .env("WILD_SAVE_SKIP_LINKING", "1")
-                .arg("+nightly")
+                .args(rustc_channel)
                 .args(["-C", "linker=clang"])
                 .args(["-C", &format!("link-arg=--ld-path={wild}")]);
 
@@ -2187,21 +2220,71 @@ fn integration_test(
 
     let host_arch = get_host_architecture();
 
-    // We only currently support cross compilation from x86_64 to aarch64, so we don't need to track
-    // which targets are enabled, since there's only one.
-    let cross_enabled = std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v == "aarch64");
+    let test_config = read_test_config()?;
 
     for &arch in ALL_ARCHITECTURES {
-        if arch != host_arch && !cross_enabled {
+        if arch != host_arch && !test_config.use_qemu {
             continue;
         }
 
-        let config_it = configs.iter().filter(|config| !config.should_skip(arch));
+        let config_it = configs
+            .iter()
+            .filter(|config| !config.should_skip(arch, &test_config));
 
         for config in config_it {
-            run_with_config(&program_inputs, config, arch, &linkers)?
+            let mut config = config.clone();
+            config.rustc_channel = Some(test_config.rustc_channel);
+            run_with_config(&program_inputs, &config, arch, &linkers)?
         }
     }
 
     Ok(())
+}
+
+fn read_test_config() -> Result<TestConfig> {
+    // We only currently support cross compilation from x86_64 to aarch64, so we don't need to track
+    // which targets are enabled, since there's only one.
+    let mut use_qemu = std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v == "aarch64");
+    let mut rustc_channel = RustcChannel::Nightly;
+
+    let config_default_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("test-config.toml");
+    let config_path = std::env::var("WILD_TEST_CONFIG")
+        .map(|config_path| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join(config_path)
+        })
+        .unwrap_or_else(|_| config_default_path.clone());
+
+    if config_path.exists() {
+        let config_content = std::fs::read_to_string(&config_path).with_context(|| {
+            format!(
+                "Failed to read WILD_TEST_CONFIG file at `{}`",
+                config_path.display()
+            )
+        })?;
+        let data: TestConfig = match toml::from_str(&config_content) {
+            Ok(d) => d,
+            Err(_) => {
+                bail!("Unable to load config from {:?}", config_path);
+            }
+        };
+
+        rustc_channel = data.rustc_channel;
+        use_qemu |= data.use_qemu;
+    } else if config_path != config_default_path {
+        bail!(
+            "WILD_TEST_CONFIG file not found at `{}`",
+            config_path.display()
+        );
+    }
+
+    Ok(TestConfig {
+        rustc_channel,
+        use_qemu,
+    })
 }
