@@ -116,6 +116,10 @@ too_many_lines = "allow"
 # Some of our tests do this and there doesn't seem to be much value in changing them.
 unreadable_literal = "allow"
 
+# This lint has false positives.
+# https://github.com/rust-lang/rust-clippy/issues/14192#issuecomment-2777602132
+manual_slice_fill = "allow"
+
 trivially_copy_pass_by_ref = "warn"
 uninlined_format_args = "warn"
 unnecessary_wraps = "warn"
