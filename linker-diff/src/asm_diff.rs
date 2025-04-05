@@ -1817,10 +1817,16 @@ impl<'data> RelaxationTester<'data> {
         if section_data[previous_end..copy_start] != self.original_data[previous_end..copy_start] {
             // The bytes between the end of the last relocation and the start of the candidate
             // relaxation don't match.
-            return failure(format!(
-                "Prior bytes didn't match [0x{:x}..0x{:x})",
-                self.section_address + previous_end as u64,
-                self.section_address + copy_start as u64,
+            return Err(FailedMatch::new(
+                candidate,
+                format!(
+                    "Prior bytes didn't match [0x{:x}..0x{:x})",
+                    self.section_address + previous_end as u64,
+                    self.section_address + copy_start as u64,
+                ),
+                offset,
+                previous_end as u64,
+                end,
             ));
         }
 
