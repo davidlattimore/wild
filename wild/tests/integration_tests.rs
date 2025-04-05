@@ -75,6 +75,9 @@
 //! Shared:{source-filename}[:extra-compilation-args] Builds the specified filename as a shared
 //! object and adds it to the link.
 //!
+//! LinkerScript:{source-filename} Adds a linker script. It will be added as -T {source-filename},
+//! so will replace the built-in linker script.
+//!
 //! Compiler:gcc|g++|clang|clang++ Specifies what compiler should be used to compile C/C++ code.
 //!
 //! Arch:{arch1}[,{arch2}...] Specifies which architectures this test should be run with. Defaults
@@ -83,8 +86,8 @@
 //! RequiresGlibc:{bool} Defaults to false. Set to true to disable this test if we're running on a
 //! system without glibc.
 //!
-//! RequiresNightlyRustc:{bool} Defaults to false. Set to true to disable this test if we detect that the
-//! version of rustc available to us is not nightly.
+//! RequiresNightlyRustc:{bool} Defaults to false. Set to true to disable this test if we detect
+//! that the version of rustc available to us is not nightly.
 //!
 //! RequiresClangWithTlsDesc:{bool} Defaults to false. Set to true to disable this test if we detect
 //! that the version of clang available to us doesn't support TLSDESC.
@@ -565,6 +568,7 @@ enum InputType {
     ThinArchive,
     #[strum(serialize = "Shared")]
     SharedObject,
+    LinkerScript,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -752,7 +756,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                         .ok_or_else(|| anyhow!("DiffIgnore missing '='"))
                         .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
                 ),
-                input_type @ ("Object" | "Archive" | "ThinArchive" | "Shared") => {
+                input_type @ ("Object" | "Archive" | "ThinArchive" | "Shared" | "LinkerScript") => {
                     let input_type = InputType::from_str(input_type)?;
                     let files = arg
                         .split(",")
@@ -957,6 +961,7 @@ impl Display for Config {
 }
 
 struct LinkerInput {
+    prefix_arg: Option<&'static str>,
     path: PathBuf,
     command: Option<LinkCommand>,
 }
@@ -964,6 +969,7 @@ struct LinkerInput {
 impl LinkerInput {
     fn new(path: PathBuf) -> LinkerInput {
         LinkerInput {
+            prefix_arg: None,
             path,
             command: None,
         }
@@ -971,8 +977,17 @@ impl LinkerInput {
 
     fn with_command(path: PathBuf, command: LinkCommand) -> LinkerInput {
         LinkerInput {
+            prefix_arg: None,
             path,
             command: Some(command),
+        }
+    }
+
+    fn new_prefixed(path: PathBuf, prefix: &'static str) -> LinkerInput {
+        LinkerInput {
+            prefix_arg: Some(prefix),
+            path,
+            command: None,
         }
     }
 }
@@ -1029,6 +1044,7 @@ fn build_linker_input(
                 .with_context(|| format!("Assertions failed for `{}`", out.path.display()))?;
             Ok(out)
         }
+        InputType::LinkerScript => Ok(LinkerInput::new_prefixed(first_obj_path.to_owned(), "-T")),
     }
 }
 
@@ -1076,9 +1092,14 @@ fn build_obj(
     cross_arch: Option<Architecture>,
 ) -> Result<PathBuf> {
     let src_path = src_path(&file.filename);
+
+    if input_type == InputType::LinkerScript {
+        return Ok(src_path);
+    }
+
     let extension = src_path
         .extension()
-        .context("Missing extension")?
+        .with_context(|| format!("Missing extension for {input_type:?}: {}", file.filename))?
         .to_str()
         .context("Extension isn't valid UTF-8")?;
 
@@ -1438,7 +1459,10 @@ impl LinkCommand {
             command.env("OUT", output_path);
             command.arg(script);
             command.arg(linker.path(cross_arch));
-            command.args(extra_inputs.iter().map(|i| &i.path));
+            for input in extra_inputs {
+                command.args(input.prefix_arg);
+                command.arg(&input.path);
+            }
             invocation_mode = LinkerInvocationMode::Script;
         } else {
             let linker_path = linker.path(cross_arch);
@@ -1531,6 +1555,7 @@ impl LinkCommand {
                 command.arg("-o").arg(output_path);
             }
             for input in inputs {
+                command.args(input.prefix_arg);
                 command.arg(&input.path);
             }
         }
@@ -1900,6 +1925,7 @@ impl Display for InputType {
             InputType::Archive => write!(f, "archive"),
             InputType::ThinArchive => write!(f, "thin archive"),
             InputType::SharedObject => write!(f, "shared"),
+            InputType::LinkerScript => write!(f, "linker script"),
         }
     }
 }
@@ -2227,6 +2253,7 @@ fn integration_test(
         "symbol-versions.c",
         "copy-relocations.c",
         "force-undefined.c",
+        "linker-script.c",
         "libc-ifunc.c",
         "libc-integration.c",
         "rust-integration.rs",

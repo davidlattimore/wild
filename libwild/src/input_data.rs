@@ -1,5 +1,6 @@
 //! Code for figuring out what input files we need to read then mapping them into memory.
 
+use crate::alignment::Alignment;
 use crate::archive;
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
@@ -9,9 +10,17 @@ use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::error::Result;
 use crate::file_kind::FileKind;
+use crate::layout_rules::LayoutRules;
+use crate::layout_rules::LayoutRulesBuilder;
+use crate::layout_rules::SectionOutputInfo;
+use crate::layout_rules::SectionRule;
+use crate::linker_script;
 use crate::linker_script::LinkerScript;
+use crate::linker_script::SectionCommand;
+use crate::output_section_id::SectionName;
 use anyhow::Context;
 use anyhow::bail;
+use bumpalo_herd::Herd;
 use foldhash::HashSet;
 use foldhash::fast::RandomState;
 use memmap2::Mmap;
@@ -86,12 +95,17 @@ struct InputPath {
 
 struct TemporaryState<'data> {
     args: &'data Args,
+    herd: &'data Herd,
     filenames: HashSet<PathBuf>,
+    layout_rules_builder: LayoutRulesBuilder<'data>,
 }
 
 impl InputData {
     #[tracing::instrument(skip_all, name = "Open input files")]
-    pub fn from_args<'data>(args: &'data Args) -> Result<Self> {
+    pub fn from_args<'data>(
+        args: &'data Args,
+        herd: &'data Herd,
+    ) -> Result<(Self, LayoutRules<'data>)> {
         let files = Vec::new();
 
         let version_script_data = args
@@ -105,13 +119,15 @@ impl InputData {
             version_script_data,
         };
 
-        let mut temporary_state = TemporaryState::new(args);
+        let mut temporary_state = TemporaryState::new(herd, args);
 
         for input in &args.inputs {
             input_data.register_input(input, &mut temporary_state)?;
         }
 
-        Ok(input_data)
+        let layout_rules = temporary_state.layout_rules_builder.build();
+
+        Ok((input_data, layout_rules))
     }
 
     fn register_input(&mut self, input: &Input, state: &mut TemporaryState) -> Result {
@@ -217,6 +233,7 @@ impl InputData {
     ) -> Result {
         let script = LinkerScript::parse(bytes, absolute_path)?;
         self.add_inputs_from_linker_script(absolute_path, modifiers, state, &script)?;
+        state.record_linker_script_sections(&script)?;
         Ok(())
     }
 
@@ -248,11 +265,58 @@ impl InputData {
 }
 
 impl<'data> TemporaryState<'data> {
-    fn new(args: &'data Args) -> Self {
+    fn new(herd: &'data Herd, args: &'data Args) -> Self {
         Self {
+            herd,
             filenames: HashSet::with_hasher(RandomState::default()),
             args,
+            layout_rules_builder: LayoutRulesBuilder::default(),
         }
+    }
+
+    /// Records information about any sections declared by the linker script.
+    fn record_linker_script_sections(&mut self, script: &LinkerScript) -> Result {
+        let allocator = self.herd.get();
+        for cmd in &script.commands {
+            if let linker_script::Command::Sections(sections) = cmd {
+                for sec_cmd in &sections.commands {
+                    let SectionCommand::Section(sec) = sec_cmd;
+
+                    let section_id = self.layout_rules_builder.id_for_section_named(
+                        SectionName(sec.output_section_name.as_bytes()),
+                        &allocator,
+                    );
+
+                    if let Some(alignment) = sec.alignment {
+                        self.layout_rules_builder
+                            .section_info_mut(section_id)
+                            .min_alignment = Alignment::new(u64::from(alignment))?;
+                    }
+
+                    for matcher in &sec.matchers {
+                        for pattern in &matcher.input_section_name_patterns {
+                            // For now at least, we need to copy the patterns into an arena. This
+                            // plausibly wouldn't be necessary if we were to put our inputs files,
+                            // or at least our linker scripts into an arena as soon as we read them,
+                            // since then we could borrow from them straight away.
+                            let pattern = allocator.alloc_slice_copy(pattern.as_bytes());
+
+                            self.layout_rules_builder.add_section_rule(SectionRule::new(
+                                pattern,
+                                crate::layout_rules::SectionRuleOutcome::Section(
+                                    SectionOutputInfo {
+                                        section_id,
+                                        must_keep: matcher.must_keep,
+                                    },
+                                ),
+                            )?);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

@@ -24,17 +24,22 @@ use rayon::iter::ParallelIterator;
 pub(crate) fn parse_input_files<'data>(
     inputs: &[InputBytes<'data>],
     args: &'data Args,
-    allocator: &bumpalo_herd::Member<'data>,
+    herd: &'data bumpalo_herd::Herd,
 ) -> Result<ParsedInputs<'data>> {
-    let objects = inputs
-        .par_iter()
-        .map(|f| ParsedInputObject::new(f, args))
-        .collect::<Result<Vec<ParsedInputObject>>>()?;
+    let (objects, prelude) = rayon::join(
+        || {
+            inputs
+                .par_iter()
+                .map(|f| ParsedInputObject::new(f, args))
+                .collect::<Result<Vec<ParsedInputObject>>>()
+        },
+        move || Prelude::new(args),
+    );
 
-    let objects = allocator.alloc_slice_fill_iter(objects.into_iter());
+    let objects = herd.get().alloc_slice_fill_iter(objects?.into_iter());
 
     let mut parsed_inputs = ParsedInputs {
-        prelude: Prelude::new(args),
+        prelude,
         objects,
         epilogue: Epilogue::new(),
     };

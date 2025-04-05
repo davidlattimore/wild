@@ -2,6 +2,7 @@
 //! entries are needed. We also resolve which output section, if any, each input section should be
 //! assigned to.
 
+use crate::LayoutRules;
 use crate::alignment::Alignment;
 use crate::args::Args;
 use crate::debug_assert_bail;
@@ -65,12 +66,13 @@ pub(crate) struct ResolutionOutputs<'data> {
 pub fn resolve_symbols_and_sections<'data>(
     symbol_db: &mut SymbolDb<'data>,
     herd: &'data bumpalo_herd::Herd,
+    layout_rules: &LayoutRules<'data>,
 ) -> Result<ResolutionOutputs<'data>> {
     let (mut resolved_groups, undefined_symbols) = resolve_symbols_in_files(symbol_db)?;
 
-    resolve_sections(&mut resolved_groups, herd, symbol_db.args)?;
+    resolve_sections(&mut resolved_groups, herd, symbol_db, layout_rules)?;
 
-    let output_sections = assign_section_ids(&mut resolved_groups, symbol_db.args);
+    let output_sections = assign_section_ids(&mut resolved_groups, symbol_db.args, layout_rules);
 
     let merged_strings = crate::string_merging::merge_strings(
         &mut resolved_groups,
@@ -267,11 +269,10 @@ fn resolve_group<'data, 'definitions>(
 fn resolve_sections<'data>(
     groups: &mut [ResolvedGroup<'data>],
     herd: &'data bumpalo_herd::Herd,
-    args: &Args,
+    symbol_db: &mut SymbolDb<'data>,
+    layout_rules: &LayoutRules<'data>,
 ) -> Result {
     let loaded_metrics: LoadedMetrics = Default::default();
-
-    let rules = SectionRules::default();
 
     groups.par_iter_mut().try_for_each_init(
         || herd.get(),
@@ -288,10 +289,10 @@ fn resolve_sections<'data>(
                     obj,
                     &mut non_dynamic.custom_sections,
                     &mut non_dynamic.string_merge_extras,
-                    args,
+                    symbol_db.args,
                     allocator,
                     &loaded_metrics,
-                    &rules,
+                    &layout_rules.section_rules,
                 )?;
 
                 non_dynamic.relocations = obj.object.parse_relocations()?;
@@ -476,8 +477,13 @@ pub(crate) struct ResolvedEpilogue {
 fn assign_section_ids<'data>(
     resolved: &mut [ResolvedGroup<'data>],
     args: &Args,
+    layout_rules: &LayoutRules<'data>,
 ) -> OutputSections<'data> {
     let mut output_sections_builder = OutputSectionsBuilder::with_base_address(args.base_address());
+
+    for section in &layout_rules.user_defined_sections {
+        output_sections_builder.add_section(section.name, section.min_alignment);
+    }
 
     for group in resolved {
         for file in &mut group.files {
