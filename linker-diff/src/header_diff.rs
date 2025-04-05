@@ -113,6 +113,7 @@ impl Converter {
                     String::from_utf8_lossy(&rest[..len]).into_owned(),
                 ))
             }
+            Converter::SymAddress if value == 0 => Ok(ConvertedValue::Single("0x0".to_owned())),
             Converter::SymAddress => {
                 // Find a symbol with the specified address. Give preference to symbols with
                 // non-zero size.
@@ -454,9 +455,7 @@ fn read_file_header_fields(obj: &Binary) -> Result<FieldValues> {
     values.insert("type", header.e_type.get(e), Converter::None, obj);
     values.insert("machine", header.e_machine.get(e), Converter::None, obj);
     values.insert("version", header.e_version.get(e), Converter::None, obj);
-    if obj.has_symbols() {
-        values.insert("entry", header.e_entry.get(e), Converter::SymAddress, obj);
-    }
+    values.insert("entry", header.e_entry.get(e), Converter::SymAddress, obj);
     values.insert("phoff", header.e_phoff.get(e), Converter::None, obj);
     values.insert("flags", header.e_flags.get(e), Converter::None, obj);
     values.insert("ehsize", header.e_ehsize.get(e), Converter::None, obj);

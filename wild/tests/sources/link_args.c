@@ -2,6 +2,7 @@
 //#Object:exit.c
 //#LinkArgs:--strip-all
 //#EnableLinker:lld
+//#DiffIgnore:file-header.entry
 
 //#Config:single-threaded
 //#Object:exit.c

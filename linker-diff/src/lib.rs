@@ -385,10 +385,6 @@ impl<'data> Binary<'data> {
         }
     }
 
-    fn has_symbols(&self) -> bool {
-        !self.name_index.globals_by_name.is_empty()
-    }
-
     fn section_by_name(&self, name: &str) -> Option<ElfSection64<LittleEndian>> {
         self.section_by_name_bytes(name.as_bytes())
     }
