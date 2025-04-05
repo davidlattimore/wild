@@ -183,7 +183,7 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         &output_order,
         symbol_db.args,
     );
-    let section_layouts = layout_sections(&section_part_layouts);
+    let section_layouts = layout_sections(&output_sections, &section_part_layouts);
     output.set_size(compute_total_file_size(&section_layouts));
 
     let Some(FileLayoutState::Prelude(internal)) =
@@ -1592,14 +1592,17 @@ impl<'data> Layout<'data> {
 }
 
 fn layout_sections(
+    output_sections: &OutputSections,
     section_part_layouts: &OutputSectionPartMap<OutputRecordLayout>,
 ) -> OutputSectionMap<OutputRecordLayout> {
-    section_part_layouts.merge_parts(|layouts| {
+    section_part_layouts.merge_parts(|section_id, layouts| {
+        let info = output_sections.section_infos.get(section_id);
         let mut file_offset = usize::MAX;
         let mut mem_offset = u64::MAX;
         let mut file_end = 0;
         let mut mem_end = 0;
-        let mut alignment = alignment::MIN;
+        let mut alignment = info.min_alignment;
+
         for part in layouts {
             file_offset = file_offset.min(part.file_offset);
             mem_offset = mem_offset.min(part.mem_offset);
@@ -5126,7 +5129,7 @@ fn test_no_disallowed_overlaps() {
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
     let section_part_layouts =
         layout_section_parts(&section_part_sizes, &output_sections, &output_order, &args);
-    let section_layouts = layout_sections(&section_part_layouts);
+    let section_layouts = layout_sections(&output_sections, &section_part_layouts);
 
     // Make sure no alloc sections overlap
     let mut last_file_start = 0;

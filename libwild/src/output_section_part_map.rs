@@ -144,7 +144,7 @@ impl<T: Copy> OutputSectionPartMap<T> {
     /// Merges the parts of each section together.
     pub(crate) fn merge_parts<U: Default + Copy>(
         &self,
-        mut cb: impl FnMut(&[T]) -> U,
+        mut cb: impl FnMut(OutputSectionId, &[T]) -> U,
     ) -> OutputSectionMap<U> {
         let num_sections = PartId::from_usize(self.parts.len())
             .output_section_id()
@@ -155,7 +155,7 @@ impl<T: Copy> OutputSectionPartMap<T> {
                 let num_parts = OutputSectionId::from_usize(i).num_parts();
                 let (section_parts, rest) = parts.split_at(num_parts);
                 parts = rest;
-                cb(section_parts)
+                cb(OutputSectionId::from_usize(i), section_parts)
             })
             .collect();
         OutputSectionMap::from_values(values_out)
@@ -197,7 +197,7 @@ fn test_merge_parts() {
         });
     let num_regular_sections = output_sections.num_regular_sections();
     let mut num_sections_with_16 = 0;
-    let sum_of_1s: OutputSectionMap<u32> = all_1.merge_parts(|values| values.iter().sum());
+    let sum_of_1s: OutputSectionMap<u32> = all_1.merge_parts(|_, values| values.iter().sum());
     let mut sum_of_sums = 0;
     sum_of_1s.for_each(|section_id, sum| {
         sum_of_sums += *sum;
@@ -211,7 +211,7 @@ fn test_merge_parts() {
 
     let mut headers_only = output_sections.new_part_map::<u32>();
     *headers_only.get_mut(crate::part_id::FILE_HEADER) += 42;
-    let merged: OutputSectionMap<u32> = headers_only.merge_parts(|values| values.iter().sum());
+    let merged: OutputSectionMap<u32> = headers_only.merge_parts(|_, values| values.iter().sum());
     assert_eq!(*merged.get(crate::output_section_id::FILE_HEADER), 42);
     assert_eq!(*merged.get(crate::output_section_id::TEXT), 0);
     assert_eq!(*merged.get(crate::output_section_id::BSS), 0);

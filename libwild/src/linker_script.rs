@@ -1,7 +1,4 @@
-//! This module is responsible for parsing very basic linker scripts. These are not the kind of
-//! linker script you might write to specify the layout of your program on an embedded platform, we
-//! don't currently support those. It's just for supporting small linker scripts that are put in
-//! place of .so files to tell the linker to load some other input file(s).
+//! This module is responsible for parsing linker scripts.
 
 use crate::args::Input;
 use crate::args::InputSpec;
@@ -11,8 +8,12 @@ use anyhow::anyhow;
 use normalize_path::NormalizePath;
 use std::path::Path;
 use winnow::Parser as _;
+use winnow::ascii::dec_uint;
 use winnow::ascii::multispace0;
-use winnow::combinator::repeat;
+use winnow::combinator::alt;
+use winnow::combinator::eof;
+use winnow::combinator::opt;
+use winnow::combinator::repeat_till;
 use winnow::token::take_until;
 use winnow::token::take_while;
 
@@ -38,15 +39,41 @@ pub(crate) fn maybe_forced_sysroot(lib_path: &Path, sysroot: &Path) -> Option<Bo
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct LinkerScript<'a> {
-    commands: Vec<Command<'a>>,
+    pub(crate) commands: Vec<Command<'a>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Command<'a> {
+pub(crate) enum Command<'a> {
     Arg(&'a str),
     Group(Vec<Command<'a>>),
     AsNeeded(Vec<Command<'a>>),
     Ignored,
+    Sections(Sections<'a>),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Sections<'a> {
+    pub(crate) commands: Vec<SectionCommand<'a>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SectionCommand<'a> {
+    Section(Section<'a>),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Section<'a> {
+    pub(crate) output_section_name: &'a str,
+    pub(crate) matchers: Vec<Matcher<'a>>,
+    pub(crate) alignment: Option<u32>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Matcher<'a> {
+    pub(crate) must_keep: bool,
+
+    // TODO: Add support for matching based on input filenames.
+    pub(crate) input_section_name_patterns: Vec<&'a str>,
 }
 
 impl<'data> LinkerScript<'data> {
@@ -74,7 +101,7 @@ impl<'data> LinkerScript<'data> {
 }
 
 fn parse_token<'input>(input: &mut &'input str) -> winnow::Result<&'input str> {
-    take_while(1.., |ch| !" (){}".contains(ch)).parse_next(input)
+    take_while(1.., |ch| !" (){}\n\t".contains(ch)).parse_next(input)
 }
 
 fn skip_comments_and_whitespace(input: &mut &str) -> winnow::Result<()> {
@@ -92,15 +119,11 @@ fn skip_comments_and_whitespace(input: &mut &str) -> winnow::Result<()> {
 fn parse_paren_group<'input>(input: &mut &'input str) -> winnow::Result<Vec<Command<'input>>> {
     '('.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
-    let group_contents = repeat(0.., parse_command).parse_next(input)?;
-    skip_comments_and_whitespace(input)?;
-    ')'.parse_next(input)?;
+    let (group_contents, _) = repeat_till(0.., parse_command, ')').parse_next(input)?;
     Ok(group_contents)
 }
 
 fn parse_command<'input>(input: &mut &'input str) -> winnow::Result<Command<'input>> {
-    skip_comments_and_whitespace(input)?;
-
     let command_str = parse_token(input)?;
 
     skip_comments_and_whitespace(input)?;
@@ -112,6 +135,7 @@ fn parse_command<'input>(input: &mut &'input str) -> winnow::Result<Command<'inp
             Command::Ignored
         }
         "AS_NEEDED" => Command::AsNeeded(parse_paren_group(input)?),
+        "SECTIONS" => Command::Sections(parse_sections(input)?),
         other => Command::Arg(other),
     };
 
@@ -121,7 +145,94 @@ fn parse_command<'input>(input: &mut &'input str) -> winnow::Result<Command<'inp
 }
 
 fn parse_commands<'input>(input: &mut &'input str) -> winnow::Result<Vec<Command<'input>>> {
-    repeat(0.., parse_command).parse_next(input)
+    skip_comments_and_whitespace(input)?;
+
+    Ok(repeat_till(0.., parse_command, eof).parse_next(input)?.0)
+}
+
+fn parse_sections<'input>(input: &mut &'input str) -> winnow::Result<Sections<'input>> {
+    '{'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    let (commands, _) = repeat_till(0.., parse_section_command, '}').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    Ok(Sections { commands })
+}
+
+fn parse_section_command<'input>(
+    input: &mut &'input str,
+) -> winnow::Result<SectionCommand<'input>> {
+    let name = parse_token(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    ':'.parse_next(input)?;
+
+    skip_comments_and_whitespace(input)?;
+
+    let mut alignment = None;
+
+    while !input.starts_with('{') {
+        "ALIGN".parse_next(input)?;
+        skip_comments_and_whitespace(input)?;
+        '('.parse_next(input)?;
+        skip_comments_and_whitespace(input)?;
+        alignment = Some(dec_uint.parse_next(input)?);
+        skip_comments_and_whitespace(input)?;
+        ')'.parse_next(input)?;
+        skip_comments_and_whitespace(input)?;
+    }
+
+    '{'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    let (matchers, _) = repeat_till(0.., parse_matcher, '}').parse_next(input)?;
+
+    skip_comments_and_whitespace(input)?;
+
+    Ok(SectionCommand::Section(Section {
+        output_section_name: name,
+        matchers,
+        alignment,
+    }))
+}
+
+fn parse_matcher<'input>(input: &mut &'input str) -> winnow::Result<Matcher<'input>> {
+    let matcher = alt((parse_keep, parse_matcher_pattern)).parse_next(input)?;
+    opt(';').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    Ok(matcher)
+}
+
+fn parse_keep<'input>(input: &mut &'input str) -> winnow::Result<Matcher<'input>> {
+    "KEEP".parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    '('.parse_next(input)?;
+    let mut matcher = parse_matcher_pattern(input)?;
+    matcher.must_keep = true;
+    ')'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    Ok(matcher)
+}
+
+fn parse_matcher_pattern<'input>(input: &mut &'input str) -> winnow::Result<Matcher<'input>> {
+    // For now, we only support wildcards here.
+    '*'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    '('.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    let (patterns, _) = repeat_till(0.., parse_pattern, ')').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    Ok(Matcher {
+        must_keep: false,
+        input_section_name_patterns: patterns,
+    })
+}
+
+fn parse_pattern<'input>(input: &mut &'input str) -> winnow::Result<&'input str> {
+    let pattern = take_while(1.., |ch| !" \n\t)".contains(ch)).parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    Ok(pattern)
 }
 
 /// Call `cb` for each input file requested by `commands`.
@@ -152,7 +263,7 @@ fn foreach_input(
                 };
                 foreach_input(subs, sub_modifiers, cb)?;
             }
-            Command::Ignored => {}
+            Command::Sections(_) | Command::Ignored => {}
         }
     }
 
@@ -288,6 +399,66 @@ mod tests {
                 relative_sysroot,
             ),
             Some(Box::from(relative_sysroot.join("lib/libc.so.6"))),
+        );
+    }
+
+    #[track_caller]
+    fn check_section_command(input: &str, expected: &SectionCommand) {
+        match parse_section_command.parse(input) {
+            Ok(actual) => assert_eq!(&actual, expected),
+            Err(e) => panic!("Parse failed:\n{e}"),
+        }
+    }
+
+    #[test]
+    fn test_section_command() {
+        check_section_command(
+            ".text : { *(.text .text2) *(.text3) }",
+            &SectionCommand::Section(Section {
+                output_section_name: ".text",
+                matchers: vec![
+                    Matcher {
+                        must_keep: false,
+                        input_section_name_patterns: vec![".text", ".text2"],
+                    },
+                    Matcher {
+                        must_keep: false,
+                        input_section_name_patterns: vec![".text3"],
+                    },
+                ],
+                alignment: None,
+            }),
+        );
+    }
+
+    #[track_caller]
+    fn check_linker_script(input: &str, expected: &LinkerScript) {
+        let actual = parse_script(input).unwrap();
+        assert_eq!(&actual, expected);
+    }
+
+    #[test]
+    fn test_basic_linker_script() {
+        check_linker_script(
+            r"
+            SECTIONS {
+                .foo : ALIGN(8) {
+                    KEEP(*(.rodata.foo));
+                }
+            }
+        ",
+            &LinkerScript {
+                commands: vec![Command::Sections(Sections {
+                    commands: vec![SectionCommand::Section(Section {
+                        output_section_name: ".foo",
+                        matchers: vec![Matcher {
+                            must_keep: true,
+                            input_section_name_patterns: vec![".rodata.foo"],
+                        }],
+                        alignment: Some(8),
+                    })],
+                })],
+            },
         );
     }
 }

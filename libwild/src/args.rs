@@ -470,6 +470,13 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 .to_owned();
             save_dir.handle_file(&script)?;
             args.version_script_path = Some(PathBuf::from(script));
+        } else if let Some(script) = long_arg_split_prefix("script=") {
+            save_dir.handle_file(script)?;
+            args.add_script(script);
+        } else if arg == "-T" {
+            let script = input.next().context("Missing argument to -T")?;
+            save_dir.handle_file(script.as_ref())?;
+            args.add_script(script.as_ref());
         } else if let Some(script) = long_arg_split_prefix("version-script=") {
             save_dir.handle_file(script)?;
             args.version_script_path = Some(PathBuf::from(script));
@@ -717,6 +724,16 @@ impl Args {
             Architecture::X86_64 => Alignment { exponent: 12 },
             Architecture::AArch64 => Alignment { exponent: 16 },
         }
+    }
+
+    /// Adds a linker script to our outputs. Note, this is only called for scripts specified via
+    /// flags like -T. Where a linker script is just listed as an argument, this won't be called.
+    fn add_script(&mut self, path: &str) {
+        self.inputs.push(Input {
+            spec: InputSpec::File(Box::from(Path::new(path))),
+            search_first: None,
+            modifiers: Modifiers::default(),
+        });
     }
 }
 

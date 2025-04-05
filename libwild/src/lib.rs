@@ -49,6 +49,7 @@ pub use args::Args;
 use crossbeam_utils::atomic::AtomicCell;
 use error::AlreadyInitialised;
 use input_data::InputData;
+use layout_rules::LayoutRules;
 pub use subprocess::run_in_subprocess;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
@@ -158,27 +159,30 @@ impl Linker {
         args: &'layout_inputs Args,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
         let output = elf_writer::Output::new(args);
-        let input_data = self.inputs.alloc(input_data::InputData::from_args(args)?);
+        let (input_data, layout_rules) = input_data::InputData::from_args(args, &self.herd)?;
+        let input_data = self.inputs.alloc(input_data);
 
         // Note, we propagate errors from `link_with_input_data` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
-        let result = self.link_with_input_data::<A>(output, input_data, args);
+        let result = self.link_with_input_data::<A>(output, input_data, &layout_rules, args);
         input_data.verify_inputs_unchanged()?;
         result
     }
 
-    fn link_with_input_data<'layout_inputs, A: arch::Arch>(
-        &'layout_inputs self,
+    fn link_with_input_data<'data, A: arch::Arch>(
+        &'data self,
         mut output: elf_writer::Output,
-        input_data: &'layout_inputs InputData,
-        args: &'layout_inputs Args,
-    ) -> error::Result<LinkerOutput<'layout_inputs>> {
+        input_data: &'data InputData,
+        layout_rules: &LayoutRules<'data>,
+        args: &'data Args,
+    ) -> error::Result<LinkerOutput<'data>> {
         let inputs = archive_splitter::split_archives(input_data)?;
-        let parsed_inputs = parsing::parse_input_files(&inputs, args, &self.herd.get())?;
+        let parsed_inputs = parsing::parse_input_files(&inputs, args, &self.herd)?;
         let groups = grouping::group_files(parsed_inputs, args);
         let mut symbol_db =
             symbol_db::SymbolDb::build(groups, input_data.version_script_data.as_ref(), args)?;
-        let resolved = resolution::resolve_symbols_and_sections(&mut symbol_db, &self.herd)?;
+        let resolved =
+            resolution::resolve_symbols_and_sections(&mut symbol_db, &self.herd, layout_rules)?;
         let layout = layout::compute::<A>(symbol_db, resolved, &mut output)?;
         output.write::<A>(&layout)?;
         diff::maybe_diff()?;

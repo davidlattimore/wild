@@ -229,6 +229,7 @@ pub(crate) struct SectionOutputInfo<'data> {
     pub(crate) name: SectionName<'data>,
     pub(crate) section_flags: SectionFlags,
     pub(crate) ty: SectionType,
+    pub(crate) min_alignment: Alignment,
 }
 
 pub(crate) struct BuiltInSectionDetails {
@@ -712,7 +713,7 @@ impl<'data> OutputSectionsBuilder<'data> {
         sections: &mut [SectionSlot],
     ) {
         for custom in custom_sections {
-            let section_id = self.add_section(custom.name);
+            let section_id = self.add_section(custom.name, custom.alignment);
 
             if let Some(slot) = sections.get_mut(custom.index.0) {
                 slot.set_part_id(section_id.part_id_with_alignment(custom.alignment));
@@ -720,7 +721,11 @@ impl<'data> OutputSectionsBuilder<'data> {
         }
     }
 
-    pub(crate) fn add_section(&mut self, name: SectionName<'data>) -> OutputSectionId {
+    pub(crate) fn add_section(
+        &mut self,
+        name: SectionName<'data>,
+        min_alignment: Alignment,
+    ) -> OutputSectionId {
         *self.custom_by_name.entry(name).or_insert_with(|| {
             self.section_infos.add_new(SectionOutputInfo {
                 name,
@@ -730,6 +735,7 @@ impl<'data> OutputSectionsBuilder<'data> {
                 ty: SectionType::from_u32(0),
                 // We'll fill this in properly in `determine_loadable_segment_ids`.
                 loadable_segment_id: None,
+                min_alignment,
             })
         })
     }
@@ -742,6 +748,7 @@ impl<'data> OutputSectionsBuilder<'data> {
                 name: d.name,
                 loadable_segment_id: Some(crate::program_segments::LOAD_RO),
                 ty: d.ty,
+                min_alignment: d.min_alignment,
             })
             .collect();
 
@@ -925,12 +932,16 @@ impl<'data> OutputSections<'data> {
     #[cfg(test)]
     pub(crate) fn for_testing() -> OutputSections<'static> {
         let mut builder = OutputSectionsBuilder::with_base_address(0x1000);
-        builder.add_section(SectionName(b"ro"));
-        builder.add_section(SectionName(b"exec"));
-        builder.add_section(SectionName(b"data"));
-        builder.add_section(SectionName(b"bss"));
+        builder.add_section(SectionName(b"ro"), alignment::MIN);
+        builder.add_section(SectionName(b"exec"), alignment::MIN);
+        builder.add_section(SectionName(b"data"), alignment::MIN);
+        builder.add_section(SectionName(b"bss"), alignment::MIN);
         builder.build()
     }
+}
+
+pub(crate) fn all_built_in_section_ids() -> impl Iterator<Item = OutputSectionId> {
+    (0..NUM_BUILT_IN_SECTIONS).map(|i| OutputSectionId(i as u32))
 }
 
 pub(crate) fn link_ids(section_id: OutputSectionId) -> &'static [OutputSectionId] {
