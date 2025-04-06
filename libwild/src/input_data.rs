@@ -9,6 +9,7 @@ use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::error::Result;
 use crate::file_kind::FileKind;
+use crate::linker_script::LinkerScript;
 use ahash::HashSet;
 use ahash::RandomState;
 use anyhow::Context;
@@ -83,9 +84,14 @@ struct InputPath {
     original: PathBuf,
 }
 
+struct TemporaryState<'data> {
+    args: &'data Args,
+    filenames: HashSet<PathBuf>,
+}
+
 impl InputData {
     #[tracing::instrument(skip_all, name = "Open input files")]
-    pub fn from_args(args: &Args) -> Result<Self> {
+    pub fn from_args<'data>(args: &'data Args) -> Result<Self> {
         let files = Vec::new();
 
         let version_script_data = args
@@ -94,49 +100,40 @@ impl InputData {
             .map(|path| read_version_script(path))
             .transpose()?;
 
-        let mut filenames = HashSet::with_hasher(RandomState::new());
-
         let mut input_data = Self {
             files,
             version_script_data,
         };
 
+        let mut temporary_state = TemporaryState::new(args);
+
         for input in &args.inputs {
-            input_data.register_input(input, args.sysroot.as_deref(), args, &mut filenames)?;
+            input_data.register_input(input, &mut temporary_state)?;
         }
 
         Ok(input_data)
     }
 
-    fn register_input(
-        &mut self,
-        input: &Input,
-        sysroot: Option<&Path>,
-        args: &Args,
-        filenames: &mut HashSet<PathBuf>,
-    ) -> Result {
-        let paths = input.path(args)?;
+    fn register_input(&mut self, input: &Input, state: &mut TemporaryState) -> Result {
+        let paths = input.path(state.args)?;
         let absolute_path = &paths.absolute;
-        if !filenames.insert(absolute_path.clone()) {
+        if !state.filenames.insert(absolute_path.clone()) {
             // File has already been added.
             return Ok(());
         }
 
-        let data = FileData::new(absolute_path.as_path(), args.prepopulate_maps)?;
+        let data = FileData::new(absolute_path.as_path(), state.args.prepopulate_maps)?;
 
         let kind = FileKind::identify_bytes(&data.bytes)?;
 
         match kind {
             FileKind::Text => {
-                for input in crate::linker_script::linker_script_to_inputs(
+                return self.process_linker_script(
                     &data.bytes,
                     absolute_path,
                     input.modifiers,
-                    sysroot,
-                )? {
-                    self.register_input(&input, sysroot, args, filenames)?;
-                }
-                return Ok(());
+                    state,
+                );
             }
             FileKind::ThinArchive => {
                 let parent_path = absolute_path.parent().unwrap();
@@ -147,7 +144,8 @@ impl InputData {
                         ArchiveEntry::Thin(entry) => {
                             let path = entry.identifier(extended_filenames).as_path();
                             let entry_path = parent_path.join(path);
-                            let file_data = FileData::new(&entry_path, args.prepopulate_maps)?;
+                            let file_data =
+                                FileData::new(&entry_path, state.args.prepopulate_maps)?;
                             self.files.push(InputFile {
                                 filename: entry_path.clone(),
                                 original_filename: entry_path,
@@ -208,6 +206,53 @@ impl InputData {
 
             Ok(())
         })
+    }
+
+    fn process_linker_script(
+        &mut self,
+        bytes: &[u8],
+        absolute_path: &Path,
+        modifiers: Modifiers,
+        state: &mut TemporaryState,
+    ) -> Result {
+        let script = LinkerScript::parse(bytes, absolute_path)?;
+        self.add_inputs_from_linker_script(absolute_path, modifiers, state, &script)?;
+        Ok(())
+    }
+
+    fn add_inputs_from_linker_script(
+        &mut self,
+        absolute_path: &Path,
+        modifiers: Modifiers,
+        state: &mut TemporaryState,
+        script: &LinkerScript<'_>,
+    ) -> Result<(), anyhow::Error> {
+        let directory = absolute_path.parent().expect("expected an absolute path");
+
+        script.foreach_input(modifiers, |mut input| {
+            input.search_first = Some(directory.to_owned());
+
+            if let (Some(sysroot), InputSpec::File(file)) =
+                (state.args.sysroot.as_ref(), &mut input.spec)
+            {
+                if let Some(new_file) =
+                    crate::linker_script::maybe_apply_sysroot(absolute_path, file, sysroot)
+                {
+                    *file = new_file;
+                }
+            }
+
+            self.register_input(&input, state)
+        })
+    }
+}
+
+impl<'data> TemporaryState<'data> {
+    fn new(args: &'data Args) -> Self {
+        Self {
+            filenames: HashSet::with_hasher(RandomState::new()),
+            args,
+        }
     }
 }
 

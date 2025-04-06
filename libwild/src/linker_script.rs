@@ -7,7 +7,6 @@ use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::error::Result;
-use anyhow::Context as _;
 use anyhow::anyhow;
 use normalize_path::NormalizePath;
 use std::path::Path;
@@ -17,35 +16,7 @@ use winnow::combinator::repeat;
 use winnow::token::take_until;
 use winnow::token::take_while;
 
-/// Parse the kind of linker script that's put in place of a shared object to specify that the
-/// linker should load several files.
-pub(crate) fn linker_script_to_inputs(
-    bytes: &[u8],
-    path: &Path,
-    modifiers: Modifiers,
-    sysroot: Option<&Path>,
-) -> Result<Vec<Input>> {
-    let text = std::str::from_utf8(bytes)?;
-    let directory = path
-        .parent()
-        .ok_or_else(|| anyhow!("Need directory for path `{}`", path.display()))?;
-    Ok(inputs_from_script(text, modifiers)
-        .with_context(|| format!("Failed to parse linker script `{}`", path.display()))?
-        .into_iter()
-        .map(|mut input| {
-            input.search_first = Some(directory.to_owned());
-            if let (Some(sysroot), InputSpec::File(file)) = (sysroot, &mut input.spec) {
-                if let Some(new_file) = maybe_apply_sysroot(path, file, sysroot) {
-                    *file = new_file;
-                }
-            }
-
-            input
-        })
-        .collect())
-}
-
-fn maybe_apply_sysroot(
+pub(crate) fn maybe_apply_sysroot(
     linker_script_path: &Path,
     input_path: &Path,
     sysroot: &Path,
@@ -65,11 +36,41 @@ pub(crate) fn maybe_forced_sysroot(lib_path: &Path, sysroot: &Path) -> Option<Bo
         .map(|stripped| Box::from(sysroot.join(stripped.trim_start_matches('/'))))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct LinkerScript<'a> {
+    commands: Vec<Command<'a>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum Command<'a> {
     Arg(&'a str),
     Group(Vec<Command<'a>>),
     AsNeeded(Vec<Command<'a>>),
     Ignored,
+}
+
+impl<'data> LinkerScript<'data> {
+    pub(crate) fn parse(bytes: &'data [u8], path: &Path) -> Result<LinkerScript<'data>> {
+        let text = std::str::from_utf8(bytes)?;
+
+        let commands = parse_commands.parse(text).map_err(|error| {
+            anyhow!(
+                "Failed to parse linker script `{}`:\n{error}",
+                path.display()
+            )
+        })?;
+
+        Ok(LinkerScript { commands })
+    }
+
+    pub(crate) fn foreach_input(
+        &self,
+        starting_modifiers: Modifiers,
+        mut cb: impl FnMut(Input) -> Result,
+    ) -> Result {
+        foreach_input(&self.commands, starting_modifiers, &mut cb)?;
+        Ok(())
+    }
 }
 
 fn parse_token<'input>(input: &mut &'input str) -> winnow::Result<&'input str> {
@@ -123,16 +124,12 @@ fn parse_commands<'input>(input: &mut &'input str) -> winnow::Result<Vec<Command
     repeat(0.., parse_command).parse_next(input)
 }
 
-fn inputs_from_script(text: &str, starting_modifiers: Modifiers) -> Result<Vec<Input>> {
-    let commands = parse_commands
-        .parse(text)
-        .map_err(|error| anyhow!("Failed to parse linker script:\n{error}"))?;
-    let mut inputs = Vec::new();
-    collect_inputs(&commands, &mut inputs, starting_modifiers);
-    Ok(inputs)
-}
-
-fn collect_inputs(commands: &[Command], inputs: &mut Vec<Input>, modifiers: Modifiers) {
+/// Call `cb` for each input file requested by `commands`.
+fn foreach_input(
+    commands: &[Command],
+    modifiers: Modifiers,
+    cb: &mut impl FnMut(Input) -> Result,
+) -> Result {
     for command in commands {
         match command {
             Command::Arg(arg) => {
@@ -141,23 +138,25 @@ fn collect_inputs(commands: &[Command], inputs: &mut Vec<Input>, modifiers: Modi
                 } else {
                     InputSpec::File(Box::from(Path::new(arg)))
                 };
-                inputs.push(Input {
+                cb(Input {
                     spec,
                     search_first: None,
                     modifiers,
-                });
+                })?;
             }
-            Command::Group(subs) => collect_inputs(subs, inputs, modifiers),
+            Command::Group(subs) => foreach_input(subs, modifiers, cb)?,
             Command::AsNeeded(subs) => {
                 let sub_modifiers = Modifiers {
                     as_needed: true,
                     ..modifiers
                 };
-                collect_inputs(subs, inputs, sub_modifiers);
+                foreach_input(subs, sub_modifiers, cb)?;
             }
             Command::Ignored => {}
         }
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -166,13 +165,26 @@ mod tests {
     use crate::args::InputSpec;
     use itertools::assert_equal;
 
+    fn parse_script(text: &str) -> Result<LinkerScript> {
+        LinkerScript::parse(text.as_bytes(), Path::new("test-linker-script.txt"))
+    }
+
+    fn inputs_from_script(text: &str) -> Result<Vec<Input>> {
+        let script = parse_script(text)?;
+        let mut inputs = Vec::new();
+        foreach_input(&script.commands, Modifiers::default(), &mut |input| {
+            inputs.push(input);
+            Ok(())
+        })?;
+        Ok(inputs)
+    }
+
     #[test]
     fn test_inputs_from_script() {
         let inputs = inputs_from_script(
             r#"/* GNU ld script */
             GROUP ( libgcc_s.so.1 -lgcc )
         "#,
-            Modifiers::default(),
         )
         .unwrap();
         assert_equal(
@@ -183,7 +195,7 @@ mod tests {
             ],
         );
 
-        let inputs = inputs_from_script("INPUT(libfoo.so)", Modifiers::default()).unwrap();
+        let inputs = inputs_from_script("INPUT(libfoo.so)").unwrap();
         assert_equal(
             inputs.into_iter().map(|i| i.spec),
             [InputSpec::File(Box::from(Path::new("libfoo.so")))],
@@ -196,7 +208,6 @@ mod tests {
             r#"OUTPUT_FORMAT(elf64-x86-64)
             GROUP ( /lib/x86_64-linux-gnu/libc.so.6 /usr/lib/x86_64-linux-gnu/libc_nonshared.a  AS_NEEDED ( /lib64/ld-linux-x86-64.so.2 ) )
         "#,
-        Modifiers::default(),
         )
         .unwrap();
         assert_equal(
