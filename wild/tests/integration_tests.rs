@@ -2258,7 +2258,7 @@ fn read_test_config() -> Result<TestConfig> {
     // We only currently support cross compilation from x86_64 to aarch64, so we don't need to track
     // which targets are enabled, since there's only one.
     let mut use_qemu = std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v == "aarch64");
-    let mut rustc_channel = RustcChannel::Nightly;
+    let mut rustc_channel = RustcChannel::Default;
 
     let config_default_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
