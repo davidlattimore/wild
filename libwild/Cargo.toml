@@ -28,7 +28,7 @@ object = { version = "0.36.7", default-features = false, features = [
     "unaligned",
 ] }
 rayon = "1.10.0"
-smallvec = "1.13.2"
+smallvec = "1.15.0"
 symbolic-demangle = "12.14.1"
 tracing = { version = "0.1.41" }
 tracing-subscriber = { version = "0.3.19", default-features = false, features = [
@@ -40,10 +40,10 @@ sharded-offset-map = "0.2.0"
 sharded-vec-writer = "0.3.0"
 itertools = "0.14.0"
 bytesize = "2.0.1"
-flate2 = { version = "1.1.0", features = ["zlib-rs"] }
+flate2 = { version = "1.1.1", features = ["zlib-rs"] }
 bumpalo-herd = "0.1.2"
 zstd = "0.13.3"
-blake3 = { version = "1.8.0", features = ["rayon"] }
+blake3 = { version = "1.8.1", features = ["rayon"] }
 uuid = { version = "1.16.0", features = ["v4"] }
 hex = "0.4.3"
 atomic-take = "1.1.0"
