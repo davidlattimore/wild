@@ -642,6 +642,12 @@ pub(crate) fn parse_with_bpaf<S: AsRef<str>, I: Iterator<Item = S>>(mut _input: 
     bail!("parse_with_bpaf is not fully implemented")
 }
 
+fn time_phases() -> impl Parser<bool> {
+    let time_phases = long_arg_flag("time", true);
+
+    time_phases
+}
+
 const fn default_target_arch() -> Architecture {
     // We default to targeting the architecture that we're running on. We don't support running on
     // architectures that we can't target.
@@ -1208,5 +1214,14 @@ mod tests {
             .run_inner(&[])
             .unwrap();
         assert_eq!(args.should_fork, true);
+    }
+
+    #[test]
+    fn test_separate_bpaf_time_with_two_dashes() {
+        let result = time_phases()
+            .to_options()
+            .run_inner(&["--time", "unknown"])
+            .unwrap();
+        assert_eq!(result, true);
     }
 }
