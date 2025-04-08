@@ -151,14 +151,9 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
 
 impl RISCVInstruction {
     pub fn write_to_value(self, extracted_value: u64, _negative: bool, dest: &mut [u8]) {
-        let mask;
-        match self {
-            RISCVInstruction::High20 => {
-                mask = (extracted_value as u32) << 12;
-            }
-            RISCVInstruction::Low12 => {
-                mask = (extracted_value as u32) << 20;
-            }
+        let mask = match self {
+            RISCVInstruction::High20 => (extracted_value as u32) << 12,
+            RISCVInstruction::Low12 => (extracted_value as u32) << 20,
             RISCVInstruction::Auipc => {
                 let lower = (extract_bits(extracted_value, 0, 12) as u32) << 20;
                 let upper = (extract_bits(extracted_value, 12, 32) as u32) << 12;
@@ -166,7 +161,7 @@ impl RISCVInstruction {
                 or_from_slice(&mut dest[4..], &lower.to_le_bytes());
                 return;
             }
-        }
+        };
         // Read the original value and combine it with the prepared mask.
         or_from_slice(dest, &mask.to_le_bytes());
     }
