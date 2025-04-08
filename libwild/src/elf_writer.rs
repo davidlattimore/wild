@@ -74,6 +74,7 @@ use foldhash::HashMap as FoldHashMap;
 use foldhash::HashMapExt as _;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKind;
+use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::pf;
 use linker_utils::elf::secnames::DEBUG_LOC_SECTION_NAME;
@@ -1958,6 +1959,8 @@ fn apply_relocation<A: Arch>(
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
 ) -> Result<RelocationModifier> {
+    const LOW6_MASK: u64 = 0b0011_0000;
+
     let section_address = section_info.section_address;
     let original_place = section_address + offset_in_section;
     let _span = tracing::trace_span!(
@@ -1968,6 +1971,15 @@ fn apply_relocation<A: Arch>(
     .entered();
 
     let e = LittleEndian;
+    let r_type = rel.r_type(e, false);
+
+    // Return early on for nop relocations.
+    if matches!(
+        A::relocation_from_raw(r_type)?.kind,
+        RelocationKind::None | RelocationKind::TlsDescCall
+    ) {
+        return Ok(RelocationModifier::Normal);
+    }
     let symbol_index = rel
         .symbol(e, false)
         .context("Unsupported absolute relocation")?;
@@ -1985,7 +1997,6 @@ fn apply_relocation<A: Arch>(
     let resolution_flags = resolution.resolution_flags;
     let mut addend = rel.r_addend.get(e);
     let mut next_modifier = RelocationModifier::Normal;
-    let r_type = rel.r_type(e, false);
     let rel_info;
     let output_kind = layout.args().output_kind();
 
@@ -2011,8 +2022,12 @@ fn apply_relocation<A: Arch>(
     let place = section_address + offset_in_section;
 
     let mask = get_page_mask(rel_info.mask);
-    let value = match rel_info.kind {
-        RelocationKind::Absolute => {
+    let mut value = match rel_info.kind {
+        RelocationKind::Absolute
+        | RelocationKind::AbsoluteWord6
+        | RelocationKind::AbsoluteAddition
+        | RelocationKind::AbsoluteSubtraction
+        | RelocationKind::AbsoluteSubtractionWord6 => {
             assert!(rel_info.mask.is_none());
             write_absolute_relocation::<A>(
                 table_writer,
@@ -2160,6 +2175,42 @@ fn apply_relocation<A: Arch>(
         RelocationKind::None | RelocationKind::TlsDescCall => 0,
     };
 
+    let offset_in_section = offset_in_section as usize;
+
+    // Handle addition and subtraction relocation kinds.
+    if matches!(
+        rel_info.kind,
+        RelocationKind::AbsoluteWord6
+            | RelocationKind::AbsoluteAddition
+            | RelocationKind::AbsoluteSubtraction
+            | RelocationKind::AbsoluteSubtractionWord6
+    ) {
+        let mut read_data = [0u8; 8];
+        let RelocationSize::ByteSize(rel_size) = rel_info.size else {
+            bail!("Unexpected size for the addition/subtraction relocation");
+        };
+        // Read only N bytes from the currente value based on the size of the relocation.
+        read_data[..rel_size]
+            .copy_from_slice(&out[offset_in_section..offset_in_section + rel_size]);
+        let current_value = u64::from_le_bytes(read_data);
+
+        match rel_info.kind {
+            RelocationKind::AbsoluteWord6 => {
+                value &= LOW6_MASK;
+            }
+            RelocationKind::AbsoluteAddition => {
+                value = current_value.wrapping_add(value);
+            }
+            RelocationKind::AbsoluteSubtraction => {
+                value = current_value.wrapping_sub(value);
+            }
+            RelocationKind::AbsoluteSubtractionWord6 => {
+                value = (current_value & LOW6_MASK).wrapping_sub(value & LOW6_MASK);
+            }
+            _ => unreachable!(),
+        }
+    }
+
     if let Some(relaxation) = relaxation {
         trace.emit(original_place, || {
             format!(
@@ -2185,13 +2236,22 @@ fn apply_relocation<A: Arch>(
             %value_flags,
             %resolution_flags,
             ?rel_info.kind,
+            %rel_info.size,
             value,
             value_hex = %HexU64::new(value),
             symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
             "relocation applied");
     }
 
-    write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section as usize..])?;
+    // Special case WORD6 type where we need to preserve the 2 most significant bits of u8.
+    if matches!(
+        rel_info.kind,
+        RelocationKind::AbsoluteWord6 | RelocationKind::AbsoluteSubtractionWord6
+    ) {
+        value |= u64::from(out[offset_in_section]) & !LOW6_MASK;
+    }
+
+    write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section..])?;
 
     Ok(next_modifier)
 }

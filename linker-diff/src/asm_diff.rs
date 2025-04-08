@@ -2257,6 +2257,10 @@ impl<'data> RelaxationTester<'data> {
                 .got_base_address
                 .context("Missing GOT base address")?,
             RelocationKind::Absolute
+            | RelocationKind::AbsoluteWord6
+            | RelocationKind::AbsoluteAddition
+            | RelocationKind::AbsoluteSubtraction
+            | RelocationKind::AbsoluteSubtractionWord6
             | RelocationKind::Got
             | RelocationKind::TlsGdGot
             | RelocationKind::GotTpOffGot
@@ -2439,7 +2443,12 @@ fn value_kind_for_relocation(
     address_index: &AddressIndex,
 ) -> Option<ValueKind> {
     let kind = match relocation_kind {
-        RelocationKind::Absolute | RelocationKind::AbsoluteAArch64 => {
+        RelocationKind::Absolute
+        | RelocationKind::AbsoluteAArch64
+        | RelocationKind::AbsoluteWord6
+        | RelocationKind::AbsoluteAddition
+        | RelocationKind::AbsoluteSubtraction
+        | RelocationKind::AbsoluteSubtractionWord6 => {
             if address_index.is_relocatable() {
                 ValueKind::Unwrapped(BasicValueKind::AbsoluteValue)
             } else {
@@ -3353,6 +3362,10 @@ impl<'data> GotIndex<'data> {
                 RelocationKind::TlsDescCall => Ok(Referent::TlsDescCall),
                 RelocationKind::Absolute
                 | RelocationKind::AbsoluteAArch64
+                | RelocationKind::AbsoluteWord6
+                | RelocationKind::AbsoluteAddition
+                | RelocationKind::AbsoluteSubtraction
+                | RelocationKind::AbsoluteSubtractionWord6
                 | RelocationKind::Relative
                 | RelocationKind::SymRelGotBase
                 | RelocationKind::GotRelGotBase

@@ -1009,6 +1009,24 @@ impl RelocationInstruction {
             RelocationInstruction::JumpCall => {
                 mask = extracted_value as u32;
             }
+            // TODO
+            RelocationInstruction::Auipc => {
+                let lower = (extract_bits(extracted_value, 0, 12) as u32) << 20;
+                let upper = (extract_bits(extracted_value, 12, 32) as u32) << 12;
+                for (i, v) in upper.to_le_bytes().iter().enumerate() {
+                    dest[i] |= *v;
+                }
+                for (i, v) in lower.to_le_bytes().iter().enumerate() {
+                    dest[i + 4] |= *v;
+                }
+                return;
+            }
+            RelocationInstruction::High20 => {
+                mask = (extracted_value as u32) << 12;
+            }
+            RelocationInstruction::Low12 => {
+                mask = (extracted_value as u32) << 20;
+            }
         }
         // Read the original value and combine it with the prepared mask.
         let mask_bytes = &mask.to_le_bytes();
@@ -1050,6 +1068,9 @@ impl RelocationInstruction {
             RelocationInstruction::Bcond => low_bits_signed(value >> 5, 19),
             // C6.2.33
             RelocationInstruction::JumpCall => low_bits_signed(value, 26),
+            RelocationInstruction::Auipc
+            | RelocationInstruction::High20
+            | RelocationInstruction::Low12 => todo!(),
         };
 
         (extracted_value, negative)

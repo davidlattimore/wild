@@ -463,7 +463,7 @@ pub(crate) fn write_relocation_to_buffer(
         }) => {
             let extracted_value = extract_bits(value, range.start, range.end);
             let negative = (value as i64).is_negative();
-            insn.write_to_value(extracted_value, negative, &mut output[..4]);
+            insn.write_to_value(extracted_value, negative, &mut output[..8]);
         }
     }
 

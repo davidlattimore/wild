@@ -2858,6 +2858,10 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
             ResolutionFlags::empty()
         }
         RelocationKind::Absolute
+        | RelocationKind::AbsoluteWord6
+        | RelocationKind::AbsoluteAddition
+        | RelocationKind::AbsoluteSubtraction
+        | RelocationKind::AbsoluteSubtractionWord6
         | RelocationKind::Relative
         | RelocationKind::DtpOff
         | RelocationKind::TpOff

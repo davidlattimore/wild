@@ -739,6 +739,7 @@ impl Args {
         match self.arch {
             Architecture::X86_64 => Alignment { exponent: 12 },
             Architecture::AArch64 => Alignment { exponent: 16 },
+            Architecture::RISCV64 => Alignment { exponent: 12 },
         }
     }
 
