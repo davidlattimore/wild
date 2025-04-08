@@ -1,2 +1,3 @@
 rustc_channel = "nightly"
 use_qemu = false
+allow_rust_musl_target = true

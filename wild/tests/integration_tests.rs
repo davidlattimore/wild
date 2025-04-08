@@ -90,6 +90,8 @@
 //! that the version of clang available to us doesn't support TLSDESC.
 //!
 //! VersionScript:{filename} Specifies a version script file that will be passed to the linker.
+//!
+//! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the musl Rust toolchain.
 
 use anyhow::Context;
 use anyhow::anyhow;
@@ -420,6 +422,7 @@ struct Config {
     requires_nightly_rustc: bool,
     version_script: Option<PathBuf>,
     rustc_channel: RustcChannel,
+    requires_rust_musl: bool,
 }
 
 /// These configs are used by the config file specified in `$WILD_TEST_CONFIG`
@@ -430,6 +433,9 @@ struct TestConfig {
 
     #[serde(default)]
     use_qemu: bool,
+
+    #[serde(default)]
+    allow_rust_musl_target: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, Debug, Default)]
@@ -615,6 +621,7 @@ impl Default for Config {
             requires_nightly_rustc: false,
             version_script: None,
             rustc_channel: RustcChannel::Default,
+            requires_rust_musl: false,
         }
     }
 }
@@ -775,6 +782,9 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
                 }
                 "VersionScript" => {
                     config.version_script = Some(src_path(&arg.trim().to_lowercase()))
+                }
+                "RequiresRustMusl" => {
+                    config.requires_rust_musl = arg.to_lowercase().parse()?;
                 }
                 other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
             }
@@ -2245,6 +2255,10 @@ fn integration_test(
             .filter(|config| !config.should_skip(arch, &test_config));
 
         for config in config_it {
+            if !test_config.allow_rust_musl_target && config.requires_rust_musl {
+                continue;
+            }
+
             let mut config = config.clone();
             config.rustc_channel = test_config.rustc_channel;
             run_with_config(&program_inputs, &config, arch, &linkers)?
@@ -2259,6 +2273,7 @@ fn read_test_config() -> Result<TestConfig> {
     // which targets are enabled, since there's only one.
     let mut use_qemu = std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v == "aarch64");
     let mut rustc_channel = RustcChannel::Default;
+    let mut allow_rust_musl_target = false;
 
     let config_default_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -2289,6 +2304,7 @@ fn read_test_config() -> Result<TestConfig> {
 
         rustc_channel = data.rustc_channel;
         use_qemu |= data.use_qemu;
+        allow_rust_musl_target = data.allow_rust_musl_target;
     } else if config_path != config_default_path {
         bail!(
             "WILD_TEST_CONFIG file not found at `{}`",
@@ -2299,5 +2315,6 @@ fn read_test_config() -> Result<TestConfig> {
     Ok(TestConfig {
         rustc_channel,
         use_qemu,
+        allow_rust_musl_target,
     })
 }
