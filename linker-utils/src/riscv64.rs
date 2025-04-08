@@ -1,7 +1,10 @@
 use crate::elf::AllowedRange;
+use crate::elf::RISCVInstruction;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
+use crate::elf::extract_bits;
+use crate::utils::or_from_slice;
 
 #[must_use]
 pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
@@ -15,28 +18,28 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         object::elf::R_RISCV_CALL_PLT => (
             RelocationKind::Relative,
-            RelocationSize::bit_mask(0, 64, crate::elf::RelocationInstruction::Auipc),
+            RelocationSize::bit_mask_riscv(0, 64, RISCVInstruction::Auipc),
             None,
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_RISCV_HI20 => (
             RelocationKind::Absolute,
-            RelocationSize::bit_mask(12, 32, crate::elf::RelocationInstruction::High20),
+            RelocationSize::bit_mask_riscv(12, 32, RISCVInstruction::High20),
             None,
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_RISCV_LO12_I | object::elf::R_RISCV_LO12_S => (
             RelocationKind::Absolute,
-            RelocationSize::bit_mask(0, 12, crate::elf::RelocationInstruction::Low12),
+            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::Low12),
             None,
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_RISCV_PCREL_HI20 => (
             RelocationKind::Relative,
-            RelocationSize::bit_mask(12, 32, crate::elf::RelocationInstruction::High20),
+            RelocationSize::bit_mask_riscv(12, 32, RISCVInstruction::High20),
             None,
             AllowedRange::no_check(),
             1,
@@ -144,4 +147,34 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         range,
         alignment,
     })
+}
+
+impl RISCVInstruction {
+    pub fn write_to_value(self, extracted_value: u64, _negative: bool, dest: &mut [u8]) {
+        let mask;
+        match self {
+            RISCVInstruction::High20 => {
+                mask = (extracted_value as u32) << 12;
+            }
+            RISCVInstruction::Low12 => {
+                mask = (extracted_value as u32) << 20;
+            }
+            RISCVInstruction::Auipc => {
+                let lower = (extract_bits(extracted_value, 0, 12) as u32) << 20;
+                let upper = (extract_bits(extracted_value, 12, 32) as u32) << 12;
+                or_from_slice(dest, &upper.to_le_bytes());
+                or_from_slice(&mut dest[4..], &lower.to_le_bytes());
+                return;
+            }
+        }
+        // Read the original value and combine it with the prepared mask.
+        or_from_slice(dest, &mask.to_le_bytes());
+    }
+
+    /// The inverse of `write_to_value`. Returns `(extracted_value, negative)`. Supplied `bytes`
+    /// must be at least 4 bytes, otherwise we panic.
+    #[must_use]
+    pub fn read_value(self, _bytes: &[u8]) -> (u64, bool) {
+        todo!()
+    }
 }
