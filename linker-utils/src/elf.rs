@@ -965,7 +965,7 @@ pub struct BitRange {
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
-pub enum RelocationInstruction {
+pub enum AArch64Instruction {
     Adr,
     Movkz,
     Movnz,
@@ -976,10 +976,19 @@ pub enum RelocationInstruction {
     TstBr,
     Bcond,
     JumpCall,
-    // TODO: separate RISC-V instructions
+}
+
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum RISCVInstruction {
     Auipc,
     High20,
     Low12,
+}
+
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum RelocationInstruction {
+    AArch64(AArch64Instruction),
+    RISCV(RISCVInstruction),
 }
 
 impl RelocationInstruction {
@@ -998,6 +1007,32 @@ impl RelocationInstruction {
         }
 
         mask
+    }
+
+    pub fn write_to_value(self, extracted_value: u64, negative: bool, dest: &mut [u8]) {
+        match self {
+            Self::AArch64(insn) => insn.write_to_value(extracted_value, negative, dest),
+            Self::RISCV(insn) => insn.write_to_value(extracted_value, negative, dest),
+        }
+    }
+
+    /// The inverse of `write_to_value`. Returns `(extracted_value, negative)`. Supplied `bytes`
+    /// must be at least 4 bytes, otherwise we panic.
+    #[must_use]
+    pub fn read_value(self, bytes: &[u8]) -> (u64, bool) {
+        match self {
+            Self::AArch64(insn) => insn.read_value(bytes),
+            Self::RISCV(insn) => insn.read_value(bytes),
+        }
+    }
+
+    /// The number of bytes the relocation actually can modify in the output data.
+    #[must_use]
+    pub fn write_windows_size(self) -> usize {
+        match self {
+            Self::AArch64(..) => 4,
+            Self::RISCV(..) => 8,
+        }
     }
 }
 
@@ -1019,12 +1054,28 @@ impl fmt::Display for RelocationSize {
 }
 
 impl RelocationSize {
-    pub(crate) const fn bit_mask(
+    pub(crate) const fn bit_mask_aarch64(
         bit_start: u32,
         bit_end: u32,
-        instruction: RelocationInstruction,
+        instruction: AArch64Instruction,
     ) -> RelocationSize {
-        Self::BitMasking(BitMask::new(instruction, bit_start, bit_end))
+        Self::BitMasking(BitMask::new(
+            RelocationInstruction::AArch64(instruction),
+            bit_start,
+            bit_end,
+        ))
+    }
+
+    pub(crate) const fn bit_mask_riscv(
+        bit_start: u32,
+        bit_end: u32,
+        instruction: RISCVInstruction,
+    ) -> RelocationSize {
+        Self::BitMasking(BitMask::new(
+            RelocationInstruction::RISCV(instruction),
+            bit_start,
+            bit_end,
+        ))
     }
 }
 
