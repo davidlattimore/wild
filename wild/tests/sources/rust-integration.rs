@@ -23,6 +23,7 @@
 //#Config:cranelift-static-aarch64:default
 //#CompArgs:-Zcodegen-backend=cranelift --target aarch64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2 --cfg cranelift
 //#RequiresRustMusl: true
+//#RequiresNightlyRustc: true
 //#Arch: aarch64
 
 //#Config:llvm-dynamic:default
