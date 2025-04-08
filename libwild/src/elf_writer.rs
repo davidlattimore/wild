@@ -1962,11 +1962,7 @@ fn apply_relocation<A: Arch>(
     let e = LittleEndian;
     let r_type = rel.r_type(e, false);
 
-    // Return early on for nop relocations.
-    if matches!(
-        A::relocation_from_raw(r_type)?.kind,
-        RelocationKind::None | RelocationKind::TlsDescCall
-    ) {
+    if A::relocation_from_raw(r_type)?.kind == RelocationKind::None {
         return Ok(RelocationModifier::Normal);
     }
     let symbol_index = rel
