@@ -63,15 +63,22 @@ Cross compilation is set up in docker/debian.Dockerfile.
 
 Currently, the behavior for the following test options can be configured using the TOML format:
 
-- `rustc_channel`: Specifies which Rust compiler channel to use when running tests that build Rust code. The default value is "default", which means no explicit toolchain is specified.
+- `rustc_channel`: Specifies which Rust compiler channel to use when running tests that build Rust
+  code. The default value is "default", which means no explicit toolchain is specified.
 
-- `use_qemu`: Determines whether to run tests for architectures different from the host. This setting is overridden by the `$WILD_TEST_CROSS` environment variable. The default value is `false`.
+- `use_qemu`: Determines whether to run tests for architectures different from the host. This
+  setting is overridden by the `$WILD_TEST_CROSS` environment variable. The default value is
+  `false`.
 
-- `allow_rust_musl_target`: Specifies whether to allow the musl target Rust. The default value is `false`, so you’ll need to set it to `true` if you want to run tests targeting musl.
+- `allow_rust_musl_target`: Specifies whether to allow the musl target Rust. The default value is
+  `false`, so you’ll need to set it to `true` if you want to run tests targeting musl.
 
-A sample configuration file is provided as `test-config.toml.sample`.
-By default, Wild uses `test-config.toml` as the configuration file.
-If you have written your configuration in a different file, specify its location using the `WILD_TEST_CONFIG` environment variable as follows:
+- `diff_ignore`: Adds extra rules to ignore certain diffs. This can be useful if you're developing
+  on a system with an older version of GNU ld that doesn't perform certain optimisations.
+
+A sample configuration file is provided as `test-config.toml.sample`. By default, Wild uses
+`test-config.toml` as the configuration file. If you have written your configuration in a different
+file, specify its location using the `WILD_TEST_CONFIG` environment variable as follows:
 
 ```sh
 WILD_TEST_CONFIG=path_to_config cargo test

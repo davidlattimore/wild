@@ -423,10 +423,11 @@ struct Config {
     version_script: Option<PathBuf>,
     rustc_channel: RustcChannel,
     requires_rust_musl: bool,
+    test_config: TestConfig,
 }
 
 /// These configs are used by the config file specified in `$WILD_TEST_CONFIG`
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default, Clone, PartialEq, Eq)]
 struct TestConfig {
     #[serde(default)]
     rustc_channel: RustcChannel,
@@ -436,6 +437,11 @@ struct TestConfig {
 
     #[serde(default)]
     allow_rust_musl_target: bool,
+
+    /// Extra ignore directives. This can be handy if you're running on a system with say an older
+    /// version of GNU ld that doesn't perform certain optimisations.
+    #[serde(default)]
+    diff_ignore: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, Debug, Default)]
@@ -467,13 +473,14 @@ impl Default for DirectConfig {
 }
 
 impl Config {
-    fn should_skip(&self, arch: Architecture, test_config: &TestConfig) -> bool {
+    fn should_skip(&self, arch: Architecture) -> bool {
         !self.support_architectures.contains(&arch)
             || self.requires_glibc && !cfg!(target_env = "gnu")
             || (self.requires_clang_with_tlsdesc && !host_supports_clang_with_tls_desc())
             || (arch != get_host_architecture()
                 && (self.compiler == "clang" || !self.cross_enabled))
-            || (test_config.rustc_channel != RustcChannel::Nightly && self.requires_nightly_rustc)
+            || (self.test_config.rustc_channel != RustcChannel::Nightly
+                && self.requires_nightly_rustc)
     }
 
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
@@ -592,8 +599,8 @@ impl ArgumentSet {
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    fn new(test_config: &TestConfig) -> Self {
         Self {
             name: "default".to_owned(),
             variant_num: None,
@@ -622,17 +629,19 @@ impl Default for Config {
             version_script: None,
             rustc_channel: RustcChannel::Default,
             requires_rust_musl: false,
+            test_config: test_config.clone(),
         }
     }
 }
 
-fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
+fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Config>> {
     let source = std::fs::read_to_string(src_filename)
         .with_context(|| format!("Failed to read {}", src_filename.display()))?;
     let is_rust = src_filename.extension().is_some_and(|ext| ext == "rs");
 
     let mut config_by_name = HashMap::new();
-    let mut config = Config::default();
+    let default_config = Config::new(test_config);
+    let mut config = default_config.clone();
 
     for line in source.lines() {
         if let Some(rest) = line.trim().strip_prefix("//#") {
@@ -640,7 +649,7 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
             let arg = arg.trim();
             match directive {
                 "Config" | "AbstractConfig" => {
-                    if config != Config::default() {
+                    if config != default_config {
                         config_by_name.insert(config.name.clone(), config);
                     }
                     let name = if let Some((name, inherit)) = arg.split_once(':') {
@@ -658,7 +667,7 @@ fn parse_configs(src_filename: &Path) -> Result<Vec<Config>> {
 
                         name
                     } else {
-                        config = Config::default();
+                        config = default_config.clone();
                         arg
                     };
                     config.is_abstract = directive == "AbstractConfig";
@@ -1957,35 +1966,38 @@ fn diff_shared_objects(instructions: &Config, programs: &[Program]) -> Result {
     Ok(())
 }
 
-fn diff_executables(instructions: &Config, programs: &[Program]) -> Result {
+fn diff_executables(config: &Config, programs: &[Program]) -> Result {
     let filenames = programs
         .iter()
         .map(|p| p.link_output.binary.clone())
         .collect_vec();
-    diff_files(instructions, filenames, programs.last().unwrap())
+    diff_files(config, filenames, programs.last().unwrap())
 }
 
 /// Diff the supplied files. The last file should be the one that we produced.
-fn diff_files(instructions: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Result {
-    if !instructions.should_diff {
+fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Result {
+    if !config.should_diff {
         return Ok(());
     }
 
-    let mut config = linker_diff::Config::default();
-    config.colour = linker_diff::Colour::Always;
-    config.wild_defaults = true;
-    config
+    let mut diff_config = linker_diff::Config::default();
+    diff_config.colour = linker_diff::Colour::Always;
+    diff_config.wild_defaults = true;
+    diff_config
         .ignore
-        .extend(instructions.diff_ignore.iter().cloned());
-    config
+        .extend(config.diff_ignore.iter().cloned());
+    diff_config
+        .ignore
+        .extend(config.test_config.diff_ignore.iter().cloned());
+    diff_config
         .equiv
-        .extend(instructions.section_equiv.iter().cloned());
-    config.references = files.clone();
-    config.file = config
+        .extend(config.section_equiv.iter().cloned());
+    diff_config.references = files.clone();
+    diff_config.file = diff_config
         .references
         .pop()
         .context("Tried to diff zero files")?;
-    let report = linker_diff::Report::from_config(config.clone()).with_context(|| {
+    let report = linker_diff::Report::from_config(diff_config.clone()).with_context(|| {
         format!(
             "Report::from_config failed for the following files: {}",
             files.iter().map(|f| f.to_string_lossy()).join(" ")
@@ -1996,7 +2008,7 @@ fn diff_files(instructions: &Config, files: Vec<PathBuf>, display: &dyn Display)
         bail!(
             "Validation failed.\n{display}\n To revalidate:\ncargo run --bin linker-diff -- \
              {}",
-            config.to_arg_string()
+            diff_config.to_arg_string()
         );
     }
     Ok(())
@@ -2237,22 +2249,20 @@ fn integration_test(
 
     let linkers = available_linkers()?;
 
+    let test_config = read_test_config()?;
+
     let filename = &program_inputs.source_file;
-    let configs = parse_configs(&src_path(filename))
+    let configs = parse_configs(&src_path(filename), &test_config)
         .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
 
     let host_arch = get_host_architecture();
-
-    let test_config = read_test_config()?;
 
     for &arch in ALL_ARCHITECTURES {
         if arch != host_arch && !test_config.use_qemu {
             continue;
         }
 
-        let config_it = configs
-            .iter()
-            .filter(|config| !config.should_skip(arch, &test_config));
+        let config_it = configs.iter().filter(|config| !config.should_skip(arch));
 
         for config in config_it {
             if !test_config.allow_rust_musl_target && config.requires_rust_musl {
@@ -2269,16 +2279,11 @@ fn integration_test(
 }
 
 fn read_test_config() -> Result<TestConfig> {
-    // We only currently support cross compilation from x86_64 to aarch64, so we don't need to track
-    // which targets are enabled, since there's only one.
-    let mut use_qemu = std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v == "aarch64");
-    let mut rustc_channel = RustcChannel::Default;
-    let mut allow_rust_musl_target = false;
-
     let config_default_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
         .join("test-config.toml");
+
     let config_path = std::env::var("WILD_TEST_CONFIG")
         .map(|config_path| {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2288,33 +2293,29 @@ fn read_test_config() -> Result<TestConfig> {
         })
         .unwrap_or_else(|_| config_default_path.clone());
 
-    if config_path.exists() {
+    let mut config = if config_path.exists() {
         let config_content = std::fs::read_to_string(&config_path).with_context(|| {
             format!(
                 "Failed to read WILD_TEST_CONFIG file at `{}`",
                 config_path.display()
             )
         })?;
-        let data: TestConfig = match toml::from_str(&config_content) {
-            Ok(d) => d,
-            Err(_) => {
-                bail!("Unable to load config from {:?}", config_path);
-            }
-        };
 
-        rustc_channel = data.rustc_channel;
-        use_qemu |= data.use_qemu;
-        allow_rust_musl_target = data.allow_rust_musl_target;
-    } else if config_path != config_default_path {
+        toml::from_str(&config_content)
+            .with_context(|| format!("Unable to load config from {:?}", config_path))?
+    } else if config_path == config_default_path {
+        TestConfig::default()
+    } else {
         bail!(
             "WILD_TEST_CONFIG file not found at `{}`",
             config_path.display()
         );
+    };
+
+    // The environment variable can override the config file setting.
+    if std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v == "aarch64") {
+        config.use_qemu = true;
     }
 
-    Ok(TestConfig {
-        rustc_channel,
-        use_qemu,
-        allow_rust_musl_target,
-    })
+    Ok(config)
 }
