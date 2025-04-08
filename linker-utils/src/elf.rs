@@ -3,6 +3,7 @@ use object::LittleEndian;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::SectionHeader;
 use std::borrow::Cow;
+use std::fmt;
 
 macro_rules! const_name_by_value {
     ($needle: expr, $( $const:ident ),*) => {
@@ -206,6 +207,78 @@ pub fn aarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
         Cow::Borrowed(name)
     } else {
         Cow::Owned(format!("Unknown aarch64 relocation type 0x{r_type:x}"))
+    }
+}
+
+pub fn riscv64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
+    if let Some(name) = const_name_by_value![
+        r_type,
+        R_RISCV_NONE,
+        R_RISCV_32,
+        R_RISCV_64,
+        R_RISCV_RELATIVE,
+        R_RISCV_COPY,
+        R_RISCV_JUMP_SLOT,
+        R_RISCV_TLS_DTPMOD32,
+        R_RISCV_TLS_DTPMOD64,
+        R_RISCV_TLS_DTPREL32,
+        R_RISCV_TLS_DTPREL64,
+        R_RISCV_TLS_TPREL32,
+        R_RISCV_TLS_TPREL64,
+        R_RISCV_BRANCH,
+        R_RISCV_JAL,
+        R_RISCV_CALL,
+        R_RISCV_CALL_PLT,
+        R_RISCV_GOT_HI20,
+        R_RISCV_TLS_GOT_HI20,
+        R_RISCV_TLS_GD_HI20,
+        R_RISCV_PCREL_HI20,
+        R_RISCV_PCREL_LO12_I,
+        R_RISCV_PCREL_LO12_S,
+        R_RISCV_HI20,
+        R_RISCV_LO12_I,
+        R_RISCV_LO12_S,
+        R_RISCV_TPREL_HI20,
+        R_RISCV_TPREL_LO12_I,
+        R_RISCV_TPREL_LO12_S,
+        R_RISCV_TPREL_ADD,
+        R_RISCV_ADD8,
+        R_RISCV_ADD16,
+        R_RISCV_ADD32,
+        R_RISCV_ADD64,
+        R_RISCV_SUB8,
+        R_RISCV_SUB16,
+        R_RISCV_SUB32,
+        R_RISCV_SUB64,
+        R_RISCV_GNU_VTINHERIT,
+        R_RISCV_GNU_VTENTRY,
+        R_RISCV_ALIGN,
+        R_RISCV_RVC_BRANCH,
+        R_RISCV_RVC_JUMP,
+        R_RISCV_RVC_LUI,
+        R_RISCV_GPREL_I,
+        R_RISCV_GPREL_S,
+        R_RISCV_TPREL_I,
+        R_RISCV_TPREL_S,
+        R_RISCV_RELAX,
+        R_RISCV_SUB6,
+        R_RISCV_SET6,
+        R_RISCV_SET8,
+        R_RISCV_SET16,
+        R_RISCV_SET32,
+        R_RISCV_32_PCREL,
+        R_RISCV_IRELATIVE,
+        R_RISCV_PLT32,
+        R_RISCV_SET_ULEB128,
+        R_RISCV_SUB_ULEB128,
+        R_RISCV_TLSDESC_HI20,
+        R_RISCV_TLSDESC_LOAD_LO12,
+        R_RISCV_TLSDESC_ADD_LO12,
+        R_RISCV_TLSDESC_CALL
+    ] {
+        Cow::Borrowed(name)
+    } else {
+        Cow::Owned(format!("Unknown riscv64 relocation type 0x{r_type:x}"))
     }
 }
 
@@ -658,6 +731,21 @@ pub enum RelocationKind {
     /// The absolute address of a symbol or section.
     Absolute,
 
+    /// The 6 low bits of an absolute address of a symbol or section.
+    AbsoluteWord6,
+
+    /// Add the absolute address of a symbol or section at the place of the relocation
+    /// to the value at the place.
+    AbsoluteAddition,
+
+    /// Subtract the absolute address of a symbol or section at the place of the relocation
+    /// from the value at the place.
+    AbsoluteSubtraction,
+
+    /// Subtract the absolute address of a symbol or section at the place of the relocation
+    /// from the value at the place (use WORD6 type for the operation)
+    AbsoluteSubtractionWord6,
+
     /// The absolute address of a symbol or section. We are going to extract only the offset
     /// within a page, so dynamic relocation creation must be skipped.
     AbsoluteAArch64,
@@ -851,6 +939,22 @@ impl DynamicRelocationKind {
             DynamicRelocationKind::JumpSlot => object::elf::R_AARCH64_JUMP_SLOT,
         }
     }
+
+    #[must_use]
+    pub fn riscv64_r_type(&self) -> u32 {
+        match self {
+            DynamicRelocationKind::Copy => object::elf::R_RISCV_COPY,
+            DynamicRelocationKind::Irelative => object::elf::R_RISCV_IRELATIVE,
+            DynamicRelocationKind::DtpMod => object::elf::R_RISCV_TLS_DTPMOD64,
+            DynamicRelocationKind::DtpOff => object::elf::R_RISCV_TLS_DTPREL64,
+            DynamicRelocationKind::TpOff => object::elf::R_RISCV_TLS_TPREL64,
+            DynamicRelocationKind::Relative => object::elf::R_RISCV_RELATIVE,
+            DynamicRelocationKind::Absolute => object::elf::R_RISCV_64,
+            DynamicRelocationKind::GotEntry => todo!(""),
+            DynamicRelocationKind::TlsDesc => todo!(""),
+            DynamicRelocationKind::JumpSlot => object::elf::R_RISCV_JUMP_SLOT,
+        }
+    }
 }
 
 // Half-opened range bounded inclusively below and exclusively above: [`start`, `end`)
@@ -872,6 +976,10 @@ pub enum RelocationInstruction {
     TstBr,
     Bcond,
     JumpCall,
+    // TODO: separate RISC-V instructions
+    Auipc,
+    High20,
+    Low12,
 }
 
 impl RelocationInstruction {
@@ -897,6 +1005,17 @@ impl RelocationInstruction {
 pub enum RelocationSize {
     ByteSize(usize),
     BitMasking(BitMask),
+}
+
+impl fmt::Display for RelocationSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ByteSize(bytes) => f.write_fmt(format_args!("{bytes}B")),
+            Self::BitMasking(mask) => {
+                f.write_fmt(format_args!("{}..{}", mask.range.start, mask.range.end))
+            }
+        }
+    }
 }
 
 impl RelocationSize {
@@ -985,6 +1104,9 @@ impl BitMask {
 /// Extract range-specified ([`start`..`end`]) bits from the provided `value`.
 #[must_use]
 pub fn extract_bits(value: u64, start: u32, end: u32) -> u64 {
+    if start == 0 && end == u64::BITS {
+        return value;
+    }
     debug_assert!(start < end);
     (value >> (start)) & ((1 << (end - start)) - 1)
 }
