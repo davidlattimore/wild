@@ -67,6 +67,8 @@ Currently, the behavior for the following test options can be configured using t
 
 - `use_qemu`: Determines whether to run tests for architectures different from the host. This setting is overridden by the `$WILD_TEST_CROSS` environment variable. The default value is `false`.
 
+- `allow_rust_musl_target`: Specifies whether to allow the musl target Rust. The default value is `false`, so you’ll need to set it to `true` if you want to run tests targeting musl.
+
 A sample configuration file is provided as `test-config.toml.sample`.
 By default, Wild uses `test-config.toml` as the configuration file.
 If you have written your configuration in a different file, specify its location using the `WILD_TEST_CONFIG` environment variable as follows:
