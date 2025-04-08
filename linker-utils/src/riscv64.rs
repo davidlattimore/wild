@@ -18,7 +18,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         object::elf::R_RISCV_CALL_PLT => (
             RelocationKind::Relative,
-            RelocationSize::bit_mask_riscv(0, 64, RISCVInstruction::Auipc),
+            RelocationSize::bit_mask_riscv(0, 64, RISCVInstruction::AuipcJalr),
             None,
             AllowedRange::no_check(),
             1,
@@ -150,11 +150,14 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
 }
 
 impl RISCVInstruction {
+    // Encode computed relocation value and store it based on the encoding of an instruction.
+    // A handy pages where one can easily find instruction encoding:
+    // https://msyksphinz-self.github.io/riscv-isadoc/html/index.html.
     pub fn write_to_value(self, extracted_value: u64, _negative: bool, dest: &mut [u8]) {
         let mask = match self {
             RISCVInstruction::High20 => (extracted_value as u32) << 12,
             RISCVInstruction::Low12 => (extracted_value as u32) << 20,
-            RISCVInstruction::Auipc => {
+            RISCVInstruction::AuipcJalr => {
                 let lower = (extract_bits(extracted_value, 0, 12) as u32) << 20;
                 let upper = (extract_bits(extracted_value, 12, 32) as u32) << 12;
                 or_from_slice(dest, &upper.to_le_bytes());

@@ -980,8 +980,16 @@ pub enum AArch64Instruction {
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum RISCVInstruction {
-    Auipc,
+    // The relocation encoding actually modifies the consecutive pair of instructions:
+    //   10:	00000097          	auipc	ra,0x0	10: R_RISCV_CALL_PLT	symbol_name
+    //   14:	000080e7          	jalr	ra # 10 <main+0x10>
+    //
+    // That makes the relocation pretty unusual as one would expect 2 relocations:
+    // https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc#procedure-calls
+    AuipcJalr,
+    // Encodes high 20 bits of 32-bit value and encodes the bits to upper part.
     High20,
+    // Encodes low 12 bits of 32-bit value and encodes the bits to upper part.
     Low12,
 }
 
