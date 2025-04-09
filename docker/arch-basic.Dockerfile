@@ -4,7 +4,7 @@
 #
 # docker run -it wild-dev-arch-basic
 
-FROM archlinux:base-20250302.0.316047 AS chef
+FROM archlinux:base-20250406.0.331908 AS chef
 
 RUN pacman --noconfirm -Syu \
     wget \
