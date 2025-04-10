@@ -15,6 +15,7 @@ use crate::args::Args;
 use crate::args::BuildIdOption;
 use crate::args::OutputKind;
 use crate::debug_assert_bail;
+use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
@@ -122,6 +123,10 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
 
     let symbol_resolution_flags = vec![AtomicResolutionFlags::empty(); symbol_db.num_symbols()];
 
+    let symbol_info_printer = symbol_db.args.sym_info.as_ref().map(|sym_name| {
+        SymbolInfoPrinter::new(&symbol_db, sym_name, &symbol_resolution_flags, &groups)
+    });
+
     let gc_outputs = find_required_sections::<A>(
         groups,
         &symbol_db,
@@ -130,15 +135,6 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         &merged_strings,
         custom_start_stop_defs,
     )?;
-
-    if let Some(sym_info) = symbol_db.args.sym_info.as_deref() {
-        print_symbol_info(
-            &symbol_db,
-            sym_info,
-            &symbol_resolution_flags,
-            &gc_outputs.group_states,
-        );
-    }
 
     let mut group_states = gc_outputs.group_states;
 
@@ -152,6 +148,10 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         &mut group_states,
         &symbol_resolution_flags,
     )?;
+
+    // Dropping `symbol_info_printer` will cause it to print. So we'll either print now, or, if we
+    // got an error, then we'll have printed at that point.
+    drop(symbol_info_printer);
 
     let mut symbol_resolution_flags: Vec<ResolutionFlags> = symbol_resolution_flags
         .into_iter()
@@ -1096,7 +1096,7 @@ bitflags! {
     }
 }
 
-struct AtomicResolutionFlags {
+pub(crate) struct AtomicResolutionFlags {
     value: AtomicU8,
 }
 
@@ -1169,7 +1169,7 @@ impl AtomicResolutionFlags {
         ResolutionFlags::from_bits_retain(previous_bits)
     }
 
-    fn get(&self) -> ResolutionFlags {
+    pub(crate) fn get(&self) -> ResolutionFlags {
         ResolutionFlags::from_bits_retain(self.value.load(atomic::Ordering::Relaxed))
     }
 }
@@ -2372,10 +2372,6 @@ impl<'data> FileLayoutState<'data> {
             }
         };
         Ok(file_layout)
-    }
-
-    fn is_loaded(&self) -> bool {
-        !matches!(self, FileLayoutState::NotLoaded(..))
     }
 }
 
@@ -4950,63 +4946,6 @@ impl std::fmt::Debug for FileLayoutState<'_> {
             FileLayoutState::Dynamic(_) => f.debug_tuple("Dynamic").finish(),
             FileLayoutState::NotLoaded(_) => Display::fmt(&"<not loaded>", f),
             FileLayoutState::Epilogue(_) => Display::fmt(&"<custom sections>", f),
-        }
-    }
-}
-
-fn print_symbol_info(
-    symbol_db: &SymbolDb,
-    name: &str,
-    resolution_flags: &[AtomicResolutionFlags],
-    groups: &[GroupState],
-) {
-    let name = symbol_db
-        .find_mangled_name(name)
-        .unwrap_or_else(|| name.to_owned());
-
-    let symbol_id = symbol_db.get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()));
-    println!("Global name `{name}` refers to: {symbol_id:?}",);
-
-    println!("Definitions / references with name `{name}`:");
-    for i in 0..symbol_db.num_symbols() {
-        let symbol_id = SymbolId::from_usize(i);
-        if symbol_db
-            .symbol_name(symbol_id)
-            .is_ok_and(|sym_name| sym_name.bytes() == name.as_bytes())
-        {
-            let file_id = symbol_db.file_id_for_symbol(symbol_id);
-            match symbol_db.file(file_id) {
-                crate::parsing::ParsedInput::Prelude(_) => println!("  <prelude>"),
-                crate::parsing::ParsedInput::Object(o) => {
-                    let local_index = symbol_id.to_input(o.symbol_id_range);
-                    match o.object.symbol(local_index) {
-                        Ok(sym) => {
-                            let canonical = symbol_db.definition(symbol_id);
-
-                            let file = &groups[file_id.group()].files[file_id.file()];
-                            let file_state = if file.is_loaded() {
-                                "LOADED"
-                            } else {
-                                "NOT LOADED"
-                            };
-
-                            println!(
-                                "  {}: symbol_id={symbol_id} -> {canonical} {value_flags} \
-                                    res=[{res_flags}] \n    \
-                                    #{local_index} in File #{file_id} {input} ({file_state})",
-                                crate::symbol::SymDebug(sym),
-                                value_flags = symbol_db.local_symbol_value_flags(symbol_id),
-                                res_flags = resolution_flags[symbol_id.as_usize()].get(),
-                                input = o.input,
-                            );
-                        }
-                        Err(e) => {
-                            println!("  Corrupted input (file_id #{file_id}) {}: {e}", o.input);
-                        }
-                    }
-                }
-                crate::parsing::ParsedInput::Epilogue(_) => println!("  <epilogue>"),
-            }
         }
     }
 }
