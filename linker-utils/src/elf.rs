@@ -753,6 +753,11 @@ pub enum RelocationKind {
     /// The address of the symbol, relative to the place of the relocation.
     Relative,
 
+    /// The address of the symbol, relative to the place of the relocation. The address of the relocation
+    /// points to an instruction for which the R_RISCV_PCREL_HI20 relocation is used and that is the place
+    /// we make this relocation relative to.
+    RelativeRISCVLow12,
+
     /// The address of the symbol, relative to the base address of the GOT.
     SymRelGotBase,
 
