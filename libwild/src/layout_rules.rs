@@ -34,12 +34,34 @@ struct SectionRule<'data> {
 /// What should be done with a particular input section.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SectionRuleOutcome {
-    Section(OutputSectionId),
+    Section(SectionOutputInfo),
     Discard,
     Custom,
     EhFrame,
     NoteGnuProperty,
     Debug,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SectionOutputInfo {
+    pub(crate) section_id: OutputSectionId,
+    pub(crate) must_keep: bool,
+}
+
+impl SectionOutputInfo {
+    const fn regular(section_id: OutputSectionId) -> Self {
+        Self {
+            section_id,
+            must_keep: false,
+        }
+    }
+
+    const fn keep(section_id: OutputSectionId) -> Self {
+        Self {
+            section_id,
+            must_keep: true,
+        }
+    }
 }
 
 impl<'data> SectionRule<'data> {
@@ -53,11 +75,37 @@ impl<'data> SectionRule<'data> {
     }
 
     const fn exact_section(name: &'data [u8], section_id: OutputSectionId) -> SectionRule<'data> {
-        Self::exact(name, SectionRuleOutcome::Section(section_id))
+        Self::exact(
+            name,
+            SectionRuleOutcome::Section(SectionOutputInfo::regular(section_id)),
+        )
+    }
+
+    const fn exact_section_keep(
+        name: &'data [u8],
+        section_id: OutputSectionId,
+    ) -> SectionRule<'data> {
+        Self::exact(
+            name,
+            SectionRuleOutcome::Section(SectionOutputInfo::keep(section_id)),
+        )
     }
 
     const fn prefix_section(name: &'data [u8], section_id: OutputSectionId) -> SectionRule<'data> {
-        Self::prefix(name, SectionRuleOutcome::Section(section_id))
+        Self::prefix(
+            name,
+            SectionRuleOutcome::Section(SectionOutputInfo::regular(section_id)),
+        )
+    }
+
+    const fn prefix_section_keep(
+        name: &'data [u8],
+        section_id: OutputSectionId,
+    ) -> SectionRule<'data> {
+        Self::prefix(
+            name,
+            SectionRuleOutcome::Section(SectionOutputInfo::keep(section_id)),
+        )
     }
 
     const fn exact(name: &'data [u8], outcome: SectionRuleOutcome) -> SectionRule<'data> {
@@ -78,14 +126,14 @@ impl<'data> SectionRule<'data> {
 }
 
 const BUILT_IN_RULES: &[SectionRule<'static>] = &[
-    SectionRule::exact_section(secnames::INIT_SECTION_NAME, output_section_id::INIT),
-    SectionRule::exact_section(secnames::FINI_SECTION_NAME, output_section_id::FINI),
-    SectionRule::exact_section(
+    SectionRule::exact_section_keep(secnames::INIT_SECTION_NAME, output_section_id::INIT),
+    SectionRule::exact_section_keep(secnames::FINI_SECTION_NAME, output_section_id::FINI),
+    SectionRule::exact_section_keep(
         secnames::PREINIT_ARRAY_SECTION_NAME,
         output_section_id::PREINIT_ARRAY,
     ),
-    SectionRule::exact_section(secnames::COMMENT_SECTION_NAME, output_section_id::COMMENT),
-    SectionRule::exact_section(
+    SectionRule::exact_section_keep(secnames::COMMENT_SECTION_NAME, output_section_id::COMMENT),
+    SectionRule::exact_section_keep(
         secnames::NOTE_ABI_TAG_SECTION_NAME,
         output_section_id::NOTE_ABI_TAG,
     ),
@@ -101,16 +149,16 @@ const BUILT_IN_RULES: &[SectionRule<'static>] = &[
     ),
     SectionRule::prefix_section(secnames::DATA_SECTION_NAME, output_section_id::DATA),
     SectionRule::prefix_section(secnames::BSS_SECTION_NAME, output_section_id::BSS),
-    SectionRule::prefix_section(
+    SectionRule::prefix_section_keep(
         secnames::INIT_ARRAY_SECTION_NAME,
         output_section_id::INIT_ARRAY,
     ),
-    SectionRule::prefix_section(b".ctors", output_section_id::INIT_ARRAY),
-    SectionRule::prefix_section(
+    SectionRule::prefix_section_keep(b".ctors", output_section_id::INIT_ARRAY),
+    SectionRule::prefix_section_keep(
         secnames::FINI_ARRAY_SECTION_NAME,
         output_section_id::FINI_ARRAY,
     ),
-    SectionRule::prefix_section(b".dtors", output_section_id::FINI_ARRAY),
+    SectionRule::prefix_section_keep(b".dtors", output_section_id::FINI_ARRAY),
     SectionRule::prefix_section(secnames::TDATA_SECTION_NAME, output_section_id::TDATA),
     SectionRule::prefix_section(secnames::TBSS_SECTION_NAME, output_section_id::TBSS),
     SectionRule::prefix_section(
@@ -195,19 +243,19 @@ fn unnamed_section_output(section_flags: SectionFlags, sh_type: SectionType) -> 
         SectionRuleOutcome::Discard
     } else if sh_type == sht::PROGBITS {
         if section_flags.contains(shf::EXECINSTR) {
-            SectionRuleOutcome::Section(output_section_id::TEXT)
+            SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::TEXT))
         } else if section_flags.contains(shf::TLS) {
-            SectionRuleOutcome::Section(output_section_id::TDATA)
+            SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::TDATA))
         } else if section_flags.contains(shf::WRITE) {
-            SectionRuleOutcome::Section(output_section_id::DATA)
+            SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::DATA))
         } else {
-            SectionRuleOutcome::Section(output_section_id::RODATA)
+            SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::RODATA))
         }
     } else if sh_type == sht::NOBITS {
         if section_flags.contains(shf::TLS) {
-            SectionRuleOutcome::Section(output_section_id::TBSS)
+            SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::TBSS))
         } else {
-            SectionRuleOutcome::Section(output_section_id::BSS)
+            SectionRuleOutcome::Section(SectionOutputInfo::regular(output_section_id::BSS))
         }
     } else {
         SectionRuleOutcome::Discard
