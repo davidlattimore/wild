@@ -464,7 +464,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(INIT_ARRAY_SECTION_NAME),
         ty: sht::INIT_ARRAY,
-        section_flags: shf::ALLOC.with(shf::WRITE).with(shf::GNU_RETAIN),
+        section_flags: shf::ALLOC.with(shf::WRITE),
         element_size: size_of::<u64>() as u64,
         start_symbol_name: Some("__init_array_start"),
         end_symbol_name: Some("__init_array_end"),
@@ -473,7 +473,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(FINI_ARRAY_SECTION_NAME),
         ty: sht::FINI_ARRAY,
-        section_flags: shf::ALLOC.with(shf::WRITE).with(shf::GNU_RETAIN),
+        section_flags: shf::ALLOC.with(shf::WRITE),
         element_size: size_of::<u64>() as u64,
         start_symbol_name: Some("__fini_array_start"),
         end_symbol_name: Some("__fini_array_end"),
@@ -482,7 +482,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(PREINIT_ARRAY_SECTION_NAME),
         ty: sht::PREINIT_ARRAY,
-        section_flags: shf::ALLOC.with(shf::GNU_RETAIN),
+        section_flags: shf::ALLOC,
         start_symbol_name: Some("__preinit_array_start"),
         end_symbol_name: Some("__preinit_array_end"),
         ..DEFAULT_DEFS
@@ -496,13 +496,13 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(INIT_SECTION_NAME),
         ty: sht::PROGBITS,
-        section_flags: shf::ALLOC.with(shf::EXECINSTR).with(shf::GNU_RETAIN),
+        section_flags: shf::ALLOC.with(shf::EXECINSTR),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
         name: SectionName(FINI_SECTION_NAME),
         ty: sht::PROGBITS,
-        section_flags: shf::ALLOC.with(shf::EXECINSTR).with(shf::GNU_RETAIN),
+        section_flags: shf::ALLOC.with(shf::EXECINSTR),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -536,7 +536,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(COMMENT_SECTION_NAME),
         ty: sht::PROGBITS,
-        section_flags: shf::STRINGS.with(shf::MERGE).with(shf::GNU_RETAIN),
+        section_flags: shf::STRINGS.with(shf::MERGE),
         element_size: 1,
         ..DEFAULT_DEFS
     },
@@ -549,7 +549,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         name: SectionName(NOTE_ABI_TAG_SECTION_NAME),
         ty: sht::NOTE,
-        section_flags: shf::ALLOC.with(shf::GNU_RETAIN),
+        section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {

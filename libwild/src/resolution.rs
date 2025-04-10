@@ -753,14 +753,10 @@ fn resolve_sections_for_object<'data>(
             let mut is_debug_info = false;
 
             match rules.lookup(section_name, section_flags, input_section) {
-                SectionRuleOutcome::Section(output_section_id) => {
-                    let part_id = output_section_id.part_id_with_alignment(alignment);
+                SectionRuleOutcome::Section(output_info) => {
+                    let part_id = output_info.section_id.part_id_with_alignment(alignment);
 
-                    must_load |= part_id
-                        .output_section_id()
-                        .built_in_details()
-                        .section_flags
-                        .should_retain();
+                    must_load |= output_info.must_keep;
 
                     unloaded_section = UnloadedSection::new(part_id);
                 }
