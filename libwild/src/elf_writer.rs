@@ -85,6 +85,7 @@ use linker_utils::elf::sht;
 use linker_utils::relaxation::RelocationModifier;
 use memmap2::MmapOptions;
 use object::LittleEndian;
+use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::from_bytes_mut;
@@ -1678,6 +1679,7 @@ impl<'data> ObjectLayout<'data> {
                 out,
                 table_writer,
                 trace,
+                Some(relocations),
             )
             .with_context(|| {
                 format!(
@@ -1859,6 +1861,7 @@ impl<'data> ObjectLayout<'data> {
                         entry_out,
                         table_writer,
                         trace,
+                        None,
                     )
                     .with_context(|| {
                         format!(
@@ -1945,6 +1948,26 @@ struct SectionInfo {
     section_flags: SectionFlags,
 }
 
+fn get_resolution(
+    rel: &elf::Rela,
+    object_layout: &ObjectLayout,
+    layout: &Layout,
+) -> Result<(Resolution, SymbolIndex, SymbolId)> {
+    let symbol_index = rel
+        .symbol(LittleEndian, false)
+        .context("Unsupported absolute relocation")?;
+    let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
+    let resolution = layout
+        .merged_symbol_resolution(local_symbol_id)
+        .with_context(|| {
+            format!(
+                "Missing resolution for: {}",
+                layout.symbol_db.symbol_debug(local_symbol_id)
+            )
+        })?;
+    Ok((resolution, symbol_index, local_symbol_id))
+}
+
 /// Applies the relocation `rel` at `offset_in_section`, where the section bytes are `out`. See "ELF
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
@@ -1958,6 +1981,7 @@ fn apply_relocation<A: Arch>(
     out: &mut [u8],
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
+    all_relocations: Option<&[elf::Rela]>,
 ) -> Result<RelocationModifier> {
     const LOW6_MASK: u64 = 0b0011_0000;
 
@@ -1976,19 +2000,8 @@ fn apply_relocation<A: Arch>(
     if A::relocation_from_raw(r_type)?.kind == RelocationKind::None {
         return Ok(RelocationModifier::Normal);
     }
-    let symbol_index = rel
-        .symbol(e, false)
-        .context("Unsupported absolute relocation")?;
-    let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
-    let resolution = layout
-        .merged_symbol_resolution(local_symbol_id)
-        .with_context(|| {
-            format!(
-                "Missing resolution for: {}",
-                layout.symbol_db.symbol_debug(local_symbol_id)
-            )
-        })?;
 
+    let (resolution, symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
     let value_flags = resolution.value_flags;
     let resolution_flags = resolution.resolution_flags;
     let mut addend = rel.r_addend.get(e);
@@ -2055,6 +2068,36 @@ fn apply_relocation<A: Arch>(
             )?
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::RelativeRISCVLow12 => {
+            let Some(all_relocations) = all_relocations else {
+                anyhow::bail!("All relocations must be available for R_RISCV_PCREL_LO12");
+            };
+            let hi_offset_in_section = resolution
+                .value_with_addend(
+                    addend,
+                    symbol_index,
+                    object_layout,
+                    &layout.merged_strings,
+                    &layout.merged_string_start_addresses,
+                )?
+                .wrapping_sub(section_address);
+            // TODO: improve search algorithm based on the index of the relocation we're current working on.
+            // The R_RISCV_PCREL_HI relocation is typically just before us.
+            let hi_rel = all_relocations
+                .iter()
+                .find(|r| r.r_offset(e) == hi_offset_in_section)
+                .with_context(|| anyhow::anyhow!("Missing R_RISCV_PCREL_HI relocation"))?;
+            let (resolution, symbol_index, _) = get_resolution(hi_rel, object_layout, layout)?;
+            resolution
+                .value_with_addend(
+                    addend,
+                    symbol_index,
+                    object_layout,
+                    &layout.merged_strings,
+                    &layout.merged_string_start_addresses,
+                )?
+                .wrapping_sub(section_address + hi_offset_in_section)
+        }
         RelocationKind::GotRelative => resolution
             .got_address()?
             .bitand(mask.got_entry)

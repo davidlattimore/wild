@@ -2239,6 +2239,7 @@ impl<'data> RelaxationTester<'data> {
     ) -> Result<u64> {
         let mut relative_to = match relocation_info.kind {
             RelocationKind::Relative
+            | RelocationKind::RelativeRISCVLow12
             | RelocationKind::PltRelative
             | RelocationKind::TlsGd
             | RelocationKind::TlsLd
@@ -2455,7 +2456,9 @@ fn value_kind_for_relocation(
                 return None;
             }
         }
-        RelocationKind::Relative | RelocationKind::SymRelGotBase => {
+        RelocationKind::Relative
+        | RelocationKind::RelativeRISCVLow12
+        | RelocationKind::SymRelGotBase => {
             return None;
         }
         RelocationKind::PltRelative | RelocationKind::PltRelGotBase => ValueKind::OptionalPlt,
@@ -3367,6 +3370,7 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::AbsoluteSubtraction
                 | RelocationKind::AbsoluteSubtractionWord6
                 | RelocationKind::Relative
+                | RelocationKind::RelativeRISCVLow12
                 | RelocationKind::SymRelGotBase
                 | RelocationKind::GotRelGotBase
                 | RelocationKind::Got

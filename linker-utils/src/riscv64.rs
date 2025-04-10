@@ -44,7 +44,13 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
-        // TODO: R_RISCV_PCREL_LO12_I is tricky one as it needs to find the position of R_RISCV_PCREL_HI20!
+        object::elf::R_RISCV_PCREL_LO12_I | object::elf::R_RISCV_PCREL_LO12_S => (
+            RelocationKind::RelativeRISCVLow12,
+            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::Low12),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
         object::elf::R_RISCV_32_PCREL => (
             RelocationKind::Relative,
             RelocationSize::ByteSize(4),
