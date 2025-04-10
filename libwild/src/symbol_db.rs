@@ -27,6 +27,7 @@ use crate::version_script::VersionScript;
 use ahash::HashMap;
 use ahash::RandomState;
 use anyhow::Context;
+use anyhow::Error;
 use anyhow::bail;
 use crossbeam_queue::SegQueue;
 use itertools::Itertools;
@@ -382,6 +383,29 @@ impl<'data> SymbolDb<'data> {
         symbol_id
     }
 
+    /// Reads the symbol visibility from the original object.
+    fn input_symbol_visibility(&self, symbol_id: SymbolId) -> Visibility {
+        let file_id = self.file_id_for_symbol(symbol_id);
+        match &self.groups[file_id.group()] {
+            Group::Prelude(_) => Visibility::Default,
+            Group::Objects(parsed_input_objects) => {
+                let obj = &parsed_input_objects[file_id.file()];
+                let local_index = symbol_id.to_input(obj.symbol_id_range);
+
+                let Ok(obj_symbol) = obj.object.symbol(local_index) else {
+                    return Visibility::Default;
+                };
+
+                match obj_symbol.st_visibility() {
+                    object::elf::STV_PROTECTED => Visibility::Protected,
+                    object::elf::STV_HIDDEN => Visibility::Hidden,
+                    _ => Visibility::Default,
+                }
+            }
+            Group::Epilogue(_) => Visibility::Default,
+        }
+    }
+
     /// Returns a struct that can be used to print debug information about the specified symbol.
     pub(crate) fn symbol_debug(&self, symbol_id: SymbolId) -> SymbolDebug<'_, 'data> {
         SymbolDebug {
@@ -625,44 +649,27 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
     let mut buckets = take(&mut symbol_db.buckets);
     let error_queue = SegQueue::new();
 
-    let replacements: Vec<Vec<(SymbolId, SymbolId)>> = buckets
+    let replacements: Vec<Vec<SymbolReplacement>> = buckets
         .par_iter_mut()
         .map(|bucket| {
             let mut local_replacements = Vec::new();
 
-            for (first, alternatives) in replace(
+            process_alternatives(
                 &mut bucket.alternative_definitions,
-                HashMap::with_hasher(RandomState::new()),
-            ) {
-                match select_symbol(symbol_db, first, &alternatives, resolved) {
-                    Ok(selected) => {
-                        local_replacements.push((first, selected));
-                        for alt in alternatives {
-                            local_replacements.push((alt, selected));
-                        }
-                    }
-                    Err(err) => {
-                        error_queue.push(err);
-                    }
-                }
-            }
+                &mut local_replacements,
+                &error_queue,
+                symbol_db,
+                resolved,
+            );
 
-            for (first, alternatives) in replace(
+            process_alternatives(
                 &mut bucket.alternative_versioned_definitions,
-                HashMap::with_hasher(RandomState::new()),
-            ) {
-                match select_symbol(symbol_db, first, &alternatives, resolved) {
-                    Ok(selected) => {
-                        local_replacements.push((first, selected));
-                        for alt in alternatives {
-                            local_replacements.push((alt, selected));
-                        }
-                    }
-                    Err(err) => {
-                        error_queue.push(err);
-                    }
-                }
-            }
+                &mut local_replacements,
+                &error_queue,
+                symbol_db,
+                resolved,
+            );
+
             local_replacements
         })
         .collect();
@@ -681,13 +688,81 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
         )));
     }
 
-    for (a, b) in replacements.iter().flat_map(|r| r.iter()) {
-        symbol_db.replace_definition(*a, *b);
+    for r in replacements.iter().flat_map(|r| r.iter()) {
+        // TODO: Currently we only make the symbol non-interposable, but we should also actually
+        // change its visibility too. We need somewhere to store this information. We also need
+        // linker-diff to report when we get exported dynamic symbols wrong.
+        if r.visibility != Visibility::Default {
+            symbol_db.symbol_value_flags[r.replace.as_usize()] |= ValueFlags::NON_INTERPOSABLE;
+        }
+        symbol_db.replace_definition(r.replace, r.selected);
     }
 
     symbol_db.buckets = buckets;
 
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct SymbolReplacement {
+    /// The symbol to be replaced.
+    replace: SymbolId,
+
+    /// The symbol that was selected as the definition to use.
+    selected: SymbolId,
+
+    visibility: Visibility,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Visibility {
+    Default,
+    Protected,
+    Hidden,
+}
+
+fn process_alternatives(
+    alternative_definitions: &mut HashMap<SymbolId, Vec<SymbolId>>,
+    local_replacements: &mut Vec<SymbolReplacement>,
+    error_queue: &SegQueue<Error>,
+    symbol_db: &SymbolDb,
+    resolved: &[ResolvedGroup],
+) {
+    for (first, alternatives) in replace(
+        alternative_definitions,
+        HashMap::with_hasher(RandomState::new()),
+    ) {
+        // Compute the most restrictive visibility of any of the alternative definitions. This is
+        // the visibility we'll use for our selected symbol. This seems like odd behaviour, but it
+        // matches what GNU ld appears to do and some programs will fail to link if we don't do
+        // this.
+        let visibility = alternatives
+            .iter()
+            .fold(symbol_db.input_symbol_visibility(first), |vis, id| {
+                vis.max(symbol_db.input_symbol_visibility(*id))
+            });
+
+        match select_symbol(symbol_db, first, &alternatives, resolved) {
+            Ok(selected) => {
+                local_replacements.push(SymbolReplacement {
+                    replace: first,
+                    selected,
+                    visibility,
+                });
+
+                for alt in alternatives {
+                    local_replacements.push(SymbolReplacement {
+                        replace: alt,
+                        selected,
+                        visibility,
+                    });
+                }
+            }
+            Err(err) => {
+                error_queue.push(err);
+            }
+        }
+    }
 }
 
 /// Selects which version of the symbol to use.
