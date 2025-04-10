@@ -2235,6 +2235,7 @@ fn integration_test(
         "rust-tls.rs",
         "input_does_not_exist.c",
         "ifunc2.c",
+        "visibility-merging.c",
         "tls-local-exec.c",
         "undefined_symbols.c",
         "whole_archive.c",
