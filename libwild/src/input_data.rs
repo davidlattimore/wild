@@ -31,7 +31,7 @@ pub(crate) struct VersionScriptData {
 }
 
 /// Identifies an input file. IDs start from 0 which is reserved for our prelude file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct FileId(u32);
 
 pub(crate) const PRELUDE_FILE_ID: FileId = FileId::new(0, 0);

@@ -5,6 +5,7 @@ pub(crate) mod archive;
 pub(crate) mod archive_splitter;
 pub mod args;
 pub(crate) mod debug_trace;
+pub(crate) mod diagnostics;
 pub(crate) mod diff;
 pub(crate) mod elf;
 pub(crate) mod elf_writer;
