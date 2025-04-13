@@ -11,34 +11,24 @@ edition.workspace = true
 linker-layout = { path = "../linker-layout", version = "0.4.0" }
 linker-trace = { path = "../linker-trace", version = "0.4.0" }
 linker-utils = { path = "../linker-utils", version = "0.4.0" }
-object = { version = "0.36.7", default-features = false, features = [
-    "elf",
-    "read_core",
-    "std",
-    "unaligned",
-    "archive",
-] }
-iced-x86 = { version = "1.21.0", default-features = false, features = [
-    "std",
-    "decoder",
-    "gas",
-] }
-symbolic-demangle = "12.14.1"
-anyhow = "1.0.97"
-clap = { version = "4.5.35", features = ["derive"] }
-rayon = "1.10.0"
-bytemuck = { version = "1.22.0", features = ["derive"] }
-itertools = "0.14.0"
-gimli = "0.31.1"
-fallible-iterator = "0.3.0"
-colored = "3.0.0"
-tracing = "0.1.41"
-tracing-subscriber = "0.3.19"
-memmap2 = "0.9.5"
-memchr = "2.7.4"
-tempfile = "3.19.1"
-which = "7.0.2"
-ascii_table = "4.0.6"
+object = { workspace = true }
+iced-x86 = { workspace = true }
+symbolic-demangle = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+rayon = { workspace = true }
+bytemuck = { workspace = true }
+itertools = { workspace = true }
+gimli = { workspace = true }
+fallible-iterator = { workspace = true }
+colored = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+memmap2 = { workspace = true }
+memchr = { workspace = true }
+tempfile = { workspace = true }
+which = { workspace = true }
+ascii_table = { workspace = true }
 
 [lints]
 workspace = true

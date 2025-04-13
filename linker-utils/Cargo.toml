@@ -8,13 +8,8 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
-anyhow = "1.0.97"
-object = { version = "0.36.7", default-features = false, features = [
-    "elf",
-    "read_core",
-    "std",
-    "unaligned",
-] }
+anyhow = { workspace = true }
+object = { workspace = true }
 
 [lints]
 workspace = true

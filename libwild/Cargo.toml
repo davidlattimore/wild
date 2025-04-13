@@ -8,49 +8,39 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
-ahash = { version = "0.8.11", default-features = false, features = ["std"] }
-anyhow = "1.0.97"
-bitflags = "2.9.0"
-bytemuck = { version = "1.22.0", features = ["derive"] }
-crossbeam-queue = "0.3.12"
-crossbeam-utils = "0.8.21"
-libc = "0.2"
+ahash = { workspace = true }
+anyhow = { workspace = true }
+atomic-take = { workspace = true }
+bitflags = { workspace = true }
+blake3 = { workspace = true }
+bumpalo-herd = { workspace = true }
+bytemuck = { workspace = true }
+bytesize = { workspace = true }
+crossbeam-queue = { workspace = true }
+crossbeam-utils = { workspace = true }
+flate2 = { workspace = true }
+hashbrown = { workspace = true }
+hex = { workspace = true }
+itertools = { workspace = true }
+libc = { workspace = true }
 linker-layout = { path = "../linker-layout", version = "0.4.0" }
 linker-trace = { path = "../linker-trace", version = "0.4.0" }
 linker-utils = { path = "../linker-utils", version = "0.4.0" }
-memchr = "2.7.4"
-memmap2 = "0.9.5"
-object = { version = "0.36.7", default-features = false, features = [
-    "archive",
-    "elf",
-    "read_core",
-    "std",
-    "unaligned",
-] }
-rayon = "1.10.0"
-smallvec = "1.15.0"
-symbolic-demangle = "12.14.1"
-tracing = { version = "0.1.41" }
-tracing-subscriber = { version = "0.3.19", default-features = false, features = [
-    "env-filter",
-    "fmt",
-    "registry",
-] }
-sharded-offset-map = "0.2.0"
-sharded-vec-writer = "0.3.0"
-itertools = "0.14.0"
-bytesize = "2.0.1"
-flate2 = { version = "1.1.1", features = ["zlib-rs"] }
-bumpalo-herd = "0.1.2"
-zstd = "0.13.3"
-blake3 = { version = "1.8.1", features = ["rayon"] }
-uuid = { version = "1.16.0", features = ["v4"] }
-hex = "0.4.3"
-atomic-take = "1.1.0"
-normalize-path = "0.2.1"
-typed-arena = "2.0.2"
-winnow = "0.7.4"
-hashbrown = "0.15.2"
+memchr = { workspace = true }
+memmap2 = { workspace = true }
+normalize-path = { workspace = true }
+object = { workspace = true }
+rayon = { workspace = true }
+sharded-offset-map = { workspace = true }
+sharded-vec-writer = { workspace = true }
+smallvec = { workspace = true }
+symbolic-demangle = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+typed-arena = { workspace = true }
+uuid = { workspace = true }
+winnow = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
 ar = "0.9.0"
