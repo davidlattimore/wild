@@ -17,30 +17,25 @@ libwild = { path = "../libwild", version = "0.4.0" }
 # This is off by default, since it doesn't appear to help. However, if you're linking against musl
 # libc, which has a comparatively slow allocator, then enabling this does help. To enable this,
 # build with `--features mimalloc`.
-mimalloc = { version = "0.1", default-features = false, optional = true }
+mimalloc = { workspace = true, optional = true }
 
-dhat = { version = "0.3.3", optional = true }
-os_info = "3.10.0"
+dhat = { workspace = true, optional = true }
 
 [dev-dependencies]
-anyhow = "1.0.97"
-wait-timeout = "0.2.1"
-itertools = "0.14.0"
-object = { version = "0.36.7", default-features = false, features = [
-    "elf",
-    "read_core",
-    "std",
-    "unaligned",
-] }
-libc = "0.2"
-linker-diff = { path = "../linker-diff", version = "0.4.0" }
-which = "7.0.2"
-rstest = "0.25.0"
-fd-lock = "4.0.4"
-strum = { version = "0.27.1", features = ["derive"] }
-strum_macros = "0.27.1"
-toml = "0.8.20"
-serde = { version = "1.0.219", features = ["derive"] }
+anyhow = { workspace = true }
+fd-lock = { workspace = true }
+itertools = { workspace = true }
+libc = { workspace = true }
+linker-diff = { path = "../linker-diff" }
+object = { workspace = true }
+os_info = { workspace = true }
+rstest = { workspace = true }
+serde = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+toml = { workspace = true }
+wait-timeout = { workspace = true }
+which = { workspace = true }
 
 [features]
 default = ["fork"]

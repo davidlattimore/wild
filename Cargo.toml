@@ -17,6 +17,71 @@ readme = "README.md"
 rust-version = "1.86"
 edition = "2024"
 
+[workspace.dependencies]
+ahash = { version = "0.8.0", default-features = false, features = ["std"] }
+anyhow = "1.0.97"
+ascii_table = "4.0.0"
+atomic-take = "1.0.0"
+bitflags = "2.4.0"
+blake3 = { version = "1.0.0", features = ["rayon"] }
+bumpalo-herd = "0.1.0"
+bytemuck = { version = "1.10.0", features = ["derive"] }
+bytesize = "2.0.0"
+clap = { version = "4.0.0", features = ["derive"] }
+colored = "3.0.0"
+crossbeam-queue = "0.3.10"
+crossbeam-utils = "0.8.18"
+dhat = { version = "0.3.3" }
+fallible-iterator = "0.3.0"
+fd-lock = "4.0.0"
+flate2 = { version = "1.1.0", features = ["zlib-rs"] }
+gimli = "0.31.0"
+hashbrown = "0.15.1"
+hex = "0.4.0"
+iced-x86 = { version = "1.17.0", default-features = false, features = [
+    "std",
+    "decoder",
+    "gas",
+] }
+itertools = "0.14.0"
+libc = "0.2.152"
+memchr = "2.6.0"
+memmap2 = "0.9.0"
+mimalloc = { version = "0.1", default-features = false }
+normalize-path = "0.2.0"
+object = { version = "0.36.7", default-features = false, features = [
+    "elf",
+    "read_core",
+    "std",
+    "unaligned",
+    "archive",
+] }
+os_info = "3.0.0"
+postcard = { version = "1.1.1", features = ["use-std"] }
+rayon = "1.2.1"
+rstest = "0.25.0"
+serde = { version = "1.0.219", features = ["derive"] }
+sharded-offset-map = "0.2.0"
+sharded-vec-writer = "0.3.0"
+smallvec = "1.6.1"
+strum = { version = "0.27.0", features = ["derive"] }
+strum_macros = "0.27.0"
+symbolic-demangle = "12.0.0"
+tempfile = "3.0.0"
+toml = "0.8.0"
+tracing = "0.1.35"
+tracing-subscriber = { version = "0.3.16", default-features = false, features = [
+    "env-filter",
+    "fmt",
+    "registry",
+] }
+typed-arena = "2.0.0"
+uuid = { version = "1.0.0", features = ["v4"] }
+wait-timeout = "0.2.0"
+which = "7.0.2"
+winnow = "0.7.0"
+zstd = "0.13.0"
+
 [profile.opt-debug]
 inherits = "release"
 debug = true
