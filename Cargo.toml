@@ -19,7 +19,7 @@ edition = "2024"
 
 [workspace.dependencies]
 ahash = { version = "0.8.0", default-features = false, features = ["std"] }
-anyhow = "1.0.97"
+anyhow = "1.0.98"
 ascii_table = "4.0.0"
 atomic-take = "1.0.0"
 bitflags = "2.4.0"
@@ -27,7 +27,7 @@ blake3 = { version = "1.0.0", features = ["rayon"] }
 bumpalo-herd = "0.1.0"
 bytemuck = { version = "1.10.0", features = ["derive"] }
 bytesize = "2.0.0"
-clap = { version = "4.0.0", features = ["derive"] }
+clap = { version = "4.5.36", features = ["derive"] }
 colored = "3.0.0"
 crossbeam-queue = "0.3.10"
 crossbeam-utils = "0.8.18"
@@ -66,7 +66,7 @@ sharded-vec-writer = "0.3.0"
 smallvec = "1.6.1"
 strum = { version = "0.27.0", features = ["derive"] }
 strum_macros = "0.27.0"
-symbolic-demangle = "12.0.0"
+symbolic-demangle = "12.15.3"
 tempfile = "3.0.0"
 toml = "0.8.0"
 tracing = "0.1.35"
@@ -79,7 +79,7 @@ typed-arena = "2.0.0"
 uuid = { version = "1.0.0", features = ["v4"] }
 wait-timeout = "0.2.0"
 which = "7.0.2"
-winnow = "0.7.0"
+winnow = "0.7.6"
 zstd = "0.13.0"
 
 [profile.opt-debug]
