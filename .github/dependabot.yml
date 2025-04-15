@@ -1,11 +1,11 @@
 version: 2
 updates:
   - package-ecosystem: github-actions
-    versioning-strategy: widen
     directory: /
     schedule:
       interval: daily
   - package-ecosystem: cargo
+    versioning-strategy: lockfile-only
     directory: /
     schedule:
       interval: weekly
