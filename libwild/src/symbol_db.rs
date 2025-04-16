@@ -693,7 +693,10 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
         // change its visibility too. We need somewhere to store this information. We also need
         // linker-diff to report when we get exported dynamic symbols wrong.
         if r.visibility != Visibility::Default {
-            symbol_db.symbol_value_flags[r.replace.as_usize()] |= ValueFlags::NON_INTERPOSABLE;
+            let value_flags = &mut symbol_db.symbol_value_flags[r.replace.as_usize()];
+            if !value_flags.contains(ValueFlags::DYNAMIC) {
+                *value_flags |= ValueFlags::NON_INTERPOSABLE;
+            }
         }
         symbol_db.replace_definition(r.replace, r.selected);
     }
