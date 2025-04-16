@@ -10,10 +10,10 @@ use crate::args::Modifiers;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::linker_script::LinkerScript;
-use ahash::HashSet;
-use ahash::RandomState;
 use anyhow::Context;
 use anyhow::bail;
+use foldhash::HashSet;
+use foldhash::fast::RandomState;
 use memmap2::Mmap;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
@@ -250,7 +250,7 @@ impl InputData {
 impl<'data> TemporaryState<'data> {
     fn new(args: &'data Args) -> Self {
         Self {
-            filenames: HashSet::with_hasher(RandomState::new()),
+            filenames: HashSet::with_hasher(RandomState::default()),
             args,
         }
     }

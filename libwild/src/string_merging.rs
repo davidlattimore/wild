@@ -34,11 +34,11 @@ use crate::part_id::PartId;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::SectionSlot;
-use ahash::HashMap;
 use anyhow::Context;
 use anyhow::bail;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
+use foldhash::HashMap;
 use itertools::Itertools as _;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
@@ -143,7 +143,7 @@ impl Default for MergedStringsSection<'_> {
             buckets: Default::default(),
             bucket_offsets: [0; MERGE_STRING_BUCKETS],
             string_offsets: Default::default(),
-            overflowed_string_offsets: HashMap::with_hasher(ahash::RandomState::new()),
+            overflowed_string_offsets: HashMap::with_hasher(foldhash::fast::RandomState::default()),
         }
     }
 }

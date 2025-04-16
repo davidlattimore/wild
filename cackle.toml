@@ -114,7 +114,7 @@ allow_unsafe = true
 [pkg.smallvec]
 allow_unsafe = true
 
-[pkg.ahash]
+[pkg.foldhash]
 allow_unsafe = true
 
 [pkg.tracing-attributes]

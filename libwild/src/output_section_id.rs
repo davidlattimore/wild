@@ -35,8 +35,9 @@ use crate::part_id::PartId;
 use crate::part_id::REGULAR_PART_BASE;
 use crate::program_segments::ProgramSegmentId;
 use crate::resolution::SectionSlot;
-use ahash::AHashMap;
 use anyhow::anyhow;
+use foldhash::HashMap as FoldHashMap;
+use foldhash::HashMapExt as _;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 #[allow(clippy::wildcard_imports)]
@@ -127,7 +128,7 @@ pub(crate) struct OutputSections<'data> {
     /// being output.
     pub(crate) output_section_indexes: Vec<Option<u16>>,
 
-    custom_by_name: AHashMap<SectionName<'data>, OutputSectionId>,
+    custom_by_name: FoldHashMap<SectionName<'data>, OutputSectionId>,
     sections_and_segments_events: Vec<OrderEvent>,
 }
 
@@ -688,7 +689,7 @@ impl Debug for SectionName<'_> {
 
 pub(crate) struct OutputSectionsBuilder<'data> {
     base_address: u64,
-    custom_by_name: AHashMap<SectionName<'data>, OutputSectionId>,
+    custom_by_name: FoldHashMap<SectionName<'data>, OutputSectionId>,
     // TODO: Change this to be an OutputSectionMap.
     section_infos: Vec<SectionOutputInfo<'data>>,
 }
@@ -782,7 +783,7 @@ impl<'data> OutputSectionsBuilder<'data> {
         Self {
             section_infos,
             base_address,
-            custom_by_name: AHashMap::new(),
+            custom_by_name: FoldHashMap::new(),
         }
     }
 }
