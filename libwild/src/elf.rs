@@ -2,7 +2,6 @@ use crate::arch::Architecture;
 use crate::error::Result;
 use crate::resolution::LoadedMetrics;
 use anyhow::Context;
-use anyhow::anyhow;
 use anyhow::bail;
 use anyhow::ensure;
 use bytemuck::Pod;
@@ -19,7 +18,6 @@ use object::LittleEndian;
 use object::read::elf::CompressionHeader;
 use object::read::elf::Dyn;
 use object::read::elf::FileHeader as _;
-use object::read::elf::ProgramHeader as _;
 use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
 use std::borrow::Cow;
@@ -60,7 +58,6 @@ pub(crate) struct File<'data> {
     pub(crate) sections: SectionTable<'data>,
     /// This may be symtab or dynsym depending on the file type.
     pub(crate) symbols: SymbolTable<'data>,
-    pub(crate) program_headers: &'data [ProgramHeader],
     pub(crate) versym: &'data [Versym],
 
     /// An iterator over the version definitions and the corresponding linked string table index.
@@ -118,19 +115,11 @@ impl<'data> File<'data> {
             }
         }
 
-        let program_headers = get_entries(
-            data,
-            header.e_phoff(endian) as usize,
-            header.e_phnum(endian) as usize,
-        )
-        .context("Failed to read program headers")?;
-
         Ok(Self {
             arch: architecture,
             data,
             sections,
             symbols,
-            program_headers,
             versym,
             verdef,
             verdefnum,
@@ -255,15 +244,10 @@ impl<'data> File<'data> {
 
     pub(crate) fn dynamic_tags(&self) -> Result<&'data [DynamicEntry]> {
         let e = LittleEndian;
-        for header in self.program_headers {
-            if header.p_type(e) == object::elf::PT_DYNAMIC {
-                return get_entries(
-                    self.data,
-                    header.p_offset(e) as usize,
-                    header.p_filesz(e) as usize / size_of::<DynamicEntry>(),
-                )
+        if let Some(dynamic) = self.sections.dynamic(e, self.data).transpose() {
+            return dynamic
+                .map(|(dynamic, _)| dynamic)
                 .context("Failed to read dynamic table");
-            }
         }
         Ok(&[])
     }
@@ -298,28 +282,6 @@ fn decompress_into(
         c => bail!("Unsupported compression format: {}", c),
     };
     Ok(())
-}
-
-/// Get some entries from `data` as a slice of some Pod type. Alignment of `T` must be 1.
-pub(crate) fn get_entries<T: object::Pod>(
-    data: &[u8],
-    offset: usize,
-    entry_count: usize,
-) -> Result<&[T]> {
-    debug_assert_eq!(align_of::<T>(), 1);
-    if offset >= data.len() {
-        bail!("Invalid offset 0x{offset}");
-    }
-    Ok(object::slice_from_bytes(&data[offset..], entry_count)
-        .map_err(|()| {
-            anyhow!(
-                "Tried to extract 0x{:x} entries of size 0x{:x} from 0x{:x}",
-                entry_count,
-                size_of::<T>(),
-                data.len(),
-            )
-        })?
-        .0)
 }
 
 /// The module number for TLS variables in the current executable.
