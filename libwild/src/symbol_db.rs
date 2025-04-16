@@ -24,12 +24,12 @@ use crate::symbol::PreHashedSymbolName;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol::VersionedSymbolName;
 use crate::version_script::VersionScript;
-use ahash::HashMap;
-use ahash::RandomState;
 use anyhow::Context;
 use anyhow::Error;
 use anyhow::bail;
 use crossbeam_queue::SegQueue;
+use foldhash::HashMap;
+use foldhash::fast::RandomState;
 use itertools::Itertools;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
@@ -308,8 +308,8 @@ impl<'data> SymbolDb<'data> {
         buckets.resize_with(num_buckets, || SymbolBucket {
             name_to_id: Default::default(),
             versioned_name_to_id: Default::default(),
-            alternative_definitions: HashMap::with_hasher(RandomState::new()),
-            alternative_versioned_definitions: HashMap::with_hasher(RandomState::new()),
+            alternative_definitions: HashMap::with_hasher(RandomState::default()),
+            alternative_versioned_definitions: HashMap::with_hasher(RandomState::default()),
         });
 
         let mut index = SymbolDb {
@@ -733,7 +733,7 @@ fn process_alternatives(
 ) {
     for (first, alternatives) in replace(
         alternative_definitions,
-        HashMap::with_hasher(RandomState::new()),
+        HashMap::with_hasher(RandomState::default()),
     ) {
         // Compute the most restrictive visibility of any of the alternative definitions. This is
         // the visibility we'll use for our selected symbol. This seems like odd behaviour, but it

@@ -65,10 +65,11 @@ use crate::string_merging::get_merged_string_output_address;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
-use ahash::AHashMap;
 use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
+use foldhash::HashMap as FoldHashMap;
+use foldhash::HashMapExt as _;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::SectionFlags;
@@ -1721,7 +1722,7 @@ impl<'data> ObjectLayout<'data> {
         let eh_frame_hdr_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME_HDR);
 
         // Map from input offset to output offset of each CIE.
-        let mut cies_offset_conversion: AHashMap<u32, u32> = AHashMap::new();
+        let mut cies_offset_conversion: FoldHashMap<u32, u32> = FoldHashMap::new();
 
         while input_pos + PREFIX_LEN <= data.len() {
             let prefix: elf::EhFrameEntryPrefix =
