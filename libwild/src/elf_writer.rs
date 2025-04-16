@@ -3317,9 +3317,14 @@ impl<'data> DynamicLayout<'data> {
                         res.value(),
                     )?;
                 } else {
-                    table_writer
+                    let entry = table_writer
                         .dynsym_writer
-                        .copy_symbol_shndx(symbol, name, 0, 0)?;
+                        .define_symbol(false, 0, 0, 0, name)?;
+
+                    // Note, we copy st_info, but not st_other since we don't want to copy the
+                    // visibility. We want to emit the symbol with default visibility, otherwise the
+                    // runtime loader may ignore dynamic relocations that reference the symbol.
+                    entry.st_info = symbol.st_info();
 
                     if let Some(versym) = table_writer.version_writer.versym.as_mut() {
                         write_symbol_version(

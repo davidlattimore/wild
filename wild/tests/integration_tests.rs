@@ -2240,6 +2240,7 @@ fn integration_test(
         "undefined_symbols.c",
         "whole_archive.c",
         "dynamic-bss-only.c",
+        "shared-priority.c",
         "shared.c",
         "duplicate_strong_symbols.c"
     )]

@@ -2706,12 +2706,21 @@ const ORIG: &str = "ORIG";
 struct SymtabEntryInfo<'data> {
     name: SymbolName<'data>,
     is_weak: bool,
+    visibility: Visibility,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct SymbolName<'data> {
     bytes: &'data [u8],
     version: Option<&'data [u8]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Visibility {
+    Default,
+    Protected,
+    Hidden,
+    Other(u8),
 }
 
 #[derive(Clone, Copy)]
@@ -2980,8 +2989,10 @@ impl<'data> AddressIndex<'data> {
                 version,
             };
 
+            let visibility = Visibility::from_sym(sym.elf_symbol());
+
             ensure!(
-                sym.elf_symbol().st_visibility() != object::elf::STV_HIDDEN,
+                visibility != Visibility::Hidden,
                 "Dynamic symbol {name} has unexpected hidden visibility"
             );
 
@@ -2992,12 +3003,14 @@ impl<'data> AddressIndex<'data> {
                         version: None,
                     },
                     is_weak: false,
+                    visibility: Visibility::Default,
                 });
             }
 
             dynamic_symbol_names.push(SymtabEntryInfo {
                 name,
                 is_weak: sym.is_weak(),
+                visibility,
             });
         }
 
@@ -3594,6 +3607,24 @@ impl Display for SymtabEntryInfo<'_> {
         if self.is_weak {
             write!(f, " (weak)")?;
         }
+
+        match self.visibility {
+            Visibility::Default => {}
+            Visibility::Protected => write!(f, " (protected)")?,
+            Visibility::Hidden => write!(f, " (hidden)")?,
+            Visibility::Other(other) => write!(f, " (vis={other})")?,
+        }
         Ok(())
+    }
+}
+
+impl Visibility {
+    fn from_sym(elf_symbol: &object::elf::Sym64<LittleEndian>) -> Visibility {
+        match elf_symbol.st_visibility() {
+            object::elf::STV_DEFAULT => Visibility::Default,
+            object::elf::STV_PROTECTED => Visibility::Protected,
+            object::elf::STV_HIDDEN => Visibility::Hidden,
+            other => Visibility::Other(other),
+        }
     }
 }
