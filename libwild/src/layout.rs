@@ -5070,8 +5070,8 @@ fn test_no_disallowed_overlaps() {
     };
 
     let mut section_index = 0;
-    for section in &output_sections.section_infos {
-        if section.section_flags.contains(shf::ALLOC) {
+    output_sections.section_infos.for_each(|_, info| {
+        if info.section_flags.contains(shf::ALLOC) {
             output_sections
                 .output_section_indexes
                 .push(Some(section_index));
@@ -5079,7 +5079,7 @@ fn test_no_disallowed_overlaps() {
         } else {
             output_sections.output_section_indexes.push(None);
         }
-    }
+    });
 
     let segment_layouts =
         compute_segment_layout(&section_layouts, &output_sections, &header_info).unwrap();
