@@ -120,7 +120,7 @@ pub(crate) const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 15;
 pub(crate) struct OutputSections<'data> {
     /// The base address for our output binary.
     pub(crate) base_address: u64,
-    pub(crate) section_infos: Vec<SectionOutputInfo<'data>>,
+    pub(crate) section_infos: OutputSectionMap<SectionOutputInfo<'data>>,
 
     // TODO: Consider moving this to Layout. We can't populate this until we know which output
     // sections have content, which we don't know until half way through the layout phase.
@@ -146,10 +146,7 @@ impl OutputSections<'_> {
     pub(crate) fn ids_with_info(
         &self,
     ) -> impl Iterator<Item = (OutputSectionId, &SectionOutputInfo)> {
-        self.section_infos
-            .iter()
-            .enumerate()
-            .map(|(raw, info)| (OutputSectionId::from_usize(raw), info))
+        self.section_infos.iter()
     }
 
     /// Determine which loadable segment, if any, each output section is contained within and update
@@ -178,7 +175,7 @@ impl OutputSections<'_> {
 
         load_seg_by_section_id
             .iter()
-            .zip(self.section_infos.iter_mut())
+            .zip(self.section_infos.values_iter_mut())
             .try_for_each(|(load_seg, info)| -> Result {
                 let load_seg_id = load_seg.ok_or_else(|| {
                     anyhow!(
@@ -690,19 +687,18 @@ impl Debug for SectionName<'_> {
 pub(crate) struct OutputSectionsBuilder<'data> {
     base_address: u64,
     custom_by_name: FoldHashMap<SectionName<'data>, OutputSectionId>,
-    // TODO: Change this to be an OutputSectionMap.
-    section_infos: Vec<SectionOutputInfo<'data>>,
+    section_infos: OutputSectionMap<SectionOutputInfo<'data>>,
 }
 
 impl<'data> OutputSectionsBuilder<'data> {
     pub(crate) fn build(self) -> Result<OutputSections<'data>> {
         let mut custom = CustomSectionIds::default();
 
-        for (offset, info) in self.section_infos[NUM_BUILT_IN_SECTIONS..]
-            .iter()
-            .enumerate()
-        {
-            let id = OutputSectionId::from_usize(NUM_BUILT_IN_SECTIONS + offset);
+        self.section_infos.for_each(|id, info| {
+            if id.as_usize() < NUM_BUILT_IN_SECTIONS {
+                return;
+            }
+
             if info.section_flags.contains(shf::EXECINSTR) {
                 custom.exec.push(id);
             } else if !info.section_flags.contains(shf::WRITE) {
@@ -716,7 +712,7 @@ impl<'data> OutputSectionsBuilder<'data> {
             } else {
                 custom.data.push(id);
             }
-        }
+        });
 
         let mut output_sections = OutputSections {
             base_address: self.base_address,
@@ -743,7 +739,7 @@ impl<'data> OutputSectionsBuilder<'data> {
             let section_id = self.add_section(custom.name, section_flags, custom.ty);
             // Section flags are sometimes different, take the union of everything we're
             // given.
-            self.section_infos[section_id.as_usize()].section_flags |= section_flags;
+            self.section_infos.get_mut(section_id).section_flags |= section_flags;
 
             if let Some(slot) = sections.get_mut(custom.index.0) {
                 slot.set_part_id(section_id.part_id_with_alignment(custom.alignment));
@@ -758,15 +754,13 @@ impl<'data> OutputSectionsBuilder<'data> {
         section_type: SectionType,
     ) -> OutputSectionId {
         *self.custom_by_name.entry(name).or_insert_with(|| {
-            let id = OutputSectionId::from_usize(self.section_infos.len());
-            self.section_infos.push(SectionOutputInfo {
+            self.section_infos.add_new(SectionOutputInfo {
                 section_flags,
                 name,
                 // We'll fill this in properly in `determine_loadable_segment_ids`.
                 loadable_segment_id: None,
                 ty: section_type,
-            });
-            id
+            })
         })
     }
 
@@ -780,8 +774,9 @@ impl<'data> OutputSectionsBuilder<'data> {
                 ty: d.ty,
             })
             .collect();
+
         Self {
-            section_infos,
+            section_infos: OutputSectionMap::from_values(section_infos),
             base_address,
             custom_by_name: FoldHashMap::new(),
         }
@@ -901,7 +896,7 @@ impl<'data> OutputSections<'data> {
     }
 
     pub(crate) fn output_info(&self, id: OutputSectionId) -> &SectionOutputInfo<'data> {
-        &self.section_infos[id.as_usize()]
+        self.section_infos.get(id)
     }
 
     /// Returns the output index of the built-in-section `id` or None if the section isn't being

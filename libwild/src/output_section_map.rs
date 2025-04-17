@@ -21,6 +21,23 @@ impl<T: Default> OutputSectionMap<T> {
 }
 
 impl<T> OutputSectionMap<T> {
+    pub(crate) fn add_new(&mut self, value: T) -> OutputSectionId {
+        let id = OutputSectionId::from_usize(self.values.len());
+        self.values.push(value);
+        id
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (OutputSectionId, &T)> {
+        self.values
+            .iter()
+            .enumerate()
+            .map(|(raw, info)| (OutputSectionId::from_usize(raw), info))
+    }
+
+    pub(crate) fn values_iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.values.iter_mut()
+    }
+
     pub(crate) fn from_values(values: Vec<T>) -> Self {
         Self { values }
     }
