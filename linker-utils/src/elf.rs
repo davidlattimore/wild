@@ -370,6 +370,14 @@ impl std::ops::BitOrAssign for SectionFlags {
     }
 }
 
+impl std::ops::BitAnd for SectionFlags {
+    type Output = SectionFlags;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Self(self.0 & rhs.0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SectionType(u32);
 

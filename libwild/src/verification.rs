@@ -3,6 +3,7 @@
 
 use crate::error::Result;
 use crate::layout::FileLayout;
+use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSections;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
@@ -33,14 +34,15 @@ impl OffsetVerifier {
         &self,
         memory_offsets: &OutputSectionPartMap<u64>,
         output_sections: &OutputSections,
+        output_order: &OutputOrder,
         files: &[FileLayout],
     ) -> Result {
         if memory_offsets == &self.expected {
             return Ok(());
         }
-        let expected = offsets_by_key(&self.expected, output_sections);
-        let actual = offsets_by_key(memory_offsets, output_sections);
-        let sizes = offsets_by_key(&self.sizes, output_sections);
+        let expected = offsets_by_key(&self.expected, output_order);
+        let actual = offsets_by_key(memory_offsets, output_order);
+        let sizes = offsets_by_key(&self.sizes, output_order);
         let mut problems = Vec::new();
         for (((part_id, exp), (_, act)), (_, size)) in expected.iter().zip(actual.iter()).zip(sizes)
         {
@@ -92,10 +94,10 @@ pub(crate) fn clear_ignored(expected: &mut OutputSectionPartMap<u64>) {
 
 fn offsets_by_key(
     memory_offsets: &OutputSectionPartMap<u64>,
-    output_sections: &OutputSections,
+    output_order: &OutputOrder,
 ) -> Vec<(PartId, u64)> {
     let mut offsets_by_key = Vec::new();
-    memory_offsets.output_order_map(output_sections, |part_id, _alignment, offset| {
+    memory_offsets.output_order_map(output_order, |part_id, _alignment, offset| {
         offsets_by_key.push((part_id, *offset));
     });
     offsets_by_key
