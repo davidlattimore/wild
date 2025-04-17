@@ -49,6 +49,7 @@ use crate::layout::VersionDef;
 use crate::layout::compute_allocations;
 use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
+use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
@@ -588,7 +589,7 @@ fn split_buffers_by_alignment<'out>(
     layout: &Layout,
 ) -> OutputSectionPartMap<&'out mut [u8]> {
     layout.section_part_layouts.output_order_map(
-        &layout.output_sections,
+        &layout.output_order,
         |part_id, _alignment, rec| {
             crate::slice::slice_take_prefix_mut(
                 section_buffers.get_mut(part_id.output_section_id()),
@@ -2288,7 +2289,11 @@ impl PreludeLayout {
 
         write_section_headers(buffers.get_mut(part_id::SECTION_HEADERS), layout);
 
-        write_section_header_strings(buffers.get_mut(part_id::SHSTRTAB), &layout.output_sections);
+        write_section_header_strings(
+            buffers.get_mut(part_id::SHSTRTAB),
+            &layout.output_sections,
+            &layout.output_order,
+        );
 
         self.write_plt_got_entries::<A>(layout, table_writer)?;
 
@@ -3188,21 +3193,25 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
     let mut name_offset = 0;
     let info_inputs = layout.info_inputs();
 
-    for event in output_sections.sections_and_segments_events() {
+    for event in &layout.output_order {
         let OrderEvent::Section(section_id) = event else {
             continue;
         };
+
         let section_type = output_sections.section_type(section_id);
         let section_layout = layout.section_layouts.get(section_id);
+
         if output_sections
             .output_index_of_section(section_id)
             .is_none()
         {
             continue;
         }
+
         let entsize = section_id.element_size();
         let size;
         let alignment;
+
         if section_type == sht::NULL {
             size = 0;
             alignment = 0;
@@ -3210,14 +3219,17 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
             size = section_layout.mem_size;
             alignment = section_layout.alignment.value();
         };
+
         let link = output_section_id::link_ids(section_id)
             .iter()
             .find_map(|link_id| output_sections.output_index_of_section(*link_id))
             .unwrap_or(0);
+
         let entry = entries.next().unwrap();
         let e = LittleEndian;
         entry.sh_name.set(e, name_offset);
         entry.sh_type.set(e, section_type.raw());
+
         // TODO: Sections are always uncompressed and the output compression is not supported yet.
         entry.sh_flags.set(
             e,
@@ -3226,6 +3238,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
                 .without(shf::COMPRESSED)
                 .raw(),
         );
+
         entry.sh_addr.set(e, section_layout.mem_offset);
         entry.sh_offset.set(e, section_layout.file_offset as u64);
         entry.sh_size.set(e, size);
@@ -3241,8 +3254,12 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
     );
 }
 
-fn write_section_header_strings(mut out: &mut [u8], sections: &OutputSections) {
-    for event in sections.sections_and_segments_events() {
+fn write_section_header_strings(
+    mut out: &mut [u8],
+    sections: &OutputSections,
+    output_order: &OutputOrder,
+) {
+    for event in output_order {
         if let OrderEvent::Section(id) = event {
             if sections.output_index_of_section(id).is_some() {
                 let name = sections.name(id);
@@ -3539,6 +3556,7 @@ impl Display for ResFlagsDisplay<'_> {
 
 pub(crate) fn verify_resolution_allocation(
     output_sections: &OutputSections,
+    output_order: &OutputOrder,
     output_kind: OutputKind,
     mem_sizes: &OutputSectionPartMap<u64>,
     resolution: &Resolution,
@@ -3546,14 +3564,14 @@ pub(crate) fn verify_resolution_allocation(
     // Allocate however much space was requested.
 
     let mut total_bytes_allocated = 0;
-    mem_sizes.output_order_map(output_sections, |_part_id, alignment, &size| {
+    mem_sizes.output_order_map(output_order, |_part_id, alignment, &size| {
         total_bytes_allocated = alignment.align_up(total_bytes_allocated) + size;
     });
     total_bytes_allocated = crate::alignment::USIZE.align_up(total_bytes_allocated);
     let mut all_mem = vec![0_u64; total_bytes_allocated as usize / size_of::<u64>()];
     let mut all_mem: &mut [u8] = bytemuck::cast_slice_mut(all_mem.as_mut_slice());
     let mut offset = 0;
-    let mut buffers = mem_sizes.output_order_map(output_sections, |_part_id, alignment, &size| {
+    let mut buffers = mem_sizes.output_order_map(output_order, |_part_id, alignment, &size| {
         let aligned_offset = alignment.align_up(offset);
         crate::slice::slice_take_prefix_mut(&mut all_mem, (aligned_offset - offset) as usize);
         offset = aligned_offset + size;

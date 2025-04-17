@@ -108,8 +108,9 @@ fn test_all_alloc_sections_in_a_loadable_segment() {
     use linker_utils::elf::shf;
 
     let output_sections = crate::output_section_id::OutputSections::for_testing();
+    let output_order = output_sections.output_order();
     let mut active = Vec::new();
-    for event in output_sections.sections_and_segments_events() {
+    for event in &output_order {
         match event {
             OrderEvent::SegmentStart(segment_id) => {
                 active.push(segment_id);

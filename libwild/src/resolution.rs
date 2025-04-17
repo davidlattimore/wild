@@ -71,7 +71,7 @@ pub fn resolve_symbols_and_sections<'data>(
 
     resolve_sections(&mut resolved_groups, herd, symbol_db.args)?;
 
-    let output_sections = assign_section_ids(&mut resolved_groups, symbol_db.args)?;
+    let output_sections = assign_section_ids(&mut resolved_groups, symbol_db.args);
 
     let merged_strings = crate::string_merging::merge_strings(
         &mut resolved_groups,
@@ -477,8 +477,9 @@ pub(crate) struct ResolvedEpilogue {
 fn assign_section_ids<'data>(
     resolved: &mut [ResolvedGroup<'data>],
     args: &Args,
-) -> Result<OutputSections<'data>> {
+) -> OutputSections<'data> {
     let mut output_sections_builder = OutputSectionsBuilder::with_base_address(args.base_address());
+
     for group in resolved {
         for file in &mut group.files {
             if let ResolvedFile::Object(s) = file {
@@ -491,6 +492,7 @@ fn assign_section_ids<'data>(
             }
         }
     }
+
     output_sections_builder.build()
 }
 
@@ -786,7 +788,6 @@ fn resolve_sections_for_object<'data>(
                 let custom_section = CustomSectionDetails {
                     name: SectionName(section_name),
                     alignment,
-                    section_flags,
                     ty: SectionType::from_header(input_section),
                     index: input_section_index,
                 };

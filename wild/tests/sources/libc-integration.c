@@ -65,7 +65,6 @@
 //#EnableLinker:lld
 //#DiffIgnore:section.relro_padding
 //#DiffIgnore:section.rodata.entsize
-//#DiffIgnore:section.rodata.flags
 
 //#Config:gcc-dynamic-pie:shared
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS

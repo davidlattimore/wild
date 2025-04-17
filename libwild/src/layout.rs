@@ -29,6 +29,7 @@ use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::output_section_id;
 use crate::output_section_id::FILE_HEADER;
+use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
@@ -85,7 +86,7 @@ use object::elf::gnu_hash;
 use object::read::elf::Dyn as _;
 use object::read::elf::Rela as _;
 use object::read::elf::RelocationSections;
-use object::read::elf::SectionHeader;
+use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym;
 use object::read::elf::VerdefIterator;
 use rayon::iter::IndexedParallelIterator;
@@ -160,16 +161,27 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
 
     let non_addressable_counts = apply_non_addressable_indexes(&mut group_states, symbol_db.args)?;
 
+    propagate_section_attributes(&group_states, &mut output_sections);
+
+    let output_order = output_sections.output_order();
+
+    output_sections.determine_loadable_segment_ids(&output_order)?;
+
     let section_part_sizes = compute_total_section_part_sizes(
         &mut group_states,
         &mut output_sections,
+        &output_order,
         &mut symbol_resolution_flags,
         gc_outputs.sections_with_content,
         &symbol_db,
     )?;
 
-    let section_part_layouts =
-        layout_section_parts(&section_part_sizes, &output_sections, symbol_db.args);
+    let section_part_layouts = layout_section_parts(
+        &section_part_sizes,
+        &output_sections,
+        &output_order,
+        symbol_db.args,
+    );
     let section_layouts = layout_sections(&section_part_layouts);
     output.set_size(compute_total_file_size(&section_layouts));
 
@@ -179,7 +191,12 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         unreachable!();
     };
     let header_info = internal.header_info.as_ref().unwrap();
-    let segment_layouts = compute_segment_layout(&section_layouts, &output_sections, header_info)?;
+    let segment_layouts = compute_segment_layout(
+        &section_layouts,
+        &output_sections,
+        &output_order,
+        header_info,
+    )?;
 
     let mem_offsets: OutputSectionPartMap<u64> = starting_memory_offsets(&section_part_layouts);
     let starting_mem_offsets_by_group = compute_start_offsets_by_group(&group_states, mem_offsets);
@@ -205,6 +222,7 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         symbol_db: &symbol_db,
         symbol_resolution_flags: &symbol_resolution_flags,
         output_sections: &output_sections,
+        output_order: &output_order,
         section_layouts: &section_layouts,
         merged_string_start_addresses: &merged_string_start_addresses,
         merged_strings: &merged_strings,
@@ -236,6 +254,7 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         section_layouts,
         group_layouts,
         output_sections,
+        output_order,
         non_addressable_counts,
         symbol_resolution_flags,
         merged_strings,
@@ -432,6 +451,7 @@ pub struct Layout<'data> {
     pub(crate) group_layouts: Vec<GroupLayout<'data>>,
     pub(crate) segment_layouts: SegmentLayouts,
     pub(crate) output_sections: OutputSections<'data>,
+    pub(crate) output_order: OutputOrder,
     pub(crate) non_addressable_counts: NonAddressableCounts,
     pub(crate) symbol_resolution_flags: Vec<ResolutionFlags>,
     pub(crate) merged_strings: OutputSectionMap<MergedStringsSection<'data>>,
@@ -931,8 +951,27 @@ impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState<'data> {
     }
 }
 
+#[derive(Default, Clone, Copy)]
+struct SectionAttributes {
+    flags: SectionFlags,
+}
+
+impl SectionAttributes {
+    fn from_header(header: &crate::elf::SectionHeader) -> Self {
+        Self {
+            flags: SectionFlags::from_header(header),
+        }
+    }
+
+    fn merge(&mut self, rhs: Self) {
+        self.flags |= rhs.flags;
+    }
+}
+
 struct CommonGroupState<'data> {
     mem_sizes: OutputSectionPartMap<u64>,
+
+    section_attributes: OutputSectionMap<SectionAttributes>,
 
     /// Dynamic symbols that need to be defined. Because of the ordering requirements for symbol
     /// hashes, these get defined by the epilogue. The object on which a particular dynamic symbol
@@ -948,6 +987,7 @@ impl CommonGroupState<'_> {
     fn new(output_sections: &OutputSections) -> Self {
         Self {
             mem_sizes: output_sections.new_part_map(),
+            section_attributes: output_sections.new_section_map(),
             dynamic_symbol_definitions: Default::default(),
             exception_frames: Default::default(),
         }
@@ -1317,6 +1357,7 @@ struct FinaliseLayoutResources<'scope, 'data> {
     symbol_db: &'scope SymbolDb<'data>,
     symbol_resolution_flags: &'scope [ResolutionFlags],
     output_sections: &'scope OutputSections<'data>,
+    output_order: &'scope OutputOrder,
     section_layouts: &'scope OutputSectionMap<OutputRecordLayout>,
     merged_string_start_addresses: &'scope MergedStringStartAddresses,
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
@@ -1612,6 +1653,7 @@ fn compute_symbols_and_layouts<'data>(
                 offset_verifier.verify(
                     &memory_offsets,
                     resources.output_sections,
+                    resources.output_order,
                     &layout.files,
                 )?;
                 Ok(layout)
@@ -1626,6 +1668,7 @@ fn compute_symbols_and_layouts<'data>(
 fn compute_segment_layout(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections,
+    output_order: &OutputOrder,
     header_info: &HeaderInfo,
 ) -> Result<SegmentLayouts> {
     struct Record {
@@ -1641,7 +1684,7 @@ fn compute_segment_layout(
     let mut complete = Vec::with_capacity(crate::program_segments::MAX_SEGMENTS);
     let mut active_records = Vec::new();
 
-    for event in output_sections.sections_and_segments_events() {
+    for event in output_order {
         match event {
             OrderEvent::SegmentStart(segment_id) => {
                 if segment_id == STACK {
@@ -1763,6 +1806,7 @@ fn compute_segment_layout(
 fn compute_total_section_part_sizes(
     group_states: &mut [GroupState],
     output_sections: &mut OutputSections,
+    output_order: &OutputOrder,
     symbol_resolution_flags: &mut [ResolutionFlags],
     sections_with_content: OutputSectionMap<bool>,
     symbol_db: &SymbolDb,
@@ -1782,11 +1826,31 @@ fn compute_total_section_part_sizes(
         &mut total_sizes,
         sections_with_content,
         output_sections,
+        output_order,
         symbol_resolution_flags,
         symbol_db,
     )?;
 
     Ok(total_sizes)
+}
+
+/// Section flags that should be propagated from input sections to the output section in which they
+/// are placed. Note, the inversion, so we keep all flags other than the one listed here.
+const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags =
+    SectionFlags::from_u32(!object::elf::SHF_GROUP);
+
+/// Propagates attributes from input sections to the output sections into which they were placed.
+#[tracing::instrument(skip_all, name = "Propagate section attributes")]
+fn propagate_section_attributes(group_states: &[GroupState], output_sections: &mut OutputSections) {
+    for group_state in group_states {
+        group_state
+            .common
+            .section_attributes
+            .for_each(|section_id, attributes| {
+                let info = output_sections.section_infos.get_mut(section_id);
+                info.section_flags |= attributes.flags & SECTION_FLAGS_PROPAGATION_MASK;
+            });
+    }
 }
 
 /// This is similar to computing start addresses, but is used for things that aren't addressable,
@@ -2494,18 +2558,18 @@ impl std::fmt::Display for ObjectLayout<'_> {
 
 impl Section {
     fn create(
+        header: &crate::elf::SectionHeader,
         object_state: &mut ObjectLayoutState,
         section_index: object::SectionIndex,
         part_id: PartId,
     ) -> Result<Section> {
-        let object_section = object_state.object.section(section_index)?;
-        let size = object_state.object.section_size(object_section)?;
+        let size = object_state.object.section_size(header)?;
         let section = Section {
             index: section_index,
             part_id,
             size,
             resolution_flags: ResolutionFlags::empty(),
-            is_writable: SectionFlags::from_header(object_section).contains(shf::WRITE),
+            is_writable: SectionFlags::from_header(header).contains(shf::WRITE),
         };
         Ok(section)
     }
@@ -2803,6 +2867,7 @@ impl PreludeLayoutState {
         total_sizes: &mut OutputSectionPartMap<u64>,
         sections_with_content: OutputSectionMap<bool>,
         output_sections: &mut OutputSections,
+        output_order: &OutputOrder,
         symbol_resolution_flags: &mut [ResolutionFlags],
         symbol_db: &SymbolDb,
     ) -> Result {
@@ -2816,6 +2881,7 @@ impl PreludeLayoutState {
             &mut extra_sizes,
             sections_with_content,
             output_sections,
+            output_order,
             symbol_resolution_flags,
             symbol_db,
         );
@@ -2887,6 +2953,7 @@ impl PreludeLayoutState {
         extra_sizes: &mut OutputSectionPartMap<u64>,
         sections_with_content: OutputSectionMap<bool>,
         output_sections: &mut OutputSections,
+        output_order: &OutputOrder,
         symbol_resolution_flags: &[ResolutionFlags],
         symbol_db: &SymbolDb,
     ) {
@@ -2928,7 +2995,7 @@ impl PreludeLayoutState {
         // Compute output indexes of each section.
         let mut next_output_index = 0;
         let mut output_section_indexes = vec![None; output_sections.num_sections()];
-        for event in output_sections.sections_and_segments_events() {
+        for event in output_order {
             if let OrderEvent::Section(id) = event {
                 if *keep_sections.get(id) {
                     output_section_indexes[id.as_usize()] = Some(next_output_index);
@@ -2941,7 +3008,7 @@ impl PreludeLayoutState {
         // Determine which program segments contain sections that we're keeping.
         let mut keep_segments = [false; crate::program_segments::MAX_SEGMENTS];
         let mut active_segments = Vec::with_capacity(4);
-        for event in output_sections.sections_and_segments_events() {
+        for event in output_order {
             match event {
                 OrderEvent::SegmentStart(segment_id) => active_segments.push(segment_id),
                 OrderEvent::SegmentEnd(segment_id) => active_segments.retain(|a| *a != segment_id),
@@ -3539,9 +3606,15 @@ impl<'data> ObjectLayoutState<'data> {
             | SectionSlot::EhFrameData(..)
             | SectionSlot::LoadedDebugInfo(..)
             | SectionSlot::NoteGnuProperty(..) => {}
-            SectionSlot::MergeStrings(_) => {
-                // We currently always load everything in merge-string sections. i.e. we don't
-                // GC unreferenced data. So there's nothing to do here.
+            SectionSlot::MergeStrings(sec) => {
+                // We currently always load everything in merge-string sections. i.e. we don't GC
+                // unreferenced data. So the only thing we need to do here is propagate section
+                // flags.
+                let header = self.object.section(section_index)?;
+                common
+                    .section_attributes
+                    .get_mut(sec.part_id.output_section_id())
+                    .merge(SectionAttributes::from_header(header));
             }
         };
 
@@ -3553,11 +3626,12 @@ impl<'data> ObjectLayoutState<'data> {
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
         unloaded: UnloadedSection,
-        section_id: SectionIndex,
+        section_index: SectionIndex,
         resources: &GraphResources<'data, 'scope>,
     ) -> Result {
         let part_id = unloaded.part_id;
-        let section = Section::create(self, section_id, part_id)?;
+        let header = self.object.section(section_index)?;
+        let section = Section::create(header, self, section_index, part_id)?;
         let mut modifier = RelocationModifier::Normal;
         for rel in self.relocations(section.index)? {
             if modifier == RelocationModifier::SkipNextRelocation {
@@ -3579,8 +3653,13 @@ impl<'data> ObjectLayoutState<'data> {
                 )
             })?;
         }
-        tracing::debug!(loaded_section = %self.object.section_display_name(section_id),);
+
+        tracing::debug!(loaded_section = %self.object.section_display_name(section_index),);
         common.allocate(part_id, section.capacity());
+        common
+            .section_attributes
+            .get_mut(part_id.output_section_id())
+            .merge(SectionAttributes::from_header(header));
 
         resources
             .sections_with_content
@@ -3594,7 +3673,7 @@ impl<'data> ObjectLayoutState<'data> {
             queue,
         )?;
 
-        self.sections[section_id.0] = SectionSlot::Loaded(section);
+        self.sections[section_index.0] = SectionSlot::Loaded(section);
 
         Ok(())
     }
@@ -3642,12 +3721,13 @@ impl<'data> ObjectLayoutState<'data> {
         &mut self,
         common: &mut CommonGroupState<'data>,
         part_id: PartId,
-        section_id: SectionIndex,
+        section_index: SectionIndex,
     ) -> Result {
-        let section = Section::create(self, section_id, part_id)?;
-        tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_id),);
+        let header = self.object.section(section_index)?;
+        let section = Section::create(header, self, section_index, part_id)?;
+        tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
         common.allocate(part_id, section.capacity());
-        self.sections[section_id.0] = SectionSlot::LoadedDebugInfo(section);
+        self.sections[section_index.0] = SectionSlot::LoadedDebugInfo(section);
 
         Ok(())
     }
@@ -4424,6 +4504,7 @@ impl Resolution {
 fn layout_section_parts(
     sizes: &OutputSectionPartMap<u64>,
     output_sections: &OutputSections,
+    output_order: &OutputOrder,
     args: &Args,
 ) -> OutputSectionPartMap<OutputRecordLayout> {
     let mut file_offset = 0;
@@ -4432,7 +4513,7 @@ fn layout_section_parts(
     let mut nonalloc_mem_offsets: OutputSectionMap<u64> =
         OutputSectionMap::with_size(output_sections.num_sections());
 
-    sizes.output_order_map(output_sections, |part_id, section_alignment, part_size| {
+    sizes.output_order_map(output_order, |part_id, section_alignment, part_size| {
         let section_id = part_id.output_section_id();
         let section_flags = output_sections.section_flags(section_id);
         let mem_size = *part_size;
@@ -5020,12 +5101,12 @@ fn test_no_disallowed_overlaps() {
     use crate::output_section_id::OrderEvent;
 
     let mut output_sections =
-        crate::output_section_id::OutputSectionsBuilder::with_base_address(0x1000)
-            .build()
-            .unwrap();
+        crate::output_section_id::OutputSectionsBuilder::with_base_address(0x1000).build();
+    let output_order = output_sections.output_order();
     let args = Args::default();
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
-    let section_part_layouts = layout_section_parts(&section_part_sizes, &output_sections, &args);
+    let section_part_layouts =
+        layout_section_parts(&section_part_sizes, &output_sections, &output_order, &args);
     let section_layouts = layout_sections(&section_part_layouts);
 
     // Make sure no alloc sections overlap
@@ -5034,7 +5115,7 @@ fn test_no_disallowed_overlaps() {
     let mut last_file_end = 0;
     let mut last_mem_end = 0;
     let mut last_section_id = output_section_id::FILE_HEADER;
-    for event in output_sections.sections_and_segments_events() {
+    for event in &output_order {
         let OrderEvent::Section(section_id) = event else {
             continue;
         };
@@ -5081,8 +5162,13 @@ fn test_no_disallowed_overlaps() {
         }
     });
 
-    let segment_layouts =
-        compute_segment_layout(&section_layouts, &output_sections, &header_info).unwrap();
+    let segment_layouts = compute_segment_layout(
+        &section_layouts,
+        &output_sections,
+        &output_order,
+        &header_info,
+    )
+    .unwrap();
 
     // Make sure loadable segments don't overlap in memory or in the file.
     let mut last_file = 0;
@@ -5124,9 +5210,8 @@ fn verify_consistent_allocation_handling(
     resolution_flags: ResolutionFlags,
     output_kind: OutputKind,
 ) -> Result {
-    let output_sections = output_section_id::OutputSectionsBuilder::with_base_address(0)
-        .build()
-        .unwrap();
+    let output_sections = output_section_id::OutputSectionsBuilder::with_base_address(0).build();
+    let output_order = output_sections.output_order();
     let mut mem_sizes = output_sections.new_part_map();
     let resolution_flags = AtomicResolutionFlags::new(resolution_flags);
     allocate_symbol_resolution(value_flags, &resolution_flags, &mut mem_sizes, output_kind);
@@ -5137,6 +5222,7 @@ fn verify_consistent_allocation_handling(
     let has_dynamic_symbol = value_flags.is_dynamic()
         || (resolution_flags.needs_export_dynamic() && value_flags.is_interposable());
     let dynamic_symbol_index = has_dynamic_symbol.then(|| NonZeroU32::new(1).unwrap());
+
     let resolution = create_resolution(
         resolution_flags,
         0,
@@ -5144,8 +5230,10 @@ fn verify_consistent_allocation_handling(
         value_flags,
         &mut memory_offsets,
     );
+
     elf_writer::verify_resolution_allocation(
         &output_sections,
+        &output_order,
         output_kind,
         &mem_sizes,
         &resolution,
@@ -5159,6 +5247,7 @@ fn verify_consistent_allocation_handling(
              has_dynamic_symbol={has_dynamic_symbol:?}"
         )
     })?;
+
     Ok(())
 }
 

@@ -36,6 +36,7 @@ use crate::part_id::REGULAR_PART_BASE;
 use crate::program_segments::ProgramSegmentId;
 use crate::resolution::SectionSlot;
 use anyhow::anyhow;
+use core::slice;
 use foldhash::HashMap as FoldHashMap;
 use foldhash::HashMapExt as _;
 use linker_utils::elf::SectionFlags;
@@ -46,6 +47,7 @@ use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use std::fmt::Debug;
 use std::fmt::Display;
+use std::iter::Copied;
 
 /// Number of non-regular sections that we define. A non-regular section is one that isn't split by
 /// alignment. They're always generated. Most of them only have a single part.
@@ -66,7 +68,6 @@ pub(crate) struct CustomSectionDetails<'data> {
     pub(crate) name: SectionName<'data>,
     pub(crate) index: object::SectionIndex,
     pub(crate) alignment: Alignment,
-    pub(crate) section_flags: SectionFlags,
     pub(crate) ty: SectionType,
 }
 
@@ -129,6 +130,11 @@ pub(crate) struct OutputSections<'data> {
     pub(crate) output_section_indexes: Vec<Option<u16>>,
 
     custom_by_name: FoldHashMap<SectionName<'data>, OutputSectionId>,
+}
+
+/// Encodes the order of output sections and the start and end of each program segment. This struct
+/// is intended to be used by iterating over it.
+pub(crate) struct OutputOrder {
     sections_and_segments_events: Vec<OrderEvent>,
 }
 
@@ -151,11 +157,12 @@ impl OutputSections<'_> {
 
     /// Determine which loadable segment, if any, each output section is contained within and update
     /// the section info accordingly.
-    fn determine_loadable_segment_ids(&mut self) -> Result {
+    #[tracing::instrument(skip_all, name = "Determine loadable segment IDs")]
+    pub(crate) fn determine_loadable_segment_ids(&mut self, output_order: &OutputOrder) -> Result {
         let mut load_seg_by_section_id = vec![None; self.section_infos.len()];
         let mut current_load_seg = None;
 
-        for event in self.sections_and_segments_events() {
+        for event in &output_order.sections_and_segments_events {
             match event {
                 OrderEvent::SegmentStart(seg_id) => {
                     if seg_id.segment_type() == object::elf::PT_LOAD {
@@ -183,7 +190,7 @@ impl OutputSections<'_> {
                         info.name,
                     )
                 })?;
-                info.loadable_segment_id = load_seg_id;
+                info.loadable_segment_id = load_seg_id.copied();
                 Ok(())
             })?;
         Ok(())
@@ -691,40 +698,13 @@ pub(crate) struct OutputSectionsBuilder<'data> {
 }
 
 impl<'data> OutputSectionsBuilder<'data> {
-    pub(crate) fn build(self) -> Result<OutputSections<'data>> {
-        let mut custom = CustomSectionIds::default();
-
-        self.section_infos.for_each(|id, info| {
-            if id.as_usize() < NUM_BUILT_IN_SECTIONS {
-                return;
-            }
-
-            if info.section_flags.contains(shf::EXECINSTR) {
-                custom.exec.push(id);
-            } else if !info.section_flags.contains(shf::WRITE) {
-                if info.section_flags.contains(shf::ALLOC) {
-                    custom.ro.push(id);
-                } else {
-                    custom.nonalloc.push(id);
-                }
-            } else if info.ty == sht::NOBITS {
-                custom.bss.push(id);
-            } else {
-                custom.data.push(id);
-            }
-        });
-
-        let mut output_sections = OutputSections {
+    pub(crate) fn build(self) -> OutputSections<'data> {
+        OutputSections {
             base_address: self.base_address,
             section_infos: self.section_infos,
             custom_by_name: self.custom_by_name,
             output_section_indexes: Default::default(),
-            sections_and_segments_events: custom.sections_and_segments_events(),
-        };
-
-        output_sections.determine_loadable_segment_ids()?;
-
-        Ok(output_sections)
+        }
     }
 
     pub(crate) fn add_sections(
@@ -733,13 +713,7 @@ impl<'data> OutputSectionsBuilder<'data> {
         sections: &mut [SectionSlot],
     ) {
         for custom in custom_sections {
-            // Some flags, when set on the input section, don't propagate to the output section.
-            let section_flags = custom.section_flags.without(shf::GROUP);
-
-            let section_id = self.add_section(custom.name, section_flags, custom.ty);
-            // Section flags are sometimes different, take the union of everything we're
-            // given.
-            self.section_infos.get_mut(section_id).section_flags |= section_flags;
+            let section_id = self.add_section(custom.name, custom.ty);
 
             if let Some(slot) = sections.get_mut(custom.index.0) {
                 slot.set_part_id(section_id.part_id_with_alignment(custom.alignment));
@@ -750,12 +724,11 @@ impl<'data> OutputSectionsBuilder<'data> {
     pub(crate) fn add_section(
         &mut self,
         name: SectionName<'data>,
-        section_flags: SectionFlags,
         section_type: SectionType,
     ) -> OutputSectionId {
         *self.custom_by_name.entry(name).or_insert_with(|| {
             self.section_infos.add_new(SectionOutputInfo {
-                section_flags,
+                section_flags: SectionFlags::empty(),
                 name,
                 // We'll fill this in properly in `determine_loadable_segment_ids`.
                 loadable_segment_id: None,
@@ -869,10 +842,33 @@ impl CustomSectionIds {
 }
 
 impl<'data> OutputSections<'data> {
-    /// Returns an iterator of events for each section and segment in output order. Segments span
-    /// multiple sections and can overlap, so are represented as start and end events.
-    pub(crate) fn sections_and_segments_events(&self) -> impl Iterator<Item = OrderEvent> + '_ {
-        self.sections_and_segments_events.iter().copied()
+    #[tracing::instrument(skip_all, name = "Compute output order")]
+    pub(crate) fn output_order(&self) -> OutputOrder {
+        let mut custom = CustomSectionIds::default();
+
+        self.section_infos.for_each(|id, info| {
+            if id.as_usize() < NUM_BUILT_IN_SECTIONS {
+                return;
+            }
+
+            if info.section_flags.contains(shf::EXECINSTR) {
+                custom.exec.push(id);
+            } else if !info.section_flags.contains(shf::WRITE) {
+                if info.section_flags.contains(shf::ALLOC) {
+                    custom.ro.push(id);
+                } else {
+                    custom.nonalloc.push(id);
+                }
+            } else if info.ty == sht::NOBITS {
+                custom.bss.push(id);
+            } else {
+                custom.data.push(id);
+            }
+        });
+
+        OutputOrder {
+            sections_and_segments_events: custom.sections_and_segments_events(),
+        }
     }
 
     #[must_use]
@@ -932,11 +928,11 @@ impl<'data> OutputSections<'data> {
     #[cfg(test)]
     pub(crate) fn for_testing() -> OutputSections<'static> {
         let mut builder = OutputSectionsBuilder::with_base_address(0x1000);
-        builder.add_section(SectionName(b"ro"), shf::GNU_RETAIN, sht::PROGBITS);
-        builder.add_section(SectionName(b"exec"), shf::EXECINSTR, sht::PROGBITS);
-        builder.add_section(SectionName(b"data"), shf::WRITE, sht::PROGBITS);
-        builder.add_section(SectionName(b"bss"), shf::WRITE, sht::NOBITS);
-        builder.build().unwrap()
+        builder.add_section(SectionName(b"ro"), sht::PROGBITS);
+        builder.add_section(SectionName(b"exec"), sht::PROGBITS);
+        builder.add_section(SectionName(b"data"), sht::PROGBITS);
+        builder.add_section(SectionName(b"bss"), sht::NOBITS);
+        builder.build()
     }
 }
 
@@ -983,6 +979,16 @@ fn rela_plt_info(info: &InfoInputs) -> u32 {
 impl std::fmt::Display for OutputSectionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.as_usize(), f)
+    }
+}
+
+impl<'a> IntoIterator for &'a OutputOrder {
+    type Item = OrderEvent;
+
+    type IntoIter = Copied<slice::Iter<'a, OrderEvent>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.sections_and_segments_events.iter().copied()
     }
 }
 

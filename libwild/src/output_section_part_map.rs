@@ -1,8 +1,8 @@
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::output_section_id::OrderEvent;
+use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
-use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::part_id::PartId;
 use std::mem::take;
@@ -77,13 +77,13 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
     /// the maximum alignment of the highest alignment PartId with a non-default value.
     pub(crate) fn output_order_map<U: Default>(
         &self,
-        output_sections: &OutputSections,
+        output_order: &OutputOrder,
         mut cb: impl FnMut(PartId, Alignment, &T) -> U,
     ) -> OutputSectionPartMap<U> {
         let mut parts_out = Vec::new();
         parts_out.resize_with(self.parts.len(), U::default);
 
-        for event in output_sections.sections_and_segments_events() {
+        for event in output_order {
             let OrderEvent::Section(section_id) = event else {
                 continue;
             };
@@ -186,15 +186,15 @@ impl<'out> OutputSectionPartMap<&'out mut [u8]> {
 
 #[test]
 fn test_merge_parts() {
-    let output_sections = OutputSections::for_testing();
+    let output_sections = crate::output_section_id::OutputSections::for_testing();
+    let output_order = output_sections.output_order();
     let mut expected_sum_of_sums = 0;
-    let all_1 =
-        output_sections
-            .new_part_map::<u32>()
-            .output_order_map(&output_sections, |_, _, _| {
-                expected_sum_of_sums += 1;
-                1
-            });
+    let all_1 = output_sections
+        .new_part_map::<u32>()
+        .output_order_map(&output_order, |_, _, _| {
+            expected_sum_of_sums += 1;
+            1
+        });
     let num_regular_sections = output_sections.num_regular_sections();
     let mut num_sections_with_16 = 0;
     let sum_of_1s: OutputSectionMap<u32> = all_1.merge_parts(|values| values.iter().sum());
@@ -219,7 +219,7 @@ fn test_merge_parts() {
 
 #[test]
 fn test_mut_with_map() {
-    let output_sections = OutputSections::for_testing();
+    let output_sections = crate::output_section_id::OutputSections::for_testing();
     let mut input1 = output_sections.new_part_map::<u32>().map(|_, _| 1);
     let input2 = output_sections.new_part_map::<u32>().map(|_, _| 2);
     let expected = output_sections.new_part_map::<u32>().map(|_, _| 3);
@@ -229,7 +229,7 @@ fn test_mut_with_map() {
 
 #[test]
 fn test_merge() {
-    let output_sections = OutputSections::for_testing();
+    let output_sections = crate::output_section_id::OutputSections::for_testing();
     let mut input1 = output_sections.new_part_map::<u32>().map(|_, _| 1);
     let input2 = output_sections.new_part_map::<u32>().map(|_, _| 2);
     let expected = output_sections.new_part_map::<u32>().map(|_, _| 3);
@@ -239,7 +239,7 @@ fn test_merge() {
 
 #[test]
 fn test_merge_with_custom_sections() {
-    let output_sections = OutputSections::for_testing();
+    let output_sections = crate::output_section_id::OutputSections::for_testing();
     let mut m1 = output_sections.new_part_map::<u32>();
     let mut m2 = output_sections.new_part_map::<u32>();
     assert_eq!(m2.num_parts(), output_sections.num_parts());
@@ -256,6 +256,7 @@ fn test_output_order_map_consistent() {
     use itertools::Itertools;
 
     let output_sections = crate::output_section_id::OutputSections::for_testing();
+    let output_order = output_sections.output_order();
     let part_map = output_sections.new_part_map::<u32>();
 
     // First, make sure that all our built-in part-ids are here. If they're not, we'd fail anyway,
@@ -280,14 +281,14 @@ fn test_output_order_map_consistent() {
     );
 
     let mut ordering_a = Vec::new();
-    part_map.output_order_map(&output_sections, |part_id, _, _| {
+    part_map.output_order_map(&output_order, |part_id, _, _| {
         let section_id = part_id.output_section_id();
         if ordering_a.last() != Some(&section_id.as_usize()) {
             ordering_a.push(section_id.as_usize());
         }
     });
-    let ordering_b = output_sections
-        .sections_and_segments_events()
+    let ordering_b = output_order
+        .into_iter()
         .filter_map(|event| {
             if let OrderEvent::Section(id) = event {
                 Some(id.as_usize())
@@ -305,6 +306,7 @@ fn test_output_order_map() {
     use crate::output_section_id;
 
     let output_sections = crate::output_section_id::OutputSections::for_testing();
+    let output_order = output_sections.output_order();
     let mut part_map = output_sections.new_part_map::<u32>();
 
     const PART_ID1: PartId = output_section_id::DATA.part_id_with_alignment(alignment::USIZE);
@@ -313,28 +315,25 @@ fn test_output_order_map() {
     const PART_ID2: PartId = output_section_id::DATA.part_id_with_alignment(alignment::MIN);
     *part_map.get_mut(PART_ID2) += 5;
 
-    part_map.output_order_map(
-        &output_sections,
-        |part_id, alignment, &value| match part_id {
-            PART_ID1 => {
-                assert_eq!(alignment, alignment::USIZE);
-                assert_eq!(value, 32);
+    part_map.output_order_map(&output_order, |part_id, alignment, &value| match part_id {
+        PART_ID1 => {
+            assert_eq!(alignment, alignment::USIZE);
+            assert_eq!(value, 32);
+        }
+        PART_ID2 => {
+            assert_eq!(alignment, alignment::MIN);
+            assert_eq!(value, 5);
+        }
+        _ => {
+            if part_id.output_section_id() == output_section_id::DATA {
+                assert!(
+                    alignment <= alignment::USIZE,
+                    "Unexpected alignment {alignment}"
+                );
             }
-            PART_ID2 => {
-                assert_eq!(alignment, alignment::MIN);
-                assert_eq!(value, 5);
-            }
-            _ => {
-                if part_id.output_section_id() == output_section_id::DATA {
-                    assert!(
-                        alignment <= alignment::USIZE,
-                        "Unexpected alignment {alignment}"
-                    );
-                }
-                assert_eq!(value, 0);
-            }
-        },
-    );
+            assert_eq!(value, 0);
+        }
+    });
 }
 
 #[test]

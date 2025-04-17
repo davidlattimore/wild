@@ -1,7 +1,6 @@
 //#LinkArgs:-z noexecstack
 //#Object:exit.c
 //#Arch: x86_64
-//#DiffIgnore:section.data.rel.ro.flags
 //#DiffIgnore:section.data.rel.ro.entsize
 
 .section        .data.foo
