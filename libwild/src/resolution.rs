@@ -43,7 +43,6 @@ use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use linker_utils::elf::SectionFlags;
-use linker_utils::elf::SectionType;
 use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
@@ -788,7 +787,6 @@ fn resolve_sections_for_object<'data>(
                 let custom_section = CustomSectionDetails {
                     name: SectionName(section_name),
                     alignment,
-                    ty: SectionType::from_header(input_section),
                     index: input_section_index,
                 };
 

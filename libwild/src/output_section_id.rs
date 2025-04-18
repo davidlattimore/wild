@@ -68,7 +68,6 @@ pub(crate) struct CustomSectionDetails<'data> {
     pub(crate) name: SectionName<'data>,
     pub(crate) index: object::SectionIndex,
     pub(crate) alignment: Alignment,
-    pub(crate) ty: SectionType,
 }
 
 // Single-part sections that we generate ourselves rather than copying directly from input objects.
@@ -713,7 +712,7 @@ impl<'data> OutputSectionsBuilder<'data> {
         sections: &mut [SectionSlot],
     ) {
         for custom in custom_sections {
-            let section_id = self.add_section(custom.name, custom.ty);
+            let section_id = self.add_section(custom.name);
 
             if let Some(slot) = sections.get_mut(custom.index.0) {
                 slot.set_part_id(section_id.part_id_with_alignment(custom.alignment));
@@ -721,18 +720,16 @@ impl<'data> OutputSectionsBuilder<'data> {
         }
     }
 
-    pub(crate) fn add_section(
-        &mut self,
-        name: SectionName<'data>,
-        section_type: SectionType,
-    ) -> OutputSectionId {
+    pub(crate) fn add_section(&mut self, name: SectionName<'data>) -> OutputSectionId {
         *self.custom_by_name.entry(name).or_insert_with(|| {
             self.section_infos.add_new(SectionOutputInfo {
-                section_flags: SectionFlags::empty(),
                 name,
+                // Section flags and type will be filled in based on the attributes of the sections
+                // that get placed into this output section.
+                section_flags: SectionFlags::empty(),
+                ty: SectionType::from_u32(0),
                 // We'll fill this in properly in `determine_loadable_segment_ids`.
                 loadable_segment_id: None,
-                ty: section_type,
             })
         })
     }
@@ -928,10 +925,10 @@ impl<'data> OutputSections<'data> {
     #[cfg(test)]
     pub(crate) fn for_testing() -> OutputSections<'static> {
         let mut builder = OutputSectionsBuilder::with_base_address(0x1000);
-        builder.add_section(SectionName(b"ro"), sht::PROGBITS);
-        builder.add_section(SectionName(b"exec"), sht::PROGBITS);
-        builder.add_section(SectionName(b"data"), sht::PROGBITS);
-        builder.add_section(SectionName(b"bss"), sht::NOBITS);
+        builder.add_section(SectionName(b"ro"));
+        builder.add_section(SectionName(b"exec"));
+        builder.add_section(SectionName(b"data"));
+        builder.add_section(SectionName(b"bss"));
         builder.build()
     }
 }

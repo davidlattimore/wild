@@ -378,7 +378,7 @@ impl std::ops::BitAnd for SectionFlags {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SectionType(u32);
 
 impl SectionType {
