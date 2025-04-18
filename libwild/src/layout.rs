@@ -70,6 +70,7 @@ use crossbeam_queue::SegQueue;
 use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::SectionFlags;
+use linker_utils::elf::SectionType;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
@@ -951,20 +952,27 @@ impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState<'data> {
     }
 }
 
+/// Attributes that we'll take from an input section and apply to the output section into which it's
+/// placed.
 #[derive(Default, Clone, Copy)]
 struct SectionAttributes {
     flags: SectionFlags,
+    ty: Option<SectionType>,
 }
 
 impl SectionAttributes {
     fn from_header(header: &crate::elf::SectionHeader) -> Self {
         Self {
             flags: SectionFlags::from_header(header),
+            ty: Some(SectionType::from_header(header)),
         }
     }
 
     fn merge(&mut self, rhs: Self) {
         self.flags |= rhs.flags;
+        // We somewhat arbitrarily tie-break by selecting the maximum type. This means for example
+        // that types like SHT_INIT_ARRAY win out over more generic types like SHT_PROGBITS.
+        self.ty = self.ty.max(rhs.ty);
     }
 }
 
@@ -1847,9 +1855,20 @@ fn propagate_section_attributes(group_states: &[GroupState], output_sections: &m
             .common
             .section_attributes
             .for_each(|section_id, attributes| {
-                let info = output_sections.section_infos.get_mut(section_id);
-                info.section_flags |= attributes.flags & SECTION_FLAGS_PROPAGATION_MASK;
+                attributes.apply(output_sections, section_id);
             });
+    }
+}
+
+impl SectionAttributes {
+    pub(crate) fn apply(&self, output_sections: &mut OutputSections, section_id: OutputSectionId) {
+        let info = output_sections.section_infos.get_mut(section_id);
+
+        info.section_flags |= self.flags & SECTION_FLAGS_PROPAGATION_MASK;
+
+        if let Some(ty) = self.ty {
+            info.ty = info.ty.max(ty);
+        }
     }
 }
 
