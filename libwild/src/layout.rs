@@ -29,6 +29,7 @@ use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::output_section_id;
 use crate::output_section_id::FILE_HEADER;
+use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
@@ -165,8 +166,6 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
     propagate_section_attributes(&group_states, &mut output_sections);
 
     let output_order = output_sections.output_order();
-
-    output_sections.determine_loadable_segment_ids(&output_order)?;
 
     let section_part_sizes = compute_total_section_part_sizes(
         &mut group_states,
@@ -4531,59 +4530,79 @@ fn layout_section_parts(
 ) -> OutputSectionPartMap<OutputRecordLayout> {
     let mut file_offset = 0;
     let mut mem_offset = output_sections.base_address;
-    let mut current_seg_id = None;
     let mut nonalloc_mem_offsets: OutputSectionMap<u64> =
         OutputSectionMap::with_size(output_sections.num_sections());
 
-    sizes.output_order_map(output_order, |part_id, section_alignment, part_size| {
-        let section_id = part_id.output_section_id();
-        let section_flags = output_sections.section_flags(section_id);
-        let mem_size = *part_size;
-        // Note, we align up even if our size is zero, otherwise our section will start at an
-        // unaligned address.
-        file_offset = section_alignment.align_up_usize(file_offset);
+    let mut records_out = output_sections.new_part_map();
 
-        if section_flags.contains(shf::ALLOC) {
-            mem_offset = section_alignment.align_up(mem_offset);
-            let seg_id = output_sections.loadable_segment_id_for(section_id);
-            if current_seg_id != seg_id {
-                current_seg_id = seg_id;
-                let segment_alignment = seg_id.map_or(alignment::MIN, |s| s.alignment(args));
-                mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
+    for event in output_order {
+        match event {
+            OrderEvent::SegmentStart(segment_id) => {
+                if segment_id.segment_type() == object::elf::PT_LOAD {
+                    let segment_alignment = segment_id.alignment(args);
+                    mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
+                }
             }
-            let file_size = if output_sections.has_data_in_file(section_id) {
-                mem_size as usize
-            } else {
-                0
-            };
+            OrderEvent::SegmentEnd(_) => {}
+            OrderEvent::Section(section_id) => {
+                let part_id_range = section_id.part_id_range();
+                let max_alignment = sizes.max_alignment(part_id_range.clone());
 
-            let section_layout = OutputRecordLayout {
-                alignment: section_alignment,
-                file_offset,
-                mem_offset,
-                file_size,
-                mem_size,
-            };
-            file_offset += file_size;
-            mem_offset += mem_size;
-            section_layout
-        } else {
-            let section_id = part_id.output_section_id();
-            let mem_offset = section_alignment.align_up(*nonalloc_mem_offsets.get(section_id));
+                records_out[part_id_range.clone()]
+                    .iter_mut()
+                    .zip(&sizes[part_id_range.clone()])
+                    .enumerate()
+                    .for_each(|(offset, (part_layout, &part_size))| {
+                        let part_id = part_id_range.start.offset(offset);
+                        let alignment = part_id.alignment().min(max_alignment);
+                        let section_flags = output_sections.section_flags(section_id);
+                        let mem_size = part_size;
 
-            *nonalloc_mem_offsets.get_mut(section_id) += mem_size;
+                        // Note, we align up even if our size is zero, otherwise our section will start at an
+                        // unaligned address.
+                        file_offset = alignment.align_up_usize(file_offset);
 
-            let section_layout = OutputRecordLayout {
-                alignment: section_alignment,
-                file_offset,
-                mem_offset,
-                file_size: mem_size as usize,
-                mem_size,
-            };
-            file_offset += mem_size as usize;
-            section_layout
-        }
-    })
+                        if section_flags.contains(shf::ALLOC) {
+                            mem_offset = alignment.align_up(mem_offset);
+
+                            let file_size = if output_sections.has_data_in_file(section_id) {
+                                mem_size as usize
+                            } else {
+                                0
+                            };
+
+                            *part_layout = OutputRecordLayout {
+                                file_size,
+                                mem_size,
+                                alignment,
+                                file_offset,
+                                mem_offset,
+                            };
+
+                            file_offset += file_size;
+                            mem_offset += mem_size;
+                        } else {
+                            let section_id = part_id.output_section_id();
+                            let mem_offset =
+                                alignment.align_up(*nonalloc_mem_offsets.get(section_id));
+
+                            *nonalloc_mem_offsets.get_mut(section_id) += mem_size;
+
+                            *part_layout = OutputRecordLayout {
+                                file_size: mem_size as usize,
+                                mem_size,
+                                alignment,
+                                file_offset,
+                                mem_offset,
+                            };
+                            file_offset += mem_size as usize;
+                        }
+                    });
+            }
+        };
+    }
+
+    records_out
 }
 
 impl<'data> DynamicLayoutState<'data> {
