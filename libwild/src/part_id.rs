@@ -37,28 +37,15 @@ pub(crate) const GNU_VERSION_D: PartId = PartId(16);
 pub(crate) const GNU_VERSION_R: PartId = PartId(17);
 pub(crate) const NOTE_GNU_PROPERTY: PartId = PartId(18);
 pub(crate) const NOTE_GNU_BUILD_ID: PartId = PartId(19);
+pub(crate) const SYMTAB_LOCAL: PartId = PartId(20);
+pub(crate) const SYMTAB_GLOBAL: PartId = PartId(21);
+pub(crate) const RELA_DYN_RELATIVE: PartId = PartId(22);
+pub(crate) const RELA_DYN_GENERAL: PartId = PartId(23);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 20;
-
-// Generated sections that have more than one part. Fortunately they all have exactly 2 parts.
-pub(crate) const SYMTAB_LOCAL: PartId = PartId::multi(0);
-pub(crate) const SYMTAB_GLOBAL: PartId = PartId::multi(1);
-pub(crate) const RELA_DYN_RELATIVE: PartId = PartId::multi(2);
-pub(crate) const RELA_DYN_GENERAL: PartId = PartId::multi(3);
-
-pub(crate) const MULTI_PART_BASE: u32 = NUM_SINGLE_PART_SECTIONS;
-pub(crate) const NUM_TWO_PART_SECTIONS: u32 = 2;
-pub(crate) const NUM_PARTS_PER_TWO_PART_SECTION: u32 = 2;
-
-/// The offset at which we start splitting sections by alignment.
-pub(crate) const REGULAR_PART_BASE: u32 =
-    NUM_SINGLE_PART_SECTIONS + NUM_TWO_PART_SECTIONS * NUM_PARTS_PER_TWO_PART_SECTION;
-
-/// Regular sections are sections that come from input files and can contain a mix of alignments.
-pub(crate) const NUM_GENERATED_PARTS: usize = REGULAR_PART_BASE as usize;
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 24;
 
 #[cfg(test)]
-pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_GENERATED_PARTS
+pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_SINGLE_PART_SECTIONS as usize
     + crate::output_section_id::NUM_BUILT_IN_REGULAR_SECTIONS * crate::alignment::NUM_ALIGNMENTS;
 
 /// A placeholder used for custom sections before we know their actual PartId.
@@ -81,23 +68,13 @@ pub(crate) fn should_merge_strings(
 }
 
 impl PartId {
-    const fn multi(offset: u32) -> PartId {
-        PartId(NUM_SINGLE_PART_SECTIONS + offset)
-    }
-
     pub(crate) const fn output_section_id(self) -> OutputSectionId {
         if self.0 < NUM_SINGLE_PART_SECTIONS {
             OutputSectionId::from_u32(self.0)
-        } else if self.0 < REGULAR_PART_BASE {
-            OutputSectionId::from_u32(
-                (self.0 - MULTI_PART_BASE) / NUM_PARTS_PER_TWO_PART_SECTION
-                    + NUM_SINGLE_PART_SECTIONS,
-            )
         } else {
             OutputSectionId::from_u32(
-                (self.0 - REGULAR_PART_BASE) / (NUM_ALIGNMENTS as u32)
-                    + NUM_SINGLE_PART_SECTIONS
-                    + NUM_TWO_PART_SECTIONS,
+                (self.0 - NUM_SINGLE_PART_SECTIONS) / (NUM_ALIGNMENTS as u32)
+                    + NUM_SINGLE_PART_SECTIONS,
             )
         }
     }
@@ -123,7 +100,7 @@ impl PartId {
     }
 
     pub(crate) fn alignment(self) -> Alignment {
-        if let Some(offset) = self.0.checked_sub(REGULAR_PART_BASE) {
+        if let Some(offset) = self.0.checked_sub(NUM_SINGLE_PART_SECTIONS) {
             Alignment {
                 exponent: NUM_ALIGNMENTS as u8 - 1 - (offset % NUM_ALIGNMENTS as u32) as u8,
             }
@@ -163,7 +140,7 @@ mod tests {
 
     #[test]
     fn test_conversion_consistency() {
-        for i in REGULAR_PART_BASE..REGULAR_PART_BASE + 40 {
+        for i in NUM_SINGLE_PART_SECTIONS..NUM_SINGLE_PART_SECTIONS + 40 {
             let part_id = PartId::from_u32(i);
             let section_id = part_id.output_section_id();
             let alignment = part_id.alignment();

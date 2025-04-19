@@ -3040,10 +3040,11 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |inputs| inputs.section_part_layouts.get(part_id::RELA_PLT).mem_size,
     ),
     DynamicEntryWriter::optional(object::elf::DT_RELA, has_rela_dyn, |inputs| {
-        inputs.vma_of_section(output_section_id::RELA_DYN)
+        inputs.vma_of_section(output_section_id::RELA_DYN_RELATIVE)
     }),
     DynamicEntryWriter::optional(object::elf::DT_RELASZ, has_rela_dyn, |inputs| {
-        inputs.size_of_section(output_section_id::RELA_DYN)
+        inputs.size_of_section(output_section_id::RELA_DYN_RELATIVE)
+            + inputs.size_of_section(output_section_id::RELA_DYN_GENERAL)
     }),
     DynamicEntryWriter::optional(object::elf::DT_RELAENT, has_rela_dyn, |_inputs| {
         elf::RELA_ENTRY_SIZE
@@ -3193,7 +3194,9 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
     let mut name_offset = 0;
     let info_inputs = layout.info_inputs();
 
-    for event in &layout.output_order {
+    let mut order = layout.output_order.into_iter().peekable();
+
+    while let Some(event) = order.next() {
         let OrderEvent::Section(section_id) = event else {
             continue;
         };
@@ -3209,7 +3212,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         }
 
         let entsize = section_id.element_size();
-        let size;
+        let mut size;
         let alignment;
 
         if section_type == sht::NULL {
@@ -3218,6 +3221,15 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         } else {
             size = section_layout.mem_size;
             alignment = section_layout.alignment.value();
+
+            while let Some(OrderEvent::Section(next_section_id)) = order.peek() {
+                if next_section_id.merge_target() == section_id {
+                    size += layout.section_layouts.get(*next_section_id).mem_size;
+                    order.next();
+                } else {
+                    break;
+                }
+            }
         };
 
         let link = output_section_id::link_ids(section_id)
