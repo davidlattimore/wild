@@ -28,10 +28,8 @@ use crate::layout::OutputRecordLayout;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
-use crate::part_id::NUM_PARTS_PER_TWO_PART_SECTION;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
-use crate::part_id::REGULAR_PART_BASE;
 use crate::program_segments::ProgramSegmentId;
 use crate::resolution::SectionSlot;
 use core::slice;
@@ -48,14 +46,9 @@ use std::fmt::Display;
 use std::iter::Copied;
 use std::ops::Range;
 
-/// Number of non-regular sections that we define. A non-regular section is one that isn't split by
-/// alignment. They're always generated. Most of them only have a single part.
-pub(crate) const NUM_NON_REGULAR_SECTIONS: u32 =
-    part_id::NUM_SINGLE_PART_SECTIONS + part_id::NUM_TWO_PART_SECTIONS;
-
 /// Number of sections that we have built-in IDs for.
 pub(crate) const NUM_BUILT_IN_SECTIONS: usize =
-    NUM_NON_REGULAR_SECTIONS as usize + NUM_BUILT_IN_REGULAR_SECTIONS;
+    part_id::NUM_SINGLE_PART_SECTIONS as usize + NUM_BUILT_IN_REGULAR_SECTIONS;
 
 /// An ID for an output section. This is used for looking up section info. It's independent of
 /// section ordering.
@@ -93,10 +86,11 @@ pub(crate) const NOTE_GNU_PROPERTY: OutputSectionId =
 pub(crate) const NOTE_GNU_BUILD_ID: OutputSectionId =
     part_id::NOTE_GNU_BUILD_ID.output_section_id();
 
-// These two are multi-part sections, but we can pick any part we wish in order to get the section
-// ID.
-pub(crate) const SYMTAB: OutputSectionId = part_id::SYMTAB_LOCAL.output_section_id();
-pub(crate) const RELA_DYN: OutputSectionId = part_id::RELA_DYN_RELATIVE.output_section_id();
+pub(crate) const SYMTAB_LOCAL: OutputSectionId = part_id::SYMTAB_LOCAL.output_section_id();
+pub(crate) const SYMTAB_GLOBAL: OutputSectionId = part_id::SYMTAB_GLOBAL.output_section_id();
+pub(crate) const RELA_DYN_RELATIVE: OutputSectionId =
+    part_id::RELA_DYN_RELATIVE.output_section_id();
+pub(crate) const RELA_DYN_GENERAL: OutputSectionId = part_id::RELA_DYN_GENERAL.output_section_id();
 
 pub(crate) const RODATA: OutputSectionId = OutputSectionId::regular(0);
 pub(crate) const INIT_ARRAY: OutputSectionId = OutputSectionId::regular(1);
@@ -154,8 +148,8 @@ impl OutputSections<'_> {
     }
 
     pub(crate) fn num_parts(&self) -> usize {
-        part_id::REGULAR_PART_BASE as usize
-            + (self.num_sections() - NUM_NON_REGULAR_SECTIONS as usize) * NUM_ALIGNMENTS
+        part_id::NUM_SINGLE_PART_SECTIONS as usize
+            + (self.num_sections() - part_id::NUM_SINGLE_PART_SECTIONS as usize) * NUM_ALIGNMENTS
     }
 
     pub(crate) fn new_part_map<T: Default>(&self) -> OutputSectionPartMap<T> {
@@ -201,6 +195,9 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) keep_if_empty: bool,
     pub(crate) element_size: u64,
     pub(crate) ty: SectionType,
+
+    /// If present, then this section will be merged into the specified section.
+    pub(crate) merge_into: Option<OutputSectionId>,
 }
 
 impl BuiltInSectionDetails {
@@ -236,6 +233,7 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     keep_if_empty: false,
     element_size: 0,
     ty: sht::NULL,
+    merge_into: None,
 };
 
 const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
@@ -293,7 +291,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ty: sht::RELA,
         section_flags: shf::ALLOC.with(shf::INFO_LINK),
         element_size: elf::RELA_ENTRY_SIZE,
-        link: &[DYNSYM, SYMTAB],
+        link: &[DYNSYM, SYMTAB_LOCAL],
         min_alignment: alignment::RELA_ENTRY,
         start_symbol_name: Some("__rela_iplt_start"),
         end_symbol_name: Some("__rela_iplt_end"),
@@ -407,12 +405,20 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
+        merge_into: Some(SYMTAB_LOCAL),
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
         name: SectionName(RELA_DYN_SECTION_NAME),
         ty: sht::RELA,
         section_flags: shf::ALLOC,
         element_size: elf::RELA_ENTRY_SIZE,
         min_alignment: alignment::RELA_ENTRY,
         link: &[DYNSYM],
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        merge_into: Some(RELA_DYN_RELATIVE),
         ..DEFAULT_DEFS
     },
     // Start of regular sections
@@ -528,7 +534,7 @@ pub(crate) fn built_in_section_ids()
 
 impl OutputSectionId {
     pub(crate) const fn regular(offset: u32) -> OutputSectionId {
-        OutputSectionId(NUM_NON_REGULAR_SECTIONS + offset)
+        OutputSectionId(NUM_SINGLE_PART_SECTIONS + offset)
     }
 
     pub(crate) fn as_usize(self) -> usize {
@@ -552,8 +558,6 @@ impl OutputSectionId {
     pub(crate) fn num_parts(self) -> usize {
         if self.0 < part_id::NUM_SINGLE_PART_SECTIONS {
             1
-        } else if self.0 < NUM_NON_REGULAR_SECTIONS {
-            part_id::NUM_PARTS_PER_TWO_PART_SECTION as usize
         } else {
             NUM_ALIGNMENTS
         }
@@ -578,17 +582,17 @@ impl OutputSectionId {
     }
 
     pub(crate) fn is_regular(self) -> bool {
-        self.0 >= NUM_NON_REGULAR_SECTIONS
+        self.0 >= NUM_SINGLE_PART_SECTIONS
     }
 
     /// Returns the part ID in this section that has the specified alignment. Can only be called for
     /// regular sections.
     pub(crate) const fn part_id_with_alignment(self, alignment: Alignment) -> PartId {
-        let Some(regular_offset) = self.0.checked_sub(NUM_NON_REGULAR_SECTIONS) else {
+        let Some(regular_offset) = self.0.checked_sub(NUM_SINGLE_PART_SECTIONS) else {
             panic!("part_id_with_alignment can only be called for regular sections");
         };
         PartId::from_u32(
-            part_id::REGULAR_PART_BASE
+            part_id::NUM_SINGLE_PART_SECTIONS
                 + (regular_offset * NUM_ALIGNMENTS as u32)
                 + NUM_ALIGNMENTS as u32
                 - 1
@@ -600,12 +604,10 @@ impl OutputSectionId {
     pub(crate) fn base_part_id(self) -> PartId {
         if self.0 < NUM_SINGLE_PART_SECTIONS {
             PartId::from_u32(self.0)
-        } else if let Some(offset) = self.0.checked_sub(NUM_NON_REGULAR_SECTIONS) {
-            PartId::from_u32(REGULAR_PART_BASE + offset * NUM_ALIGNMENTS as u32)
         } else {
             PartId::from_u32(
-                (self.0 - NUM_SINGLE_PART_SECTIONS) * NUM_PARTS_PER_TWO_PART_SECTION
-                    + NUM_SINGLE_PART_SECTIONS,
+                NUM_SINGLE_PART_SECTIONS
+                    + (self.0 - NUM_SINGLE_PART_SECTIONS) * NUM_ALIGNMENTS as u32,
             )
         }
     }
@@ -618,6 +620,14 @@ impl OutputSectionId {
 
     pub(crate) fn element_size(self) -> u64 {
         self.opt_built_in_details().map_or(0, |d| d.element_size)
+    }
+
+    /// Returns the ID of the section that this section should be merged into, or this section if it
+    /// shouldn't be merged into another section.
+    pub(crate) fn merge_target(self) -> OutputSectionId {
+        self.opt_built_in_details()
+            .and_then(|info| info.merge_into)
+            .unwrap_or(self)
     }
 }
 
@@ -752,7 +762,8 @@ impl CustomSectionIds {
         events.push(GNU_VERSION.event());
         events.push(GNU_VERSION_D.event());
         events.push(GNU_VERSION_R.event());
-        events.push(RELA_DYN.event());
+        events.push(RELA_DYN_RELATIVE.event());
+        events.push(RELA_DYN_GENERAL.event());
         events.push(RELA_PLT.event());
         events.push(RODATA.event());
         events.push(OrderEvent::SegmentStart(crate::program_segments::EH_FRAME));
@@ -798,7 +809,8 @@ impl CustomSectionIds {
         events.extend(build_section_events(&self.nonalloc));
         events.push(COMMENT.event());
         events.push(SHSTRTAB.event());
-        events.push(SYMTAB.event());
+        events.push(SYMTAB_LOCAL.event());
+        events.push(SYMTAB_GLOBAL.event());
         events.push(STRTAB.event());
 
         events
@@ -843,7 +855,7 @@ impl<'data> OutputSections<'data> {
     #[allow(dead_code)]
     #[must_use]
     pub(crate) fn num_regular_sections(&self) -> usize {
-        self.section_infos.len() - NUM_NON_REGULAR_SECTIONS as usize
+        self.section_infos.len() - NUM_SINGLE_PART_SECTIONS as usize
     }
 
     pub(crate) fn has_data_in_file(&self, section_id: OutputSectionId) -> bool {
@@ -879,6 +891,16 @@ impl<'data> OutputSections<'data> {
 
     pub(crate) fn display_name(&self, section_id: OutputSectionId) -> std::borrow::Cow<str> {
         String::from_utf8_lossy(self.name(section_id).0)
+    }
+
+    pub(crate) fn section_debug(&self, section_id: OutputSectionId) -> String {
+        let merge_target = section_id.merge_target();
+        let merge = if merge_target == section_id {
+            String::new()
+        } else {
+            format!(" merged into {merge_target}")
+        };
+        format!("{section_id}{merge} ({})", self.display_name(merge_target))
     }
 
     pub(crate) fn custom_name_to_id(&self, name: SectionName) -> Option<OutputSectionId> {
@@ -971,7 +993,8 @@ fn test_constant_ids() {
         (EH_FRAME, EH_FRAME_SECTION_NAME),
         (EH_FRAME_HDR, EH_FRAME_HDR_SECTION_NAME),
         (SHSTRTAB, SHSTRTAB_SECTION_NAME),
-        (SYMTAB, SYMTAB_SECTION_NAME),
+        (SYMTAB_LOCAL, SYMTAB_SECTION_NAME),
+        (SYMTAB_GLOBAL, &[]),
         (STRTAB, STRTAB_SECTION_NAME),
         (TDATA, TDATA_SECTION_NAME),
         (TBSS, TBSS_SECTION_NAME),
@@ -984,7 +1007,8 @@ fn test_constant_ids() {
         (DYNAMIC, DYNAMIC_SECTION_NAME),
         (DYNSYM, DYNSYM_SECTION_NAME),
         (DYNSTR, DYNSTR_SECTION_NAME),
-        (RELA_DYN, RELA_DYN_SECTION_NAME),
+        (RELA_DYN_RELATIVE, RELA_DYN_SECTION_NAME),
+        (RELA_DYN_GENERAL, &[]),
         (GCC_EXCEPT_TABLE, GCC_EXCEPT_TABLE_SECTION_NAME),
         (INTERP, INTERP_SECTION_NAME),
         (GNU_VERSION, GNU_VERSION_SECTION_NAME),

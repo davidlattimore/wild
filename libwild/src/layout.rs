@@ -37,7 +37,7 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::part_id;
-use crate::part_id::NUM_GENERATED_PARTS;
+use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
 use crate::program_segments;
 use crate::program_segments::MAX_SEGMENTS;
@@ -755,7 +755,7 @@ pub(crate) fn compute_allocations(
     resolution: &Resolution,
     output_kind: OutputKind,
 ) -> OutputSectionPartMap<u64> {
-    let mut sizes = OutputSectionPartMap::with_size(NUM_GENERATED_PARTS);
+    let mut sizes = OutputSectionPartMap::with_size(NUM_SINGLE_PART_SECTIONS as usize);
     allocate_resolution(
         resolution.value_flags,
         resolution.resolution_flags,
@@ -1692,14 +1692,14 @@ fn compute_segment_layout(
 
     use output_section_id::OrderEvent;
     let mut complete = Vec::with_capacity(crate::program_segments::MAX_SEGMENTS);
-    let mut active_records = Vec::new();
+    let mut active_segments = Vec::new();
 
     for event in output_order {
         match event {
             OrderEvent::SegmentStart(segment_id) => {
                 if segment_id == STACK {
                     // STACK segment is special as it does not contain any section.
-                    active_records.push((
+                    active_segments.push((
                         segment_id,
                         Record {
                             segment_id,
@@ -1711,7 +1711,7 @@ fn compute_segment_layout(
                         },
                     ));
                 } else {
-                    active_records.push((
+                    active_segments.push((
                         segment_id,
                         Record {
                             segment_id,
@@ -1725,7 +1725,7 @@ fn compute_segment_layout(
                 }
             }
             OrderEvent::SegmentEnd(segment_id) => {
-                let (popped_segment_id, record) = active_records
+                let (popped_segment_id, record) = active_segments
                     .pop()
                     .expect("SegmentEnd without matching SegmentStart");
                 ensure!(
@@ -1739,44 +1739,49 @@ fn compute_segment_layout(
                 complete.push(record);
             }
             OrderEvent::Section(section_id) => {
-                let part = section_layouts.get(section_id);
+                let section_layout = section_layouts.get(section_id);
+                let merge_target = section_id.merge_target();
 
                 // Skip all ignored sections that will not end up in the final file.
-                if output_sections.output_section_indexes[section_id.as_usize()].is_none() {
+                if output_sections.output_section_indexes[merge_target.as_usize()].is_none() {
                     continue;
                 }
-                let section_flags = output_sections.section_flags(section_id);
+                let section_flags = output_sections.section_flags(merge_target);
 
-                if active_records.is_empty() {
+                if active_segments.is_empty() {
                     ensure!(
-                        part.mem_offset == 0,
-                        "Expected zero address for section `{}` not present in any program segment.",
-                        output_sections.name(section_id)
+                        section_layout.mem_offset == 0,
+                        "Expected zero address for section {} not present in any program segment.",
+                        output_sections.section_debug(section_id)
                     );
                     ensure!(
                         !section_flags.contains(shf::ALLOC),
-                        "Section with SHF_ALLOC flag `{}` not present in any program segment.",
-                        output_sections.name(section_id)
+                        "Section with SHF_ALLOC flag {} not present in any program segment.",
+                        output_sections.section_debug(section_id)
                     );
                 } else {
                     // All segments should only cover sections that are allocated and have a non-zero address.
                     ensure!(
-                        part.mem_offset != 0 || section_id == FILE_HEADER,
-                        "Missing memory offset for section `{}` present in a program segment.",
-                        output_sections.name(section_id)
+                        section_layout.mem_offset != 0 || merge_target == FILE_HEADER,
+                        "Missing memory offset for section {} present in a program segment.",
+                        output_sections.section_debug(section_id),
                     );
                     ensure!(
                         section_flags.contains(shf::ALLOC),
-                        "Missing SHF_ALLOC section flag for section `{}` present in a program \
+                        "Missing SHF_ALLOC section flag for section {} present in a program \
                          segment.",
-                        output_sections.name(section_id)
+                        output_sections.section_debug(section_id)
                     );
-                    for (_, rec) in &mut active_records {
-                        rec.file_start = rec.file_start.min(part.file_offset);
-                        rec.mem_start = rec.mem_start.min(part.mem_offset);
-                        rec.file_end = rec.file_end.max(part.file_offset + part.file_size);
-                        rec.mem_end = rec.mem_end.max(part.mem_offset + part.mem_size);
-                        rec.alignment = rec.alignment.max(part.alignment);
+                    for (_, rec) in &mut active_segments {
+                        rec.file_start = rec.file_start.min(section_layout.file_offset);
+                        rec.mem_start = rec.mem_start.min(section_layout.mem_offset);
+                        rec.file_end = rec
+                            .file_end
+                            .max(section_layout.file_offset + section_layout.file_size);
+                        rec.mem_end = rec
+                            .mem_end
+                            .max(section_layout.mem_offset + section_layout.mem_size);
+                        rec.alignment = rec.alignment.max(section_layout.alignment);
                     }
                 }
             }
@@ -2989,7 +2994,7 @@ impl PreludeLayoutState {
         // record the loading of an input section. This covers sections where we generate content.
         total_sizes.map(|part_id, size| {
             if *size > 0 {
-                *keep_sections.get_mut(part_id.output_section_id()) = true;
+                *keep_sections.get_mut(part_id.output_section_id().merge_target()) = true;
             }
         });
 
@@ -3007,10 +3012,11 @@ impl PreludeLayoutState {
             .for_each(|(symbol_state, definition)| {
                 if !symbol_state.is_empty() {
                     if let Some(section_id) = definition.section_id() {
-                        *keep_sections.get_mut(section_id) = true;
+                        *keep_sections.get_mut(section_id.merge_target()) = true;
                     }
                 }
             });
+
         let num_sections = keep_sections.values_iter().filter(|p| **p).count();
 
         // Compute output indexes of each section.
@@ -4555,7 +4561,8 @@ fn layout_section_parts(
                     .for_each(|(offset, (part_layout, &part_size))| {
                         let part_id = part_id_range.start.offset(offset);
                         let alignment = part_id.alignment().min(max_alignment);
-                        let section_flags = output_sections.section_flags(section_id);
+                        let merge_target = section_id.merge_target();
+                        let section_flags = output_sections.section_flags(merge_target);
                         let mem_size = part_size;
 
                         // Note, we align up even if our size is zero, otherwise our section will start at an
@@ -4565,7 +4572,7 @@ fn layout_section_parts(
                         if section_flags.contains(shf::ALLOC) {
                             mem_offset = alignment.align_up(mem_offset);
 
-                            let file_size = if output_sections.has_data_in_file(section_id) {
+                            let file_size = if output_sections.has_data_in_file(merge_target) {
                                 mem_size as usize
                             } else {
                                 0
