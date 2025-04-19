@@ -34,10 +34,6 @@ impl<T> OutputSectionMap<T> {
             .map(|(raw, info)| (OutputSectionId::from_usize(raw), info))
     }
 
-    pub(crate) fn values_iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        self.values.iter_mut()
-    }
-
     pub(crate) fn from_values(values: Vec<T>) -> Self {
         Self { values }
     }
