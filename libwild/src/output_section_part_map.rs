@@ -7,6 +7,9 @@ use crate::output_section_map::OutputSectionMap;
 use crate::part_id::PartId;
 use std::mem::take;
 use std::ops::AddAssign;
+use std::ops::Index;
+use std::ops::IndexMut;
+use std::ops::Range;
 
 /// A map from each part of each output section to some value. Different sections are split into
 /// parts in different ways. Sections that come from input files are split by alignment. Some
@@ -26,6 +29,20 @@ impl<T: Default> OutputSectionPartMap<T> {
         let mut parts = Vec::new();
         parts.resize_with(size, Default::default);
         Self { parts }
+    }
+}
+
+impl<T> Index<Range<PartId>> for OutputSectionPartMap<T> {
+    type Output = [T];
+
+    fn index(&self, index: Range<PartId>) -> &Self::Output {
+        &self.parts[index.start.as_usize()..index.end.as_usize()]
+    }
+}
+
+impl<T> IndexMut<Range<PartId>> for OutputSectionPartMap<T> {
+    fn index_mut(&mut self, index: Range<PartId>) -> &mut Self::Output {
+        &mut self.parts[index.start.as_usize()..index.end.as_usize()]
     }
 }
 
@@ -82,37 +99,38 @@ impl<T: Default + PartialEq> OutputSectionPartMap<T> {
     ) -> OutputSectionPartMap<U> {
         let mut parts_out = Vec::new();
         parts_out.resize_with(self.parts.len(), U::default);
+        let mut output = OutputSectionPartMap { parts: parts_out };
 
         for event in output_order {
             let OrderEvent::Section(section_id) = event else {
                 continue;
             };
 
-            let count = section_id.num_parts();
-            let base_part_id = section_id.base_part_id();
-            let max_alignment = self.max_alignment(base_part_id, count);
-            parts_out[base_part_id.as_usize()..base_part_id.as_usize() + count]
+            let part_id_range = section_id.part_id_range();
+            let max_alignment = self.max_alignment(part_id_range.clone());
+            output[part_id_range.clone()]
                 .iter_mut()
+                .zip(&self[part_id_range.clone()])
                 .enumerate()
-                .for_each(|(offset, out)| {
-                    let part_id = base_part_id.offset(offset);
+                .for_each(|(offset, (out, input))| {
+                    let part_id = part_id_range.start.offset(offset);
                     let alignment = part_id.alignment().min(max_alignment);
-                    *out = cb(part_id, alignment, self.get(part_id));
+                    *out = cb(part_id, alignment, input);
                 });
         }
 
-        OutputSectionPartMap { parts: parts_out }
+        output
     }
 
     /// Returns the maximum alignment for any part with a non-default value starting from
     /// `base_part_id` for the next `count` parts. The returned value will not be any less than the
     /// minimum alignment for the section.
-    fn max_alignment(&self, base_part_id: PartId, count: usize) -> Alignment {
-        self.parts[base_part_id.as_usize()..base_part_id.as_usize() + count]
+    pub(crate) fn max_alignment(&self, range: Range<PartId>) -> Alignment {
+        self[range.clone()]
             .iter()
             .position(|p| *p != T::default())
-            .map_or(alignment::MIN, |o| base_part_id.offset(o).alignment())
-            .max(base_part_id.output_section_id().min_alignment())
+            .map_or(alignment::MIN, |o| range.start.offset(o).alignment())
+            .max(range.start.output_section_id().min_alignment())
     }
 
     /// Zip mutable references to values in `self` with shared references from `other` producing a
@@ -344,7 +362,7 @@ fn test_max_alignment() {
     let mut part_map = output_sections.new_part_map::<u32>();
 
     assert_eq!(
-        part_map.max_alignment(output_section_id::DATA.base_part_id(), 16),
+        part_map.max_alignment(output_section_id::DATA.part_id_range()),
         alignment::MIN
     );
 
@@ -355,7 +373,7 @@ fn test_max_alignment() {
     *part_map.get_mut(PART_ID2) += 5;
 
     assert_eq!(
-        part_map.max_alignment(output_section_id::DATA.base_part_id(), 16),
+        part_map.max_alignment(output_section_id::DATA.part_id_range()),
         alignment::USIZE
     );
 }

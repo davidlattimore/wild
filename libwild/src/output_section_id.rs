@@ -23,7 +23,6 @@ use crate::args::OutputKind;
 use crate::elf;
 use crate::elf::DynamicEntry;
 use crate::elf::Versym;
-use crate::error::Result;
 use crate::layout::NonAddressableCounts;
 use crate::layout::OutputRecordLayout;
 use crate::output_section_map::OutputSectionMap;
@@ -35,7 +34,6 @@ use crate::part_id::PartId;
 use crate::part_id::REGULAR_PART_BASE;
 use crate::program_segments::ProgramSegmentId;
 use crate::resolution::SectionSlot;
-use anyhow::anyhow;
 use core::slice;
 use foldhash::HashMap as FoldHashMap;
 use foldhash::HashMapExt as _;
@@ -48,6 +46,7 @@ use linker_utils::elf::sht;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::iter::Copied;
+use std::ops::Range;
 
 /// Number of non-regular sections that we define. A non-regular section is one that isn't split by
 /// alignment. They're always generated. Most of them only have a single part.
@@ -154,47 +153,6 @@ impl OutputSections<'_> {
         self.section_infos.iter()
     }
 
-    /// Determine which loadable segment, if any, each output section is contained within and update
-    /// the section info accordingly.
-    #[tracing::instrument(skip_all, name = "Determine loadable segment IDs")]
-    pub(crate) fn determine_loadable_segment_ids(&mut self, output_order: &OutputOrder) -> Result {
-        let mut load_seg_by_section_id = vec![None; self.section_infos.len()];
-        let mut current_load_seg = None;
-
-        for event in &output_order.sections_and_segments_events {
-            match event {
-                OrderEvent::SegmentStart(seg_id) => {
-                    if seg_id.segment_type() == object::elf::PT_LOAD {
-                        current_load_seg = Some(seg_id);
-                    }
-                }
-                OrderEvent::SegmentEnd(seg_id) => {
-                    if current_load_seg == Some(seg_id) {
-                        current_load_seg = None;
-                    }
-                }
-                OrderEvent::Section(section_id) => {
-                    load_seg_by_section_id[section_id.as_usize()] = Some(current_load_seg);
-                }
-            }
-        }
-
-        load_seg_by_section_id
-            .iter()
-            .zip(self.section_infos.values_iter_mut())
-            .try_for_each(|(load_seg, info)| -> Result {
-                let load_seg_id = load_seg.ok_or_else(|| {
-                    anyhow!(
-                        "Section `{}` is missing from output order (update sections_and_segments_events)",
-                        info.name,
-                    )
-                })?;
-                info.loadable_segment_id = load_seg_id.copied();
-                Ok(())
-            })?;
-        Ok(())
-    }
-
     pub(crate) fn num_parts(&self) -> usize {
         part_id::REGULAR_PART_BASE as usize
             + (self.num_sections() - NUM_NON_REGULAR_SECTIONS as usize) * NUM_ALIGNMENTS
@@ -225,7 +183,6 @@ impl OutputSections<'_> {
 
 #[derive(Debug)]
 pub(crate) struct SectionOutputInfo<'data> {
-    pub(crate) loadable_segment_id: Option<ProgramSegmentId>,
     pub(crate) name: SectionName<'data>,
     pub(crate) section_flags: SectionFlags,
     pub(crate) ty: SectionType,
@@ -586,6 +543,12 @@ impl OutputSectionId {
         Self(value as u32)
     }
 
+    pub(crate) fn part_id_range(self) -> Range<PartId> {
+        let base = self.base_part_id();
+        let count = self.num_parts();
+        base..base.offset(count)
+    }
+
     pub(crate) fn num_parts(self) -> usize {
         if self.0 < part_id::NUM_SINGLE_PART_SECTIONS {
             1
@@ -733,8 +696,6 @@ impl<'data> OutputSectionsBuilder<'data> {
                 // that get placed into this output section.
                 section_flags: SectionFlags::empty(),
                 ty: SectionType::from_u32(0),
-                // We'll fill this in properly in `determine_loadable_segment_ids`.
-                loadable_segment_id: None,
                 min_alignment,
             })
         })
@@ -746,7 +707,6 @@ impl<'data> OutputSectionsBuilder<'data> {
             .map(|d| SectionOutputInfo {
                 section_flags: d.section_flags,
                 name: d.name,
-                loadable_segment_id: Some(crate::program_segments::LOAD_RO),
                 ty: d.ty,
                 min_alignment: d.min_alignment,
             })
@@ -911,10 +871,6 @@ impl<'data> OutputSections<'data> {
     /// Returns whether we're going to emit the specified section.
     pub(crate) fn will_emit_section(&self, id: OutputSectionId) -> bool {
         self.output_index_of_section(id).is_some()
-    }
-
-    pub(crate) fn loadable_segment_id_for(&self, id: OutputSectionId) -> Option<ProgramSegmentId> {
-        self.output_info(id).loadable_segment_id
     }
 
     pub(crate) fn name(&self, section_id: OutputSectionId) -> SectionName<'data> {
