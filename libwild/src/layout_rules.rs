@@ -1,19 +1,25 @@
 //! Rules for helping determine how we're going to lay out the output file.
 
+use crate::OutputSections;
 use crate::alignment;
 use crate::alignment::Alignment;
-use crate::elf::SectionHeader;
 use crate::error::Result;
-use crate::hash::PreHashed;
 use crate::hash::hash_bytes;
+use crate::input_data::InputLinkerScript;
+use crate::input_data::InputRef;
+use crate::input_data::UNINITIALISED_FILE_ID;
+use crate::linker_script;
+use crate::linker_script::ContentsCommand;
+use crate::linker_script::SectionCommand;
 use crate::output_section_id;
-use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionName;
+use crate::parsing::InternalSymDefInfo;
+use crate::parsing::ProcessedLinkerScript;
 use crate::symbol::UnversionedSymbolName;
+use crate::symbol_db::SymbolId;
+use crate::symbol_db::SymbolIdRange;
 use anyhow::ensure;
-use foldhash::HashMap;
-use foldhash::fast::RandomState;
 use hashbrown::HashTable;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
@@ -23,25 +29,21 @@ use linker_utils::elf::sht;
 
 pub(crate) struct LayoutRules<'data> {
     pub(crate) section_rules: SectionRules<'data>,
-    pub(crate) user_defined_sections: Vec<UserDefinedSection<'data>>,
 }
 
 #[derive(Default)]
 pub(crate) struct LayoutRulesBuilder<'data> {
     rules: Vec<SectionRule<'data>>,
-    section_ids: SectionIdAllocator<'data>,
 }
 
-struct SectionIdAllocator<'data> {
-    user_defined_sections: Vec<UserDefinedSection<'data>>,
-    section_name_to_id: HashMap<Vec<u8>, OutputSectionId>,
-}
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum SectionKind<'data> {
+    /// This is the primary section.
+    Primary(SectionName<'data>),
 
-pub(crate) struct UserDefinedSection<'data> {
-    pub(crate) name: SectionName<'data>,
-    pub(crate) min_alignment: Alignment,
-    pub(crate) start_symbols: Vec<PreHashed<UnversionedSymbolName<'data>>>,
-    pub(crate) end_symbols: Vec<PreHashed<UnversionedSymbolName<'data>>>,
+    /// This is a secondary section that will be merged into the primary. The ID of the primary is
+    /// supplied.
+    Secondary(OutputSectionId),
 }
 
 /// Rules governing how input sections should be mapped to output sections.
@@ -65,7 +67,7 @@ pub(crate) struct SectionRule<'data> {
 }
 
 /// What should be done with a particular input section.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SectionRuleOutcome {
     Section(SectionOutputInfo),
     Discard,
@@ -75,7 +77,7 @@ pub(crate) enum SectionRuleOutcome {
     Debug,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SectionOutputInfo {
     pub(crate) section_id: OutputSectionId,
     pub(crate) must_keep: bool,
@@ -98,32 +100,103 @@ impl SectionOutputInfo {
 }
 
 impl<'data> LayoutRulesBuilder<'data> {
-    pub(crate) fn build(self) -> LayoutRules<'data> {
+    /// Records information about any sections and symbols declared by the linker script.
+    pub(crate) fn process_linker_script(
+        &mut self,
+        input: &InputLinkerScript<'data>,
+        output_sections: &mut OutputSections<'data>,
+    ) -> Result<ProcessedLinkerScript<'data>> {
+        let mut symbol_names = Vec::new();
+        let mut symbol_defs = Vec::new();
+
+        for cmd in &input.script.commands {
+            if let linker_script::Command::Sections(sections) = cmd {
+                for sec_cmd in &sections.commands {
+                    let SectionCommand::Section(sec) = sec_cmd;
+
+                    let min_alignment = sec
+                        .alignment
+                        .map(|alignment| Alignment::new(u64::from(alignment)))
+                        .transpose()?
+                        .unwrap_or(alignment::MIN);
+
+                    let primary_section_id = output_sections
+                        .add_named_section(SectionName(sec.output_section_name), min_alignment);
+
+                    let mut last_section_id = None;
+
+                    for contents_cmd in &sec.commands {
+                        match contents_cmd {
+                            ContentsCommand::Matcher(matcher) => {
+                                let section_id = if last_section_id.is_none() {
+                                    primary_section_id
+                                } else {
+                                    output_sections.add_secondary_section(primary_section_id)
+                                };
+
+                                for pattern in &matcher.input_section_name_patterns {
+                                    self.add_section_rule(SectionRule::new(
+                                        pattern,
+                                        crate::layout_rules::SectionRuleOutcome::Section(
+                                            SectionOutputInfo {
+                                                section_id,
+                                                must_keep: matcher.must_keep,
+                                            },
+                                        ),
+                                    )?);
+                                }
+
+                                last_section_id = Some(section_id);
+                            }
+                            ContentsCommand::SymbolAssignment(assignment) => {
+                                symbol_names.push(UnversionedSymbolName::new(assignment.name));
+                                symbol_defs.push(if let Some(id) = last_section_id {
+                                    InternalSymDefInfo::SectionEnd(id)
+                                } else {
+                                    InternalSymDefInfo::SectionStart(primary_section_id)
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let symbol_id_range = SymbolIdRange::input(SymbolId::undefined(), symbol_names.len());
+
+        Ok(ProcessedLinkerScript {
+            symbol_names,
+            symbol_defs,
+            input: InputRef {
+                file: input.input_file,
+                entry: None,
+            },
+            file_id: UNINITIALISED_FILE_ID,
+            symbol_id_range,
+        })
+    }
+
+    pub(crate) fn build(mut self) -> LayoutRules<'data> {
         let section_rules = if self.rules.is_empty() {
             SectionRules::from_rules(BUILT_IN_RULES)
         } else {
+            // Even when we have a linker script, we still need to map .comment to .comment. It's a
+            // special section because both input objects and the linker write to it. At least for
+            // linkers that put their version in the .comment section. GNU ld doesn't, but LLD does
+            // and still does so even when a linker script supposedly suppresses built-in rules.
+            self.rules.push(SectionRule::exact_section_keep(
+                secnames::COMMENT_SECTION_NAME,
+                output_section_id::COMMENT,
+            ));
+
             SectionRules::from_rules(&self.rules)
         };
 
-        LayoutRules {
-            section_rules,
-            user_defined_sections: self.section_ids.user_defined_sections,
-        }
+        LayoutRules { section_rules }
     }
 
     pub(crate) fn add_section_rule(&mut self, rule: SectionRule<'data>) {
         self.rules.push(rule);
-    }
-
-    pub(crate) fn id_for_section_named(&mut self, name: SectionName<'data>) -> OutputSectionId {
-        self.section_ids.id_for_section_named(name)
-    }
-
-    pub(crate) fn section_info_mut(
-        &mut self,
-        section_id: OutputSectionId,
-    ) -> &mut UserDefinedSection<'data> {
-        &mut self.section_ids.user_defined_sections[section_id.as_usize() - NUM_BUILT_IN_SECTIONS]
     }
 }
 
@@ -292,7 +365,7 @@ impl<'data> SectionRules<'data> {
         &self,
         section_name: &[u8],
         section_flags: SectionFlags,
-        section: &SectionHeader,
+        sh_type: SectionType,
     ) -> SectionRuleOutcome {
         if let Some(hash) = section_name_prefix_hash(section_name) {
             if let Some(rule) = self.rules.find(hash, |rule| rule.matches(section_name)) {
@@ -301,7 +374,6 @@ impl<'data> SectionRules<'data> {
         }
 
         if section_name.is_empty() {
-            let sh_type = SectionType::from_header(section);
             return unnamed_section_output(section_flags, sh_type);
         }
 
@@ -341,44 +413,22 @@ fn unnamed_section_output(section_flags: SectionFlags, sh_type: SectionType) -> 
     }
 }
 
-impl Default for SectionIdAllocator<'_> {
-    fn default() -> Self {
-        Self {
-            user_defined_sections: Vec::new(),
-            section_name_to_id: HashMap::with_hasher(RandomState::default()),
-        }
-    }
-}
+#[test]
+fn test_section_mapping() {
+    let rules = SectionRules::from_rules(BUILT_IN_RULES);
+    let lookup_name = |name: &str| {
+        rules.lookup(
+            name.as_bytes(),
+            SectionFlags::empty(),
+            SectionType::from_u32(0),
+        )
+    };
 
-impl<'data> SectionIdAllocator<'data> {
-    fn id_for_section_named(&mut self, name: SectionName<'data>) -> OutputSectionId {
-        if self.section_name_to_id.is_empty() {
-            // Pre-populate with built-in sections
-            for section_id in output_section_id::all_built_in_section_ids() {
-                self.section_name_to_id.insert(
-                    section_id.built_in_details().name.bytes().to_owned(),
-                    section_id,
-                );
-            }
-        }
-
-        if let Some(id) = self.section_name_to_id.get(name.bytes()) {
-            return *id;
-        }
-
-        let id = OutputSectionId::from_usize(
-            output_section_id::NUM_BUILT_IN_SECTIONS + self.user_defined_sections.len(),
-        );
-
-        self.user_defined_sections.push(UserDefinedSection {
-            name,
-            min_alignment: alignment::MIN,
-            start_symbols: Vec::new(),
-            end_symbols: Vec::new(),
-        });
-
-        self.section_name_to_id.insert(name.bytes().to_owned(), id);
-
-        id
-    }
+    assert_eq!(
+        lookup_name(".comment"),
+        SectionRuleOutcome::Section(SectionOutputInfo {
+            section_id: output_section_id::COMMENT,
+            must_keep: true
+        })
+    );
 }

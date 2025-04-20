@@ -37,6 +37,7 @@ use crate::layout::GroupLayout;
 use crate::layout::HeaderInfo;
 use crate::layout::InternalSymbols;
 use crate::layout::Layout;
+use crate::layout::LinkerScriptLayoutState;
 use crate::layout::NonAddressableCounts;
 use crate::layout::ObjectLayout;
 use crate::layout::OutputRecordLayout;
@@ -69,6 +70,7 @@ use crate::symbol_db::SymbolId;
 use anyhow::Context;
 use anyhow::anyhow;
 use anyhow::bail;
+use anyhow::ensure;
 use foldhash::HashMap as FoldHashMap;
 use foldhash::HashMapExt as _;
 use linker_utils::elf::DynamicRelocationKind;
@@ -491,13 +493,17 @@ impl SizedOutput {
                 Ok(())
             })?;
 
-        for (output_section_id, section) in layout.output_sections.ids_with_info() {
+        for (output_section_id, _) in layout.output_sections.ids_with_info() {
             let relocations = layout
                 .relocation_statistics
                 .get(output_section_id)
                 .load(Relaxed);
+
             if relocations > 0 {
-                tracing::debug!(target: "metrics", section = %section.name, relocations, "resolved relocations");
+                tracing::debug!(
+                    target: "metrics",
+                    section = layout.output_sections.display_name(output_section_id),
+                    relocations, "resolved relocations");
             }
         }
         Ok(())
@@ -691,6 +697,7 @@ impl<'data> FileLayout<'data> {
             FileLayout::Object(s) => s.write_file::<A>(buffers, table_writer, layout, trace)?,
             FileLayout::Prelude(s) => s.write_file::<A>(buffers, table_writer, layout)?,
             FileLayout::Epilogue(s) => s.write_file::<A>(buffers, table_writer, layout)?,
+            FileLayout::LinkerScript(_) => {}
             FileLayout::NotLoaded => {}
             FileLayout::Dynamic(s) => s.write_file::<A>(table_writer, layout)?,
         }
@@ -1568,6 +1575,7 @@ impl<'data> ObjectLayout<'data> {
                 &self.sections,
             ) {
                 let e = LittleEndian;
+
                 let section_id = if let Some(section_index) =
                     self.object.symbol_section(sym, sym_index)?
                 {
@@ -1595,16 +1603,22 @@ impl<'data> ObjectLayout<'data> {
                 } else {
                     bail!("Attempted to output a symtab entry with an unexpected section type")
                 };
+
+                let section_id = layout.output_sections.primary_output_section(section_id);
+
                 let Some(res) = layout.local_symbol_resolution(symbol_id) else {
                     bail!("Missing resolution for {}", layout.symbol_debug(symbol_id));
                 };
+
                 let mut symbol_value = res.value_for_symbol_table();
+
                 if sym.st_type() == object::elf::STT_TLS {
                     let tls_start_address = layout.segment_layouts.tls_start_address.context(
                         "Writing TLS variable to symtab, but we don't have a TLS segment",
                     )?;
                     symbol_value -= tls_start_address;
                 }
+
                 symbol_writer
                     .copy_symbol(sym, info.name, section_id, symbol_value)
                     .with_context(|| {
@@ -2287,7 +2301,7 @@ impl PreludeLayout {
             ProgramHeaderWriter::new(buffers.get_mut(part_id::PROGRAM_HEADERS));
         write_program_headers(&mut program_headers, layout)?;
 
-        write_section_headers(buffers.get_mut(part_id::SECTION_HEADERS), layout);
+        write_section_headers(buffers.get_mut(part_id::SECTION_HEADERS), layout)?;
 
         write_section_header_strings(
             buffers.get_mut(part_id::SHSTRTAB),
@@ -2723,9 +2737,8 @@ fn write_dynamic_symbol_definitions(
                     )?;
                 }
             }
-            FileLayout::Epilogue(epilogue) => {
-                // Dynamic symbols exported by the epilogue come from linker scripts.
-                write_linker_script_dynsym(table_writer, layout, sym_def.symbol_id, epilogue)?;
+            FileLayout::LinkerScript(script) => {
+                write_linker_script_dynsym(table_writer, layout, sym_def.symbol_id, script)?;
             }
             _ => bail!(
                 "Internal error: Unexpected dynamic symbol definition from {:?}. {}",
@@ -2743,27 +2756,34 @@ fn write_linker_script_dynsym(
     table_writer: &mut TableWriter,
     layout: &Layout,
     symbol_id: SymbolId,
-    epilogue: &EpilogueLayout,
+    script: &LinkerScriptLayoutState,
 ) -> Result {
-    let local_index = epilogue
+    let local_index = script
         .internal_symbols
         .symbol_id_range()
         .id_to_offset(symbol_id);
 
-    let info = &epilogue.internal_symbols.symbol_definitions[local_index];
+    let info = &script.internal_symbols.symbol_definitions[local_index];
 
     let section_id = info
         .section_id()
         .context("Tried to export dynamic symbol not associated with a section")?;
+
+    let section_id = layout.output_sections.primary_output_section(section_id);
 
     let shndx = layout
         .output_sections
         .output_index_of_section(section_id)
         .context("Tried to write dynamic symbol in section that's not being output")?;
 
-    let section_layout = layout.section_layouts.get(section_id);
-    let address = section_layout.mem_offset;
+    let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
+        format!(
+            "Missing resolution for {}",
+            layout.symbol_db.symbol_debug(symbol_id)
+        )
+    })?;
 
+    let address = resolution.address()?;
     let name = layout.symbol_db.symbol_name(symbol_id)?;
 
     let entry = table_writer
@@ -2873,16 +2893,18 @@ fn write_internal_symbols(
         let mut shndx = def_info
             .section_id()
             .map(|section_id| {
+                let section_id = layout.output_sections.primary_output_section(section_id);
+
                 layout
-                .output_sections
-                .output_index_of_section(section_id)
-                .with_context(|| {
-                    format!(
-                        "symbol `{}` in section `{}` that we're not going to output {resolution:?}",
-                        layout.symbol_db.symbol_name_for_display(symbol_id),
-                        layout.output_sections.display_name(section_id)
-                    )
-                })
+                    .output_sections
+                    .output_index_of_section(section_id)
+                    .with_context(|| {
+                        format!(
+                            "symbol `{}` in section `{}` that we're not going to output {resolution:?}",
+                            layout.symbol_db.symbol_name_for_display(symbol_id),
+                            layout.output_sections.display_name(section_id)
+                        )
+                    })
             })
             .transpose()?
             .unwrap_or(0);
@@ -3228,7 +3250,7 @@ impl DynamicEntriesWriter<'_> {
     }
 }
 
-fn write_section_headers(out: &mut [u8], layout: &Layout) {
+fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
     let entries: &mut [SectionHeader] = slice_from_all_bytes_mut(out);
     let output_sections = &layout.output_sections;
     let mut entries = entries.iter_mut();
@@ -3265,7 +3287,8 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
             alignment = section_layout.alignment.value();
 
             while let Some(OrderEvent::Section(next_section_id)) = order.peek() {
-                if next_section_id.merge_target() == section_id {
+                if let Some(primary_id) = output_sections.merge_target(*next_section_id) {
+                    debug_assert_eq!(primary_id, section_id);
                     size += layout.section_layouts.get(*next_section_id).mem_size;
                     order.next();
                 } else {
@@ -3293,6 +3316,13 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
                 .raw(),
         );
 
+        let name = layout.output_sections.name(section_id).with_context(|| {
+            format!(
+                "Missing name for section {}",
+                layout.output_sections.section_debug(section_id)
+            )
+        })?;
+
         entry.sh_addr.set(e, section_layout.mem_offset);
         entry.sh_offset.set(e, section_layout.file_offset as u64);
         entry.sh_size.set(e, size);
@@ -3300,12 +3330,15 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
         entry.sh_info.set(e, section_id.info(&info_inputs));
         entry.sh_addralign.set(e, alignment);
         entry.sh_entsize.set(e, entsize);
-        name_offset += layout.output_sections.name(section_id).len() as u32 + 1;
+
+        name_offset += name.len() as u32 + 1;
     }
-    assert!(
+    ensure!(
         entries.next().is_none(),
         "Allocated section entries that weren't used"
     );
+
+    Ok(())
 }
 
 fn write_section_header_strings(
@@ -3316,10 +3349,11 @@ fn write_section_header_strings(
     for event in output_order {
         if let OrderEvent::Section(id) = event {
             if sections.output_index_of_section(id).is_some() {
-                let name = sections.name(id);
-                let name_out = crate::slice::slice_take_prefix_mut(&mut out, name.len() + 1);
-                name_out[..name.len()].copy_from_slice(name.bytes());
-                name_out[name.len()] = 0;
+                if let Some(name) = sections.name(id) {
+                    let name_out = crate::slice::slice_take_prefix_mut(&mut out, name.len() + 1);
+                    name_out[..name.len()].copy_from_slice(name.bytes());
+                    name_out[name.len()] = 0;
+                }
             }
         }
     }

@@ -4,12 +4,14 @@ use crate::parsing::Epilogue;
 use crate::parsing::ParsedInputObject;
 use crate::parsing::ParsedInputs;
 use crate::parsing::Prelude;
+use crate::parsing::ProcessedLinkerScript;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 
 pub(crate) enum Group<'data> {
     Prelude(Prelude<'data>),
     Objects(&'data [ParsedInputObject<'data>]),
+    LinkerScripts(Vec<ProcessedLinkerScript<'data>>),
     Epilogue(Epilogue),
 }
 
@@ -25,6 +27,16 @@ impl Group<'_> {
                 objects[0].symbol_id_range,
                 objects[objects.len() - 1].symbol_id_range,
             ),
+            Group::LinkerScripts(scripts) => {
+                if scripts.is_empty() {
+                    SymbolIdRange::empty()
+                } else {
+                    SymbolIdRange::covering(
+                        scripts[0].symbol_id_range,
+                        scripts[scripts.len() - 1].symbol_id_range,
+                    )
+                }
+            }
             Group::Epilogue(o) => SymbolIdRange::epilogue(o.start_symbol_id, 0),
         }
     }
@@ -78,6 +90,12 @@ pub(crate) fn group_files<'data>(
                 Group::Objects(group_objects)
             }),
     );
+
+    let mut linker_scripts = parsed_inputs.linker_scripts;
+    for (i, script) in linker_scripts.iter_mut().enumerate() {
+        script.file_id = FileId::new(groups.len() as u32, i as u32);
+    }
+    groups.push(Group::LinkerScripts(linker_scripts));
 
     let mut epilogue = parsed_inputs.epilogue;
     epilogue.file_id = FileId::new(groups.len() as u32, 0);

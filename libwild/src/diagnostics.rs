@@ -38,6 +38,7 @@ impl<'data> SymbolInfoPrinter<'data> {
                     ResolvedFile::NotLoaded(_) => None,
                     ResolvedFile::Prelude(_) => Some(PRELUDE_FILE_ID),
                     ResolvedFile::Object(obj) => Some(obj.file_id),
+                    ResolvedFile::LinkerScript(obj) => Some(obj.file_id),
                     ResolvedFile::Epilogue(obj) => Some(obj.file_id),
                 })
             })
@@ -100,6 +101,9 @@ impl<'data> SymbolInfoPrinter<'data> {
                                 println!("  Corrupted input (file_id #{file_id}) {}: {e}", o.input);
                             }
                         }
+                    }
+                    crate::parsing::ParsedInput::LinkerScript(s) => {
+                        println!("  Symbol from linker script `{}`", s.input);
                     }
                     crate::parsing::ParsedInput::Epilogue(_) => println!("  <epilogue>"),
                 }

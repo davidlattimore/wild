@@ -7,6 +7,7 @@ use crate::error::Result;
 use crate::grouping::Group;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
+use crate::hash::hash_bytes;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::input_data::UNINITIALISED_FILE_ID;
@@ -16,6 +17,7 @@ use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ParsedInput;
 use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
+use crate::parsing::ProcessedLinkerScript;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::ValueFlags;
@@ -206,6 +208,10 @@ impl SymbolIdRange {
             start_symbol_id: a.start_symbol_id,
             num_symbols: b.start_symbol_id.as_usize() + b.len() - a.start_symbol_id.as_usize(),
         }
+    }
+
+    pub(crate) fn empty() -> SymbolIdRange {
+        Self::input(SymbolId::from_usize(0), 0)
     }
 }
 
@@ -402,6 +408,7 @@ impl<'data> SymbolDb<'data> {
                     _ => Visibility::Default,
                 }
             }
+            Group::LinkerScripts(_) => Visibility::Default,
             Group::Epilogue(_) => Visibility::Default,
         }
     }
@@ -428,6 +435,7 @@ impl<'data> SymbolDb<'data> {
             Group::Objects(parsed_input_objects) => {
                 parsed_input_objects[file_id.file()].symbol_name(symbol_id)
             }
+            Group::LinkerScripts(scripts) => Ok(scripts[file_id.file()].symbol_name(symbol_id)),
             Group::Epilogue(epilogue) => {
                 Ok(self.start_stop_symbol_names[symbol_id.offset_from(epilogue.start_symbol_id)])
             }
@@ -456,6 +464,7 @@ impl<'data> SymbolDb<'data> {
             .map(|group| match group {
                 Group::Prelude(_) => 0,
                 Group::Objects(parsed_input_objects) => parsed_input_objects.len(),
+                Group::LinkerScripts(_) => 0,
                 Group::Epilogue(_) => 0,
             })
             .sum()
@@ -528,6 +537,7 @@ impl<'data> SymbolDb<'data> {
             Group::Objects(parsed_input_objects) => {
                 ParsedInput::Object(&parsed_input_objects[file_id.file()])
             }
+            Group::LinkerScripts(scripts) => ParsedInput::LinkerScript(&scripts[file_id.file()]),
             Group::Epilogue(epilogue) => ParsedInput::Epilogue(epilogue),
         }
     }
@@ -900,6 +910,11 @@ fn read_symbols<'data, 'out>(
                         .with_context(|| format!("Failed to load symbols from `{}`", obj.input))?;
                     }
                 }
+                Group::LinkerScripts(scripts) => {
+                    for script in scripts {
+                        load_linker_script_symbols(script, symbols_out, &mut outputs);
+                    }
+                }
                 Group::Epilogue(_) => {
                     // Custom section start/stop symbols are generated after archive handling.
                 }
@@ -908,6 +923,21 @@ fn read_symbols<'data, 'out>(
             Ok(outputs)
         })
         .collect::<Result<Vec<SymbolLoadOutputs>>>()
+}
+
+fn load_linker_script_symbols<'data>(
+    script: &ProcessedLinkerScript<'data>,
+    symbols_out: &mut SymbolInfoWriter,
+    outputs: &mut SymbolLoadOutputs<'data>,
+) {
+    for (offset, name) in script.symbol_names.iter().enumerate() {
+        let symbol_id = script.symbol_id_range.offset_to_id(offset);
+        outputs.add_non_versioned(PendingSymbol::from_prehashed(
+            symbol_id,
+            PreHashed::new(*name, hash_bytes(name.bytes())),
+        ));
+        symbols_out.set_next(ValueFlags::ADDRESS, symbol_id, script.file_id);
+    }
 }
 
 fn load_symbols_from_file<'data>(
@@ -1266,6 +1296,9 @@ impl std::fmt::Display for SymbolDebug<'_, '_> {
                     } else {
                         write!(f, "<unnamed symbol>")?;
                     }
+                }
+                ParsedInput::LinkerScript(s) => {
+                    write!(f, "Symbol from linker script `{}`", s.input)?;
                 }
                 ParsedInput::Epilogue(_) => write!(f, "<unnamed custom-section symbol>")?,
             }

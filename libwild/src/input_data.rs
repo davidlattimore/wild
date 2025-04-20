@@ -1,6 +1,5 @@
 //! Code for figuring out what input files we need to read then mapping them into memory.
 
-use crate::alignment::Alignment;
 use crate::archive;
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
@@ -10,16 +9,7 @@ use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::error::Result;
 use crate::file_kind::FileKind;
-use crate::layout_rules::LayoutRules;
-use crate::layout_rules::LayoutRulesBuilder;
-use crate::layout_rules::SectionOutputInfo;
-use crate::layout_rules::SectionRule;
-use crate::linker_script;
-use crate::linker_script::ContentsCommand;
 use crate::linker_script::LinkerScript;
-use crate::linker_script::SectionCommand;
-use crate::output_section_id::SectionName;
-use crate::symbol::UnversionedSymbolName;
 use anyhow::Context;
 use anyhow::bail;
 use foldhash::HashSet;
@@ -96,11 +86,16 @@ struct InputPath {
     original: PathBuf,
 }
 
+pub(crate) struct InputLinkerScript<'data> {
+    pub(crate) script: LinkerScript<'data>,
+    pub(crate) input_file: &'data InputFile,
+}
+
 struct TemporaryState<'data> {
     args: &'data Args,
     filenames: HashSet<PathBuf>,
-    layout_rules_builder: LayoutRulesBuilder<'data>,
     inputs_arena: &'data Arena<InputFile>,
+    linker_scripts: Vec<InputLinkerScript<'data>>,
 }
 
 impl<'data> InputData<'data> {
@@ -108,7 +103,7 @@ impl<'data> InputData<'data> {
     pub fn from_args(
         args: &'data Args,
         inputs_arena: &'data Arena<InputFile>,
-    ) -> Result<(Self, LayoutRules<'data>)> {
+    ) -> Result<(Self, Vec<InputLinkerScript<'data>>)> {
         let files = Vec::new();
 
         let version_script_data = args
@@ -128,9 +123,7 @@ impl<'data> InputData<'data> {
             input_data.register_input(input, &mut temporary_state)?;
         }
 
-        let layout_rules = temporary_state.layout_rules_builder.build();
-
-        Ok((input_data, layout_rules))
+        Ok((input_data, temporary_state.linker_scripts))
     }
 
     fn register_input(&mut self, input: &Input, state: &mut TemporaryState<'data>) -> Result {
@@ -155,8 +148,10 @@ impl<'data> InputData<'data> {
 
         match kind {
             FileKind::Text => {
+                let input_file = state.inputs_arena.alloc(input_file);
+
                 return self.process_linker_script(
-                    state.inputs_arena.alloc(input_file).data(),
+                    input_file,
                     absolute_path,
                     input.modifiers,
                     state,
@@ -231,14 +226,17 @@ impl<'data> InputData<'data> {
 
     fn process_linker_script(
         &mut self,
-        bytes: &'data [u8],
+        input_file: &'data InputFile,
         absolute_path: &Path,
         modifiers: Modifiers,
         state: &mut TemporaryState<'data>,
     ) -> Result {
+        let bytes = input_file.data();
         let script = LinkerScript::parse(bytes, absolute_path)?;
         self.add_inputs_from_linker_script(absolute_path, modifiers, state, &script)?;
-        state.record_linker_script_sections(&script)?;
+        state
+            .linker_scripts
+            .push(InputLinkerScript { script, input_file });
         Ok(())
     }
 
@@ -248,7 +246,7 @@ impl<'data> InputData<'data> {
         modifiers: Modifiers,
         state: &mut TemporaryState<'data>,
         script: &LinkerScript,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result {
         let directory = absolute_path.parent().expect("expected an absolute path");
 
         script.foreach_input(modifiers, |mut input| {
@@ -275,68 +273,8 @@ impl<'data> TemporaryState<'data> {
             inputs_arena,
             filenames: HashSet::with_hasher(RandomState::default()),
             args,
-            layout_rules_builder: LayoutRulesBuilder::default(),
+            linker_scripts: Vec::new(),
         }
-    }
-
-    /// Records information about any sections declared by the linker script.
-    fn record_linker_script_sections(&mut self, script: &LinkerScript<'data>) -> Result {
-        for cmd in &script.commands {
-            if let linker_script::Command::Sections(sections) = cmd {
-                for sec_cmd in &sections.commands {
-                    let SectionCommand::Section(sec) = sec_cmd;
-
-                    let primary_section_id = self
-                        .layout_rules_builder
-                        .id_for_section_named(SectionName(sec.output_section_name));
-
-                    if let Some(alignment) = sec.alignment {
-                        self.layout_rules_builder
-                            .section_info_mut(primary_section_id)
-                            .min_alignment = Alignment::new(u64::from(alignment))?;
-                    }
-
-                    let mut last_section_id = None;
-
-                    for cmd in &sec.commands {
-                        match cmd {
-                            ContentsCommand::Matcher(matcher) => {
-                                for pattern in &matcher.input_section_name_patterns {
-                                    self.layout_rules_builder.add_section_rule(SectionRule::new(
-                                        pattern,
-                                        crate::layout_rules::SectionRuleOutcome::Section(
-                                            SectionOutputInfo {
-                                                section_id: primary_section_id,
-                                                must_keep: matcher.must_keep,
-                                            },
-                                        ),
-                                    )?);
-                                }
-
-                                last_section_id = Some(primary_section_id);
-                            }
-                            ContentsCommand::SymbolAssignment(assignment) => {
-                                let symbol_name = UnversionedSymbolName::prehashed(assignment.name);
-
-                                if let Some(id) = last_section_id {
-                                    self.layout_rules_builder
-                                        .section_info_mut(id)
-                                        .end_symbols
-                                        .push(symbol_name);
-                                } else {
-                                    self.layout_rules_builder
-                                        .section_info_mut(primary_section_id)
-                                        .start_symbols
-                                        .push(symbol_name);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 }
 

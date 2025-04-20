@@ -196,7 +196,7 @@ pub(crate) fn merge_strings<'data>(
     output_string_sections.for_each(|section_id, sec| {
         if sec.len() > 0 {
             tracing::debug!(target: "metrics",
-                section = ?output_sections.name(section_id),
+                section = %output_sections.display_name(section_id),
                 string_count = sec.string_count(),
                 byte_size = sec.len(),
                 input_string_count = sec.input_string_count(),

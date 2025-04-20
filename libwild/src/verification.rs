@@ -50,9 +50,9 @@ impl OffsetVerifier {
             if exp != act {
                 let actual_bump = *act as i64 - (*exp as i64 - size as i64);
                 problems.push(format!(
-                    "Part #{part_id} (section `{}` alignment: {alignment}) expected: 0x{exp:x} \
+                    "Part #{part_id} (section {} alignment: {alignment}) expected: 0x{exp:x} \
                      actual: 0x{act:x} bumped by: 0x{actual_bump:x} requested size: 0x{size:x}\n",
-                    output_sections.name(part_id.output_section_id())
+                    output_sections.display_name(part_id.output_section_id())
                 ));
             }
         }

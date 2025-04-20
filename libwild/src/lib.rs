@@ -50,7 +50,9 @@ use crossbeam_utils::atomic::AtomicCell;
 use error::AlreadyInitialised;
 use input_data::InputData;
 use input_data::InputFile;
+use input_data::InputLinkerScript;
 use layout_rules::LayoutRules;
+use output_section_id::OutputSections;
 pub use subprocess::run_in_subprocess;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
@@ -160,12 +162,15 @@ impl Linker {
         args: &'layout_inputs Args,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
         let output = elf_writer::Output::new(args);
-        let (input_data, layout_rules) = input_data::InputData::from_args(args, &self.inputs)?;
+
+        let (input_data, linker_scripts) = input_data::InputData::from_args(args, &self.inputs)?;
 
         // Note, we propagate errors from `link_with_input_data` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
-        let result = self.link_with_input_data::<A>(output, &input_data, &layout_rules, args);
+        let result = self.link_with_input_data::<A>(output, &input_data, &linker_scripts, args);
+
         input_data.verify_inputs_unchanged()?;
+
         result
     }
 
@@ -173,17 +178,34 @@ impl Linker {
         &'data self,
         mut output: elf_writer::Output,
         input_data: &InputData<'data>,
-        layout_rules: &LayoutRules<'data>,
+        linker_scripts: &[InputLinkerScript<'data>],
         args: &'data Args,
     ) -> error::Result<LinkerOutput<'data>> {
         let inputs = archive_splitter::split_archives(input_data)?;
-        let parsed_inputs = parsing::parse_input_files(&inputs, args, &self.herd)?;
+        let mut output_sections = OutputSections::with_base_address(args.base_address());
+
+        let (parsed_inputs, layout_rules) = parsing::parse_input_files(
+            &inputs,
+            linker_scripts,
+            args,
+            &mut output_sections,
+            &self.herd,
+        )?;
+
         let groups = grouping::group_files(parsed_inputs, args);
+
         let mut symbol_db =
             symbol_db::SymbolDb::build(groups, input_data.version_script_data, args)?;
-        let resolved =
-            resolution::resolve_symbols_and_sections(&mut symbol_db, &self.herd, layout_rules)?;
-        let layout = layout::compute::<A>(symbol_db, resolved, &mut output)?;
+
+        let resolved = resolution::resolve_symbols_and_sections(
+            &mut symbol_db,
+            &self.herd,
+            &mut output_sections,
+            &layout_rules,
+        )?;
+
+        let layout = layout::compute::<A>(symbol_db, resolved, output_sections, &mut output)?;
+
         output.write::<A>(&layout)?;
         diff::maybe_diff()?;
 
