@@ -2723,6 +2723,10 @@ fn write_dynamic_symbol_definitions(
                     )?;
                 }
             }
+            FileLayout::Epilogue(epilogue) => {
+                // Dynamic symbols exported by the epilogue come from linker scripts.
+                write_linker_script_dynsym(table_writer, layout, sym_def.symbol_id, epilogue)?;
+            }
             _ => bail!(
                 "Internal error: Unexpected dynamic symbol definition from {:?}. {}",
                 file_layout,
@@ -2730,6 +2734,43 @@ fn write_dynamic_symbol_definitions(
             ),
         }
     }
+
+    Ok(())
+}
+
+/// Writes a symbol that was produced by a linker script.
+fn write_linker_script_dynsym(
+    table_writer: &mut TableWriter,
+    layout: &Layout,
+    symbol_id: SymbolId,
+    epilogue: &EpilogueLayout,
+) -> Result {
+    let local_index = epilogue
+        .internal_symbols
+        .symbol_id_range()
+        .id_to_offset(symbol_id);
+
+    let info = &epilogue.internal_symbols.symbol_definitions[local_index];
+
+    let section_id = info
+        .section_id()
+        .context("Tried to export dynamic symbol not associated with a section")?;
+
+    let shndx = layout
+        .output_sections
+        .output_index_of_section(section_id)
+        .context("Tried to write dynamic symbol in section that's not being output")?;
+
+    let section_layout = layout.section_layouts.get(section_id);
+    let address = section_layout.mem_offset;
+
+    let name = layout.symbol_db.symbol_name(symbol_id)?;
+
+    let entry = table_writer
+        .dynsym_writer
+        .define_symbol(false, shndx, address, 0, name.bytes())?;
+
+    entry.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
 
     Ok(())
 }

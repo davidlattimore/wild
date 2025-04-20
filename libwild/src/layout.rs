@@ -121,7 +121,6 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         groups,
         mut output_sections,
         merged_strings,
-        custom_start_stop_defs,
     } = resolved;
 
     let symbol_resolution_flags = vec![AtomicResolutionFlags::empty(); symbol_db.num_symbols()];
@@ -136,7 +135,6 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         &output_sections,
         &symbol_resolution_flags,
         &merged_strings,
-        custom_start_stop_defs,
     )?;
 
     let mut group_states = gc_outputs.group_states;
@@ -273,6 +271,7 @@ fn update_dynamic_symbol_resolutions(
     let Some(FileLayout::Epilogue(epilogue)) = layouts.last().and_then(|g| g.files.last()) else {
         panic!("Epilogue should be the last file");
     };
+
     for (index, sym) in epilogue.dynamic_symbol_definitions.iter().enumerate() {
         let dynamic_symbol_index = NonZeroU32::try_from(epilogue.dynsym_start_index + index as u32)
             .expect("Dynamic symbol definitions should start > 0");
@@ -571,6 +570,7 @@ pub(crate) struct EpilogueLayoutState<'data> {
     build_id_size: Option<usize>,
 
     verdefs: Option<Vec<VersionDef>>,
+    end_linker_script_symbols: SymbolId,
 }
 
 #[derive(Default, Debug)]
@@ -1966,15 +1966,9 @@ fn find_required_sections<'data, A: Arch>(
     output_sections: &OutputSections<'data>,
     symbol_resolution_flags: &[AtomicResolutionFlags],
     merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
-    custom_start_stop_defs: Vec<InternalSymDefInfo>,
 ) -> Result<GcOutputs<'data>> {
     let num_workers = groups_in.len();
-    let (worker_slots, groups) = create_worker_slots(
-        groups_in,
-        output_sections,
-        symbol_db,
-        custom_start_stop_defs,
-    );
+    let (worker_slots, groups) = create_worker_slots(groups_in, output_sections, symbol_db);
 
     let num_threads = symbol_db.args.num_threads.get();
 
@@ -2080,7 +2074,6 @@ fn create_worker_slots<'data>(
     groups_in: Vec<resolution::ResolvedGroup<'data>>,
     output_sections: &OutputSections<'data>,
     symbol_db: &SymbolDb<'data>,
-    mut custom_start_stop_defs: Vec<InternalSymDefInfo>,
 ) -> (Vec<Mutex<WorkerSlot<'data>>>, Vec<GroupState<'data>>) {
     let mut worker_slots = Vec::with_capacity(groups_in.len());
     let group_states = groups_in
@@ -2091,7 +2084,7 @@ fn create_worker_slots<'data>(
             let files = group
                 .files
                 .into_iter()
-                .map(|file| file.create_layout_state(&mut custom_start_stop_defs))
+                .map(|file| file.create_layout_state())
                 .collect();
             worker_slots.push(Mutex::new(WorkerSlot {
                 work: Default::default(),
@@ -2235,7 +2228,7 @@ fn activate<'data, A: Arch>(
         FileLayoutState::Prelude(s) => s.activate(common, resources, queue)?,
         FileLayoutState::Dynamic(s) => s.activate(common, resources, queue)?,
         FileLayoutState::NotLoaded(_) => {}
-        FileLayoutState::Epilogue(s) => s.activate(common, resources, queue),
+        FileLayoutState::Epilogue(s) => s.activate(common, resources, queue)?,
     }
     Ok(())
 }
@@ -3181,6 +3174,10 @@ impl InternalSymbols {
         }
         Ok(())
     }
+
+    pub(crate) fn symbol_id_range(&self) -> SymbolIdRange {
+        SymbolIdRange::epilogue(self.start_symbol_id, self.symbol_definitions.len())
+    }
 }
 
 fn create_start_end_symbol_resolution(
@@ -3240,30 +3237,35 @@ fn is_symbol_undefined(
 impl<'data> EpilogueLayoutState<'data> {
     fn activate(
         &mut self,
-        _common: &mut CommonGroupState,
-        resources: &GraphResources,
+        common: &mut CommonGroupState<'data>,
+        resources: &GraphResources<'data, '_>,
         _queue: &mut LocalWorkQueue,
-    ) {
+    ) -> Result {
         self.build_id_size = match &resources.symbol_db.args.build_id {
             BuildIdOption::None => None,
             BuildIdOption::Fast => Some(size_of::<blake3::Hash>()),
             BuildIdOption::Hex(hex) => Some(hex.len()),
             BuildIdOption::Uuid => Some(size_of::<uuid::Uuid>()),
         };
+
+        let mut symbol_id = self.internal_symbols.start_symbol_id;
+        while symbol_id < self.end_linker_script_symbols {
+            export_dynamic(common, symbol_id, resources.symbol_db)?;
+            symbol_id = symbol_id.next();
+        }
+
+        Ok(())
     }
 
-    fn new(
-        input_state: ResolvedEpilogue,
-        custom_start_stop_defs: Vec<InternalSymDefInfo>,
-    ) -> EpilogueLayoutState<'data> {
+    fn new(input_state: ResolvedEpilogue) -> EpilogueLayoutState<'data> {
         EpilogueLayoutState {
             file_id: input_state.file_id,
             symbol_id_range: SymbolIdRange::epilogue(
                 input_state.start_symbol_id,
-                custom_start_stop_defs.len(),
+                input_state.custom_start_stop_defs.len(),
             ),
             internal_symbols: InternalSymbols {
-                symbol_definitions: custom_start_stop_defs,
+                symbol_definitions: input_state.custom_start_stop_defs,
                 start_symbol_id: input_state.start_symbol_id,
             },
             dynamic_symbol_definitions: Default::default(),
@@ -3271,6 +3273,7 @@ impl<'data> EpilogueLayoutState<'data> {
             gnu_property_notes: Default::default(),
             build_id_size: Default::default(),
             verdefs: Default::default(),
+            end_linker_script_symbols: input_state.end_linker_script_symbols,
         }
     }
 
@@ -4405,10 +4408,7 @@ fn allocate_plt(memory_offsets: &mut OutputSectionPartMap<u64>) -> NonZeroU64 {
 }
 
 impl<'data> resolution::ResolvedFile<'data> {
-    fn create_layout_state(
-        self,
-        custom_start_stop_defs: &mut Vec<InternalSymDefInfo>,
-    ) -> FileLayoutState<'data> {
+    fn create_layout_state(self) -> FileLayoutState<'data> {
         match self {
             resolution::ResolvedFile::Object(s) => new_object_layout_state(s),
             resolution::ResolvedFile::Prelude(s) => {
@@ -4416,7 +4416,7 @@ impl<'data> resolution::ResolvedFile<'data> {
             }
             resolution::ResolvedFile::NotLoaded(s) => FileLayoutState::NotLoaded(s),
             resolution::ResolvedFile::Epilogue(s) => {
-                FileLayoutState::Epilogue(EpilogueLayoutState::new(s, take(custom_start_stop_defs)))
+                FileLayoutState::Epilogue(EpilogueLayoutState::new(s))
             }
         }
     }

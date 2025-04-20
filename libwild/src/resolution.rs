@@ -59,7 +59,6 @@ pub(crate) struct ResolutionOutputs<'data> {
     pub(crate) groups: Vec<ResolvedGroup<'data>>,
     pub(crate) output_sections: OutputSections<'data>,
     pub(crate) merged_strings: OutputSectionMap<MergedStringsSection<'data>>,
-    pub(crate) custom_start_stop_defs: Vec<InternalSymDefInfo>,
 }
 
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
@@ -72,7 +71,16 @@ pub fn resolve_symbols_and_sections<'data>(
 
     resolve_sections(&mut resolved_groups, herd, symbol_db, layout_rules)?;
 
-    let output_sections = assign_section_ids(&mut resolved_groups, symbol_db.args, layout_rules);
+    let mut custom_start_stop_defs = Vec::new();
+
+    let output_sections = assign_section_ids(
+        &mut resolved_groups,
+        symbol_db,
+        layout_rules,
+        &mut custom_start_stop_defs,
+    );
+
+    let end_linker_script_symbols = SymbolId::from_usize(symbol_db.num_symbols());
 
     let merged_strings = crate::string_merging::merge_strings(
         &mut resolved_groups,
@@ -80,12 +88,26 @@ pub fn resolve_symbols_and_sections<'data>(
         symbol_db.args,
     )?;
 
-    let custom_start_stop_defs = canonicalise_undefined_symbols(
+    canonicalise_undefined_symbols(
         undefined_symbols,
         &output_sections,
         &resolved_groups,
         symbol_db,
+        &mut custom_start_stop_defs,
     )?;
+
+    let ResolvedFile::Epilogue(epilogue) = resolved_groups
+        .last_mut()
+        .unwrap()
+        .files
+        .last_mut()
+        .unwrap()
+    else {
+        panic!("Epilogue must always be last");
+    };
+
+    epilogue.custom_start_stop_defs = custom_start_stop_defs;
+    epilogue.end_linker_script_symbols = end_linker_script_symbols;
 
     crate::symbol_db::resolve_alternative_symbol_definitions(symbol_db, &resolved_groups)?;
 
@@ -93,7 +115,6 @@ pub fn resolve_symbols_and_sections<'data>(
         groups: resolved_groups,
         output_sections,
         merged_strings,
-        custom_start_stop_defs,
     })
 }
 
@@ -259,6 +280,8 @@ fn resolve_group<'data, 'definitions>(
                 files: vec![ResolvedFile::Epilogue(ResolvedEpilogue {
                     file_id: UNINITIALISED_FILE_ID,
                     start_symbol_id: epilogue.start_symbol_id,
+                    custom_start_stop_defs: Vec::new(),
+                    end_linker_script_symbols: epilogue.start_symbol_id,
                 })],
             }
         }
@@ -467,22 +490,40 @@ pub(crate) struct NonDynamicResolved<'data> {
     custom_sections: Vec<CustomSectionDetails<'data>>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct ResolvedEpilogue {
     pub(crate) file_id: FileId,
     pub(crate) start_symbol_id: SymbolId,
+    pub(crate) custom_start_stop_defs: Vec<InternalSymDefInfo>,
+
+    /// All symbols in the range [`start_symbol_id`, `end_linker_script_symbols`) came from the
+    /// linker script.
+    pub(crate) end_linker_script_symbols: SymbolId,
 }
 
 #[tracing::instrument(skip_all, name = "Assign section IDs")]
 fn assign_section_ids<'data>(
     resolved: &mut [ResolvedGroup<'data>],
-    args: &Args,
+    symbol_db: &mut SymbolDb<'data>,
     layout_rules: &LayoutRules<'data>,
+    custom_start_stop_defs: &mut Vec<InternalSymDefInfo>,
 ) -> OutputSections<'data> {
-    let mut output_sections_builder = OutputSectionsBuilder::with_base_address(args.base_address());
+    let mut output_sections_builder =
+        OutputSectionsBuilder::with_base_address(symbol_db.args.base_address());
 
     for section in &layout_rules.user_defined_sections {
-        output_sections_builder.add_section(section.name, section.min_alignment);
+        let output_section_id =
+            output_sections_builder.add_section(section.name, section.min_alignment);
+
+        for sym in &section.start_symbols {
+            symbol_db.add_start_stop_symbol(*sym);
+            custom_start_stop_defs.push(InternalSymDefInfo::SectionStart(output_section_id));
+        }
+
+        for sym in &section.end_symbols {
+            symbol_db.add_start_stop_symbol(*sym);
+            custom_start_stop_defs.push(InternalSymDefInfo::SectionEnd(output_section_id));
+        }
     }
 
     for group in resolved {
@@ -600,9 +641,8 @@ fn canonicalise_undefined_symbols<'data>(
     output_sections: &OutputSections,
     groups: &[ResolvedGroup],
     symbol_db: &mut SymbolDb<'data>,
-) -> Result<Vec<InternalSymDefInfo>> {
-    let mut custom_start_stop_defs = Vec::new();
-
+    custom_start_stop_defs: &mut Vec<InternalSymDefInfo>,
+) -> Result {
     let mut name_to_id: PassThroughHashMap<UnversionedSymbolName<'data>, SymbolId> =
         Default::default();
 
@@ -636,7 +676,7 @@ fn canonicalise_undefined_symbols<'data>(
                         let symbol_id = allocate_start_stop_symbol_id(
                             pre_hashed,
                             symbol_db,
-                            &mut custom_start_stop_defs,
+                            custom_start_stop_defs,
                             output_sections,
                         );
 
@@ -665,7 +705,7 @@ fn canonicalise_undefined_symbols<'data>(
         }
     }
 
-    Ok(custom_start_stop_defs)
+    Ok(())
 }
 
 fn allocate_start_stop_symbol_id<'data>(

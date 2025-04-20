@@ -189,7 +189,12 @@ impl ParsedInput<'_> {
         match self {
             ParsedInput::Prelude(o) => SymbolIdRange::prelude(o.symbol_definitions.len()),
             ParsedInput::Object(o) => o.symbol_id_range,
-            ParsedInput::Epilogue(o) => SymbolIdRange::epilogue(o.start_symbol_id, 0),
+            ParsedInput::Epilogue(o) => SymbolIdRange::epilogue(
+                o.start_symbol_id,
+                // The epilogue allocates symbols after inputs are parsed, so it effectively owns
+                // the rest of the symbol ID space.
+                u32::MAX as usize - o.start_symbol_id.as_usize(),
+            ),
         }
     }
 }
