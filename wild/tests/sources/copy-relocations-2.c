@@ -6,6 +6,10 @@ int bar = 1;
 __attribute__ ((weak, alias("bar"))) extern int foo;
 
 int get_foo(void) {
+    return foo;
+}
+
+int get_bar(void) {
     return bar;
 }
 

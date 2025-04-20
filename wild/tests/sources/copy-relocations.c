@@ -30,6 +30,9 @@ int get_bar(void);
 void _start(void) {
     foo = 10;
     if (get_foo() != 10) {
+        exit_syscall(19);
+    }
+    if (get_bar() != 10) {
         exit_syscall(20);
     }
     bar = 11;
