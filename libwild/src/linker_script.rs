@@ -4,9 +4,11 @@ use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
 use crate::error::Result;
+use anyhow::Context;
 use anyhow::anyhow;
 use normalize_path::NormalizePath;
 use std::path::Path;
+use winnow::BStr;
 use winnow::Parser as _;
 use winnow::ascii::dec_uint;
 use winnow::ascii::multispace0;
@@ -44,7 +46,7 @@ pub(crate) struct LinkerScript<'a> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command<'a> {
-    Arg(&'a str),
+    Arg(&'a [u8]),
     Group(Vec<Command<'a>>),
     AsNeeded(Vec<Command<'a>>),
     Ignored,
@@ -63,7 +65,7 @@ pub(crate) enum SectionCommand<'a> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Section<'a> {
-    pub(crate) output_section_name: &'a str,
+    pub(crate) output_section_name: &'a [u8],
     pub(crate) matchers: Vec<Matcher<'a>>,
     pub(crate) alignment: Option<u32>,
 }
@@ -73,14 +75,12 @@ pub(crate) struct Matcher<'a> {
     pub(crate) must_keep: bool,
 
     // TODO: Add support for matching based on input filenames.
-    pub(crate) input_section_name_patterns: Vec<&'a str>,
+    pub(crate) input_section_name_patterns: Vec<&'a [u8]>,
 }
 
 impl<'data> LinkerScript<'data> {
     pub(crate) fn parse(bytes: &'data [u8], path: &Path) -> Result<LinkerScript<'data>> {
-        let text = std::str::from_utf8(bytes)?;
-
-        let commands = parse_commands.parse(text).map_err(|error| {
+        let commands = parse_commands.parse(BStr::new(bytes)).map_err(|error| {
             anyhow!(
                 "Failed to parse linker script `{}`:\n{error}",
                 path.display()
@@ -100,14 +100,14 @@ impl<'data> LinkerScript<'data> {
     }
 }
 
-fn parse_token<'input>(input: &mut &'input str) -> winnow::Result<&'input str> {
-    take_while(1.., |ch| !" (){}\n\t".contains(ch)).parse_next(input)
+fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]> {
+    take_while(1.., |b| !b" (){}\n\t".contains(&b)).parse_next(input)
 }
 
-fn skip_comments_and_whitespace(input: &mut &str) -> winnow::Result<()> {
+fn skip_comments_and_whitespace(input: &mut &BStr) -> winnow::Result<()> {
     loop {
         multispace0(input)?;
-        if input.starts_with("/*") {
+        if input.starts_with(b"/*") {
             take_until(1.., "*/").parse_next(input)?;
             "*/".parse_next(input)?;
         } else {
@@ -116,26 +116,26 @@ fn skip_comments_and_whitespace(input: &mut &str) -> winnow::Result<()> {
     }
 }
 
-fn parse_paren_group<'input>(input: &mut &'input str) -> winnow::Result<Vec<Command<'input>>> {
+fn parse_paren_group<'input>(input: &mut &'input BStr) -> winnow::Result<Vec<Command<'input>>> {
     '('.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
     let (group_contents, _) = repeat_till(0.., parse_command, ')').parse_next(input)?;
     Ok(group_contents)
 }
 
-fn parse_command<'input>(input: &mut &'input str) -> winnow::Result<Command<'input>> {
+fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'input>> {
     let command_str = parse_token(input)?;
 
     skip_comments_and_whitespace(input)?;
 
     let command = match command_str {
-        "GROUP" | "INPUT" => Command::Group(parse_paren_group(input)?),
-        "OUTPUT_FORMAT" => {
+        b"GROUP" | b"INPUT" => Command::Group(parse_paren_group(input)?),
+        b"OUTPUT_FORMAT" => {
             parse_paren_group(input)?;
             Command::Ignored
         }
-        "AS_NEEDED" => Command::AsNeeded(parse_paren_group(input)?),
-        "SECTIONS" => Command::Sections(parse_sections(input)?),
+        b"AS_NEEDED" => Command::AsNeeded(parse_paren_group(input)?),
+        b"SECTIONS" => Command::Sections(parse_sections(input)?),
         other => Command::Arg(other),
     };
 
@@ -144,13 +144,13 @@ fn parse_command<'input>(input: &mut &'input str) -> winnow::Result<Command<'inp
     Ok(command)
 }
 
-fn parse_commands<'input>(input: &mut &'input str) -> winnow::Result<Vec<Command<'input>>> {
+fn parse_commands<'input>(input: &mut &'input BStr) -> winnow::Result<Vec<Command<'input>>> {
     skip_comments_and_whitespace(input)?;
 
     Ok(repeat_till(0.., parse_command, eof).parse_next(input)?.0)
 }
 
-fn parse_sections<'input>(input: &mut &'input str) -> winnow::Result<Sections<'input>> {
+fn parse_sections<'input>(input: &mut &'input BStr) -> winnow::Result<Sections<'input>> {
     '{'.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
     let (commands, _) = repeat_till(0.., parse_section_command, '}').parse_next(input)?;
@@ -159,7 +159,7 @@ fn parse_sections<'input>(input: &mut &'input str) -> winnow::Result<Sections<'i
 }
 
 fn parse_section_command<'input>(
-    input: &mut &'input str,
+    input: &mut &'input BStr,
 ) -> winnow::Result<SectionCommand<'input>> {
     let name = parse_token(input)?;
     skip_comments_and_whitespace(input)?;
@@ -170,7 +170,7 @@ fn parse_section_command<'input>(
 
     let mut alignment = None;
 
-    while !input.starts_with('{') {
+    while !input.starts_with("{".as_bytes()) {
         "ALIGN".parse_next(input)?;
         skip_comments_and_whitespace(input)?;
         '('.parse_next(input)?;
@@ -195,14 +195,14 @@ fn parse_section_command<'input>(
     }))
 }
 
-fn parse_matcher<'input>(input: &mut &'input str) -> winnow::Result<Matcher<'input>> {
+fn parse_matcher<'input>(input: &mut &'input BStr) -> winnow::Result<Matcher<'input>> {
     let matcher = alt((parse_keep, parse_matcher_pattern)).parse_next(input)?;
     opt(';').parse_next(input)?;
     skip_comments_and_whitespace(input)?;
     Ok(matcher)
 }
 
-fn parse_keep<'input>(input: &mut &'input str) -> winnow::Result<Matcher<'input>> {
+fn parse_keep<'input>(input: &mut &'input BStr) -> winnow::Result<Matcher<'input>> {
     "KEEP".parse_next(input)?;
     skip_comments_and_whitespace(input)?;
     '('.parse_next(input)?;
@@ -213,7 +213,7 @@ fn parse_keep<'input>(input: &mut &'input str) -> winnow::Result<Matcher<'input>
     Ok(matcher)
 }
 
-fn parse_matcher_pattern<'input>(input: &mut &'input str) -> winnow::Result<Matcher<'input>> {
+fn parse_matcher_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<Matcher<'input>> {
     // For now, we only support wildcards here.
     '*'.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
@@ -229,8 +229,8 @@ fn parse_matcher_pattern<'input>(input: &mut &'input str) -> winnow::Result<Matc
     })
 }
 
-fn parse_pattern<'input>(input: &mut &'input str) -> winnow::Result<&'input str> {
-    let pattern = take_while(1.., |ch| !" \n\t)".contains(ch)).parse_next(input)?;
+fn parse_pattern<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]> {
+    let pattern = take_while(1.., |b| !b" \n\t)".contains(&b)).parse_next(input)?;
     skip_comments_and_whitespace(input)?;
     Ok(pattern)
 }
@@ -244,10 +244,10 @@ fn foreach_input(
     for command in commands {
         match command {
             Command::Arg(arg) => {
-                let spec = if let Some(lib_name) = arg.strip_prefix("-l") {
-                    InputSpec::Lib(Box::from(lib_name))
+                let spec = if let Some(lib_name) = arg.strip_prefix("-l".as_bytes()) {
+                    InputSpec::Lib(Box::from(to_str(lib_name)?))
                 } else {
-                    InputSpec::File(Box::from(Path::new(arg)))
+                    InputSpec::File(Box::from(Path::new(to_str(arg)?)))
                 };
                 cb(Input {
                     spec,
@@ -268,6 +268,11 @@ fn foreach_input(
     }
 
     Ok(())
+}
+
+fn to_str(bytes: &[u8]) -> Result<&str> {
+    std::str::from_utf8(bytes)
+        .with_context(|| format!("Expected UTF-8, found `{}`", String::from_utf8_lossy(bytes)))
 }
 
 #[cfg(test)]
@@ -404,7 +409,7 @@ mod tests {
 
     #[track_caller]
     fn check_section_command(input: &str, expected: &SectionCommand) {
-        match parse_section_command.parse(input) {
+        match parse_section_command.parse(BStr::new(input)) {
             Ok(actual) => assert_eq!(&actual, expected),
             Err(e) => panic!("Parse failed:\n{e}"),
         }
@@ -415,15 +420,15 @@ mod tests {
         check_section_command(
             ".text : { *(.text .text2) *(.text3) }",
             &SectionCommand::Section(Section {
-                output_section_name: ".text",
+                output_section_name: ".text".as_bytes(),
                 matchers: vec![
                     Matcher {
                         must_keep: false,
-                        input_section_name_patterns: vec![".text", ".text2"],
+                        input_section_name_patterns: vec![".text".as_bytes(), ".text2".as_bytes()],
                     },
                     Matcher {
                         must_keep: false,
-                        input_section_name_patterns: vec![".text3"],
+                        input_section_name_patterns: vec![".text3".as_bytes()],
                     },
                 ],
                 alignment: None,
@@ -450,10 +455,10 @@ mod tests {
             &LinkerScript {
                 commands: vec![Command::Sections(Sections {
                     commands: vec![SectionCommand::Section(Section {
-                        output_section_name: ".foo",
+                        output_section_name: ".foo".as_bytes(),
                         matchers: vec![Matcher {
                             must_keep: true,
-                            input_section_name_patterns: vec![".rodata.foo"],
+                            input_section_name_patterns: vec![".rodata.foo".as_bytes()],
                         }],
                         alignment: Some(8),
                     })],

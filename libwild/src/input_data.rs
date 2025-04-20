@@ -282,10 +282,9 @@ impl<'data> TemporaryState<'data> {
                 for sec_cmd in &sections.commands {
                     let SectionCommand::Section(sec) = sec_cmd;
 
-                    let section_id = self.layout_rules_builder.id_for_section_named(
-                        SectionName(sec.output_section_name.as_bytes()),
-                        &allocator,
-                    );
+                    let section_id = self
+                        .layout_rules_builder
+                        .id_for_section_named(SectionName(sec.output_section_name), &allocator);
 
                     if let Some(alignment) = sec.alignment {
                         self.layout_rules_builder
@@ -299,7 +298,7 @@ impl<'data> TemporaryState<'data> {
                             // plausibly wouldn't be necessary if we were to put our inputs files,
                             // or at least our linker scripts into an arena as soon as we read them,
                             // since then we could borrow from them straight away.
-                            let pattern = allocator.alloc_slice_copy(pattern.as_bytes());
+                            let pattern = allocator.alloc_slice_copy(pattern);
 
                             self.layout_rules_builder.add_section_rule(SectionRule::new(
                                 pattern,
