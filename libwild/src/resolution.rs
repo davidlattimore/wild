@@ -43,6 +43,7 @@ use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use linker_utils::elf::SectionFlags;
+use linker_utils::elf::SectionType;
 use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
@@ -56,7 +57,6 @@ use std::thread::Thread;
 
 pub(crate) struct ResolutionOutputs<'data> {
     pub(crate) groups: Vec<ResolvedGroup<'data>>,
-    pub(crate) output_sections: OutputSections<'data>,
     pub(crate) merged_strings: OutputSectionMap<MergedStringsSection<'data>>,
 }
 
@@ -64,6 +64,7 @@ pub(crate) struct ResolutionOutputs<'data> {
 pub fn resolve_symbols_and_sections<'data>(
     symbol_db: &mut SymbolDb<'data>,
     herd: &'data bumpalo_herd::Herd,
+    output_sections: &mut OutputSections<'data>,
     layout_rules: &LayoutRules<'data>,
 ) -> Result<ResolutionOutputs<'data>> {
     let (mut resolved_groups, undefined_symbols) = resolve_symbols_in_files(symbol_db)?;
@@ -72,24 +73,17 @@ pub fn resolve_symbols_and_sections<'data>(
 
     let mut custom_start_stop_defs = Vec::new();
 
-    let output_sections = assign_section_ids(
-        &mut resolved_groups,
-        symbol_db,
-        layout_rules,
-        &mut custom_start_stop_defs,
-    );
-
-    let end_linker_script_symbols = SymbolId::from_usize(symbol_db.num_symbols());
+    assign_section_ids(&mut resolved_groups, output_sections);
 
     let merged_strings = crate::string_merging::merge_strings(
         &mut resolved_groups,
-        &output_sections,
+        output_sections,
         symbol_db.args,
     )?;
 
     canonicalise_undefined_symbols(
         undefined_symbols,
-        &output_sections,
+        output_sections,
         &resolved_groups,
         symbol_db,
         &mut custom_start_stop_defs,
@@ -106,13 +100,11 @@ pub fn resolve_symbols_and_sections<'data>(
     };
 
     epilogue.custom_start_stop_defs = custom_start_stop_defs;
-    epilogue.end_linker_script_symbols = end_linker_script_symbols;
 
     crate::symbol_db::resolve_alternative_symbol_definitions(symbol_db, &resolved_groups)?;
 
     Ok(ResolutionOutputs {
         groups: resolved_groups,
-        output_sections,
         merged_strings,
     })
 }
@@ -272,6 +264,22 @@ fn resolve_group<'data, 'definitions>(
 
             ResolvedGroup { files }
         }
+        Group::LinkerScripts(scripts) => {
+            let files = scripts
+                .iter()
+                .map(|s| {
+                    ResolvedFile::LinkerScript(ResolvedLinkerScript {
+                        input: s.input.clone(),
+                        file_id: s.file_id,
+                        symbol_id_range: s.symbol_id_range,
+                        // TODO: Consider alternative to cloning this.
+                        symbol_definitions: s.symbol_defs.clone(),
+                    })
+                })
+                .collect();
+
+            ResolvedGroup { files }
+        }
         Group::Epilogue(epilogue) => {
             definitions_out_per_file.push(AtomicTake::empty());
 
@@ -280,7 +288,6 @@ fn resolve_group<'data, 'definitions>(
                     file_id: UNINITIALISED_FILE_ID,
                     start_symbol_id: epilogue.start_symbol_id,
                     custom_start_stop_defs: Vec::new(),
-                    end_linker_script_symbols: epilogue.start_symbol_id,
                 })],
             }
         }
@@ -400,6 +407,7 @@ pub(crate) enum ResolvedFile<'data> {
     NotLoaded(NotLoaded),
     Prelude(ResolvedPrelude),
     Object(ResolvedObject<'data>),
+    LinkerScript(ResolvedLinkerScript<'data>),
     Epilogue(ResolvedEpilogue),
 }
 
@@ -489,40 +497,25 @@ pub(crate) struct NonDynamicResolved<'data> {
     custom_sections: Vec<CustomSectionDetails<'data>>,
 }
 
+pub(crate) struct ResolvedLinkerScript<'data> {
+    pub(crate) input: InputRef<'data>,
+    pub(crate) file_id: FileId,
+    pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
+}
+
 #[derive(Clone)]
 pub(crate) struct ResolvedEpilogue {
     pub(crate) file_id: FileId,
     pub(crate) start_symbol_id: SymbolId,
     pub(crate) custom_start_stop_defs: Vec<InternalSymDefInfo>,
-
-    /// All symbols in the range [`start_symbol_id`, `end_linker_script_symbols`) came from the
-    /// linker script.
-    pub(crate) end_linker_script_symbols: SymbolId,
 }
 
 #[tracing::instrument(skip_all, name = "Assign section IDs")]
 fn assign_section_ids<'data>(
     resolved: &mut [ResolvedGroup<'data>],
-    symbol_db: &mut SymbolDb<'data>,
-    layout_rules: &LayoutRules<'data>,
-    custom_start_stop_defs: &mut Vec<InternalSymDefInfo>,
-) -> OutputSections<'data> {
-    let mut output_sections = OutputSections::with_base_address(symbol_db.args.base_address());
-
-    for section in &layout_rules.user_defined_sections {
-        let output_section_id = output_sections.add_section(section.name, section.min_alignment);
-
-        for sym in &section.start_symbols {
-            symbol_db.add_start_stop_symbol(*sym);
-            custom_start_stop_defs.push(InternalSymDefInfo::SectionStart(output_section_id));
-        }
-
-        for sym in &section.end_symbols {
-            symbol_db.add_start_stop_symbol(*sym);
-            custom_start_stop_defs.push(InternalSymDefInfo::SectionEnd(output_section_id));
-        }
-    }
-
+    output_sections: &mut OutputSections<'data>,
+) {
     for group in resolved {
         for file in &mut group.files {
             if let ResolvedFile::Object(s) = file {
@@ -535,8 +528,6 @@ fn assign_section_ids<'data>(
             }
         }
     }
-
-    output_sections
 }
 
 struct Outputs<'data> {
@@ -580,6 +571,7 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
             .with_context(|| format!("Failed to process {input}"))?;
             let _ = resources.outputs.loaded.push(res);
         }
+        Group::LinkerScripts(_) => {}
         Group::Epilogue(_) => {}
     }
     Ok(())
@@ -795,8 +787,9 @@ fn resolve_sections_for_object<'data>(
             let mut unloaded_section;
             let mut must_load = section_flags.should_retain();
             let mut is_debug_info = false;
+            let section_type = SectionType::from_header(input_section);
 
-            match rules.lookup(section_name, section_flags, input_section) {
+            match rules.lookup(section_name, section_flags, section_type) {
                 SectionRuleOutcome::Section(output_info) => {
                     let part_id = output_info.section_id.part_id_with_alignment(alignment);
 
@@ -985,12 +978,19 @@ impl std::fmt::Display for ResolvedObject<'_> {
     }
 }
 
+impl std::fmt::Display for ResolvedLinkerScript<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.input, f)
+    }
+}
+
 impl std::fmt::Display for ResolvedFile<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ResolvedFile::NotLoaded(_) => std::fmt::Display::fmt("<not loaded>", f),
             ResolvedFile::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             ResolvedFile::Object(o) => std::fmt::Display::fmt(o, f),
+            ResolvedFile::LinkerScript(o) => std::fmt::Display::fmt(o, f),
             ResolvedFile::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
         }
     }

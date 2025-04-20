@@ -54,6 +54,7 @@ fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
                         }
                     }
                 }
+                crate::layout::FileLayout::LinkerScript(_) => {}
                 crate::layout::FileLayout::Dynamic(_) => {}
                 crate::layout::FileLayout::Epilogue(_) => {}
                 crate::layout::FileLayout::NotLoaded => {}

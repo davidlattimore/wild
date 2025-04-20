@@ -27,6 +27,7 @@ use crate::error::Result;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
+use crate::layout_rules::SectionKind;
 use crate::output_section_id;
 use crate::output_section_id::FILE_HEADER;
 use crate::output_section_id::OrderEvent;
@@ -48,6 +49,7 @@ use crate::resolution::FrameIndex;
 use crate::resolution::NotLoaded;
 use crate::resolution::ResolutionOutputs;
 use crate::resolution::ResolvedEpilogue;
+use crate::resolution::ResolvedLinkerScript;
 use crate::resolution::SectionSlot;
 use crate::resolution::UnloadedSection;
 use crate::resolution::ValueFlags;
@@ -100,6 +102,7 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt::Display;
+use std::mem::replace;
 use std::mem::size_of;
 use std::mem::swap;
 use std::mem::take;
@@ -115,11 +118,11 @@ use std::sync::atomic::AtomicU64;
 pub fn compute<'data, 'symbol_db, A: Arch>(
     symbol_db: SymbolDb<'data>,
     resolved: ResolutionOutputs<'data>,
+    mut output_sections: OutputSections<'data>,
     output: &mut elf_writer::Output,
 ) -> Result<Layout<'data>> {
     let ResolutionOutputs {
         groups,
-        mut output_sections,
         merged_strings,
     } = resolved;
 
@@ -482,6 +485,7 @@ pub(crate) enum FileLayout<'data> {
     Dynamic(DynamicLayout<'data>),
     Epilogue(EpilogueLayout<'data>),
     NotLoaded,
+    LinkerScript(LinkerScriptLayoutState<'data>),
 }
 
 /// Address information for a symbol.
@@ -544,6 +548,7 @@ enum FileLayoutState<'data> {
     Dynamic(DynamicLayoutState<'data>),
     NotLoaded(NotLoaded),
     Epilogue(EpilogueLayoutState<'data>),
+    LinkerScript(LinkerScriptLayoutState<'data>),
 }
 
 /// Data that doesn't come from any input files, but needs to be written by the linker.
@@ -570,7 +575,12 @@ pub(crate) struct EpilogueLayoutState<'data> {
     build_id_size: Option<usize>,
 
     verdefs: Option<Vec<VersionDef>>,
-    end_linker_script_symbols: SymbolId,
+}
+
+pub(crate) struct LinkerScriptLayoutState<'data> {
+    input: InputRef<'data>,
+    symbol_id_range: SymbolIdRange,
+    pub(crate) internal_symbols: InternalSymbols,
 }
 
 #[derive(Default, Debug)]
@@ -1776,7 +1786,7 @@ fn compute_segment_layout(
             }
             OrderEvent::Section(section_id) => {
                 let section_layout = section_layouts.get(section_id);
-                let merge_target = section_id.merge_target();
+                let merge_target = output_sections.primary_output_section(section_id);
 
                 // Skip all ignored sections that will not end up in the final file.
                 if output_sections.output_section_indexes[merge_target.as_usize()].is_none() {
@@ -2265,8 +2275,9 @@ fn activate<'data, A: Arch>(
         FileLayoutState::Object(s) => s.activate::<A>(common, resources, queue)?,
         FileLayoutState::Prelude(s) => s.activate(common, resources, queue)?,
         FileLayoutState::Dynamic(s) => s.activate(common, resources, queue)?,
+        FileLayoutState::LinkerScript(s) => s.activate(common, resources)?,
         FileLayoutState::NotLoaded(_) => {}
-        FileLayoutState::Epilogue(s) => s.activate(common, resources, queue)?,
+        FileLayoutState::Epilogue(s) => s.activate(resources, queue),
     }
     Ok(())
 }
@@ -2375,6 +2386,7 @@ impl<'data> FileLayoutState<'data> {
                 s.finalise_sizes(common, symbol_db, symbol_resolution_flags)?;
                 s.finalise_symbol_sizes(common, symbol_db, symbol_resolution_flags)?;
             }
+            FileLayoutState::LinkerScript(_) => {}
             FileLayoutState::NotLoaded(_) => {}
         }
         Ok(())
@@ -2446,6 +2458,7 @@ impl<'data> FileLayoutState<'data> {
             FileLayoutState::Dynamic(state) => {
                 state.load_symbol::<A>(common, symbol_id, resources, queue)?;
             }
+            FileLayoutState::LinkerScript(_) => {}
             FileLayoutState::NotLoaded(_) => {}
             FileLayoutState::Epilogue(state) => {
                 state.load_symbol::<A>(common, symbol_id, resources, queue)?;
@@ -2485,6 +2498,10 @@ impl<'data> FileLayoutState<'data> {
                 resolutions_out,
                 resources,
             )?),
+            Self::LinkerScript(s) => {
+                s.finalise_layout(memory_offsets, resolutions_out, resources)?;
+                FileLayout::LinkerScript(s)
+            }
             Self::NotLoaded(s) => {
                 for _ in 0..s.symbol_id_range.len() {
                     resolutions_out.write(None)?;
@@ -2521,11 +2538,18 @@ impl std::fmt::Display for EpilogueLayoutState<'_> {
     }
 }
 
+impl std::fmt::Display for LinkerScriptLayoutState<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.input, f)
+    }
+}
+
 impl std::fmt::Display for FileLayoutState<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FileLayoutState::Object(s) => std::fmt::Display::fmt(s, f),
             FileLayoutState::Dynamic(s) => std::fmt::Display::fmt(s, f),
+            FileLayoutState::LinkerScript(s) => std::fmt::Display::fmt(s, f),
             FileLayoutState::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             FileLayoutState::NotLoaded(_) => std::fmt::Display::fmt("<not-loaded>", f),
             FileLayoutState::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
@@ -2538,6 +2562,7 @@ impl std::fmt::Display for FileLayout<'_> {
         match self {
             Self::Object(s) => std::fmt::Display::fmt(s, f),
             Self::Dynamic(s) => std::fmt::Display::fmt(s, f),
+            Self::LinkerScript(s) => std::fmt::Display::fmt(s, f),
             Self::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
             Self::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
             Self::NotLoaded => std::fmt::Display::fmt("<not loaded>", f),
@@ -3025,7 +3050,7 @@ impl PreludeLayoutState {
         // record the loading of an input section. This covers sections where we generate content.
         total_sizes.map(|part_id, size| {
             if *size > 0 {
-                *keep_sections.get_mut(part_id.output_section_id().merge_target()) = true;
+                *keep_sections.get_mut(part_id.output_section_id()) = true;
             }
         });
 
@@ -3043,10 +3068,19 @@ impl PreludeLayoutState {
             .for_each(|(symbol_state, definition)| {
                 if !symbol_state.is_empty() {
                     if let Some(section_id) = definition.section_id() {
-                        *keep_sections.get_mut(section_id.merge_target()) = true;
+                        *keep_sections.get_mut(section_id) = true;
                     }
                 }
             });
+
+        // If any secondary sections were marked to be kept, then unmark them and mark the primary instead.
+        for i in 0..output_sections.num_sections() {
+            let section_id = OutputSectionId::from_usize(i);
+            if let Some(primary_id) = output_sections.merge_target(section_id) {
+                let keep_secondary = replace(keep_sections.get_mut(section_id), false);
+                *keep_sections.get_mut(primary_id) |= keep_secondary;
+            }
+        }
 
         let num_sections = keep_sections.values_iter().filter(|p| **p).count();
 
@@ -3056,6 +3090,11 @@ impl PreludeLayoutState {
         for event in output_order {
             if let OrderEvent::Section(id) = event {
                 if *keep_sections.get(id) {
+                    debug_assert!(
+                        output_sections.merge_target(id).is_none(),
+                        "Tried to allocate section header for secondary section {}",
+                        output_sections.section_debug(id)
+                    );
                     output_section_indexes[id.as_usize()] = Some(next_output_index);
                     next_output_index += 1;
                 }
@@ -3105,7 +3144,13 @@ impl PreludeLayoutState {
         self.shstrtab_size = output_sections
             .ids_with_info()
             .filter(|(id, _info)| output_sections.output_index_of_section(*id).is_some())
-            .map(|(_id, info)| info.name.len() as u64 + 1)
+            .map(|(_id, info)| {
+                if let SectionKind::Primary(name) = info.kind {
+                    name.len() as u64 + 1
+                } else {
+                    0
+                }
+            })
             .sum::<u64>();
         extra_sizes.increment(part_id::SHSTRTAB, self.shstrtab_size);
 
@@ -3273,26 +3318,13 @@ fn is_symbol_undefined(
 }
 
 impl<'data> EpilogueLayoutState<'data> {
-    fn activate(
-        &mut self,
-        common: &mut CommonGroupState<'data>,
-        resources: &GraphResources<'data, '_>,
-        _queue: &mut LocalWorkQueue,
-    ) -> Result {
+    fn activate(&mut self, resources: &GraphResources<'data, '_>, _queue: &mut LocalWorkQueue) {
         self.build_id_size = match &resources.symbol_db.args.build_id {
             BuildIdOption::None => None,
             BuildIdOption::Fast => Some(size_of::<blake3::Hash>()),
             BuildIdOption::Hex(hex) => Some(hex.len()),
             BuildIdOption::Uuid => Some(size_of::<uuid::Uuid>()),
         };
-
-        let mut symbol_id = self.internal_symbols.start_symbol_id;
-        while symbol_id < self.end_linker_script_symbols {
-            export_dynamic(common, symbol_id, resources.symbol_db)?;
-            symbol_id = symbol_id.next();
-        }
-
-        Ok(())
     }
 
     fn new(input_state: ResolvedEpilogue) -> EpilogueLayoutState<'data> {
@@ -3311,7 +3343,6 @@ impl<'data> EpilogueLayoutState<'data> {
             gnu_property_notes: Default::default(),
             build_id_size: Default::default(),
             verdefs: Default::default(),
-            end_linker_script_symbols: input_state.end_linker_script_symbols,
         }
     }
 
@@ -4450,6 +4481,9 @@ impl<'data> resolution::ResolvedFile<'data> {
                 FileLayoutState::Prelude(PreludeLayoutState::new(s))
             }
             resolution::ResolvedFile::NotLoaded(s) => FileLayoutState::NotLoaded(s),
+            resolution::ResolvedFile::LinkerScript(s) => {
+                FileLayoutState::LinkerScript(LinkerScriptLayoutState::new(s))
+            }
             resolution::ResolvedFile::Epilogue(s) => {
                 FileLayoutState::Epilogue(EpilogueLayoutState::new(s))
             }
@@ -4596,7 +4630,7 @@ fn layout_section_parts(
                     .for_each(|(offset, (part_layout, &part_size))| {
                         let part_id = part_id_range.start.offset(offset);
                         let alignment = part_id.alignment().min(max_alignment);
-                        let merge_target = section_id.merge_target();
+                        let merge_target = output_sections.primary_output_section(section_id);
                         let section_flags = output_sections.section_flags(merge_target);
                         let mem_size = part_size;
 
@@ -5003,6 +5037,45 @@ impl<'data> DynamicLayoutState<'data> {
     }
 }
 
+impl<'data> LinkerScriptLayoutState<'data> {
+    fn finalise_layout(
+        &self,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
+        resolutions_out: &mut ResolutionWriter,
+        resources: &FinaliseLayoutResources<'_, 'data>,
+    ) -> Result {
+        self.internal_symbols
+            .finalise_layout(memory_offsets, resolutions_out, resources)
+    }
+
+    fn new(input: ResolvedLinkerScript<'data>) -> Self {
+        Self {
+            input: input.input,
+            symbol_id_range: input.symbol_id_range,
+            internal_symbols: InternalSymbols {
+                symbol_definitions: input.symbol_definitions,
+                start_symbol_id: input.symbol_id_range.start(),
+            },
+        }
+    }
+
+    fn activate(
+        &self,
+        common: &mut CommonGroupState<'data>,
+        resources: &GraphResources<'data, '_>,
+    ) -> Result {
+        for offset in 0..self.symbol_id_range.len() {
+            let symbol_id = self.symbol_id_range.offset_to_id(offset);
+            resources.symbol_resolution_flags[symbol_id.as_usize()]
+                .fetch_or(ResolutionFlags::EXPORT_DYNAMIC);
+
+            export_dynamic(common, symbol_id, resources.symbol_db)?;
+        }
+
+        Ok(())
+    }
+}
+
 impl CopyRelocationInfo {
     fn add_symbol(&mut self, symbol_id: SymbolId, is_weak: bool, symbol_db: &SymbolDb) -> Result {
         if self.symbol_id == symbol_id || is_weak {
@@ -5098,7 +5171,10 @@ impl std::fmt::Debug for FileLayoutState<'_> {
         match self {
             FileLayoutState::Object(s) => f.debug_tuple("Object").field(&s.input).finish(),
             FileLayoutState::Prelude(_) => f.debug_tuple("Internal").finish(),
-            FileLayoutState::Dynamic(_) => f.debug_tuple("Dynamic").finish(),
+            FileLayoutState::Dynamic(s) => f.debug_tuple("Dynamic").field(&s.input).finish(),
+            FileLayoutState::LinkerScript(s) => {
+                f.debug_tuple("LinkerScript").field(&s.input).finish()
+            }
             FileLayoutState::NotLoaded(_) => Display::fmt(&"<not loaded>", f),
             FileLayoutState::Epilogue(_) => Display::fmt(&"<custom sections>", f),
         }

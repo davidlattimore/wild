@@ -25,6 +25,7 @@ use crate::elf::DynamicEntry;
 use crate::elf::Versym;
 use crate::layout::NonAddressableCounts;
 use crate::layout::OutputRecordLayout;
+use crate::layout_rules::SectionKind;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
@@ -169,11 +170,25 @@ impl OutputSections<'_> {
     pub(crate) fn section_flags(&self, section_id: OutputSectionId) -> SectionFlags {
         self.output_info(section_id).section_flags
     }
+
+    /// Returns the ID of the primary output section for the supplied section ID.
+    pub(crate) fn primary_output_section(&self, section_id: OutputSectionId) -> OutputSectionId {
+        self.merge_target(section_id).unwrap_or(section_id)
+    }
+
+    /// Returns the ID of the section that the specified section should be merged into, if any, or
+    /// None if the supplied section is itself a primary section.
+    pub(crate) fn merge_target(&self, section_id: OutputSectionId) -> Option<OutputSectionId> {
+        match self.output_info(section_id).kind {
+            SectionKind::Primary(_) => None,
+            SectionKind::Secondary(primary_id) => Some(primary_id),
+        }
+    }
 }
 
 #[derive(Debug)]
 pub(crate) struct SectionOutputInfo<'data> {
-    pub(crate) name: SectionName<'data>,
+    pub(crate) kind: SectionKind<'data>,
     pub(crate) section_flags: SectionFlags,
     pub(crate) ty: SectionType,
     pub(crate) min_alignment: Alignment,
@@ -181,7 +196,7 @@ pub(crate) struct SectionOutputInfo<'data> {
 }
 
 pub(crate) struct BuiltInSectionDetails {
-    pub(crate) name: SectionName<'static>,
+    pub(crate) kind: SectionKind<'static>,
     pub(crate) section_flags: SectionFlags,
     /// Sections to try to link to. The first section that we're outputting is the one used.
     pub(crate) link: &'static [OutputSectionId],
@@ -192,9 +207,6 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) keep_if_empty: bool,
     pub(crate) element_size: u64,
     pub(crate) ty: SectionType,
-
-    /// If present, then this section will be merged into the specified section.
-    pub(crate) merge_into: Option<OutputSectionId>,
 }
 
 impl BuiltInSectionDetails {
@@ -220,7 +232,7 @@ impl BuiltInSectionDetails {
 }
 
 const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
-    name: SectionName(&[]),
+    kind: SectionKind::Primary(SectionName(&[])),
     section_flags: SectionFlags::empty(),
     link: &[],
     start_symbol_name: None,
@@ -230,44 +242,43 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     keep_if_empty: false,
     element_size: 0,
     ty: sht::NULL,
-    merge_into: None,
 };
 
 const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     // A section into which we write headers.
     BuiltInSectionDetails {
-        name: SectionName(b""),
+        kind: SectionKind::Primary(SectionName(b"")),
         section_flags: shf::ALLOC,
         start_symbol_name: Some("__ehdr_start"),
         keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(PROGRAM_HEADERS_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(PROGRAM_HEADERS_SECTION_NAME)),
         section_flags: shf::ALLOC,
         min_alignment: alignment::PROGRAM_HEADER_ENTRY,
         keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(SECTION_HEADERS_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(SECTION_HEADERS_SECTION_NAME)),
         section_flags: shf::ALLOC,
         keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(SHSTRTAB_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(SHSTRTAB_SECTION_NAME)),
         ty: sht::STRTAB,
         keep_if_empty: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(STRTAB_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(STRTAB_SECTION_NAME)),
         ty: sht::STRTAB,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(GOT_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(GOT_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::WRITE.with(shf::ALLOC),
         element_size: crate::elf::GOT_ENTRY_SIZE,
@@ -276,7 +287,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(PLT_GOT_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(PLT_GOT_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
         element_size: crate::elf::PLT_ENTRY_SIZE,
@@ -284,7 +295,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(RELA_PLT_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(RELA_PLT_SECTION_NAME)),
         ty: sht::RELA,
         section_flags: shf::ALLOC.with(shf::INFO_LINK),
         element_size: elf::RELA_ENTRY_SIZE,
@@ -296,21 +307,21 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(EH_FRAME_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(EH_FRAME_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         min_alignment: alignment::USIZE,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(EH_FRAME_HDR_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(EH_FRAME_HDR_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         min_alignment: alignment::EH_FRAME_HDR,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(DYNAMIC_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(DYNAMIC_SECTION_NAME)),
         ty: sht::DYNAMIC,
         section_flags: shf::ALLOC.with(shf::WRITE),
         element_size: size_of::<DynamicEntry>() as u64,
@@ -320,7 +331,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(GNU_HASH_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(GNU_HASH_SECTION_NAME)),
         ty: sht::GNU_HASH,
         section_flags: shf::ALLOC,
         link: &[DYNSYM],
@@ -328,7 +339,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(DYNSYM_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(DYNSYM_SECTION_NAME)),
         ty: sht::DYNSYM,
         section_flags: shf::ALLOC,
         element_size: size_of::<elf::SymtabEntry>() as u64,
@@ -338,20 +349,20 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(DYNSTR_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(DYNSTR_SECTION_NAME)),
         ty: sht::STRTAB,
         section_flags: shf::ALLOC,
         min_alignment: alignment::MIN,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(INTERP_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(INTERP_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(GNU_VERSION_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(GNU_VERSION_SECTION_NAME)),
         ty: sht::GNU_VERSYM,
         section_flags: shf::ALLOC,
         element_size: size_of::<Versym>() as u64,
@@ -360,7 +371,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(GNU_VERSION_D_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(GNU_VERSION_D_SECTION_NAME)),
         ty: sht::GNU_VERDEF,
         section_flags: shf::ALLOC,
         info_fn: Some(version_d_info),
@@ -369,7 +380,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(GNU_VERSION_R_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(GNU_VERSION_R_SECTION_NAME)),
         ty: sht::GNU_VERNEED,
         section_flags: shf::ALLOC,
         info_fn: Some(version_r_info),
@@ -378,14 +389,14 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(NOTE_GNU_PROPERTY_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(NOTE_GNU_PROPERTY_SECTION_NAME)),
         ty: sht::NOTE,
         section_flags: shf::ALLOC,
         min_alignment: alignment::NOTE_GNU_PROPERTY,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(NOTE_GNU_BUILD_ID_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(NOTE_GNU_BUILD_ID_SECTION_NAME)),
         ty: sht::NOTE,
         section_flags: shf::ALLOC,
         min_alignment: alignment::NOTE_GNU_BUILD_ID,
@@ -393,7 +404,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
     // Multi-part generated sections
     BuiltInSectionDetails {
-        name: SectionName(SYMTAB_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(SYMTAB_SECTION_NAME)),
         ty: sht::SYMTAB,
         element_size: size_of::<elf::SymtabEntry>() as u64,
         min_alignment: alignment::SYMTAB_ENTRY,
@@ -402,11 +413,11 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        merge_into: Some(SYMTAB_LOCAL),
+        kind: SectionKind::Secondary(SYMTAB_LOCAL),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(RELA_DYN_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(RELA_DYN_SECTION_NAME)),
         ty: sht::RELA,
         section_flags: shf::ALLOC,
         element_size: elf::RELA_ENTRY_SIZE,
@@ -415,18 +426,18 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        merge_into: Some(RELA_DYN_RELATIVE),
+        kind: SectionKind::Secondary(RELA_DYN_RELATIVE),
         ..DEFAULT_DEFS
     },
     // Start of regular sections
     BuiltInSectionDetails {
-        name: SectionName(RODATA_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(RODATA_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(INIT_ARRAY_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(INIT_ARRAY_SECTION_NAME)),
         ty: sht::INIT_ARRAY,
         section_flags: shf::ALLOC.with(shf::WRITE),
         element_size: size_of::<u64>() as u64,
@@ -435,7 +446,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(FINI_ARRAY_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(FINI_ARRAY_SECTION_NAME)),
         ty: sht::FINI_ARRAY,
         section_flags: shf::ALLOC.with(shf::WRITE),
         element_size: size_of::<u64>() as u64,
@@ -444,7 +455,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(PREINIT_ARRAY_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(PREINIT_ARRAY_SECTION_NAME)),
         ty: sht::PREINIT_ARRAY,
         section_flags: shf::ALLOC,
         start_symbol_name: Some("__preinit_array_start"),
@@ -452,31 +463,31 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(TEXT_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(TEXT_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(INIT_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(INIT_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(FINI_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(FINI_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(DATA_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(DATA_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(TDATA_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(TDATA_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
         // The symbol is defined twice, but later on we make a filtering based on the output type!
@@ -484,40 +495,40 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(TBSS_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(TBSS_SECTION_NAME)),
         ty: sht::NOBITS,
         section_flags: shf::WRITE.with(shf::ALLOC).with(shf::TLS),
         end_symbol_name: Some(TLS_MODULE_BASE_SYMBOL_NAME),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(BSS_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(BSS_SECTION_NAME)),
         ty: sht::NOBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         end_symbol_name: Some("_end"),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(COMMENT_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(COMMENT_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::STRINGS.with(shf::MERGE),
         element_size: 1,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(GCC_EXCEPT_TABLE_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(GCC_EXCEPT_TABLE_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(NOTE_ABI_TAG_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(NOTE_ABI_TAG_SECTION_NAME)),
         ty: sht::NOTE,
         section_flags: shf::ALLOC,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
-        name: SectionName(DATA_REL_RO_SECTION_NAME),
+        kind: SectionKind::Primary(SectionName(DATA_REL_RO_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
         ..DEFAULT_DEFS
@@ -617,14 +628,6 @@ impl OutputSectionId {
 
     pub(crate) fn element_size(self) -> u64 {
         self.opt_built_in_details().map_or(0, |d| d.element_size)
-    }
-
-    /// Returns the ID of the section that this section should be merged into, or this section if it
-    /// shouldn't be merged into another section.
-    pub(crate) fn merge_target(self) -> OutputSectionId {
-        self.opt_built_in_details()
-            .and_then(|info| info.merge_into)
-            .unwrap_or(self)
     }
 }
 
@@ -755,7 +758,7 @@ impl<'data> OutputSections<'data> {
         sections: &mut [SectionSlot],
     ) {
         for custom in custom_sections {
-            let section_id = self.add_section(custom.name, custom.alignment);
+            let section_id = self.add_named_section(custom.name, custom.alignment);
 
             if let Some(slot) = sections.get_mut(custom.index.0) {
                 slot.set_part_id(section_id.part_id_with_alignment(custom.alignment));
@@ -763,14 +766,14 @@ impl<'data> OutputSections<'data> {
         }
     }
 
-    pub(crate) fn add_section(
+    pub(crate) fn add_named_section(
         &mut self,
         name: SectionName<'data>,
         min_alignment: Alignment,
     ) -> OutputSectionId {
         *self.custom_by_name.entry(name).or_insert_with(|| {
             self.section_infos.add_new(SectionOutputInfo {
-                name,
+                kind: SectionKind::Primary(name),
                 // Section flags and type will be filled in based on the attributes of the sections
                 // that get placed into this output section.
                 section_flags: SectionFlags::empty(),
@@ -781,12 +784,22 @@ impl<'data> OutputSections<'data> {
         })
     }
 
+    pub(crate) fn add_secondary_section(&mut self, primary_id: OutputSectionId) -> OutputSectionId {
+        self.section_infos.add_new(SectionOutputInfo {
+            kind: SectionKind::Secondary(primary_id),
+            section_flags: SectionFlags::empty(),
+            ty: SectionType::from_u32(0),
+            min_alignment: alignment::MIN,
+            entsize: 0,
+        })
+    }
+
     pub(crate) fn with_base_address(base_address: u64) -> Self {
         let section_infos = SECTION_DEFINITIONS
             .iter()
             .map(|d| SectionOutputInfo {
                 section_flags: d.section_flags,
-                name: d.name,
+                kind: d.kind,
                 ty: d.ty,
                 min_alignment: d.min_alignment,
                 entsize: d.element_size,
@@ -868,16 +881,26 @@ impl<'data> OutputSections<'data> {
         self.output_index_of_section(id).is_some()
     }
 
-    pub(crate) fn name(&self, section_id: OutputSectionId) -> SectionName<'data> {
-        self.output_info(section_id).name
+    pub(crate) fn name(&self, section_id: OutputSectionId) -> Option<SectionName<'data>> {
+        match self.output_info(section_id).kind {
+            SectionKind::Primary(section_name) => Some(section_name),
+            SectionKind::Secondary(_) => None,
+        }
     }
 
-    pub(crate) fn display_name(&self, section_id: OutputSectionId) -> std::borrow::Cow<str> {
-        String::from_utf8_lossy(self.name(section_id).0)
+    pub(crate) fn display_name(&self, section_id: OutputSectionId) -> String {
+        match self.output_info(section_id).kind {
+            SectionKind::Primary(section_name) => {
+                format!("`{}`", String::from_utf8_lossy(section_name.0))
+            }
+            SectionKind::Secondary(primary_id) => {
+                format!("`{}` (secondary)", self.display_name(primary_id))
+            }
+        }
     }
 
     pub(crate) fn section_debug(&self, section_id: OutputSectionId) -> String {
-        let merge_target = section_id.merge_target();
+        let merge_target = self.primary_output_section(section_id);
         let merge = if merge_target == section_id {
             String::new()
         } else {
@@ -893,16 +916,12 @@ impl<'data> OutputSections<'data> {
     #[cfg(test)]
     pub(crate) fn for_testing() -> OutputSections<'static> {
         let mut output_sections = OutputSections::with_base_address(0x1000);
-        output_sections.add_section(SectionName(b"ro"), alignment::MIN);
-        output_sections.add_section(SectionName(b"exec"), alignment::MIN);
-        output_sections.add_section(SectionName(b"data"), alignment::MIN);
-        output_sections.add_section(SectionName(b"bss"), alignment::MIN);
+        output_sections.add_named_section(SectionName(b"ro"), alignment::MIN);
+        output_sections.add_named_section(SectionName(b"exec"), alignment::MIN);
+        output_sections.add_named_section(SectionName(b"data"), alignment::MIN);
+        output_sections.add_named_section(SectionName(b"bss"), alignment::MIN);
         output_sections
     }
-}
-
-pub(crate) fn all_built_in_section_ids() -> impl Iterator<Item = OutputSectionId> {
-    (0..NUM_BUILT_IN_SECTIONS).map(|i| OutputSectionId(i as u32))
 }
 
 pub(crate) fn link_ids(section_id: OutputSectionId) -> &'static [OutputSectionId] {
@@ -961,6 +980,24 @@ impl<'a> IntoIterator for &'a OutputOrder {
     }
 }
 
+impl Display for OutputSections<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.section_infos.for_each(|section_id, info| {
+            let _ = writeln!(f, "{section_id}: {}", info.kind);
+        });
+        Ok(())
+    }
+}
+
+impl Display for SectionKind<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SectionKind::Primary(section_name) => write!(f, "{section_name}"),
+            SectionKind::Secondary(primary_id) => write!(f, "Secondary to {primary_id}"),
+        }
+    }
+}
+
 /// Verifies that our constants for section IDs match their respective offsets in
 /// `SECTION_DEFINITIONS`.
 #[test]
@@ -1007,7 +1044,12 @@ fn test_constant_ids() {
         (DATA_REL_RO, DATA_REL_RO_SECTION_NAME),
     ];
     for (id, name) in check {
-        assert_eq!(id.built_in_details().name.bytes(), *name);
+        match id.built_in_details().kind {
+            SectionKind::Primary(section_name) => {
+                assert_eq!(section_name.bytes(), *name);
+            }
+            SectionKind::Secondary(_) => assert!(name.is_empty()),
+        }
     }
     assert_eq!(NUM_BUILT_IN_SECTIONS, check.len());
 }

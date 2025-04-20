@@ -29,8 +29,12 @@
 //!
 //! CompSoArgs:... Arguments to be passed to the compiler when building shared objects.
 //!
-//! ExpectSym:symbol-name [section] Checks that the specified symbol is defined in the output file
-//! and, if specified, that it's in the specified section.
+//! ExpectSym:symbol-name [section] [offset-in-section] Checks that the specified symbol is defined
+//! in the output file and, if specified, that it's in the specified section. Can also optionally
+//! verify the offset within that section.
+//!
+//! ExpectDynSym:symbol-name [section] [offset-in-section] As for ExpectSym, but for dynamic
+//! symbols.
 //!
 //! ExpectComment: Checks that the comment in the .comment section is equal to the supplied
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
@@ -94,7 +98,8 @@
 //!
 //! VersionScript:{filename} Specifies a version script file that will be passed to the linker.
 //!
-//! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the musl Rust toolchain.
+//! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the
+//! musl Rust toolchain.
 
 use anyhow::Context;
 use anyhow::anyhow;
@@ -537,6 +542,7 @@ struct Dep {
 #[derive(Default, Clone, PartialEq, Eq)]
 struct Assertions {
     expected_symtab_entries: Vec<ExpectedSymtabEntry>,
+    expected_dynsym_entries: Vec<ExpectedSymtabEntry>,
     expected_comments: Vec<String>,
     does_not_contain: Vec<String>,
     contains_strings: Vec<String>,
@@ -546,18 +552,33 @@ struct Assertions {
 struct ExpectedSymtabEntry {
     name: String,
     section_name: Option<String>,
+    section_offset: Option<u64>,
 }
 
 impl ExpectedSymtabEntry {
     fn parse(s: &str) -> Result<Self> {
         let mut parts = s.split(' ').map(str::to_owned);
-        let (Some(name), section, None) = (parts.next(), parts.next(), parts.next()) else {
-            bail!("ExpectSym requires {{symbol name}} [{{symbol section}}]");
-        };
+        let name = parts.next().context("ExpectSym missing name")?;
+        let section_name = parts.next();
+        let section_offset = parts.next().map(|v| parse_u64(&v)).transpose()?;
+
+        if let Some(extra) = parts.next() {
+            bail!("Unexpected argument to ExpectSym `{extra}`");
+        }
+
         Ok(Self {
             name,
-            section_name: section,
+            section_name,
+            section_offset,
         })
+    }
+}
+
+fn parse_u64(s: &str) -> Result<u64> {
+    if let Some(rest) = s.strip_prefix("0x") {
+        u64::from_str_radix(rest, 16).with_context(|| format!("Failed to parse hex `{rest}`"))
+    } else {
+        u64::from_str(s).with_context(|| format!("Failed to parse decimal `{s}`"))
     }
 }
 
@@ -710,6 +731,10 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                 "ExpectSym" => config
                     .assertions
                     .expected_symtab_entries
+                    .push(ExpectedSymtabEntry::parse(arg.trim())?),
+                "ExpectDynSym" => config
+                    .assertions
+                    .expected_dynsym_entries
                     .push(ExpectedSymtabEntry::parse(arg.trim())?),
                 "ExpectComment" => config
                     .assertions
@@ -869,10 +894,6 @@ impl ProgramInputs {
 
 impl Program<'_> {
     fn run(&self, cross_arch: Option<Architecture>) -> Result {
-        self.assertions
-            .check(&self.link_output)
-            .context("Output binary assertions failed")?;
-
         let mut command = if let Some(arch) = cross_arch {
             let mut c = Command::new(format!("qemu-{arch}"));
             c.arg("-L");
@@ -1689,40 +1710,10 @@ impl Assertions {
         let bytes = std::fs::read(path)?;
         let obj = ElfFile64::parse(bytes.as_slice())?;
 
-        self.verify_symbol_assertions(&obj)?;
+        verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols())?;
+        verify_symbol_assertions(&obj, &self.expected_dynsym_entries, obj.dynamic_symbols())?;
         self.verify_comment_section(&obj, linker_used)?;
         self.verify_strings(&bytes)?;
-        Ok(())
-    }
-
-    fn verify_symbol_assertions(&self, obj: &ElfFile64<'_>) -> Result {
-        let mut missing = self
-            .expected_symtab_entries
-            .iter()
-            .map(|exp| (exp.name.as_str(), exp))
-            .collect::<HashMap<_, _>>();
-        for sym in obj.symbols() {
-            if let Ok(name) = sym.name() {
-                if let Some(exp) = missing.remove(name) {
-                    if let object::SymbolSection::Section(index) = sym.section() {
-                        let section = obj.section_by_index(index)?;
-                        let section_name = section.name()?;
-                        if let Some(exp_name) = exp.section_name.as_ref() {
-                            if section_name != exp_name {
-                                bail!(
-                                    "Expected symbol `{name}` to be in section `{exp_name}`, \
-                                    but it was in `{section_name}`"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let missing: Vec<&str> = missing.into_keys().collect();
-        if !missing.is_empty() {
-            bail!("Missing expected symbol(s): {}", missing.join(", "));
-        };
         Ok(())
     }
 
@@ -1775,6 +1766,55 @@ impl Assertions {
         }
         Ok(())
     }
+}
+
+fn verify_symbol_assertions(
+    obj: &ElfFile64,
+    assertions: &[ExpectedSymtabEntry],
+    symbols: object::read::elf::ElfSymbolIterator<object::elf::FileHeader64<LittleEndian>>,
+) -> Result {
+    let mut missing = assertions
+        .iter()
+        .map(|exp| (exp.name.as_str(), exp))
+        .collect::<HashMap<_, _>>();
+
+    for sym in symbols {
+        if let Ok(name) = sym.name() {
+            if let Some(exp) = missing.remove(name) {
+                if let object::SymbolSection::Section(index) = sym.section() {
+                    let section = obj.section_by_index(index)?;
+                    let section_name = section.name()?;
+
+                    if let Some(exp_name) = exp.section_name.as_ref() {
+                        if section_name != exp_name {
+                            bail!(
+                                "Expected symbol `{name}` to be in section `{exp_name}`, \
+                                but it was in `{section_name}`"
+                            );
+                        }
+
+                        if let Some(expected_offset) = exp.section_offset {
+                            let actual_offset = sym.address().wrapping_sub(section.address());
+                            if expected_offset != actual_offset {
+                                bail!(
+                                    "Expected symbol `{name}` to be at offset {expected_offset} \
+                                    in section `{exp_name}`, but it was actually at offset {}",
+                                    actual_offset as i64
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let missing: Vec<&str> = missing.into_keys().collect();
+    if !missing.is_empty() {
+        bail!("Missing expected symbol(s): {}", missing.join(", "));
+    };
+
+    Ok(())
 }
 
 /// Returns whether the supplied object indicates that it was linked with wild.
@@ -2205,8 +2245,15 @@ fn run_with_config(
         );
     }
 
-    if config.should_run {
-        for program in programs {
+    for program in programs {
+        if config.should_run || program.assertions != &Assertions::default() {
+            program
+                .assertions
+                .check(&program.link_output)
+                .with_context(|| format!("Output binary assertions failed. {program}"))?;
+        }
+
+        if config.should_run {
             program
                 .run(cross_arch)
                 .with_context(|| format!("Failed to run program. {program}"))?;
