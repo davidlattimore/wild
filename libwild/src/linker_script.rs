@@ -66,8 +66,19 @@ pub(crate) enum SectionCommand<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Section<'a> {
     pub(crate) output_section_name: &'a [u8],
-    pub(crate) matchers: Vec<Matcher<'a>>,
+    pub(crate) commands: Vec<ContentsCommand<'a>>,
     pub(crate) alignment: Option<u32>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ContentsCommand<'a> {
+    Matcher(Matcher<'a>),
+    SymbolAssignment(SymbolAssignment<'a>),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct SymbolAssignment<'a> {
+    pub(crate) name: &'a [u8],
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -184,22 +195,39 @@ fn parse_section_command<'input>(
     '{'.parse_next(input)?;
     skip_comments_and_whitespace(input)?;
 
-    let (matchers, _) = repeat_till(0.., parse_matcher, '}').parse_next(input)?;
+    let (commands, _) = repeat_till(0.., parse_contents_command, '}').parse_next(input)?;
 
     skip_comments_and_whitespace(input)?;
 
     Ok(SectionCommand::Section(Section {
         output_section_name: name,
-        matchers,
+        commands,
         alignment,
     }))
 }
 
-fn parse_matcher<'input>(input: &mut &'input BStr) -> winnow::Result<Matcher<'input>> {
+fn parse_contents_command<'input>(
+    input: &mut &'input BStr,
+) -> winnow::Result<ContentsCommand<'input>> {
+    alt((parse_matcher, parse_assignment)).parse_next(input)
+}
+
+fn parse_assignment<'input>(input: &mut &'input BStr) -> winnow::Result<ContentsCommand<'input>> {
+    let name = parse_token(input)?;
+    skip_comments_and_whitespace(input)?;
+    '='.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    '.'.parse_next(input)?;
+    opt(';').parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    Ok(ContentsCommand::SymbolAssignment(SymbolAssignment { name }))
+}
+
+fn parse_matcher<'input>(input: &mut &'input BStr) -> winnow::Result<ContentsCommand<'input>> {
     let matcher = alt((parse_keep, parse_matcher_pattern)).parse_next(input)?;
     opt(';').parse_next(input)?;
     skip_comments_and_whitespace(input)?;
-    Ok(matcher)
+    Ok(ContentsCommand::Matcher(matcher))
 }
 
 fn parse_keep<'input>(input: &mut &'input BStr) -> winnow::Result<Matcher<'input>> {
@@ -421,15 +449,15 @@ mod tests {
             ".text : { *(.text .text2) *(.text3) }",
             &SectionCommand::Section(Section {
                 output_section_name: ".text".as_bytes(),
-                matchers: vec![
-                    Matcher {
+                commands: vec![
+                    ContentsCommand::Matcher(Matcher {
                         must_keep: false,
                         input_section_name_patterns: vec![".text".as_bytes(), ".text2".as_bytes()],
-                    },
-                    Matcher {
+                    }),
+                    ContentsCommand::Matcher(Matcher {
                         must_keep: false,
                         input_section_name_patterns: vec![".text3".as_bytes()],
-                    },
+                    }),
                 ],
                 alignment: None,
             }),
@@ -448,7 +476,9 @@ mod tests {
             r"
             SECTIONS {
                 .foo : ALIGN(8) {
+                    start_foo = .;
                     KEEP(*(.rodata.foo));
+                    end_foo = .;
                 }
             }
         ",
@@ -456,10 +486,18 @@ mod tests {
                 commands: vec![Command::Sections(Sections {
                     commands: vec![SectionCommand::Section(Section {
                         output_section_name: ".foo".as_bytes(),
-                        matchers: vec![Matcher {
-                            must_keep: true,
-                            input_section_name_patterns: vec![".rodata.foo".as_bytes()],
-                        }],
+                        commands: vec![
+                            ContentsCommand::SymbolAssignment(SymbolAssignment {
+                                name: "start_foo".as_bytes(),
+                            }),
+                            ContentsCommand::Matcher(Matcher {
+                                must_keep: true,
+                                input_section_name_patterns: vec![".rodata.foo".as_bytes()],
+                            }),
+                            ContentsCommand::SymbolAssignment(SymbolAssignment {
+                                name: "end_foo".as_bytes(),
+                            }),
+                        ],
                         alignment: Some(8),
                     })],
                 })],

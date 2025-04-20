@@ -4,11 +4,13 @@ use crate::alignment;
 use crate::alignment::Alignment;
 use crate::elf::SectionHeader;
 use crate::error::Result;
+use crate::hash::PreHashed;
 use crate::hash::hash_bytes;
 use crate::output_section_id;
 use crate::output_section_id::NUM_BUILT_IN_SECTIONS;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionName;
+use crate::symbol::UnversionedSymbolName;
 use anyhow::ensure;
 use foldhash::HashMap;
 use foldhash::fast::RandomState;
@@ -38,6 +40,8 @@ struct SectionIdAllocator<'data> {
 pub(crate) struct UserDefinedSection<'data> {
     pub(crate) name: SectionName<'data>,
     pub(crate) min_alignment: Alignment,
+    pub(crate) start_symbols: Vec<PreHashed<UnversionedSymbolName<'data>>>,
+    pub(crate) end_symbols: Vec<PreHashed<UnversionedSymbolName<'data>>>,
 }
 
 /// Rules governing how input sections should be mapped to output sections.
@@ -377,6 +381,8 @@ impl<'data> SectionIdAllocator<'data> {
         self.user_defined_sections.push(UserDefinedSection {
             name: SectionName(allocator.alloc_slice_copy(name.bytes())),
             min_alignment: alignment::MIN,
+            start_symbols: Vec::new(),
+            end_symbols: Vec::new(),
         });
 
         self.section_name_to_id.insert(name.bytes().to_owned(), id);

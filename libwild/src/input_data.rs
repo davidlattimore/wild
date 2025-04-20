@@ -15,9 +15,11 @@ use crate::layout_rules::LayoutRulesBuilder;
 use crate::layout_rules::SectionOutputInfo;
 use crate::layout_rules::SectionRule;
 use crate::linker_script;
+use crate::linker_script::ContentsCommand;
 use crate::linker_script::LinkerScript;
 use crate::linker_script::SectionCommand;
 use crate::output_section_id::SectionName;
+use crate::symbol::UnversionedSymbolName;
 use anyhow::Context;
 use anyhow::bail;
 use bumpalo_herd::Herd;
@@ -282,33 +284,59 @@ impl<'data> TemporaryState<'data> {
                 for sec_cmd in &sections.commands {
                     let SectionCommand::Section(sec) = sec_cmd;
 
-                    let section_id = self
+                    let primary_section_id = self
                         .layout_rules_builder
                         .id_for_section_named(SectionName(sec.output_section_name), &allocator);
 
                     if let Some(alignment) = sec.alignment {
                         self.layout_rules_builder
-                            .section_info_mut(section_id)
+                            .section_info_mut(primary_section_id)
                             .min_alignment = Alignment::new(u64::from(alignment))?;
                     }
 
-                    for matcher in &sec.matchers {
-                        for pattern in &matcher.input_section_name_patterns {
-                            // For now at least, we need to copy the patterns into an arena. This
-                            // plausibly wouldn't be necessary if we were to put our inputs files,
-                            // or at least our linker scripts into an arena as soon as we read them,
-                            // since then we could borrow from them straight away.
-                            let pattern = allocator.alloc_slice_copy(pattern);
+                    let mut last_section_id = None;
 
-                            self.layout_rules_builder.add_section_rule(SectionRule::new(
-                                pattern,
-                                crate::layout_rules::SectionRuleOutcome::Section(
-                                    SectionOutputInfo {
-                                        section_id,
-                                        must_keep: matcher.must_keep,
-                                    },
-                                ),
-                            )?);
+                    for cmd in &sec.commands {
+                        match cmd {
+                            ContentsCommand::Matcher(matcher) => {
+                                for pattern in &matcher.input_section_name_patterns {
+                                    // For now at least, we need to copy the patterns into an arena.
+                                    // This plausibly wouldn't be necessary if we were to put our
+                                    // inputs files, or at least our linker scripts into an arena as
+                                    // soon as we read them, since then we could borrow from them
+                                    // straight away.
+                                    let pattern = allocator.alloc_slice_copy(pattern);
+
+                                    self.layout_rules_builder.add_section_rule(SectionRule::new(
+                                        pattern,
+                                        crate::layout_rules::SectionRuleOutcome::Section(
+                                            SectionOutputInfo {
+                                                section_id: primary_section_id,
+                                                must_keep: matcher.must_keep,
+                                            },
+                                        ),
+                                    )?);
+                                }
+
+                                last_section_id = Some(primary_section_id);
+                            }
+                            ContentsCommand::SymbolAssignment(assignment) => {
+                                let symbol_name = UnversionedSymbolName::prehashed(
+                                    allocator.alloc_slice_copy(assignment.name),
+                                );
+
+                                if let Some(id) = last_section_id {
+                                    self.layout_rules_builder
+                                        .section_info_mut(id)
+                                        .end_symbols
+                                        .push(symbol_name);
+                                } else {
+                                    self.layout_rules_builder
+                                        .section_info_mut(primary_section_id)
+                                        .start_symbols
+                                        .push(symbol_name);
+                                }
+                            }
                         }
                     }
                 }
