@@ -1136,9 +1136,9 @@ bitflags! {
         /// We encountered a direct reference to a symbol from a non-writable section and so we're
         /// going to need to do a copy relocation. Note that multiple symbols can have this flag
         /// set, however if they all point at the same address in the shared object from which they
-        /// originate, only a single copy relocation will be emitted. This flags indicates that the
-        /// symbol requires a copy relocation not necessarily that a copy relocation will be emitted
-        /// with the exact name of this symbol.
+        /// originate, only a single copy relocation will be emitted. This flag indicates that the
+        /// symbol requires a copy relocation, not necessarily that a copy relocation will be
+        /// emitted with the exact name of this symbol.
         const COPY_RELOCATION = 1 << 7;
     }
 }
@@ -4663,10 +4663,7 @@ impl<'data> DynamicLayoutState<'data> {
             return Ok(());
         }
 
-        self.select_copy_relocation_alternatives(symbol_resolution_flags);
-        self.request_copy_relocation_dynamic_symbols(common, symbol_db)?;
-
-        Ok(())
+        self.select_copy_relocation_alternatives(symbol_resolution_flags, common, symbol_db)
     }
 
     fn finalise_sizes(&mut self, common: &mut CommonGroupState<'data>) -> Result {
@@ -4738,7 +4735,9 @@ impl<'data> DynamicLayoutState<'data> {
     fn select_copy_relocation_alternatives(
         &mut self,
         symbol_resolution_flags: &[AtomicResolutionFlags],
-    ) {
+        common: &mut CommonGroupState<'data>,
+        symbol_db: &SymbolDb<'data>,
+    ) -> Result {
         for (i, symbol) in self.object.symbols.iter().enumerate() {
             let address = symbol.st_value(LittleEndian);
             let Some(info) = self.copy_relocations.get_mut(&address) else {
@@ -4747,25 +4746,17 @@ impl<'data> DynamicLayoutState<'data> {
 
             let symbol_id = self.symbol_id_range.offset_to_id(i);
 
+            export_dynamic(common, symbol_id, symbol_db)?;
+
+            symbol_resolution_flags[symbol_id.as_usize()]
+                .fetch_or(ResolutionFlags::COPY_RELOCATION);
+
             if symbol.is_weak() || !info.is_weak || info.symbol_id == symbol_id {
                 continue;
             }
 
             info.symbol_id = symbol_id;
             info.is_weak = false;
-
-            symbol_resolution_flags[symbol_id.as_usize()]
-                .fetch_or(ResolutionFlags::COPY_RELOCATION);
-        }
-    }
-
-    fn request_copy_relocation_dynamic_symbols(
-        &self,
-        common: &mut CommonGroupState<'data>,
-        symbol_db: &SymbolDb<'data>,
-    ) -> Result {
-        for info in self.copy_relocations.values() {
-            export_dynamic(common, info.symbol_id, symbol_db)?;
         }
 
         Ok(())
