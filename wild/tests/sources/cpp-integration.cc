@@ -3,6 +3,8 @@
 //#DiffIgnore:section.data
 //#DiffIgnore:section.rodata.alignment
 //#DiffIgnore:section.bss.alignment
+// On aarch64, GNU ld puts the copy relocation for this symbol in .data.rel.ro rather than .bss.
+//#DiffIgnore:dynsym.__stack_chk_guard.section
 //#Object:cpp-integration-2.cc
 
 //#Config:pie:default

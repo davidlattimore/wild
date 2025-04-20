@@ -3,6 +3,9 @@
 //#Object:visibility-merging-1.c
 //#RunEnabled:false
 //#DiffIgnore:section.got
+// TODO: Prevent dynsym export of symbols like these.
+//#DiffIgnore:dynsym.data1.*
+//#DiffIgnore:dynsym.data4.*
 
 // This symbol is included, but isn't exported as a dynamic symbol because of a second definition in
 // our other file that's marked as hidden.

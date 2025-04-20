@@ -43,6 +43,7 @@ mod gnu_hash;
 mod header_diff;
 mod init_order;
 pub(crate) mod section_map;
+mod symbol_diff;
 mod symtab;
 mod trace;
 mod version_diff;
@@ -231,6 +232,9 @@ impl Config {
                 // On aarch64, GNU ld, at least sometimes, converts R_AARCH64_ABS64 to a PLT-forming
                 // relocation. We at present, don't.
                 "rel.dynamic-plt-bypass",
+                // If we don't optimise a TLS access, then we'll have references to __tls_get_addr,
+                // when GNU ld doesn't.
+                "dynsym.__tls_get_addr.*",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
@@ -562,6 +566,7 @@ impl Report {
         eh_frame_diff::report_diffs(self, objects);
         version_diff::report_diffs(self, objects);
         debug_info_diff::check_debug_info(self, objects);
+        symbol_diff::report_diffs(self, objects);
 
         match objects[0].elf_file.elf_header().e_machine(LittleEndian) {
             object::elf::EM_X86_64 => {
