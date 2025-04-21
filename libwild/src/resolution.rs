@@ -43,6 +43,7 @@ use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use linker_utils::elf::SectionFlags;
+use linker_utils::elf::SectionType;
 use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
@@ -510,7 +511,8 @@ fn assign_section_ids<'data>(
     let mut output_sections = OutputSections::with_base_address(symbol_db.args.base_address());
 
     for section in &layout_rules.user_defined_sections {
-        let output_section_id = output_sections.add_section(section.name, section.min_alignment);
+        let output_section_id =
+            output_sections.add_section(section.name, section.min_alignment, None);
 
         for sym in &section.start_symbols {
             symbol_db.add_start_stop_symbol(*sym);
@@ -831,6 +833,7 @@ fn resolve_sections_for_object<'data>(
                     name: SectionName(section_name),
                     alignment,
                     index: input_section_index,
+                    ty: SectionType::from_header(input_section),
                 };
 
                 custom_sections.push(custom_section);
