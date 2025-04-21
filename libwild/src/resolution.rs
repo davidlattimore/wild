@@ -20,7 +20,6 @@ use crate::layout_rules::SectionRuleOutcome;
 use crate::layout_rules::SectionRules;
 use crate::output_section_id::CustomSectionDetails;
 use crate::output_section_id::OutputSections;
-use crate::output_section_id::OutputSectionsBuilder;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::parsing::InternalSymDefInfo;
@@ -508,12 +507,10 @@ fn assign_section_ids<'data>(
     layout_rules: &LayoutRules<'data>,
     custom_start_stop_defs: &mut Vec<InternalSymDefInfo>,
 ) -> OutputSections<'data> {
-    let mut output_sections_builder =
-        OutputSectionsBuilder::with_base_address(symbol_db.args.base_address());
+    let mut output_sections = OutputSections::with_base_address(symbol_db.args.base_address());
 
     for section in &layout_rules.user_defined_sections {
-        let output_section_id =
-            output_sections_builder.add_section(section.name, section.min_alignment);
+        let output_section_id = output_sections.add_section(section.name, section.min_alignment);
 
         for sym in &section.start_symbols {
             symbol_db.add_start_stop_symbol(*sym);
@@ -530,7 +527,7 @@ fn assign_section_ids<'data>(
         for file in &mut group.files {
             if let ResolvedFile::Object(s) = file {
                 if let Some(non_dynamic) = s.non_dynamic.as_mut() {
-                    output_sections_builder.add_sections(
+                    output_sections.add_sections(
                         &non_dynamic.custom_sections,
                         non_dynamic.sections.as_mut_slice(),
                     );
@@ -539,7 +536,7 @@ fn assign_section_ids<'data>(
         }
     }
 
-    output_sections_builder.build()
+    output_sections
 }
 
 struct Outputs<'data> {
