@@ -5139,8 +5139,7 @@ impl<'data> ObjectLayout<'data> {
 fn test_no_disallowed_overlaps() {
     use crate::output_section_id::OrderEvent;
 
-    let mut output_sections =
-        crate::output_section_id::OutputSectionsBuilder::with_base_address(0x1000).build();
+    let mut output_sections = OutputSections::with_base_address(0x1000);
     let output_order = output_sections.output_order();
     let args = Args::default();
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
@@ -5249,7 +5248,7 @@ fn verify_consistent_allocation_handling(
     resolution_flags: ResolutionFlags,
     output_kind: OutputKind,
 ) -> Result {
-    let output_sections = output_section_id::OutputSectionsBuilder::with_base_address(0).build();
+    let output_sections = OutputSections::with_base_address(0);
     let output_order = output_sections.output_order();
     let mut mem_sizes = output_sections.new_part_map();
     let resolution_flags = AtomicResolutionFlags::new(resolution_flags);

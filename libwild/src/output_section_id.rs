@@ -664,72 +664,6 @@ impl Debug for SectionName<'_> {
     }
 }
 
-pub(crate) struct OutputSectionsBuilder<'data> {
-    base_address: u64,
-    custom_by_name: FoldHashMap<SectionName<'data>, OutputSectionId>,
-    section_infos: OutputSectionMap<SectionOutputInfo<'data>>,
-}
-
-impl<'data> OutputSectionsBuilder<'data> {
-    pub(crate) fn build(self) -> OutputSections<'data> {
-        OutputSections {
-            base_address: self.base_address,
-            section_infos: self.section_infos,
-            custom_by_name: self.custom_by_name,
-            output_section_indexes: Default::default(),
-        }
-    }
-
-    pub(crate) fn add_sections(
-        &mut self,
-        custom_sections: &[CustomSectionDetails<'data>],
-        sections: &mut [SectionSlot],
-    ) {
-        for custom in custom_sections {
-            let section_id = self.add_section(custom.name, custom.alignment);
-
-            if let Some(slot) = sections.get_mut(custom.index.0) {
-                slot.set_part_id(section_id.part_id_with_alignment(custom.alignment));
-            }
-        }
-    }
-
-    pub(crate) fn add_section(
-        &mut self,
-        name: SectionName<'data>,
-        min_alignment: Alignment,
-    ) -> OutputSectionId {
-        *self.custom_by_name.entry(name).or_insert_with(|| {
-            self.section_infos.add_new(SectionOutputInfo {
-                name,
-                // Section flags and type will be filled in based on the attributes of the sections
-                // that get placed into this output section.
-                section_flags: SectionFlags::empty(),
-                ty: SectionType::from_u32(0),
-                min_alignment,
-            })
-        })
-    }
-
-    pub(crate) fn with_base_address(base_address: u64) -> Self {
-        let section_infos = SECTION_DEFINITIONS
-            .iter()
-            .map(|d| SectionOutputInfo {
-                section_flags: d.section_flags,
-                name: d.name,
-                ty: d.ty,
-                min_alignment: d.min_alignment,
-            })
-            .collect();
-
-        Self {
-            section_infos: OutputSectionMap::from_values(section_infos),
-            base_address,
-            custom_by_name: FoldHashMap::new(),
-        }
-    }
-}
-
 impl CustomSectionIds {
     /// Returns vector of events for each section and segment in output order.
     /// Segments span multiple sections and can overlap, so are represented as start and end events.
@@ -818,6 +752,56 @@ impl CustomSectionIds {
 }
 
 impl<'data> OutputSections<'data> {
+    pub(crate) fn add_sections(
+        &mut self,
+        custom_sections: &[CustomSectionDetails<'data>],
+        sections: &mut [SectionSlot],
+    ) {
+        for custom in custom_sections {
+            let section_id = self.add_section(custom.name, custom.alignment);
+
+            if let Some(slot) = sections.get_mut(custom.index.0) {
+                slot.set_part_id(section_id.part_id_with_alignment(custom.alignment));
+            }
+        }
+    }
+
+    pub(crate) fn add_section(
+        &mut self,
+        name: SectionName<'data>,
+        min_alignment: Alignment,
+    ) -> OutputSectionId {
+        *self.custom_by_name.entry(name).or_insert_with(|| {
+            self.section_infos.add_new(SectionOutputInfo {
+                name,
+                // Section flags and type will be filled in based on the attributes of the sections
+                // that get placed into this output section.
+                section_flags: SectionFlags::empty(),
+                ty: SectionType::from_u32(0),
+                min_alignment,
+            })
+        })
+    }
+
+    pub(crate) fn with_base_address(base_address: u64) -> Self {
+        let section_infos = SECTION_DEFINITIONS
+            .iter()
+            .map(|d| SectionOutputInfo {
+                section_flags: d.section_flags,
+                name: d.name,
+                ty: d.ty,
+                min_alignment: d.min_alignment,
+            })
+            .collect();
+
+        Self {
+            section_infos: OutputSectionMap::from_values(section_infos),
+            base_address,
+            custom_by_name: FoldHashMap::new(),
+            output_section_indexes: Default::default(),
+        }
+    }
+
     #[tracing::instrument(skip_all, name = "Compute output order")]
     pub(crate) fn output_order(&self) -> OutputOrder {
         let mut custom = CustomSectionIds::default();
@@ -909,12 +893,12 @@ impl<'data> OutputSections<'data> {
 
     #[cfg(test)]
     pub(crate) fn for_testing() -> OutputSections<'static> {
-        let mut builder = OutputSectionsBuilder::with_base_address(0x1000);
-        builder.add_section(SectionName(b"ro"), alignment::MIN);
-        builder.add_section(SectionName(b"exec"), alignment::MIN);
-        builder.add_section(SectionName(b"data"), alignment::MIN);
-        builder.add_section(SectionName(b"bss"), alignment::MIN);
-        builder.build()
+        let mut output_sections = OutputSections::with_base_address(0x1000);
+        output_sections.add_section(SectionName(b"ro"), alignment::MIN);
+        output_sections.add_section(SectionName(b"exec"), alignment::MIN);
+        output_sections.add_section(SectionName(b"data"), alignment::MIN);
+        output_sections.add_section(SectionName(b"bss"), alignment::MIN);
+        output_sections
     }
 }
 
