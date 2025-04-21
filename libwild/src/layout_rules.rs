@@ -115,12 +115,8 @@ impl<'data> LayoutRulesBuilder<'data> {
         self.rules.push(rule);
     }
 
-    pub(crate) fn id_for_section_named(
-        &mut self,
-        name: SectionName<'_>,
-        allocator: &bumpalo_herd::Member<'data>,
-    ) -> OutputSectionId {
-        self.section_ids.id_for_section_named(name, allocator)
+    pub(crate) fn id_for_section_named(&mut self, name: SectionName<'data>) -> OutputSectionId {
+        self.section_ids.id_for_section_named(name)
     }
 
     pub(crate) fn section_info_mut(
@@ -355,11 +351,7 @@ impl Default for SectionIdAllocator<'_> {
 }
 
 impl<'data> SectionIdAllocator<'data> {
-    fn id_for_section_named(
-        &mut self,
-        name: SectionName,
-        allocator: &bumpalo_herd::Member<'data>,
-    ) -> OutputSectionId {
+    fn id_for_section_named(&mut self, name: SectionName<'data>) -> OutputSectionId {
         if self.section_name_to_id.is_empty() {
             // Pre-populate with built-in sections
             for section_id in output_section_id::all_built_in_section_ids() {
@@ -379,7 +371,7 @@ impl<'data> SectionIdAllocator<'data> {
         );
 
         self.user_defined_sections.push(UserDefinedSection {
-            name: SectionName(allocator.alloc_slice_copy(name.bytes())),
+            name,
             min_alignment: alignment::MIN,
             start_symbols: Vec::new(),
             end_symbols: Vec::new(),
