@@ -18,7 +18,7 @@ pub(crate) struct InputBytes<'data> {
 }
 
 #[tracing::instrument(skip_all, name = "Split archives")]
-pub fn split_archives<'data>(input_data: &'data InputData) -> Result<Vec<InputBytes<'data>>> {
+pub fn split_archives<'data>(input_data: &InputData<'data>) -> Result<Vec<InputBytes<'data>>> {
     let split_output = input_data
         .files
         .par_iter()

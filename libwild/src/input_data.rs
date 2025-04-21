@@ -22,7 +22,6 @@ use crate::output_section_id::SectionName;
 use crate::symbol::UnversionedSymbolName;
 use anyhow::Context;
 use anyhow::bail;
-use bumpalo_herd::Herd;
 use foldhash::HashSet;
 use foldhash::fast::RandomState;
 use memmap2::Mmap;
@@ -31,14 +30,16 @@ use rayon::iter::ParallelIterator;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
+use typed_arena::Arena;
 
-pub(crate) struct InputData {
-    pub(crate) files: Vec<InputFile>,
-    pub(crate) version_script_data: Option<VersionScriptData>,
+pub(crate) struct InputData<'data> {
+    pub(crate) files: Vec<&'data InputFile>,
+    pub(crate) version_script_data: Option<VersionScriptData<'data>>,
 }
 
-pub(crate) struct VersionScriptData {
-    pub(crate) raw: String,
+#[derive(Clone, Copy)]
+pub(crate) struct VersionScriptData<'data> {
+    pub(crate) raw: &'data str,
 }
 
 /// Identifies an input file. IDs start from 0 which is reserved for our prelude file.
@@ -97,23 +98,23 @@ struct InputPath {
 
 struct TemporaryState<'data> {
     args: &'data Args,
-    herd: &'data Herd,
     filenames: HashSet<PathBuf>,
     layout_rules_builder: LayoutRulesBuilder<'data>,
+    inputs_arena: &'data Arena<InputFile>,
 }
 
-impl InputData {
+impl<'data> InputData<'data> {
     #[tracing::instrument(skip_all, name = "Open input files")]
-    pub fn from_args<'data>(
+    pub fn from_args(
         args: &'data Args,
-        herd: &'data Herd,
+        inputs_arena: &'data Arena<InputFile>,
     ) -> Result<(Self, LayoutRules<'data>)> {
         let files = Vec::new();
 
         let version_script_data = args
             .version_script_path
             .as_ref()
-            .map(|path| read_version_script(path))
+            .map(|path| read_version_script(path, inputs_arena))
             .transpose()?;
 
         let mut input_data = Self {
@@ -121,7 +122,7 @@ impl InputData {
             version_script_data,
         };
 
-        let mut temporary_state = TemporaryState::new(herd, args);
+        let mut temporary_state = TemporaryState::new(inputs_arena, args);
 
         for input in &args.inputs {
             input_data.register_input(input, &mut temporary_state)?;
@@ -132,7 +133,7 @@ impl InputData {
         Ok((input_data, layout_rules))
     }
 
-    fn register_input(&mut self, input: &Input, state: &mut TemporaryState) -> Result {
+    fn register_input(&mut self, input: &Input, state: &mut TemporaryState<'data>) -> Result {
         let paths = input.path(state.args)?;
         let absolute_path = &paths.absolute;
         if !state.filenames.insert(absolute_path.clone()) {
@@ -144,10 +145,18 @@ impl InputData {
 
         let kind = FileKind::identify_bytes(&data.bytes)?;
 
+        let input_file = InputFile {
+            filename: absolute_path.to_owned(),
+            original_filename: paths.original,
+            kind,
+            modifiers: input.modifiers,
+            data: Some(data),
+        };
+
         match kind {
             FileKind::Text => {
                 return self.process_linker_script(
-                    &data.bytes,
+                    state.inputs_arena.alloc(input_file).data(),
                     absolute_path,
                     input.modifiers,
                     state,
@@ -156,7 +165,7 @@ impl InputData {
             FileKind::ThinArchive => {
                 let parent_path = absolute_path.parent().unwrap();
                 let mut extended_filenames = None;
-                for entry in ArchiveIterator::from_archive_bytes(&data)? {
+                for entry in ArchiveIterator::from_archive_bytes(input_file.data())? {
                     match entry? {
                         ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
                         ArchiveEntry::Thin(entry) => {
@@ -164,7 +173,7 @@ impl InputData {
                             let entry_path = parent_path.join(path);
                             let file_data =
                                 FileData::new(&entry_path, state.args.prepopulate_maps)?;
-                            self.files.push(InputFile {
+                            self.files.push(state.inputs_arena.alloc(InputFile {
                                 filename: entry_path.clone(),
                                 original_filename: entry_path,
                                 kind: FileKind::ElfObject,
@@ -173,20 +182,14 @@ impl InputData {
                                     ..input.modifiers
                                 },
                                 data: Some(file_data),
-                            });
+                            }));
                         }
                         _ => {}
                     }
                 }
             }
             _ => {
-                self.files.push(InputFile {
-                    filename: absolute_path.to_owned(),
-                    original_filename: paths.original,
-                    kind,
-                    modifiers: input.modifiers,
-                    data: Some(data),
-                });
+                self.files.push(state.inputs_arena.alloc(input_file));
             }
         }
 
@@ -228,10 +231,10 @@ impl InputData {
 
     fn process_linker_script(
         &mut self,
-        bytes: &[u8],
+        bytes: &'data [u8],
         absolute_path: &Path,
         modifiers: Modifiers,
-        state: &mut TemporaryState,
+        state: &mut TemporaryState<'data>,
     ) -> Result {
         let script = LinkerScript::parse(bytes, absolute_path)?;
         self.add_inputs_from_linker_script(absolute_path, modifiers, state, &script)?;
@@ -243,8 +246,8 @@ impl InputData {
         &mut self,
         absolute_path: &Path,
         modifiers: Modifiers,
-        state: &mut TemporaryState,
-        script: &LinkerScript<'_>,
+        state: &mut TemporaryState<'data>,
+        script: &LinkerScript,
     ) -> Result<(), anyhow::Error> {
         let directory = absolute_path.parent().expect("expected an absolute path");
 
@@ -267,9 +270,9 @@ impl InputData {
 }
 
 impl<'data> TemporaryState<'data> {
-    fn new(herd: &'data Herd, args: &'data Args) -> Self {
+    fn new(inputs_arena: &'data Arena<InputFile>, args: &'data Args) -> Self {
         Self {
-            herd,
+            inputs_arena,
             filenames: HashSet::with_hasher(RandomState::default()),
             args,
             layout_rules_builder: LayoutRulesBuilder::default(),
@@ -277,8 +280,7 @@ impl<'data> TemporaryState<'data> {
     }
 
     /// Records information about any sections declared by the linker script.
-    fn record_linker_script_sections(&mut self, script: &LinkerScript) -> Result {
-        let allocator = self.herd.get();
+    fn record_linker_script_sections(&mut self, script: &LinkerScript<'data>) -> Result {
         for cmd in &script.commands {
             if let linker_script::Command::Sections(sections) = cmd {
                 for sec_cmd in &sections.commands {
@@ -286,7 +288,7 @@ impl<'data> TemporaryState<'data> {
 
                     let primary_section_id = self
                         .layout_rules_builder
-                        .id_for_section_named(SectionName(sec.output_section_name), &allocator);
+                        .id_for_section_named(SectionName(sec.output_section_name));
 
                     if let Some(alignment) = sec.alignment {
                         self.layout_rules_builder
@@ -300,13 +302,6 @@ impl<'data> TemporaryState<'data> {
                         match cmd {
                             ContentsCommand::Matcher(matcher) => {
                                 for pattern in &matcher.input_section_name_patterns {
-                                    // For now at least, we need to copy the patterns into an arena.
-                                    // This plausibly wouldn't be necessary if we were to put our
-                                    // inputs files, or at least our linker scripts into an arena as
-                                    // soon as we read them, since then we could borrow from them
-                                    // straight away.
-                                    let pattern = allocator.alloc_slice_copy(pattern);
-
                                     self.layout_rules_builder.add_section_rule(SectionRule::new(
                                         pattern,
                                         crate::layout_rules::SectionRuleOutcome::Section(
@@ -321,9 +316,7 @@ impl<'data> TemporaryState<'data> {
                                 last_section_id = Some(primary_section_id);
                             }
                             ContentsCommand::SymbolAssignment(assignment) => {
-                                let symbol_name = UnversionedSymbolName::prehashed(
-                                    allocator.alloc_slice_copy(assignment.name),
-                                );
+                                let symbol_name = UnversionedSymbolName::prehashed(assignment.name);
 
                                 if let Some(id) = last_section_id {
                                     self.layout_rules_builder
@@ -347,10 +340,24 @@ impl<'data> TemporaryState<'data> {
     }
 }
 
-fn read_version_script(path: &Path) -> Result<VersionScriptData> {
-    let data = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read version script `{}`", path.display()))?;
-    Ok(VersionScriptData { raw: data })
+fn read_version_script<'data>(
+    path: &Path,
+    inputs_arena: &'data Arena<InputFile>,
+) -> Result<VersionScriptData<'data>> {
+    let data = FileData::new(path, false)?;
+
+    let file = inputs_arena.alloc(InputFile {
+        filename: path.to_owned(),
+        original_filename: path.to_owned(),
+        kind: FileKind::Text,
+        modifiers: Default::default(),
+        data: Some(data),
+    });
+
+    // TODO: Experiment with switching version scripts to parsing bytes instead of strings.
+    let raw = std::str::from_utf8(file.data()).context("Invalid UTF-8 in version script")?;
+
+    Ok(VersionScriptData { raw })
 }
 
 impl Input {

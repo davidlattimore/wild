@@ -67,8 +67,8 @@ enum SymbolMatcher<'data> {
 
 impl<'data> VersionScript<'data> {
     #[tracing::instrument(skip_all, name = "Parse version script")]
-    pub(crate) fn parse(data: &'data VersionScriptData) -> Result<VersionScript<'data>> {
-        let mut tokens = Tokeniser::new(&data.raw);
+    pub(crate) fn parse(data: VersionScriptData<'data>) -> Result<VersionScript<'data>> {
+        let mut tokens = Tokeniser::new(data.raw);
         let mut version_script = Self::default();
 
         // List of version names in the script, used to map parent version to version indexes
@@ -384,10 +384,9 @@ mod tests {
                         /* Multi-line
                            comment */
                         *;
-                    }"#
-            .into(),
+                    }"#,
         };
-        let script = VersionScript::parse(&data).unwrap();
+        let script = VersionScript::parse(data).unwrap();
         assert_equal(
             script
                 .globals
@@ -421,10 +420,9 @@ mod tests {
                 VERS_1.2 {
                     foo2;
                 } VERS_1.1;
-            "#
-            .into(),
+            "#,
         };
-        let script = VersionScript::parse(&data).unwrap();
+        let script = VersionScript::parse(data).unwrap();
         assert_eq!(script.versions.len(), 3);
         assert_equal(
             script

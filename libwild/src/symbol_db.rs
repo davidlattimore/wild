@@ -254,7 +254,7 @@ impl<'data> SymbolDb<'data> {
     #[tracing::instrument(skip_all, name = "Build symbol DB")]
     pub fn build(
         groups: Vec<Group<'data>>,
-        version_script_data: Option<&'data VersionScriptData>,
+        version_script_data: Option<VersionScriptData<'data>>,
         args: &'data Args,
     ) -> Result<Self> {
         let version_script = version_script_data
