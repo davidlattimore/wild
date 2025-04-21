@@ -60,6 +60,7 @@ pub(crate) struct CustomSectionDetails<'data> {
     pub(crate) name: SectionName<'data>,
     pub(crate) index: object::SectionIndex,
     pub(crate) alignment: Alignment,
+    pub(crate) ty: SectionType,
 }
 
 // Single-part sections that we generate ourselves rather than copying directly from input objects.
@@ -758,7 +759,7 @@ impl<'data> OutputSections<'data> {
         sections: &mut [SectionSlot],
     ) {
         for custom in custom_sections {
-            let section_id = self.add_section(custom.name, custom.alignment);
+            let section_id = self.add_section(custom.name, custom.alignment, Some(custom.ty));
 
             if let Some(slot) = sections.get_mut(custom.index.0) {
                 slot.set_part_id(section_id.part_id_with_alignment(custom.alignment));
@@ -770,6 +771,7 @@ impl<'data> OutputSections<'data> {
         &mut self,
         name: SectionName<'data>,
         min_alignment: Alignment,
+        ty: Option<SectionType>,
     ) -> OutputSectionId {
         *self.custom_by_name.entry(name).or_insert_with(|| {
             self.section_infos.add_new(SectionOutputInfo {
@@ -777,7 +779,7 @@ impl<'data> OutputSections<'data> {
                 // Section flags and type will be filled in based on the attributes of the sections
                 // that get placed into this output section.
                 section_flags: SectionFlags::empty(),
-                ty: SectionType::from_u32(0),
+                ty: ty.unwrap_or(SectionType::from_u32(0)),
                 min_alignment,
             })
         })
@@ -894,10 +896,10 @@ impl<'data> OutputSections<'data> {
     #[cfg(test)]
     pub(crate) fn for_testing() -> OutputSections<'static> {
         let mut output_sections = OutputSections::with_base_address(0x1000);
-        output_sections.add_section(SectionName(b"ro"), alignment::MIN);
-        output_sections.add_section(SectionName(b"exec"), alignment::MIN);
-        output_sections.add_section(SectionName(b"data"), alignment::MIN);
-        output_sections.add_section(SectionName(b"bss"), alignment::MIN);
+        output_sections.add_section(SectionName(b"ro"), alignment::MIN, None);
+        output_sections.add_section(SectionName(b"exec"), alignment::MIN, None);
+        output_sections.add_section(SectionName(b"data"), alignment::MIN, None);
+        output_sections.add_section(SectionName(b"bss"), alignment::MIN, None);
         output_sections
     }
 }
