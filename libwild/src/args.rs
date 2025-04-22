@@ -544,14 +544,18 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             args.no_undefined = true;
         } else if let Some(rest) = long_arg_split_prefix("undefined=") {
             args.undefined.push(rest.to_owned());
-        } else if arg == "-u" {
-            args.undefined.push(
-                input
-                    .next()
-                    .context("Missing argument to -u")?
-                    .as_ref()
-                    .to_owned(),
-            );
+        } else if let Some(rest) = arg.strip_prefix("-u") {
+            if rest.is_empty() {
+                args.undefined.push(
+                    input
+                        .next()
+                        .context("Missing argument to -u")?
+                        .as_ref()
+                        .to_owned(),
+                );
+            } else {
+                args.undefined.push(rest.to_owned());
+            }
         } else if long_arg_eq("demangle") {
             args.demangle = true;
         } else if long_arg_eq("no-demangle") {
