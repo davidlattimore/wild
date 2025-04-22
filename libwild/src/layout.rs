@@ -953,17 +953,17 @@ impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState<'data> {
 
 /// Attributes that we'll take from an input section and apply to the output section into which it's
 /// placed.
-#[derive(Default, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct SectionAttributes {
     flags: SectionFlags,
-    ty: Option<SectionType>,
+    ty: SectionType,
 }
 
 impl SectionAttributes {
     fn from_header(header: &crate::elf::SectionHeader) -> Self {
         Self {
             flags: SectionFlags::from_header(header),
-            ty: Some(SectionType::from_header(header)),
+            ty: SectionType::from_header(header),
         }
     }
 
@@ -978,7 +978,7 @@ impl SectionAttributes {
 struct CommonGroupState<'data> {
     mem_sizes: OutputSectionPartMap<u64>,
 
-    section_attributes: OutputSectionMap<SectionAttributes>,
+    section_attributes: OutputSectionMap<Option<SectionAttributes>>,
 
     /// Dynamic symbols that need to be defined. Because of the ordering requirements for symbol
     /// hashes, these get defined by the epilogue. The object on which a particular dynamic symbol
@@ -1044,6 +1044,33 @@ impl CommonGroupState<'_> {
 
     fn allocate(&mut self, part_id: PartId, size: u64) {
         self.mem_sizes.increment(part_id, size);
+    }
+
+    /// Allocate resources and update attributes based on a section having been loaded.
+    fn section_loaded(
+        &mut self,
+        part_id: PartId,
+        header: &object::elf::SectionHeader64<LittleEndian>,
+        section: Section,
+    ) {
+        self.allocate(part_id, section.capacity());
+        self.store_section_attributes(part_id, header);
+    }
+
+    fn store_section_attributes(
+        &mut self,
+        part_id: PartId,
+        header: &object::elf::SectionHeader64<LittleEndian>,
+    ) {
+        let existing_attributes = self.section_attributes.get_mut(part_id.output_section_id());
+
+        let new_attributes = SectionAttributes::from_header(header);
+
+        if let Some(existing) = existing_attributes {
+            existing.merge(new_attributes);
+        } else {
+            *existing_attributes = Some(new_attributes);
+        }
     }
 }
 
@@ -1862,7 +1889,9 @@ fn propagate_section_attributes(group_states: &[GroupState], output_sections: &m
             .common
             .section_attributes
             .for_each(|section_id, attributes| {
-                attributes.apply(output_sections, section_id);
+                if let Some(attributes) = attributes {
+                    attributes.apply(output_sections, section_id);
+                }
             });
     }
 }
@@ -1873,9 +1902,7 @@ impl SectionAttributes {
 
         info.section_flags |= self.flags & SECTION_FLAGS_PROPAGATION_MASK;
 
-        if let Some(ty) = self.ty {
-            info.ty = info.ty.max(ty);
-        }
+        info.ty = info.ty.max(self.ty);
     }
 }
 
@@ -3641,10 +3668,7 @@ impl<'data> ObjectLayoutState<'data> {
                 // unreferenced data. So the only thing we need to do here is propagate section
                 // flags.
                 let header = self.object.section(section_index)?;
-                common
-                    .section_attributes
-                    .get_mut(sec.part_id.output_section_id())
-                    .merge(SectionAttributes::from_header(header));
+                common.store_section_attributes(sec.part_id, header);
             }
         };
 
@@ -3685,11 +3709,8 @@ impl<'data> ObjectLayoutState<'data> {
         }
 
         tracing::debug!(loaded_section = %self.object.section_display_name(section_index),);
-        common.allocate(part_id, section.capacity());
-        common
-            .section_attributes
-            .get_mut(part_id.output_section_id())
-            .merge(SectionAttributes::from_header(header));
+
+        common.section_loaded(part_id, header, section);
 
         resources
             .sections_with_content
