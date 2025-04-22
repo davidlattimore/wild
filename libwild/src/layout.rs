@@ -3591,7 +3591,9 @@ impl<'data> ObjectLayoutState<'data> {
 
         for (i, section) in self.sections.iter().enumerate() {
             match section {
-                SectionSlot::MustLoad(..) | SectionSlot::UnloadedDebugInfo(..) => {
+                SectionSlot::MustLoad(..)
+                | SectionSlot::UnloadedDebugInfo(..)
+                | SectionSlot::MergeStrings(_) => {
                     queue
                         .local_work
                         .push(WorkItem::LoadSection(SectionLoadRequest::new(
@@ -3789,7 +3791,7 @@ impl<'data> ObjectLayoutState<'data> {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
-        common.allocate(part_id, section.capacity());
+        common.section_loaded(part_id, header, section);
         self.sections[section_index.0] = SectionSlot::LoadedDebugInfo(section);
 
         Ok(())
