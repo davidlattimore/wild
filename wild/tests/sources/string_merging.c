@@ -1,7 +1,6 @@
 // Defines identical string literals in two different C files and checks that they end up pointing
 // to the same memory.
 
-//#DiffIgnore:section.custom1.entsize
 //#LinkArgs:-z noexecstack
 //#Object:string_merging1.s
 //#Object:string_merging2.s

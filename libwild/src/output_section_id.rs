@@ -167,10 +167,6 @@ impl OutputSections<'_> {
         OutputSectionMap::from_values(values)
     }
 
-    pub(crate) fn section_type(&self, section_id: OutputSectionId) -> SectionType {
-        self.output_info(section_id).ty
-    }
-
     pub(crate) fn section_flags(&self, section_id: OutputSectionId) -> SectionFlags {
         self.output_info(section_id).section_flags
     }
@@ -182,6 +178,7 @@ pub(crate) struct SectionOutputInfo<'data> {
     pub(crate) section_flags: SectionFlags,
     pub(crate) ty: SectionType,
     pub(crate) min_alignment: Alignment,
+    pub(crate) entsize: u64,
 }
 
 pub(crate) struct BuiltInSectionDetails {
@@ -781,6 +778,7 @@ impl<'data> OutputSections<'data> {
                 section_flags: SectionFlags::empty(),
                 ty: ty.unwrap_or(SectionType::from_u32(0)),
                 min_alignment,
+                entsize: 0,
             })
         })
     }
@@ -793,6 +791,7 @@ impl<'data> OutputSections<'data> {
                 name: d.name,
                 ty: d.ty,
                 min_alignment: d.min_alignment,
+                entsize: d.element_size,
             })
             .collect();
 

@@ -1,7 +1,6 @@
 //#LinkArgs:-z noexecstack
 //#Object:exit.c
 //#Arch: x86_64
-//#DiffIgnore:section.data.rel.ro.entsize
 
 .section        .data.foo
 .p2align        4, 0x0
