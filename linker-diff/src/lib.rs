@@ -147,7 +147,6 @@ impl Config {
                 "section.phdr",
                 // We don't yet support these sections.
                 "section.data.rel.ro",
-                "section.debug*",
                 "section.stapsdt.base",
                 "section.note.gnu.build-id",
                 "section.note.gnu.property",
