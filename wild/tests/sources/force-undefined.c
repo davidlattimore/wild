@@ -2,9 +2,10 @@
 //#Object:exit.c
 
 //#Config:undefined:default
-//#LinkArgs:--undefined=foo -u bar
+//#LinkArgs:--undefined=foo -u bar -ubaz
 //#ExpectSym:foo
 //#ExpectSym:bar
+//#ExpectSym:baz
 
 // Verify that we can activate an archive entry by listing a symbol it defines as undefined.
 //#Config:archive-activation:default
