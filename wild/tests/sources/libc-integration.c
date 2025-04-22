@@ -5,8 +5,6 @@
 //#DiffIgnore:.dynamic.DT_PLTGOT
 //#DiffIgnore:.dynamic.DT_JMPREL
 //#DiffIgnore:.dynamic.DT_PLTREL
-//#DiffIgnore:section.plt.entsize
-//#DiffIgnore:section.rodata.cst32.entsize
 // This is only an issue on openSUSE
 //#DiffIgnore:section.rela.plt.link
 //#DiffIgnore:section.data.alignment
@@ -64,7 +62,6 @@
 //#LinkArgs:-fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#EnableLinker:lld
 //#DiffIgnore:section.relro_padding
-//#DiffIgnore:section.rodata.entsize
 
 //#Config:gcc-dynamic-pie:shared
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS

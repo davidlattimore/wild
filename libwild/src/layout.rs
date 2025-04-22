@@ -957,6 +957,7 @@ impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState<'data> {
 struct SectionAttributes {
     flags: SectionFlags,
     ty: SectionType,
+    entsize: u64,
 }
 
 impl SectionAttributes {
@@ -964,14 +965,22 @@ impl SectionAttributes {
         Self {
             flags: SectionFlags::from_header(header),
             ty: SectionType::from_header(header),
+            entsize: header.sh_entsize.get(LittleEndian),
         }
     }
 
     fn merge(&mut self, rhs: Self) {
         self.flags |= rhs.flags;
+
         // We somewhat arbitrarily tie-break by selecting the maximum type. This means for example
         // that types like SHT_INIT_ARRAY win out over more generic types like SHT_PROGBITS.
         self.ty = self.ty.max(rhs.ty);
+
+        // If all input sections specify the same entsize, then we use that. If there's any
+        // inconsistency, then we set entsize to 0.
+        if self.entsize != rhs.entsize {
+            self.entsize = 0;
+        }
     }
 }
 
@@ -1901,6 +1910,8 @@ impl SectionAttributes {
         let info = output_sections.section_infos.get_mut(section_id);
 
         info.section_flags |= self.flags & SECTION_FLAGS_PROPAGATION_MASK;
+
+        info.entsize = self.entsize;
 
         info.ty = info.ty.max(self.ty);
     }
@@ -3687,6 +3698,7 @@ impl<'data> ObjectLayoutState<'data> {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
         let mut modifier = RelocationModifier::Normal;
+
         for rel in self.relocations(section.index)? {
             if modifier == RelocationModifier::SkipNextRelocation {
                 modifier = RelocationModifier::Normal;

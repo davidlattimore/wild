@@ -1,7 +1,6 @@
 // The C compiler seems to always reference local symbols by offsets from the section containing the
 // symbol. We want to make sure that actual symbol references work properly too.
 
-//#DiffIgnore:section.rodata.entsize
 //#Object:exit.c
 //#LinkArgs:-z noexecstack
 //#EnableLinker:lld

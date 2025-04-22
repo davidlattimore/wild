@@ -3242,7 +3242,8 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
             continue;
         };
 
-        let section_type = output_sections.section_type(section_id);
+        let output_info = output_sections.output_info(section_id);
+        let section_type = output_info.ty;
         let section_layout = layout.section_layouts.get(section_id);
 
         if output_sections
@@ -3252,7 +3253,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) {
             continue;
         }
 
-        let entsize = section_id.element_size();
+        let entsize = output_info.entsize.max(section_id.element_size());
         let mut size;
         let alignment;
 

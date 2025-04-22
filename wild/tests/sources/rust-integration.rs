@@ -19,6 +19,9 @@
 //#RequiresNightlyRustc: true
 //#RequiresRustMusl: true
 //#Arch: x86_64
+// GNU ld clears these flags and sets entsize to 0. It's not clear why.
+//#DiffIgnore:section.debug_str.flags
+//#DiffIgnore:section.debug_str.entsize
 
 //#Config:cranelift-static-aarch64:default
 //#CompArgs:-Zcodegen-backend=cranelift --target aarch64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2 --cfg cranelift
