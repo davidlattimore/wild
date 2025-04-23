@@ -8,17 +8,52 @@ use crate::utils::or_from_slice;
 
 #[must_use]
 pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
+    // The relocation listing following the order defined in the standard:
+    // https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc#relocations
     let (kind, size, mask, range, alignment) = match r_type {
-        object::elf::R_RISCV_NONE | object::elf::R_RISCV_RELAX => (
+        object::elf::R_RISCV_NONE => (
             RelocationKind::None,
             RelocationSize::ByteSize(0),
             None,
             AllowedRange::no_check(),
             1,
         ),
-        object::elf::R_RISCV_CALL_PLT => (
+        object::elf::R_RISCV_32 => (
+            RelocationKind::Absolute,
+            RelocationSize::ByteSize(4),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_64 => (
+            RelocationKind::Absolute,
+            RelocationSize::ByteSize(4),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_BRANCH => return None, // TODO: support
+        object::elf::R_RISCV_JAL => return None,    // TODO: support
+        object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT => (
             RelocationKind::Relative,
             RelocationSize::bit_mask_riscv(0, 64, RISCVInstruction::AuipcJalr),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_GOT_HI20 => return None, // TODO: support
+        object::elf::R_RISCV_TLS_GOT_HI20 => return None, // TODO: support
+        object::elf::R_RISCV_TLS_GD_HI20 => return None, // TODO: support
+        object::elf::R_RISCV_PCREL_HI20 => (
+            RelocationKind::Relative,
+            RelocationSize::bit_mask_riscv(12, 32, RISCVInstruction::High20),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_PCREL_LO12_I | object::elf::R_RISCV_PCREL_LO12_S => (
+            RelocationKind::RelativeRISCVLow12,
+            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::Low12),
             None,
             AllowedRange::no_check(),
             1,
@@ -37,23 +72,78 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
-        object::elf::R_RISCV_PCREL_HI20 => (
-            RelocationKind::Relative,
-            RelocationSize::bit_mask_riscv(12, 32, RISCVInstruction::High20),
+        object::elf::R_RISCV_TPREL_ADD => return None, // TODO: support
+        object::elf::R_RISCV_ADD8 => (
+            RelocationKind::AbsoluteAddition,
+            RelocationSize::ByteSize(1),
             None,
             AllowedRange::no_check(),
             1,
         ),
-        object::elf::R_RISCV_PCREL_LO12_I | object::elf::R_RISCV_PCREL_LO12_S => (
-            RelocationKind::RelativeRISCVLow12,
-            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::Low12),
+        object::elf::R_RISCV_ADD16 => (
+            RelocationKind::AbsoluteAddition,
+            RelocationSize::ByteSize(2),
             None,
             AllowedRange::no_check(),
             1,
         ),
-        object::elf::R_RISCV_32_PCREL => (
-            RelocationKind::Relative,
+        object::elf::R_RISCV_ADD32 => (
+            RelocationKind::AbsoluteAddition,
             RelocationSize::ByteSize(4),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_ADD64 => (
+            RelocationKind::AbsoluteAddition,
+            RelocationSize::ByteSize(8),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_SUB8 => (
+            RelocationKind::AbsoluteSubtraction,
+            RelocationSize::ByteSize(1),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_SUB16 => (
+            RelocationKind::AbsoluteSubtraction,
+            RelocationSize::ByteSize(2),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_SUB32 => (
+            RelocationKind::AbsoluteSubtraction,
+            RelocationSize::ByteSize(4),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_SUB64 => (
+            RelocationKind::AbsoluteSubtraction,
+            RelocationSize::ByteSize(8),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        // TODO: missing object::elf::R_RISCV_GOT32_PCREL
+        // https://github.com/gimli-rs/object/pull/767
+        object::elf::R_RISCV_ALIGN => return None, // TODO: support
+        object::elf::R_RISCV_RVC_BRANCH => return None, // TODO: support
+        object::elf::R_RISCV_RVC_JUMP => return None, // TODO: support
+        object::elf::R_RISCV_RELAX => (
+            RelocationKind::None,
+            RelocationSize::ByteSize(0),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_SUB6 => (
+            RelocationKind::AbsoluteSubtractionWord6,
+            RelocationSize::ByteSize(1),
             None,
             AllowedRange::no_check(),
             1,
@@ -86,63 +176,20 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
-        object::elf::R_RISCV_ADD8 => (
-            RelocationKind::AbsoluteAddition,
-            RelocationSize::ByteSize(1),
-            None,
-            AllowedRange::no_check(),
-            1,
-        ),
-        object::elf::R_RISCV_ADD16 => (
-            RelocationKind::AbsoluteAddition,
-            RelocationSize::ByteSize(2),
-            None,
-            AllowedRange::no_check(),
-            1,
-        ),
-        object::elf::R_RISCV_ADD32 => (
-            RelocationKind::AbsoluteAddition,
+        object::elf::R_RISCV_32_PCREL => (
+            RelocationKind::Relative,
             RelocationSize::ByteSize(4),
             None,
             AllowedRange::no_check(),
             1,
         ),
-        object::elf::R_RISCV_ADD64 => (
-            RelocationKind::AbsoluteAddition,
-            RelocationSize::ByteSize(8),
-            None,
-            AllowedRange::no_check(),
-            1,
-        ),
-        object::elf::R_RISCV_SUB6 => (
-            RelocationKind::AbsoluteSubtractionWord6,
-            RelocationSize::ByteSize(1),
-            None,
-            AllowedRange::no_check(),
-            1,
-        ),
-        object::elf::R_RISCV_SUB16 => (
-            RelocationKind::AbsoluteSubtraction,
-            RelocationSize::ByteSize(2),
-            None,
-            AllowedRange::no_check(),
-            1,
-        ),
-        object::elf::R_RISCV_SUB32 => (
-            RelocationKind::AbsoluteSubtraction,
-            RelocationSize::ByteSize(4),
-            None,
-            AllowedRange::no_check(),
-            1,
-        ),
-        object::elf::R_RISCV_SUB64 => (
-            RelocationKind::AbsoluteSubtraction,
-            RelocationSize::ByteSize(8),
-            None,
-            AllowedRange::no_check(),
-            1,
-        ),
-
+        object::elf::R_RISCV_PLT32 => return None, // TODO: support
+        object::elf::R_RISCV_SET_ULEB128 => return None, // TODO: support
+        object::elf::R_RISCV_SUB_ULEB128 => return None, // TODO: support
+        object::elf::R_RISCV_TLSDESC_HI20 => return None, // TODO: support
+        object::elf::R_RISCV_TLSDESC_LOAD_LO12 => return None, // TODO: support
+        object::elf::R_RISCV_TLSDESC_ADD_LO12 => return None, // TODO: support
+        object::elf::R_RISCV_TLSDESC_CALL => return None, // TODO: support
         _ => return None,
     };
 
