@@ -634,6 +634,10 @@ const fn default_target_arch() -> Architecture {
     {
         Architecture::AArch64
     }
+    #[cfg(target_arch = "riscv64")]
+    {
+        Architecture::RISCV64
+    }
 }
 
 fn parse_from_argument_file(path: &Path) -> Result<Args> {
