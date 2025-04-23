@@ -271,15 +271,22 @@ enum LinkerInvocationMode {
 enum Architecture {
     X86_64,
     AArch64,
+    #[allow(clippy::upper_case_acronyms)]
+    RISCV,
 }
 
-const ALL_ARCHITECTURES: &[Architecture] = &[Architecture::X86_64, Architecture::AArch64];
+const ALL_ARCHITECTURES: &[Architecture] = &[
+    Architecture::X86_64,
+    Architecture::AArch64,
+    Architecture::RISCV,
+];
 
 impl Architecture {
     fn name(&self) -> &'static str {
         match self {
             Architecture::X86_64 => "x86_64",
             Architecture::AArch64 => "aarch64",
+            Architecture::RISCV => "riscv64",
         }
     }
 
@@ -287,6 +294,7 @@ impl Architecture {
         match self {
             Architecture::X86_64 => "x86_64",
             Architecture::AArch64 => "aarch64elf",
+            Architecture::RISCV => "elf64lriscv",
         }
     }
 
@@ -294,6 +302,7 @@ impl Architecture {
         match self {
             Architecture::X86_64 => "x86_64-unknown-linux-gnu",
             Architecture::AArch64 => "aarch64-unknown-linux-gnu",
+            Architecture::RISCV => "riscv64-unknown-linux-gnu",
         }
     }
 
@@ -311,6 +320,7 @@ fn dynamic_linker_path(cross_arch: Option<Architecture>) -> &'static str {
         None => host_dynamic_linker_cached(),
         Some(Architecture::X86_64) => "/lib64/ld-linux-x86-64.so.2",
         Some(Architecture::AArch64) => "/lib/ld-linux-aarch64.so.1",
+        Some(Architecture::RISCV) => "/lib/ld-linux-riscv64.so.1",
     }
 }
 
@@ -364,6 +374,10 @@ fn get_host_architecture() -> Architecture {
     #[cfg(target_arch = "aarch64")]
     {
         return Architecture::AArch64;
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        return Architecture::RISCV;
     }
     todo!("Unsupported architecture")
 }
@@ -808,6 +822,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                             match arch.as_str() {
                                 "x86_64" => Ok(Architecture::X86_64),
                                 "aarch64" => Ok(Architecture::AArch64),
+                                "riscv64" => Ok(Architecture::RISCV),
                                 _ => Err(anyhow!(format!("Unsupported architecture: `{}`", arch))),
                             }
                         })
@@ -1085,21 +1100,29 @@ fn get_c_compiler(
     compiler: &str,
     c_language: CLanguage,
     cross_arch: Option<Architecture>,
-) -> Result<&'static str> {
+) -> Result<String> {
     match (cross_arch, compiler, c_language) {
-        (None, "gcc", CLanguage::C) => Ok("gcc"),
-        (None, "gcc", CLanguage::Cpp) => Ok("g++"),
-        (None, "clang", CLanguage::C) => Ok("clang"),
-        (None, "clang", CLanguage::Cpp) => Ok("clang++"),
-        (Some(Architecture::AArch64), "gcc" | "g++", CLanguage::C) => Ok(if is_host_opensuse() {
-            "aarch64-suse-linux-gcc"
+        (None, "gcc", CLanguage::C) => Ok("gcc".to_string()),
+        (None, "gcc", CLanguage::Cpp) => Ok("g++".to_string()),
+        (None, "clang", CLanguage::C) => Ok("clang".to_string()),
+        (None, "clang", CLanguage::Cpp) => Ok("clang++".to_string()),
+        (
+            Some(arch @ (Architecture::AArch64 | Architecture::RISCV)),
+            "gcc" | "g++",
+            CLanguage::C,
+        ) => Ok(if is_host_opensuse() {
+            format!("{arch}-suse-linux-gcc")
         } else {
-            "aarch64-linux-gnu-gcc"
+            format!("{arch}-linux-gnu-gcc")
         }),
-        (Some(Architecture::AArch64), "gcc" | "g++", CLanguage::Cpp) => Ok(if is_host_opensuse() {
-            "aarch64-suse-linux-g++"
+        (
+            Some(arch @ (Architecture::AArch64 | Architecture::RISCV)),
+            "gcc" | "g++",
+            CLanguage::Cpp,
+        ) => Ok(if is_host_opensuse() {
+            format!("{arch}-suse-linux-g++")
         } else {
-            "aarch64-linux-gnu-g++"
+            format!("{arch}-linux-gnu-g++")
         }),
         _ => bail!("Unsupported compiler and or architecture `{compiler}` / {cross_arch:?}"),
     }
@@ -1137,7 +1160,7 @@ fn build_obj(
             get_c_compiler(&config.compiler, CLanguage::C, cross_arch)?,
             CompilerKind::C,
         ),
-        "rs" => ("rustc", CompilerKind::Rust),
+        "rs" => ("rustc".to_string(), CompilerKind::Rust),
         "o" => return Ok(src_path),
         _ => bail!("Don't know how to compile {extension} files"),
     };
@@ -2108,7 +2131,7 @@ fn find_bin(names: &[&str]) -> Result<PathBuf> {
 }
 
 fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
-    [Architecture::AArch64]
+    [Architecture::AArch64, Architecture::RISCV]
         .into_iter()
         .filter_map(|arch| {
             let path = PathBuf::from(if is_host_opensuse() {
@@ -2394,7 +2417,8 @@ fn read_test_config() -> Result<TestConfig> {
     };
 
     // The environment variable can override the config file setting.
-    if std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v == "aarch64") {
+    if std::env::var("WILD_TEST_CROSS").is_ok_and(|v| ["aarch64", "riscv64"].contains(&v.as_str()))
+    {
         config.use_qemu = true;
     }
 
