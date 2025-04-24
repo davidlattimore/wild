@@ -34,7 +34,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         object::elf::R_RISCV_BRANCH => (
             RelocationKind::Relative,
-            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::Low12),
+            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::BType),
             None,
             AllowedRange::no_check(),
             1,
@@ -222,6 +222,13 @@ impl RISCVInstruction {
                 or_from_slice(dest, &upper.to_le_bytes());
                 or_from_slice(&mut dest[4..], &lower.to_le_bytes());
                 return;
+            }
+            RISCVInstruction::BType => {
+                let mut mask = extract_bits(extracted_value, 11, 12) << 7;
+                mask |= extract_bits(extracted_value, 1, 5) << 8;
+                mask |= extract_bits(extracted_value, 5, 11) << 25;
+                mask |= extract_bits(extracted_value, 12, 13) << 31;
+                mask as u32
             }
         };
         // Read the original value and combine it with the prepared mask.

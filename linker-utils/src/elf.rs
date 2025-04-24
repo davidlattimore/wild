@@ -1000,6 +1000,12 @@ pub enum RISCVInstruction {
     High20,
     // Encodes low 12 bits of 32-bit value and encodes the bits to upper part.
     Low12,
+
+    // The X-type instruction immediate encoding is defined here:
+    // https://riscv.github.io/riscv-isa-manual/snapshot/unprivileged/#_immediate_encoding_variants
+
+    // Specifies a field as the immediate field in a B-type instruction
+    BType,
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
