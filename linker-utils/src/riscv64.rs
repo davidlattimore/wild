@@ -47,9 +47,15 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
-        object::elf::R_RISCV_GOT_HI20 => return None, // TODO: support
+        object::elf::R_RISCV_GOT_HI20 => (
+            RelocationKind::GotRelative,
+            RelocationSize::bit_mask_riscv(12, 32, RISCVInstruction::High20),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
         object::elf::R_RISCV_TLS_GOT_HI20 => return None, // TODO: support
-        object::elf::R_RISCV_TLS_GD_HI20 => return None, // TODO: support
+        object::elf::R_RISCV_TLS_GD_HI20 => return None,  // TODO: support
         object::elf::R_RISCV_PCREL_HI20 => (
             RelocationKind::Relative,
             RelocationSize::bit_mask_riscv(12, 32, RISCVInstruction::High20),
