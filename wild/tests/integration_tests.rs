@@ -271,14 +271,13 @@ enum LinkerInvocationMode {
 enum Architecture {
     X86_64,
     AArch64,
-    #[allow(clippy::upper_case_acronyms)]
-    RISCV,
+    RISCV64,
 }
 
 const ALL_ARCHITECTURES: &[Architecture] = &[
     Architecture::X86_64,
     Architecture::AArch64,
-    Architecture::RISCV,
+    Architecture::RISCV64,
 ];
 
 impl Architecture {
@@ -286,7 +285,7 @@ impl Architecture {
         match self {
             Architecture::X86_64 => "x86_64",
             Architecture::AArch64 => "aarch64",
-            Architecture::RISCV => "riscv64",
+            Architecture::RISCV64 => "riscv64",
         }
     }
 
@@ -294,7 +293,7 @@ impl Architecture {
         match self {
             Architecture::X86_64 => "x86_64",
             Architecture::AArch64 => "aarch64elf",
-            Architecture::RISCV => "elf64lriscv",
+            Architecture::RISCV64 => "elf64lriscv",
         }
     }
 
@@ -302,7 +301,7 @@ impl Architecture {
         match self {
             Architecture::X86_64 => "x86_64-unknown-linux-gnu",
             Architecture::AArch64 => "aarch64-unknown-linux-gnu",
-            Architecture::RISCV => "riscv64-unknown-linux-gnu",
+            Architecture::RISCV64 => "riscv64-unknown-linux-gnu",
         }
     }
 
@@ -320,7 +319,7 @@ fn dynamic_linker_path(cross_arch: Option<Architecture>) -> &'static str {
         None => host_dynamic_linker_cached(),
         Some(Architecture::X86_64) => "/lib64/ld-linux-x86-64.so.2",
         Some(Architecture::AArch64) => "/lib/ld-linux-aarch64.so.1",
-        Some(Architecture::RISCV) => "/lib/ld-linux-riscv64.so.1",
+        Some(Architecture::RISCV64) => "/lib/ld-linux-riscv64.so.1",
     }
 }
 
@@ -377,7 +376,7 @@ fn get_host_architecture() -> Architecture {
     }
     #[cfg(target_arch = "riscv64")]
     {
-        return Architecture::RISCV;
+        return Architecture::RISCV64;
     }
     todo!("Unsupported architecture")
 }
@@ -822,7 +821,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                             match arch.as_str() {
                                 "x86_64" => Ok(Architecture::X86_64),
                                 "aarch64" => Ok(Architecture::AArch64),
-                                "riscv64" => Ok(Architecture::RISCV),
+                                "riscv64" => Ok(Architecture::RISCV64),
                                 _ => Err(anyhow!(format!("Unsupported architecture: `{}`", arch))),
                             }
                         })
@@ -1107,7 +1106,7 @@ fn get_c_compiler(
         (None, "clang", CLanguage::C) => Ok("clang".to_string()),
         (None, "clang", CLanguage::Cpp) => Ok("clang++".to_string()),
         (
-            Some(arch @ (Architecture::AArch64 | Architecture::RISCV)),
+            Some(arch @ (Architecture::AArch64 | Architecture::RISCV64)),
             "gcc" | "g++",
             CLanguage::C,
         ) => Ok(if is_host_opensuse() {
@@ -1116,7 +1115,7 @@ fn get_c_compiler(
             format!("{arch}-linux-gnu-gcc")
         }),
         (
-            Some(arch @ (Architecture::AArch64 | Architecture::RISCV)),
+            Some(arch @ (Architecture::AArch64 | Architecture::RISCV64)),
             "gcc" | "g++",
             CLanguage::Cpp,
         ) => Ok(if is_host_opensuse() {
@@ -2131,7 +2130,7 @@ fn find_bin(names: &[&str]) -> Result<PathBuf> {
 }
 
 fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
-    [Architecture::AArch64, Architecture::RISCV]
+    [Architecture::AArch64, Architecture::RISCV64]
         .into_iter()
         .filter_map(|arch| {
             let path = PathBuf::from(if is_host_opensuse() {
