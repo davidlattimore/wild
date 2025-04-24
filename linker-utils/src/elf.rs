@@ -1004,8 +1004,15 @@ pub enum RISCVInstruction {
     // The X-type instruction immediate encoding is defined here:
     // https://riscv.github.io/riscv-isa-manual/snapshot/unprivileged/#_immediate_encoding_variants
 
-    // Specifies a field as the immediate field in a B-type instruction
+    // Specifies a field as the immediate field in a B-type (branch) instruction
     BType,
+
+    // Specifies a field as the immediate field in a CB-type (compressed branch) instruction
+    // https://riscv.github.io/riscv-isa-manual/snapshot/unprivileged/#_control_transfer_instructions_2
+    CBType,
+
+    // Specifies a field as the immediate field in a CB-type (compressed jump) instruction
+    CJType,
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
@@ -1173,6 +1180,12 @@ impl BitMask {
             },
         }
     }
+}
+
+/// Extract a single bit from the provided `value`.
+#[must_use]
+pub fn extract_bit(value: u64, position: u32) -> u64 {
+    extract_bits(value, position, position + 1)
 }
 
 /// Extract range-specified ([`start`..`end`]) bits from the provided `value`.

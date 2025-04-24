@@ -3,6 +3,7 @@ use crate::elf::RISCVInstruction;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
+use crate::elf::extract_bit;
 use crate::elf::extract_bits;
 use crate::utils::or_from_slice;
 
@@ -144,8 +145,20 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         // TODO: missing object::elf::R_RISCV_GOT32_PCREL
         // https://github.com/gimli-rs/object/pull/767
         object::elf::R_RISCV_ALIGN => return None, // TODO: support
-        object::elf::R_RISCV_RVC_BRANCH => return None, // TODO: support
-        object::elf::R_RISCV_RVC_JUMP => return None, // TODO: support
+        object::elf::R_RISCV_RVC_BRANCH => (
+            RelocationKind::Relative,
+            RelocationSize::bit_mask_riscv(0, 9, RISCVInstruction::CBType),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_RVC_JUMP => (
+            RelocationKind::Relative,
+            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::CJType),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
         object::elf::R_RISCV_RELAX => (
             RelocationKind::None,
             RelocationSize::ByteSize(0),
@@ -233,7 +246,26 @@ impl RISCVInstruction {
                 let mut mask = extract_bits(extracted_value, 11, 12) << 7;
                 mask |= extract_bits(extracted_value, 1, 5) << 8;
                 mask |= extract_bits(extracted_value, 5, 11) << 25;
-                mask |= extract_bits(extracted_value, 12, 13) << 31;
+                mask |= extract_bit(extracted_value, 12) << 31;
+                mask as u32
+            }
+            RISCVInstruction::CBType => {
+                let mut mask = extract_bit(extracted_value, 5) << 2;
+                mask |= extract_bits(extracted_value, 1, 3) << 3;
+                mask |= extract_bits(extracted_value, 6, 8) << 5;
+                mask |= extract_bits(extracted_value, 3, 5) << 10;
+                mask |= extract_bit(extracted_value, 8) << 12;
+                mask as u32
+            }
+            RISCVInstruction::CJType => {
+                let mut mask = extract_bit(extracted_value, 5) << 2;
+                mask |= extract_bits(extracted_value, 1, 4) << 3;
+                mask |= extract_bit(extracted_value, 7) << 6;
+                mask |= extract_bit(extracted_value, 6) << 7;
+                mask |= extract_bit(extracted_value, 10) << 8;
+                mask |= extract_bits(extracted_value, 8, 10) << 9;
+                mask |= extract_bit(extracted_value, 4) << 11;
+                mask |= extract_bit(extracted_value, 11) << 12;
                 mask as u32
             }
         };
