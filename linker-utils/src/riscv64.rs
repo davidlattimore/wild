@@ -237,7 +237,9 @@ impl RISCVInstruction {
             RISCVInstruction::Low12 => (extracted_value as u32) << 20,
             RISCVInstruction::AuipcJalr => {
                 let lower = (extract_bits(extracted_value, 0, 12) as u32) << 20;
-                let upper = (extract_bits(extracted_value, 12, 32) as u32) << 12;
+                // TODO: add documentation entry and explain!
+                let upper =
+                    (extract_bits(extracted_value.wrapping_add(1 << 11), 12, 32) as u32) << 12;
                 or_from_slice(dest, &upper.to_le_bytes());
                 or_from_slice(&mut dest[4..], &lower.to_le_bytes());
                 return;
