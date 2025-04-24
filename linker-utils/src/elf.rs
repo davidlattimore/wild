@@ -225,6 +225,7 @@ pub fn riscv64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
         R_RISCV_TLS_DTPREL64,
         R_RISCV_TLS_TPREL32,
         R_RISCV_TLS_TPREL64,
+        // Add R_RISCV_TLSDESC after https://github.com/gimli-rs/object/pull/768
         R_RISCV_BRANCH,
         R_RISCV_JAL,
         R_RISCV_CALL,
@@ -250,6 +251,7 @@ pub fn riscv64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
         R_RISCV_SUB16,
         R_RISCV_SUB32,
         R_RISCV_SUB64,
+        // Remove after: https://github.com/gimli-rs/object/pull/767
         R_RISCV_GNU_VTINHERIT,
         R_RISCV_GNU_VTENTRY,
         R_RISCV_ALIGN,
@@ -957,6 +959,7 @@ impl DynamicRelocationKind {
             DynamicRelocationKind::Absolute => object::elf::R_RISCV_64,
             DynamicRelocationKind::GotEntry => object::elf::R_RISCV_64,
             // TODO: use missing object contant once released
+            // https://github.com/gimli-rs/object/pull/768
             DynamicRelocationKind::TlsDesc => 12,
             DynamicRelocationKind::JumpSlot => object::elf::R_RISCV_JUMP_SLOT,
         }
