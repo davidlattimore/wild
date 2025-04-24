@@ -955,8 +955,9 @@ impl DynamicRelocationKind {
             DynamicRelocationKind::TpOff => object::elf::R_RISCV_TLS_TPREL64,
             DynamicRelocationKind::Relative => object::elf::R_RISCV_RELATIVE,
             DynamicRelocationKind::Absolute => object::elf::R_RISCV_64,
-            DynamicRelocationKind::GotEntry => todo!(""),
-            DynamicRelocationKind::TlsDesc => todo!(""),
+            DynamicRelocationKind::GotEntry => object::elf::R_RISCV_64,
+            // TODO: use missing object contant once released
+            DynamicRelocationKind::TlsDesc => 12,
             DynamicRelocationKind::JumpSlot => object::elf::R_RISCV_JUMP_SLOT,
         }
     }

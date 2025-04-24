@@ -26,7 +26,7 @@ impl crate::arch::Arch for RISCV64 {
     }
 
     fn get_dynamic_relocation_type(relocation: DynamicRelocationKind) -> u32 {
-        relocation.aarch64_r_type()
+        relocation.riscv64_r_type()
     }
 
     fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
