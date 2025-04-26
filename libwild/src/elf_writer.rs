@@ -88,6 +88,7 @@ use object::LittleEndian;
 use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
+use object::elf::R_RISCV_PCREL_HI20;
 use object::from_bytes_mut;
 use object::read::elf::Rela;
 use object::read::elf::Sym as _;
@@ -2090,6 +2091,10 @@ fn apply_relocation<'a, A: Arch>(
             let hi_rel = relocations_to_search
                 .find(|r| r.r_offset(e) == hi_offset_in_section)
                 .with_context(|| anyhow::anyhow!("Missing R_RISCV_PCREL_HI relocation"))?;
+            anyhow::ensure!(
+                hi_rel.r_type(LittleEndian, false) == R_RISCV_PCREL_HI20,
+                "Only R_RISCV_PCREL_HI expected as RelativeRISCVLow12 target relocation"
+            );
             let (resolution, symbol_index, _) = get_resolution(hi_rel, object_layout, layout)?;
             resolution
                 .value_with_addend(
