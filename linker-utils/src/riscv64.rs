@@ -226,29 +226,29 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
     })
 }
 
-// A final address calculation is represented as addition of HI20 and LO12, where
-// we must prevent add 0x800 in order to not make HI20 a huge negative if the final
-// value is a small negative value.
-// For instance, -10i32 (0xfffffff6) should become 0x0 (HI20) and 0xff6 (LO12).
-const RISCV_HI20_ADDEND: u64 = 0x800;
-
 impl RISCVInstruction {
     // Encode computed relocation value and store it based on the encoding of an instruction.
     // A handy pages where one can easily find instruction encoding:
     // https://msyksphinz-self.github.io/riscv-isadoc/html/index.html.
     pub fn write_to_value(self, extracted_value: u64, _negative: bool, dest: &mut [u8]) {
+        let encode_u_type = |extracted_value: u64| {
+            // A final address calculation is represented as addition of HI20 and LO12, where
+            // we must prevent add 0x800 in order to not make HI20 a huge negative if the final
+            // value is a small negative value.
+            // For instance, -10i32 (0xfffffff6) should become 0x0 (HI20) and 0xff6 (LO12).
+            (extract_bits(extracted_value.wrapping_add(0x800), 12, 32) as u32) << 12
+        };
+        let encode_i_type = |extracted_value: u64| (extracted_value as u32) << 20;
+
         let mask = match self {
-            RISCVInstruction::High20 => {
-                (extract_bits(extracted_value.wrapping_add(RISCV_HI20_ADDEND), 12, 32) as u32) << 12
-            }
-            RISCVInstruction::Low12 => (extracted_value as u32) << 20,
+            RISCVInstruction::High20 => encode_u_type(extracted_value),
+            RISCVInstruction::Low12 => encode_i_type(extracted_value),
             RISCVInstruction::AuipcJalr => {
-                let lower = (extract_bits(extracted_value, 0, 12) as u32) << 20;
-                let upper = (extract_bits(extracted_value.wrapping_add(RISCV_HI20_ADDEND), 12, 32)
-                    as u32)
-                    << 12;
-                or_from_slice(dest, &upper.to_le_bytes());
-                or_from_slice(&mut dest[4..], &lower.to_le_bytes());
+                or_from_slice(dest, &encode_u_type(extracted_value).to_le_bytes());
+                or_from_slice(
+                    &mut dest[4..],
+                    &encode_i_type(extracted_value).to_le_bytes(),
+                );
                 return;
             }
             RISCVInstruction::BType => {
