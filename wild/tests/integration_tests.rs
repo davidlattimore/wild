@@ -113,6 +113,8 @@ use object::read::elf::ProgramHeader;
 use os_info::Type;
 use rstest::fixture;
 use rstest::rstest;
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -267,9 +269,11 @@ enum LinkerInvocationMode {
     Script,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, EnumString)]
+#[strum(serialize_all = "snake_case")]
 enum Architecture {
     X86_64,
+    #[strum(serialize = "aarch64")]
     AArch64,
     RISCV64,
 }
@@ -454,7 +458,7 @@ struct TestConfig {
     rustc_channel: RustcChannel,
 
     #[serde(default)]
-    use_qemu: bool,
+    qemu_arch: Option<Architecture>,
 
     #[serde(default)]
     allow_rust_musl_target: bool,
@@ -2361,7 +2365,7 @@ fn integration_test(
     let host_arch = get_host_architecture();
 
     for &arch in ALL_ARCHITECTURES {
-        if arch != host_arch && !test_config.use_qemu {
+        if arch != host_arch && test_config.qemu_arch != Some(arch) {
             continue;
         }
 
@@ -2416,9 +2420,11 @@ fn read_test_config() -> Result<TestConfig> {
     };
 
     // The environment variable can override the config file setting.
-    if std::env::var("WILD_TEST_CROSS").is_ok_and(|v| ["aarch64", "riscv64"].contains(&v.as_str()))
-    {
-        config.use_qemu = true;
+    if let Ok(cross_arch) = std::env::var("WILD_TEST_CROSS") {
+        config.qemu_arch = Some(
+            Architecture::from_str(&cross_arch)
+                .with_context(|| format!("Unknown WILD_TEST_CROSS value `{cross_arch}`"))?,
+        );
     }
 
     Ok(config)

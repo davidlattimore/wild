@@ -1,3 +1,3 @@
 rustc_channel = FILLHERE # `"stable"`, `"beta"`, `"nightly"` or "default"
-use_qemu = FILLHERE # `true` or `false`
+qemu_arch = FILLHERE # `aarch64` or `riscv64`
 allow_rust_musl_target = FILLHERE # `true` or `false`
