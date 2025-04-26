@@ -33,6 +33,8 @@ use crossbeam_queue::SegQueue;
 use foldhash::HashMap;
 use foldhash::fast::RandomState;
 use itertools::Itertools;
+use linker_utils::elf::SectionFlags;
+use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
 use rayon::iter::IndexedParallelIterator;
@@ -607,6 +609,28 @@ impl<'data> SymbolDb<'data> {
             SymbolStrength::Undefined
         }
     }
+
+    /// Returns whether the specified symbol is defined in a section with the SHF_GROUP flag set.
+    fn is_in_comdat_group(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> bool {
+        let file_id = self.file_id_for_symbol(symbol_id);
+        let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] else {
+            return false;
+        };
+
+        let local_index = symbol_id.to_input(obj.symbol_id_range);
+        let Ok(obj_symbol) = obj.object.symbol(local_index) else {
+            return false;
+        };
+
+        let section_index = object::SectionIndex(usize::from(obj_symbol.st_shndx(LittleEndian)));
+        let Ok(header) = obj.object.section(section_index) else {
+            return false;
+        };
+
+        let flags = SectionFlags::from_header(header);
+
+        flags.contains(shf::GROUP)
+    }
 }
 
 impl<'data> SymbolBucket<'data> {
@@ -799,15 +823,22 @@ fn select_symbol(
         match strength {
             SymbolStrength::Strong => {
                 if let Some(existing) = strong_symbol {
-                    bail!(
-                        "{}, defined in {} and {}",
-                        symbol_db.symbol_name_for_display(symbol_id),
-                        symbol_db.file(symbol_db.file_id_for_symbol(existing)),
-                        symbol_db.file(symbol_db.file_id_for_symbol(alt)),
-                    );
+                    // We don't implement full COMDAT logic, however if we encounter duplicate
+                    // strong definitions, then we don't emit errors if all the strong definitions
+                    // are defined in COMDAT group sections.
+                    if !symbol_db.is_in_comdat_group(existing, resolved)
+                        || !symbol_db.is_in_comdat_group(alt, resolved)
+                    {
+                        bail!(
+                            "{}, defined in {} and {}",
+                            symbol_db.symbol_name_for_display(symbol_id),
+                            symbol_db.file(symbol_db.file_id_for_symbol(existing)),
+                            symbol_db.file(symbol_db.file_id_for_symbol(alt)),
+                        );
+                    }
+                } else {
+                    strong_symbol = Some(alt);
                 }
-
-                strong_symbol = Some(alt);
             }
             SymbolStrength::Common(size) => {
                 if let Some((previous_size, _)) = max_common {

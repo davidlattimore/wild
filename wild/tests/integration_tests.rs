@@ -2307,6 +2307,7 @@ fn integration_test(
         "rust-integration-dynamic.rs",
         "cpp-integration.cc",
         "rust-tls.rs",
+        "basic-comdat.s",
         "input_does_not_exist.c",
         "ifunc2.c",
         "visibility-merging.c",
