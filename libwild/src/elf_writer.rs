@@ -96,6 +96,7 @@ use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
 use std::fmt::Display;
 use std::io::Write;
+use std::iter::Empty;
 use std::marker::PhantomData;
 use std::ops::BitAnd;
 use std::ops::Deref;
@@ -1660,12 +1661,16 @@ impl<'data> ObjectLayout<'data> {
             .relocation_statistics
             .get(section.part_id.output_section_id())
             .fetch_add(relocations.len() as u64, Relaxed);
-        for rel in relocations {
+        for (i, rel) in relocations.iter().enumerate() {
             if modifier == RelocationModifier::SkipNextRelocation {
                 modifier = RelocationModifier::Normal;
                 continue;
             }
             let offset_in_section = rel.r_offset.get(LittleEndian);
+            // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of relocations where the later
+            // one actually points to a label of the HI20 relocations and thus we need to find it. The relocation is typically
+            // right before the LO12_* relocation.
+            let relocations_to_search = relocations[..i].iter().chain(relocations[i + 1..].iter());
             modifier = apply_relocation::<A>(
                 self,
                 offset_in_section,
@@ -1679,7 +1684,7 @@ impl<'data> ObjectLayout<'data> {
                 out,
                 table_writer,
                 trace,
-                Some(relocations),
+                Some(relocations_to_search),
             )
             .with_context(|| {
                 format!(
@@ -1861,7 +1866,7 @@ impl<'data> ObjectLayout<'data> {
                         entry_out,
                         table_writer,
                         trace,
-                        None,
+                        None::<Empty<&elf::Rela>>,
                     )
                     .with_context(|| {
                         format!(
@@ -1972,7 +1977,7 @@ fn get_resolution(
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
 #[inline(always)]
-fn apply_relocation<A: Arch>(
+fn apply_relocation<'a, A: Arch>(
     object_layout: &ObjectLayout,
     mut offset_in_section: u64,
     rel: &elf::Rela,
@@ -1981,7 +1986,7 @@ fn apply_relocation<A: Arch>(
     out: &mut [u8],
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
-    all_relocations: Option<&[elf::Rela]>,
+    mut relocations_to_search: Option<impl Iterator<Item = &'a elf::Rela>>,
 ) -> Result<RelocationModifier> {
     const LOW6_MASK: u64 = 0b0011_0000;
 
@@ -2069,7 +2074,7 @@ fn apply_relocation<A: Arch>(
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::RelativeRISCVLow12 => {
-            let Some(all_relocations) = all_relocations else {
+            let Some(relocations_to_search) = relocations_to_search.as_mut() else {
                 anyhow::bail!("All relocations must be available for R_RISCV_PCREL_LO12");
             };
             let hi_offset_in_section = resolution
@@ -2081,10 +2086,8 @@ fn apply_relocation<A: Arch>(
                     &layout.merged_string_start_addresses,
                 )?
                 .wrapping_sub(section_address);
-            // TODO: improve search algorithm based on the index of the relocation we're current working on.
             // The R_RISCV_PCREL_HI relocation is typically just before us.
-            let hi_rel = all_relocations
-                .iter()
+            let hi_rel = relocations_to_search
                 .find(|r| r.r_offset(e) == hi_offset_in_section)
                 .with_context(|| anyhow::anyhow!("Missing R_RISCV_PCREL_HI relocation"))?;
             let (resolution, symbol_index, _) = get_resolution(hi_rel, object_layout, layout)?;
