@@ -50,11 +50,9 @@ jobs:
     steps:
       - run: echo "WILD_TEST_CONFIG=test-config-ci.toml" >> $GITHUB_ENV
         if: ${{ env.CI == 'true' }}
-      - run: echo "WILD_TEST_CROSS=aarch64" >> $GITHUB_ENV
-        if: ${{ matrix.test-qemu }}
-      - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap binutils-aarch64-linux-gnu
+      - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap binutils-aarch64-linux-gnu binutils-riscv64-linux-gnu
         if: ${{ contains(matrix.container, 'ubuntu') }}
-      - run: apt-get update && apt-get -y install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+      - run: apt-get update && apt-get -y install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
         if: ${{ matrix.test-qemu }}
       - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
         if: ${{ contains(matrix.container, 'opensuse') }}
@@ -66,7 +64,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
         with:
-          targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl
+          targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl,riscv64-unknown-linux-gnu,riscv64-unknown-linux-musl
           components: rustc-codegen-cranelift-preview
       - uses: actions/cache@v4
         with:
@@ -79,7 +77,10 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.container }}-${{ matrix.runs-on }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
         if: ${{ !contains(matrix.container, 'alpine') }}
       - run: cargo build --profile ci --workspace --no-default-features
-      - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace
+      - run: WILD_TEST_CROSS=aarch64 cargo test --profile ci --workspace
+        if: ${{ matrix.test-qemu }}
+      - run: WILD_TEST_CROSS=riscv64 cargo test --profile ci --workspace
+        if: ${{ matrix.test-qemu }}
 
   clippy:
     name: Clippy
