@@ -49,7 +49,7 @@ memchr = "2.6.0"
 memmap2 = "0.9.0"
 mimalloc = { version = "0.1", default-features = false }
 normalize-path = "0.2.0"
-object = { version = "0.36.7", default-features = false, features = [
+object = { git = "https://github.com/gimli-rs/object", rev = "61474b7de8074f91b78ad24ff2424e54a22f8b32", default-features = false, features = [
     "elf",
     "read_core",
     "std",

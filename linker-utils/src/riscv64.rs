@@ -142,9 +142,8 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
-        // TODO: missing object::elf::R_RISCV_GOT32_PCREL
-        // https://github.com/gimli-rs/object/pull/767
-        object::elf::R_RISCV_ALIGN => return None, // TODO: support
+        object::elf::R_RISCV_GOT32_PCREL => return None, // TODO: support
+        object::elf::R_RISCV_ALIGN => return None,       // TODO: support
         object::elf::R_RISCV_RVC_BRANCH => (
             RelocationKind::Relative,
             RelocationSize::bit_mask_riscv(0, 9, RISCVInstruction::CBType),
