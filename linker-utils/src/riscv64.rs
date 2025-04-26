@@ -239,7 +239,7 @@ impl RISCVInstruction {
     pub fn write_to_value(self, extracted_value: u64, _negative: bool, dest: &mut [u8]) {
         let mask = match self {
             RISCVInstruction::High20 => {
-                (extracted_value.wrapping_add(RISCV_HI20_ADDEND) as u32) << 12
+                (extract_bits(extracted_value.wrapping_add(RISCV_HI20_ADDEND), 12, 32) as u32) << 12
             }
             RISCVInstruction::Low12 => (extracted_value as u32) << 20,
             RISCVInstruction::AuipcJalr => {
