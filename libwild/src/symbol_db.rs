@@ -41,7 +41,6 @@ use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use std::collections::hash_map;
 use std::fmt::Display;
-use std::fmt::Write;
 use std::mem::replace;
 use std::mem::take;
 use symbolic_demangle::demangle;
@@ -787,7 +786,7 @@ fn select_symbol(
     resolved: &[ResolvedGroup],
 ) -> Result<SymbolId, anyhow::Error> {
     let mut max_common = None;
-    let mut strong_symbols = Vec::new();
+    let mut strong_symbol = None;
 
     let all_symbols = std::iter::once(symbol_id).chain(alternatives.iter().copied());
 
@@ -798,7 +797,18 @@ fn select_symbol(
 
         let strength = symbol_db.symbol_strength(alt, resolved);
         match strength {
-            SymbolStrength::Strong => strong_symbols.push(alt),
+            SymbolStrength::Strong => {
+                if let Some(existing) = strong_symbol {
+                    bail!(
+                        "{}, defined in {} and {}",
+                        symbol_db.symbol_name_for_display(symbol_id),
+                        symbol_db.file(symbol_db.file_id_for_symbol(existing)),
+                        symbol_db.file(symbol_db.file_id_for_symbol(alt)),
+                    );
+                }
+
+                strong_symbol = Some(alt);
+            }
             SymbolStrength::Common(size) => {
                 if let Some((previous_size, _)) = max_common {
                     if size <= previous_size {
@@ -811,25 +821,7 @@ fn select_symbol(
         }
     }
 
-    if strong_symbols.len() > 1 {
-        let already_defined_in = symbol_db.file_id_for_symbol(*strong_symbols.first().unwrap());
-
-        return Err(anyhow::Error::msg(format!(
-            "{}{}, previously defined in {}",
-            symbol_db.symbol_name_for_display(symbol_id),
-            strong_symbols
-                .iter()
-                .skip(1)
-                .fold(String::new(), |mut output, &s| {
-                    let fid = symbol_db.file_id_for_symbol(s);
-                    write!(output, ", defined in {}", symbol_db.file(fid)).unwrap();
-                    output
-                }),
-            symbol_db.file(already_defined_in)
-        )));
-    }
-
-    if let Some(&strong_symbol) = strong_symbols.first() {
+    if let Some(strong_symbol) = strong_symbol {
         return Ok(strong_symbol);
     }
 
