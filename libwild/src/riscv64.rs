@@ -1,11 +1,24 @@
+use crate::elf::PLT_ENTRY_SIZE;
 use anyhow::Result;
 use anyhow::anyhow;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::RISCVInstruction;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::riscv64_rel_type_to_string;
 use linker_utils::relaxation::RelocationModifier;
 
 pub(crate) struct RISCV64;
+
+const PLT_ENTRY_TEMPLATE: &[u8] = &[
+    0x17, 0x0e, 0x0, 0x0, // auipc t3,offset_high(&(.got.plt[n])
+    0x03, 0x3e, 0x03, 0x0, // ld t3,offset_low(&(.got.plt[n])(t3)
+    0x67, 0x03, 0x03, 0x0, // jalr t1,t3
+    0x73, 0x0, 0x10, 0x0, // ebreak
+];
+
+const _ASSERTS: () = {
+    assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
+};
 
 impl crate::arch::Arch for RISCV64 {
     type Relaxation = Relaxation;
@@ -14,7 +27,6 @@ impl crate::arch::Arch for RISCV64 {
         object::elf::EM_RISCV
     }
 
-    // TODO: add link
     #[inline(always)]
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
         linker_utils::riscv64::relocation_type_from_raw(r_type).ok_or_else(|| {
@@ -34,11 +46,17 @@ impl crate::arch::Arch for RISCV64 {
     }
 
     fn write_plt_entry(
-        _plt_entry: &mut [u8],
-        _got_address: u64,
-        _plt_address: u64,
+        plt_entry: &mut [u8],
+        got_address: u64,
+        plt_address: u64,
     ) -> crate::error::Result {
-        todo!("plt");
+        // TODO: For simplicity, we assume now the PLT entry precedes the GOT entry, so we can
+        // make the offset calculation in the unsigned type.
+        debug_assert!(plt_address < got_address);
+
+        plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
+        RISCVInstruction::AuipcJalr.write_to_value(got_address, false, &mut plt_entry[0..8]);
+        Ok(())
     }
 }
 
