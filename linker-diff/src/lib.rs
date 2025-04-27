@@ -54,9 +54,9 @@ type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
 type ElfSymbol64<'data, 'file> = object::read::elf::ElfSymbol64<'data, 'file, LittleEndian>;
 
 use arch::Arch;
+use arch::ArchKind;
 use colored::Colorize;
 pub use diagnostics::enable_diagnostics;
-use object::read::elf::FileHeader as _;
 use section_map::InputSectionId;
 use section_map::OwnedFileIdentifier;
 
@@ -137,7 +137,7 @@ impl Config {
         Self::parse()
     }
 
-    fn apply_wild_defaults(&mut self) {
+    fn apply_wild_defaults(&mut self, arch: ArchKind) {
         self.ignore.extend(
             [
                 // We don't currently support allocating space except in sections, so we have sections
@@ -239,8 +239,7 @@ impl Config {
             .map(ToOwned::to_owned),
         );
 
-        #[cfg(target_arch = "aarch64")]
-        {
+        if arch == ArchKind::Aarch64 {
             self.ignore.extend(
                 [
                     // Other linkers have a bigger initial PLT entry, thus the entsize is set to zero:
@@ -488,9 +487,6 @@ impl Report {
             Colour::Always => colored::control::set_override(true),
         }
 
-        if config.wild_defaults {
-            config.apply_wild_defaults();
-        }
         let display_names = short_file_display_names(&config)?;
 
         let file_bytes = config
@@ -522,6 +518,12 @@ impl Report {
             })
             .collect::<Result<Vec<_>>>()?;
 
+        let arch = ArchKind::from_objects(&objects)?;
+
+        if config.wild_defaults {
+            config.apply_wild_defaults(arch);
+        }
+
         let mut report = Report {
             names: objects.iter().map(|o| o.name.clone()).collect(),
             paths: objects.iter().map(|o| o.path.clone()).collect(),
@@ -529,11 +531,13 @@ impl Report {
             coverage: config.coverage.then(Coverage::default),
             config,
         };
-        report.run_on_objects(&objects);
+
+        report.run_on_objects(&objects, arch);
+
         Ok(report)
     }
 
-    fn run_on_objects(&mut self, objects: &[Binary]) {
+    fn run_on_objects(&mut self, objects: &[Binary], arch: ArchKind) {
         validate_objects(
             self,
             objects,
@@ -567,14 +571,13 @@ impl Report {
         debug_info_diff::check_debug_info(self, objects);
         symbol_diff::report_diffs(self, objects);
 
-        match objects[0].elf_file.elf_header().e_machine(LittleEndian) {
-            object::elf::EM_X86_64 => {
+        match arch {
+            ArchKind::X86_64 => {
                 self.report_arch_specific_diffs::<crate::x86_64::X86_64>(objects);
             }
-            object::elf::EM_AARCH64 => {
+            ArchKind::Aarch64 => {
                 self.report_arch_specific_diffs::<crate::aarch64::AArch64>(objects);
             }
-            _ => {}
         }
     }
 

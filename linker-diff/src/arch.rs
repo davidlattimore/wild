@@ -1,12 +1,22 @@
+use crate::Binary;
 use crate::Result;
 use anyhow::Context;
+use anyhow::bail;
 use linker_utils::elf::BitMask;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::relaxation::RelocationModifier;
+use object::LittleEndian;
+use object::read::elf::FileHeader as _;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::ops::Range;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArchKind {
+    X86_64,
+    Aarch64,
+}
 
 /// Provides architecture-specific functionality needed by linker-diff.
 pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
@@ -249,4 +259,14 @@ pub(crate) enum PltEntry {
 
     /// The parameter is an index into .rela.plt.
     JumpSlot(u32),
+}
+
+impl ArchKind {
+    pub(crate) fn from_objects(bins: &[Binary]) -> Result<ArchKind> {
+        match bins[0].elf_file.elf_header().e_machine(LittleEndian) {
+            object::elf::EM_X86_64 => Ok(ArchKind::X86_64),
+            object::elf::EM_AARCH64 => Ok(ArchKind::Aarch64),
+            other => bail!("Unsupported object architecture {other}",),
+        }
+    }
 }
