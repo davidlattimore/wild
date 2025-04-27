@@ -2301,6 +2301,7 @@ fn integration_test(
         "copy-relocations.c",
         "force-undefined.c",
         "linker-script.c",
+        "linker-script-executable.c",
         "libc-ifunc.c",
         "libc-integration.c",
         "rust-integration.rs",

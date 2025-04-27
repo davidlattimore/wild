@@ -111,52 +111,62 @@ impl<'data> LayoutRulesBuilder<'data> {
 
         for cmd in &input.script.commands {
             if let linker_script::Command::Sections(sections) = cmd {
+                let mut location = None;
+
                 for sec_cmd in &sections.commands {
-                    let SectionCommand::Section(sec) = sec_cmd;
+                    match sec_cmd {
+                        SectionCommand::Section(sec) => {
+                            let min_alignment = sec
+                                .alignment
+                                .map(|alignment| Alignment::new(u64::from(alignment)))
+                                .transpose()?
+                                .unwrap_or(alignment::MIN);
 
-                    let min_alignment = sec
-                        .alignment
-                        .map(|alignment| Alignment::new(u64::from(alignment)))
-                        .transpose()?
-                        .unwrap_or(alignment::MIN);
+                            let primary_section_id = output_sections.add_named_section(
+                                SectionName(sec.output_section_name),
+                                min_alignment,
+                                location.take(),
+                            );
 
-                    let primary_section_id = output_sections
-                        .add_named_section(SectionName(sec.output_section_name), min_alignment);
+                            let mut last_section_id = None;
 
-                    let mut last_section_id = None;
+                            for contents_cmd in &sec.commands {
+                                match contents_cmd {
+                                    ContentsCommand::Matcher(matcher) => {
+                                        let section_id = if last_section_id.is_none() {
+                                            primary_section_id
+                                        } else {
+                                            output_sections
+                                                .add_secondary_section(primary_section_id)
+                                        };
 
-                    for contents_cmd in &sec.commands {
-                        match contents_cmd {
-                            ContentsCommand::Matcher(matcher) => {
-                                let section_id = if last_section_id.is_none() {
-                                    primary_section_id
-                                } else {
-                                    output_sections.add_secondary_section(primary_section_id)
-                                };
+                                        for pattern in &matcher.input_section_name_patterns {
+                                            self.add_section_rule(SectionRule::new(
+                                                pattern,
+                                                crate::layout_rules::SectionRuleOutcome::Section(
+                                                    SectionOutputInfo {
+                                                        section_id,
+                                                        must_keep: matcher.must_keep,
+                                                    },
+                                                ),
+                                            )?);
+                                        }
 
-                                for pattern in &matcher.input_section_name_patterns {
-                                    self.add_section_rule(SectionRule::new(
-                                        pattern,
-                                        crate::layout_rules::SectionRuleOutcome::Section(
-                                            SectionOutputInfo {
-                                                section_id,
-                                                must_keep: matcher.must_keep,
-                                            },
-                                        ),
-                                    )?);
+                                        last_section_id = Some(section_id);
+                                    }
+                                    ContentsCommand::SymbolAssignment(assignment) => {
+                                        symbol_names
+                                            .push(UnversionedSymbolName::new(assignment.name));
+                                        symbol_defs.push(if let Some(id) = last_section_id {
+                                            InternalSymDefInfo::SectionEnd(id)
+                                        } else {
+                                            InternalSymDefInfo::SectionStart(primary_section_id)
+                                        });
+                                    }
                                 }
-
-                                last_section_id = Some(section_id);
-                            }
-                            ContentsCommand::SymbolAssignment(assignment) => {
-                                symbol_names.push(UnversionedSymbolName::new(assignment.name));
-                                symbol_defs.push(if let Some(id) = last_section_id {
-                                    InternalSymDefInfo::SectionEnd(id)
-                                } else {
-                                    InternalSymDefInfo::SectionStart(primary_section_id)
-                                });
                             }
                         }
+                        SectionCommand::SetLocation(new_location) => location = Some(*new_location),
                     }
                 }
             }

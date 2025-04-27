@@ -1856,6 +1856,7 @@ fn compute_segment_layout(
                     }
                 }
             }
+            OrderEvent::SetLocation(_) => {}
         }
     }
 
@@ -3159,6 +3160,7 @@ impl PreludeLayoutState {
                         active_segments.clear();
                     }
                 }
+                OrderEvent::SetLocation(_) => {}
             }
         }
 
@@ -4654,20 +4656,39 @@ fn layout_section_parts(
     let mut nonalloc_mem_offsets: OutputSectionMap<u64> =
         OutputSectionMap::with_size(output_sections.num_sections());
 
+    let mut pending_location = None;
+
     let mut records_out = output_sections.new_part_map();
 
     for event in output_order {
         match event {
+            OrderEvent::SetLocation(location) => {
+                pending_location = Some(location);
+            }
             OrderEvent::SegmentStart(segment_id) => {
                 if program_segments.is_load_segment(segment_id) {
                     let segment_alignment = program_segments.segment_alignment(segment_id, args);
-                    mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
+                    if let Some(location) = pending_location.take() {
+                        mem_offset = location.address;
+                        file_offset =
+                            segment_alignment.align_modulo(mem_offset, file_offset as u64) as usize;
+                    } else {
+                        mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
+                    }
                 }
             }
             OrderEvent::SegmentEnd(_) => {}
             OrderEvent::Section(section_id) => {
+                debug_assert!(
+                    pending_location.is_none(),
+                    "SetLocation, Section without SegmentStart"
+                );
+                let section_info = output_sections.output_info(section_id);
                 let part_id_range = section_id.part_id_range();
                 let max_alignment = sizes.max_alignment(part_id_range.clone());
+                if let Some(location) = section_info.location {
+                    mem_offset = location.address;
+                }
 
                 records_out[part_id_range.clone()]
                     .iter_mut()

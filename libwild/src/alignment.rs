@@ -79,19 +79,19 @@ impl Alignment {
         value & !self.mask()
     }
 
-    /// Returns `mem_offset`, possibly adjusted up so that it is >= `align_up(mem_offset)` and has
-    /// the same modulo as `file_offset`
-    pub(crate) fn align_modulo(self, file_offset: u64, mut mem_offset: u64) -> u64 {
+    /// Returns `offset`, possibly adjusted up so that it is >= `align_up(offset)` and has the same
+    /// modulo as `ref_offset`
+    pub(crate) fn align_modulo(self, ref_offset: u64, mut offset: u64) -> u64 {
         let mask = self.mask();
-        mem_offset = self.align_up(mem_offset);
-        if mem_offset & mask == file_offset & mask {
-            return mem_offset;
+        offset = self.align_up(offset);
+        if offset & mask == ref_offset & mask {
+            return offset;
         }
-        let mut adjustment = (file_offset & mask) + self.value() - (mem_offset & mask);
+        let mut adjustment = (ref_offset & mask) + self.value() - (offset & mask);
         if adjustment > self.value() {
             adjustment -= self.value();
         }
-        mem_offset + adjustment
+        offset + adjustment
     }
 }
 

@@ -26,6 +26,7 @@ use crate::elf::Versym;
 use crate::layout::NonAddressableCounts;
 use crate::layout::OutputRecordLayout;
 use crate::layout_rules::SectionKind;
+use crate::linker_script;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
@@ -165,21 +166,50 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
     }
 
     fn add_section(&mut self, section_id: OutputSectionId) {
-        self.start_stop_segments_for_section(section_id);
+        let (stop, start) = self.start_stop_segments_for_section(section_id);
+
+        for segment_id in stop {
+            self.events.push(OrderEvent::SegmentEnd(segment_id));
+        }
+
+        let section_info = self.output_sections.output_info(section_id);
+        if let Some(location) = section_info.location {
+            self.events.push(OrderEvent::SetLocation(location));
+        }
+
+        for segment_id in start {
+            self.events.push(OrderEvent::SegmentStart(segment_id));
+        }
 
         self.events.push(OrderEvent::Section(section_id));
     }
 
-    /// Insert whatever `SegmentStart` and/or `SegmentEnd` events are necessary prior to the start
+    /// Returns whatever `SegmentStart` and/or `SegmentEnd` events are necessary prior to the start
     /// of `section_id`. We add segment start/stop events based on the properties of the section
     /// we're about to begin. For example, if the there's a TLS segment active, but the incoming
     /// section doesn't have the TLS flag set, then we need to end the TLS segment. Similarly, if a
     /// read-only LOAD segment is active and we're about to start a section that needs to be
     /// writable, then we'll need to end the current LOAD segment and start a new writable one.
-    fn start_stop_segments_for_section(&mut self, section_id: OutputSectionId) {
+    fn start_stop_segments_for_section(
+        &mut self,
+        section_id: OutputSectionId,
+    ) -> (Vec<ProgramSegmentId>, Vec<ProgramSegmentId>) {
+        let mut stop = Vec::new();
+        let mut start = Vec::new();
+
         // Secondary sections don't begin or end segments.
         if self.output_sections.merge_target(section_id).is_some() {
-            return;
+            return (stop, start);
+        }
+
+        let section_info = self.output_sections.output_info(section_id);
+        if section_info.location.is_some() {
+            // If we're setting the location, then first end all active segments.
+            for id in &mut self.active_segment_kinds {
+                if let Some(id) = id.take() {
+                    stop.push(id);
+                }
+            }
         }
 
         PROGRAM_SEGMENT_DEFS
@@ -200,17 +230,19 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
                     // Start segment
                     (None, true) => {
                         let segment_id = self.program_segments.add_segment(*segment_def);
-                        self.events.push(OrderEvent::SegmentStart(segment_id));
+                        start.push(segment_id);
                         *active_id = Some(segment_id);
                     }
 
                     // End segment
                     (Some(segment_id), false) => {
-                        self.events.push(OrderEvent::SegmentEnd(segment_id));
+                        stop.push(segment_id);
                         *active_id = None;
                     }
                 }
             });
+
+        (stop, start)
     }
 
     fn add_sections(&mut self, sections: &[OutputSectionId]) {
@@ -329,6 +361,7 @@ pub(crate) struct SectionOutputInfo<'data> {
     pub(crate) ty: SectionType,
     pub(crate) min_alignment: Alignment,
     pub(crate) entsize: u64,
+    pub(crate) location: Option<linker_script::Location>,
 }
 
 pub(crate) struct BuiltInSectionDetails {
@@ -788,6 +821,7 @@ pub(crate) enum OrderEvent {
     SegmentStart(ProgramSegmentId),
     SegmentEnd(ProgramSegmentId),
     Section(OutputSectionId),
+    SetLocation(linker_script::Location),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -875,7 +909,7 @@ impl<'data> OutputSections<'data> {
         sections: &mut [SectionSlot],
     ) {
         for custom in custom_sections {
-            let section_id = self.add_named_section(custom.name, custom.alignment);
+            let section_id = self.add_named_section(custom.name, custom.alignment, None);
 
             if let Some(slot) = sections.get_mut(custom.index.0) {
                 slot.set_part_id(section_id.part_id_with_alignment(custom.alignment));
@@ -887,6 +921,7 @@ impl<'data> OutputSections<'data> {
         &mut self,
         name: SectionName<'data>,
         min_alignment: Alignment,
+        location: Option<linker_script::Location>,
     ) -> OutputSectionId {
         *self.custom_by_name.entry(name).or_insert_with(|| {
             self.section_infos.add_new(SectionOutputInfo {
@@ -897,6 +932,7 @@ impl<'data> OutputSections<'data> {
                 ty: SectionType::from_u32(0),
                 min_alignment,
                 entsize: 0,
+                location,
             })
         })
     }
@@ -908,6 +944,7 @@ impl<'data> OutputSections<'data> {
             ty: SectionType::from_u32(0),
             min_alignment: alignment::MIN,
             entsize: 0,
+            location: None,
         })
     }
 
@@ -920,6 +957,7 @@ impl<'data> OutputSections<'data> {
                 ty: d.ty,
                 min_alignment: d.min_alignment,
                 entsize: d.element_size,
+                location: None,
             })
             .collect();
 
@@ -1031,10 +1069,13 @@ impl<'data> OutputSections<'data> {
     #[cfg(test)]
     pub(crate) fn for_testing() -> OutputSections<'static> {
         let mut output_sections = OutputSections::with_base_address(0x1000);
-        output_sections.add_named_section(SectionName(b"ro"), alignment::MIN);
-        output_sections.add_named_section(SectionName(b"exec"), alignment::MIN);
-        output_sections.add_named_section(SectionName(b"data"), alignment::MIN);
-        output_sections.add_named_section(SectionName(b"bss"), alignment::MIN);
+        let mut add_name = |name: &'static str| {
+            output_sections.add_named_section(SectionName(name.as_bytes()), alignment::MIN, None)
+        };
+        add_name("ro");
+        add_name("exec");
+        add_name("data");
+        add_name("bss");
         output_sections
     }
 }
@@ -1129,6 +1170,9 @@ impl Display for OutputOrderDisplay<'_, '_> {
                 }
                 OrderEvent::Section(output_section_id) => {
                     writeln!(f, "  {}", self.sections.display_name(*output_section_id))?;
+                }
+                OrderEvent::SetLocation(location) => {
+                    writeln!(f, "SET_LOCATION(0x{:x})", location.address)?;
                 }
             }
         }
