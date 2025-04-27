@@ -66,47 +66,58 @@ impl<'data> SymbolInfoPrinter<'data> {
         println!("Definitions / references with name `{name}`:");
         for i in 0..self.symbol_db.num_symbols() {
             let symbol_id = SymbolId::from_usize(i);
+            let canonical = self.symbol_db.definition(symbol_id);
+            let file_id = self.symbol_db.file_id_for_symbol(symbol_id);
+            let value_flags = self.symbol_db.local_symbol_value_flags(symbol_id);
+            let res_flags = self.resolution_flags[symbol_id.as_usize()].get();
+
+            let file_state = if self.loaded_file_ids.contains(&file_id) {
+                "LOADED"
+            } else {
+                "NOT LOADED"
+            };
+
             if self
                 .symbol_db
                 .symbol_name(symbol_id)
                 .is_ok_and(|sym_name| sym_name.bytes() == name.as_bytes())
             {
-                let file_id = self.symbol_db.file_id_for_symbol(symbol_id);
-                match self.symbol_db.file(file_id) {
-                    crate::parsing::ParsedInput::Prelude(_) => println!("  <prelude>"),
-                    crate::parsing::ParsedInput::Object(o) => {
-                        let local_index = symbol_id.to_input(o.symbol_id_range);
-                        match o.object.symbol(local_index) {
-                            Ok(sym) => {
-                                let canonical = self.symbol_db.definition(symbol_id);
+                let file = self.symbol_db.file(file_id);
+                let local_index = symbol_id.to_input(file.symbol_id_range());
 
-                                let file_state = if self.loaded_file_ids.contains(&file_id) {
-                                    "LOADED"
-                                } else {
-                                    "NOT LOADED"
-                                };
+                let sym_debug;
+                let input;
 
-                                println!(
-                                    "  {}: symbol_id={symbol_id} -> {canonical} {value_flags} \
-                                        res=[{res_flags}] \n    \
-                                        #{local_index} in File #{file_id} {input} ({file_state})",
-                                    crate::symbol::SymDebug(sym),
-                                    value_flags =
-                                        self.symbol_db.local_symbol_value_flags(symbol_id),
-                                    res_flags = self.resolution_flags[symbol_id.as_usize()].get(),
-                                    input = o.input,
-                                );
-                            }
-                            Err(e) => {
-                                println!("  Corrupted input (file_id #{file_id}) {}: {e}", o.input);
-                            }
+                match file {
+                    crate::parsing::ParsedInput::Prelude(_) => {
+                        input = "  <prelude>".to_owned();
+                        sym_debug = "Prelude symbol".to_owned();
+                    }
+                    crate::parsing::ParsedInput::Object(o) => match o.object.symbol(local_index) {
+                        Ok(sym) => {
+                            sym_debug = crate::symbol::SymDebug(sym).to_string();
+                            input = o.input.to_string();
                         }
-                    }
+                        Err(e) => {
+                            println!("  Corrupted input (file_id #{file_id}) {}: {e}", o.input);
+                            continue;
+                        }
+                    },
                     crate::parsing::ParsedInput::LinkerScript(s) => {
-                        println!("  Symbol from linker script `{}`", s.input);
+                        sym_debug = "Linker script symbol".to_owned();
+                        input = s.input.to_string();
                     }
-                    crate::parsing::ParsedInput::Epilogue(_) => println!("  <epilogue>"),
+                    crate::parsing::ParsedInput::Epilogue(_) => {
+                        input = "  <epilogue>".to_owned();
+                        sym_debug = "Epilogue symbol".to_owned();
+                    }
                 }
+
+                println!(
+                    "  {sym_debug}: symbol_id={symbol_id} -> {canonical} {value_flags} \
+                            res=[{res_flags}] \n    \
+                            #{local_index} in File #{file_id} {input} ({file_state})"
+                );
             }
         }
     }
