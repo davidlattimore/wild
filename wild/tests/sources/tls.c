@@ -1,7 +1,7 @@
 //#AbstractConfig:default
 //#Object:tls1.c
 //#Object:init_tls.c
-//#Object:exit.c
+//#Object:runtime.c
 //#Arch: x86_64
 
 //#Config:global-dynamic-0:default
@@ -24,7 +24,7 @@
 //#Config:local-exec:default
 //#CompArgs:-ftls-model=local-exec
 
-#include "exit.h"
+#include "runtime.h"
 #include "init_tls.h"
 
 #include <stddef.h>
@@ -44,6 +44,8 @@ static __thread int tvar5 = 0;
 __thread char tvar6 = 0;
 
 void _start(void) {
+    runtime_init();
+
     int ret = init_tls(0);
     if (ret != 0) {
         exit_syscall(ret);

@@ -3,10 +3,10 @@
 
 //#Object:got_ref_to_local-1.s
 //#LinkArgs:-z noexecstack
-//#Object:exit.c
+//#Object:runtime.c
 //#Arch: x86_64
 
-#include "exit.h"
+#include "runtime.h"
 
 typedef int (*fnptr)(void);
 
@@ -14,6 +14,8 @@ fnptr get_foo1(void);
 fnptr get_foo2(void);
 
 void _start(void) {
+    runtime_init();
+
     if (get_foo1()() != 2) {
         exit_syscall(100);
     }

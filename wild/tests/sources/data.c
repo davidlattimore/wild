@@ -1,7 +1,7 @@
-//#Object:exit.c
+//#Object:runtime.c
 //#EnableLinker:lld
 
-#include "exit.h"
+#include "runtime.h"
 #include <stddef.h>
 
 static char data1[] = "QQQ";
@@ -11,6 +11,8 @@ __attribute__ ((aligned (64)))
 static char data2[] = "abcdefghijklmnopqrstuvwxyz";
 
 void _start(void) {
+    runtime_init();
+
     if (data1[0] != 'Q') {
         exit_syscall(1);
     }

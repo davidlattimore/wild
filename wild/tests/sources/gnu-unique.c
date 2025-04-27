@@ -1,8 +1,8 @@
-//#Object:exit.c
+//#Object:runtime.c
 //#Object:gnu-unique-1.cc
 //#Object:gnu-unique-2.cc
 
-#include "exit.h"
+#include "runtime.h"
 
 typedef int(*get_int_fn_t)(int);
 
@@ -13,6 +13,8 @@ get_int_fn_t get_fn1(void);
 get_int_fn_t get_fn2(void);
 
 void _start(void) {
+    runtime_init();
+
     // 10 + 1 == 1
     if (get_fn1()(10) != 11) {
         exit_syscall(11);

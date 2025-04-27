@@ -9,17 +9,19 @@
 
 //#Object:old_init0.s
 //#Object:old_init1.s
-//#Object:exit.c
+//#Object:runtime.c
 //#LinkArgs:-z noexecstack
 //#EnableLinker:lld
 //#Arch: x86_64
 
-#include "exit.h"
+#include "runtime.h"
 
 int _init();
 int _fini();
 
 void _start(void) {
+    runtime_init();
+
     if (_init() != 7) {
         exit_syscall(1);
     }

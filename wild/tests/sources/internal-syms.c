@@ -1,9 +1,9 @@
 // This test does stuff with some of the linker-defined symbols. These symbols are generally used by
 // libc.
 
-//#Object:exit.c
+//#Object:runtime.c
 
-#include "exit.h"
+#include "runtime.h"
 
 struct Rela {
     long long a, b, c;    
@@ -13,6 +13,8 @@ extern const struct Rela __rela_iplt_start __attribute__ ((weak));
 extern const struct Rela __rela_iplt_end __attribute__ ((weak));
 
 void _start(void) {
+    runtime_init();
+
     int value = 42;
     // We shouldn't have any .rela.plt entries, so this loop should terminate without dereferencing
     // any RELA entries.

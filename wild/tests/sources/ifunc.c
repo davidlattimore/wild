@@ -1,7 +1,7 @@
 //#AbstractConfig:default
 //#Object:ifunc1.c
 //#Object:ifunc_init.c
-//#Object:exit.c
+//#Object:runtime.c
 //#DiffIgnore:section.rela.plt.link
 //#RequiresGlibc:true
 //#Arch: x86_64
@@ -14,7 +14,7 @@
 //#Config:no-pie:default
 //#CompArgs:-fno-pie
 
-#include "exit.h"
+#include "runtime.h"
 #include "init.h"
 #include "ifunc_init.h"
 
@@ -28,6 +28,8 @@ typedef int (*vptr)(void);
 const vptr v10_ptr = compute_value10;
 
 void _start(void) {
+    runtime_init();
+
     int rv = init_ifuncs();
     if (rv != 0) {
         exit_syscall(rv);

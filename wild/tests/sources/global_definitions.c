@@ -1,5 +1,5 @@
 //#Object:global_references.c
-//#Object:exit.c
+//#Object:runtime.c
 //#EnableLinker:lld
 
 int global_value = 38;

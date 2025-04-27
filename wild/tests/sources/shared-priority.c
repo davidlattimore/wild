@@ -3,7 +3,7 @@
 
 //#AbstractConfig:default
 //#CompArgs:-fPIC
-//#Object:exit.c
+//#Object:runtime.c
 //#Static:false
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic.DT_RELA
@@ -18,13 +18,15 @@
 //#Archive:shared-priority-1.c
 //#Shared:shared-priority-2.c
 
-#include "exit.h"
+#include "runtime.h"
 
 int foo(void);
 
 extern int var1;
 
 void _start(void) {
+    runtime_init();
+
     if (var1 != 65) {
         exit_syscall(101);
     }

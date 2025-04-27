@@ -1,9 +1,9 @@
 //#AbstractConfig:default
 //#Archive:weak-fns1.c
-//#Object:exit.c
+//#Object:runtime.c
 //#CompArgs:-fno-stack-protector
 
-#include "exit.h"
+#include "runtime.h"
 
 #if (VARIANT & 1) != 0
 int __attribute__ ((weak)) weak_fn1(void) {
@@ -33,6 +33,7 @@ int strong_fn1();
 int strong_fn2();
 
 void _start() {
+    runtime_init();
     int value = 0;
     if (&weak_fn1) {
         value += weak_fn1();

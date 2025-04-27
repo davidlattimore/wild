@@ -1,5 +1,5 @@
 //#Config:default
-//#Object:exit.c
+//#Object:runtime.c
 //#EnableLinker:lld
 //#Static:false
 //#LinkArgs:-z now
@@ -16,11 +16,13 @@
 //#Config:origin:default
 //#LinkArgs:-z now -z origin
 
-#include "exit.h"
+#include "runtime.h"
 
 int foo(void);
 
 void _start(void) {
+    runtime_init();
+
     if (foo() != 10) {
         exit_syscall(20);
     }

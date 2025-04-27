@@ -1,4 +1,4 @@
-//#Shared:exit.c
+//#Shared:runtime.c
 //#EnableLinker:lld
 //#Static:false
 //#LinkArgs:-z now
@@ -9,7 +9,7 @@
 // GNU ld emits a .got section for the shared object, despite it not being necessary.
 //#DiffIgnore:section.got
 
-#include "exit.h"
+#include "runtime.h"
 
 extern int foo[8];
 extern int bar[8];
@@ -22,5 +22,7 @@ int *pointers[2] = {&foo[2], &bar[6]};
 int check_pointers(int **p);
 
 void _start(void) {
+    runtime_init();
+
     exit_syscall(check_pointers(pointers));
 }

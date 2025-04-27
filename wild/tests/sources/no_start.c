@@ -1,5 +1,5 @@
 //#AbstractConfig:default
-//#Object:exit.c
+//#Object:runtime.c
 
 //#Config:no-gc:default
 //#LinkArgs:-z now --no-gc-sections
@@ -10,7 +10,7 @@
 //#LinkArgs:-z now --gc-sections
 //#RunEnabled:false
 
-#include "exit.h"
+#include "runtime.h"
 
 // Provided this is the first function, it'll get used as the entry point - at least by GNU ld. LLD
 // doesn't set an entry point in this case.

@@ -1,9 +1,9 @@
 //#AbstractConfig:default
 //#Archive:weak-vars1.c
-//#Object:exit.c
+//#Object:runtime.c
 //#CompArgs:-fno-stack-protector
 
-#include "exit.h"
+#include "runtime.h"
 
 #if (VARIANT & 1) != 0
 int weak_var1 __attribute__ ((weak)) = 2; // 64
@@ -23,6 +23,8 @@ extern int strong_var1; // 128
 extern int strong_var2;
 
 void _start() {
+    runtime_init();
+
     int value = 0;
     if (&weak_var1) {
         value += weak_var1;

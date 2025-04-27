@@ -1,10 +1,10 @@
 //#CompArgs:-fcommon
 //#Object:common_section0.c
 //#Object:common_section1.c
-//#Object:exit.c
+//#Object:runtime.c
 //#EnableLinker:lld
 
-#include "exit.h"
+#include "runtime.h"
 
 int a;
 extern int data[];
@@ -12,6 +12,8 @@ extern int q[];
 extern int z[];
 
 void _start(void) {
+    runtime_init();
+
     a = 30;
     q[0] = 20;
     z[0] = 40;

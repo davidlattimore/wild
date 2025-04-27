@@ -1,4 +1,4 @@
-//#Object:exit.c
+//#Object:runtime.c
 //#EnableLinker:lld
 //#Static:false
 //#CompSoArgs:-fPIC
@@ -9,7 +9,7 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:dynsym.w2.section
 
-#include "exit.h"
+#include "runtime.h"
 
 // These two symbols are at the same address in the shared object, so references to both should
 // point to the same copy relocation and that location should be what `get_w` returns.
@@ -32,6 +32,8 @@ int get_w3(void);
 int get_s1_pic(void);
 
 void _start(void) {
+    runtime_init();
+
     // Reference both the weak and the strong versions of the symbol.
     w1 = 10;
     if (get_w1() != 10) {
