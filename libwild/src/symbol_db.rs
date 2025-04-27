@@ -955,11 +955,17 @@ fn load_linker_script_symbols<'data>(
 ) {
     for (offset, name) in script.symbol_names.iter().enumerate() {
         let symbol_id = script.symbol_id_range.offset_to_id(offset);
+
         outputs.add_non_versioned(PendingSymbol::from_prehashed(
             symbol_id,
             PreHashed::new(*name, hash_bytes(name.bytes())),
         ));
-        symbols_out.set_next(ValueFlags::ADDRESS, symbol_id, script.file_id);
+
+        symbols_out.set_next(
+            ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE,
+            symbol_id,
+            script.file_id,
+        );
     }
 }
 
