@@ -53,6 +53,7 @@ pub(crate) enum Command<'a> {
     AsNeeded(Vec<Command<'a>>),
     Ignored,
     Sections(Sections<'a>),
+    Entry(&'a [u8]),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -155,6 +156,7 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
         }
         b"AS_NEEDED" => Command::AsNeeded(parse_paren_group(input)?),
         b"SECTIONS" => Command::Sections(parse_sections(input)?),
+        b"ENTRY" => Command::Entry(parse_entry(input)?),
         other => Command::Arg(other),
     };
 
@@ -181,6 +183,16 @@ fn parse_commands<'input>(input: &mut &'input BStr) -> winnow::Result<Vec<Comman
     skip_comments_and_whitespace(input)?;
 
     Ok(repeat_till(0.., parse_command, eof).parse_next(input)?.0)
+}
+
+fn parse_entry<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]> {
+    skip_comments_and_whitespace(input)?;
+    '('.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    let symbol_name = parse_token(input)?;
+    skip_comments_and_whitespace(input)?;
+    ')'.parse_next(input)?;
+    Ok(symbol_name)
 }
 
 fn parse_sections<'input>(input: &mut &'input BStr) -> winnow::Result<Sections<'input>> {
@@ -503,6 +515,7 @@ mod tests {
     fn test_basic_linker_script() {
         check_linker_script(
             r"
+            ENTRY(_start)
             SECTIONS {
                 . = 0x1000000;
                 .foo : ALIGN(8) {
@@ -513,27 +526,30 @@ mod tests {
             }
         ",
             &LinkerScript {
-                commands: vec![Command::Sections(Sections {
-                    commands: vec![
-                        SectionCommand::SetLocation(Location { address: 0x1000000 }),
-                        SectionCommand::Section(Section {
-                            output_section_name: ".foo".as_bytes(),
-                            commands: vec![
-                                ContentsCommand::SymbolAssignment(SymbolAssignment {
-                                    name: "start_foo".as_bytes(),
-                                }),
-                                ContentsCommand::Matcher(Matcher {
-                                    must_keep: true,
-                                    input_section_name_patterns: vec![".rodata.foo".as_bytes()],
-                                }),
-                                ContentsCommand::SymbolAssignment(SymbolAssignment {
-                                    name: "end_foo".as_bytes(),
-                                }),
-                            ],
-                            alignment: Some(8),
-                        }),
-                    ],
-                })],
+                commands: vec![
+                    Command::Entry("_start".as_bytes()),
+                    Command::Sections(Sections {
+                        commands: vec![
+                            SectionCommand::SetLocation(Location { address: 0x1000000 }),
+                            SectionCommand::Section(Section {
+                                output_section_name: ".foo".as_bytes(),
+                                commands: vec![
+                                    ContentsCommand::SymbolAssignment(SymbolAssignment {
+                                        name: "start_foo".as_bytes(),
+                                    }),
+                                    ContentsCommand::Matcher(Matcher {
+                                        must_keep: true,
+                                        input_section_name_patterns: vec![".rodata.foo".as_bytes()],
+                                    }),
+                                    ContentsCommand::SymbolAssignment(SymbolAssignment {
+                                        name: "end_foo".as_bytes(),
+                                    }),
+                                ],
+                                alignment: Some(8),
+                            }),
+                        ],
+                    }),
+                ],
             },
         );
     }

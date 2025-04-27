@@ -194,8 +194,12 @@ impl Linker {
 
         let groups = grouping::group_files(parsed_inputs, args);
 
-        let mut symbol_db =
-            symbol_db::SymbolDb::build(groups, input_data.version_script_data, args)?;
+        let mut symbol_db = symbol_db::SymbolDb::build(
+            groups,
+            input_data.version_script_data,
+            args,
+            linker_scripts,
+        )?;
 
         let resolved = resolution::resolve_symbols_and_sections(
             &mut symbol_db,

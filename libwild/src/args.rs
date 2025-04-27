@@ -748,10 +748,6 @@ impl Args {
             modifiers: Modifiers::default(),
         });
     }
-
-    pub(crate) fn entry_symbol_name(&self) -> &[u8] {
-        self.entry.as_ref().map_or(b"_start", |n| n.as_bytes())
-    }
 }
 
 fn parse_number(s: &str) -> Result<u64> {
