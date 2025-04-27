@@ -11,11 +11,13 @@ use std::path::Path;
 use winnow::BStr;
 use winnow::Parser as _;
 use winnow::ascii::dec_uint;
+use winnow::ascii::hex_digit1;
 use winnow::ascii::multispace0;
 use winnow::combinator::alt;
 use winnow::combinator::eof;
 use winnow::combinator::opt;
 use winnow::combinator::repeat_till;
+use winnow::error::ContextError;
 use winnow::token::take_until;
 use winnow::token::take_while;
 
@@ -61,6 +63,12 @@ pub(crate) struct Sections<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SectionCommand<'a> {
     Section(Section<'a>),
+    SetLocation(Location),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) struct Location {
+    pub(crate) address: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -155,6 +163,20 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
     Ok(command)
 }
 
+fn parse_location_assignment(input: &mut &BStr) -> winnow::Result<Location> {
+    skip_comments_and_whitespace(input)?;
+    '='.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    "0x".parse_next(input)?;
+    let hex_str =
+        std::str::from_utf8(hex_digit1.parse_next(input)?).map_err(|_| ContextError::new())?;
+    let address = u64::from_str_radix(hex_str, 16).map_err(|_| ContextError::new())?;
+    skip_comments_and_whitespace(input)?;
+    ';'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+    Ok(Location { address })
+}
+
 fn parse_commands<'input>(input: &mut &'input BStr) -> winnow::Result<Vec<Command<'input>>> {
     skip_comments_and_whitespace(input)?;
 
@@ -173,6 +195,13 @@ fn parse_section_command<'input>(
     input: &mut &'input BStr,
 ) -> winnow::Result<SectionCommand<'input>> {
     let name = parse_token(input)?;
+
+    if name == b"." {
+        return Ok(SectionCommand::SetLocation(
+            parse_location_assignment.parse_next(input)?,
+        ));
+    }
+
     skip_comments_and_whitespace(input)?;
 
     ':'.parse_next(input)?;
@@ -291,7 +320,7 @@ fn foreach_input(
                 };
                 foreach_input(subs, sub_modifiers, cb)?;
             }
-            Command::Sections(_) | Command::Ignored => {}
+            _ => {}
         }
     }
 
@@ -475,6 +504,7 @@ mod tests {
         check_linker_script(
             r"
             SECTIONS {
+                . = 0x1000000;
                 .foo : ALIGN(8) {
                     start_foo = .;
                     KEEP(*(.rodata.foo));
@@ -484,22 +514,25 @@ mod tests {
         ",
             &LinkerScript {
                 commands: vec![Command::Sections(Sections {
-                    commands: vec![SectionCommand::Section(Section {
-                        output_section_name: ".foo".as_bytes(),
-                        commands: vec![
-                            ContentsCommand::SymbolAssignment(SymbolAssignment {
-                                name: "start_foo".as_bytes(),
-                            }),
-                            ContentsCommand::Matcher(Matcher {
-                                must_keep: true,
-                                input_section_name_patterns: vec![".rodata.foo".as_bytes()],
-                            }),
-                            ContentsCommand::SymbolAssignment(SymbolAssignment {
-                                name: "end_foo".as_bytes(),
-                            }),
-                        ],
-                        alignment: Some(8),
-                    })],
+                    commands: vec![
+                        SectionCommand::SetLocation(Location { address: 0x1000000 }),
+                        SectionCommand::Section(Section {
+                            output_section_name: ".foo".as_bytes(),
+                            commands: vec![
+                                ContentsCommand::SymbolAssignment(SymbolAssignment {
+                                    name: "start_foo".as_bytes(),
+                                }),
+                                ContentsCommand::Matcher(Matcher {
+                                    must_keep: true,
+                                    input_section_name_patterns: vec![".rodata.foo".as_bytes()],
+                                }),
+                                ContentsCommand::SymbolAssignment(SymbolAssignment {
+                                    name: "end_foo".as_bytes(),
+                                }),
+                            ],
+                            alignment: Some(8),
+                        }),
+                    ],
                 })],
             },
         );
