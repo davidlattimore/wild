@@ -268,6 +268,8 @@ fn resolve_group<'data, 'definitions>(
             let files = scripts
                 .iter()
                 .map(|s| {
+                    definitions_out_per_file.push(AtomicTake::empty());
+
                     ResolvedFile::LinkerScript(ResolvedLinkerScript {
                         input: s.input.clone(),
                         file_id: s.file_id,

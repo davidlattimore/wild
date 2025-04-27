@@ -704,7 +704,7 @@ impl<'data> FileLayout<'data> {
             FileLayout::Object(s) => s.write_file::<A>(buffers, table_writer, layout, trace)?,
             FileLayout::Prelude(s) => s.write_file::<A>(buffers, table_writer, layout)?,
             FileLayout::Epilogue(s) => s.write_file::<A>(buffers, table_writer, layout)?,
-            FileLayout::LinkerScript(s) => s.write_file(table_writer, layout)?,
+            FileLayout::LinkerScript(s) => s.write_file::<A>(table_writer, layout)?,
             FileLayout::NotLoaded => {}
             FileLayout::Dynamic(s) => s.write_file::<A>(table_writer, layout)?,
         }
@@ -2563,12 +2563,16 @@ pub(crate) struct EpilogueOffsets {
 }
 
 impl LinkerScriptLayoutState<'_> {
-    fn write_file(&self, table_writer: &mut TableWriter, layout: &Layout) -> Result {
+    fn write_file<A: Arch>(&self, table_writer: &mut TableWriter, layout: &Layout) -> Result {
         write_internal_symbols(
             &self.internal_symbols,
             layout,
             &mut table_writer.debug_symbol_writer,
-        )
+        )?;
+
+        write_internal_symbols_plt_got_entries::<A>(&self.internal_symbols, table_writer, layout)?;
+
+        Ok(())
     }
 }
 

@@ -5116,7 +5116,9 @@ impl<'data> LinkerScriptLayoutState<'data> {
             resources.symbol_resolution_flags[symbol_id.as_usize()]
                 .fetch_or(ResolutionFlags::EXPORT_DYNAMIC);
 
-            export_dynamic(common, symbol_id, resources.symbol_db)?;
+            if resources.symbol_db.args.needs_dynsym() {
+                export_dynamic(common, symbol_id, resources.symbol_db)?;
+            }
         }
 
         Ok(())
