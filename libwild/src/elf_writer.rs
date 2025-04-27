@@ -2037,11 +2037,7 @@ fn apply_relocation<'a, A: Arch>(
 
     let mask = get_page_mask(rel_info.mask);
     let mut value = match rel_info.kind {
-        RelocationKind::Absolute
-        | RelocationKind::AbsoluteWord6
-        | RelocationKind::AbsoluteAddition
-        | RelocationKind::AbsoluteSubtraction
-        | RelocationKind::AbsoluteSubtractionWord6 => {
+        RelocationKind::Absolute => {
             assert!(rel_info.mask.is_none());
             write_absolute_relocation::<A>(
                 table_writer,
@@ -2054,6 +2050,17 @@ fn apply_relocation<'a, A: Arch>(
                 layout,
             )?
         }
+        RelocationKind::AbsoluteSet
+        | RelocationKind::AbsoluteSetWord6
+        | RelocationKind::AbsoluteAddition
+        | RelocationKind::AbsoluteSubtraction
+        | RelocationKind::AbsoluteSubtractionWord6 => resolution.value_with_addend(
+            addend,
+            symbol_index,
+            object_layout,
+            &layout.merged_strings,
+            &layout.merged_string_start_addresses,
+        )?,
         RelocationKind::AbsoluteAArch64 => resolution
             .value_with_addend(
                 addend,
@@ -2242,7 +2249,7 @@ fn apply_relocation<'a, A: Arch>(
     // Handle addition and subtraction relocation kinds.
     if matches!(
         rel_info.kind,
-        RelocationKind::AbsoluteWord6
+        RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
             | RelocationKind::AbsoluteSubtraction
             | RelocationKind::AbsoluteSubtractionWord6
@@ -2257,7 +2264,7 @@ fn apply_relocation<'a, A: Arch>(
         let current_value = u64::from_le_bytes(read_data);
 
         match rel_info.kind {
-            RelocationKind::AbsoluteWord6 => {
+            RelocationKind::AbsoluteSetWord6 => {
                 value &= LOW6_MASK;
             }
             RelocationKind::AbsoluteAddition => {
@@ -2308,7 +2315,7 @@ fn apply_relocation<'a, A: Arch>(
     // Special case WORD6 type where we need to preserve the 2 most significant bits of u8.
     if matches!(
         rel_info.kind,
-        RelocationKind::AbsoluteWord6 | RelocationKind::AbsoluteSubtractionWord6
+        RelocationKind::AbsoluteSetWord6 | RelocationKind::AbsoluteSubtractionWord6
     ) {
         value |= u64::from(out[offset_in_section]) & !LOW6_MASK;
     }

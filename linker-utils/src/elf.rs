@@ -731,8 +731,11 @@ pub enum RelocationKind {
     /// The absolute address of a symbol or section.
     Absolute,
 
+    /// The absolute address of a symbol or section related to EH section.
+    AbsoluteSet,
+
     /// The 6 low bits of an absolute address of a symbol or section.
-    AbsoluteWord6,
+    AbsoluteSetWord6,
 
     /// Add the absolute address of a symbol or section at the place of the relocation
     /// to the value at the place.
