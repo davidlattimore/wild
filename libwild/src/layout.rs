@@ -3804,7 +3804,7 @@ impl<'data> ObjectLayoutState<'data> {
             )
             .with_context(|| {
                 format!(
-                    "Failed to copy section `{}` from file {self}",
+                    "Failed to copy section {} from file {self}",
                     section_debug(self.object, section.index)
                 )
             })?;
