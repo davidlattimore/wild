@@ -210,10 +210,12 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         object::elf::R_RISCV_PLT32 => return None, // TODO: support
         object::elf::R_RISCV_SET_ULEB128 => return None, // TODO: support
         object::elf::R_RISCV_SUB_ULEB128 => return None, // TODO: support
-        object::elf::R_RISCV_TLSDESC_HI20 => return None, // TODO: support
-        object::elf::R_RISCV_TLSDESC_LOAD_LO12 => return None, // TODO: support
-        object::elf::R_RISCV_TLSDESC_ADD_LO12 => return None, // TODO: support
-        object::elf::R_RISCV_TLSDESC_CALL => return None, // TODO: support
+
+        // TODO: support TLSDESC once glibc supports the feature: #712
+        object::elf::R_RISCV_TLSDESC_HI20 => return None,
+        object::elf::R_RISCV_TLSDESC_LOAD_LO12 => return None,
+        object::elf::R_RISCV_TLSDESC_ADD_LO12 => return None,
+        object::elf::R_RISCV_TLSDESC_CALL => return None,
         _ => return None,
     };
 
