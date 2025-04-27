@@ -2379,7 +2379,7 @@ fn read_test_config() -> Result<TestConfig> {
         })?;
 
         toml::from_str(&config_content)
-            .with_context(|| format!("Unable to load config from {:?}", config_path))?
+            .with_context(|| format!("Unable to load config from {config_path:?}"))?
     } else if config_path == config_default_path {
         TestConfig::default()
     } else {
