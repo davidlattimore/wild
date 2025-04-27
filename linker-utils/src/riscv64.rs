@@ -48,7 +48,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             1,
         ),
         object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT => (
-            RelocationKind::Relative,
+            RelocationKind::PltRelative,
             RelocationSize::bit_mask_riscv(0, 64, RISCVInstruction::AuipcJalr),
             None,
             AllowedRange::no_check(),
