@@ -704,7 +704,7 @@ impl<'data> FileLayout<'data> {
             FileLayout::Object(s) => s.write_file::<A>(buffers, table_writer, layout, trace)?,
             FileLayout::Prelude(s) => s.write_file::<A>(buffers, table_writer, layout)?,
             FileLayout::Epilogue(s) => s.write_file::<A>(buffers, table_writer, layout)?,
-            FileLayout::LinkerScript(_) => {}
+            FileLayout::LinkerScript(s) => s.write_file(table_writer, layout)?,
             FileLayout::NotLoaded => {}
             FileLayout::Dynamic(s) => s.write_file::<A>(table_writer, layout)?,
         }
@@ -2560,6 +2560,16 @@ fn write_epilogue_dynamic_entries(
 pub(crate) struct EpilogueOffsets {
     /// The offset of the shared object name in .dynsym.
     pub(crate) soname: Option<u32>,
+}
+
+impl LinkerScriptLayoutState<'_> {
+    fn write_file(&self, table_writer: &mut TableWriter, layout: &Layout) -> Result {
+        write_internal_symbols(
+            &self.internal_symbols,
+            layout,
+            &mut table_writer.debug_symbol_writer,
+        )
+    }
 }
 
 impl EpilogueLayout<'_> {

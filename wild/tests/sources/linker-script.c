@@ -6,6 +6,9 @@
 //#ExpectDynSym:start_bar bar 0
 //#ExpectDynSym:start_aaa bar 8
 //#ExpectDynSym:end_bar bar 12
+//#ExpectSym:start_bar bar 0
+//#ExpectSym:start_aaa bar 8
+//#ExpectSym:end_bar bar 12
 
 static int foo1 __attribute__ ((used, section (".data.foo"))) = 0x01;
 

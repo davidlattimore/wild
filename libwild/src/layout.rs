@@ -587,6 +587,7 @@ pub(crate) struct EpilogueLayoutState<'data> {
 }
 
 pub(crate) struct LinkerScriptLayoutState<'data> {
+    file_id: FileId,
     input: InputRef<'data>,
     symbol_id_range: SymbolIdRange,
     pub(crate) internal_symbols: InternalSymbols,
@@ -928,6 +929,28 @@ impl<'data> SymbolRequestHandler<'data> for PreludeLayoutState {
     fn load_symbol<'scope, A: Arch>(
         &mut self,
         _common: &mut CommonGroupState,
+        _symbol_id: SymbolId,
+        _resources: &GraphResources<'data, 'scope>,
+        _queue: &mut LocalWorkQueue,
+    ) -> Result {
+        Ok(())
+    }
+}
+
+impl HandlerData for LinkerScriptLayoutState<'_> {
+    fn symbol_id_range(&self) -> SymbolIdRange {
+        self.symbol_id_range
+    }
+
+    fn file_id(&self) -> FileId {
+        self.file_id
+    }
+}
+
+impl<'data> SymbolRequestHandler<'data> for LinkerScriptLayoutState<'data> {
+    fn load_symbol<'scope, A: Arch>(
+        &mut self,
+        _common: &mut CommonGroupState<'data>,
         _symbol_id: SymbolId,
         _resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
@@ -2396,7 +2419,10 @@ impl<'data> FileLayoutState<'data> {
                 s.finalise_sizes(common, symbol_db, symbol_resolution_flags)?;
                 s.finalise_symbol_sizes(common, symbol_db, symbol_resolution_flags)?;
             }
-            FileLayoutState::LinkerScript(_) => {}
+            FileLayoutState::LinkerScript(s) => {
+                s.finalise_sizes(common, symbol_db, symbol_resolution_flags)?;
+                s.finalise_symbol_sizes(common, symbol_db, symbol_resolution_flags)?;
+            }
             FileLayoutState::NotLoaded(_) => {}
         }
         Ok(())
@@ -5072,6 +5098,7 @@ impl<'data> LinkerScriptLayoutState<'data> {
 
     fn new(input: ResolvedLinkerScript<'data>) -> Self {
         Self {
+            file_id: input.file_id,
             input: input.input,
             symbol_id_range: input.symbol_id_range,
             internal_symbols: InternalSymbols {
@@ -5093,6 +5120,25 @@ impl<'data> LinkerScriptLayoutState<'data> {
 
             export_dynamic(common, symbol_id, resources.symbol_db)?;
         }
+
+        Ok(())
+    }
+
+    fn finalise_sizes(
+        &self,
+        common: &mut CommonGroupState<'data>,
+        symbol_db: &SymbolDb<'data>,
+        symbol_resolution_flags: &[AtomicResolutionFlags],
+    ) -> Result {
+        self.internal_symbols.allocate_symbol_table_sizes(
+            &mut common.mem_sizes,
+            symbol_db,
+            |symbol_id, _info| {
+                !symbol_resolution_flags[symbol_id.as_usize()]
+                    .get()
+                    .is_empty()
+            },
+        )?;
 
         Ok(())
     }
