@@ -88,7 +88,6 @@ use object::LittleEndian;
 use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
-use object::elf::R_RISCV_PCREL_HI20;
 use object::from_bytes_mut;
 use object::read::elf::Rela;
 use object::read::elf::Sym as _;
@@ -2087,24 +2086,36 @@ fn apply_relocation<'a, A: Arch>(
                     &layout.merged_string_start_addresses,
                 )?
                 .wrapping_sub(section_address);
-            // The R_RISCV_PCREL_HI relocation is typically just before us.
+            // The High-part relocation is typically just before us.
             let hi_rel = relocations_to_search
                 .find(|r| r.r_offset(e) == hi_offset_in_section)
-                .with_context(|| anyhow::anyhow!("Missing R_RISCV_PCREL_HI relocation"))?;
-            anyhow::ensure!(
-                hi_rel.r_type(LittleEndian, false) == R_RISCV_PCREL_HI20,
-                "Only R_RISCV_PCREL_HI expected as RelativeRISCVLow12 target relocation"
-            );
+                .with_context(|| {
+                    anyhow::anyhow!("Missing High relocation connected with R_RISCV_PCREL_LO12")
+                })?;
+            let hi_rel_info = A::relocation_from_raw(hi_rel.r_type(LittleEndian, false))?;
             let (resolution, symbol_index, _) = get_resolution(hi_rel, object_layout, layout)?;
-            resolution
-                .value_with_addend(
-                    addend,
-                    symbol_index,
-                    object_layout,
-                    &layout.merged_strings,
-                    &layout.merged_string_start_addresses,
-                )?
-                .wrapping_sub(section_address + hi_offset_in_section)
+            let place = section_address + hi_offset_in_section;
+
+            // Only a subset of relocations is referenced by R_RISCV_PCREL_LO12 relocations.
+            match hi_rel_info.kind {
+                RelocationKind::Relative => resolution
+                    .value_with_addend(
+                        addend,
+                        symbol_index,
+                        object_layout,
+                        &layout.merged_strings,
+                        &layout.merged_string_start_addresses,
+                    )?
+                    .wrapping_sub(place),
+                RelocationKind::GotRelative => resolution
+                    .got_address()?
+                    .wrapping_add(addend as u64)
+                    .wrapping_sub(place),
+                _ => anyhow::bail!(format!(
+                    "Unsupported high part relocation {:?} connected with R_RISCV_PCREL_LO12",
+                    hi_rel_info.kind
+                )),
+            }
         }
         RelocationKind::GotRelative => resolution
             .got_address()?
