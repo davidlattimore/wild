@@ -9,13 +9,19 @@ RUN zypper install -y -t pattern devel_C_C++ && \
         rustup \
         clang \
         glibc-devel-static \
+        cross-aarch64-gcc14 \
+        qemu-linux-user \
         lld \
         vim \
         less
 RUN rustup toolchain install nightly
 RUN cargo install --locked cargo-chef
-RUN rustup target add x86_64-unknown-linux-musl && \
-    rustup target add x86_64-unknown-linux-musl --toolchain nightly && \
+RUN rustup toolchain install nightly && \
+    rustup target add --toolchain nightly \
+        x86_64-unknown-linux-musl \
+        aarch64-unknown-linux-gnu \
+        aarch64-unknown-linux-musl \
+        && \
     rustup component add rustc-codegen-cranelift-preview --toolchain nightly
 WORKDIR /wild
 
