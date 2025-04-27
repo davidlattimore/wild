@@ -1,6 +1,5 @@
 //#LinkerScript:linker-script-executable.ld
 //#Object:runtime.c
-//#LinkArgs:--entry=begin_here
 
 #include <stddef.h>
 

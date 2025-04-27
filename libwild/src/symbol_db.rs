@@ -1,6 +1,7 @@
 //! Reads global symbols for each input file and builds a map from symbol names to IDs together with
 //! information about where each symbol can be obtained.
 
+use crate::InputLinkerScript;
 use crate::args::Args;
 use crate::args::OutputKind;
 use crate::error::Result;
@@ -75,6 +76,9 @@ pub struct SymbolDb<'data> {
     start_stop_symbol_names: Vec<UnversionedSymbolName<'data>>,
 
     pub(crate) version_script: VersionScript<'data>,
+
+    /// The name of the entry symbol if overridden by a linker script.
+    entry: Option<&'data [u8]>,
 }
 
 struct SymbolBucket<'data> {
@@ -263,6 +267,7 @@ impl<'data> SymbolDb<'data> {
         groups: Vec<Group<'data>>,
         version_script_data: Option<VersionScriptData<'data>>,
         args: &'data Args,
+        linker_scripts: &[InputLinkerScript<'data>],
     ) -> Result<Self> {
         let version_script = version_script_data
             .map(VersionScript::parse)
@@ -330,9 +335,14 @@ impl<'data> SymbolDb<'data> {
             start_stop_symbol_names: Default::default(),
             symbol_value_flags,
             version_script,
+            entry: None,
         };
 
         index.populate_symbol_db(&per_group_outputs)?;
+
+        for script in linker_scripts {
+            index.apply_linker_script(script);
+        }
 
         Ok(index)
     }
@@ -630,6 +640,25 @@ impl<'data> SymbolDb<'data> {
         let flags = SectionFlags::from_header(header);
 
         flags.contains(shf::GROUP)
+    }
+
+    pub(crate) fn entry_symbol_name(&self) -> &[u8] {
+        // The --entry flag is used first, falling back to what the linker script says, or otherwise
+        // defaults to `_start`.
+        self.args
+            .entry
+            .as_ref()
+            .map(|n| n.as_bytes())
+            .or(self.entry)
+            .unwrap_or(b"_start")
+    }
+
+    fn apply_linker_script(&mut self, script: &InputLinkerScript<'data>) {
+        for cmd in &script.script.commands {
+            if let crate::linker_script::Command::Entry(symbol_name) = cmd {
+                self.entry = Some(*symbol_name);
+            }
+        }
     }
 }
 

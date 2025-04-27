@@ -599,7 +599,7 @@ fn load_prelude(
         load_symbol_named(
             resources,
             &mut SymbolId::undefined(),
-            resources.symbol_db.args.entry_symbol_name(),
+            resources.symbol_db.entry_symbol_name(),
         );
     }
 

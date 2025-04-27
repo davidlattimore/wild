@@ -2941,7 +2941,7 @@ impl PreludeLayoutState {
             resources
                 .symbol_db
                 .get_unversioned(&UnversionedSymbolName::prehashed(
-                    resources.symbol_db.args.entry_symbol_name(),
+                    resources.symbol_db.entry_symbol_name(),
                 ))
         else {
             // We'll emit a warning when writing the file.

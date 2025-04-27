@@ -1,3 +1,5 @@
+ENTRY(begin_here)
+
 SECTIONS
 {
     . = 0x600000;
