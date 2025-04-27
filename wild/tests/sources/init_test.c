@@ -1,9 +1,9 @@
 //#Object:init.c
-//#Object:exit.c
+//#Object:runtime.c
 //#CompArgs:default:
 //#CompArgs:-static -pie
 
-#include "exit.h"
+#include "runtime.h"
 #include "init.h"
 
 static int value = 0;
@@ -13,6 +13,7 @@ void __attribute__ ((constructor)) premain() {
 }
 
 void _start(void) {
+    runtime_init();
     call_init_functions();
     exit_syscall(value);
 }

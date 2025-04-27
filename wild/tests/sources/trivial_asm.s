@@ -1,5 +1,5 @@
 //#LinkArgs:-z noexecstack
-//#Object:exit.c
+//#Object:runtime.c
 //#Arch: x86_64
 
 .section        .data.foo

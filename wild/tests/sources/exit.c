@@ -1,5 +1,3 @@
-#include "exit.h"
-
 #include <inttypes.h>
 #include <sys/types.h>
 

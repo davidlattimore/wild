@@ -1,5 +1,5 @@
 //#AbstractConfig:default
-//#Object:exit.c
+//#Object:runtime.c
 
 //#Config:undefined:default
 //#LinkArgs:--undefined=foo -u bar -ubaz
@@ -13,13 +13,15 @@
 //#CompArgs:-DEXPECT_ARCH0
 //#LinkArgs:--undefined=bar
 
-#include "exit.h"
+#include "runtime.h"
 
 __attribute__ ((weak)) int is_archive0_loaded() {
     return 0;
 }
 
 void _start(void) {
+    runtime_init();
+
     #ifdef EXPECT_ARCH0
     if (!is_archive0_loaded()){
         exit_syscall(10);

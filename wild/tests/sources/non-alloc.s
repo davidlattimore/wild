@@ -1,7 +1,7 @@
 // This test makes sure that we're able to handle a retained, non-alloc section.
 
 //#LinkArgs:-z noexecstack
-//#Object:exit.c
+//#Object:runtime.c
 //#Arch: x86_64
 
 .section .nonloadable, "R", @progbits

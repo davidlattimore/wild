@@ -4,11 +4,11 @@
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:file-header.entry
-//#Object:exit.c
+//#Object:runtime.c
 //#VersionScript:symbol-versions-script.map
 
 //#Config:verneed
-//#Object:exit.c
+//#Object:runtime.c
 //#Object:symbol-versions-2.c
 //#ExpectSym: _start .text
 //#ExpectSym: exit_syscall .text
@@ -21,7 +21,7 @@
 //#Config:verdef-1:verdef
 //#LinkArgs:--shared --soname=symbol-versions.so
 
-#include "exit.h"
+#include "runtime.h"
 
 int foo(void);
 int bar_global(void);
@@ -30,6 +30,8 @@ int bar_v2(void);
 int bar_v2_1(void);
 
 void _start(void) {
+    runtime_init();
+
     if (foo() != 2) {
         exit_syscall(foo());
     }

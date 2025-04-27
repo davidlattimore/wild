@@ -1,21 +1,22 @@
 //#Config:strip-all
-//#Object:exit.c
+//#Object:runtime.c
 //#LinkArgs:--strip-all
 //#EnableLinker:lld
 //#DiffIgnore:file-header.entry
 
 //#Config:single-threaded
-//#Object:exit.c
+//#Object:runtime.c
 //#WildExtraLinkArgs:--threads=1
 
 //#Config:dev_null
-//#Object:exit.c
+//#Object:runtime.c
 //#LinkArgs:-o /dev/null
 //#DiffEnabled:false
 //#RunEnabled:false
 
-#include "exit.h"
+#include "runtime.h"
 
 void _start(void) {
+    runtime_init();
     exit_syscall(42);
 }

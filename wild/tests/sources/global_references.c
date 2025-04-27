@@ -1,4 +1,4 @@
-#include "exit.h"
+#include "runtime.h"
 #include "global_definitions.h"
 
 #include <stddef.h>
@@ -26,6 +26,8 @@ int black_box(int input) {
 #endif
 
 void _start() {
+    runtime_init();
+
     if (global_value != 38) {
         exit_syscall(100);
     }

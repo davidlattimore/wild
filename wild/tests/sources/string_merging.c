@@ -4,10 +4,10 @@
 //#LinkArgs:-z noexecstack
 //#Object:string_merging1.s
 //#Object:string_merging2.s
-//#Object:exit.c
+//#Object:runtime.c
 //#Arch: x86_64
 
-#include "exit.h"
+#include "runtime.h"
 
 extern const char s1h[];
 extern const char s2h[];
@@ -23,6 +23,8 @@ const char* get_s2w(void);
 const char* get_s2w_via_offset(void);
 
 void _start(void) {
+    runtime_init();
+
     if (s1h != s2h) {
         exit_syscall(101);
     }

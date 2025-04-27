@@ -1,9 +1,9 @@
 //#Object:eh_frame_end.c
-//#Object:exit.c
+//#Object:runtime.c
 
 #include <stdint.h>
 
-#include "exit.h"
+#include "runtime.h"
 
 typedef uint32_t u32;
 
@@ -17,6 +17,8 @@ static char EH_FRAME_START[] __attribute__((section(".eh_frame"), aligned(__alig
 extern char EH_FRAME_END[];
 
 void _start(void) {
+    runtime_init();
+
     const struct EhFrameEntry* frame1 = (struct EhFrameEntry*) EH_FRAME_START;
 
     // The first entry should be a CIE. Its length should be non-zero.

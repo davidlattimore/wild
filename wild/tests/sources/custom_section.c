@@ -1,5 +1,5 @@
 //#AbstractConfig:default
-//#Object:exit.c
+//#Object:runtime.c
 
 //#Config:archive:default
 //#Archive:custom_section0.c
@@ -7,7 +7,7 @@
 //#Config:object:default
 //#Object:custom_section0.c
 
-#include "exit.h"
+#include "runtime.h"
 
 static int foo1 __attribute__ ((used, section ("foo"))) = 2;
 static int foo2 __attribute__ ((used, section ("foo"))) = 5;
@@ -47,6 +47,8 @@ int h1();
 int h2(int x);
 
 void _start(void) {
+    runtime_init();
+
     int value = fn1();
     for (int *foo = __start_foo; foo < __stop_foo; foo++) {
         value += *foo;

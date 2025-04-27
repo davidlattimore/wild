@@ -5,13 +5,13 @@
 //#Config:regular:default
 //#Archive:archive_activation0.c
 //#Archive:archive_activation1.c
-//#Archive:exit.c
+//#Archive:runtime.c
 //#Archive:empty.a
 
 //#Config:thin:default
 //#ThinArchive:archive_activation0.c
 //#ThinArchive:archive_activation1.c
-//#ThinArchive:exit.c
+//#ThinArchive:runtime.c
 //#ThinArchive:empty.a
 
 //#Config:lib:default
@@ -21,10 +21,10 @@
 //#LinkArgs:--start-lib
 //#Object:archive_activation0.c
 //#Object:archive_activation1.c
-//#Object:exit.c
+//#Object:runtime.c
 //#Object:empty.a
 
-#include "exit.h"
+#include "runtime.h"
 
 int bar(void);
 int does_not_exist(void);
@@ -38,6 +38,8 @@ __attribute__ ((weak)) int is_archive1_loaded() {
 }
 
 void _start(void) {
+    runtime_init();
+
     if (!is_archive0_loaded()) {
         exit_syscall(101);
     }
