@@ -2242,7 +2242,8 @@ impl<'data> RelaxationTester<'data> {
                 .got_base_address
                 .context("Missing GOT base address")?,
             RelocationKind::Absolute
-            | RelocationKind::AbsoluteWord6
+            | RelocationKind::AbsoluteSet
+            | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
             | RelocationKind::AbsoluteSubtraction
             | RelocationKind::AbsoluteSubtractionWord6
@@ -2430,7 +2431,8 @@ fn value_kind_for_relocation(
     let kind = match relocation_kind {
         RelocationKind::Absolute
         | RelocationKind::AbsoluteAArch64
-        | RelocationKind::AbsoluteWord6
+        | RelocationKind::AbsoluteSet
+        | RelocationKind::AbsoluteSetWord6
         | RelocationKind::AbsoluteAddition
         | RelocationKind::AbsoluteSubtraction
         | RelocationKind::AbsoluteSubtractionWord6 => {
@@ -3349,7 +3351,8 @@ impl<'data> GotIndex<'data> {
                 RelocationKind::TlsDescCall => Ok(Referent::TlsDescCall),
                 RelocationKind::Absolute
                 | RelocationKind::AbsoluteAArch64
-                | RelocationKind::AbsoluteWord6
+                | RelocationKind::AbsoluteSet
+                | RelocationKind::AbsoluteSetWord6
                 | RelocationKind::AbsoluteAddition
                 | RelocationKind::AbsoluteSubtraction
                 | RelocationKind::AbsoluteSubtractionWord6
