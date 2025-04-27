@@ -1,33 +1,39 @@
-int bar = 1;
+int s1 = 1;
 
-// Because this alias is a weak symbol, any copy relocations produced by references to foo should
-// instead locate the strong symbol `bar` that is at the same address and emit a copy relocation for
+// Because this alias is a weak symbol, any copy relocations produced by references to w1 should
+// instead locate the strong symbol `s1` that is at the same address and emit a copy relocation for
 // that instead.
-__attribute__ ((weak, alias("bar"))) extern int foo;
+__attribute__ ((weak, alias("s1"))) extern int w1;
 
-int get_foo(void) {
-    return foo;
+int get_w1(void) {
+    return w1;
 }
 
-int get_bar(void) {
-    return bar;
+int get_s1(void) {
+    return s1;
 }
 
 // Repeat the same scenario twice more. These are effectively identical in this file. The
 // differences are in how they are referenced in the main file.
 
-int bar2 = 2;
+int s2 = 2;
 
-__attribute__ ((weak, alias("bar2"))) extern int foo2;
+__attribute__ ((weak, alias("s2"))) extern int w2;
 
-int get_foo2(void) {
-    return bar2;
+int get_s2(void) {
+    return s2;
+}
+int get_w2(void) {
+    return w2;
 }
 
-int bar3 = 3;
+int s3 = 3;
 
-__attribute__ ((weak, alias("bar3"))) extern int foo3;
+__attribute__ ((weak, alias("s3"))) extern int w3;
 
-int get_foo3(void) {
-    return bar3;
+int get_s3(void) {
+    return s3;
+}
+int get_w3(void) {
+    return w3;
 }
