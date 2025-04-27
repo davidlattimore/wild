@@ -2900,9 +2900,12 @@ impl PreludeLayoutState {
     }
 
     fn load_entry_point(&mut self, resources: &GraphResources, queue: &mut LocalWorkQueue) {
-        let Some(symbol_id) = resources
-            .symbol_db
-            .get_unversioned(&UnversionedSymbolName::prehashed(b"_start"))
+        let Some(symbol_id) =
+            resources
+                .symbol_db
+                .get_unversioned(&UnversionedSymbolName::prehashed(
+                    resources.symbol_db.args.entry_symbol_name(),
+                ))
         else {
             // We'll emit a warning when writing the file.
             return;
