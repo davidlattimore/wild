@@ -191,6 +191,10 @@ const IGNORED_FLAGS: &[&str] = &[
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
     "no-export-dynamic",
+    "-Bsymbolic",
+    "-Bsymbolic-functions",
+    "-Bsymbolic-non-weak-functions", // LLD specific
+    "-Bsymbolic-non-weak",           // LLD specific
 ];
 
 // These flags map to the default behavior of the linker.
@@ -573,7 +577,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             bail!("Sorry, help isn't implemented yet");
         } else if strip_option(arg)
             .is_some_and(|stripped_arg| DEFAULT_FLAGS.contains(&stripped_arg))
-        { // These flags are mapped to the default behaviour of the linker.
+        {
+            // These flags are mapped to the default behaviour of the linker.
         } else if strip_option(arg)
             .is_some_and(|stripped_arg| IGNORED_FLAGS.contains(&stripped_arg))
         {
