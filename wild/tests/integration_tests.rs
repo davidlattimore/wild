@@ -2314,6 +2314,7 @@ fn integration_test(
         "tls-local-exec.c",
         "undefined_symbols.c",
         "whole_archive.c",
+        "entry_arg.c",
         "dynamic-bss-only.c",
         "shared-priority.c",
         "shared.c",

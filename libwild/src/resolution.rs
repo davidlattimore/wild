@@ -591,10 +591,14 @@ fn load_prelude(
     resources: &ResolutionResources,
 ) {
     if resources.symbol_db.args.output_kind().is_executable() {
-        // The _start symbol could be defined within an archive entry. If it is, then we need to
-        // load it. We don't currently store the resulting SymbolId, but instead look it up again
-        // during layout.
-        load_symbol_named(resources, &mut SymbolId::undefined(), b"_start");
+        // The start symbol could be defined within an archive entry. If it is, then we need to load
+        // it. We don't currently store the resulting SymbolId, but instead look it up again during
+        // layout.
+        load_symbol_named(
+            resources,
+            &mut SymbolId::undefined(),
+            resources.symbol_db.args.entry_symbol_name(),
+        );
     }
 
     // Try to resolve any symbols that the user requested be undefined (e.g. via --undefined). If an

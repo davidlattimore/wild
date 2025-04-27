@@ -62,6 +62,7 @@ pub struct Args {
     pub(crate) sysroot: Option<Box<Path>>,
     pub(crate) undefined: Vec<String>,
     pub(crate) relro: bool,
+    pub(crate) entry: Option<String>,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -264,6 +265,7 @@ impl Default for Args {
             demangle: true,
             undefined: Vec::new(),
             relro: true,
+            entry: None,
         }
     }
 }
@@ -377,6 +379,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 bail!("Unsupported hash-style `{style}`");
             }
             // Since we currently only support GNU hash, there's no state to update.
+        } else if let Some(rest) = long_arg_split_prefix("entry=") {
+            args.entry = Some(rest.to_owned());
         } else if long_arg_eq("build-id") {
             args.build_id = BuildIdOption::Fast;
         } else if let Some(build_id_value) = long_arg_split_prefix("build-id=") {
@@ -738,6 +742,10 @@ impl Args {
             search_first: None,
             modifiers: Modifiers::default(),
         });
+    }
+
+    pub(crate) fn entry_symbol_name(&self) -> &[u8] {
+        self.entry.as_ref().map_or(b"_start", |n| n.as_bytes())
     }
 }
 
