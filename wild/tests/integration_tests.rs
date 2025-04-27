@@ -664,7 +664,8 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
         .with_context(|| format!("Failed to read {}", src_filename.display()))?;
     let is_rust = src_filename.extension().is_some_and(|ext| ext == "rs");
 
-    let mut config_by_name = HashMap::new();
+    let mut configs = Vec::new();
+    let mut config_name_to_index = HashMap::new();
     let default_config = Config::new(test_config);
     let mut config = default_config.clone();
 
@@ -675,17 +676,18 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
             match directive {
                 "Config" | "AbstractConfig" => {
                     if config != default_config {
-                        config_by_name.insert(config.name.clone(), config);
+                        let index = configs.len();
+                        config_name_to_index.insert(config.name.clone(), index);
+                        configs.push(config);
                     }
                     let name = if let Some((name, inherit)) = arg.split_once(':') {
-                        config = config_by_name
-                            .get(inherit)
-                            .ok_or_else(|| {
-                                anyhow!(
-                                    "Config `{name}` inherits from unknown config named `{inherit}`"
-                                )
-                            })?
-                            .clone();
+                        let inherit_index = config_name_to_index.get(inherit).ok_or_else(|| {
+                            anyhow!(
+                                "Config `{name}` inherits from unknown config named `{inherit}`"
+                            )
+                        })?;
+
+                        config = configs[*inherit_index].clone();
 
                         // Clear any fields that we want to not inherit.
                         config.variant_num = None;
@@ -696,7 +698,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                         arg
                     };
                     config.is_abstract = directive == "AbstractConfig";
-                    if config_by_name.contains_key(name) {
+                    if config_name_to_index.contains_key(name) {
                         bail!("Duplicate config `{name}`");
                     }
                     name.clone_into(&mut config.name);
@@ -829,13 +831,11 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
         }
     }
 
-    let mut configs = config_by_name
-        .into_values()
-        .filter(|c| !c.is_abstract)
-        .collect_vec();
     configs.push(config);
 
-    if configs.iter().all(|config| config.is_abstract) {
+    configs.retain(|c| !c.is_abstract);
+
+    if configs.is_empty() {
         bail!("Missing non-abstract Config");
     }
 
