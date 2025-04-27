@@ -1,5 +1,5 @@
-extern int bar;
+extern int s1;
 
-int get_bar(void) {
-    return bar;
+int get_s1_pic(void) {
+    return s1;
 }
