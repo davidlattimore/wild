@@ -205,7 +205,7 @@ impl<'out> OutputSectionPartMap<&'out mut [u8]> {
 #[test]
 fn test_merge_parts() {
     let output_sections = crate::output_section_id::OutputSections::for_testing();
-    let output_order = output_sections.output_order();
+    let (output_order, _program_segments) = output_sections.output_order();
     let mut expected_sum_of_sums = 0;
     let all_1 = output_sections
         .new_part_map::<u32>()
@@ -274,7 +274,7 @@ fn test_output_order_map_consistent() {
     use itertools::Itertools;
 
     let output_sections = crate::output_section_id::OutputSections::for_testing();
-    let output_order = output_sections.output_order();
+    let (output_order, _program_segments) = output_sections.output_order();
     let part_map = output_sections.new_part_map::<u32>();
 
     // First, make sure that all our built-in part-ids are here. If they're not, we'd fail anyway,
@@ -324,7 +324,7 @@ fn test_output_order_map() {
     use crate::output_section_id;
 
     let output_sections = crate::output_section_id::OutputSections::for_testing();
-    let output_order = output_sections.output_order();
+    let (output_order, _program_segments) = output_sections.output_order();
     let mut part_map = output_sections.new_part_map::<u32>();
 
     const PART_ID1: PartId = output_section_id::DATA.part_id_with_alignment(alignment::USIZE);
