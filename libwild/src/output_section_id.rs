@@ -22,6 +22,7 @@ use crate::alignment::NUM_ALIGNMENTS;
 use crate::args::OutputKind;
 use crate::elf;
 use crate::elf::DynamicEntry;
+use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::Versym;
 use crate::layout::NonAddressableCounts;
 use crate::layout::OutputRecordLayout;
@@ -665,6 +666,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(DATA_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
+        // TODO: define the symbol only on RISC-V target
+        start_symbol_name: Some(GLOBAL_POINTER_SYMBOL_NAME),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {

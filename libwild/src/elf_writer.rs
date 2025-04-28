@@ -17,6 +17,7 @@ use crate::elf::DynamicEntry;
 use crate::elf::EhFrameHdr;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::FileHeader;
+use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::GNU_NOTE_NAME;
 use crate::elf::GnuHashHeader;
 use crate::elf::ProgramHeader;
@@ -3086,6 +3087,12 @@ fn write_internal_symbols(
         } else {
             object::elf::STT_NOTYPE
         };
+
+        // Mandatory RISC-V symbol defined by the default linker script as:
+        // __global_pointer$ = MIN(__SDATA_BEGIN__ + 0x800, MAX(__DATA_BEGIN__ + 0x800, __BSS_END__ - 0x800));
+        if symbol_name.bytes() == GLOBAL_POINTER_SYMBOL_NAME.as_bytes() {
+            address += 0x800;
+        }
 
         let entry = symbol_writer
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
