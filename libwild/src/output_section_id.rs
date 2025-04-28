@@ -31,7 +31,11 @@ use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
+use crate::program_segments::PROGRAM_SEGMENT_DEFS;
+use crate::program_segments::ProgramSegmentDef;
 use crate::program_segments::ProgramSegmentId;
+use crate::program_segments::ProgramSegments;
+use crate::program_segments::STACK_SEGMENT_DEF;
 use crate::resolution::SectionSlot;
 use core::slice;
 use foldhash::HashMap as FoldHashMap;
@@ -128,7 +132,101 @@ pub(crate) struct OutputSections<'data> {
 /// Encodes the order of output sections and the start and end of each program segment. This struct
 /// is intended to be used by iterating over it.
 pub(crate) struct OutputOrder {
-    sections_and_segments_events: Vec<OrderEvent>,
+    events: Vec<OrderEvent>,
+}
+
+struct OutputOrderBuilder<'scope, 'data> {
+    events: Vec<OrderEvent>,
+
+    program_segments: ProgramSegments,
+
+    /// Indexes correspond to elements of `PROGRAM_SEGMENT_DEFS`.
+    active_segment_kinds: Vec<Option<ProgramSegmentId>>,
+
+    output_sections: &'scope OutputSections<'data>,
+}
+
+impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
+    fn new(output_sections: &'scope OutputSections<'data>) -> Self {
+        Self {
+            events: Vec::new(),
+            program_segments: ProgramSegments::empty(),
+            output_sections,
+            active_segment_kinds: vec![None; PROGRAM_SEGMENT_DEFS.len()],
+        }
+    }
+
+    fn add_section(&mut self, section_id: OutputSectionId) {
+        self.start_stop_segments_for_section(section_id);
+
+        self.events.push(OrderEvent::Section(section_id));
+    }
+
+    /// Insert whatever `SegmentStart` and/or `SegmentEnd` events are necessary prior to the start
+    /// of `section_id`. We add segment start/stop events based on the properties of the section
+    /// we're about to begin. For example, if the there's a TLS segment active, but the incoming
+    /// section doesn't have the TLS flag set, then we need to end the TLS segment. Similarly, if a
+    /// read-only LOAD segment is active and we're about to start a section that needs to be
+    /// writable, then we'll need to end the current LOAD segment and start a new writable one.
+    fn start_stop_segments_for_section(&mut self, section_id: OutputSectionId) {
+        // Secondary sections don't begin or end segments.
+        if self.output_sections.merge_target(section_id).is_some() {
+            return;
+        }
+
+        PROGRAM_SEGMENT_DEFS
+            .iter()
+            .zip(self.active_segment_kinds.iter_mut())
+            .for_each(|(segment_def, active_id)| {
+                let should_be_active = self
+                    .output_sections
+                    .should_include_in_segment(section_id, *segment_def);
+
+                match (active_id.as_ref().copied(), should_be_active) {
+                    // Remain inactive
+                    (None, false) => {}
+
+                    // Remain active
+                    (Some(_), true) => {}
+
+                    // Start segment
+                    (None, true) => {
+                        let segment_id = self.program_segments.add_segment(*segment_def);
+                        self.events.push(OrderEvent::SegmentStart(segment_id));
+                        *active_id = Some(segment_id);
+                    }
+
+                    // End segment
+                    (Some(segment_id), false) => {
+                        self.events.push(OrderEvent::SegmentEnd(segment_id));
+                        *active_id = None;
+                    }
+                }
+            });
+    }
+
+    fn add_sections(&mut self, sections: &[OutputSectionId]) {
+        for section in sections {
+            self.add_section(*section);
+        }
+    }
+
+    fn build(mut self) -> (OutputOrder, ProgramSegments) {
+        for segment_id in self.active_segment_kinds.into_iter().flatten() {
+            self.events.push(OrderEvent::SegmentEnd(segment_id));
+        }
+
+        let segment_id = self.program_segments.add_segment(STACK_SEGMENT_DEF);
+        self.events.push(OrderEvent::SegmentStart(segment_id));
+        self.events.push(OrderEvent::SegmentEnd(segment_id));
+
+        (
+            OutputOrder {
+                events: self.events,
+            },
+            self.program_segments,
+        )
+    }
 }
 
 #[derive(Default)]
@@ -184,6 +282,36 @@ impl OutputSections<'_> {
             SectionKind::Secondary(primary_id) => Some(primary_id),
         }
     }
+
+    /// Returns whether we should include the specified section in a program segment with the
+    /// supplied properties.
+    fn should_include_in_segment(
+        &self,
+        section_id: OutputSectionId,
+        segment_def: ProgramSegmentDef,
+    ) -> bool {
+        let info = self.output_info(section_id);
+
+        match segment_def.segment_type {
+            object::elf::PT_NOTE => info.ty == sht::NOTE,
+            object::elf::PT_TLS => info.section_flags.contains(shf::TLS),
+            object::elf::PT_LOAD => {
+                info.section_flags.contains(shf::ALLOC)
+                    && info.section_flags.contains(shf::WRITE) == segment_def.is_writable()
+                    && info.section_flags.contains(shf::EXECINSTR) == segment_def.is_executable()
+            }
+            object::elf::PT_GNU_RELRO => {
+                info.section_flags.contains(shf::TLS)
+                    || section_id
+                        .opt_built_in_details()
+                        .is_some_and(|details| details.is_relro)
+            }
+            other => section_id
+                .opt_built_in_details()
+                .and_then(|details| details.target_segment_type)
+                .is_some_and(|target_segment_type| target_segment_type == other),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -207,6 +335,8 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) keep_if_empty: bool,
     pub(crate) element_size: u64,
     pub(crate) ty: SectionType,
+    is_relro: bool,
+    target_segment_type: Option<u32>,
 }
 
 impl BuiltInSectionDetails {
@@ -242,6 +372,8 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     keep_if_empty: false,
     element_size: 0,
     ty: sht::NULL,
+    is_relro: false,
+    target_segment_type: None,
 };
 
 const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
@@ -258,6 +390,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::ALLOC,
         min_alignment: alignment::PROGRAM_HEADER_ENTRY,
         keep_if_empty: true,
+        target_segment_type: Some(object::elf::PT_PHDR),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -284,6 +417,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         element_size: crate::elf::GOT_ENTRY_SIZE,
         min_alignment: alignment::GOT_ENTRY,
         start_symbol_name: Some("_GLOBAL_OFFSET_TABLE_"),
+        is_relro: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -318,6 +452,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         min_alignment: alignment::EH_FRAME_HDR,
+        target_segment_type: Some(object::elf::PT_GNU_EH_FRAME),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -328,6 +463,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         link: &[DYNSTR],
         min_alignment: alignment::USIZE,
         start_symbol_name: Some("_DYNAMIC"),
+        is_relro: true,
+        target_segment_type: Some(object::elf::PT_DYNAMIC),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -359,6 +496,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(INTERP_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
+        target_segment_type: Some(object::elf::PT_INTERP),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -443,6 +581,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         element_size: size_of::<u64>() as u64,
         start_symbol_name: Some("__init_array_start"),
         end_symbol_name: Some("__init_array_end"),
+        is_relro: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -452,6 +591,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         element_size: size_of::<u64>() as u64,
         start_symbol_name: Some("__fini_array_start"),
         end_symbol_name: Some("__fini_array_end"),
+        is_relro: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -531,6 +671,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(DATA_REL_RO_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::WRITE),
+        is_relro: true,
         ..DEFAULT_DEFS
     },
 ];
@@ -577,10 +718,6 @@ impl OutputSectionId {
 
     pub(crate) fn opt_built_in_details(self) -> Option<&'static BuiltInSectionDetails> {
         SECTION_DEFINITIONS.get(self.as_usize())
-    }
-
-    fn event(self) -> OrderEvent {
-        OrderEvent::Section(self)
     }
 
     pub(crate) fn min_alignment(self) -> Alignment {
@@ -665,89 +802,61 @@ impl Debug for SectionName<'_> {
 }
 
 impl CustomSectionIds {
-    /// Returns vector of events for each section and segment in output order.
-    /// Segments span multiple sections and can overlap, so are represented as start and end events.
-    fn sections_and_segments_events(&self) -> Vec<OrderEvent> {
-        fn build_section_events(
-            sections: &[OutputSectionId],
-        ) -> impl Iterator<Item = OrderEvent> + '_ {
-            sections.iter().copied().map(OrderEvent::Section)
-        }
+    fn build_output_order_and_program_segments(
+        &self,
+        output_sections: &OutputSections,
+    ) -> (OutputOrder, ProgramSegments) {
+        let mut builder = OutputOrderBuilder::new(output_sections);
 
-        let mut events = Vec::with_capacity(64);
+        builder.add_section(FILE_HEADER);
+        builder.add_section(PROGRAM_HEADERS);
+        builder.add_section(SECTION_HEADERS);
+        builder.add_section(INTERP);
+        builder.add_section(NOTE_GNU_PROPERTY);
+        builder.add_section(NOTE_GNU_BUILD_ID);
+        builder.add_section(NOTE_ABI_TAG);
+        builder.add_section(GNU_HASH);
+        builder.add_section(DYNSYM);
+        builder.add_section(DYNSTR);
+        builder.add_section(GNU_VERSION);
+        builder.add_section(GNU_VERSION_D);
+        builder.add_section(GNU_VERSION_R);
+        builder.add_section(RELA_DYN_RELATIVE);
+        builder.add_section(RELA_DYN_GENERAL);
+        builder.add_section(RELA_PLT);
+        builder.add_section(RODATA);
+        builder.add_section(EH_FRAME_HDR);
+        builder.add_section(EH_FRAME);
+        builder.add_section(PREINIT_ARRAY);
+        builder.add_section(GCC_EXCEPT_TABLE);
+        builder.add_sections(&self.ro);
 
-        events.push(OrderEvent::SegmentStart(crate::program_segments::LOAD_RO));
-        events.push(FILE_HEADER.event());
-        events.push(OrderEvent::SegmentStart(crate::program_segments::PHDR));
-        events.push(PROGRAM_HEADERS.event());
-        events.push(OrderEvent::SegmentEnd(crate::program_segments::PHDR));
-        events.push(SECTION_HEADERS.event());
-        events.push(OrderEvent::SegmentStart(crate::program_segments::INTERP));
-        events.push(INTERP.event());
-        events.push(OrderEvent::SegmentEnd(crate::program_segments::INTERP));
-        events.push(OrderEvent::SegmentStart(crate::program_segments::NOTE));
-        events.push(NOTE_GNU_PROPERTY.event());
-        events.push(NOTE_GNU_BUILD_ID.event());
-        events.push(NOTE_ABI_TAG.event());
-        events.push(OrderEvent::SegmentEnd(crate::program_segments::NOTE));
-        events.push(GNU_HASH.event());
-        events.push(DYNSYM.event());
-        events.push(DYNSTR.event());
-        events.push(GNU_VERSION.event());
-        events.push(GNU_VERSION_D.event());
-        events.push(GNU_VERSION_R.event());
-        events.push(RELA_DYN_RELATIVE.event());
-        events.push(RELA_DYN_GENERAL.event());
-        events.push(RELA_PLT.event());
-        events.push(RODATA.event());
-        events.push(OrderEvent::SegmentStart(crate::program_segments::EH_FRAME));
-        events.push(EH_FRAME_HDR.event());
-        events.push(OrderEvent::SegmentEnd(crate::program_segments::EH_FRAME));
-        events.push(EH_FRAME.event());
-        events.push(PREINIT_ARRAY.event());
-        events.push(GCC_EXCEPT_TABLE.event());
-        events.extend(build_section_events(&self.ro));
-        events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RO));
+        builder.add_section(PLT_GOT);
+        builder.add_section(TEXT);
+        builder.add_section(INIT);
+        builder.add_section(FINI);
+        builder.add_sections(&self.exec);
 
-        events.push(OrderEvent::SegmentStart(crate::program_segments::LOAD_EXEC));
-        events.push(PLT_GOT.event());
-        events.push(TEXT.event());
-        events.push(INIT.event());
-        events.push(FINI.event());
-        events.extend(build_section_events(&self.exec));
-        events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_EXEC));
+        builder.add_section(TDATA);
+        builder.add_section(TBSS);
+        builder.add_section(INIT_ARRAY);
+        builder.add_section(FINI_ARRAY);
+        builder.add_section(DATA_REL_RO);
+        builder.add_section(DYNAMIC);
+        builder.add_section(GOT);
+        builder.add_section(DATA);
+        builder.add_sections(&self.data);
+        builder.add_section(BSS);
+        builder.add_sections(&self.bss);
 
-        events.push(OrderEvent::SegmentStart(crate::program_segments::LOAD_RW));
-        events.push(OrderEvent::SegmentStart(crate::program_segments::RELRO));
-        events.push(OrderEvent::SegmentStart(crate::program_segments::TLS));
-        events.push(TDATA.event());
-        events.push(TBSS.event());
-        events.push(OrderEvent::SegmentEnd(crate::program_segments::TLS));
-        events.push(INIT_ARRAY.event());
-        events.push(FINI_ARRAY.event());
-        events.push(DATA_REL_RO.event());
-        events.push(OrderEvent::SegmentStart(crate::program_segments::DYNAMIC));
-        events.push(DYNAMIC.event());
-        events.push(OrderEvent::SegmentEnd(crate::program_segments::DYNAMIC));
-        events.push(GOT.event());
-        events.push(OrderEvent::SegmentEnd(crate::program_segments::RELRO));
-        events.push(DATA.event());
-        events.extend(build_section_events(&self.data));
-        events.push(BSS.event());
-        events.extend(build_section_events(&self.bss));
-        events.push(OrderEvent::SegmentEnd(crate::program_segments::LOAD_RW));
+        builder.add_sections(&self.nonalloc);
+        builder.add_section(COMMENT);
+        builder.add_section(SHSTRTAB);
+        builder.add_section(SYMTAB_LOCAL);
+        builder.add_section(SYMTAB_GLOBAL);
+        builder.add_section(STRTAB);
 
-        events.push(OrderEvent::SegmentStart(crate::program_segments::STACK));
-        events.push(OrderEvent::SegmentEnd(crate::program_segments::STACK));
-
-        events.extend(build_section_events(&self.nonalloc));
-        events.push(COMMENT.event());
-        events.push(SHSTRTAB.event());
-        events.push(SYMTAB_LOCAL.event());
-        events.push(SYMTAB_GLOBAL.event());
-        events.push(STRTAB.event());
-
-        events
+        builder.build()
     }
 }
 
@@ -815,7 +924,7 @@ impl<'data> OutputSections<'data> {
     }
 
     #[tracing::instrument(skip_all, name = "Compute output order")]
-    pub(crate) fn output_order(&self) -> OutputOrder {
+    pub(crate) fn output_order(&self) -> (OutputOrder, ProgramSegments) {
         let mut custom = CustomSectionIds::default();
 
         self.section_infos.for_each(|id, info| {
@@ -838,9 +947,7 @@ impl<'data> OutputSections<'data> {
             }
         });
 
-        OutputOrder {
-            sections_and_segments_events: custom.sections_and_segments_events(),
-        }
+        custom.build_output_order_and_program_segments(self)
     }
 
     #[must_use]
@@ -976,7 +1083,7 @@ impl<'a> IntoIterator for &'a OutputOrder {
     type IntoIter = Copied<slice::Iter<'a, OrderEvent>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.sections_and_segments_events.iter().copied()
+        self.events.iter().copied()
     }
 }
 

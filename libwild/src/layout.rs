@@ -40,10 +40,8 @@ use crate::parsing::InternalSymDefInfo;
 use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
-use crate::program_segments;
-use crate::program_segments::MAX_SEGMENTS;
 use crate::program_segments::ProgramSegmentId;
-use crate::program_segments::STACK;
+use crate::program_segments::ProgramSegments;
 use crate::resolution;
 use crate::resolution::FrameIndex;
 use crate::resolution::NotLoaded;
@@ -166,12 +164,13 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
 
     propagate_section_attributes(&group_states, &mut output_sections);
 
-    let output_order = output_sections.output_order();
+    let (output_order, program_segments) = output_sections.output_order();
 
     let section_part_sizes = compute_total_section_part_sizes(
         &mut group_states,
         &mut output_sections,
         &output_order,
+        &program_segments,
         &mut symbol_resolution_flags,
         gc_outputs.sections_with_content,
         &symbol_db,
@@ -180,6 +179,7 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
     let section_part_layouts = layout_section_parts(
         &section_part_sizes,
         &output_sections,
+        &program_segments,
         &output_order,
         symbol_db.args,
     );
@@ -196,6 +196,7 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         &section_layouts,
         &output_sections,
         &output_order,
+        &program_segments,
         header_info,
     )?;
 
@@ -255,6 +256,7 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         section_layouts,
         group_layouts,
         output_sections,
+        program_segments,
         output_order,
         non_addressable_counts,
         symbol_resolution_flags,
@@ -453,6 +455,7 @@ pub struct Layout<'data> {
     pub(crate) group_layouts: Vec<GroupLayout<'data>>,
     pub(crate) segment_layouts: SegmentLayouts,
     pub(crate) output_sections: OutputSections<'data>,
+    pub(crate) program_segments: ProgramSegments,
     pub(crate) output_order: OutputOrder,
     pub(crate) non_addressable_counts: NonAddressableCounts,
     pub(crate) symbol_resolution_flags: Vec<ResolutionFlags>,
@@ -1725,8 +1728,10 @@ fn compute_segment_layout(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections,
     output_order: &OutputOrder,
+    program_segments: &ProgramSegments,
     header_info: &HeaderInfo,
 ) -> Result<SegmentLayouts> {
+    #[derive(Clone)]
     struct Record {
         segment_id: ProgramSegmentId,
         file_start: usize,
@@ -1737,51 +1742,38 @@ fn compute_segment_layout(
     }
 
     use output_section_id::OrderEvent;
-    let mut complete = Vec::with_capacity(crate::program_segments::MAX_SEGMENTS);
-    let mut active_segments = Vec::new();
+    let mut complete = Vec::with_capacity(program_segments.len());
+    let mut active_segments = vec![None; program_segments.len()];
 
     for event in output_order {
         match event {
             OrderEvent::SegmentStart(segment_id) => {
-                if segment_id == STACK {
+                if program_segments.is_stack_segment(segment_id) {
                     // STACK segment is special as it does not contain any section.
-                    active_segments.push((
+                    active_segments[segment_id.as_usize()] = Some(Record {
                         segment_id,
-                        Record {
-                            segment_id,
-                            file_start: 0,
-                            file_end: 0,
-                            mem_start: 0,
-                            mem_end: 0,
-                            alignment: alignment::MIN,
-                        },
-                    ));
+                        file_start: 0,
+                        file_end: 0,
+                        mem_start: 0,
+                        mem_end: 0,
+                        alignment: alignment::MIN,
+                    });
                 } else {
-                    active_segments.push((
+                    active_segments[segment_id.as_usize()] = Some(Record {
                         segment_id,
-                        Record {
-                            segment_id,
-                            file_start: usize::MAX,
-                            file_end: 0,
-                            mem_start: u64::MAX,
-                            mem_end: 0,
-                            alignment: alignment::MIN,
-                        },
-                    ));
+                        file_start: usize::MAX,
+                        file_end: 0,
+                        mem_start: u64::MAX,
+                        mem_end: 0,
+                        alignment: alignment::MIN,
+                    });
                 }
             }
             OrderEvent::SegmentEnd(segment_id) => {
-                let (popped_segment_id, record) = active_segments
-                    .pop()
-                    .expect("SegmentEnd without matching SegmentStart");
-                ensure!(
-                    popped_segment_id == segment_id,
-                    format!(
-                        "Expected SegmentEnd event for segment `{}`, got `{}`",
-                        segment_id.as_usize(),
-                        popped_segment_id.as_usize()
-                    )
-                );
+                let record = active_segments[segment_id.as_usize()]
+                    .take()
+                    .context("SegmentEnd without matching SegmentStart")?;
+
                 complete.push(record);
             }
             OrderEvent::Section(section_id) => {
@@ -1794,7 +1786,7 @@ fn compute_segment_layout(
                 }
                 let section_flags = output_sections.section_flags(merge_target);
 
-                if active_segments.is_empty() {
+                if active_segments.iter().all(|s| s.is_none()) {
                     ensure!(
                         section_layout.mem_offset == 0,
                         "Expected zero address for section {} not present in any program segment.",
@@ -1818,7 +1810,11 @@ fn compute_segment_layout(
                          segment.",
                         output_sections.section_debug(section_id)
                     );
-                    for (_, rec) in &mut active_segments {
+                    for opt_rec in &mut active_segments {
+                        let Some(rec) = opt_rec.as_mut() else {
+                            continue;
+                        };
+
                         rec.file_start = rec.file_start.min(section_layout.file_offset);
                         rec.mem_start = rec.mem_start.min(section_layout.mem_offset);
                         rec.file_end = rec
@@ -1835,16 +1831,19 @@ fn compute_segment_layout(
     }
 
     complete.sort_by_key(|r| r.segment_id);
-    assert_eq!(complete.len(), MAX_SEGMENTS);
+
+    assert_eq!(complete.len(), program_segments.len());
     let mut tls_start_address = None;
-    let segments = header_info
+
+    let mut segments: Vec<SegmentLayout> = header_info
         .active_segment_ids
         .iter()
         .map(|&id| {
             let r = &complete[id.as_usize()];
-            if id == program_segments::TLS {
+            if program_segments.is_tls_segment(id) {
                 tls_start_address = Some(r.mem_start);
             }
+
             SegmentLayout {
                 id,
                 sizes: OutputRecordLayout {
@@ -1857,6 +1856,9 @@ fn compute_segment_layout(
             }
         })
         .collect();
+
+    segments.sort_by_key(|s| program_segments.order_key(s.id, s.sizes.mem_offset));
+
     Ok(SegmentLayouts {
         segments,
         tls_start_address,
@@ -1868,6 +1870,7 @@ fn compute_total_section_part_sizes(
     group_states: &mut [GroupState],
     output_sections: &mut OutputSections,
     output_order: &OutputOrder,
+    program_segments: &ProgramSegments,
     symbol_resolution_flags: &mut [ResolutionFlags],
     sections_with_content: OutputSectionMap<bool>,
     symbol_db: &SymbolDb,
@@ -1888,6 +1891,7 @@ fn compute_total_section_part_sizes(
         sections_with_content,
         output_sections,
         output_order,
+        program_segments,
         symbol_resolution_flags,
         symbol_db,
     )?;
@@ -2953,6 +2957,7 @@ impl PreludeLayoutState {
         sections_with_content: OutputSectionMap<bool>,
         output_sections: &mut OutputSections,
         output_order: &OutputOrder,
+        program_segments: &ProgramSegments,
         symbol_resolution_flags: &mut [ResolutionFlags],
         symbol_db: &SymbolDb,
     ) -> Result {
@@ -2966,6 +2971,7 @@ impl PreludeLayoutState {
             &mut extra_sizes,
             sections_with_content,
             output_sections,
+            program_segments,
             output_order,
             symbol_resolution_flags,
             symbol_db,
@@ -3038,6 +3044,7 @@ impl PreludeLayoutState {
         extra_sizes: &mut OutputSectionPartMap<u64>,
         sections_with_content: OutputSectionMap<bool>,
         output_sections: &mut OutputSections,
+        program_segments: &ProgramSegments,
         output_order: &OutputOrder,
         symbol_resolution_flags: &[ResolutionFlags],
         symbol_db: &SymbolDb,
@@ -3106,7 +3113,7 @@ impl PreludeLayoutState {
         output_sections.output_section_indexes = output_section_indexes;
 
         // Determine which program segments contain sections that we're keeping.
-        let mut keep_segments = [false; crate::program_segments::MAX_SEGMENTS];
+        let mut keep_segments = vec![false; program_segments.len()];
         let mut active_segments = Vec::with_capacity(4);
         for event in output_order {
             match event {
@@ -3123,13 +3130,18 @@ impl PreludeLayoutState {
             }
         }
 
+        // If relro is disabled, then discard the relro segment.
         if !symbol_db.args.relro {
-            keep_segments[crate::program_segments::RELRO.as_usize()] = false;
+            for (segment_def, keep) in program_segments.into_iter().zip(keep_segments.iter_mut()) {
+                if segment_def.segment_type == object::elf::PT_GNU_RELRO {
+                    *keep = false;
+                }
+            }
         }
 
-        let active_segment_ids = (0..crate::program_segments::MAX_SEGMENTS)
-            .filter(|i| keep_segments[*i] || i == &STACK.as_usize())
+        let active_segment_ids = (0..program_segments.len())
             .map(ProgramSegmentId::new)
+            .filter(|id| keep_segments[id.as_usize()] || program_segments.is_stack_segment(*id))
             .collect();
 
         let header_info = HeaderInfo {
@@ -4603,6 +4615,7 @@ impl Resolution {
 fn layout_section_parts(
     sizes: &OutputSectionPartMap<u64>,
     output_sections: &OutputSections,
+    program_segments: &ProgramSegments,
     output_order: &OutputOrder,
     args: &Args,
 ) -> OutputSectionPartMap<OutputRecordLayout> {
@@ -4616,8 +4629,8 @@ fn layout_section_parts(
     for event in output_order {
         match event {
             OrderEvent::SegmentStart(segment_id) => {
-                if segment_id.segment_type() == object::elf::PT_LOAD {
-                    let segment_alignment = segment_id.alignment(args);
+                if program_segments.segment_def(segment_id).segment_type == object::elf::PT_LOAD {
+                    let segment_alignment = program_segments.segment_alignment(segment_id, args);
                     mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
                 }
             }
@@ -5254,11 +5267,18 @@ fn test_no_disallowed_overlaps() {
     use crate::output_section_id::OrderEvent;
 
     let mut output_sections = OutputSections::with_base_address(0x1000);
-    let output_order = output_sections.output_order();
+    let (output_order, program_segments) = output_sections.output_order();
     let args = Args::default();
     let section_part_sizes = output_sections.new_part_map::<u64>().map(|_, _| 7);
-    let section_part_layouts =
-        layout_section_parts(&section_part_sizes, &output_sections, &output_order, &args);
+
+    let section_part_layouts = layout_section_parts(
+        &section_part_sizes,
+        &output_sections,
+        &program_segments,
+        &output_order,
+        &args,
+    );
+
     let section_layouts = layout_sections(&output_sections, &section_part_layouts);
 
     // Make sure no alloc sections overlap
@@ -5267,6 +5287,7 @@ fn test_no_disallowed_overlaps() {
     let mut last_file_end = 0;
     let mut last_mem_end = 0;
     let mut last_section_id = output_section_id::FILE_HEADER;
+
     for event in &output_order {
         let OrderEvent::Section(section_id) = event else {
             continue;
@@ -5299,7 +5320,9 @@ fn test_no_disallowed_overlaps() {
 
     let header_info = HeaderInfo {
         num_output_sections_with_content: 0,
-        active_segment_ids: (0..MAX_SEGMENTS).map(ProgramSegmentId::new).collect(),
+        active_segment_ids: (0..program_segments.len())
+            .map(ProgramSegmentId::new)
+            .collect(),
     };
 
     let mut section_index = 0;
@@ -5318,6 +5341,7 @@ fn test_no_disallowed_overlaps() {
         &section_layouts,
         &output_sections,
         &output_order,
+        &program_segments,
         &header_info,
     )
     .unwrap();
@@ -5327,7 +5351,7 @@ fn test_no_disallowed_overlaps() {
     let mut last_mem = 0;
     for seg_layout in &segment_layouts.segments {
         let seg_id = seg_layout.id;
-        if seg_id.segment_type() != object::elf::PT_LOAD {
+        if program_segments.segment_def(seg_id).segment_type != object::elf::PT_LOAD {
             continue;
         }
         assert!(
@@ -5363,7 +5387,7 @@ fn verify_consistent_allocation_handling(
     output_kind: OutputKind,
 ) -> Result {
     let output_sections = OutputSections::with_base_address(0);
-    let output_order = output_sections.output_order();
+    let (output_order, _program_segments) = output_sections.output_order();
     let mut mem_sizes = output_sections.new_part_map();
     let resolution_flags = AtomicResolutionFlags::new(resolution_flags);
     allocate_symbol_resolution(value_flags, &resolution_flags, &mut mem_sizes, output_kind);

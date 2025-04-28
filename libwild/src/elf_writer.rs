@@ -57,7 +57,6 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
-use crate::program_segments::STACK;
 use crate::resolution::SectionSlot;
 use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
@@ -611,17 +610,22 @@ fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: 
         let segment_id = segment_layout.id;
         let segment_header = program_headers_out.take_header()?;
         let mut alignment = segment_sizes.alignment;
-        if segment_id.segment_type() == object::elf::PT_LOAD {
+
+        if layout.program_segments.is_load_segment(segment_id) {
             alignment = alignment.max(layout.args().loadable_segment_alignment());
         }
+
         let e = LittleEndian;
-        segment_header.p_type.set(e, segment_id.segment_type());
+        let segment_details = layout.program_segments.segment_def(segment_id);
+
+        segment_header.p_type.set(e, segment_details.segment_type);
 
         // Support executable stack (Wild defaults to non-executable stack)
-        let mut segment_flags = segment_id.segment_flags();
-        if segment_id == STACK && layout.args().execstack {
+        let mut segment_flags = segment_details.segment_flags;
+        if layout.program_segments.is_stack_segment(segment_id) && layout.args().execstack {
             segment_flags |= object::elf::PF_X;
         }
+
         segment_header.p_flags.set(e, segment_flags);
         segment_header
             .p_offset
