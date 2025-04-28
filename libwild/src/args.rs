@@ -191,10 +191,10 @@ const IGNORED_FLAGS: &[&str] = &[
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
     "no-export-dynamic",
-    "-Bsymbolic",
-    "-Bsymbolic-functions",
-    "-Bsymbolic-non-weak-functions", // LLD specific
-    "-Bsymbolic-non-weak",           // LLD specific
+    "Bsymbolic",
+    "Bsymbolic-functions",
+    "Bsymbolic-non-weak-functions", // LLD specific
+    "Bsymbolic-non-weak",           // LLD specific
 ];
 
 // These flags map to the default behavior of the linker.
