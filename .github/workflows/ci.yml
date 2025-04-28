@@ -125,4 +125,4 @@ jobs:
         with:
           persist-credentials: false
       - name: Spell Check Repo
-        uses: crate-ci/typos@v1.31.1
+        uses: crate-ci/typos@v1.31.2
