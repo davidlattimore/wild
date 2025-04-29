@@ -7,6 +7,7 @@ use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
+use std::fmt::Display;
 
 pub(crate) enum Group<'data> {
     Prelude(Prelude<'data>),
@@ -101,6 +102,8 @@ pub(crate) fn group_files<'data>(
     epilogue.file_id = FileId::new(groups.len() as u32, 0);
     groups.push(Group::Epilogue(epilogue));
 
+    tracing::trace!("GROUPS:\n{}", GroupsDisplay(&groups));
+
     groups
 }
 
@@ -134,4 +137,28 @@ fn determine_max_files_per_group(args: &Args) -> usize {
     // We may eventually find that a lower value based on the number of threads is better, but for
     // now, if files are small, we allow lots of them in a single group.
     crate::input_data::MAX_FILES_PER_GROUP as usize
+}
+
+struct GroupsDisplay<'a, 'data>(&'a [Group<'data>]);
+
+impl Display for GroupsDisplay<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, group) in self.0.iter().enumerate() {
+            writeln!(f, "{i}: {group}")?;
+        }
+        Ok(())
+    }
+}
+
+impl Display for Group<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Group::Prelude(_) => write!(f, "<prelude>"),
+            Group::Objects(parsed_input_objects) => {
+                write!(f, "{} object(s)", parsed_input_objects.len())
+            }
+            Group::LinkerScripts(scripts) => write!(f, "{} linker script(s)", scripts.len()),
+            Group::Epilogue(_) => write!(f, "<epilogue>"),
+        }
+    }
 }
