@@ -3,6 +3,7 @@ use linker_utils::elf::SegmentFlags;
 use linker_utils::elf::SegmentType;
 use linker_utils::elf::pf;
 use linker_utils::elf::pt;
+use std::fmt::Display;
 
 #[derive(Default, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, Debug)]
 pub(crate) struct ProgramSegmentId(u8);
@@ -151,6 +152,25 @@ impl ProgramSegmentId {
                 .try_into()
                 .expect("Tried to create a ProgramSegmentId >= 256"),
         )
+    }
+
+    pub(crate) fn display(self, program_segments: &ProgramSegments) -> ProgramSegmentDisplay {
+        ProgramSegmentDisplay {
+            id: self,
+            program_segments,
+        }
+    }
+}
+
+pub(crate) struct ProgramSegmentDisplay<'a> {
+    id: ProgramSegmentId,
+    program_segments: &'a ProgramSegments,
+}
+
+impl Display for ProgramSegmentDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let info = self.program_segments.segment_def(self.id);
+        write!(f, "{}, {}", info.segment_type, info.segment_flags)
     }
 }
 

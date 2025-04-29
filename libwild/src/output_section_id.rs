@@ -137,6 +137,12 @@ pub(crate) struct OutputOrder {
     events: Vec<OrderEvent>,
 }
 
+pub(crate) struct OutputOrderDisplay<'a, 'data> {
+    order: &'a OutputOrder,
+    sections: &'a OutputSections<'data>,
+    program_segments: &'a ProgramSegments,
+}
+
 struct OutputOrderBuilder<'scope, 'data> {
     events: Vec<OrderEvent>,
 
@@ -1086,6 +1092,48 @@ impl<'a> IntoIterator for &'a OutputOrder {
 
     fn into_iter(self) -> Self::IntoIter {
         self.events.iter().copied()
+    }
+}
+
+impl OutputOrder {
+    pub(crate) fn display<'a, 'data>(
+        &'a self,
+        sections: &'a OutputSections<'data>,
+        program_segments: &'a ProgramSegments,
+    ) -> OutputOrderDisplay<'a, 'data> {
+        OutputOrderDisplay {
+            order: self,
+            sections,
+            program_segments,
+        }
+    }
+}
+
+impl Display for OutputOrderDisplay<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for event in &self.order.events {
+            match event {
+                OrderEvent::SegmentStart(program_segment_id) => {
+                    writeln!(
+                        f,
+                        "START({})",
+                        program_segment_id.display(self.program_segments)
+                    )?;
+                }
+                OrderEvent::SegmentEnd(program_segment_id) => {
+                    writeln!(
+                        f,
+                        "END({})",
+                        program_segment_id.display(self.program_segments)
+                    )?;
+                }
+                OrderEvent::Section(output_section_id) => {
+                    writeln!(f, "  {}", self.sections.display_name(*output_section_id))?;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
