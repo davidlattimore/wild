@@ -678,7 +678,13 @@ fn populate_file_header<A: Arch>(
         e,
         u64::from(elf::FILE_HEADER_SIZE) + header_info.program_headers_size(),
     );
-    header.e_flags.set(e, 0);
+    // TODO: #701
+    let e_flags = if A::elf_header_arch_magic() == object::elf::EM_RISCV {
+        object::elf::EF_RISCV_RVC | object::elf::EF_RISCV_FLOAT_ABI_DOUBLE
+    } else {
+        0
+    };
+    header.e_flags.set(e, e_flags);
     header.e_ehsize.set(e, elf::FILE_HEADER_SIZE);
     header.e_phentsize.set(e, elf::PROGRAM_HEADER_SIZE);
     header
