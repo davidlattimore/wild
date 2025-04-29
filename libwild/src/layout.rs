@@ -167,6 +167,11 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
 
     let (output_order, program_segments) = output_sections.output_order();
 
+    tracing::trace!(
+        "Output order:\n{}",
+        output_order.display(&output_sections, &program_segments)
+    );
+
     let section_part_sizes = compute_total_section_part_sizes(
         &mut group_states,
         &mut output_sections,
