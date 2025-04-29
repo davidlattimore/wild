@@ -234,6 +234,8 @@ impl Config {
                 // If we don't optimise a TLS access, then we'll have references to __tls_get_addr,
                 // when GNU ld doesn't.
                 "dynsym.__tls_get_addr.*",
+                // This will be removed soon. See #721.
+                "segment.GNU_STACK.alignment",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
