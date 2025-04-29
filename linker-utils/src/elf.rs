@@ -1,5 +1,6 @@
 use anyhow::Result;
 use object::LittleEndian;
+use object::read::elf::ProgramHeader as _;
 use object::read::elf::SectionHeader;
 use std::borrow::Cow;
 
@@ -487,6 +488,143 @@ pub mod secnames {
     pub const GROUP_SECTION_NAME: &[u8] = GROUP_SECTION_NAME_STR.as_bytes();
     pub const DATA_REL_RO_SECTION_NAME_STR: &str = ".data.rel.ro";
     pub const DATA_REL_RO_SECTION_NAME: &[u8] = DATA_REL_RO_SECTION_NAME_STR.as_bytes();
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SegmentType(u32);
+
+impl SegmentType {
+    #[must_use]
+    pub fn raw(self) -> u32 {
+        self.0
+    }
+
+    #[must_use]
+    pub fn from_header(header: &object::elf::ProgramHeader64<LittleEndian>) -> Self {
+        Self(header.p_type(LittleEndian))
+    }
+
+    #[must_use]
+    pub const fn from_u32(raw: u32) -> Self {
+        Self(raw)
+    }
+}
+
+impl std::fmt::Display for SegmentType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            pt::PHDR => write!(f, "PHDR")?,
+            pt::INTERP => write!(f, "INTERP")?,
+            pt::NOTE => write!(f, "NOTE")?,
+            pt::LOAD => write!(f, "LOAD")?,
+            pt::TLS => write!(f, "TLS")?,
+            pt::GNU_EH_FRAME => write!(f, "GNU_EH_FRAME")?,
+            pt::DYNAMIC => write!(f, "DYNAMIC")?,
+            pt::GNU_RELRO => write!(f, "GNU_RELRO")?,
+            pt::GNU_STACK => write!(f, "GNU_STACK")?,
+            other => write!(f, "UNKNOWN_SEG_TYPE({})", other.raw())?,
+        }
+        Ok(())
+    }
+}
+
+pub mod pt {
+    use super::SegmentType;
+
+    pub const PHDR: SegmentType = SegmentType::from_u32(object::elf::PT_PHDR);
+    pub const INTERP: SegmentType = SegmentType::from_u32(object::elf::PT_INTERP);
+    pub const NOTE: SegmentType = SegmentType::from_u32(object::elf::PT_NOTE);
+    pub const LOAD: SegmentType = SegmentType::from_u32(object::elf::PT_LOAD);
+    pub const TLS: SegmentType = SegmentType::from_u32(object::elf::PT_TLS);
+    pub const GNU_EH_FRAME: SegmentType = SegmentType::from_u32(object::elf::PT_GNU_EH_FRAME);
+    pub const DYNAMIC: SegmentType = SegmentType::from_u32(object::elf::PT_DYNAMIC);
+    pub const GNU_RELRO: SegmentType = SegmentType::from_u32(object::elf::PT_GNU_RELRO);
+    pub const GNU_STACK: SegmentType = SegmentType::from_u32(object::elf::PT_GNU_STACK);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SegmentFlags(u32);
+
+impl SegmentFlags {
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    #[must_use]
+    pub fn from_header(header: &object::elf::ProgramHeader64<LittleEndian>) -> Self {
+        Self(header.p_flags(LittleEndian))
+    }
+
+    #[must_use]
+    pub fn contains(self, flag: SegmentFlags) -> bool {
+        self.0 & flag.0 != 0
+    }
+
+    #[must_use]
+    pub const fn from_u32(raw: u32) -> SegmentFlags {
+        SegmentFlags(raw)
+    }
+
+    /// Returns self with the specified flags set.
+    #[must_use]
+    pub const fn with(self, flags: SegmentFlags) -> SegmentFlags {
+        SegmentFlags(self.0 | flags.0)
+    }
+
+    /// Returns self with the specified flags cleared.
+    #[must_use]
+    pub const fn without(self, flags: SegmentFlags) -> SegmentFlags {
+        SegmentFlags(self.0 & !flags.0)
+    }
+
+    #[must_use]
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+}
+
+pub mod pf {
+    use super::SegmentFlags;
+
+    pub const EXECUTABLE: SegmentFlags = SegmentFlags::from_u32(object::elf::PF_X);
+    pub const WRITABLE: SegmentFlags = SegmentFlags::from_u32(object::elf::PF_W);
+    pub const READABLE: SegmentFlags = SegmentFlags::from_u32(object::elf::PF_R);
+}
+
+impl std::fmt::Display for SegmentFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.contains(pf::WRITABLE) {
+            f.write_str("W")?;
+        }
+        if self.contains(pf::READABLE) {
+            f.write_str("R")?;
+        }
+        if self.contains(pf::EXECUTABLE) {
+            f.write_str("X")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for SegmentFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self, f)
+    }
+}
+
+impl std::ops::BitOrAssign for SegmentFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
+
+impl std::ops::BitAnd for SegmentFlags {
+    type Output = SegmentFlags;
+
+    fn bitand(self, rhs: Self) -> Self::Output {
+        Self(self.0 & rhs.0)
+    }
 }
 
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -

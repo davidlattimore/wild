@@ -72,6 +72,7 @@ use itertools::Itertools;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
+use linker_utils::elf::pt;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
@@ -3133,7 +3134,7 @@ impl PreludeLayoutState {
         // If relro is disabled, then discard the relro segment.
         if !symbol_db.args.relro {
             for (segment_def, keep) in program_segments.into_iter().zip(keep_segments.iter_mut()) {
-                if segment_def.segment_type == object::elf::PT_GNU_RELRO {
+                if segment_def.segment_type == pt::GNU_RELRO {
                     *keep = false;
                 }
             }
@@ -4629,7 +4630,7 @@ fn layout_section_parts(
     for event in output_order {
         match event {
             OrderEvent::SegmentStart(segment_id) => {
-                if program_segments.segment_def(segment_id).segment_type == object::elf::PT_LOAD {
+                if program_segments.is_load_segment(segment_id) {
                     let segment_alignment = program_segments.segment_alignment(segment_id, args);
                     mem_offset = segment_alignment.align_modulo(file_offset as u64, mem_offset);
                 }
@@ -5351,7 +5352,7 @@ fn test_no_disallowed_overlaps() {
     let mut last_mem = 0;
     for seg_layout in &segment_layouts.segments {
         let seg_id = seg_layout.id;
-        if program_segments.segment_def(seg_id).segment_type != object::elf::PT_LOAD {
+        if program_segments.is_load_segment(seg_id) {
             continue;
         }
         assert!(
