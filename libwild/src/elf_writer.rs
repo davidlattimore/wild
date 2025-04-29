@@ -75,6 +75,7 @@ use foldhash::HashMapExt as _;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::SectionFlags;
+use linker_utils::elf::pf;
 use linker_utils::elf::secnames::DEBUG_LOC_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_RANGES_SECTION_NAME;
 use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
@@ -618,15 +619,17 @@ fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: 
         let e = LittleEndian;
         let segment_details = layout.program_segments.segment_def(segment_id);
 
-        segment_header.p_type.set(e, segment_details.segment_type);
+        segment_header
+            .p_type
+            .set(e, segment_details.segment_type.raw());
 
         // Support executable stack (Wild defaults to non-executable stack)
         let mut segment_flags = segment_details.segment_flags;
         if layout.program_segments.is_stack_segment(segment_id) && layout.args().execstack {
-            segment_flags |= object::elf::PF_X;
+            segment_flags |= pf::EXECUTABLE;
         }
 
-        segment_header.p_flags.set(e, segment_flags);
+        segment_header.p_flags.set(e, segment_flags.raw());
         segment_header
             .p_offset
             .set(e, segment_sizes.file_offset as u64);

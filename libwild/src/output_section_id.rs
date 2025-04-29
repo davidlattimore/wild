@@ -42,6 +42,8 @@ use foldhash::HashMap as FoldHashMap;
 use foldhash::HashMapExt as _;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
+use linker_utils::elf::SegmentType;
+use linker_utils::elf::pt;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use linker_utils::elf::shf;
@@ -293,14 +295,14 @@ impl OutputSections<'_> {
         let info = self.output_info(section_id);
 
         match segment_def.segment_type {
-            object::elf::PT_NOTE => info.ty == sht::NOTE,
-            object::elf::PT_TLS => info.section_flags.contains(shf::TLS),
-            object::elf::PT_LOAD => {
+            pt::NOTE => info.ty == sht::NOTE,
+            pt::TLS => info.section_flags.contains(shf::TLS),
+            pt::LOAD => {
                 info.section_flags.contains(shf::ALLOC)
                     && info.section_flags.contains(shf::WRITE) == segment_def.is_writable()
                     && info.section_flags.contains(shf::EXECINSTR) == segment_def.is_executable()
             }
-            object::elf::PT_GNU_RELRO => {
+            pt::GNU_RELRO => {
                 info.section_flags.contains(shf::TLS)
                     || section_id
                         .opt_built_in_details()
@@ -336,7 +338,7 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) element_size: u64,
     pub(crate) ty: SectionType,
     is_relro: bool,
-    target_segment_type: Option<u32>,
+    target_segment_type: Option<SegmentType>,
 }
 
 impl BuiltInSectionDetails {
@@ -390,7 +392,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::ALLOC,
         min_alignment: alignment::PROGRAM_HEADER_ENTRY,
         keep_if_empty: true,
-        target_segment_type: Some(object::elf::PT_PHDR),
+        target_segment_type: Some(pt::PHDR),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -452,7 +454,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         min_alignment: alignment::EH_FRAME_HDR,
-        target_segment_type: Some(object::elf::PT_GNU_EH_FRAME),
+        target_segment_type: Some(pt::GNU_EH_FRAME),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -464,7 +466,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         min_alignment: alignment::USIZE,
         start_symbol_name: Some("_DYNAMIC"),
         is_relro: true,
-        target_segment_type: Some(object::elf::PT_DYNAMIC),
+        target_segment_type: Some(pt::DYNAMIC),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -496,7 +498,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(INTERP_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
-        target_segment_type: Some(object::elf::PT_INTERP),
+        target_segment_type: Some(pt::INTERP),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
