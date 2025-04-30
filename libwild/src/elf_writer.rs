@@ -2176,7 +2176,7 @@ fn apply_relocation<'a, A: Arch>(
             };
             let set_rel = relocations_to_search
                 .next()
-                .with_context(|| anyhow::anyhow!("Missing previou relocation"))?;
+                .with_context(|| anyhow::anyhow!("Missing previous relocation"))?;
             anyhow::ensure!(
                 set_rel.r_type(LittleEndian, false) == object::elf::R_RISCV_SET_ULEB128,
                 "R_RISCV_SET_ULEB128 must be the previous relocation"
