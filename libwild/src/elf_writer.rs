@@ -2157,6 +2157,13 @@ fn apply_relocation<'a, A: Arch>(
                     .tlsgd_got_address()?
                     .wrapping_add(addend as u64)
                     .wrapping_sub(place),
+                RelocationKind::TlsLd => layout
+                    .prelude()
+                    .tlsld_got_entry
+                    .unwrap()
+                    .get()
+                    .wrapping_add(addend as u64)
+                    .wrapping_sub(place),
                 _ => anyhow::bail!(format!(
                     "Unsupported high part relocation {:?} connected with R_RISCV_PCREL_LO12",
                     hi_rel_info.kind
