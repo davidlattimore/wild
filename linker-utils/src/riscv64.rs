@@ -6,6 +6,8 @@ use crate::elf::RelocationSize;
 use crate::elf::extract_bit;
 use crate::elf::extract_bits;
 use crate::utils::or_from_slice;
+use leb128;
+use std::io::Cursor;
 
 #[must_use]
 pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
@@ -265,9 +267,22 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
-        object::elf::R_RISCV_SET_ULEB128 => return None, // TODO: support
-        object::elf::R_RISCV_SUB_ULEB128 => return None, // TODO: support
-
+        // We process the subtraction in the SUB_ULEB128 relocation,
+        // thus we skip the first relocation in the pair.
+        object::elf::R_RISCV_SET_ULEB128 => (
+            RelocationKind::Relative,
+            RelocationSize::ByteSize(0),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_SUB_ULEB128 => (
+            RelocationKind::PairSubtraction,
+            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::ULEB128),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
         // TODO: support TLSDESC once glibc supports the feature: #712
         object::elf::R_RISCV_TLSDESC_HI20 => return None,
         object::elf::R_RISCV_TLSDESC_LOAD_LO12 => return None,
@@ -335,6 +350,13 @@ impl RISCVInstruction {
                 mask |= extract_bit(extracted_value, 4) << 11;
                 mask |= extract_bit(extracted_value, 11) << 12;
                 mask as u32
+            }
+            RISCVInstruction::ULEB128 => {
+                let mut writer = Cursor::new(vec![0u8; 9]);
+                let n = leb128::write::unsigned(&mut writer, extracted_value)
+                    .expect("Must fit into the buffer");
+                dest[..n].copy_from_slice(&writer.into_inner()[..n]);
+                return;
             }
         };
         // Read the original value and combine it with the prepared mask.

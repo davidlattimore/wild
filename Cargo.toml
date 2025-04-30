@@ -44,6 +44,7 @@ iced-x86 = { version = "1.17.0", default-features = false, features = [
     "gas",
 ] }
 itertools = "0.14.0"
+leb128 = "0.2.5"
 libc = "0.2.152"
 memchr = "2.6.0"
 memmap2 = "0.9.0"

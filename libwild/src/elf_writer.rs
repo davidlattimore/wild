@@ -2135,6 +2135,36 @@ fn apply_relocation<'a, A: Arch>(
                 )),
             }
         }
+        RelocationKind::PairSubtraction => {
+            let Some(relocations_to_search) = relocations_to_search.as_mut() else {
+                anyhow::bail!("All relocations must be available for R_RISCV_SUB_ULEB128");
+            };
+            let set_rel = relocations_to_search
+                .next()
+                .with_context(|| anyhow::anyhow!("Missing previou relocation"))?;
+            anyhow::ensure!(
+                set_rel.r_type(LittleEndian, false) == object::elf::R_RISCV_SET_ULEB128,
+                "R_RISCV_SET_ULEB128 must be the previous relocation"
+            );
+            let (set_resolution, set_symbol_index, _) =
+                get_resolution(set_rel, object_layout, layout)?;
+
+            set_resolution
+                .value_with_addend(
+                    set_rel.r_addend.get(e),
+                    set_symbol_index,
+                    object_layout,
+                    &layout.merged_strings,
+                    &layout.merged_string_start_addresses,
+                )?
+                .wrapping_sub(resolution.value_with_addend(
+                    addend,
+                    symbol_index,
+                    object_layout,
+                    &layout.merged_strings,
+                    &layout.merged_string_start_addresses,
+                )?)
+        }
         RelocationKind::GotRelative => resolution
             .got_address()?
             .bitand(mask.got_entry)

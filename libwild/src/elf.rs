@@ -464,10 +464,13 @@ pub(crate) fn write_relocation_to_buffer(
         }) => {
             let extracted_value = extract_bits(value, range.start, range.end);
             let negative = (value as i64).is_negative();
+            let output_len = output.len();
             insn.write_to_value(
                 extracted_value,
                 negative,
-                &mut output[..insn.write_windows_size()],
+                // We can write a non-text section, so we might need to limit the output buffer slice
+                // e.g. .gcc_except_table is written on riscv64 using the ULEB128 encoding
+                &mut output[..insn.write_windows_size().min(output_len)],
             );
         }
     }
