@@ -71,6 +71,12 @@ impl Display for UnversionedSymbolName<'_> {
     }
 }
 
+impl std::fmt::Debug for UnversionedSymbolName<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&String::from_utf8_lossy(self.bytes), f)
+    }
+}
+
 pub(crate) struct SymDebug<'data>(pub(crate) &'data crate::elf::SymtabEntry);
 
 impl<'data> PreHashedSymbolName<'data> {

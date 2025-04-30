@@ -124,10 +124,13 @@ fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]>
     take_while(1.., |b| !b" (){}\n\t".contains(&b)).parse_next(input)
 }
 
-fn skip_comments_and_whitespace(input: &mut &BStr) -> winnow::Result<()> {
+pub(crate) fn skip_comments_and_whitespace(input: &mut &BStr) -> winnow::Result<()> {
     loop {
         multispace0(input)?;
-        if input.starts_with(b"/*") {
+
+        if input.starts_with(b"#") {
+            take_until(1.., "\n").parse_next(input)?;
+        } else if input.starts_with(b"/*") {
             take_until(1.., "*/").parse_next(input)?;
             "*/".parse_next(input)?;
         } else {

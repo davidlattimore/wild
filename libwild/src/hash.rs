@@ -44,6 +44,12 @@ pub(crate) struct PreHashed<T> {
     hash: u64,
 }
 
+impl<T: std::fmt::Debug> std::fmt::Debug for PreHashed<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.value, f)
+    }
+}
+
 impl<T: PartialEq> PartialEq for PreHashed<T> {
     fn eq(&self, other: &Self) -> bool {
         self.value == other.value
