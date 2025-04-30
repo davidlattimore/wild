@@ -261,6 +261,8 @@ impl Config {
             ),
             ArchKind::RISCV64 => self.ignore.extend(
                 [
+                    // TODO: for some reason, main is put into .dynsym
+                    "dynsym.main.section",
                     // #701
                     "file-header.flags",
                     // #700
@@ -268,6 +270,9 @@ impl Config {
                     // #732
                     ".dynamic.DT_RELA",
                     ".dynamic.DT_RELAENT",
+                    // #732
+                    ".dynamic.DT_PREINIT_ARRAY",
+                    ".dynamic.DT_PREINIT_ARRAYSZ",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
