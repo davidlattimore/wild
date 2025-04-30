@@ -314,23 +314,26 @@ impl RISCVInstruction {
         };
         let encode_i_type = |extracted_value: u64| (extracted_value as u32) << 20;
 
-        let mask = match self {
-            RISCVInstruction::High20 => encode_u_type(extracted_value),
-            RISCVInstruction::Low12 => encode_i_type(extracted_value),
+        match self {
+            RISCVInstruction::High20 => {
+                or_from_slice(dest, &encode_u_type(extracted_value).to_le_bytes());
+            }
+            RISCVInstruction::Low12 => {
+                or_from_slice(dest, &encode_i_type(extracted_value).to_le_bytes());
+            }
             RISCVInstruction::AuipcJalr => {
                 or_from_slice(dest, &encode_u_type(extracted_value).to_le_bytes());
                 or_from_slice(
                     &mut dest[4..],
                     &encode_i_type(extracted_value).to_le_bytes(),
                 );
-                return;
             }
             RISCVInstruction::BType => {
                 let mut mask = extract_bits(extracted_value, 11, 12) << 7;
                 mask |= extract_bits(extracted_value, 1, 5) << 8;
                 mask |= extract_bits(extracted_value, 5, 11) << 25;
                 mask |= extract_bit(extracted_value, 12) << 31;
-                mask as u32
+                or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::CBType => {
                 let mut mask = extract_bit(extracted_value, 5) << 2;
@@ -338,7 +341,8 @@ impl RISCVInstruction {
                 mask |= extract_bits(extracted_value, 6, 8) << 5;
                 mask |= extract_bits(extracted_value, 3, 5) << 10;
                 mask |= extract_bit(extracted_value, 8) << 12;
-                mask as u32
+                // The compressed instruction only takes 2 bytes.
+                or_from_slice(dest, &mask.to_le_bytes()[..2]);
             }
             RISCVInstruction::CJType => {
                 let mut mask = extract_bit(extracted_value, 5) << 2;
@@ -349,18 +353,16 @@ impl RISCVInstruction {
                 mask |= extract_bits(extracted_value, 8, 10) << 9;
                 mask |= extract_bit(extracted_value, 4) << 11;
                 mask |= extract_bit(extracted_value, 11) << 12;
-                mask as u32
+                // The compressed instruction only takes 2 bytes.
+                or_from_slice(dest, &mask.to_le_bytes()[..2]);
             }
             RISCVInstruction::ULEB128 => {
                 let mut writer = Cursor::new(vec![0u8; 9]);
                 let n = leb128::write::unsigned(&mut writer, extracted_value)
                     .expect("Must fit into the buffer");
                 dest[..n].copy_from_slice(&writer.into_inner()[..n]);
-                return;
             }
         };
-        // Read the original value and combine it with the prepared mask.
-        or_from_slice(dest, &mask.to_le_bytes());
     }
 
     /// The inverse of `write_to_value`. Returns `(extracted_value, negative)`. Supplied `bytes`
