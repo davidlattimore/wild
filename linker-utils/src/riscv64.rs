@@ -357,7 +357,8 @@ impl RISCVInstruction {
                 or_from_slice(dest, &mask.to_le_bytes()[..2]);
             }
             RISCVInstruction::ULEB128 => {
-                let mut writer = Cursor::new(vec![0u8; 9]);
+                // u64 always fits in 10 bytes in the ULEB format: 64 / 7 = 9.14
+                let mut writer = Cursor::new(vec![0u8; 10]);
                 let n = leb128::write::unsigned(&mut writer, extracted_value)
                     .expect("Must fit into the buffer");
                 dest[..n].copy_from_slice(&writer.into_inner()[..n]);
