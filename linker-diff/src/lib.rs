@@ -266,7 +266,8 @@ impl Config {
                     // #700
                     "section.riscv.attributes",
                     // #732
-                    ".dynamic.DT_PLTREL",
+                    ".dynamic.DT_RELA",
+                    ".dynamic.DT_RELAENT",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
