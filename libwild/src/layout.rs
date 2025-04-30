@@ -3325,17 +3325,15 @@ fn create_start_end_symbol_resolution(
         return None;
     }
 
-    let (raw_value, value_flags) = match def_info {
-        InternalSymDefInfo::Undefined | InternalSymDefInfo::ForceUndefined(_) => {
-            (0, ValueFlags::ABSOLUTE)
+    let raw_value = match def_info {
+        InternalSymDefInfo::Undefined | InternalSymDefInfo::ForceUndefined(_) => 0,
+        InternalSymDefInfo::SectionStart(section_id) => {
+            resources.section_layouts.get(section_id).mem_offset
         }
-        InternalSymDefInfo::SectionStart(section_id) => (
-            resources.section_layouts.get(section_id).mem_offset,
-            ValueFlags::ADDRESS,
-        ),
+
         InternalSymDefInfo::SectionEnd(section_id) => {
             let sec = resources.section_layouts.get(section_id);
-            (sec.mem_offset + sec.mem_size, ValueFlags::ADDRESS)
+            sec.mem_offset + sec.mem_size
         }
     };
 
@@ -3343,7 +3341,7 @@ fn create_start_end_symbol_resolution(
         emitter.symbol_resolution_flags[symbol_id.as_usize()],
         raw_value,
         None,
-        value_flags,
+        resources.symbol_db.symbol_value_flags(symbol_id),
         memory_offsets,
     ))
 }
