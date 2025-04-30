@@ -261,26 +261,18 @@ impl Config {
             ),
             ArchKind::RISCV64 => self.ignore.extend(
                 [
-                    // https://github.com/davidlattimore/wild/issues/701
+                    // #701
                     "file-header.flags",
-                    // https://github.com/davidlattimore/wild/issues/700
+                    // #700
                     "section.riscv.attributes",
+                    // #732
+                    ".dynamic.DT_PLTREL",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
             ),
             ArchKind::X86_64 => {}
         }
-        self.ignore.extend(
-            [
-                // https://github.com/davidlattimore/wild/issues/701
-                "file-header.flags",
-                // https://github.com/davidlattimore/wild/issues/700
-                "section.riscv.attributes",
-            ]
-            .into_iter()
-            .map(ToOwned::to_owned),
-        );
 
         self.equiv.push((
             GOT_SECTION_NAME_STR.to_owned(),
