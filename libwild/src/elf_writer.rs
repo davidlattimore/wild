@@ -75,6 +75,7 @@ use foldhash::HashMap as FoldHashMap;
 use foldhash::HashMapExt as _;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKind;
+use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::pf;
@@ -1980,6 +1981,35 @@ fn get_resolution(
     Ok((resolution, symbol_index, local_symbol_id))
 }
 
+const LOW6_MASK: u64 = 0b0011_0000;
+
+/// Adjust relocation value based on the actual value at the place of a relocation.
+fn adjust_relocation_based_on_value(
+    value: u64,
+    rel_info: &RelocationKindInfo,
+    out: &[u8],
+    offset_in_section: usize,
+) -> Result<u64> {
+    let mut read_data = [0u8; 8];
+    let RelocationSize::ByteSize(rel_size) = rel_info.size else {
+        bail!("Unexpected size for the addition/subtraction relocation");
+    };
+    // Read only N bytes from the currente value based on the size of the relocation.
+    read_data[..rel_size].copy_from_slice(&out[offset_in_section..offset_in_section + rel_size]);
+    let current_value = u64::from_le_bytes(read_data);
+
+    // Handle addition and subtraction relocation kinds.
+    match rel_info.kind {
+        RelocationKind::AbsoluteSetWord6 => Ok(value & LOW6_MASK),
+        RelocationKind::AbsoluteAddition => Ok(current_value.wrapping_add(value)),
+        RelocationKind::AbsoluteSubtraction => Ok(current_value.wrapping_sub(value)),
+        RelocationKind::AbsoluteSubtractionWord6 => {
+            Ok((current_value & LOW6_MASK).wrapping_sub(value & LOW6_MASK))
+        }
+        _ => Err(anyhow::anyhow!("Unexpected relocation: {:?}", rel_info)),
+    }
+}
+
 /// Applies the relocation `rel` at `offset_in_section`, where the section bytes are `out`. See "ELF
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
@@ -1995,8 +2025,6 @@ fn apply_relocation<'a, A: Arch>(
     trace: &TraceOutput,
     mut relocations_to_search: Option<impl Iterator<Item = &'a elf::Rela>>,
 ) -> Result<RelocationModifier> {
-    const LOW6_MASK: u64 = 0b0011_0000;
-
     let section_address = section_info.section_address;
     let original_place = section_address + offset_in_section;
     let _span = tracing::trace_span!(
@@ -2291,30 +2319,7 @@ fn apply_relocation<'a, A: Arch>(
             | RelocationKind::AbsoluteSubtraction
             | RelocationKind::AbsoluteSubtractionWord6
     ) {
-        let mut read_data = [0u8; 8];
-        let RelocationSize::ByteSize(rel_size) = rel_info.size else {
-            bail!("Unexpected size for the addition/subtraction relocation");
-        };
-        // Read only N bytes from the currente value based on the size of the relocation.
-        read_data[..rel_size]
-            .copy_from_slice(&out[offset_in_section..offset_in_section + rel_size]);
-        let current_value = u64::from_le_bytes(read_data);
-
-        match rel_info.kind {
-            RelocationKind::AbsoluteSetWord6 => {
-                value &= LOW6_MASK;
-            }
-            RelocationKind::AbsoluteAddition => {
-                value = current_value.wrapping_add(value);
-            }
-            RelocationKind::AbsoluteSubtraction => {
-                value = current_value.wrapping_sub(value);
-            }
-            RelocationKind::AbsoluteSubtractionWord6 => {
-                value = (current_value & LOW6_MASK).wrapping_sub(value & LOW6_MASK);
-            }
-            _ => unreachable!(),
-        }
+        adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?;
     }
 
     if let Some(relaxation) = relaxation {
@@ -2391,13 +2396,30 @@ fn apply_debug_relocation<A: Arch>(
 
     let value = if let Some(resolution) = resolution {
         match rel_info.kind {
-            RelocationKind::Absolute => resolution.value_with_addend(
-                addend,
-                symbol_index,
-                object_layout,
-                &layout.merged_strings,
-                &layout.merged_string_start_addresses,
-            )?,
+            RelocationKind::Absolute
+            | RelocationKind::AbsoluteAddition
+            | RelocationKind::AbsoluteSubtraction => {
+                let mut value = resolution.value_with_addend(
+                    addend,
+                    symbol_index,
+                    object_layout,
+                    &layout.merged_strings,
+                    &layout.merged_string_start_addresses,
+                )?;
+                // Adjust the relocation value based on the value at the place.
+                if matches!(
+                    rel_info.kind,
+                    RelocationKind::AbsoluteSubtraction | RelocationKind::AbsoluteAddition
+                ) {
+                    value = adjust_relocation_based_on_value(
+                        value,
+                        &rel_info,
+                        out,
+                        offset_in_section as usize,
+                    )?;
+                }
+                value
+            }
             RelocationKind::DtpOff => resolution
                 .value()
                 .wrapping_sub(layout.tls_end_address())
