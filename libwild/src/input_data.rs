@@ -29,7 +29,7 @@ pub(crate) struct InputData<'data> {
 
 #[derive(Clone, Copy)]
 pub(crate) struct VersionScriptData<'data> {
-    pub(crate) raw: &'data str,
+    pub(crate) raw: &'data [u8],
 }
 
 /// Identifies an input file. IDs start from 0 which is reserved for our prelude file.
@@ -292,10 +292,7 @@ fn read_version_script<'data>(
         data: Some(data),
     });
 
-    // TODO: Experiment with switching version scripts to parsing bytes instead of strings.
-    let raw = std::str::from_utf8(file.data()).context("Invalid UTF-8 in version script")?;
-
-    Ok(VersionScriptData { raw })
+    Ok(VersionScriptData { raw: file.data() })
 }
 
 impl Input {
