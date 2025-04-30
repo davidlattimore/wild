@@ -3493,7 +3493,7 @@ impl<'data> EpilogueLayoutState<'data> {
             // Take all but the base version
             for version in symbol_db.version_script.version_iter().skip(1) {
                 verdefs.push(VersionDef {
-                    name: version.name.as_bytes().to_vec(),
+                    name: version.name.to_vec(),
                     parent_index: version.parent_index,
                 });
                 common.allocate(part_id::DYNSTR, version.name.len() as u64 + 1);

@@ -24,7 +24,7 @@ pub(crate) struct VersionScript<'data> {
 }
 
 pub(crate) struct Version<'data> {
-    pub(crate) name: &'data str,
+    pub(crate) name: &'data [u8],
     pub(crate) parent_index: Option<u16>,
     symbols: MatchRules<'data>,
 }
@@ -40,10 +40,9 @@ impl<'data> MatchRules<'data> {
     fn push(&mut self, pattern: SymbolMatcher<'data>) {
         match pattern {
             SymbolMatcher::All => self.matches_all = true,
-            SymbolMatcher::Prefix(prefix) => self.prefixes.push(prefix.as_bytes()),
+            SymbolMatcher::Prefix(prefix) => self.prefixes.push(prefix),
             SymbolMatcher::Exact(exact) => {
-                self.exact
-                    .insert(UnversionedSymbolName::prehashed(exact.as_bytes()));
+                self.exact.insert(UnversionedSymbolName::prehashed(exact));
             }
         }
     }
@@ -61,8 +60,8 @@ impl<'data> MatchRules<'data> {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum SymbolMatcher<'data> {
     All,
-    Prefix(&'data str),
-    Exact(&'data str),
+    Prefix(&'data [u8]),
+    Exact(&'data [u8]),
 }
 
 impl<'data> VersionScript<'data> {
@@ -72,13 +71,13 @@ impl<'data> VersionScript<'data> {
         let mut version_script = Self::default();
 
         // List of version names in the script, used to map parent version to version indexes
-        let mut version_names = Vec::new();
+        let mut version_names: Vec<&[u8]> = Vec::new();
 
-        tokens.text = tokens.text.trim();
+        tokens.text = trim(tokens.text);
 
         let mut token = tokens.next().ok_or_else(|| anyhow!("No tokens found"))?;
         // Simple version script, only defines symbols visibility
-        if token.starts_with('{') {
+        if token.starts_with(b"{") {
             parse_version_section(
                 &mut tokens,
                 &mut version_script.locals,
@@ -89,15 +88,15 @@ impl<'data> VersionScript<'data> {
         }
 
         // Base version placeholder
-        version_names.push("");
+        version_names.push(b"");
         version_script.versions.push(Version {
-            name: "",
+            name: b"",
             symbols: MatchRules::default(),
             parent_index: None,
         });
 
         loop {
-            tokens.expect("{")?;
+            tokens.expect(b"{")?;
             version_names.push(token);
 
             let mut version_symbols = MatchRules::default();
@@ -113,8 +112,9 @@ impl<'data> VersionScript<'data> {
                     version_names
                         .iter()
                         .position(|v| v == &parent)
-                        .with_context(|| format!("Could not find version {parent}"))?
-                        as u16,
+                        .with_context(|| {
+                            format!("Could not find version {}", String::from_utf8_lossy(parent))
+                        })? as u16,
                 )
             } else {
                 None
@@ -171,6 +171,26 @@ impl<'data> VersionScript<'data> {
     }
 }
 
+fn trim(text: &[u8]) -> &[u8] {
+    trim_start(trim_end(text))
+}
+
+const WHITESPACE: &[u8] = b" \n\r\t";
+
+fn trim_start(text: &[u8]) -> &[u8] {
+    if let Some(pos) = text.iter().position(|b| !WHITESPACE.contains(b)) {
+        return &text[pos..];
+    }
+    text
+}
+
+fn trim_end(text: &[u8]) -> &[u8] {
+    if let Some(pos) = text.iter().rev().position(|b| !WHITESPACE.contains(b)) {
+        return &text[..text.len() - pos];
+    }
+    text
+}
+
 enum VersionRuleSection {
     Global,
     Local,
@@ -183,39 +203,39 @@ fn parse_version_section<'data>(
     locals: &mut MatchRules<'data>,
     globals: &mut MatchRules<'data>,
     mut versioned_symbols: Option<&mut MatchRules<'data>>,
-) -> Result<Option<&'data str>> {
+) -> Result<Option<&'data [u8]>> {
     let mut section = None;
 
     // We read line-by-line rather than token-by-token because it's much faster. This is
     // important when for example rustc emits a version script that's more than 300k lines.
     while let Some(line) = tokens.next_line() {
-        let mut line = line.trim();
-        if let Some(parent_string) = line.strip_prefix('}') {
-            if parent_string.starts_with(';') {
+        let mut line = trim(line);
+        if let Some(parent_string) = line.strip_prefix(b"}") {
+            if parent_string.starts_with(b";") {
                 return Ok(None);
             }
-            return Ok(parent_string.trim().strip_suffix(';'));
+            return Ok(trim(parent_string).strip_suffix(b";"));
         }
         // Note, we don't currently support comments that have content after them on the same
         // line. Doing so would require us to search every line for embedded comments, which
         // would hurt performance.
-        if line.ends_with("*/") {
-            if let Some(start_index) = line.find("/*") {
-                line = line[..start_index].trim();
+        if line.ends_with(b"*/") {
+            if let Some(start_index) = line.windows(2).position(|w| w == b"/*") {
+                line = trim(&line[..start_index]);
             }
         }
 
-        if line.starts_with("/*") {
+        if line.starts_with(b"/*") {
             while let Some(line) = tokens.next_line() {
-                if line.ends_with("*/") {
+                if line.ends_with(b"*/") {
                     break;
                 }
             }
-        } else if line == "global:" {
+        } else if line == b"global:" {
             section = Some(VersionRuleSection::Global);
-        } else if line == "local:" {
+        } else if line == b"local:" {
             section = Some(VersionRuleSection::Local);
-        } else if let Some(pattern) = line.strip_suffix(';') {
+        } else if let Some(pattern) = line.strip_suffix(b";") {
             match section {
                 Some(VersionRuleSection::Global) | None => {
                     globals.push(SymbolMatcher::from_pattern(pattern)?);
@@ -228,7 +248,10 @@ fn parse_version_section<'data>(
                 versioned_symbols.push(SymbolMatcher::from_pattern(pattern)?);
             }
         } else if !line.is_empty() {
-            bail!("Unsupported version script line `{line}`");
+            bail!(
+                "Unsupported version script line `{}`",
+                String::from_utf8_lossy(line)
+            );
         }
     }
     bail!("Missing close '}}' in version script");
@@ -241,47 +264,53 @@ impl Version<'_> {
 }
 
 impl<'data> SymbolMatcher<'data> {
-    fn from_pattern(token: &'data str) -> Result<SymbolMatcher<'data>> {
-        if token == "*" {
+    fn from_pattern(token: &'data [u8]) -> Result<SymbolMatcher<'data>> {
+        if token == b"*" {
             return Ok(SymbolMatcher::All);
         }
-        if let Some(prefix) = token.strip_suffix('*') {
-            if prefix.contains('*') {
-                bail!("Unsupported symbol pattern '{token}'");
+        if let Some(prefix) = token.strip_suffix(b"*") {
+            if prefix.contains(&b'*') {
+                bail!(
+                    "Unsupported symbol pattern '{}'",
+                    String::from_utf8_lossy(token)
+                );
             }
             return Ok(SymbolMatcher::Prefix(prefix));
         }
-        if token.contains('*') {
-            bail!("Unsupported symbol pattern '{token}'");
+        if token.contains(&b'*') {
+            bail!(
+                "Unsupported symbol pattern '{}'",
+                String::from_utf8_lossy(token)
+            );
         }
         Ok(SymbolMatcher::Exact(token))
     }
 }
 
 struct Tokeniser<'a> {
-    text: &'a str,
+    text: &'a [u8],
 }
 
 impl<'a> Tokeniser<'a> {
-    fn next(&mut self) -> Option<&'a str> {
+    fn next(&mut self) -> Option<&'a [u8]> {
         loop {
-            self.text = self.text.trim_start();
-            if try_take(&mut self.text, "/*") {
-                if take_up_to(&mut self.text, "*/").is_err() {
-                    self.text = "";
+            self.text = trim_start(self.text);
+            if try_take(&mut self.text, b"/*") {
+                if take_up_to(&mut self.text, b"*/").is_err() {
+                    self.text = b"";
                 }
                 continue;
             }
-            if self.text.starts_with('#') {
-                if take_up_to(&mut self.text, "\n").is_err() {
-                    self.text = "";
+            if self.text.starts_with(b"#") {
+                if take_up_to(&mut self.text, b"\n").is_err() {
+                    self.text = b"";
                 }
                 continue;
             }
             if self.text.is_empty() {
                 return None;
             }
-            let bytes = self.text.as_bytes();
+            let bytes = self.text;
             let mut len = 0;
             for byte in bytes {
                 if b" \n\t(){};".contains(byte) {
@@ -298,36 +327,43 @@ impl<'a> Tokeniser<'a> {
         }
     }
 
-    fn next_line(&mut self) -> Option<&'a str> {
-        while let Some(rest) = self.text.strip_prefix('\n') {
+    fn next_line(&mut self) -> Option<&'a [u8]> {
+        while let Some(rest) = self.text.strip_prefix(b"\n") {
             self.text = rest;
         }
         if self.text.is_empty() {
             return None;
         }
-        let bytes = self.text.as_bytes();
+        let bytes = self.text;
         let end_pos = memchr::memchr(b'\n', bytes).unwrap_or(bytes.len());
         let (line, rest) = self.text.split_at(end_pos);
         self.text = rest;
         Some(line)
     }
 
-    fn new(text: &'a str) -> Self {
+    fn new(text: &'a [u8]) -> Self {
         Tokeniser { text }
     }
 
-    fn expect(&mut self, expected: &str) -> Result {
-        let token = self
-            .next()
-            .ok_or_else(|| anyhow!("Expected token '{expected}', got end of input"))?;
+    fn expect(&mut self, expected: &[u8]) -> Result {
+        let token = self.next().ok_or_else(|| {
+            anyhow!(
+                "Expected token '{}', got end of input",
+                String::from_utf8_lossy(expected)
+            )
+        })?;
         if token != expected {
-            bail!("Expected token '{expected}', got '{token}'");
+            bail!(
+                "Expected token '{}', got '{}'",
+                String::from_utf8_lossy(expected),
+                String::from_utf8_lossy(token)
+            );
         }
         Ok(())
     }
 }
 
-fn try_take(input: &mut &str, pattern: &str) -> bool {
+fn try_take(input: &mut &[u8], pattern: &[u8]) -> bool {
     if let Some(rest) = input.strip_prefix(pattern) {
         *input = rest;
         true
@@ -336,10 +372,11 @@ fn try_take(input: &mut &str, pattern: &str) -> bool {
     }
 }
 
-fn take_up_to<'a>(input: &mut &'a str, pattern: &str) -> Result<&'a str> {
+fn take_up_to<'a>(input: &mut &'a [u8], pattern: &[u8]) -> Result<&'a [u8]> {
     let end = input
-        .find(pattern)
-        .ok_or_else(|| anyhow!("Missing expected '{pattern}'"))?;
+        .windows(pattern.len())
+        .position(|w| w == pattern)
+        .ok_or_else(|| anyhow!("Missing expected '{}'", String::from_utf8_lossy(pattern)))?;
     let content = &input[..end];
     *input = &input[end + pattern.len()..];
     Ok(content)
@@ -354,11 +391,11 @@ mod tests {
     #[test]
     fn test_tokenisation() {
         fn tokenise(text: &str) -> Vec<&str> {
-            let mut t = Tokeniser::new(text);
+            let mut t = Tokeniser::new(text.as_bytes());
             let mut out = Vec::new();
             while let Some(token) = t.next() {
                 assert!(!token.is_empty());
-                out.push(token);
+                out.push(std::str::from_utf8(token).unwrap());
             }
             out
         }
@@ -374,7 +411,7 @@ mod tests {
     #[test]
     fn test_parse_simple_version_script() {
         let data = VersionScriptData {
-            raw: r#"
+            raw: br#"
                     # Comment starting with a hash
                     {global:
                         /* Single-line comment */
@@ -409,7 +446,7 @@ mod tests {
     #[test]
     fn test_parse_version_script() {
         let data = VersionScriptData {
-            raw: r#"
+            raw: br#"
                 VERS_1.1 {
                     global:
                         foo1;
@@ -443,7 +480,7 @@ mod tests {
         );
 
         let version = &script.versions[1];
-        assert_eq!(version.name, "VERS_1.1");
+        assert_eq!(version.name, b"VERS_1.1");
         assert_eq!(version.parent_index, None);
         assert_equal(
             version
@@ -463,7 +500,7 @@ mod tests {
         );
 
         let version = &script.versions[2];
-        assert_eq!(version.name, "VERS_1.2");
+        assert_eq!(version.name, b"VERS_1.2");
         assert_eq!(version.parent_index, Some(1));
         assert_equal(
             version
