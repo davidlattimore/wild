@@ -753,6 +753,9 @@ pub enum RelocationKind {
     /// within a page, so dynamic relocation creation must be skipped.
     AbsoluteAArch64,
 
+    /// Subtract addresses of two symbols and encode the value using ULEB128.
+    PairSubtraction,
+
     /// The address of the symbol, relative to the place of the relocation.
     Relative,
 
@@ -1012,6 +1015,9 @@ pub enum RISCVInstruction {
 
     // Specifies a field as the immediate field in a CB-type (compressed jump) instruction
     CJType,
+
+    // Encode the value using ULEB128 encoding (the size of the output is variable based on the value)
+    ULEB128,
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
