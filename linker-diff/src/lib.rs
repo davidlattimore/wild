@@ -43,6 +43,7 @@ mod gnu_hash;
 mod header_diff;
 mod init_order;
 pub(crate) mod section_map;
+mod segment;
 mod symbol_diff;
 mod symtab;
 mod trace;
@@ -570,6 +571,7 @@ impl Report {
         version_diff::report_diffs(self, objects);
         debug_info_diff::check_debug_info(self, objects);
         symbol_diff::report_diffs(self, objects);
+        segment::report_diffs(self, objects);
 
         match arch {
             ArchKind::X86_64 => {
