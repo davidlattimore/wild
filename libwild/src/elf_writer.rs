@@ -614,6 +614,8 @@ fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: 
 
         if layout.program_segments.is_load_segment(segment_id) {
             alignment = alignment.max(layout.args().loadable_segment_alignment());
+        } else if layout.program_segments.is_stack_segment(segment_id) {
+            alignment = alignment::STACK_ALIGNMENT;
         }
 
         let e = LittleEndian;
