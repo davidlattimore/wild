@@ -937,12 +937,16 @@ impl<'data> OutputSections<'data> {
         })
     }
 
-    pub(crate) fn add_secondary_section(&mut self, primary_id: OutputSectionId) -> OutputSectionId {
+    pub(crate) fn add_secondary_section(
+        &mut self,
+        primary_id: OutputSectionId,
+        min_alignment: Alignment,
+    ) -> OutputSectionId {
         self.section_infos.add_new(SectionOutputInfo {
             kind: SectionKind::Secondary(primary_id),
             section_flags: SectionFlags::empty(),
             ty: SectionType::from_u32(0),
-            min_alignment: alignment::MIN,
+            min_alignment,
             entsize: 0,
             location: None,
         })
