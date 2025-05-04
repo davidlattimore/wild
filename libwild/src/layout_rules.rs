@@ -2,7 +2,6 @@
 
 use crate::OutputSections;
 use crate::alignment;
-use crate::alignment::Alignment;
 use crate::error::Result;
 use crate::hash::hash_bytes;
 use crate::input_data::InputLinkerScript;
@@ -26,6 +25,7 @@ use linker_utils::elf::SectionType;
 use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
+use std::mem::replace;
 
 pub(crate) struct LayoutRules<'data> {
     pub(crate) section_rules: SectionRules<'data>,
@@ -113,14 +113,22 @@ impl<'data> LayoutRulesBuilder<'data> {
             if let linker_script::Command::Sections(sections) = cmd {
                 let mut location = None;
 
+                // "Extra alignment" is what we call it when a linker script sets alignment via a
+                // command like `. = ALIGN(8)`. We attach that to the subsequent section by
+                // adjusting its alignment. This doesn't exactly match what GNU ld does, since what
+                // we do can cause the alignment of the section in the section headers to increase,
+                // whereas GNU ld leaves the section header alignment alone in this case. For now,
+                // though, it doesn't seem worthwhile having two separate alignment properties on a
+                // section, one of which doesn't affect the header value.
+                let mut extra_min_alignment = alignment::MIN;
+
                 for sec_cmd in &sections.commands {
                     match sec_cmd {
                         SectionCommand::Section(sec) => {
                             let min_alignment = sec
                                 .alignment
-                                .map(|alignment| Alignment::new(u64::from(alignment)))
-                                .transpose()?
-                                .unwrap_or(alignment::MIN);
+                                .unwrap_or(alignment::MIN)
+                                .max(replace(&mut extra_min_alignment, alignment::MIN));
 
                             let primary_section_id = output_sections.add_named_section(
                                 SectionName(sec.output_section_name),
@@ -136,8 +144,10 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         let section_id = if last_section_id.is_none() {
                                             primary_section_id
                                         } else {
-                                            output_sections
-                                                .add_secondary_section(primary_section_id)
+                                            output_sections.add_secondary_section(
+                                                primary_section_id,
+                                                replace(&mut extra_min_alignment, alignment::MIN),
+                                            )
                                         };
 
                                         for pattern in &matcher.input_section_name_patterns {
@@ -163,10 +173,12 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             InternalSymDefInfo::SectionStart(primary_section_id)
                                         });
                                     }
+                                    ContentsCommand::Align(a) => extra_min_alignment = *a,
                                 }
                             }
                         }
                         SectionCommand::SetLocation(new_location) => location = Some(*new_location),
+                        SectionCommand::Align(a) => extra_min_alignment = *a,
                     }
                 }
             }

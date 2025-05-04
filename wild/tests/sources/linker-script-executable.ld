@@ -8,9 +8,13 @@ SECTIONS
         *(.text)
     }
     . = 0x800000;
+    . = ALIGN(4);
     .data : {
         start_of_data = .;
         *(.data)
+        . = ALIGN(512);
+        start_of_512 = .;
+        *(.data.2)
     }
     .bss : { *(.bss) }
 }
