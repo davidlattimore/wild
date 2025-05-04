@@ -79,7 +79,7 @@ typed-arena = "2.0.0"
 uuid = { version = "1.0.0", features = ["v4"] }
 wait-timeout = "0.2.0"
 which = "7.0.2"
-winnow = {version = "0.7.0", features = ["simd"] }
+winnow = { version = "0.7.0", features = ["simd"] }
 zstd = "0.13.0"
 
 [profile.opt-debug]
@@ -152,7 +152,7 @@ iter_not_returning_iterator = "allow"
 
 # Indexing into a vec may panic. That's true, and if it does, that's a bug. The fact that we're
 # matching on the element of the vec is irrelevant.
-match_on_vec_items = "allow"
+indexing_slicing = "allow"
 
 # Sometimes you have a comment on one arm that doesn't apply to the other arms. Clippy isn't smart
 # enough to see that the comment is what is different.
