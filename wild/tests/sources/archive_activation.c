@@ -23,6 +23,7 @@
 //#Object:archive_activation1.c
 //#Object:runtime.c
 //#Object:empty.a
+//#DiffIgnore:segment.GNU_STACK.alignment
 
 #include "runtime.h"
 
