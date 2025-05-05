@@ -161,7 +161,7 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
         .map(|f| f.into_non_atomic())
         .collect();
 
-    let non_addressable_counts = apply_non_addressable_indexes(&mut group_states, symbol_db.args)?;
+    let non_addressable_counts = apply_non_addressable_indexes(&mut group_states, &symbol_db)?;
 
     propagate_section_attributes(&group_states, &mut output_sections);
 
@@ -1967,16 +1967,20 @@ impl SectionAttributes {
 #[tracing::instrument(skip_all, name = "Apply non-addressable indexes")]
 fn apply_non_addressable_indexes(
     group_states: &mut [GroupState],
-    args: &Args,
+    symbol_db: &SymbolDb,
 ) -> Result<NonAddressableCounts> {
     let mut indexes = NonAddressableIndexes {
-        // Allocate version indexes starting from after the local and global indexes.
-        gnu_version_r_index: object::elf::VER_NDX_GLOBAL + 1,
+        // Allocate version indexes starting from after the local and global indexes and any
+        // versions defined by a version script.
+        gnu_version_r_index: object::elf::VER_NDX_GLOBAL
+            + 1.max(symbol_db.version_script.version_count()),
     };
+
     let mut counts = NonAddressableCounts {
         verneed_count: 0,
         verdef_count: 0,
     };
+
     for g in group_states.iter_mut() {
         for s in &mut g.files {
             match s {
@@ -1999,7 +2003,7 @@ fn apply_non_addressable_indexes(
     // versym allocations. This is partly to avoid wasting unnecessary space in the output file, but
     // mostly in order match what GNU ld does.
     if (counts.verneed_count == 0 && counts.verdef_count == 0)
-        && args.should_output_symbol_versions()
+        && symbol_db.args.should_output_symbol_versions()
     {
         for g in group_states {
             *g.common.mem_sizes.get_mut(part_id::GNU_VERSION) = 0;

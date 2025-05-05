@@ -2298,6 +2298,7 @@ fn integration_test(
         "non-alloc.s",
         "gnu-unique.c",
         "symbol-versions.c",
+        "mixed-verdef-verneed.c",
         "copy-relocations.c",
         "force-undefined.c",
         "linker-script.c",

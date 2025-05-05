@@ -1,0 +1,8 @@
+VER_1.0 {
+    global:
+        bar_global;
+};
+
+VER_2.0 {
+        from_so;
+} VER_1.0;
