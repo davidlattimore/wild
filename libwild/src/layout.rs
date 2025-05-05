@@ -4825,22 +4825,36 @@ impl<'data> DynamicLayoutState<'data> {
             let mut base_size = 0;
             while let Some((verdef, mut aux_iterator)) = verdef_iterator.next()? {
                 let version_index = verdef.vd_ndx.get(e);
+
                 if version_index == 0 {
                     bail!("Invalid version index");
                 }
+
                 let flags = verdef.vd_flags.get(e);
                 let is_base = (flags & object::elf::VER_FLG_BASE) != 0;
+
                 // Keep the base version and any versions that are referenced.
                 let needed = is_base
                     || *self
                         .symbol_versions_needed
                         .get(usize::from(version_index - 1))
                         .context("Invalid version index")?;
+
                 if needed {
-                    // Every VERDEF entry should have at least one AUX entry.
-                    let aux = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
-                    let name = aux.name(e, strings)?;
+                    // For the base version, we use the lib_name rather than the version name from
+                    // the input file. This matches what GNU ld appears to do. Also, if we don't do
+                    // this, then the C runtime hits an assertion failure, because it expects to be
+                    // able to find a DT_NEEDED entry that matches the base name of a version.
+                    let name = if is_base {
+                        self.lib_name
+                    } else {
+                        // Every VERDEF entry should have at least one AUX entry.
+                        let aux = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
+                        aux.name(e, strings)?
+                    };
+
                     let name_size = name.len() as u64 + 1;
+
                     if is_base {
                         // The base version doesn't count as a version, so we don't increment
                         // version_count here. We emit it as a Verneed, whereas the actual versions
