@@ -3477,18 +3477,22 @@ impl<'data> DynamicLayout<'data> {
         if let Some(verneed_info) = &self.verneed_info {
             let mut verdefs = verneed_info.defs.clone();
             let e = LittleEndian;
+
             let strings = self.object.sections.strings(
                 e,
                 self.object.data,
                 verneed_info.string_table_index,
             )?;
+
             let ver_need = table_writer.version_writer.take_verneed()?;
+
             let next_verneed_offset = if self.is_last_verneed {
                 0
             } else {
                 (size_of::<Verneed>() + size_of::<Vernaux>() * verneed_info.version_count as usize)
                     as u32
             };
+
             ver_need.vn_version.set(e, 1);
             ver_need.vn_cnt.set(e, verneed_info.version_count);
             ver_need.vn_aux.set(e, size_of::<Verneed>() as u32);
@@ -3498,25 +3502,32 @@ impl<'data> DynamicLayout<'data> {
                 .version_writer
                 .take_auxes(verneed_info.version_count)?;
             let mut aux_index = 0;
+
             while let Some((verdef, mut aux_iterator)) = verdefs.next()? {
                 let input_version = verdef.vd_ndx.get(e);
                 let flags = verdef.vd_flags.get(e);
                 let is_base = (flags & object::elf::VER_FLG_BASE) != 0;
+
                 if is_base {
-                    let aux_in = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
-                    let name = aux_in.name(e, strings)?;
-                    let name_offset = table_writer.dynsym_writer.strtab_writer.write_str(name);
+                    let name_offset = table_writer
+                        .dynsym_writer
+                        .strtab_writer
+                        .write_str(self.lib_name);
+
                     ver_need.vn_file.set(e, name_offset);
                     continue;
                 }
+
                 if input_version == 0 {
                     bail!("Invalid version index");
                 }
+
                 let output_version = self
                     .version_mapping
                     .get(usize::from(input_version - 1))
                     .copied()
                     .unwrap_or_default();
+
                 if output_version != object::elf::VER_NDX_GLOBAL {
                     // Every VERDEF entry should have at least one AUX entry.
                     let aux_in = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
@@ -3524,14 +3535,17 @@ impl<'data> DynamicLayout<'data> {
                     let name_offset = table_writer.dynsym_writer.strtab_writer.write_str(name);
                     let sysv_name_hash = object::elf::hash(name);
                     let is_last_aux = aux_index + 1 == auxes.len();
+
                     let aux_out = auxes
                         .get_mut(aux_index)
                         .context("Insufficient vernaux allocation")?;
+
                     let vna_next = if is_last_aux {
                         0
                     } else {
                         size_of::<Vernaux>() as u32
                     };
+
                     aux_out.vna_next.set(e, vna_next);
                     aux_out.vna_other.set(e, output_version);
                     aux_out.vna_name.set(e, name_offset);
