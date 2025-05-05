@@ -235,8 +235,8 @@ impl Config {
                 // If we don't optimise a TLS access, then we'll have references to __tls_get_addr,
                 // when GNU ld doesn't.
                 "dynsym.__tls_get_addr.*",
-                // temporary
-                "segment.LOAD.*",
+                // GNU ld emits two segments, whereas wild emits only a single segment.
+                "segment.LOAD.R.*",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
