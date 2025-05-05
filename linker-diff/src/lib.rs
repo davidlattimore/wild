@@ -237,6 +237,13 @@ impl Config {
                 "dynsym.__tls_get_addr.*",
                 // GNU ld emits two segments, whereas wild emits only a single segment.
                 "segment.LOAD.R.*",
+                // We haven't provided an implementation that is compatible with existing linkers.
+                "segment.PT_NOTE.*",
+                "segment.PT_INTERP.*",
+                "segment.PT_PHDR.*",
+                "segment.PT_GNU_RELRO.*",
+                "segment.PT_GNU_STACK.*",
+                "segment.PT_GNU_PROPERTY.*",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
