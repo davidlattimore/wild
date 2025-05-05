@@ -209,6 +209,29 @@ pub fn aarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
     }
 }
 
+#[must_use]
+pub fn segment_type_to_string(p_type: u32) -> Cow<'static, str> {
+    if let Some(name) = const_name_by_value![
+        p_type,
+        PT_NULL,
+        PT_LOAD,
+        PT_DYNAMIC,
+        PT_INTERP,
+        PT_NOTE,
+        PT_SHLIB,
+        PT_PHDR,
+        PT_TLS,
+        PT_GNU_EH_FRAME,
+        PT_GNU_STACK,
+        PT_GNU_RELRO,
+        PT_GNU_PROPERTY
+    ] {
+        Cow::Borrowed(name)
+    } else {
+        Cow::Owned(format!("UNKNOWN_P_TYPE_{p_type}"))
+    }
+}
+
 /// Section flag bit values.
 pub mod shf {
     use super::SectionFlags;
