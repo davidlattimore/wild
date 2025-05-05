@@ -3,6 +3,8 @@
 //#Static:false
 //#LinkArgs:-shared -z now
 //#DiffIgnore:section.got
+//#DiffIgnore:segment.GNU_STACK.alignment
+//#DiffIgnore:segment.GNU_STACK.flags
 
 .section .data.foo1,"awG",@progbits,foobar,comdat
 .globl foo1

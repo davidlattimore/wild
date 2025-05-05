@@ -1,5 +1,6 @@
 //#LinkerScript:linker-script-executable.ld
 //#Object:runtime.c
+//#DiffIgnore: segment.LOAD.RW.alignment
 
 #include <stddef.h>
 
