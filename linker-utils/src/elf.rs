@@ -210,6 +210,7 @@ pub fn aarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
     }
 }
 
+#[must_use]
 pub fn riscv64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
     if let Some(name) = const_name_by_value![
         r_type,
