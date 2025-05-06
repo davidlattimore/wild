@@ -6,6 +6,8 @@ use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::InputData;
 use crate::input_data::InputRef;
+use anyhow::Context;
+use anyhow::bail;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use std::fmt::Display;
@@ -32,8 +34,31 @@ pub fn split_archives<'data>(input_data: &InputData<'data>) -> Result<Vec<InputB
                         ArchiveEntry::Ignored => {}
                         ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
                         ArchiveEntry::Regular(archive_entry) => {
+                            let archive_and_member_name = || {
+                                format!(
+                                    "{} @ {}",
+                                    f.filename.to_string_lossy(),
+                                    archive_entry
+                                        .identifier(extended_filenames)
+                                        .as_path()
+                                        .to_string_lossy()
+                                )
+                            };
+                            let kind = FileKind::identify_bytes(archive_entry.entry_data)
+                                .with_context(|| {
+                                    format!(
+                                        "Failed to parse archive `{}`",
+                                        archive_and_member_name()
+                                    )
+                                })?;
+                            if kind != FileKind::ElfObject {
+                                bail!(
+                                    "Archive member is not an object `{}`",
+                                    archive_and_member_name()
+                                )
+                            }
                             outputs.push(InputBytes {
-                                kind: f.kind,
+                                kind,
                                 input: InputRef {
                                     file: f,
                                     entry: Some(EntryMeta {
