@@ -1,6 +1,8 @@
 //#DiffIgnore:.dynamic.*
 // It looks like GNU ld sets .tdata's alignment to match .tbss's alignment
 //#DiffIgnore:section.tdata.alignment
+// TODO: RISC-V BFD linker keeps multiple .dynsym symbols
+//#DiffIgnore:dynsym.*
 //#CompArgs:-C debuginfo=2
 //#Shared:rdyn1.rs
 //#Cross: false
