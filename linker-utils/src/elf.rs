@@ -298,7 +298,9 @@ pub fn segment_type_to_string(p_type: u32) -> Cow<'static, str> {
         PT_GNU_EH_FRAME,
         PT_GNU_STACK,
         PT_GNU_RELRO,
-        PT_GNU_PROPERTY
+        PT_GNU_PROPERTY,
+        // RISC-V specific program headers
+        SHT_RISCV_ATTRIBUTES
     ] {
         Cow::Borrowed(name)
     } else {
