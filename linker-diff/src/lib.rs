@@ -244,6 +244,9 @@ impl Config {
                 "segment.PT_GNU_RELRO.*",
                 "segment.PT_GNU_STACK.*",
                 "segment.PT_GNU_PROPERTY.*",
+                // TODO: RISC-v
+                "segment.SHT_RISCV_ATTRIBUTES.*",
+                "segment.LOAD.RW.alignment",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
