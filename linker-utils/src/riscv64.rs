@@ -64,7 +64,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             1,
         ),
         object::elf::R_RISCV_TLS_GOT_HI20 => (
-            RelocationKind::TlsLd,
+            RelocationKind::GotTpOff,
             RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::High20),
             None,
             AllowedRange::no_check(),
