@@ -132,6 +132,7 @@ use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
+use strum::Display;
 use strum::EnumString;
 use wait_timeout::ChildExt;
 
@@ -269,7 +270,7 @@ enum LinkerInvocationMode {
     Script,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, EnumString)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, EnumString, Display)]
 #[strum(serialize_all = "snake_case")]
 enum Architecture {
     X86_64,
@@ -285,14 +286,6 @@ const ALL_ARCHITECTURES: &[Architecture] = &[
 ];
 
 impl Architecture {
-    fn name(&self) -> &'static str {
-        match self {
-            Architecture::X86_64 => "x86_64",
-            Architecture::AArch64 => "aarch64",
-            Architecture::RISCV64 => "riscv64",
-        }
-    }
-
     fn emulation_name(&self) -> &'static str {
         match self {
             Architecture::X86_64 => "x86_64",
@@ -301,12 +294,8 @@ impl Architecture {
         }
     }
 
-    fn default_target_triple(&self) -> &'static str {
-        match self {
-            Architecture::X86_64 => "x86_64-unknown-linux-gnu",
-            Architecture::AArch64 => "aarch64-unknown-linux-gnu",
-            Architecture::RISCV64 => "riscv64-unknown-linux-gnu",
-        }
+    fn default_target_triple(&self) -> String {
+        format!("{self}-unknown-linux-gnu")
     }
 
     fn get_cross_sysroot_path(&self) -> String {
@@ -360,12 +349,6 @@ fn get_dynamic_linker(path: impl AsRef<Path>) -> Option<String> {
     interp_data.pop();
 
     String::from_utf8(interp_data.to_owned()).ok()
-}
-
-impl Display for Architecture {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(self.name(), f)
-    }
 }
 
 #[allow(unreachable_code)]
@@ -821,13 +804,12 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                         .trim()
                         .split(",")
                         .map(|arch| {
-                            let arch = arch.trim().to_lowercase();
-                            match arch.as_str() {
-                                "x86_64" => Ok(Architecture::X86_64),
-                                "aarch64" => Ok(Architecture::AArch64),
-                                "riscv64" => Ok(Architecture::RISCV64),
-                                _ => Err(anyhow!(format!("Unsupported architecture: `{}`", arch))),
-                            }
+                            Architecture::try_from(arch).with_context(|| {
+                                anyhow!(format!(
+                                    "Unsupported architecture for #Arch directive: `{}`",
+                                    arch
+                                ))
+                            })
                         })
                         .collect::<Result<Vec<_>>>()?;
                 }
@@ -1330,8 +1312,10 @@ fn get_target(compiler_args: &[String]) -> Result<&String> {
     bail!("No --target flag found");
 }
 
-fn cross_name(cross_arch: Option<Architecture>) -> &'static str {
-    cross_arch.map(|a| a.name()).unwrap_or("host")
+fn cross_name(cross_arch: Option<Architecture>) -> String {
+    cross_arch
+        .map(|a| a.to_string())
+        .unwrap_or("host".to_string())
 }
 
 /// Newer versions of rustc pass -soname=... to the linker when writing shared objects. This sets
