@@ -298,6 +298,13 @@ impl Architecture {
         format!("{self}-unknown-linux-gnu")
     }
 
+    fn default_target_triple_rustc(&self) -> String {
+        match self {
+            Architecture::RISCV64 => "riscv64gc-unknown-linux-gnu".to_string(),
+            other => other.default_target_triple(),
+        }
+    }
+
     fn get_cross_sysroot_path(&self) -> String {
         if is_host_opensuse() {
             format!("/usr/{self}-suse-linux/sys-root")
@@ -1207,7 +1214,7 @@ fn build_obj(
 
             if let Some(arch) = cross_arch {
                 let target = get_target(&compiler_args).cloned().unwrap_or_else(|_| {
-                    command.arg(format!("--target={}", arch.default_target_triple()));
+                    command.arg(format!("--target={}", arch.default_target_triple_rustc()));
                     arch.default_target_triple().to_owned()
                 });
                 let target_underscore = target.replace('-', "_");
