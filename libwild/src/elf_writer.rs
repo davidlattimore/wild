@@ -2135,7 +2135,10 @@ fn apply_relocation<'a, A: Arch>(
                     anyhow::anyhow!("Missing High relocation connected with R_RISCV_PCREL_LO12")
                 })?;
             let hi_rel_info = A::relocation_from_raw(hi_rel.r_type(LittleEndian, false))?;
-            let (resolution, symbol_index, _) = get_resolution(hi_rel, object_layout, layout)?;
+            let (resolution, symbol_index, _) = get_resolution(hi_rel, object_layout, layout)
+                .with_context(|| {
+                    anyhow!("Missing High resolution connected to R_RISCV_PCREL_LO12")
+                })?;
             let place = section_address + hi_offset_in_section;
 
             // Only a subset of relocations is referenced by R_RISCV_PCREL_LO12 relocations.
