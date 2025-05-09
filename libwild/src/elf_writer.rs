@@ -2359,7 +2359,7 @@ fn apply_relocation<'a, A: Arch>(
             | RelocationKind::AbsoluteSubtraction
             | RelocationKind::AbsoluteSubtractionWord6
     ) {
-        adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?;
+        value = adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?;
     }
 
     if let Some(relaxation) = relaxation {
