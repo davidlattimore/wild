@@ -2133,7 +2133,11 @@ fn apply_relocation<'a, A: Arch>(
                 .wrapping_sub(section_address);
             // The High-part relocation is typically just before us.
             let hi_rel = relocations_to_search
-                .find(|r| r.r_offset(e) == hi_offset_in_section)
+                .find(|r| {
+                    r.r_offset(e) == hi_offset_in_section
+                        // RELAX relocations have the same offset as the HIGH part relocation!
+                        && r.r_type(e, false) != object::elf::R_RISCV_RELAX
+                })
                 .with_context(|| {
                     anyhow::anyhow!("Missing High relocation connected with R_RISCV_PCREL_LO12")
                 })?;
