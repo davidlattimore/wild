@@ -1595,6 +1595,13 @@ impl<'data> Layout<'data> {
         tdata.alignment.align_down(tls_start)
     }
 
+    /// Returns the memory address of the start of the TLS segment used by the RISC-V.
+    pub(crate) fn tls_start_address_riscv64(&self) -> u64 {
+        let tdata = self.section_layouts.get(output_section_id::TDATA);
+        let tls_start = tdata.mem_offset;
+        tdata.alignment.align_down(tls_start)
+    }
+
     pub(crate) fn layout_data(&self) -> linker_layout::Layout {
         let files = self
             .group_layouts
@@ -2870,6 +2877,7 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
         | RelocationKind::TpOffAArch64
+        | RelocationKind::TpOffRISCV
         | RelocationKind::SymRelGotBase
         | RelocationKind::PairSubtraction => ResolutionFlags::DIRECT,
         RelocationKind::None | RelocationKind::AbsoluteAArch64 => ResolutionFlags::empty(),

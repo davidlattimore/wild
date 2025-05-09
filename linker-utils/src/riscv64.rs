@@ -106,14 +106,14 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             1,
         ),
         object::elf::R_RISCV_TPREL_HI20 => (
-            RelocationKind::TpOff,
+            RelocationKind::TpOffRISCV,
             RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::High20),
             None,
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_RISCV_TPREL_LO12_I | object::elf::R_RISCV_TPREL_LO12_S => (
-            RelocationKind::TpOff,
+            RelocationKind::TpOffRISCV,
             RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::Low12),
             None,
             AllowedRange::no_check(),
