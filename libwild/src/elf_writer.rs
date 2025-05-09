@@ -2188,24 +2188,35 @@ fn apply_relocation<'a, A: Arch>(
                 set_rel.r_type(LittleEndian, false) == object::elf::R_RISCV_SET_ULEB128,
                 "R_RISCV_SET_ULEB128 must be the previous relocation"
             );
-            let (set_resolution, set_symbol_index, _) =
+            let (set_resolution, set_symbol_index, set_local_symbol_id) =
                 get_resolution(set_rel, object_layout, layout)?;
 
-            set_resolution
-                .value_with_addend(
-                    set_rel.r_addend.get(e),
-                    set_symbol_index,
-                    object_layout,
-                    &layout.merged_strings,
-                    &layout.merged_string_start_addresses,
-                )?
-                .wrapping_sub(resolution.value_with_addend(
-                    addend,
-                    symbol_index,
-                    object_layout,
-                    &layout.merged_strings,
-                    &layout.merged_string_start_addresses,
-                )?)
+            let set_resolution_val = set_resolution.value_with_addend(
+                set_rel.r_addend.get(e),
+                set_symbol_index,
+                object_layout,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+            )?;
+            let sub_resolution_val = resolution.value_with_addend(
+                addend,
+                symbol_index,
+                object_layout,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+            )?;
+            let (value, overflow) = set_resolution_val.overflowing_sub(sub_resolution_val);
+            ensure!(
+                !overflow,
+                "ULEB128 overflow should not happen: {} (0x{}) - {} (0x{})",
+                layout
+                    .symbol_db
+                    .symbol_name_for_display(set_local_symbol_id),
+                HexU64::new(set_resolution_val),
+                layout.symbol_db.symbol_name_for_display(local_symbol_id),
+                HexU64::new(sub_resolution_val)
+            );
+            value
         }
         RelocationKind::GotRelative => resolution
             .got_address()?
