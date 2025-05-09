@@ -1678,7 +1678,10 @@ impl<'data> ObjectLayout<'data> {
             // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of relocations where the later
             // one actually points to a label of the HI20 relocations and thus we need to find it. The relocation is typically
             // right before the LO12_* relocation.
-            let relocations_to_search = relocations[..i].iter().chain(relocations[i + 1..].iter());
+            let relocations_to_search = relocations[..i]
+                .iter()
+                .rev()
+                .chain(relocations[i + 1..].iter());
             modifier = apply_relocation::<A>(
                 self,
                 offset_in_section,
@@ -2184,6 +2187,10 @@ fn apply_relocation<'a, A: Arch>(
             let set_rel = relocations_to_search
                 .next()
                 .with_context(|| anyhow::anyhow!("Missing previous relocation"))?;
+            ensure!(
+                set_rel.r_offset(e) == rel.r_offset(e),
+                "R_RISCV_SET_ULEB128 relocation must have equal offset"
+            );
             anyhow::ensure!(
                 set_rel.r_type(LittleEndian, false) == object::elf::R_RISCV_SET_ULEB128,
                 "R_RISCV_SET_ULEB128 must be the previous relocation"
