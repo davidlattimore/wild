@@ -2758,7 +2758,7 @@ fn process_relocation<A: Arch>(
         let mut resolution_flags = resolution_flags(rel_info.kind);
 
         if rel_info.kind.is_tls() {
-            if does_relocation_require_static_tls(r_type) {
+            if does_relocation_require_static_tls(rel_info.kind) {
                 resources
                     .has_static_tls
                     .store(true, atomic::Ordering::Relaxed);
@@ -2832,8 +2832,8 @@ fn process_relocation<A: Arch>(
 /// Returns whether the supplied relocation type requires static TLS. If true and we're writing a
 /// shared object, then the STATIC_TLS will be set in the shared object which is a signal to the
 /// runtime loader that the shared object cannot be loaded at runtime (e.g. with dlopen).
-fn does_relocation_require_static_tls(r_type: u32) -> bool {
-    r_type == object::elf::R_X86_64_GOTTPOFF
+fn does_relocation_require_static_tls(rel_kind: RelocationKind) -> bool {
+    resolution_flags(rel_kind) == ResolutionFlags::GOT_TLS_OFFSET
 }
 
 fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
