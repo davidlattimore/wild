@@ -2156,6 +2156,10 @@ fn apply_relocation<'a, A: Arch>(
                     .get()
                     .wrapping_add(addend as u64)
                     .wrapping_sub(place),
+                RelocationKind::GotTpOff => resolution
+                    .got_address()?
+                    .wrapping_add(addend as u64)
+                    .wrapping_sub(place),
                 _ => anyhow::bail!(format!(
                     "Unsupported high part relocation {:?} connected with R_RISCV_PCREL_LO12",
                     hi_rel_info.kind
