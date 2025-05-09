@@ -143,7 +143,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "miniz_oxide",
- "object",
+ "object 0.36.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustc-demangle",
  "windows-targets",
 ]
@@ -290,7 +290,7 @@ version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fde0e0ec90c9dfb3b4b1a0891a7dcd0e2bffde2f7efed5fe7c9bb00e5bfb915e"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -419,7 +419,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33d852cb9b869c2a9b3df2f71a3074817f01e1844f839a144f5fcef059a4eb5d"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -442,7 +442,7 @@ checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
 dependencies = [
  "cfg-if",
  "rustix 1.0.2",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -636,6 +636,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
+name = "leb128"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "884e2677b40cc8c339eaefcb701c32ef1fd2493d71118dc0ca4b6a736c93bd67"
+
+[[package]]
 name = "libc"
 version = "0.2.172"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -677,7 +683,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "normalize-path",
- "object",
+ "object 0.36.7 (git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32)",
  "rayon",
  "sharded-offset-map",
  "sharded-vec-writer",
@@ -718,7 +724,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "object",
+ "object 0.36.7 (git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32)",
  "rayon",
  "symbolic-demangle",
  "tempfile",
@@ -750,7 +756,8 @@ name = "linker-utils"
 version = "0.4.0"
 dependencies = [
  "anyhow",
- "object",
+ "leb128",
+ "object 0.36.7 (git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32)",
 ]
 
 [[package]]
@@ -849,6 +856,14 @@ name = "object"
 version = "0.36.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "object"
+version = "0.36.7"
+source = "git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32#61474b7de8074f91b78ad24ff2424e54a22f8b32"
 dependencies = [
  "memchr",
 ]
@@ -1091,7 +1106,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1104,7 +1119,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.9.2",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1306,7 +1321,7 @@ dependencies = [
  "getrandom",
  "once_cell",
  "rustix 1.0.2",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1474,7 +1489,7 @@ dependencies = [
  "libwild",
  "linker-diff",
  "mimalloc",
- "object",
+ "object 0.36.7 (git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32)",
  "os_info",
  "rstest",
  "serde",

@@ -8,6 +8,7 @@ use itertools::Itertools;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_SIZE_BITS;
 use linker_utils::aarch64::RelaxationKind;
+use linker_utils::elf::AArch64Instruction;
 use linker_utils::elf::BitMask;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::PageMask;
@@ -363,14 +364,22 @@ const CHAINS: &[&[RType]] = &[
 ];
 
 const REL_ADR_PAGE: BitMask = BitMask::new(
-    RelocationInstruction::Adr,
+    RelocationInstruction::AArch64(AArch64Instruction::Adr),
     DEFAULT_AARCH64_PAGE_SIZE_BITS as u32,
     DEFAULT_AARCH64_PAGE_SIZE_BITS as u32 + 21,
 );
 
-const REL_LDR_OFFSET: BitMask = BitMask::new(RelocationInstruction::LdrRegister, 3, 3 + 12);
+const REL_LDR_OFFSET: BitMask = BitMask::new(
+    RelocationInstruction::AArch64(AArch64Instruction::LdrRegister),
+    3,
+    3 + 12,
+);
 
-const REL_ADD_LITERAL: BitMask = BitMask::new(RelocationInstruction::Add, 0, 12);
+const REL_ADD_LITERAL: BitMask = BitMask::new(
+    RelocationInstruction::AArch64(AArch64Instruction::Add),
+    0,
+    12,
+);
 
 fn decode_plt_entry_template_1(
     plt_entry: &[u8],
