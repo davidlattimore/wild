@@ -1072,7 +1072,7 @@ impl RelocationInstruction {
     pub fn write_windows_size(self) -> usize {
         match self {
             Self::AArch64(..) => 4,
-            Self::RISCV(..) => 8,
+            Self::RISCV(..) => 10,
         }
     }
 }
