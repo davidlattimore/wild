@@ -4,7 +4,7 @@ members = ["cargo:wild"]
 # Config for 'dist'
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.28.0"
+cargo-dist-version = "0.28.5"
 # CI backends to support
 ci = "github"
 # The installers to generate for each app
@@ -15,6 +15,3 @@ targets = ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"]
 install-path = "CARGO_HOME"
 # Whether to install an updater program
 install-updater = false
-
-[dist.github-custom-runners]
-global = "ubuntu-latest"
