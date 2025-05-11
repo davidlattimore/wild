@@ -58,6 +58,7 @@ pub struct Args {
     pub(crate) file_write_mode: Option<FileWriteMode>,
     pub(crate) no_undefined: bool,
     pub(crate) needs_origin_handling: bool,
+    pub(crate) needs_nodelete_handling: bool,
     pub(crate) allow_copy_relocations: bool,
     pub(crate) sysroot: Option<Box<Path>>,
     pub(crate) undefined: Vec<String>,
@@ -260,6 +261,7 @@ impl Default for Args {
             execstack: false,
             should_fork: true,
             needs_origin_handling: false,
+            needs_nodelete_handling: false,
             file_write_mode: None,
             build_id: BuildIdOption::None,
             files_per_group: None,
@@ -325,6 +327,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
                 "execstack" => args.execstack = true,
                 "noexecstack" => args.execstack = false,
                 "nocopyreloc" => args.allow_copy_relocations = false,
+                "nodelete" => args.needs_nodelete_handling = true,
                 _ => {
                     warn_unsupported(&format!("-z {arg}"))?;
                     // TODO: Handle these
