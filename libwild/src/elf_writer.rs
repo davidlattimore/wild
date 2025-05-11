@@ -5,6 +5,7 @@ use self::elf::TLS_MODULE_BASE_SYMBOL_NAME;
 use self::elf::get_page_mask;
 use crate::alignment;
 use crate::arch::Arch;
+use crate::arch::Architecture;
 use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::BuildIdOption;
@@ -3160,13 +3161,18 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     }),
     DynamicEntryWriter::optional(
         object::elf::DT_FLAGS,
-        |inputs| inputs.dt_flags() != 0,
+        |inputs| inputs.args.arch != Architecture::AArch64 && inputs.dt_flags() != 0,
         |inputs| inputs.dt_flags(),
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_FLAGS_1,
         |inputs| inputs.dt_flags_1() != 0,
         |inputs| inputs.dt_flags_1(),
+    ),
+    DynamicEntryWriter::optional(
+        object::elf::DT_BIND_NOW,
+        |inputs| inputs.args.arch == Architecture::AArch64,
+        |_| object::elf::DF_BIND_NOW.into(),
     ),
     DynamicEntryWriter::new(object::elf::DT_NULL, |_inputs| 0),
 ];
