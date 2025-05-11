@@ -1467,6 +1467,10 @@ enum Referent<'data, R: RType> {
     TlsModuleId,
     TlsDescCall,
     TlsDesc(SymtabEntryInfo<'data>),
+
+    /// No relocation is applied. This is used for example when a TLSLD relocation is optimised
+    /// away.
+    NoRelocation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1570,6 +1574,7 @@ impl<R: RType> Referent<'_, R> {
             Referent::TlsModuleId => write!(f, "TlsModuleId")?,
             Referent::TlsGd(symbol) => write!(f, "TlsGd({symbol})")?,
             Referent::TlsDescCall => write!(f, "TlsDescCall")?,
+            Referent::NoRelocation => write!(f, "NoRelocation")?,
         }
 
         Ok(())
@@ -1889,6 +1894,9 @@ impl<'data> RelaxationTester<'data> {
         let mut addend = 0;
         let mut referent = None;
 
+        // Whether all relocations have been optimised away.
+        let mut all_none = true;
+
         let mut value_kind = ValueKind::OptionalPlt;
 
         // Empty groups are not permitted.
@@ -1962,6 +1970,10 @@ impl<'data> RelaxationTester<'data> {
                 value_kind = kind;
             }
 
+            if relocation_info.kind != RelocationKind::None {
+                all_none = false;
+            }
+
             match relocation_info.kind {
                 RelocationKind::TlsDescCall => {
                     referent = Some(Referent::TlsDescCall);
@@ -1978,6 +1990,10 @@ impl<'data> RelaxationTester<'data> {
             value = relative_to.wrapping_add(value);
 
             merged_value = merged_value.wrapping_add(value);
+        }
+
+        if all_none {
+            referent = Some(Referent::NoRelocation);
         }
 
         // The relocation info for our primary and alt r-types should be the same for our purposes
