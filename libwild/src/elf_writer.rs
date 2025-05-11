@@ -1788,34 +1788,45 @@ impl<'data> ObjectLayout<'data> {
                             if let Some(section_address) =
                                 self.section_resolutions[section_index.0].address()
                             {
-                                should_keep = true;
-                                let cie_pointer_pos = input_pos as u32 + 4;
-                                let input_cie_pos = cie_pointer_pos
-                                    .checked_sub(prefix.cie_id)
-                                    .with_context(|| {
-                                        format!(
-                                            "CIE pointer is {}, but we're at offset {}",
-                                            prefix.cie_id, cie_pointer_pos
-                                        )
-                                    })?;
-                                if let Some(hdr_out) = table_writer.take_eh_frame_hdr_entry() {
-                                    let frame_ptr = (section_address + offset_in_section) as i64
-                                        - eh_frame_hdr_address as i64;
-                                    let frame_info_ptr = (frame_info_ptr_base + output_pos as u64)
-                                        as i64
-                                        - eh_frame_hdr_address as i64;
-                                    *hdr_out = EhFrameHdrEntry {
-                                        frame_ptr: i32::try_from(frame_ptr)
-                                            .context("32 bit overflow in frame_ptr")?,
-                                        frame_info_ptr: i32::try_from(frame_info_ptr).context(
-                                            "32 bit overflow when computing frame_info_ptr",
-                                        )?,
-                                    };
+                                if self
+                                    .object
+                                    .section(section_index)?
+                                    .sh_size
+                                    .get(LittleEndian)
+                                    != 0
+                                {
+                                    should_keep = true;
+                                    let cie_pointer_pos = input_pos as u32 + 4;
+                                    let input_cie_pos = cie_pointer_pos
+                                        .checked_sub(prefix.cie_id)
+                                        .with_context(|| {
+                                            format!(
+                                                "CIE pointer is {}, but we're at offset {}",
+                                                prefix.cie_id, cie_pointer_pos
+                                            )
+                                        })?;
+
+                                    if let Some(hdr_out) = table_writer.take_eh_frame_hdr_entry() {
+                                        let frame_ptr = (section_address + offset_in_section)
+                                            as i64
+                                            - eh_frame_hdr_address as i64;
+                                        let frame_info_ptr =
+                                            (frame_info_ptr_base + output_pos as u64) as i64
+                                                - eh_frame_hdr_address as i64;
+                                        *hdr_out = EhFrameHdrEntry {
+                                            frame_ptr: i32::try_from(frame_ptr)
+                                                .context("32 bit overflow in frame_ptr")?,
+                                            frame_info_ptr: i32::try_from(frame_info_ptr).context(
+                                                "32 bit overflow when computing frame_info_ptr",
+                                            )?,
+                                        };
+                                    }
+                                    // TODO: Experiment with skipping this lookup if the `input_cie_pos`
+                                    // is the same as the previous entry.
+                                    let output_cie_pos = cies_offset_conversion.get(&input_cie_pos).with_context(|| format!("FDE referenced CIE at {input_cie_pos}, but no CIE at that position"))?;
+                                    output_cie_offset =
+                                        Some(output_pos as u32 + 4 - *output_cie_pos);
                                 }
-                                // TODO: Experiment with skipping this lookup if the `input_cie_pos`
-                                // is the same as the previous entry.
-                                let output_cie_pos = cies_offset_conversion.get(&input_cie_pos).with_context(|| format!("FDE referenced CIE at {input_cie_pos}, but no CIE at that position"))?;
-                                output_cie_offset = Some(output_pos as u32 + 4 - *output_cie_pos);
                             }
                         }
                     }
