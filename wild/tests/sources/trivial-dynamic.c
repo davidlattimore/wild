@@ -15,6 +15,8 @@
 
 //#Config:origin:default
 //#LinkArgs:-z now -z origin
+// Some versions of GNU ld don't use the DT_FLAGS at all and rely on DT_FLAGS_1 and tags.
+//#DiffIgnore:.dynamic.DT_FLAGS.ORIGIN
 
 #include "runtime.h"
 
