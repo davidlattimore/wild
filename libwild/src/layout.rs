@@ -3813,12 +3813,14 @@ impl<'data> ObjectLayoutState<'data> {
             .get(part_id.output_section_id())
             .fetch_or(true, atomic::Ordering::Relaxed);
 
-        self.process_section_exception_frames::<A>(
-            unloaded.last_frame_index,
-            common,
-            resources,
-            queue,
-        )?;
+        if section.size > 0 {
+            self.process_section_exception_frames::<A>(
+                unloaded.last_frame_index,
+                common,
+                resources,
+                queue,
+            )?;
+        }
 
         self.sections[section_index.0] = SectionSlot::Loaded(section);
 
