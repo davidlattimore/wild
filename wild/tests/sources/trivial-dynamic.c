@@ -16,6 +16,9 @@
 //#Config:origin:default
 //#LinkArgs:-z now -z origin
 
+//#Config:nodelete:default
+//#LinkArgs:-z now -z nodelete
+
 #include "runtime.h"
 
 int foo(void);

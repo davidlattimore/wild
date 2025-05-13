@@ -3213,6 +3213,10 @@ impl DynamicEntryInputs<'_> {
             flags |= object::elf::DF_1_ORIGIN;
         }
 
+        if self.args.output_kind().is_shared_object() && self.args.needs_nodelete_handling {
+            flags |= object::elf::DF_1_NODELETE;
+        }
+
         u64::from(flags)
     }
 
