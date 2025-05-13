@@ -2338,7 +2338,8 @@ fn integration_test(
         "shared-priority.c",
         "shared.c",
         "duplicate_strong_symbols.c",
-        "preinit-array.c"
+        "preinit-array.c",
+        "exception.cc"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
