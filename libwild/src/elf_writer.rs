@@ -3040,6 +3040,16 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |inputs| inputs.has_data_in_section(output_section_id::FINI_ARRAY),
         |inputs| inputs.size_of_section(output_section_id::FINI_ARRAY),
     ),
+    DynamicEntryWriter::optional(
+        object::elf::DT_PREINIT_ARRAY,
+        |inputs| inputs.has_data_in_section(output_section_id::PREINIT_ARRAY),
+        |inputs| inputs.vma_of_section(output_section_id::PREINIT_ARRAY),
+    ),
+    DynamicEntryWriter::optional(
+        object::elf::DT_PREINIT_ARRAYSZ,
+        |inputs| inputs.has_data_in_section(output_section_id::PREINIT_ARRAY),
+        |inputs| inputs.size_of_section(output_section_id::PREINIT_ARRAY),
+    ),
     DynamicEntryWriter::new(object::elf::DT_STRTAB, |inputs| {
         inputs.vma_of_section(output_section_id::DYNSTR)
     }),

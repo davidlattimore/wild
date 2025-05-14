@@ -2320,7 +2320,8 @@ fn integration_test(
         "dynamic-bss-only.c",
         "shared-priority.c",
         "shared.c",
-        "duplicate_strong_symbols.c"
+        "duplicate_strong_symbols.c",
+        "preinit-array.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
