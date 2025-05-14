@@ -4,8 +4,8 @@
 //#DiffIgnore:section.data
 //#DiffIgnore:section.rodata
 //#DiffIgnore:.dynamic.DT_PREINIT_ARRAY
-//#RequiresGlibc:true
 //#Arch: x86_64
+//#RequiresGlibc:true
 
 int exit_code;
 
