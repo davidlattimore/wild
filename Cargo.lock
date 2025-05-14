@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "libwild"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "ar",
@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "linker-diff"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "ascii_table",
@@ -729,7 +729,7 @@ dependencies = [
 
 [[package]]
 name = "linker-layout"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "postcard",
@@ -738,7 +738,7 @@ dependencies = [
 
 [[package]]
 name = "linker-trace"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "postcard",
@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "linker-utils"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "object",
@@ -1464,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "wild-linker"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "dhat",
