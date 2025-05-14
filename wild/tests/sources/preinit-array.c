@@ -1,11 +1,16 @@
 //#Object:preinit-array.s
-//#LinkerDriver:gcc
+//#Shared:runtime.c
+// We're linking different .so files, so this is expected.
+//#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:segment.LOAD.RW.alignment
-//#DiffIgnore:section.data
-//#DiffIgnore:section.rodata
 //#DiffIgnore:.dynamic.DT_PREINIT_ARRAY
+//#DiffIgnore:.dynamic.DT_RELA
+//#DiffIgnore:.dynamic.DT_RELAENT
 //#Arch: x86_64
 //#RequiresGlibc:true
+//#Static:false
+
+#include "runtime.h"
 
 int exit_code;
 
@@ -13,6 +18,7 @@ void preinit() {
     exit_code = 42;
 }
 
-int main() {
-    return exit_code;
+void _start(void) {
+    runtime_init();
+    exit_syscall(exit_code);
 }
