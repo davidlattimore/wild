@@ -638,9 +638,10 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(PREINIT_ARRAY_SECTION_NAME)),
         ty: sht::PREINIT_ARRAY,
-        section_flags: shf::ALLOC,
+        section_flags: shf::ALLOC.with(shf::WRITE),
         start_symbol_name: Some("__preinit_array_start"),
         end_symbol_name: Some("__preinit_array_end"),
+        is_relro: true,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -869,7 +870,6 @@ impl CustomSectionIds {
         builder.add_section(RODATA);
         builder.add_section(EH_FRAME_HDR);
         builder.add_section(EH_FRAME);
-        builder.add_section(PREINIT_ARRAY);
         builder.add_section(GCC_EXCEPT_TABLE);
         builder.add_sections(&self.ro);
 
@@ -883,6 +883,7 @@ impl CustomSectionIds {
         builder.add_section(TBSS);
         builder.add_section(INIT_ARRAY);
         builder.add_section(FINI_ARRAY);
+        builder.add_section(PREINIT_ARRAY);
         builder.add_section(DATA_REL_RO);
         builder.add_section(DYNAMIC);
         builder.add_section(GOT);
