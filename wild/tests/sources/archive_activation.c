@@ -1,5 +1,6 @@
 //#AbstractConfig:default
 //#CompArgs:-ffunction-sections
+//#DiffIgnore:section.relro_padding
 //#EnableLinker:lld
 
 //#Config:regular:default
