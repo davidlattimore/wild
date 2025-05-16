@@ -14,7 +14,7 @@ repository = "https://github.com/davidlattimore/wild"
 license = "MIT OR Apache-2.0"
 version = "0.5.0"
 readme = "README.md"
-rust-version = "1.86"
+rust-version = "1.87"
 edition = "2024"
 
 [workspace.dependencies]
@@ -180,10 +180,6 @@ too_many_lines = "allow"
 
 # Some of our tests do this and there doesn't seem to be much value in changing them.
 unreadable_literal = "allow"
-
-# This lint has false positives.
-# https://github.com/rust-lang/rust-clippy/issues/14192#issuecomment-2777602132
-manual_slice_fill = "allow"
 
 trivially_copy_pass_by_ref = "warn"
 uninlined_format_args = "warn"
