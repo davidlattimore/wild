@@ -14,13 +14,13 @@
 
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
+use crate::bail;
+use crate::ensure;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::input_data::FileId;
 use crate::linker_script::maybe_forced_sysroot;
 use crate::save_dir::SaveDir;
-use anyhow::Context as _;
-use anyhow::bail;
-use anyhow::ensure;
 use rayon::ThreadPoolBuilder;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -575,6 +575,7 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             if input.next().is_some() || arg_num > 1 {
                 bail!("Mixing of @{{filename}} and regular arguments isn't supported");
             }
+            save_dir.handle_file(path)?;
             return parse_from_argument_file(Path::new(path));
         } else if long_arg_eq("help") {
             bail!("Sorry, help isn't implemented yet");

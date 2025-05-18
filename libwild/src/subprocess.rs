@@ -1,13 +1,12 @@
 use crate::Args;
+use crate::bail;
+use crate::error::Context as _;
 use crate::error::Result;
-use anyhow::Context as _;
-use anyhow::anyhow;
 use libc::c_char;
 use libc::fork;
 use libc::pid_t;
 use std::ffi::c_int;
 use std::ffi::c_void;
-use std::io::Error;
 
 /// Runs the linker, in a subprocess if possible, prints any errors, then exits.
 ///
@@ -110,9 +109,9 @@ fn wait_for_child_done(fds: &[c_int], child_pid: pid_t) -> i32 {
 fn make_pipe(fds: &mut [c_int; 2]) -> Result {
     match unsafe { libc::pipe(fds.as_mut_ptr()) } {
         0 => Ok(()),
-        _ => Err(anyhow!(
+        _ => bail!(
             "Error creating pipe. Errno = {:?}",
-            Error::last_os_error().raw_os_error().unwrap_or(-1)
-        )),
+            std::io::Error::last_os_error().raw_os_error().unwrap_or(-1)
+        ),
     }
 }

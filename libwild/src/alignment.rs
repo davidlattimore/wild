@@ -1,5 +1,5 @@
+use crate::bail;
 use crate::error::Result;
-use anyhow::bail;
 use std::fmt::Debug;
 use std::fmt::Display;
 

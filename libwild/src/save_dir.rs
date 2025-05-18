@@ -1,7 +1,7 @@
 //! Support for saving inputs for later use.
 
+use crate::error::Context as _;
 use crate::error::Result;
-use anyhow::Context;
 use foldhash::HashMap as FoldHashMap;
 use foldhash::HashMapExt as _;
 use std::io::BufWriter;

@@ -4,13 +4,13 @@
 //! generally passed via the --version-script flag instead. They can also sometimes be quite large.
 //! For this reason, we have a separate parser for them.
 
+use crate::error;
 use crate::error::Result;
 use crate::hash::PassThroughHasher;
 use crate::hash::PreHashed;
 use crate::input_data::VersionScriptData;
 use crate::linker_script::skip_comments_and_whitespace;
 use crate::symbol::UnversionedSymbolName;
-use anyhow::anyhow;
 use std::collections::HashSet;
 use winnow::BStr;
 use winnow::Parser;
@@ -165,7 +165,7 @@ impl<'data> VersionScript<'data> {
     pub(crate) fn parse(data: VersionScriptData<'data>) -> Result<VersionScript<'data>> {
         parse_version_script
             .parse(BStr::new(data.raw))
-            .map_err(|err| anyhow!("Failed to parse version script:\n{err}",))
+            .map_err(|err| error!("Failed to parse version script:\n{err}"))
     }
 
     pub(crate) fn is_local(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {

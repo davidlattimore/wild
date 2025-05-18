@@ -1,9 +1,9 @@
 //! Abstraction over different CPU architectures.
 
 use crate::args::OutputKind;
+use crate::bail;
 use crate::error::Result;
 use crate::resolution::ValueFlags;
-use anyhow::bail;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::SectionFlags;
@@ -39,7 +39,7 @@ pub(crate) enum Architecture {
 }
 
 impl FromStr for Architecture {
-    type Err = anyhow::Error;
+    type Err = crate::error::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
@@ -51,7 +51,7 @@ impl FromStr for Architecture {
 }
 
 impl TryFrom<u16> for Architecture {
-    type Error = anyhow::Error;
+    type Error = crate::error::Error;
 
     fn try_from(arch: u16) -> Result<Self, Self::Error> {
         match arch {

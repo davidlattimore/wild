@@ -1,8 +1,8 @@
 //! Code for identifying what sort of file we're dealing with based on the bytes of the file.
 
+use crate::bail;
 use crate::elf;
 use crate::error::Result;
-use anyhow::bail;
 use object::LittleEndian;
 use object::read::elf::FileHeader;
 

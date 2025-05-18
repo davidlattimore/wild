@@ -101,10 +101,10 @@
 //! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the
 //! musl Rust toolchain.
 
-use anyhow::Context;
-use anyhow::anyhow;
-use anyhow::bail;
 use itertools::Itertools;
+use libwild::bail;
+use libwild::error;
+use libwild::error::Context as _;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection as _;
@@ -133,7 +133,7 @@ use std::time::Instant;
 use strum::EnumString;
 use wait_timeout::ChildExt;
 
-type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
+type Result<T = (), E = libwild::error::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
 
 fn base_dir() -> &'static Path {
@@ -682,9 +682,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                     }
                     let name = if let Some((name, inherit)) = arg.split_once(':') {
                         let inherit_index = config_name_to_index.get(inherit).ok_or_else(|| {
-                            anyhow!(
-                                "Config `{name}` inherits from unknown config named `{inherit}`"
-                            )
+                            error!("Config `{name}` inherits from unknown config named `{inherit}`")
                         })?;
 
                         config = configs[*inherit_index].clone();
@@ -780,7 +778,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                 "SecEquiv" => config.section_equiv.push(
                     arg.trim()
                         .split_once('=')
-                        .ok_or_else(|| anyhow!("DiffIgnore missing '='"))
+                        .ok_or_else(|| error!("DiffIgnore missing '='"))
                         .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
                 ),
                 input_type @ ("Object" | "Archive" | "ThinArchive" | "Shared" | "LinkerScript") => {
@@ -808,7 +806,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                             match arch.as_str() {
                                 "x86_64" => Ok(Architecture::X86_64),
                                 "aarch64" => Ok(Architecture::AArch64),
-                                _ => Err(anyhow!(format!("Unsupported architecture: `{}`", arch))),
+                                _ => Err(error!("Unsupported architecture: `{}`", arch)),
                             }
                         })
                         .collect::<Result<Vec<_>>>()?;
@@ -923,7 +921,7 @@ impl Program<'_> {
 
         let exit_code = status
             .code()
-            .ok_or_else(|| anyhow!("Binary exited with signal"))?;
+            .ok_or_else(|| error!("Binary exited with signal"))?;
 
         if exit_code != 42 {
             bail!("Binary exited with unexpected exit code {exit_code}");
