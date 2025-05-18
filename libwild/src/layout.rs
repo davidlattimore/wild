@@ -2814,9 +2814,17 @@ fn process_relocation<A: Arch>(
                 args,
             ) {
                 let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
+                let source_info = crate::dwarf_address_info::get_source_info::<A>(
+                    object.object,
+                    &object.relocations,
+                    section,
+                    rel_offset,
+                )
+                .context("Failed to get source info")?;
+
                 resources.report_error(error!(
-                    "Undefined symbol {symbol_name}, referenced by {}",
-                    object.input,
+                    "Undefined symbol {symbol_name}, referenced by {}\n    {}",
+                    source_info, object.input,
                 ));
             }
         }
@@ -4300,9 +4308,11 @@ fn process_eh_frame_data<'data, A: Arch>(
             bytemuck::pod_read_unaligned(&data[offset..offset + PREFIX_LEN]);
         let size = size_of_val(&prefix.length) + prefix.length as usize;
         let next_offset = offset + size;
+
         if next_offset > data.len() {
             bail!("Invalid .eh_frame data");
         }
+
         if prefix.cie_id == 0 {
             // This is a CIE
             let mut referenced_symbols: SmallVec<[SymbolId; 1]> = Default::default();
@@ -4316,9 +4326,11 @@ fn process_eh_frame_data<'data, A: Arch>(
                     // This relocation belongs to the next entry.
                     break;
                 }
+
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
                 process_relocation::<A>(object, common, rel, eh_frame_section, resources, queue)?;
+
                 if let Some(local_sym_index) = rel.symbol(e, false) {
                     let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);
                     let definition = resources.symbol_db.definition(local_symbol_id);
@@ -4328,6 +4340,7 @@ fn process_eh_frame_data<'data, A: Arch>(
                 }
                 rel_iter.next();
             }
+
             object.cies.push(CieAtOffset {
                 offset: offset as u32,
                 cie: Cie {

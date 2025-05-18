@@ -668,6 +668,7 @@ dependencies = [
  "crossbeam-utils",
  "flate2",
  "foldhash",
+ "gimli",
  "hashbrown",
  "hex",
  "itertools",
