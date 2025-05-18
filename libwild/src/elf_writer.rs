@@ -11,6 +11,7 @@ use crate::args::BuildIdOption;
 use crate::args::FileWriteMode;
 use crate::args::OutputKind;
 use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
+use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf;
 use crate::elf::DynamicEntry;
@@ -29,6 +30,9 @@ use crate::elf::Verneed;
 use crate::elf::Versym;
 use crate::elf::slice_from_all_bytes_mut;
 use crate::elf::write_relocation_to_buffer;
+use crate::ensure;
+use crate::error;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
@@ -66,10 +70,6 @@ use crate::string_merging::get_merged_string_output_address;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
-use anyhow::Context;
-use anyhow::anyhow;
-use anyhow::bail;
-use anyhow::ensure;
 use foldhash::HashMap as FoldHashMap;
 use foldhash::HashMapExt as _;
 use linker_utils::elf::DynamicRelocationKind;
@@ -511,14 +511,14 @@ impl SizedOutput {
 }
 
 fn insufficient_allocation(section_name: &str) -> crate::error::Error {
-    anyhow!(
+    error!(
         "Insufficient {section_name} allocation. {}",
         verify_allocations_message()
     )
 }
 
 fn excessive_allocation(section_name: &str, remaining: u64, allocated: u64) -> crate::error::Error {
-    anyhow!(
+    error!(
         "Allocated too much space in {section_name}. {remaining} of {allocated} bytes remain. {}",
         verify_allocations_message()
     )
@@ -753,14 +753,14 @@ impl<'out> VersionWriter<'out> {
     fn take_verneed(&mut self) -> Result<&'out mut Verneed> {
         let bytes = self.take_bytes(size_of::<Verneed>())?;
         Ok(object::from_bytes_mut(bytes)
-            .map_err(|_| anyhow!("Incorrect .gnu.version_r alignment"))?
+            .map_err(|_| error!("Incorrect .gnu.version_r alignment"))?
             .0)
     }
 
     fn take_auxes(&mut self, version_count: u16) -> Result<&'out mut [Vernaux]> {
         let bytes = self.take_bytes(size_of::<Vernaux>() * usize::from(version_count))?;
         object::slice_from_all_bytes_mut::<Vernaux>(bytes)
-            .map_err(|_| anyhow!("Invalid .gnu.version_r allocation"))
+            .map_err(|_| error!("Invalid .gnu.version_r allocation"))
     }
 
     fn take_bytes_d(&mut self, size: usize) -> Result<&'out mut [u8]> {
@@ -771,14 +771,14 @@ impl<'out> VersionWriter<'out> {
     fn take_verdef(&mut self) -> Result<&'out mut Verdef> {
         let bytes = self.take_bytes_d(size_of::<Verdef>())?;
         Ok(object::from_bytes_mut::<Verdef>(bytes)
-            .map_err(|_| anyhow!("Incorrect .gnu.version_d alignment"))?
+            .map_err(|_| error!("Incorrect .gnu.version_d alignment"))?
             .0)
     }
 
     fn take_verdaux(&mut self) -> Result<&'out mut Verdaux> {
         let bytes = self.take_bytes_d(size_of::<Verdaux>())?;
         Ok(object::from_bytes_mut::<Verdaux>(bytes)
-            .map_err(|_| anyhow!("Incorrect .gnu.version_d aux alignment"))?
+            .map_err(|_| error!("Incorrect .gnu.version_d aux alignment"))?
             .0)
     }
 
@@ -1021,7 +1021,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         self.take_next_got_entry()?;
         self.take_next_got_entry()?;
 
-        anyhow::ensure!(
+        ensure!(
             !self.output_kind.is_static_executable(),
             "Cannot create dynamic TLSDESC relocation (function trampoline will be missed) for a static executable"
         );
@@ -2313,7 +2313,7 @@ impl PreludeLayout {
         layout: &Layout,
     ) -> Result {
         let header: &mut FileHeader = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
-            .map_err(|_| anyhow!("Invalid file header allocation"))?
+            .map_err(|_| error!("Invalid file header allocation"))?
             .0;
         populate_file_header::<A>(layout, &self.header_info, header)?;
 
@@ -2638,7 +2638,7 @@ fn write_gnu_property_notes(
     let e = LittleEndian;
     let (note_header, mut rest) =
         from_bytes_mut::<NoteHeader>(buffers.get_mut(part_id::NOTE_GNU_PROPERTY))
-            .map_err(|_| anyhow!("Insufficient .note.gnu.property allocation"))?;
+            .map_err(|_| error!("Insufficient .note.gnu.property allocation"))?;
     note_header.n_namesz.set(e, GNU_NOTE_NAME.len() as u32);
     note_header.n_descsz.set(
         e,
@@ -2671,7 +2671,7 @@ fn write_gnu_hash_tables(
 
     let (header, rest) =
         object::from_bytes_mut::<GnuHashHeader>(buffers.get_mut(part_id::GNU_HASH))
-            .map_err(|_| anyhow!("Insufficient .gnu.hash allocation"))?;
+            .map_err(|_| error!("Insufficient .gnu.hash allocation"))?;
     let e = LittleEndian;
     header.bucket_count.set(e, gnu_hash_layout.bucket_count);
     header.bloom_shift.set(e, gnu_hash_layout.bloom_shift);
@@ -2680,13 +2680,13 @@ fn write_gnu_hash_tables(
 
     let (bloom, rest) =
         object::slice_from_bytes_mut::<u64>(rest, gnu_hash_layout.bloom_count as usize)
-            .map_err(|_| anyhow!("Insufficient bytes for .gnu.hash bloom filter"))?;
+            .map_err(|_| error!("Insufficient bytes for .gnu.hash bloom filter"))?;
     let (buckets, rest) =
         object::slice_from_bytes_mut::<u32>(rest, gnu_hash_layout.bucket_count as usize)
-            .map_err(|_| anyhow!("Insufficient bytes for .gnu.hash buckets"))?;
+            .map_err(|_| error!("Insufficient bytes for .gnu.hash buckets"))?;
     let (chains, _) =
         object::slice_from_bytes_mut::<u32>(rest, epilogue.dynamic_symbol_definitions.len())
-            .map_err(|_| anyhow!("Insufficient bytes for .gnu.hash chains"))?;
+            .map_err(|_| error!("Insufficient bytes for .gnu.hash chains"))?;
 
     bloom.fill(0);
 
@@ -3420,7 +3420,7 @@ impl<'out> ProgramHeaderWriter<'out> {
 
     fn take_header(&mut self) -> Result<&mut ProgramHeader> {
         crate::slice::take_first_mut(&mut self.headers)
-            .ok_or_else(|| anyhow!("Insufficient header slots"))
+            .ok_or_else(|| error!("Insufficient header slots"))
     }
 }
 

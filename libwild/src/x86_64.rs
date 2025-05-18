@@ -6,9 +6,9 @@
 use crate::arch::Arch;
 use crate::args::OutputKind;
 use crate::elf::PLT_ENTRY_SIZE;
+use crate::error;
+use crate::error::Result;
 use crate::resolution::ValueFlags;
-use anyhow::Result;
-use anyhow::anyhow;
 use linker_utils::elf::AllowedRange;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -42,11 +42,12 @@ impl crate::arch::Arch for X86_64 {
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
         let (kind, size) =
             linker_utils::x86_64::relocation_kind_and_size(r_type).ok_or_else(|| {
-                anyhow!(
+                error!(
                     "Unsupported relocation type {}",
                     Self::rel_type_to_string(r_type)
                 )
             })?;
+
         Ok(RelocationKindInfo {
             kind,
             size: RelocationSize::ByteSize(size),
@@ -68,7 +69,7 @@ impl crate::arch::Arch for X86_64 {
         plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
         let offset: i32 = ((got_address.wrapping_sub(plt_address + 0xb)) as i64)
             .try_into()
-            .map_err(|_| anyhow!("PLT is more than 2GiB away from GOT"))?;
+            .map_err(|_| error!("PLT is more than 2GiB away from GOT"))?;
         plt_entry[7..11].copy_from_slice(&offset.to_le_bytes());
         Ok(())
     }

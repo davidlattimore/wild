@@ -17,12 +17,12 @@
 //! ```
 
 use crate::args::Args;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout::FileLayout;
 use crate::layout::GroupLayout;
 use crate::output_section_id;
 use crate::resolution::SectionSlot;
-use anyhow::Context as _;
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::path::PathBuf;

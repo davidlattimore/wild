@@ -2,6 +2,7 @@
 
 use crate::OutputSections;
 use crate::alignment;
+use crate::ensure;
 use crate::error::Result;
 use crate::hash::hash_bytes;
 use crate::input_data::InputLinkerScript;
@@ -18,7 +19,6 @@ use crate::parsing::ProcessedLinkerScript;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
-use anyhow::ensure;
 use hashbrown::HashTable;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;

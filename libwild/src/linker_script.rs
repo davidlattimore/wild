@@ -4,9 +4,9 @@ use crate::alignment::Alignment;
 use crate::args::Input;
 use crate::args::InputSpec;
 use crate::args::Modifiers;
+use crate::error;
+use crate::error::Context as _;
 use crate::error::Result;
-use anyhow::Context;
-use anyhow::anyhow;
 use normalize_path::NormalizePath;
 use std::path::Path;
 use winnow::BStr;
@@ -105,7 +105,7 @@ pub(crate) struct Matcher<'a> {
 impl<'data> LinkerScript<'data> {
     pub(crate) fn parse(bytes: &'data [u8], path: &Path) -> Result<LinkerScript<'data>> {
         let commands = parse_commands.parse(BStr::new(bytes)).map_err(|error| {
-            anyhow!(
+            error!(
                 "Failed to parse linker script `{}`:\n{error}",
                 path.display()
             )

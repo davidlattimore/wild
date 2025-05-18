@@ -2,9 +2,9 @@
 //! Read trait and we want to borrow the data of each entry. We do however use the ar crate as a dev
 //! dependency in our tests so that we can verify consistency.
 
+use crate::bail;
+use crate::error::Context as _;
 use crate::error::Result;
-use anyhow::Context;
-use anyhow::bail;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
 use std::ffi::OsStr;
@@ -283,9 +283,8 @@ impl<'data> Iterator for ArchiveIterator<'data> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bail;
     use crate::error::Result;
-    use anyhow::Context;
-    use anyhow::bail;
     use std::io::Read;
     use std::path::Path;
 

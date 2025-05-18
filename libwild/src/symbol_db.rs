@@ -4,6 +4,9 @@
 use crate::InputLinkerScript;
 use crate::args::Args;
 use crate::args::OutputKind;
+use crate::bail;
+use crate::error::Context as _;
+use crate::error::Error;
 use crate::error::Result;
 use crate::grouping::Group;
 use crate::hash::PassThroughHashMap;
@@ -27,9 +30,6 @@ use crate::symbol::PreHashedSymbolName;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol::VersionedSymbolName;
 use crate::version_script::VersionScript;
-use anyhow::Context;
-use anyhow::Error;
-use anyhow::bail;
 use crossbeam_queue::SegQueue;
 use foldhash::HashMap;
 use foldhash::fast::RandomState;
@@ -736,7 +736,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
         })
         .collect();
 
-    let mut duplicate_errors: Vec<anyhow::Error> = error_queue.into_iter().collect();
+    let mut duplicate_errors: Vec<Error> = error_queue.into_iter().collect();
     duplicate_errors.sort_by_key(|e| e.to_string());
 
     if !duplicate_errors.is_empty() {
@@ -745,9 +745,8 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
             .map(|e| e.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        return Err(anyhow::Error::msg(format!(
-            "Duplicate symbols detected: {error_details}"
-        )));
+
+        bail!("Duplicate symbols detected: {error_details}");
     }
 
     for r in replacements.iter().flat_map(|r| r.iter()) {
@@ -837,7 +836,7 @@ fn select_symbol(
     symbol_id: SymbolId,
     alternatives: &[SymbolId],
     resolved: &[ResolvedGroup],
-) -> Result<SymbolId, anyhow::Error> {
+) -> Result<SymbolId> {
     let mut max_common = None;
     let mut strong_symbol = None;
 

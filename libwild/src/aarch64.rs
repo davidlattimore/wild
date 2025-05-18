@@ -1,7 +1,8 @@
 use crate::arch::Arch;
 use crate::elf::PLT_ENTRY_SIZE;
-use anyhow::Result;
-use anyhow::anyhow;
+use crate::ensure;
+use crate::error;
+use crate::error::Result;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_MASK;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_SIZE;
@@ -40,7 +41,7 @@ impl crate::arch::Arch for AArch64 {
     #[inline(always)]
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
         linker_utils::aarch64::relocation_type_from_raw(r_type).ok_or_else(|| {
-            anyhow!(
+            error!(
                 "Unsupported relocation type {}",
                 Self::rel_type_to_string(r_type)
             )
@@ -67,7 +68,7 @@ impl crate::arch::Arch for AArch64 {
         plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
         let plt_page_address = plt_address & DEFAULT_AARCH64_PAGE_IGNORED_MASK;
         let offset = got_address.wrapping_sub(plt_page_address);
-        anyhow::ensure!(offset < (1 << 32), "PLT is more than 4GiB away from GOT");
+        ensure!(offset < (1 << 32), "PLT is more than 4GiB away from GOT");
         RelocationInstruction::Adr.write_to_value(
             // The immediate value represents a distance in pages.
             offset / DEFAULT_AARCH64_PAGE_SIZE,
