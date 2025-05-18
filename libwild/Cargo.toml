@@ -19,6 +19,7 @@ crossbeam-queue = { workspace = true }
 crossbeam-utils = { workspace = true }
 flate2 = { workspace = true }
 foldhash = { workspace = true }
+gimli = { workspace = true }
 hashbrown = { workspace = true }
 hex = { workspace = true }
 itertools = { workspace = true }

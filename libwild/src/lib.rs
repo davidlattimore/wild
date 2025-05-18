@@ -7,6 +7,7 @@ pub mod args;
 pub(crate) mod debug_trace;
 pub(crate) mod diagnostics;
 pub(crate) mod diff;
+pub(crate) mod dwarf_address_info;
 pub(crate) mod elf;
 pub(crate) mod elf_writer;
 pub mod error;
