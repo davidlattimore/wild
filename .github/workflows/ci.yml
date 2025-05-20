@@ -27,7 +27,7 @@ jobs:
           - 'ubuntu:24.10'
           - 'ubuntu:25.04'
           - 'opensuse/tumbleweed:latest'
-          - 'rust:1.86-alpine'
+          - 'rust:1.87-alpine'
         test-qemu:
           - false
         include:
@@ -39,7 +39,7 @@ jobs:
             container: 'ubuntu:22.04'
         exclude: # TODO: https://github.com/actions/runner/issues/1637
           - runs-on: ubuntu-24.04-arm
-            container: 'rust:1.86-alpine'
+            container: 'rust:1.87-alpine'
       fail-fast: false
 
     runs-on: ${{ matrix.runs-on }}
