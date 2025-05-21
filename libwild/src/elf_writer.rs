@@ -1984,7 +1984,7 @@ fn get_resolution(
     Ok((resolution, symbol_index, local_symbol_id))
 }
 
-const LOW6_MASK: u64 = 0b0011_0000;
+const LOW6_MASK: u64 = 0b0011_1111;
 
 /// Adjust relocation value based on the actual value at the place of a relocation.
 fn adjust_relocation_based_on_value(
@@ -2007,7 +2007,7 @@ fn adjust_relocation_based_on_value(
         RelocationKind::AbsoluteAddition => Ok(current_value.wrapping_add(value)),
         RelocationKind::AbsoluteSubtraction => Ok(current_value.wrapping_sub(value)),
         RelocationKind::AbsoluteSubtractionWord6 => {
-            Ok((current_value & LOW6_MASK).wrapping_sub(value & LOW6_MASK))
+            Ok((current_value & LOW6_MASK).wrapping_sub(value & LOW6_MASK) & LOW6_MASK)
         }
         _ => Err(anyhow::anyhow!("Unexpected relocation: {:?}", rel_info)),
     }
@@ -2362,6 +2362,15 @@ fn apply_relocation<'a, A: Arch>(
         value = adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?;
     }
 
+    // Special case WORD6 type where we need to preserve the 2 most significant bits of u8.
+    if matches!(
+        rel_info.kind,
+        RelocationKind::AbsoluteSetWord6 | RelocationKind::AbsoluteSubtractionWord6
+    ) {
+        tracing::trace!(value = %HexU64::new(value), "value before");
+        value |= u64::from(out[offset_in_section]) & !LOW6_MASK;
+    }
+
     if let Some(relaxation) = relaxation {
         trace.emit(original_place, || {
             format!(
@@ -2392,14 +2401,6 @@ fn apply_relocation<'a, A: Arch>(
             value_hex = %HexU64::new(value),
             symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
             "relocation applied");
-    }
-
-    // Special case WORD6 type where we need to preserve the 2 most significant bits of u8.
-    if matches!(
-        rel_info.kind,
-        RelocationKind::AbsoluteSetWord6 | RelocationKind::AbsoluteSubtractionWord6
-    ) {
-        value |= u64::from(out[offset_in_section]) & !LOW6_MASK;
     }
 
     write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section..])?;
