@@ -329,7 +329,7 @@ impl RISCVInstruction {
                 );
             }
             RISCVInstruction::BType => {
-                let mut mask = extract_bits(extracted_value, 11, 12) << 7;
+                let mut mask = extract_bit(extracted_value, 11) << 7;
                 mask |= extract_bits(extracted_value, 1, 5) << 8;
                 mask |= extract_bits(extracted_value, 5, 11) << 25;
                 mask |= extract_bit(extracted_value, 12) << 31;
@@ -339,6 +339,7 @@ impl RISCVInstruction {
                 let mut mask = extract_bit(extracted_value, 5) << 2;
                 mask |= extract_bits(extracted_value, 1, 3) << 3;
                 mask |= extract_bits(extracted_value, 6, 8) << 5;
+                // rs1' register takes 3 bits here
                 mask |= extract_bits(extracted_value, 3, 5) << 10;
                 mask |= extract_bit(extracted_value, 8) << 12;
                 // The compressed instruction only takes 2 bytes.
