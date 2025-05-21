@@ -2352,23 +2352,16 @@ fn apply_relocation<'a, A: Arch>(
     let offset_in_section = offset_in_section as usize;
 
     // Handle addition and subtraction relocation kinds.
-    if matches!(
-        rel_info.kind,
-        RelocationKind::AbsoluteSetWord6
-            | RelocationKind::AbsoluteAddition
-            | RelocationKind::AbsoluteSubtraction
-            | RelocationKind::AbsoluteSubtractionWord6
-    ) {
-        value = adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?;
-    }
-
-    // Special case WORD6 type where we need to preserve the 2 most significant bits of u8.
-    if matches!(
-        rel_info.kind,
-        RelocationKind::AbsoluteSetWord6 | RelocationKind::AbsoluteSubtractionWord6
-    ) {
-        tracing::trace!(value = %HexU64::new(value), "value before");
-        value |= u64::from(out[offset_in_section]) & !LOW6_MASK;
+    match rel_info.kind {
+        RelocationKind::AbsoluteAddition | RelocationKind::AbsoluteSubtraction => {
+            value = adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?;
+        }
+        RelocationKind::AbsoluteSetWord6 | RelocationKind::AbsoluteSubtractionWord6 => {
+            // Special case WORD6 type where we need to preserve the 2 most significant bits of u8.
+            value = adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?
+                | (u64::from(out[offset_in_section]) & !LOW6_MASK);
+        }
+        _ => {}
     }
 
     if let Some(relaxation) = relaxation {
