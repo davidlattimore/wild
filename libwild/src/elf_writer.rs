@@ -1156,15 +1156,15 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
 
     fn write_dtpoff_relocation<A: Arch>(
         &mut self,
-        place: u64,
+        mut place: u64,
         dynamic_symbol_index: u32,
     ) -> Result {
-        self.write_rela_dyn_general(
-            place,
-            dynamic_symbol_index,
-            A::get_dynamic_relocation_type(DynamicRelocationKind::DtpOff),
-            0,
-        )
+        // TODO: hack
+        let r_type = A::get_dynamic_relocation_type(DynamicRelocationKind::DtpOff);
+        if r_type == object::elf::R_RISCV_TLS_DTPREL64 {
+            place += 0x800;
+        }
+        self.write_rela_dyn_general(place, dynamic_symbol_index, r_type, 0)
     }
 
     fn write_tpoff_relocation<A: Arch>(
