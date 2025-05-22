@@ -44,7 +44,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         object::elf::R_RISCV_JAL => (
             RelocationKind::Relative,
-            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::High20),
+            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::JType),
             None,
             AllowedRange::no_check(),
             1,
@@ -333,6 +333,13 @@ impl RISCVInstruction {
                 mask |= extract_bits(extracted_value, 1, 5) << 8;
                 mask |= extract_bits(extracted_value, 5, 11) << 25;
                 mask |= extract_bit(extracted_value, 12) << 31;
+                or_from_slice(dest, &(mask as u32).to_le_bytes());
+            }
+            RISCVInstruction::JType => {
+                let mut mask = extract_bits(extracted_value, 12, 20) << 12;
+                mask |= extract_bit(extracted_value, 11) << 20;
+                mask |= extract_bits(extracted_value, 1, 11) << 21;
+                mask |= extract_bit(extracted_value, 20) << 31;
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::CBType => {

@@ -1015,6 +1015,9 @@ pub enum RISCVInstruction {
     // Specifies a field as the immediate field in a B-type (branch) instruction
     BType,
 
+    // Specifies a field as the immediate field in a J-type (jump) instruction
+    JType,
+
     // Specifies a field as the immediate field in a CB-type (compressed branch) instruction
     // https://riscv.github.io/riscv-isa-manual/snapshot/unprivileged/#_control_transfer_instructions_2
     CBType,
