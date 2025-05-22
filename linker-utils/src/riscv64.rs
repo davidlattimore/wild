@@ -37,7 +37,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         object::elf::R_RISCV_BRANCH => (
             RelocationKind::Relative,
-            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::BType),
+            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::BType),
             None,
             AllowedRange::no_check(),
             1,
@@ -199,14 +199,14 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         object::elf::R_RISCV_RVC_BRANCH => (
             RelocationKind::Relative,
-            RelocationSize::bit_mask_riscv(0, 9, RISCVInstruction::CBType),
+            RelocationSize::bit_mask_riscv(0, 16, RISCVInstruction::CBType),
             None,
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_RISCV_RVC_JUMP => (
             RelocationKind::Relative,
-            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::CJType),
+            RelocationSize::bit_mask_riscv(0, 16, RISCVInstruction::CJType),
             None,
             AllowedRange::no_check(),
             1,
