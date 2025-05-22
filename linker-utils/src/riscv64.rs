@@ -58,63 +58,84 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         object::elf::R_RISCV_GOT_HI20 => (
             RelocationKind::GotRelative,
-            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::High20),
+            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::UType),
             None,
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_RISCV_TLS_GOT_HI20 => (
             RelocationKind::GotTpOff,
-            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::High20),
+            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::UType),
             None,
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_RISCV_TLS_GD_HI20 => (
             RelocationKind::TlsGd,
-            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::High20),
+            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::UType),
             None,
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_RISCV_PCREL_HI20 => (
             RelocationKind::Relative,
-            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::High20),
+            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::UType),
             None,
             AllowedRange::no_check(),
             1,
         ),
-        object::elf::R_RISCV_PCREL_LO12_I | object::elf::R_RISCV_PCREL_LO12_S => (
+        object::elf::R_RISCV_PCREL_LO12_I => (
             RelocationKind::RelativeRISCVLow12,
-            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::Low12),
+            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::IType),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_PCREL_LO12_S => (
+            RelocationKind::RelativeRISCVLow12,
+            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::SType),
             None,
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_RISCV_HI20 => (
             RelocationKind::Absolute,
-            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::High20),
+            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::UType),
             None,
             AllowedRange::no_check(),
             1,
         ),
-        object::elf::R_RISCV_LO12_I | object::elf::R_RISCV_LO12_S => (
+        object::elf::R_RISCV_LO12_I => (
             RelocationKind::Absolute,
-            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::Low12),
+            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::IType),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_LO12_S => (
+            RelocationKind::Absolute,
+            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::SType),
             None,
             AllowedRange::no_check(),
             1,
         ),
         object::elf::R_RISCV_TPREL_HI20 => (
             RelocationKind::TpOffRISCV,
-            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::High20),
+            RelocationSize::bit_mask_riscv(0, 32, RISCVInstruction::UType),
             None,
             AllowedRange::no_check(),
             1,
         ),
-        object::elf::R_RISCV_TPREL_LO12_I | object::elf::R_RISCV_TPREL_LO12_S => (
+        object::elf::R_RISCV_TPREL_LO12_I => (
             RelocationKind::TpOffRISCV,
-            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::Low12),
+            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::IType),
+            None,
+            AllowedRange::no_check(),
+            1,
+        ),
+        object::elf::R_RISCV_TPREL_LO12_S => (
+            RelocationKind::TpOffRISCV,
+            RelocationSize::bit_mask_riscv(0, 12, RISCVInstruction::SType),
             None,
             AllowedRange::no_check(),
             1,
@@ -315,11 +336,16 @@ impl RISCVInstruction {
         let encode_i_type = |extracted_value: u64| (extracted_value as u32) << 20;
 
         match self {
-            RISCVInstruction::High20 => {
+            RISCVInstruction::UType => {
                 or_from_slice(dest, &encode_u_type(extracted_value).to_le_bytes());
             }
-            RISCVInstruction::Low12 => {
+            RISCVInstruction::IType => {
                 or_from_slice(dest, &encode_i_type(extracted_value).to_le_bytes());
+            }
+            RISCVInstruction::SType => {
+                let mut mask = extract_bits(extracted_value, 0, 5) << 7;
+                mask |= extract_bits(extracted_value, 5, 12) << 25;
+                or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::AuipcJalr => {
                 or_from_slice(dest, &encode_u_type(extracted_value).to_le_bytes());

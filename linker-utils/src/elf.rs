@@ -1004,10 +1004,15 @@ pub enum RISCVInstruction {
     // That makes the relocation pretty unusual as one would expect 2 relocations:
     // https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc#procedure-calls
     AuipcJalr,
+
     // Encodes high 20 bits of 32-bit value and encodes the bits to upper part.
-    High20,
+    UType,
+
     // Encodes low 12 bits of 32-bit value and encodes the bits to upper part.
-    Low12,
+    IType,
+
+    // Encodes 12 bits of 32-bit value.
+    SType,
 
     // The X-type instruction immediate encoding is defined here:
     // https://riscv.github.io/riscv-isa-manual/snapshot/unprivileged/#_immediate_encoding_variants
