@@ -62,7 +62,8 @@
 //! Cross:{bool} Defaults to true. Set to false to disable cross-compilation testing for this test.
 //!
 //! ExpectError:{error string} Verifies that the link fails and that the error message includes the
-//! specified string. Implies `RunEnabled:false` and `DiffEnabled:false`.
+//! specified string. Implies `RunEnabled:false` and `DiffEnabled:false`. May be specified multiple
+//! times - all must match.
 //!
 //! SecEquiv:{sec-name}={sec-name} Tells linker-diff that the two section names should be considered
 //! as equivalent.
@@ -423,7 +424,7 @@ struct Config {
     compiler: String,
     should_diff: bool,
     should_run: bool,
-    expect_error: Option<String>,
+    expect_errors: Vec<String>,
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_clang_with_tlsdesc: bool,
@@ -645,7 +646,7 @@ impl Config {
             compiler: "gcc".to_owned(),
             should_diff: true,
             should_run: true,
-            expect_error: None,
+            expect_errors: Default::default(),
             cross_enabled: true,
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
@@ -770,7 +771,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                     }
                 }
                 "ExpectError" => {
-                    config.expect_error = Some(arg.trim().to_owned());
+                    config.expect_errors.push(arg.trim().to_owned());
                     // If there are errors, then there's nothing to run and nothing to diff.
                     config.should_run = false;
                     config.should_diff = false;
@@ -1628,7 +1629,7 @@ impl LinkCommand {
     }
 
     fn run(&mut self, config: &Config) -> Result {
-        if let Some(expected_error) = config.expect_error.as_ref() {
+        if !config.expect_errors.is_empty() {
             let output = self
                 .command
                 .output()
@@ -1638,17 +1639,21 @@ impl LinkCommand {
                 bail!("Linker returned exit status of 0, when an error was expected");
             }
 
-            if !output
-                .stderr
-                .windows(expected_error.len())
-                .any(|s| s == expected_error.as_bytes())
-            {
-                eprintln!(
-                    "-- stdout --\n{}\n-- stderr --\n{}\n-- end --",
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr),
-                );
-                bail!("Linker expected to report error `{expected_error}` on stderr, but didn't");
+            for expected_error in &config.expect_errors {
+                if !output
+                    .stderr
+                    .windows(expected_error.len())
+                    .any(|s| s == expected_error.as_bytes())
+                {
+                    eprintln!(
+                        "-- stdout --\n{}\n-- stderr --\n{}\n-- end --",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr),
+                    );
+                    bail!(
+                        "Linker expected to report error `{expected_error}` on stderr, but didn't"
+                    );
+                }
             }
 
             return Ok(());
@@ -2228,7 +2233,7 @@ fn run_with_config(
         .collect::<Result<Vec<_>>>()?;
 
     // If we expect an error, then don't try to diff or run the output.
-    if config.expect_error.is_some() {
+    if !config.expect_errors.is_empty() {
         return Ok(());
     }
 
