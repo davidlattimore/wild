@@ -74,6 +74,7 @@ pub struct Args {
 
     pub(crate) verbose_gc_stats: bool,
 
+    pub(crate) save_dir: SaveDir,
     pub(crate) print_allocations: Option<FileId>,
     pub(crate) execstack: bool,
     pub(crate) verify_allocation_consistency: bool,
@@ -279,6 +280,7 @@ impl Default for Args {
             no_undefined: false,
             should_print_version: false,
             sysroot: None,
+            save_dir: Default::default(),
             demangle: true,
             undefined: Vec::new(),
             relro: true,
@@ -311,7 +313,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
 
     let mut unrecognised = Vec::new();
 
-    let mut save_dir = SaveDir::new(&input)?;
+    args.save_dir = SaveDir::new(&input)?;
 
     let mut input = input();
 
@@ -368,14 +370,18 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                     .and_then(|sysroot| maybe_forced_sysroot(path, sysroot))
                     .unwrap_or_else(|| Box::from(path))
             };
-            if rest.is_empty() {
-                if let Some(next) = input.next() {
-                    args.lib_search_path
-                        .push(handle_sysroot(Path::new(next.as_ref())));
-                }
+
+            let dir = if rest.is_empty() {
+                handle_sysroot(Path::new(
+                    input.next().context("Missing argument to -L")?.as_ref(),
+                ))
             } else {
-                args.lib_search_path.push(handle_sysroot(Path::new(rest)));
-            }
+                handle_sysroot(Path::new(rest))
+            };
+
+            args.save_dir.handle_file(rest)?;
+
+            args.lib_search_path.push(dir);
         } else if let Some(rest) = arg.strip_prefix("-l") {
             let spec = if let Some(stripped) = rest.strip_prefix(':') {
                 InputSpec::File(Box::from(Path::new(stripped)))
@@ -506,17 +512,17 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                 .context("Missing argument to -version-script")?
                 .as_ref()
                 .to_owned();
-            save_dir.handle_file(&script)?;
+            args.save_dir.handle_file(&script)?;
             args.version_script_path = Some(PathBuf::from(script));
         } else if let Some(script) = long_arg_split_prefix("script=") {
-            save_dir.handle_file(script)?;
+            args.save_dir.handle_file(script)?;
             args.add_script(script);
         } else if arg == "-T" {
             let script = input.next().context("Missing argument to -T")?;
-            save_dir.handle_file(script.as_ref())?;
+            args.save_dir.handle_file(script.as_ref())?;
             args.add_script(script.as_ref());
         } else if let Some(script) = long_arg_split_prefix("version-script=") {
-            save_dir.handle_file(script)?;
+            args.save_dir.handle_file(script)?;
             args.version_script_path = Some(PathBuf::from(script));
         } else if long_arg_eq("rpath") {
             let value = input.next().context("Missing argument to -rpath")?;
@@ -602,7 +608,6 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             if input.next().is_some() || arg_num > 1 {
                 bail!("Mixing of @{{filename}} and regular arguments isn't supported");
             }
-            save_dir.handle_file(path)?;
             return parse_from_argument_file(Path::new(path));
         } else if long_arg_eq("help") {
             bail!("Sorry, help isn't implemented yet");
@@ -628,7 +633,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         } else if arg.starts_with('-') {
             unrecognised.push(format!("`{arg}`"));
         } else {
-            save_dir.handle_file(arg)?;
+            args.save_dir.handle_file(arg)?;
             args.inputs.push(Input {
                 spec: InputSpec::File(Box::from(Path::new(arg))),
                 search_first: None,
@@ -645,8 +650,6 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
     if args.output_kind() == OutputKind::SharedObject {
         args.allow_copy_relocations = false;
     }
-
-    save_dir.finish()?;
 
     Ok(args)
 }
