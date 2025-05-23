@@ -1672,7 +1672,7 @@ impl LinkCommand {
                 .context("Linker args must be valid utf-8")?;
 
             let linker = libwild::Linker::new();
-            let parsed_args = libwild::Args::parse(args.iter())?;
+            let parsed_args = libwild::Args::parse(|| args.iter())?;
 
             // This call is expected to error for all but the first call.
             let _ = libwild::setup_tracing(&parsed_args);

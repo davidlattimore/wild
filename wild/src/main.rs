@@ -10,7 +10,7 @@ fn main() -> libwild::error::Result {
     #[cfg(feature = "dhat")]
     let _profiler = dhat::Profiler::new_heap();
 
-    let args = libwild::Args::parse(std::env::args().skip(1))?;
+    let args = libwild::Args::parse(|| std::env::args().skip(1))?;
 
     if args.should_fork() {
         // Safety: We haven't spawned any threads yet.
