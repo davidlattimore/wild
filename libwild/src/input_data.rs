@@ -244,12 +244,13 @@ impl<'data> InputData<'data> {
 
     fn add_inputs_from_linker_script(
         &mut self,
-        absolute_path: &Path,
+        script_path: &Path,
         modifiers: Modifiers,
         state: &mut TemporaryState<'data>,
         script: &LinkerScript,
     ) -> Result {
-        let directory = absolute_path.parent().expect("expected an absolute path");
+        let script_path = std::fs::canonicalize(script_path)?;
+        let directory = script_path.parent().expect("expected an absolute path");
 
         script.foreach_input(modifiers, |mut input| {
             input.search_first = Some(directory.to_owned());
@@ -258,7 +259,7 @@ impl<'data> InputData<'data> {
                 (state.args.sysroot.as_ref(), &mut input.spec)
             {
                 if let Some(new_file) =
-                    crate::linker_script::maybe_apply_sysroot(absolute_path, file, sysroot)
+                    crate::linker_script::maybe_apply_sysroot(&script_path, file, sysroot)
                 {
                     *file = new_file;
                 }
