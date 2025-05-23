@@ -5,14 +5,15 @@ use crate::archive::ArchiveIterator;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
-use crate::file_kind::FileKind;
-use foldhash::HashMap as FoldHashMap;
-use foldhash::HashMapExt as _;
+use foldhash::HashSet;
+use std::fs::File;
 use std::io::BufWriter;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
+#[derive(Default)]
 pub(crate) struct SaveDir(Option<SaveDirState>);
 
 const SAVE_DIR_ENV: &str = "WILD_SAVE_DIR";
@@ -23,7 +24,6 @@ const PRELUDE: &str = include_str!("save-dir-prelude.sh");
 
 struct SaveDirState {
     dir: PathBuf,
-    copied_paths: FoldHashMap<String, PathBuf>,
     args: Vec<String>,
 }
 
@@ -41,9 +41,9 @@ impl SaveDir {
         ))))
     }
 
-    pub(crate) fn finish(&self) -> Result {
+    pub(crate) fn finish(&self, filenames: &HashSet<PathBuf>) -> Result {
         if let Some(state) = self.0.as_ref() {
-            state.finish()?;
+            state.finish(filenames)?;
         }
         Ok(())
     }
@@ -106,17 +106,21 @@ fn save_dir_from_env() -> Result<Option<PathBuf>> {
 
 impl SaveDirState {
     fn new(dir: PathBuf, args: Vec<String>) -> Self {
-        SaveDirState {
-            dir,
-            copied_paths: FoldHashMap::new(),
-            args,
-        }
+        SaveDirState { dir, args }
     }
 
-    fn finish(&self) -> Result {
+    /// Finalise the save directory. Makes sure that all `filenames` have been copied, writes the
+    /// `run-with` file and if the environment variable is set to indicate that we should skip
+    /// linking, then exit.
+    fn finish(&self, filenames: &HashSet<PathBuf>) -> Result {
+        for filename in filenames {
+            self.copy_file(filename)?;
+        }
+
         let run_with_file = self.dir.join("run-with");
         self.write_args_file(&run_with_file)
             .with_context(|| format!("Failed to write `{}`", run_with_file.display()))?;
+
         if std::env::var(SKIP_LINKING_ENV).is_ok() {
             std::process::exit(0);
         }
@@ -134,36 +138,44 @@ impl SaveDirState {
     }
 
     fn write_args(&self, out: &mut BufWriter<&mut std::fs::File>) -> Result {
-        let mut is_output_file = false;
         let mut original_output_file = None;
+        let mut args = self.args.iter();
 
-        for arg in &self.args {
+        while let Some(arg) = args.next() {
             out.write_all(b" \\\n  ")?;
 
-            if is_output_file {
-                out.write_all(b"$OUT")?;
-                is_output_file = false;
-                original_output_file = Some(arg);
-                continue;
-            }
+            if let Some(mut path) = arg.strip_prefix("-o") {
+                if path.is_empty() {
+                    path = args.next().map(|s| s.as_str()).unwrap_or_default();
+                }
+                out.write_all(b"-o $OUT")?;
+                original_output_file = Some(path);
+            } else if let Some(mut dir) = arg.strip_prefix("-L") {
+                if dir.is_empty() {
+                    dir = args.next().map(|s| s.as_str()).unwrap_or_default();
+                }
 
-            is_output_file = arg == "-o";
-
-            let maybe_path = if let Some(eq_index) = arg.find('=') {
-                out.write_all(&arg.as_bytes()[..=eq_index])?;
-                &arg[eq_index + 1..]
+                let dir = std::path::absolute(dir)?;
+                out.write_all(b"-L")?;
+                write_copied_file_arg(out, &dir)?;
             } else {
-                arg.as_str()
-            };
+                let maybe_path = if let Some(eq_index) = arg.find('=') {
+                    out.write_all(&arg.as_bytes()[..=eq_index])?;
+                    &arg[eq_index + 1..]
+                } else {
+                    arg.as_str()
+                };
 
-            if let Some(copied) = self.copied_paths.get(maybe_path) {
-                write_copied_file_arg(out, copied)?;
-            } else {
-                for b in maybe_path.bytes() {
-                    if b" $\\".contains(&b) {
-                        out.write_all(b"\\")?;
+                let path = std::path::absolute(maybe_path)?;
+                if self.output_path(&path).exists() {
+                    write_copied_file_arg(out, &path)?;
+                } else {
+                    for b in maybe_path.bytes() {
+                        if b" $\\".contains(&b) {
+                            out.write_all(b"\\")?;
+                        }
+                        out.write_all(&[b])?;
                     }
-                    out.write_all(&[b])?;
                 }
             }
         }
@@ -175,41 +187,81 @@ impl SaveDirState {
         Ok(())
     }
 
-    /// To save disk space, we first attempt to hard link the file. If that fails, then just
-    /// copy it. Returns where we copied the file to.
-    fn copy_file(&self, source_path: &PathBuf) -> Result<PathBuf> {
-        let dest_path = unique_dest_path(&self.dir, source_path)?;
-
-        copy_file_to(source_path, &dest_path)?;
-
-        Ok(dest_path)
+    fn output_path(&self, path: &Path) -> PathBuf {
+        self.dir.join(to_output_relative_path(path))
     }
 
-    fn handle_file(&mut self, arg: &str) -> Result {
-        let source_path = std::fs::canonicalize(Path::new(arg))?;
+    /// Copies `source_path` to our output directory.
+    fn copy_file(&self, source_path: &Path) -> Result {
+        let dest_path = self.output_path(source_path);
 
-        if source_path.is_dir() || self.copied_paths.contains_key(arg) {
+        if dest_path.exists() {
             return Ok(());
         }
 
-        let file_bytes = std::fs::read(&source_path)?;
-        let file_kind = FileKind::identify_bytes(&file_bytes)?;
-        if file_kind == FileKind::ThinArchive {
-            self.handle_thin_archive(&source_path, &file_bytes)?;
+        // The parent directory might be an actual directory or it might be a symlink. Either way,
+        // we want to copy it before we copy our file.
+        if let Some(parent) = source_path.parent() {
+            self.copy_file(parent)?;
         }
 
-        let copied = self.copy_file(&source_path)?;
+        let meta = std::fs::metadata(source_path)
+            .with_context(|| format!("Failed to read metadata for `{}`", source_path.display()))?;
 
-        self.copied_paths.insert(arg.to_owned(), copied);
+        if meta.is_dir() {
+            if !dest_path.exists() {
+                std::fs::create_dir(&dest_path).with_context(|| {
+                    format!("Failed to create directory `{}`", dest_path.display())
+                })?;
+            }
+        } else if meta.is_symlink() {
+            let target = std::fs::read_link(source_path)
+                .with_context(|| format!("Failed to read symlink `{}`", source_path.display()))?;
+
+            if target.is_absolute() {
+                todo!("Implement support for handling absolute symlinks");
+            }
+
+            std::os::unix::fs::symlink(&target, &dest_path).with_context(|| {
+                format!(
+                    "Failed to symlink {} to {}",
+                    dest_path.display(),
+                    target.display()
+                )
+            })?;
+
+            return self.copy_file(&target);
+        } else {
+            if is_thin_archive(source_path) {
+                self.handle_thin_archive(source_path)?;
+            }
+
+            // To save disk space, we first attempt to hard link the file. If that fails, then just copy it.
+            if std::fs::hard_link(source_path, &dest_path).is_err() {
+                std::fs::copy(source_path, &dest_path).with_context(|| {
+                    format!(
+                        "Failed to copy `{}` to `{}`",
+                        source_path.display(),
+                        dest_path.display()
+                    )
+                })?;
+            }
+        }
 
         Ok(())
     }
 
-    fn handle_thin_archive(&self, path: &Path, file_bytes: &[u8]) -> Result {
+    fn handle_file(&self, arg: &str) -> Result {
+        self.copy_file(&std::path::absolute(Path::new(arg))?)
+    }
+
+    /// Copies the files listed by the thin archive.
+    fn handle_thin_archive(&self, path: &Path) -> Result {
+        let file_bytes = std::fs::read(path)?;
         let parent_path = path.parent().unwrap();
         let mut extended_filenames = None;
 
-        for entry in ArchiveIterator::from_archive_bytes(file_bytes)? {
+        for entry in ArchiveIterator::from_archive_bytes(&file_bytes)? {
             match entry? {
                 ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
                 ArchiveEntry::Thin(entry) => {
@@ -223,15 +275,7 @@ impl SaveDirState {
                     }
                     let absolute_entry_path = parent_path.join(entry_path);
 
-                    if let Some(relative_dir) = entry_path.parent() {
-                        let directory = self.dir.join(relative_dir);
-                        std::fs::create_dir_all(&directory).with_context(|| {
-                            format!("Failed to create directory `{}`", directory.display())
-                        })?;
-                    }
-
-                    let dest_path = self.dir.join(entry_path);
-                    copy_file_to(&absolute_entry_path, &dest_path)?;
+                    self.copy_file(&absolute_entry_path)?;
                 }
                 _ => {}
             }
@@ -241,57 +285,26 @@ impl SaveDirState {
     }
 }
 
-fn copy_file_to(source_path: &PathBuf, dest_path: &PathBuf) -> Result<(), crate::error::Error> {
-    if std::fs::hard_link(source_path, dest_path).is_err() {
-        std::fs::copy(source_path, dest_path).with_context(|| {
-            format!(
-                "Failed to copy `{}` to `{}`",
-                source_path.display(),
-                dest_path.display()
-            )
-        })?;
-    }
+fn is_thin_archive(path: &Path) -> bool {
+    (|| -> Result<bool> {
+        let mut file = File::open(path)?;
 
-    Ok(())
+        let mut buffer = [0; object::archive::THIN_MAGIC.len()];
+        file.read_exact(&mut buffer)?;
+        Ok(buffer == object::archive::THIN_MAGIC)
+    })()
+    .unwrap_or(false)
 }
 
 fn write_copied_file_arg(out: &mut BufWriter<&mut std::fs::File>, path: &Path) -> Result {
-    let file_name = path.file_name().context("Invalid copied file name")?;
     out.write_all(b"$D/")?;
-    out.write_all(file_name.as_encoded_bytes())?;
+    out.write_all(to_output_relative_path(path).as_os_str().as_encoded_bytes())?;
     Ok(())
 }
 
-/// Return the full path to a new filename in `dir` that if possible has the same filename as that
-/// of `path`.
-fn unique_dest_path(dir: &Path, path: &Path) -> Result<PathBuf> {
-    let file_name = path.file_name().context("Missing file_name")?;
-    let raw_dest_path = dir.join(file_name);
-    let mut result = raw_dest_path.clone();
-    let mut seq = 0;
-    while result.exists() {
-        result = sequence_path(&raw_dest_path, seq)
-            .with_context(|| format!("Invalid path `{}`", raw_dest_path.display()))?;
-
-        seq += 1;
-    }
-    Ok(result)
-}
-
-fn sequence_path(path: &Path, sequence: i32) -> Option<PathBuf> {
-    let stem = path.file_stem()?;
-    let dir = path.parent()?;
-    let extension = path.extension()?;
-    let mut out = stem.to_owned();
-    out.push(format!(".{sequence}."));
-    out.push(extension);
-    Some(dir.join(out))
-}
-
-#[test]
-fn test_sequence_path() {
-    assert_eq!(
-        sequence_path(Path::new("/foo/bar/libx.o"), 7),
-        Some(PathBuf::from("/foo/bar/libx.7.o"))
-    );
+/// Returns where we should copy `path` to when we put it in our output directory.
+fn to_output_relative_path(path: &Path) -> PathBuf {
+    path.iter()
+        .filter(|p| p.as_encoded_bytes() != b"/")
+        .collect()
 }

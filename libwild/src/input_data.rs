@@ -123,6 +123,8 @@ impl<'data> InputData<'data> {
             input_data.register_input(input, &mut temporary_state)?;
         }
 
+        args.save_dir.finish(&temporary_state.filenames)?;
+
         Ok((input_data, temporary_state.linker_scripts))
     }
 
@@ -300,13 +302,13 @@ impl Input {
         match &self.spec {
             InputSpec::File(p) => {
                 if self.search_first.is_some() || p.parent() == Some(Path::new("")) {
-                    if let Some(absolute) = search_for_file(
+                    if let Some(path) = search_for_file(
                         &args.lib_search_path,
                         self.search_first.as_ref(),
                         p.as_ref(),
                     ) {
                         return Ok(InputPath {
-                            absolute,
+                            absolute: std::path::absolute(path)?,
                             original: p.as_ref().to_owned(),
                         });
                     }
@@ -319,23 +321,23 @@ impl Input {
             InputSpec::Lib(lib_name) => {
                 if self.modifiers.allow_shared {
                     let filename = format!("lib{lib_name}.so");
-                    if let Some(absolute) = search_for_file(
+                    if let Some(path) = search_for_file(
                         &args.lib_search_path,
                         self.search_first.as_ref(),
                         &filename,
                     ) {
                         return Ok(InputPath {
-                            absolute,
+                            absolute: std::path::absolute(&path)?,
                             original: PathBuf::from(filename),
                         });
                     }
                 }
                 let filename = format!("lib{lib_name}.a");
-                if let Some(absolute) =
+                if let Some(path) =
                     search_for_file(&args.lib_search_path, self.search_first.as_ref(), &filename)
                 {
                     return Ok(InputPath {
-                        absolute,
+                        absolute: std::path::absolute(&path)?,
                         original: PathBuf::from(filename),
                     });
                 }
