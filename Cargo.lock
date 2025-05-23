@@ -694,7 +694,6 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "normalize-path",
  "object 0.36.7 (git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32)",
  "rayon",
  "sharded-offset-map",
@@ -850,12 +849,6 @@ checksum = "c4c25a3bb7d880e8eceab4822f3141ad0700d20f025991c1f03bd3d00219a5fc"
 dependencies = [
  "bitflags",
 ]
-
-[[package]]
-name = "normalize-path"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5438dd2b2ff4c6df6e1ce22d825ed2fa93ee2922235cc45186991717f0a892d"
 
 [[package]]
 name = "object"

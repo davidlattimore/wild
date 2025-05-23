@@ -7,7 +7,6 @@ use crate::args::Modifiers;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
-use normalize_path::NormalizePath;
 use std::path::Path;
 use winnow::BStr;
 use winnow::Parser as _;
@@ -23,14 +22,17 @@ use winnow::error::FromExternalError;
 use winnow::token::take_until;
 use winnow::token::take_while;
 
+/// Checks if we need to prefix `input_path` with the sysroot. If we do, then returns the resulting
+/// path. Otherwise, returns `None`. `linker_script_path` and `sysroot` should be canonical,
+/// absolute paths, otherwise we might not apply the sysroot when we actually should.
 pub(crate) fn maybe_apply_sysroot(
     linker_script_path: &Path,
     input_path: &Path,
     sysroot: &Path,
 ) -> Option<Box<Path>> {
-    if linker_script_path.normalize().starts_with(sysroot)
-        || linker_script_path.starts_with(sysroot)
-    {
+    debug_assert!(linker_script_path.is_absolute());
+    debug_assert!(sysroot.is_absolute());
+    if linker_script_path.starts_with(sysroot) {
         Some(Box::from(sysroot.join(input_path.strip_prefix("/").ok()?)))
     } else {
         maybe_forced_sysroot(input_path, sysroot)
@@ -464,14 +466,6 @@ mod tests {
             ),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
         );
-        assert_equal(
-            maybe_apply_sysroot(
-                Path::new("../../sysroot/libc.so"),
-                Path::new("/lib/libc.so.6"),
-                Path::new("../../sysroot"),
-            ),
-            Some(Box::from(Path::new("../../sysroot/lib/libc.so.6"))),
-        );
         // Linker script is not located in the sysroot
         assert_equal(
             maybe_apply_sysroot(
@@ -516,16 +510,6 @@ mod tests {
                 sysroot,
             ),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
-        );
-        // Relative sysroot path
-        let relative_sysroot = Path::new("foo");
-        assert_equal(
-            maybe_apply_sysroot(
-                &relative_sysroot.join("lib/libc.so"),
-                Path::new("/lib/libc.so.6"),
-                relative_sysroot,
-            ),
-            Some(Box::from(relative_sysroot.join("lib/libc.so.6"))),
         );
     }
 

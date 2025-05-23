@@ -29,7 +29,6 @@ linker-trace = { path = "../linker-trace", version = "0.5.0" }
 linker-utils = { path = "../linker-utils", version = "0.5.0" }
 memchr = { workspace = true }
 memmap2 = { workspace = true }
-normalize-path = { workspace = true }
 object = { workspace = true }
 rayon = { workspace = true }
 sharded-offset-map = { workspace = true }

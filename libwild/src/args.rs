@@ -627,10 +627,11 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             .is_some_and(|stripped_arg| SILENTLY_IGNORED_FLAGS.contains(&stripped_arg))
         {
         } else if let Some(sysroot) = long_arg_split_prefix("sysroot=") {
-            let sysroot = Path::new(sysroot);
-            args.sysroot = Some(Box::from(sysroot));
+            args.save_dir.handle_file(sysroot)?;
+            let sysroot = std::fs::canonicalize(sysroot).unwrap_or_else(|_| PathBuf::from(sysroot));
+            args.sysroot = Some(Box::from(sysroot.as_path()));
             for path in &mut args.lib_search_path {
-                if let Some(new_path) = maybe_forced_sysroot(path, sysroot) {
+                if let Some(new_path) = maybe_forced_sysroot(path, &sysroot) {
                     *path = new_path;
                 }
             }
