@@ -14,6 +14,7 @@ use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::BuildIdOption;
 use crate::args::OutputKind;
+use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
@@ -22,6 +23,9 @@ use crate::elf::File;
 use crate::elf::FileHeader;
 use crate::elf::Versym;
 use crate::elf_writer;
+use crate::ensure;
+use crate::error;
+use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
 use crate::input_data::FileId;
@@ -61,10 +65,6 @@ use crate::symbol_db::SymbolDebug;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::symbol_db::is_mapping_symbol_name;
-use anyhow::Context;
-use anyhow::anyhow;
-use anyhow::bail;
-use anyhow::ensure;
 use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
@@ -398,9 +398,8 @@ fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
     let mut property_map = HashMap::new();
     for file_props in &properties_per_file {
         for prop in *file_props {
-            let property_class = get_property_class(prop.ptype).ok_or_else(|| {
-                anyhow::anyhow!(format!("unclassified property type {}", prop.ptype))
-            })?;
+            let property_class = get_property_class(prop.ptype)
+                .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
             property_map
                 .entry(prop.ptype)
                 .and_modify(|e| {
@@ -2824,7 +2823,7 @@ fn process_relocation<A: Arch>(
                 args,
             ) {
                 let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
-                resources.report_error(anyhow::anyhow!(
+                resources.report_error(error!(
                     "Undefined symbol {symbol_name}, referenced by {}",
                     object.input,
                 ));
@@ -4417,7 +4416,7 @@ fn process_gnu_property_note(
     for note in notes {
         for gnu_property in note?
             .gnu_properties(e)
-            .ok_or(anyhow!("Invalid type of .note.gnu.property"))?
+            .ok_or(error!("Invalid type of .note.gnu.property"))?
         {
             let gnu_property = gnu_property?;
 
@@ -5262,7 +5261,7 @@ impl<'data> DynamicTagValues<'data> {
                         file.symbols
                             .strings()
                             .get(value as u32)
-                            .map_err(|()| anyhow!("Invalid DT_SONAME 0x{value:x}"))?,
+                            .map_err(|()| error!("Invalid DT_SONAME 0x{value:x}"))?,
                     );
                 }
                 _ => {}

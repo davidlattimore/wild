@@ -1,9 +1,9 @@
 use crate::arch::Architecture;
+use crate::bail;
+use crate::ensure;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::resolution::LoadedMetrics;
-use anyhow::Context;
-use anyhow::bail;
-use anyhow::ensure;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;

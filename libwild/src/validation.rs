@@ -1,9 +1,9 @@
 //! Code to double-check that we did certain things correctly. Generally only used in debug builds.
 
+use crate::bail;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::layout::Layout;
-use anyhow::Context;
-use anyhow::bail;
 use linker_utils::elf::secnames::GOT_SECTION_NAME_STR;
 use object::LittleEndian;
 use object::read::elf::SectionHeader as _;

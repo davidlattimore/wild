@@ -1,6 +1,7 @@
 //! Used after `finalise_layout` to verify that all section output offsets were bumped by an amount
 //! equal to the size requested for that section.
 
+use crate::bail;
 use crate::error::Result;
 use crate::layout::FileLayout;
 use crate::output_section_id::OutputOrder;
@@ -8,7 +9,6 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
 use crate::part_id::PartId;
-use anyhow::bail;
 use itertools::Itertools;
 
 pub(crate) struct OffsetVerifier {
@@ -44,6 +44,7 @@ impl OffsetVerifier {
         let actual = offsets_by_key(memory_offsets, output_order);
         let sizes = offsets_by_key(&self.sizes, output_order);
         let mut problems = Vec::new();
+
         for (((part_id, exp), (_, act)), (_, size)) in expected.iter().zip(actual.iter()).zip(sizes)
         {
             let alignment = part_id.alignment();
@@ -56,7 +57,9 @@ impl OffsetVerifier {
                 ));
             }
         }
+
         let files = files.iter().map(|f| f.to_string()).collect_vec();
+
         bail!(
             "Unexpected memory offsets:\n{}\nfor files:\n{}",
             problems.join(""),

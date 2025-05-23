@@ -5,7 +5,9 @@ use crate::args::Args;
 use crate::args::Modifiers;
 use crate::args::OutputKind;
 use crate::args::RelocationModel;
+use crate::bail;
 use crate::elf::File;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::FileId;
@@ -19,8 +21,6 @@ use crate::sharding::ShardKey;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
-use anyhow::Context;
-use anyhow::bail;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 

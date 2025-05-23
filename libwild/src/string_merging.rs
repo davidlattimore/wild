@@ -24,6 +24,8 @@
 
 use crate::alignment;
 use crate::args::Args;
+use crate::bail;
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
@@ -34,8 +36,6 @@ use crate::part_id::PartId;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::SectionSlot;
-use anyhow::Context;
-use anyhow::bail;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
 use foldhash::HashMap;

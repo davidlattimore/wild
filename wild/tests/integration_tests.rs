@@ -62,7 +62,8 @@
 //! Cross:{bool} Defaults to true. Set to false to disable cross-compilation testing for this test.
 //!
 //! ExpectError:{error string} Verifies that the link fails and that the error message includes the
-//! specified string. Implies `RunEnabled:false` and `DiffEnabled:false`.
+//! specified string. Implies `RunEnabled:false` and `DiffEnabled:false`. May be specified multiple
+//! times - all must match.
 //!
 //! SecEquiv:{sec-name}={sec-name} Tells linker-diff that the two section names should be considered
 //! as equivalent.
@@ -101,10 +102,10 @@
 //! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the
 //! musl Rust toolchain.
 
-use anyhow::Context;
-use anyhow::anyhow;
-use anyhow::bail;
 use itertools::Itertools;
+use libwild::bail;
+use libwild::error;
+use libwild::error::Context as _;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectSection as _;
@@ -136,7 +137,7 @@ use strum::Display;
 use strum::EnumString;
 use wait_timeout::ChildExt;
 
-type Result<T = (), E = anyhow::Error> = core::result::Result<T, E>;
+type Result<T = (), E = libwild::error::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
 
 fn base_dir() -> &'static Path {
@@ -430,7 +431,7 @@ struct Config {
     compiler: String,
     should_diff: bool,
     should_run: bool,
-    expect_error: Option<String>,
+    expect_errors: Vec<String>,
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_clang_with_tlsdesc: bool,
@@ -652,7 +653,7 @@ impl Config {
             compiler: "gcc".to_owned(),
             should_diff: true,
             should_run: true,
-            expect_error: None,
+            expect_errors: Default::default(),
             cross_enabled: true,
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
@@ -689,9 +690,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                     }
                     let name = if let Some((name, inherit)) = arg.split_once(':') {
                         let inherit_index = config_name_to_index.get(inherit).ok_or_else(|| {
-                            anyhow!(
-                                "Config `{name}` inherits from unknown config named `{inherit}`"
-                            )
+                            error!("Config `{name}` inherits from unknown config named `{inherit}`")
                         })?;
 
                         config = configs[*inherit_index].clone();
@@ -779,7 +778,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                     }
                 }
                 "ExpectError" => {
-                    config.expect_error = Some(arg.trim().to_owned());
+                    config.expect_errors.push(arg.trim().to_owned());
                     // If there are errors, then there's nothing to run and nothing to diff.
                     config.should_run = false;
                     config.should_diff = false;
@@ -787,7 +786,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                 "SecEquiv" => config.section_equiv.push(
                     arg.trim()
                         .split_once('=')
-                        .ok_or_else(|| anyhow!("DiffIgnore missing '='"))
+                        .ok_or_else(|| error!("DiffIgnore missing '='"))
                         .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
                 ),
                 input_type @ ("Object" | "Archive" | "ThinArchive" | "Shared" | "LinkerScript") => {
@@ -811,12 +810,12 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                         .trim()
                         .split(",")
                         .map(|arch| {
-                            Architecture::try_from(arch).with_context(|| {
-                                anyhow!(format!(
-                                    "Unsupported architecture for #Arch directive: `{}`",
-                                    arch
-                                ))
-                            })
+                            let arch = arch.trim().to_lowercase();
+                            match arch.as_str() {
+                                "x86_64" => Ok(Architecture::X86_64),
+                                "aarch64" => Ok(Architecture::AArch64),
+                                _ => bail!("Unsupported architecture: `{}`", arch),
+                            }
                         })
                         .collect::<Result<Vec<_>>>()?;
                 }
@@ -930,7 +929,7 @@ impl Program<'_> {
 
         let exit_code = status
             .code()
-            .ok_or_else(|| anyhow!("Binary exited with signal"))?;
+            .ok_or_else(|| error!("Binary exited with signal"))?;
 
         if exit_code != 42 {
             bail!("Binary exited with unexpected exit code {exit_code}");
@@ -1647,7 +1646,7 @@ impl LinkCommand {
     }
 
     fn run(&mut self, config: &Config) -> Result {
-        if let Some(expected_error) = config.expect_error.as_ref() {
+        if !config.expect_errors.is_empty() {
             let output = self
                 .command
                 .output()
@@ -1657,17 +1656,21 @@ impl LinkCommand {
                 bail!("Linker returned exit status of 0, when an error was expected");
             }
 
-            if !output
-                .stderr
-                .windows(expected_error.len())
-                .any(|s| s == expected_error.as_bytes())
-            {
-                eprintln!(
-                    "-- stdout --\n{}\n-- stderr --\n{}\n-- end --",
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr),
-                );
-                bail!("Linker expected to report error `{expected_error}` on stderr, but didn't");
+            for expected_error in &config.expect_errors {
+                if !output
+                    .stderr
+                    .windows(expected_error.len())
+                    .any(|s| s == expected_error.as_bytes())
+                {
+                    eprintln!(
+                        "-- stdout --\n{}\n-- stderr --\n{}\n-- end --",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr),
+                    );
+                    bail!(
+                        "Linker expected to report error `{expected_error}` on stderr, but didn't"
+                    );
+                }
             }
 
             return Ok(());
@@ -2247,7 +2250,7 @@ fn run_with_config(
         .collect::<Result<Vec<_>>>()?;
 
     // If we expect an error, then don't try to diff or run the output.
-    if config.expect_error.is_some() {
+    if !config.expect_errors.is_empty() {
         return Ok(());
     }
 

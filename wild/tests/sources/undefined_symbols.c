@@ -8,11 +8,9 @@
 
 //#Config:no-undefined:default
 //#LinkArgs:--shared --no-undefined
-//#ExpectError:Undefined symbols:
 //#ExpectError:  undefined_strong
 
 //#Config:executable:default
-//#ExpectError:Undefined symbols:
 //#ExpectError:  undefined_strong
 
 int undefined_strong();

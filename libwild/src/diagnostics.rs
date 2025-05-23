@@ -99,7 +99,11 @@ impl<'data> SymbolInfoPrinter<'data> {
                             input = o.input.to_string();
                         }
                         Err(e) => {
-                            println!("  Corrupted input (file_id #{file_id}) {}: {e}", o.input);
+                            println!(
+                                "  Corrupted input (file_id #{file_id}) {}: {}",
+                                o.input,
+                                e.to_string()
+                            );
                             continue;
                         }
                     },

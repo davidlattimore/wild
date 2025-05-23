@@ -1,6 +1,6 @@
 use crate::elf::PLT_ENTRY_SIZE;
-use anyhow::Result;
-use anyhow::anyhow;
+use crate::error;
+use crate::error::Result;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCVInstruction;
 use linker_utils::elf::RelocationKindInfo;
@@ -30,7 +30,7 @@ impl crate::arch::Arch for RISCV64 {
     #[inline(always)]
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
         linker_utils::riscv64::relocation_type_from_raw(r_type).ok_or_else(|| {
-            anyhow!(
+            error!(
                 "Unsupported relocation type {}",
                 Self::rel_type_to_string(r_type)
             )
