@@ -51,7 +51,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         ),
         object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT => (
             RelocationKind::PltRelative,
-            RelocationSize::bit_mask_riscv(0, 64, RISCVInstruction::AuipcJalr),
+            RelocationSize::bit_mask_riscv(0, 64, RISCVInstruction::UIType),
             None,
             AllowedRange::no_check(),
             1,
@@ -326,33 +326,27 @@ impl RISCVInstruction {
     // A handy pages where one can easily find instruction encoding:
     // https://msyksphinz-self.github.io/riscv-isadoc/html/index.html.
     pub fn write_to_value(self, extracted_value: u64, _negative: bool, dest: &mut [u8]) {
-        let encode_u_type = |extracted_value: u64| {
-            // A final address calculation is represented as addition of HI20 and LO12, where
-            // we must prevent add 0x800 in order to not make HI20 a huge negative if the final
-            // value is a small negative value.
-            // For instance, -10i32 (0xfffffff6) should become 0x0 (HI20) and 0xff6 (LO12).
-            (extract_bits(extracted_value.wrapping_add(0x800), 12, 32) as u32) << 12
-        };
-        let encode_i_type = |extracted_value: u64| (extracted_value as u32) << 20;
-
         match self {
+            RISCVInstruction::UIType => {
+                RISCVInstruction::UType.write_to_value(extracted_value, _negative, &mut dest[..4]);
+                RISCVInstruction::IType.write_to_value(extracted_value, _negative, &mut dest[4..]);
+            }
             RISCVInstruction::UType => {
-                or_from_slice(dest, &encode_u_type(extracted_value).to_le_bytes());
+                // A final address calculation is represented as addition of HI20 and LO12, where
+                // we must prevent add 0x800 in order to not make HI20 a huge negative if the final
+                // value is a small negative value.
+                // For instance, -10i32 (0xfffffff6) should become 0x0 (HI20) and 0xff6 (LO12).
+                let mask = (extract_bits(extracted_value.wrapping_add(0x800), 12, 32) as u32) << 12;
+                or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::IType => {
-                or_from_slice(dest, &encode_i_type(extracted_value).to_le_bytes());
+                let mask = extracted_value << 20;
+                or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::SType => {
                 let mut mask = extract_bits(extracted_value, 0, 5) << 7;
                 mask |= extract_bits(extracted_value, 5, 12) << 25;
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
-            }
-            RISCVInstruction::AuipcJalr => {
-                or_from_slice(dest, &encode_u_type(extracted_value).to_le_bytes());
-                or_from_slice(
-                    &mut dest[4..],
-                    &encode_i_type(extracted_value).to_le_bytes(),
-                );
             }
             RISCVInstruction::BType => {
                 let mut mask = extract_bit(extracted_value, 11) << 7;

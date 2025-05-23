@@ -55,7 +55,7 @@ impl crate::arch::Arch for RISCV64 {
         debug_assert!(plt_address < got_address);
 
         plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
-        RISCVInstruction::AuipcJalr.write_to_value(
+        RISCVInstruction::UIType.write_to_value(
             got_address.wrapping_sub(plt_address),
             false,
             &mut plt_entry[0..8],

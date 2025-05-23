@@ -1003,7 +1003,7 @@ pub enum RISCVInstruction {
     //
     // That makes the relocation pretty unusual as one would expect 2 relocations:
     // https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc#procedure-calls
-    AuipcJalr,
+    UIType,
 
     // Encodes high 20 bits of 32-bit value and encodes the bits to upper part.
     UType,
