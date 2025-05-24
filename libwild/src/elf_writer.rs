@@ -18,6 +18,7 @@ use crate::elf::DynamicEntry;
 use crate::elf::EhFrameHdr;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::FileHeader;
+use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::GNU_NOTE_NAME;
 use crate::elf::GnuHashHeader;
 use crate::elf::ProgramHeader;
@@ -74,6 +75,8 @@ use foldhash::HashMap as FoldHashMap;
 use foldhash::HashMapExt as _;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKind;
+use linker_utils::elf::RelocationKindInfo;
+use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::pf;
 use linker_utils::elf::secnames::DEBUG_LOC_SECTION_NAME;
@@ -84,6 +87,7 @@ use linker_utils::elf::sht;
 use linker_utils::relaxation::RelocationModifier;
 use memmap2::MmapOptions;
 use object::LittleEndian;
+use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::from_bytes_mut;
@@ -94,6 +98,7 @@ use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
 use std::fmt::Display;
 use std::io::Write;
+use std::iter::Empty;
 use std::marker::PhantomData;
 use std::ops::BitAnd;
 use std::ops::Deref;
@@ -674,7 +679,13 @@ fn populate_file_header<A: Arch>(
         e,
         u64::from(elf::FILE_HEADER_SIZE) + header_info.program_headers_size(),
     );
-    header.e_flags.set(e, 0);
+    // TODO: #701
+    let e_flags = if A::elf_header_arch_magic() == object::elf::EM_RISCV {
+        object::elf::EF_RISCV_RVC | object::elf::EF_RISCV_FLOAT_ABI_DOUBLE
+    } else {
+        0
+    };
+    header.e_flags.set(e, e_flags);
     header.e_ehsize.set(e, elf::FILE_HEADER_SIZE);
     header.e_phentsize.set(e, elf::PROGRAM_HEADER_SIZE);
     header
@@ -1658,12 +1669,19 @@ impl<'data> ObjectLayout<'data> {
             .relocation_statistics
             .get(section.part_id.output_section_id())
             .fetch_add(relocations.len() as u64, Relaxed);
-        for rel in relocations {
+        for (i, rel) in relocations.iter().enumerate() {
             if modifier == RelocationModifier::SkipNextRelocation {
                 modifier = RelocationModifier::Normal;
                 continue;
             }
             let offset_in_section = rel.r_offset.get(LittleEndian);
+            // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of relocations where the later
+            // one actually points to a label of the HI20 relocations and thus we need to find it. The relocation is typically
+            // right before the LO12_* relocation.
+            let relocations_to_search = relocations[..i]
+                .iter()
+                .rev()
+                .chain(relocations[i + 1..].iter());
             modifier = apply_relocation::<A>(
                 self,
                 offset_in_section,
@@ -1677,6 +1695,7 @@ impl<'data> ObjectLayout<'data> {
                 out,
                 table_writer,
                 trace,
+                Some(relocations_to_search),
             )
             .with_context(|| {
                 format!(
@@ -1858,6 +1877,7 @@ impl<'data> ObjectLayout<'data> {
                         entry_out,
                         table_writer,
                         trace,
+                        None::<Empty<&elf::Rela>>,
                     )
                     .with_context(|| {
                         format!(
@@ -1944,11 +1964,60 @@ struct SectionInfo {
     section_flags: SectionFlags,
 }
 
+fn get_resolution(
+    rel: &elf::Rela,
+    object_layout: &ObjectLayout,
+    layout: &Layout,
+) -> Result<(Resolution, SymbolIndex, SymbolId)> {
+    let symbol_index = rel
+        .symbol(LittleEndian, false)
+        .context("Unsupported absolute relocation")?;
+    let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
+    let resolution = layout
+        .merged_symbol_resolution(local_symbol_id)
+        .with_context(|| {
+            format!(
+                "Missing resolution for: {}",
+                layout.symbol_db.symbol_debug(local_symbol_id)
+            )
+        })?;
+    Ok((resolution, symbol_index, local_symbol_id))
+}
+
+const LOW6_MASK: u64 = 0b0011_1111;
+
+/// Adjust relocation value based on the actual value at the place of a relocation.
+fn adjust_relocation_based_on_value(
+    value: u64,
+    rel_info: &RelocationKindInfo,
+    out: &[u8],
+    offset_in_section: usize,
+) -> Result<u64> {
+    let mut read_data = [0u8; 8];
+    let RelocationSize::ByteSize(rel_size) = rel_info.size else {
+        bail!("Unexpected size for the addition/subtraction relocation");
+    };
+    // Read only N bytes from the currente value based on the size of the relocation.
+    read_data[..rel_size].copy_from_slice(&out[offset_in_section..offset_in_section + rel_size]);
+    let current_value = u64::from_le_bytes(read_data);
+
+    // Handle addition and subtraction relocation kinds.
+    match rel_info.kind {
+        RelocationKind::AbsoluteSetWord6 => Ok(value & LOW6_MASK),
+        RelocationKind::AbsoluteAddition => Ok(current_value.wrapping_add(value)),
+        RelocationKind::AbsoluteSubtraction => Ok(current_value.wrapping_sub(value)),
+        RelocationKind::AbsoluteSubtractionWord6 => {
+            Ok((current_value & LOW6_MASK).wrapping_sub(value & LOW6_MASK) & LOW6_MASK)
+        }
+        _ => Err(error!("Unexpected relocation: {:?}", rel_info)),
+    }
+}
+
 /// Applies the relocation `rel` at `offset_in_section`, where the section bytes are `out`. See "ELF
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
 #[inline(always)]
-fn apply_relocation<A: Arch>(
+fn apply_relocation<'a, A: Arch>(
     object_layout: &ObjectLayout,
     mut offset_in_section: u64,
     rel: &elf::Rela,
@@ -1957,6 +2026,7 @@ fn apply_relocation<A: Arch>(
     out: &mut [u8],
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
+    mut relocations_to_search: Option<impl Iterator<Item = &'a elf::Rela>>,
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
     let original_place = section_address + offset_in_section;
@@ -1968,24 +2038,17 @@ fn apply_relocation<A: Arch>(
     .entered();
 
     let e = LittleEndian;
-    let symbol_index = rel
-        .symbol(e, false)
-        .context("Unsupported absolute relocation")?;
-    let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
-    let resolution = layout
-        .merged_symbol_resolution(local_symbol_id)
-        .with_context(|| {
-            format!(
-                "Missing resolution for: {}",
-                layout.symbol_db.symbol_debug(local_symbol_id)
-            )
-        })?;
+    let r_type = rel.r_type(e, false);
 
+    if A::relocation_from_raw(r_type)?.kind == RelocationKind::None {
+        return Ok(RelocationModifier::Normal);
+    }
+
+    let (resolution, symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
     let value_flags = resolution.value_flags;
     let resolution_flags = resolution.resolution_flags;
     let mut addend = rel.r_addend.get(e);
     let mut next_modifier = RelocationModifier::Normal;
-    let r_type = rel.r_type(e, false);
     let rel_info;
     let output_kind = layout.args().output_kind();
 
@@ -2011,7 +2074,7 @@ fn apply_relocation<A: Arch>(
     let place = section_address + offset_in_section;
 
     let mask = get_page_mask(rel_info.mask);
-    let value = match rel_info.kind {
+    let mut value = match rel_info.kind {
         RelocationKind::Absolute => {
             assert!(rel_info.mask.is_none());
             write_absolute_relocation::<A>(
@@ -2025,6 +2088,17 @@ fn apply_relocation<A: Arch>(
                 layout,
             )?
         }
+        RelocationKind::AbsoluteSet
+        | RelocationKind::AbsoluteSetWord6
+        | RelocationKind::AbsoluteAddition
+        | RelocationKind::AbsoluteSubtraction
+        | RelocationKind::AbsoluteSubtractionWord6 => resolution.value_with_addend(
+            addend,
+            symbol_index,
+            object_layout,
+            &layout.merged_strings,
+            &layout.merged_string_start_addresses,
+        )?,
         RelocationKind::AbsoluteAArch64 => resolution
             .value_with_addend(
                 addend,
@@ -2044,6 +2118,117 @@ fn apply_relocation<A: Arch>(
             )?
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
+        RelocationKind::RelativeRISCVLow12 => {
+            let Some(relocations_to_search) = relocations_to_search.as_mut() else {
+                bail!("All relocations must be available for R_RISCV_PCREL_LO12");
+            };
+            let hi_offset_in_section = resolution
+                .value_with_addend(
+                    addend,
+                    symbol_index,
+                    object_layout,
+                    &layout.merged_strings,
+                    &layout.merged_string_start_addresses,
+                )?
+                .wrapping_sub(section_address);
+            // The High-part relocation is typically just before us.
+            let hi_rel = relocations_to_search
+                .find(|r| {
+                    r.r_offset(e) == hi_offset_in_section
+                        // RELAX relocations have the same offset as the HIGH part relocation!
+                        && r.r_type(e, false) != object::elf::R_RISCV_RELAX
+                })
+                .with_context(|| {
+                    "Missing High relocation connected with R_RISCV_PCREL_LO12".to_string()
+                })?;
+            let hi_rel_info = A::relocation_from_raw(hi_rel.r_type(LittleEndian, false))?;
+            let (resolution, symbol_index, _) = get_resolution(hi_rel, object_layout, layout)
+                .with_context(|| {
+                    "Missing High resolution connected to R_RISCV_PCREL_LO12".to_string()
+                })?;
+            let place = section_address + hi_offset_in_section;
+
+            // Only a subset of relocations is referenced by R_RISCV_PCREL_LO12 relocations.
+            match hi_rel_info.kind {
+                RelocationKind::Relative => resolution
+                    .value_with_addend(
+                        addend,
+                        symbol_index,
+                        object_layout,
+                        &layout.merged_strings,
+                        &layout.merged_string_start_addresses,
+                    )?
+                    .wrapping_sub(place),
+                RelocationKind::GotRelative => resolution
+                    .got_address()?
+                    .wrapping_add(addend as u64)
+                    .wrapping_sub(place),
+                RelocationKind::TlsGd => resolution
+                    .tlsgd_got_address()?
+                    .wrapping_add(addend as u64)
+                    .wrapping_sub(place),
+                RelocationKind::TlsLd => layout
+                    .prelude()
+                    .tlsld_got_entry
+                    .unwrap()
+                    .get()
+                    .wrapping_add(addend as u64)
+                    .wrapping_sub(place),
+                RelocationKind::GotTpOff => resolution
+                    .got_address()?
+                    .wrapping_add(addend as u64)
+                    .wrapping_sub(place),
+                _ => bail!(
+                    "Unsupported high part relocation {:?} connected with R_RISCV_PCREL_LO12",
+                    hi_rel_info.kind
+                ),
+            }
+        }
+        RelocationKind::PairSubtraction => {
+            let Some(relocations_to_search) = relocations_to_search.as_mut() else {
+                bail!("All relocations must be available for R_RISCV_SUB_ULEB128");
+            };
+            let set_rel = relocations_to_search
+                .next()
+                .with_context(|| "Missing previous relocation".to_string())?;
+            ensure!(
+                set_rel.r_offset(e) == rel.r_offset(e),
+                "R_RISCV_SET_ULEB128 relocation must have equal offset"
+            );
+            ensure!(
+                set_rel.r_type(LittleEndian, false) == object::elf::R_RISCV_SET_ULEB128,
+                "R_RISCV_SET_ULEB128 must be the previous relocation"
+            );
+            let (set_resolution, set_symbol_index, set_local_symbol_id) =
+                get_resolution(set_rel, object_layout, layout)?;
+
+            let set_resolution_val = set_resolution.value_with_addend(
+                set_rel.r_addend.get(e),
+                set_symbol_index,
+                object_layout,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+            )?;
+            let sub_resolution_val = resolution.value_with_addend(
+                addend,
+                symbol_index,
+                object_layout,
+                &layout.merged_strings,
+                &layout.merged_string_start_addresses,
+            )?;
+            let (value, overflow) = set_resolution_val.overflowing_sub(sub_resolution_val);
+            ensure!(
+                !overflow,
+                "ULEB128 overflow should not happen: {} (0x{}) - {} (0x{})",
+                layout
+                    .symbol_db
+                    .symbol_name_for_display(set_local_symbol_id),
+                HexU64::new(set_resolution_val),
+                layout.symbol_db.symbol_name_for_display(local_symbol_id),
+                HexU64::new(sub_resolution_val)
+            );
+            value
+        }
         RelocationKind::GotRelative => resolution
             .got_address()?
             .bitand(mask.got_entry)
@@ -2143,6 +2328,10 @@ fn apply_relocation<A: Arch>(
             .value()
             .wrapping_sub(layout.tls_start_address_aarch64())
             .wrapping_add(addend as u64),
+        RelocationKind::TpOffRISCV => resolution
+            .value()
+            .wrapping_sub(layout.tls_start_address_riscv64())
+            .wrapping_add(addend as u64),
         RelocationKind::TlsDesc => resolution
             .tls_descriptor_got_address()?
             .bitand(mask.got_entry)
@@ -2159,6 +2348,21 @@ fn apply_relocation<A: Arch>(
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::None | RelocationKind::TlsDescCall => 0,
     };
+
+    let offset_in_section = offset_in_section as usize;
+
+    // Handle addition and subtraction relocation kinds.
+    match rel_info.kind {
+        RelocationKind::AbsoluteAddition | RelocationKind::AbsoluteSubtraction => {
+            value = adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?;
+        }
+        RelocationKind::AbsoluteSetWord6 | RelocationKind::AbsoluteSubtractionWord6 => {
+            // Special case WORD6 type where we need to preserve the 2 most significant bits of u8.
+            value = adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?
+                | (u64::from(out[offset_in_section]) & !LOW6_MASK);
+        }
+        _ => {}
+    }
 
     if let Some(relaxation) = relaxation {
         trace.emit(original_place, || {
@@ -2185,13 +2389,14 @@ fn apply_relocation<A: Arch>(
             %value_flags,
             %resolution_flags,
             ?rel_info.kind,
+            %rel_info.size,
             value,
             value_hex = %HexU64::new(value),
             symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
             "relocation applied");
     }
 
-    write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section as usize..])?;
+    write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section..])?;
 
     Ok(next_modifier)
 }
@@ -2225,13 +2430,30 @@ fn apply_debug_relocation<A: Arch>(
 
     let value = if let Some(resolution) = resolution {
         match rel_info.kind {
-            RelocationKind::Absolute => resolution.value_with_addend(
-                addend,
-                symbol_index,
-                object_layout,
-                &layout.merged_strings,
-                &layout.merged_string_start_addresses,
-            )?,
+            RelocationKind::Absolute
+            | RelocationKind::AbsoluteAddition
+            | RelocationKind::AbsoluteSubtraction => {
+                let mut value = resolution.value_with_addend(
+                    addend,
+                    symbol_index,
+                    object_layout,
+                    &layout.merged_strings,
+                    &layout.merged_string_start_addresses,
+                )?;
+                // Adjust the relocation value based on the value at the place.
+                if matches!(
+                    rel_info.kind,
+                    RelocationKind::AbsoluteSubtraction | RelocationKind::AbsoluteAddition
+                ) {
+                    value = adjust_relocation_based_on_value(
+                        value,
+                        &rel_info,
+                        out,
+                        offset_in_section as usize,
+                    )?;
+                }
+                value
+            }
             RelocationKind::DtpOff => resolution
                 .value()
                 .wrapping_sub(layout.tls_end_address())
@@ -2957,6 +3179,12 @@ fn write_internal_symbols(
         } else {
             object::elf::STT_NOTYPE
         };
+
+        // Mandatory RISC-V symbol defined by the default linker script as:
+        // __global_pointer$ = MIN(__SDATA_BEGIN__ + 0x800, MAX(__DATA_BEGIN__ + 0x800, __BSS_END__ - 0x800));
+        if symbol_name.bytes() == GLOBAL_POINTER_SYMBOL_NAME.as_bytes() {
+            address += 0x800;
+        }
 
         let entry = symbol_writer
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())

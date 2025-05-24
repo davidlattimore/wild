@@ -23,6 +23,15 @@ int black_box(int input) {
     );
     return w0;
 }
+#elif defined(__riscv)
+int black_box(int input) {
+    register int a0 __asm__ ("a0") = input;
+    __asm__ __volatile__ (
+        "nop"
+        : "+r" (a0)
+    );
+    return a0;
+}
 #endif
 
 void _start() {

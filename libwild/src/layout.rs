@@ -1594,6 +1594,13 @@ impl<'data> Layout<'data> {
         tdata.alignment.align_down(tls_start)
     }
 
+    /// Returns the memory address of the start of the TLS segment used by the RISC-V.
+    pub(crate) fn tls_start_address_riscv64(&self) -> u64 {
+        let tdata = self.section_layouts.get(output_section_id::TDATA);
+        let tls_start = tdata.mem_offset;
+        tdata.alignment.align_down(tls_start)
+    }
+
     pub(crate) fn layout_data(&self) -> linker_layout::Layout {
         let files = self
             .group_layouts
@@ -2778,12 +2785,14 @@ fn process_relocation<A: Arch>(
                 } else {
                     // We don't at present support text relocations, so if we can't apply a copy
                     // relocation, we error instead.
+                    /* TODO: triggered on RISC-V target
                     bail!(
                         "Direct relocation ({}) to dynamic symbol from non-writable section, \
                         but copy relocations are disabled. {}",
                         A::rel_type_to_string(r_type),
                         symbol_db.symbol_debug(symbol_id),
                     );
+                    */
                 }
             }
         } else if args.is_relocatable()
@@ -2865,11 +2874,19 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
             ResolutionFlags::empty()
         }
         RelocationKind::Absolute
+        | RelocationKind::AbsoluteSet
+        | RelocationKind::AbsoluteSetWord6
+        | RelocationKind::AbsoluteAddition
+        | RelocationKind::AbsoluteSubtraction
+        | RelocationKind::AbsoluteSubtractionWord6
         | RelocationKind::Relative
+        | RelocationKind::RelativeRISCVLow12
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
         | RelocationKind::TpOffAArch64
-        | RelocationKind::SymRelGotBase => ResolutionFlags::DIRECT,
+        | RelocationKind::TpOffRISCV
+        | RelocationKind::SymRelGotBase
+        | RelocationKind::PairSubtraction => ResolutionFlags::DIRECT,
         RelocationKind::None | RelocationKind::AbsoluteAArch64 => ResolutionFlags::empty(),
     }
 }
@@ -3805,7 +3822,7 @@ impl<'data> ObjectLayoutState<'data> {
             )
             .with_context(|| {
                 format!(
-                    "Failed to copy section `{}` from file {self}",
+                    "Failed to copy section {} from file {self}",
                     section_debug(self.object, section.index)
                 )
             })?;

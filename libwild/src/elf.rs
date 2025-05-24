@@ -32,6 +32,7 @@ use std::sync::atomic::Ordering;
 pub const NON_PIE_START_MEM_ADDRESS: u64 = 0x400_000;
 
 pub(crate) const TLS_MODULE_BASE_SYMBOL_NAME: &str = "_TLS_MODULE_BASE_";
+pub(crate) const GLOBAL_POINTER_SYMBOL_NAME: &str = "__global_pointer$";
 
 pub(crate) type FileHeader = object::elf::FileHeader64<LittleEndian>;
 pub(crate) type ProgramHeader = object::elf::ProgramHeader64<LittleEndian>;
@@ -481,7 +482,14 @@ pub(crate) fn write_relocation_to_buffer(
         }) => {
             let extracted_value = extract_bits(value, range.start, range.end);
             let negative = (value as i64).is_negative();
-            insn.write_to_value(extracted_value, negative, &mut output[..4]);
+            let output_len = output.len();
+            insn.write_to_value(
+                extracted_value,
+                negative,
+                // We can write a non-text section, so we might need to limit the output buffer slice
+                // e.g. .gcc_except_table is written on riscv64 using the ULEB128 encoding
+                &mut output[..insn.write_windows_size().min(output_len)],
+            );
         }
     }
 

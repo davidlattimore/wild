@@ -16,6 +16,7 @@ use std::ops::Range;
 pub(crate) enum ArchKind {
     X86_64,
     Aarch64,
+    RISCV64,
 }
 
 /// Provides architecture-specific functionality needed by linker-diff.
@@ -266,6 +267,7 @@ impl ArchKind {
         match bins[0].elf_file.elf_header().e_machine(LittleEndian) {
             object::elf::EM_X86_64 => Ok(ArchKind::X86_64),
             object::elf::EM_AARCH64 => Ok(ArchKind::Aarch64),
+            object::elf::EM_RISCV => Ok(ArchKind::RISCV64),
             other => bail!("Unsupported object architecture {other}",),
         }
     }
