@@ -80,6 +80,8 @@ pub struct Args {
     pub(crate) should_print_version: bool,
     pub(crate) demangle: bool,
 
+    pub(crate) b_symbolic: BSymbolicKind,
+
     output_kind: Option<OutputKind>,
     is_dynamic_executable: bool,
     relocation_model: RelocationModel,
@@ -149,6 +151,16 @@ pub(crate) enum InputSpec {
     Lib(Box<str>),
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum BSymbolicKind {
+    None,
+    Functions,
+    // TODO: Handle below cases
+    // All,
+    // NonWeak,
+    // NonWeakFunctions,
+}
+
 pub const WILD_UNSUPPORTED_ENV: &str = "WILD_UNSUPPORTED";
 pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
 pub const WRITE_LAYOUT_ENV: &str = "WILD_WRITE_LAYOUT";
@@ -193,7 +205,6 @@ const IGNORED_FLAGS: &[&str] = &[
     "fix-cortex-a53-843419",
     "no-export-dynamic",
     "Bsymbolic",
-    "Bsymbolic-functions",
     "Bsymbolic-non-weak-functions", // LLD specific
     "Bsymbolic-non-weak",           // LLD specific
 ];
@@ -272,6 +283,7 @@ impl Default for Args {
             undefined: Vec::new(),
             relro: true,
             entry: None,
+            b_symbolic: BSymbolicKind::None,
         }
     }
 }
@@ -366,6 +378,8 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
             modifier_stack.last_mut().unwrap().allow_shared = false;
         } else if long_arg_eq("Bdynamic") {
             modifier_stack.last_mut().unwrap().allow_shared = true;
+        } else if long_arg_eq("Bsymbolic-functions") {
+            args.b_symbolic = BSymbolicKind::Functions;
         } else if arg == "-o" {
             args.output = input
                 .next()
