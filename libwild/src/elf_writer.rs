@@ -2227,6 +2227,7 @@ fn apply_relocation<'a, A: Arch>(
                     "Missing High relocation connected with R_RISCV_PCREL_LO12".to_string()
                 })?;
             let hi_rel_info = A::relocation_from_raw(hi_rel.r_type(LittleEndian, false))?;
+            let addend = hi_rel.r_addend.get(e);
             let (resolution, symbol_index, _) = get_resolution(hi_rel, object_layout, layout)
                 .with_context(|| {
                     "Missing High resolution connected to R_RISCV_PCREL_LO12".to_string()
