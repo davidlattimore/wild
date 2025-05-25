@@ -79,8 +79,7 @@ jobs:
       - run: cargo build --profile ci --workspace --no-default-features
       - run: WILD_TEST_CROSS=aarch64 cargo test --profile ci --workspace
         if: ${{ matrix.test-qemu }}
-      # TODO: make all tests green on QEMU
-      - run: WILD_TEST_CROSS=riscv64 cargo test --profile ci --workspace || true
+      - run: WILD_TEST_CROSS=riscv64 cargo test --profile ci --workspace
         if: ${{ matrix.test-qemu }}
 
   clippy:
