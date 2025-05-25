@@ -1735,15 +1735,27 @@ impl<'data> ObjectLayout<'data> {
             .relocation_statistics
             .get(section.part_id.output_section_id())
             .fetch_add(relocations.len() as u64, Relaxed);
-        for rel in relocations {
+        for (i, rel) in relocations.iter().enumerate() {
             let offset_in_section = rel.r_offset.get(LittleEndian);
-            apply_debug_relocation::<A>(self, offset_in_section, rel, layout, tombstone_value, out)
-                .with_context(|| {
-                    format!(
-                        "Failed to apply {} at offset 0x{offset_in_section:x}",
-                        self.display_relocation::<A>(rel, layout)
-                    )
-                })?;
+            let relocations_to_search = relocations[..i]
+                .iter()
+                .rev()
+                .chain(relocations[i + 1..].iter());
+            apply_debug_relocation::<A>(
+                self,
+                offset_in_section,
+                rel,
+                layout,
+                tombstone_value,
+                out,
+                Some(relocations_to_search),
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to apply {} at offset 0x{offset_in_section:x}",
+                    self.display_relocation::<A>(rel, layout)
+                )
+            })?;
         }
         Ok(())
     }
@@ -2021,6 +2033,63 @@ fn adjust_relocation_based_on_value(
     }
 }
 
+#[inline(always)]
+fn get_pair_subtraction_relocation_value<'a, A: Arch>(
+    object_layout: &ObjectLayout,
+    rel: &elf::Rela,
+    layout: &Layout,
+    resolution: Resolution,
+    symbol_index: SymbolIndex,
+    local_symbol_id: SymbolId,
+    addend: i64,
+    mut relocations_to_search: Option<impl Iterator<Item = &'a elf::Rela>>,
+) -> Result<u64> {
+    let e = LittleEndian;
+    let Some(relocations_to_search) = relocations_to_search.as_mut() else {
+        bail!("All relocations must be available for R_RISCV_SUB_ULEB128");
+    };
+    let set_rel = relocations_to_search
+        .next()
+        .with_context(|| "Missing previous relocation".to_string())?;
+    ensure!(
+        set_rel.r_offset(e) == rel.r_offset(e),
+        "R_RISCV_SET_ULEB128 relocation must have equal offset"
+    );
+    ensure!(
+        set_rel.r_type(LittleEndian, false) == object::elf::R_RISCV_SET_ULEB128,
+        "R_RISCV_SET_ULEB128 must be the previous relocation"
+    );
+    let (set_resolution, set_symbol_index, set_local_symbol_id) =
+        get_resolution(set_rel, object_layout, layout)?;
+
+    let set_resolution_val = set_resolution.value_with_addend(
+        set_rel.r_addend.get(e),
+        set_symbol_index,
+        object_layout,
+        &layout.merged_strings,
+        &layout.merged_string_start_addresses,
+    )?;
+    let sub_resolution_val = resolution.value_with_addend(
+        addend,
+        symbol_index,
+        object_layout,
+        &layout.merged_strings,
+        &layout.merged_string_start_addresses,
+    )?;
+    let (value, overflow) = set_resolution_val.overflowing_sub(sub_resolution_val);
+    ensure!(
+        !overflow,
+        "ULEB128 overflow should not happen: {} (0x{}) - {} (0x{})",
+        layout
+            .symbol_db
+            .symbol_name_for_display(set_local_symbol_id),
+        HexU64::new(set_resolution_val),
+        layout.symbol_db.symbol_name_for_display(local_symbol_id),
+        HexU64::new(sub_resolution_val)
+    );
+    Ok(value)
+}
+
 /// Applies the relocation `rel` at `offset_in_section`, where the section bytes are `out`. See "ELF
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
@@ -2192,51 +2261,16 @@ fn apply_relocation<'a, A: Arch>(
                 ),
             }
         }
-        RelocationKind::PairSubtraction => {
-            let Some(relocations_to_search) = relocations_to_search.as_mut() else {
-                bail!("All relocations must be available for R_RISCV_SUB_ULEB128");
-            };
-            let set_rel = relocations_to_search
-                .next()
-                .with_context(|| "Missing previous relocation".to_string())?;
-            ensure!(
-                set_rel.r_offset(e) == rel.r_offset(e),
-                "R_RISCV_SET_ULEB128 relocation must have equal offset"
-            );
-            ensure!(
-                set_rel.r_type(LittleEndian, false) == object::elf::R_RISCV_SET_ULEB128,
-                "R_RISCV_SET_ULEB128 must be the previous relocation"
-            );
-            let (set_resolution, set_symbol_index, set_local_symbol_id) =
-                get_resolution(set_rel, object_layout, layout)?;
-
-            let set_resolution_val = set_resolution.value_with_addend(
-                set_rel.r_addend.get(e),
-                set_symbol_index,
-                object_layout,
-                &layout.merged_strings,
-                &layout.merged_string_start_addresses,
-            )?;
-            let sub_resolution_val = resolution.value_with_addend(
-                addend,
-                symbol_index,
-                object_layout,
-                &layout.merged_strings,
-                &layout.merged_string_start_addresses,
-            )?;
-            let (value, overflow) = set_resolution_val.overflowing_sub(sub_resolution_val);
-            ensure!(
-                !overflow,
-                "ULEB128 overflow should not happen: {} (0x{}) - {} (0x{})",
-                layout
-                    .symbol_db
-                    .symbol_name_for_display(set_local_symbol_id),
-                HexU64::new(set_resolution_val),
-                layout.symbol_db.symbol_name_for_display(local_symbol_id),
-                HexU64::new(sub_resolution_val)
-            );
-            value
-        }
+        RelocationKind::PairSubtraction => get_pair_subtraction_relocation_value::<A>(
+            object_layout,
+            rel,
+            layout,
+            resolution,
+            symbol_index,
+            local_symbol_id,
+            addend,
+            relocations_to_search,
+        )?,
         RelocationKind::GotRelative => resolution
             .got_address()?
             .bitand(mask.got_entry)
@@ -2407,13 +2441,14 @@ fn apply_relocation<'a, A: Arch>(
     Ok(next_modifier)
 }
 
-fn apply_debug_relocation<A: Arch>(
+fn apply_debug_relocation<'a, A: Arch>(
     object_layout: &ObjectLayout,
     offset_in_section: u64,
     rel: &elf::Rela,
     layout: &Layout,
     section_tombstone_value: u64,
     out: &mut [u8],
+    relocations_to_search: Option<impl Iterator<Item = &'a elf::Rela>>,
 ) -> Result<()> {
     let e = LittleEndian;
     let symbol_index = rel
@@ -2421,6 +2456,7 @@ fn apply_debug_relocation<A: Arch>(
         .context("Unsupported absolute relocation")?;
     let sym = object_layout.object.symbol(symbol_index)?;
     let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
+    let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
 
     let addend = rel.r_addend.get(e);
     let r_type = rel.r_type(e, false);
@@ -2464,6 +2500,16 @@ fn apply_debug_relocation<A: Arch>(
                 .value()
                 .wrapping_sub(layout.tls_end_address())
                 .wrapping_add(addend as u64),
+            RelocationKind::PairSubtraction => get_pair_subtraction_relocation_value::<A>(
+                object_layout,
+                rel,
+                layout,
+                resolution,
+                symbol_index,
+                local_symbol_id,
+                addend,
+                relocations_to_search,
+            )?,
             kind => bail!("Unsupported debug relocation kind {kind:?}"),
         }
     } else if let Some(section_index) = section_index {
