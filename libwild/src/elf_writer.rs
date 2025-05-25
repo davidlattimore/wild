@@ -2005,11 +2005,17 @@ fn adjust_relocation_based_on_value(
 
     // Handle addition and subtraction relocation kinds.
     match rel_info.kind {
-        RelocationKind::AbsoluteSetWord6 => Ok(value & LOW6_MASK),
+        RelocationKind::AbsoluteSetWord6 => {
+            // Preserve the 2 most significant bits of u8.
+            let value = value & LOW6_MASK;
+            Ok(value | (current_value & !LOW6_MASK))
+        }
         RelocationKind::AbsoluteAddition => Ok(current_value.wrapping_add(value)),
         RelocationKind::AbsoluteSubtraction => Ok(current_value.wrapping_sub(value)),
         RelocationKind::AbsoluteSubtractionWord6 => {
-            Ok((current_value & LOW6_MASK).wrapping_sub(value & LOW6_MASK) & LOW6_MASK)
+            // Preserve the 2 most significant bits of u8.
+            let value = (current_value & LOW6_MASK).wrapping_sub(value & LOW6_MASK) & LOW6_MASK;
+            Ok(value | (current_value & !LOW6_MASK))
         }
         _ => Err(error!("Unexpected relocation: {:?}", rel_info)),
     }
@@ -2354,16 +2360,14 @@ fn apply_relocation<'a, A: Arch>(
     let offset_in_section = offset_in_section as usize;
 
     // Handle addition and subtraction relocation kinds.
-    match rel_info.kind {
-        RelocationKind::AbsoluteAddition | RelocationKind::AbsoluteSubtraction => {
-            value = adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?;
-        }
-        RelocationKind::AbsoluteSetWord6 | RelocationKind::AbsoluteSubtractionWord6 => {
-            // Special case WORD6 type where we need to preserve the 2 most significant bits of u8.
-            value = adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?
-                | (u64::from(out[offset_in_section]) & !LOW6_MASK);
-        }
-        _ => {}
+    if matches!(
+        rel_info.kind,
+        RelocationKind::AbsoluteAddition
+            | RelocationKind::AbsoluteSubtraction
+            | RelocationKind::AbsoluteSetWord6
+            | RelocationKind::AbsoluteSubtractionWord6
+    ) {
+        value = adjust_relocation_based_on_value(value, &rel_info, out, offset_in_section)?;
     }
 
     if let Some(relaxation) = relaxation {
