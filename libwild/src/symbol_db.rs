@@ -3,6 +3,7 @@
 
 use crate::InputLinkerScript;
 use crate::args::Args;
+use crate::args::OutputKind;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Error;
@@ -441,7 +442,7 @@ impl<'data> SymbolDb<'data> {
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> Result<UnversionedSymbolName<'data>> {
         let file_id = self.file_id_for_symbol(symbol_id);
         match &self.groups[file_id.group()] {
-            Group::Prelude(prelude) => Ok(prelude.symbol_name(symbol_id)),
+            Group::Prelude(prelude) => Ok(prelude.symbol_name(symbol_id, self.args.output_kind())),
             Group::Objects(parsed_input_objects) => {
                 parsed_input_objects[file_id.file()].symbol_name(symbol_id)
             }
@@ -946,7 +947,7 @@ fn read_symbols<'data, 'out>(
 
             match group {
                 Group::Prelude(prelude) => {
-                    prelude.load_symbols(symbols_out, &mut outputs);
+                    prelude.load_symbols(symbols_out, &mut outputs, args.output_kind());
                 }
                 Group::Objects(parsed_input_objects) => {
                     for obj in *parsed_input_objects {
@@ -1421,7 +1422,12 @@ impl TryFrom<usize> for SymbolId {
 }
 
 impl Prelude<'_> {
-    fn load_symbols(&self, symbols_out: &mut SymbolInfoWriter, outputs: &mut SymbolLoadOutputs) {
+    fn load_symbols(
+        &self,
+        symbols_out: &mut SymbolInfoWriter,
+        outputs: &mut SymbolLoadOutputs,
+        output_kind: OutputKind,
+    ) {
         for definition in &self.symbol_definitions {
             let symbol_id = symbols_out.next;
             let value_flags = match definition {
@@ -1430,13 +1436,13 @@ impl Prelude<'_> {
                 }
                 InternalSymDefInfo::SectionStart(section_id) => {
                     let def = section_id.built_in_details();
-                    let name = def.start_symbol_name.unwrap().as_bytes();
+                    let name = def.start_symbol_name(output_kind).unwrap().as_bytes();
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, name));
                     ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE
                 }
                 InternalSymDefInfo::SectionEnd(section_id) => {
                     let def = section_id.built_in_details();
-                    let name = def.end_symbol_name.unwrap().as_bytes();
+                    let name = def.end_symbol_name(output_kind).unwrap().as_bytes();
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, name));
                     ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE
                 }

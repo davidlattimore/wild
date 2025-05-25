@@ -2556,7 +2556,7 @@ impl PreludeLayout {
         self.write_plt_got_entries::<A>(layout, table_writer)?;
 
         if !layout.args().strip_all {
-            self.write_symbol_table_entries::<A>(&mut table_writer.debug_symbol_writer, layout)?;
+            self.write_symbol_table_entries(&mut table_writer.debug_symbol_writer, layout)?;
         }
 
         if layout.args().should_write_eh_frame_hdr {
@@ -2655,7 +2655,7 @@ impl PreludeLayout {
         Ok(())
     }
 
-    fn write_symbol_table_entries<A: Arch>(
+    fn write_symbol_table_entries(
         &self,
         symbol_writer: &mut SymbolTableWriter,
         layout: &Layout,
@@ -2665,7 +2665,7 @@ impl PreludeLayout {
 
         let internal_symbols = &self.internal_symbols;
 
-        write_internal_symbols::<A>(internal_symbols, layout, symbol_writer)?;
+        write_internal_symbols(internal_symbols, layout, symbol_writer)?;
         Ok(())
     }
 }
@@ -2801,7 +2801,7 @@ pub(crate) struct EpilogueOffsets {
 
 impl LinkerScriptLayoutState<'_> {
     fn write_file<A: Arch>(&self, table_writer: &mut TableWriter, layout: &Layout) -> Result {
-        write_internal_symbols::<A>(
+        write_internal_symbols(
             &self.internal_symbols,
             layout,
             &mut table_writer.debug_symbol_writer,
@@ -2825,7 +2825,7 @@ impl EpilogueLayout<'_> {
         write_internal_symbols_plt_got_entries::<A>(&self.internal_symbols, table_writer, layout)?;
 
         if !layout.args().strip_all {
-            write_internal_symbols::<A>(
+            write_internal_symbols(
                 &self.internal_symbols,
                 layout,
                 &mut table_writer.debug_symbol_writer,
@@ -3133,7 +3133,7 @@ fn write_regular_object_dynamic_symbol_definition(
     Ok(())
 }
 
-fn write_internal_symbols<A: Arch>(
+fn write_internal_symbols(
     internal_symbols: &InternalSymbols,
     layout: &Layout,
     symbol_writer: &mut SymbolTableWriter<'_, '_, '_>,
@@ -3176,7 +3176,7 @@ fn write_internal_symbols<A: Arch>(
         let mut address = resolution.value();
 
         let st_type = if symbol_name.bytes() == TLS_MODULE_BASE_SYMBOL_NAME.as_bytes() {
-            address += A::get_dtv_offset();
+            address -= layout.tls_start_address();
             object::elf::STT_TLS
         } else {
             object::elf::STT_NOTYPE
