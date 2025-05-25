@@ -1019,7 +1019,9 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         }
         // Convert the address to an offset within the TLS segment
         let address = res.address()?;
-        *offset_entry = address - self.tls.start;
+        *offset_entry = address
+            .wrapping_sub(self.tls.start)
+            .wrapping_sub(A::get_dtv_offset());
         Ok(())
     }
 
