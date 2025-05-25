@@ -1987,8 +1987,16 @@ fn get_resolution(
         .symbol(LittleEndian, false)
         .context("Unsupported absolute relocation")?;
     let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
+    let sym = object_layout.object.symbol(symbol_index)?;
+    let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
     let resolution = layout
         .merged_symbol_resolution(local_symbol_id)
+        // TODO: the fallback should be likely only used for the debug relocations
+        .or_else(|| {
+            section_index.and_then(|section_index| {
+                object_layout.section_resolutions[section_index.0].full_resolution()
+            })
+        })
         .with_context(|| {
             format!(
                 "Missing resolution for: {}",
