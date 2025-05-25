@@ -28,7 +28,9 @@ pub(crate) fn maybe_apply_sysroot(
     input_path: &Path,
     sysroot: &Path,
 ) -> Option<Box<Path>> {
-    if linker_script_path.normalize().starts_with(sysroot) {
+    if linker_script_path.normalize().starts_with(sysroot)
+        || linker_script_path.starts_with(sysroot)
+    {
         Some(Box::from(sysroot.join(input_path.strip_prefix("/").ok()?)))
     } else {
         maybe_forced_sysroot(input_path, sysroot)
@@ -461,6 +463,14 @@ mod tests {
                 sysroot,
             ),
             Some(Box::from(sysroot.join("lib/libc.so.6"))),
+        );
+        assert_equal(
+            maybe_apply_sysroot(
+                Path::new("../../sysroot/libc.so"),
+                Path::new("/lib/libc.so.6"),
+                Path::new("../../sysroot"),
+            ),
+            Some(Box::from(Path::new("../../sysroot/lib/libc.so.6"))),
         );
         // Linker script is not located in the sysroot
         assert_equal(
