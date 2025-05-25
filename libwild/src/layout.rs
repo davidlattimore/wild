@@ -2785,14 +2785,12 @@ fn process_relocation<A: Arch>(
                 } else {
                     // We don't at present support text relocations, so if we can't apply a copy
                     // relocation, we error instead.
-                    /* TODO: triggered on RISC-V target
                     bail!(
                         "Direct relocation ({}) to dynamic symbol from non-writable section, \
                         but copy relocations are disabled. {}",
                         A::rel_type_to_string(r_type),
                         symbol_db.symbol_debug(symbol_id),
                     );
-                    */
                 }
             }
         } else if args.is_relocatable()
