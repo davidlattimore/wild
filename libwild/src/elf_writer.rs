@@ -2510,6 +2510,8 @@ fn apply_debug_relocation<'a, A: Arch>(
                 addend,
                 relocations_to_search,
             )?,
+            // Skip R_RISCV_SET_ULEB128
+            RelocationKind::Relative if rel_info.size == RelocationSize::ByteSize(0) => 0,
             kind => bail!("Unsupported debug relocation kind {kind:?}"),
         }
     } else if let Some(section_index) = section_index {
