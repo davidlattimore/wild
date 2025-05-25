@@ -4,6 +4,7 @@
 //#DiffIgnore:debug_info.missing_unit
 // TODO: RISC-V BFD linker keeps multiple .dynsym symbols
 //#DiffIgnore:dynsym.*
+// TODO: #775
 //#Cross: false
 
 //#Config:llvm-static:default
@@ -36,7 +37,6 @@
 //#DiffIgnore:.dynamic.DT_JMPREL
 //#DiffIgnore:.dynamic.DT_PLTGOT
 //#DiffIgnore:.dynamic.DT_PLTREL
-//#Cross: true
 
 fn foo() {
     panic!("Make sure unwinding works");
