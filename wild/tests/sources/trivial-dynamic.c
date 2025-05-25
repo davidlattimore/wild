@@ -19,6 +19,9 @@
 //#Config:nodelete:default
 //#LinkArgs:-z now -z nodelete
 
+//#Config:bsymbolic-functions:default
+//#LinkArgs:-z now -Bsymbolic-functions
+
 #include "runtime.h"
 
 int foo(void);

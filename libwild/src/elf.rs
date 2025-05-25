@@ -198,6 +198,24 @@ impl<'data> File<'data> {
         Ok(())
     }
 
+    /// Returns the contents of a section as a Cow. Will heap-allocate if the section is compressed.
+    pub(crate) fn section_data_cow(&self, section: &SectionHeader) -> Result<Cow<'data, [u8]>> {
+        let data = section.data(LittleEndian, self.data)?;
+
+        if let Some((compression, _, _)) = section.compression(LittleEndian, self.data)? {
+            let len = self.section_size(section)?;
+            let mut decompressed = vec![0; len as usize];
+            decompress_into(
+                compression,
+                &data[COMPRESSION_HEADER_SIZE..],
+                &mut decompressed,
+            )?;
+            Ok(Cow::Owned(decompressed))
+        } else {
+            Ok(Cow::Borrowed(data))
+        }
+    }
+
     pub(crate) fn section_size(&self, section: &SectionHeader) -> Result<u64> {
         Ok(section.compression(LittleEndian, self.data)?.map_or_else(
             || section.sh_size.get(LittleEndian),

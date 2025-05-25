@@ -1,0 +1,162 @@
+//! Uses DWARF debug info, if available, to find file and line number information for a particular
+//! offset in an input section.
+
+use crate::arch::Arch;
+use crate::elf::File;
+use crate::error::Result;
+use anyhow::Context;
+use object::LittleEndian;
+use object::SymbolIndex;
+use object::read::elf::RelocationSections;
+use std::borrow::Cow;
+use std::ffi::OsStr;
+use std::fmt::Display;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
+use std::path::PathBuf;
+
+pub(crate) struct SourceInfo(Option<SourceInfoDetails>);
+
+#[derive(Debug)]
+pub(crate) struct SourceInfoDetails {
+    path: PathBuf,
+    line: u64,
+}
+
+/// The address at which we'll pretend that we loaded the section we're interested in. This value is
+/// arbitrary, but should be larger than the largest input section we expect to encounter and small
+/// enough to fit comfortably in a u32.
+const SECTION_LOAD_ADDRESS: u64 = 0x1_000_000_000;
+
+/// Attempts to locate source info for `offset_in_section` within `section`.
+pub(crate) fn get_source_info<A: Arch>(
+    object: &File,
+    relocations: &RelocationSections,
+    section: &object::elf::SectionHeader64<LittleEndian>,
+    offset_in_section: u64,
+) -> Result<SourceInfo> {
+    let dwarf_sections =
+        gimli::DwarfSections::load(&|id: gimli::SectionId| -> Result<Cow<[u8]>> {
+            section_data_with_relocations::<A>(object, relocations, id, section)
+        })?;
+
+    let borrow_section: &dyn for<'a> Fn(
+        &'a Cow<[u8]>,
+    ) -> gimli::EndianSlice<'a, gimli::LittleEndian> =
+        &|section| gimli::EndianSlice::new(section, gimli::LittleEndian);
+
+    let dwarf = dwarf_sections.borrow(borrow_section);
+
+    let mut details = None;
+
+    let address_of_interest = SECTION_LOAD_ADDRESS + offset_in_section;
+
+    let mut iter = dwarf.units();
+    while let Some(header) = iter.next()? {
+        let unit = dwarf.unit(header)?;
+
+        let Some(program) = unit.line_program.clone() else {
+            continue;
+        };
+
+        let comp_dir = unit
+            .comp_dir
+            .as_ref()
+            .map(|dir| Path::new(OsStr::from_bytes(dir)).to_owned())
+            .unwrap_or_default();
+
+        let mut rows = program.rows();
+
+        while let Some((header, row)) = rows.next_row()? {
+            if row.address() > address_of_interest {
+                break;
+            }
+
+            // Computing the path for every row seems a bit wasteful. If it turns out that this is
+            // actually a problem, then we could experiment with iterating through the rows twice.
+            // Once to determine which row we want then a second time to get the relevant properties
+            // from the row.
+            let mut path = PathBuf::new();
+            if let Some(file) = row.file(header) {
+                path = comp_dir.clone();
+
+                path.push(OsStr::from_bytes(
+                    &dwarf.attr_string(&unit, file.path_name())?,
+                ));
+            }
+
+            let line = row.line().map_or(0, |l| l.get());
+
+            details = Some(SourceInfoDetails { path, line });
+        }
+    }
+
+    Ok(SourceInfo(details))
+}
+
+/// Gets the data for section `id` from `object` and applies relocations to it.
+fn section_data_with_relocations<A: Arch>(
+    object: &File,
+    relocations: &RelocationSections,
+    id: gimli::SectionId,
+    section_of_interest: &object::elf::SectionHeader64<LittleEndian>,
+) -> Result<Cow<'static, [u8]>> {
+    let data = match object.section_by_name(id.name()) {
+        Some((index, section)) => {
+            let mut section_data = object.section_data_cow(section)?.into_owned();
+
+            // Apply relocations.
+            let relocations = object.relocations(index, relocations)?;
+
+            for rel in relocations {
+                let sym_index = rel.r_sym(LittleEndian, false);
+                let symbol = object.symbol(SymbolIndex(sym_index as usize))?;
+
+                let mut value = symbol
+                    .st_value
+                    .get(LittleEndian)
+                    .wrapping_add(rel.r_addend.get(LittleEndian) as u64);
+
+                let symbol_section = object.section(object::SectionIndex(
+                    symbol.st_shndx.get(LittleEndian) as usize,
+                ))?;
+
+                let data_offset = rel.r_offset.get(LittleEndian) as usize;
+
+                if symbol_section.sh_offset.get(LittleEndian)
+                    == section_of_interest.sh_offset.get(LittleEndian)
+                {
+                    value += SECTION_LOAD_ADDRESS;
+                }
+
+                let r_type = A::relocation_from_raw(rel.r_type(LittleEndian, false))?;
+
+                let linker_utils::elf::RelocationSize::ByteSize(num_bytes) = r_type.size else {
+                    continue;
+                };
+
+                if r_type.kind == linker_utils::elf::RelocationKind::Absolute {
+                    section_data
+                        .get_mut(data_offset..data_offset + num_bytes)
+                        .context("Invalid relocation offset")?
+                        .copy_from_slice(&value.to_le_bytes()[..num_bytes]);
+                }
+            }
+
+            Cow::Owned(section_data)
+        }
+        None => Cow::Borrowed(&[][..]),
+    };
+
+    Ok(data)
+}
+
+impl Display for SourceInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(details) = self.0.as_ref() {
+            let SourceInfoDetails { path, line } = details;
+            write!(f, "\n    {}:{}", path.display(), line)?;
+        }
+        Ok(())
+    }
+}

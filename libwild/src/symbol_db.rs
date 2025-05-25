@@ -2,6 +2,7 @@
 //! information about where each symbol can be obtained.
 
 use crate::InputLinkerScript;
+use crate::args;
 use crate::args::Args;
 use crate::args::OutputKind;
 use crate::bail;
@@ -1024,7 +1025,12 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFl
         || args.output_kind().is_static_executable()
         // Symbols defined in an executable cannot be interposed since the executable is always the
         // first place checked for a symbol by the dynamic loader.
-        || (args.output_kind().is_executable() && !is_undefined);
+        || (args.output_kind().is_executable() && !is_undefined)
+        // `-Bsymbolic-functions`
+        || (
+            args.b_symbolic == args::BSymbolicKind::Functions
+            && sym.st_type() == object::elf::STT_FUNC
+        );
 
     let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {
         ValueFlags::ABSOLUTE
