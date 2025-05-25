@@ -2834,7 +2834,7 @@ impl EpilogueLayout<'_> {
         }
         write_gnu_hash_tables(self, buffers)?;
 
-        write_dynamic_symbol_definitions::<A>(self, table_writer, layout)?;
+        write_dynamic_symbol_definitions(self, table_writer, layout)?;
 
         if !&self.gnu_property_notes.is_empty() {
             write_gnu_property_notes(self, buffers)?;
@@ -2947,7 +2947,7 @@ fn write_gnu_hash_tables(
     Ok(())
 }
 
-fn write_dynamic_symbol_definitions<A: Arch>(
+fn write_dynamic_symbol_definitions(
     epilogue: &EpilogueLayout,
     table_writer: &mut TableWriter,
     layout: &Layout,
@@ -2957,7 +2957,7 @@ fn write_dynamic_symbol_definitions<A: Arch>(
         let file_layout = &layout.file_layout(file_id);
         match file_layout {
             FileLayout::Object(object) => {
-                write_regular_object_dynamic_symbol_definition::<A>(
+                write_regular_object_dynamic_symbol_definition(
                     sym_def,
                     object,
                     layout,
@@ -3084,7 +3084,7 @@ fn write_copy_relocation_dynamic_symbol_definition(
     Ok(())
 }
 
-fn write_regular_object_dynamic_symbol_definition<A: Arch>(
+fn write_regular_object_dynamic_symbol_definition(
     sym_def: &crate::layout::DynamicSymbolDefinition,
     object: &ObjectLayout,
     layout: &Layout,
@@ -3112,7 +3112,6 @@ fn write_regular_object_dynamic_symbol_definition<A: Arch>(
                 .tls_start_address
                 .context("Writing TLS variable to symtab, but we don't have a TLS segment")?;
             symbol_value -= tls_start_address;
-            symbol_value = symbol_value.wrapping_add(A::get_dtv_offset());
         }
         dynamic_symbol_writer
             .copy_symbol(sym, name, output_section_id, symbol_value)
