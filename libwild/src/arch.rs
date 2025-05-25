@@ -31,6 +31,11 @@ pub(crate) trait Arch {
 
     // Get string representation of a relocation specific for the architecture.
     fn rel_type_to_string(r_type: u32) -> Cow<'static, str>;
+
+    // Get DTV OFFSET.
+    fn get_dtv_offset() -> u64 {
+        0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

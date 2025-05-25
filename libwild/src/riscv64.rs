@@ -62,6 +62,10 @@ impl crate::arch::Arch for RISCV64 {
         );
         Ok(())
     }
+
+    fn get_dtv_offset() -> u64 {
+        0x800
+    }
 }
 
 #[derive(Debug, Clone)]
