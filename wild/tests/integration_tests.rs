@@ -320,7 +320,7 @@ fn dynamic_linker_path(cross_arch: Option<Architecture>) -> &'static str {
         None => host_dynamic_linker_cached(),
         Some(Architecture::X86_64) => "/lib64/ld-linux-x86-64.so.2",
         Some(Architecture::AArch64) => "/lib/ld-linux-aarch64.so.1",
-        Some(Architecture::RISCV64) => "/lib/ld-linux-riscv64.so.1",
+        Some(Architecture::RISCV64) => "/lib/ld-linux-riscv64-lp64d.so.1",
     }
 }
 
