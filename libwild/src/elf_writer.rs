@@ -98,7 +98,7 @@ use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
 use std::fmt::Display;
 use std::io::Write;
-use std::iter::Empty;
+use std::iter;
 use std::marker::PhantomData;
 use std::ops::BitAnd;
 use std::ops::Deref;
@@ -1677,13 +1677,6 @@ impl<'data> ObjectLayout<'data> {
                 continue;
             }
             let offset_in_section = rel.r_offset.get(LittleEndian);
-            // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of relocations where the later
-            // one actually points to a label of the HI20 relocations and thus we need to find it. The relocation is typically
-            // right before the LO12_* relocation.
-            let relocations_to_search = relocations[..i]
-                .iter()
-                .rev()
-                .chain(relocations[i + 1..].iter());
             modifier = apply_relocation::<A>(
                 self,
                 offset_in_section,
@@ -1697,7 +1690,8 @@ impl<'data> ObjectLayout<'data> {
                 out,
                 table_writer,
                 trace,
-                Some(relocations_to_search),
+                relocations,
+                i,
             )
             .with_context(|| {
                 format!(
@@ -1737,10 +1731,6 @@ impl<'data> ObjectLayout<'data> {
             .fetch_add(relocations.len() as u64, Relaxed);
         for (i, rel) in relocations.iter().enumerate() {
             let offset_in_section = rel.r_offset.get(LittleEndian);
-            let relocations_to_search = relocations[..i]
-                .iter()
-                .rev()
-                .chain(relocations[i + 1..].iter());
             apply_debug_relocation::<A>(
                 self,
                 offset_in_section,
@@ -1748,7 +1738,8 @@ impl<'data> ObjectLayout<'data> {
                 layout,
                 tombstone_value,
                 out,
-                Some(relocations_to_search),
+                relocations,
+                i,
             )
             .with_context(|| {
                 format!(
@@ -1891,7 +1882,8 @@ impl<'data> ObjectLayout<'data> {
                         entry_out,
                         table_writer,
                         trace,
-                        None::<Empty<&elf::Rela>>,
+                        &[],
+                        0,
                     )
                     .with_context(|| {
                         format!(
@@ -2050,12 +2042,9 @@ fn get_pair_subtraction_relocation_value<'a, A: Arch>(
     symbol_index: SymbolIndex,
     local_symbol_id: SymbolId,
     addend: i64,
-    mut relocations_to_search: Option<impl Iterator<Item = &'a elf::Rela>>,
+    mut relocations_to_search: impl Iterator<Item = &'a elf::Rela>,
 ) -> Result<u64> {
     let e = LittleEndian;
-    let Some(relocations_to_search) = relocations_to_search.as_mut() else {
-        bail!("All relocations must be available for R_RISCV_SUB_ULEB128");
-    };
     let set_rel = relocations_to_search
         .next()
         .with_context(|| "Missing previous relocation".to_string())?;
@@ -2102,7 +2091,7 @@ fn get_pair_subtraction_relocation_value<'a, A: Arch>(
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
 #[inline(always)]
-fn apply_relocation<'a, A: Arch>(
+fn apply_relocation<A: Arch>(
     object_layout: &ObjectLayout,
     mut offset_in_section: u64,
     rel: &elf::Rela,
@@ -2111,7 +2100,8 @@ fn apply_relocation<'a, A: Arch>(
     out: &mut [u8],
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
-    mut relocations_to_search: Option<impl Iterator<Item = &'a elf::Rela>>,
+    relocations: &[elf::Rela],
+    relocation_index: usize,
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
     let original_place = section_address + offset_in_section;
@@ -2204,9 +2194,13 @@ fn apply_relocation<'a, A: Arch>(
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::RelativeRISCVLow12 => {
-            let Some(relocations_to_search) = relocations_to_search.as_mut() else {
-                bail!("All relocations must be available for R_RISCV_PCREL_LO12");
-            };
+            // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of relocations where the later
+            // one actually points to a label of the HI20 relocations and thus we need to find it. The relocation is typically
+            // right before the LO12_* relocation.
+            let mut relocations_to_search = relocations[..relocation_index]
+                .iter()
+                .rev()
+                .chain(relocations[relocation_index + 1..].iter());
             let hi_offset_in_section = resolution
                 .value_with_addend(
                     addend,
@@ -2278,7 +2272,8 @@ fn apply_relocation<'a, A: Arch>(
             symbol_index,
             local_symbol_id,
             addend,
-            relocations_to_search,
+            // It must be the previous relocation
+            iter::once(&relocations[relocation_index - 1]),
         )?,
         RelocationKind::GotRelative => resolution
             .got_address()?
@@ -2450,14 +2445,15 @@ fn apply_relocation<'a, A: Arch>(
     Ok(next_modifier)
 }
 
-fn apply_debug_relocation<'a, A: Arch>(
+fn apply_debug_relocation<A: Arch>(
     object_layout: &ObjectLayout,
     offset_in_section: u64,
     rel: &elf::Rela,
     layout: &Layout,
     section_tombstone_value: u64,
     out: &mut [u8],
-    relocations_to_search: Option<impl Iterator<Item = &'a elf::Rela>>,
+    relocations: &[elf::Rela],
+    relocation_index: usize,
 ) -> Result<()> {
     let e = LittleEndian;
     let symbol_index = rel
@@ -2517,7 +2513,8 @@ fn apply_debug_relocation<'a, A: Arch>(
                 symbol_index,
                 local_symbol_id,
                 addend,
-                relocations_to_search,
+                // Must be the previous relocation.
+                iter::once(&relocations[relocation_index - 1]),
             )?,
             // Skip R_RISCV_SET_ULEB128
             RelocationKind::Relative if rel_info.size == RelocationSize::ByteSize(0) => 0,
