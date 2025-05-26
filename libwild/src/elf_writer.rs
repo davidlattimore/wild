@@ -919,7 +919,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
                 got_address += crate::elf::GOT_ENTRY_SIZE;
             }
             if resolution_flags.needs_got_tls_module() {
-                self.process_got_tls_mod::<A>(res, got_address)?;
+                self.process_got_tls_mod_and_offset::<A>(res, got_address)?;
                 got_address += 2 * crate::elf::GOT_ENTRY_SIZE;
             }
             if resolution_flags.needs_got_tls_descriptor() {
@@ -994,9 +994,13 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         Ok(())
     }
 
-    fn process_got_tls_mod<A: Arch>(&mut self, res: &Resolution, got_address: u64) -> Result {
+    fn process_got_tls_mod_and_offset<A: Arch>(
+        &mut self,
+        res: &Resolution,
+        got_address: u64,
+    ) -> Result {
         let got_entry = self.take_next_got_entry()?;
-        if self.output_kind.is_executable() {
+        if self.output_kind.is_executable() && !res.value_flags.is_dynamic() {
             *got_entry = elf::CURRENT_EXE_TLS_MOD;
         } else {
             let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);

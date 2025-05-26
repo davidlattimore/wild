@@ -817,7 +817,7 @@ fn allocate_resolution(
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
         // For executables, the TLS module ID is known at link time. For shared objects, we
         // need a runtime relocation to fill it in.
-        if !output_kind.is_executable() {
+        if !output_kind.is_executable() || value_flags.is_dynamic() {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
         if value_flags.is_interposable() && has_dynamic_symbol {
