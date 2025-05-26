@@ -323,7 +323,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
 
 impl RISCVInstruction {
     // Encode computed relocation value and store it based on the encoding of an instruction.
-    // A handy pages where one can easily find instruction encoding:
+    // A handy page where one can easily find instruction encoding:
     // https://msyksphinz-self.github.io/riscv-isadoc/html/index.html.
     pub fn write_to_value(self, extracted_value: u64, _negative: bool, dest: &mut [u8]) {
         match self {

@@ -2006,8 +2006,6 @@ fn get_resolution(
     Ok((resolution, symbol_index, local_symbol_id))
 }
 
-const LOW6_MASK: u64 = 0b0011_1111;
-
 /// Adjust relocation value based on the actual value at the place of a relocation.
 fn adjust_relocation_based_on_value(
     value: u64,
@@ -2015,6 +2013,8 @@ fn adjust_relocation_based_on_value(
     out: &[u8],
     offset_in_section: usize,
 ) -> Result<u64> {
+    const LOW6_MASK: u64 = 0b0011_1111;
+
     let mut read_data = [0u8; 8];
     let RelocationSize::ByteSize(rel_size) = rel_info.size else {
         bail!("Unexpected size for the addition/subtraction relocation");
