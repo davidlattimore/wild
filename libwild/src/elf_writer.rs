@@ -2201,6 +2201,10 @@ fn apply_relocation<A: Arch>(
             // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of relocations where the later
             // one actually points to a label of the HI20 relocations and thus we need to find it. The relocation is typically
             // right before the LO12_* relocation.
+            ensure!(
+                addend == 0,
+                "Unexpected added for R_RISCV_PCREL_LO12 relocation"
+            );
             let mut relocations_to_search = relocations[..relocation_index]
                 .iter()
                 .rev()
