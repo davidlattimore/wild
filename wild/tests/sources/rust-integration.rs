@@ -2,7 +2,6 @@
 //#DiffIgnore:section.tdata.alignment
 // We include some more archive members than what other linkers do (#162).
 //#DiffIgnore:debug_info.missing_unit
-//#Cross: false
 
 //#Config:llvm-static:default
 //#CompArgs:--target x86_64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2
@@ -28,13 +27,14 @@
 //#RequiresRustMusl: true
 //#RequiresNightlyRustc: true
 //#Arch: aarch64
+//#DiffIgnore:section.debug_str.flags
+//#DiffIgnore:section.debug_str.entsize
 
 //#Config:llvm-dynamic:default
 //#CompArgs:-C debuginfo=2
 //#DiffIgnore:.dynamic.DT_JMPREL
 //#DiffIgnore:.dynamic.DT_PLTGOT
 //#DiffIgnore:.dynamic.DT_PLTREL
-//#Cross: true
 
 fn foo() {
     panic!("Make sure unwinding works");
