@@ -1597,8 +1597,13 @@ impl<'data> Layout<'data> {
     /// Returns the memory address of the start of the TLS segment used by the RISC-V.
     pub(crate) fn tls_start_address_riscv64(&self) -> u64 {
         let tdata = self.section_layouts.get(output_section_id::TDATA);
-        let tls_start = tdata.mem_offset;
-        tdata.alignment.align_down(tls_start)
+        let tbss = self.section_layouts.get(output_section_id::TBSS);
+        // TODO: if TDATA is empty, we must take offset from the TBSS!
+        if tdata.mem_size != 0 {
+            tdata.mem_offset
+        } else {
+            tbss.mem_offset
+        }
     }
 
     pub(crate) fn layout_data(&self) -> linker_layout::Layout {
