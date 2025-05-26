@@ -830,7 +830,7 @@ pub enum RelocationKind {
     TpOffAArch64,
 
     /// The offset of a TLS variable within the executable's TLS storage, RISC-V TLS block layout.
-    TpOffRISCV,
+    TpOffRiscV,
 
     /// The address of a TLS descriptor structure, relative to the place of the relocation.
     TlsDesc,
