@@ -1033,6 +1033,12 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFl
         || (
             args.b_symbolic == args::BSymbolicKind::Functions
             && sym.st_type() == object::elf::STT_FUNC
+        )
+        // `-Bsymbolic-non-weak-functions`
+        || (
+            args.b_symbolic == args::BSymbolicKind::NonWeakFunctions
+            && (sym.st_type() == object::elf::STT_FUNC
+            && sym.st_bind() != object::elf::STB_WEAK)
         );
 
     let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {
