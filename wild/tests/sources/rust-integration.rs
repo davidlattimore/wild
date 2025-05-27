@@ -4,8 +4,6 @@
 //#DiffIgnore:debug_info.missing_unit
 // TODO: RISC-V BFD linker keeps multiple .dynsym symbols
 //#DiffIgnore:dynsym.*
-// TODO: #775
-//#Cross: false
 
 //#Config:llvm-static:default
 //#CompArgs:--target x86_64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2
@@ -31,6 +29,8 @@
 //#RequiresRustMusl: true
 //#RequiresNightlyRustc: true
 //#Arch: aarch64
+//#DiffIgnore:section.debug_str.flags
+//#DiffIgnore:section.debug_str.entsize
 
 //#Config:llvm-dynamic:default
 //#CompArgs:-C debuginfo=2

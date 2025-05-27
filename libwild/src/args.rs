@@ -289,7 +289,7 @@ impl Default for Args {
 }
 
 // Parse the supplied input arguments, which should not include the program name.
-pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Result<Args> {
+pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Args> {
     let mut args = Args {
         files_per_group: std::env::var(FILES_PER_GROUP_ENV)
             .ok()
@@ -300,7 +300,9 @@ pub(crate) fn parse<S: AsRef<str>, I: Iterator<Item = S>>(mut input: I) -> Resul
 
     let mut unrecognised = Vec::new();
 
-    let mut save_dir = SaveDir::new()?;
+    let mut save_dir = SaveDir::new(&input)?;
+
+    let mut input = input();
 
     let mut modifier_stack = vec![Modifiers::default()];
 
@@ -658,11 +660,12 @@ const fn default_target_arch() -> Architecture {
 fn parse_from_argument_file(path: &Path) -> Result<Args> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read arguments from file `{}`", path.display()))?;
-    parse(arguments_from_string(&contents)?.into_iter())
+    let arguments = arguments_from_string(&contents)?;
+    parse(|| arguments.iter())
 }
 
 impl Args {
-    pub fn parse<S: AsRef<str>, I: Iterator<Item = S>>(input: I) -> Result<Args> {
+    pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Args> {
         parse(input)
     }
 
@@ -1037,7 +1040,7 @@ mod tests {
 
     #[test]
     fn test_parse() {
-        let args = super::parse(INPUT1.iter()).unwrap();
+        let args = super::parse(|| INPUT1.iter()).unwrap();
         assert!(args.is_relocatable());
         assert_eq!(
             args.inputs
