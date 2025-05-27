@@ -1029,6 +1029,7 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFl
         // Symbols defined in an executable cannot be interposed since the executable is always the
         // first place checked for a symbol by the dynamic loader.
         || (args.output_kind().is_executable() && !is_undefined)
+        || args.b_symbolic == args::BSymbolicKind::All
         // `-Bsymbolic-functions`
         || (
             args.b_symbolic == args::BSymbolicKind::Functions

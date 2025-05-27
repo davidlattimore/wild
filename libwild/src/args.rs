@@ -155,10 +155,10 @@ pub(crate) enum InputSpec {
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum BSymbolicKind {
     None,
+    All,
     Functions,
     NonWeakFunctions,
     // TODO: Handle below cases
-    // All,
     // NonWeak,
 }
 
@@ -205,7 +205,6 @@ const IGNORED_FLAGS: &[&str] = &[
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
     "no-export-dynamic",
-    "Bsymbolic",
     "Bsymbolic-non-weak", // LLD specific
 ];
 
@@ -400,6 +399,8 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.b_symbolic = BSymbolicKind::Functions;
         } else if long_arg_eq("Bsymbolic-non-weak-functions") {
             args.b_symbolic = BSymbolicKind::NonWeakFunctions;
+        } else if long_arg_eq("Bsymbolic") {
+            args.b_symbolic = BSymbolicKind::All;
         } else if arg == "-o" {
             args.output = input
                 .next()
