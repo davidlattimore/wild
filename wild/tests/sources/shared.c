@@ -4,6 +4,7 @@
 // One notable scenario that this test tests is having a non-weak undefined symbol (baz) in a shared
 // object and having that symbol be defined by an archive entry that we don't load.
 
+//#Config:default
 //#RunEnabled:false
 //#LinkArgs:-shared -z now
 //#Static:false
@@ -13,9 +14,16 @@
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:.dynamic.DT_NEEDED
 
+//#Config:symbolic-functions:default
+//#LinkArgs:-shared -z now -Bsymbolic-functions
+
 int bar1(void);
 int bar2(void);
 
 int foo(void) {
     return bar1() + bar2();
+}
+
+int call_bar1(void) {
+    return bar1();
 }
