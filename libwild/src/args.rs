@@ -158,8 +158,7 @@ pub(crate) enum BSymbolicKind {
     All,
     Functions,
     NonWeakFunctions,
-    // TODO: Handle below cases
-    // NonWeak,
+    NonWeak,
 }
 
 pub const WILD_UNSUPPORTED_ENV: &str = "WILD_UNSUPPORTED";
@@ -205,7 +204,6 @@ const IGNORED_FLAGS: &[&str] = &[
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
     "no-export-dynamic",
-    "Bsymbolic-non-weak", // LLD specific
 ];
 
 // These flags map to the default behavior of the linker.
@@ -399,6 +397,8 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.b_symbolic = BSymbolicKind::Functions;
         } else if long_arg_eq("Bsymbolic-non-weak-functions") {
             args.b_symbolic = BSymbolicKind::NonWeakFunctions;
+        } else if long_arg_eq("Bsymbolic-non-weak") {
+            args.b_symbolic = BSymbolicKind::NonWeak;
         } else if long_arg_eq("Bsymbolic") {
             args.b_symbolic = BSymbolicKind::All;
         } else if arg == "-o" {

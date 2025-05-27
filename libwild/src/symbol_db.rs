@@ -1035,6 +1035,11 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFl
             args.b_symbolic == args::BSymbolicKind::Functions
             && sym.st_type() == object::elf::STT_FUNC
         )
+        // `-Bsymbolic-non-weak`
+        || (
+            args.b_symbolic == args::BSymbolicKind::NonWeak
+            && sym.st_bind() != object::elf::STB_WEAK
+        )
         // `-Bsymbolic-non-weak-functions`
         || (
             args.b_symbolic == args::BSymbolicKind::NonWeakFunctions
