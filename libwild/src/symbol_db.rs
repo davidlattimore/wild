@@ -4,7 +4,6 @@
 use crate::InputLinkerScript;
 use crate::args;
 use crate::args::Args;
-use crate::args::OutputKind;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Error;
@@ -23,6 +22,7 @@ use crate::parsing::ParsedInput;
 use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
+use crate::parsing::SymbolPlacement;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::ValueFlags;
@@ -443,7 +443,7 @@ impl<'data> SymbolDb<'data> {
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> Result<UnversionedSymbolName<'data>> {
         let file_id = self.file_id_for_symbol(symbol_id);
         match &self.groups[file_id.group()] {
-            Group::Prelude(prelude) => Ok(prelude.symbol_name(symbol_id, self.args.output_kind())),
+            Group::Prelude(prelude) => Ok(prelude.symbol_name(symbol_id)),
             Group::Objects(parsed_input_objects) => {
                 parsed_input_objects[file_id.file()].symbol_name(symbol_id)
             }
@@ -948,7 +948,7 @@ fn read_symbols<'data, 'out>(
 
             match group {
                 Group::Prelude(prelude) => {
-                    prelude.load_symbols(symbols_out, &mut outputs, args.output_kind());
+                    prelude.load_symbols(symbols_out, &mut outputs);
                 }
                 Group::Objects(parsed_input_objects) => {
                     for obj in *parsed_input_objects {
@@ -982,12 +982,15 @@ fn load_linker_script_symbols<'data>(
     symbols_out: &mut SymbolInfoWriter,
     outputs: &mut SymbolLoadOutputs<'data>,
 ) {
-    for (offset, name) in script.symbol_names.iter().enumerate() {
+    for (offset, definition) in script.symbol_defs.iter().enumerate() {
         let symbol_id = script.symbol_id_range.offset_to_id(offset);
 
         outputs.add_non_versioned(PendingSymbol::from_prehashed(
             symbol_id,
-            PreHashed::new(*name, hash_bytes(name.bytes())),
+            PreHashed::new(
+                UnversionedSymbolName::new(definition.name),
+                hash_bytes(definition.name),
+            ),
         ));
 
         symbols_out.set_next(
@@ -1427,29 +1430,24 @@ impl TryFrom<usize> for SymbolId {
     }
 }
 
-impl Prelude<'_> {
+impl<'data> Prelude<'data> {
     fn load_symbols(
         &self,
         symbols_out: &mut SymbolInfoWriter,
-        outputs: &mut SymbolLoadOutputs,
-        output_kind: OutputKind,
+        outputs: &mut SymbolLoadOutputs<'data>,
     ) {
         for definition in &self.symbol_definitions {
             let symbol_id = symbols_out.next;
-            let value_flags = match definition {
-                InternalSymDefInfo::Undefined | InternalSymDefInfo::ForceUndefined(_) => {
+            let value_flags = match definition.placement {
+                SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => {
                     ValueFlags::ABSOLUTE
                 }
-                InternalSymDefInfo::SectionStart(section_id) => {
-                    let def = section_id.built_in_details();
-                    let name = def.start_symbol_name(output_kind).unwrap().as_bytes();
-                    outputs.add_non_versioned(PendingSymbol::new(symbol_id, name));
+                SymbolPlacement::SectionStart(_) => {
+                    outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
                     ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE
                 }
-                InternalSymDefInfo::SectionEnd(section_id) => {
-                    let def = section_id.built_in_details();
-                    let name = def.end_symbol_name(output_kind).unwrap().as_bytes();
-                    outputs.add_non_versioned(PendingSymbol::new(symbol_id, name));
+                SymbolPlacement::SectionEnd(_) => {
+                    outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
                     ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE
                 }
             };
@@ -1464,12 +1462,12 @@ impl std::fmt::Display for SymbolId {
     }
 }
 
-impl InternalSymDefInfo {
+impl InternalSymDefInfo<'_> {
     pub(crate) fn section_id(self) -> Option<OutputSectionId> {
-        match self {
-            InternalSymDefInfo::Undefined | InternalSymDefInfo::ForceUndefined(_) => None,
-            InternalSymDefInfo::SectionStart(i) => Some(i),
-            InternalSymDefInfo::SectionEnd(i) => Some(i),
+        match self.placement {
+            SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => None,
+            SymbolPlacement::SectionStart(i) => Some(i),
+            SymbolPlacement::SectionEnd(i) => Some(i),
         }
     }
 }

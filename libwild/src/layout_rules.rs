@@ -16,7 +16,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::SectionName;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ProcessedLinkerScript;
-use crate::symbol::UnversionedSymbolName;
+use crate::parsing::SymbolPlacement;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use hashbrown::HashTable;
@@ -106,7 +106,6 @@ impl<'data> LayoutRulesBuilder<'data> {
         input: &InputLinkerScript<'data>,
         output_sections: &mut OutputSections<'data>,
     ) -> Result<ProcessedLinkerScript<'data>> {
-        let mut symbol_names = Vec::new();
         let mut symbol_defs = Vec::new();
 
         for cmd in &input.script.commands {
@@ -165,12 +164,16 @@ impl<'data> LayoutRulesBuilder<'data> {
                                         last_section_id = Some(section_id);
                                     }
                                     ContentsCommand::SymbolAssignment(assignment) => {
-                                        symbol_names
-                                            .push(UnversionedSymbolName::new(assignment.name));
                                         symbol_defs.push(if let Some(id) = last_section_id {
-                                            InternalSymDefInfo::SectionEnd(id)
+                                            InternalSymDefInfo::notype(
+                                                SymbolPlacement::SectionEnd(id),
+                                                assignment.name,
+                                            )
                                         } else {
-                                            InternalSymDefInfo::SectionStart(primary_section_id)
+                                            InternalSymDefInfo::notype(
+                                                SymbolPlacement::SectionStart(primary_section_id),
+                                                assignment.name,
+                                            )
                                         });
                                     }
                                     ContentsCommand::Align(a) => extra_min_alignment = *a,
@@ -184,10 +187,9 @@ impl<'data> LayoutRulesBuilder<'data> {
             }
         }
 
-        let symbol_id_range = SymbolIdRange::input(SymbolId::undefined(), symbol_names.len());
+        let symbol_id_range = SymbolIdRange::input(SymbolId::undefined(), symbol_defs.len());
 
         Ok(ProcessedLinkerScript {
-            symbol_names,
             symbol_defs,
             input: InputRef {
                 file: input.input_file,

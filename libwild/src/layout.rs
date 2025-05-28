@@ -41,6 +41,7 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
+use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
@@ -488,7 +489,7 @@ pub(crate) struct SymbolResolutions {
 }
 
 pub(crate) enum FileLayout<'data> {
-    Prelude(PreludeLayout),
+    Prelude(PreludeLayout<'data>),
     Object(ObjectLayout<'data>),
     Dynamic(DynamicLayout<'data>),
     Epilogue(EpilogueLayout<'data>),
@@ -551,7 +552,7 @@ impl SectionResolution {
 }
 
 enum FileLayoutState<'data> {
-    Prelude(PreludeLayoutState),
+    Prelude(PreludeLayoutState<'data>),
     Object(ObjectLayoutState<'data>),
     Dynamic(DynamicLayoutState<'data>),
     NotLoaded(NotLoaded),
@@ -560,10 +561,10 @@ enum FileLayoutState<'data> {
 }
 
 /// Data that doesn't come from any input files, but needs to be written by the linker.
-struct PreludeLayoutState {
+struct PreludeLayoutState<'data> {
     file_id: FileId,
     symbol_id_range: SymbolIdRange,
-    internal_symbols: InternalSymbols,
+    internal_symbols: InternalSymbols<'data>,
     entry_symbol_id: Option<SymbolId>,
     needs_tlsld_got_entry: bool,
     identity: String,
@@ -575,7 +576,7 @@ struct PreludeLayoutState {
 pub(crate) struct EpilogueLayoutState<'data> {
     file_id: FileId,
     symbol_id_range: SymbolIdRange,
-    internal_symbols: InternalSymbols,
+    internal_symbols: InternalSymbols<'data>,
 
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     gnu_hash_layout: Option<GnuHashLayout>,
@@ -589,7 +590,7 @@ pub(crate) struct LinkerScriptLayoutState<'data> {
     file_id: FileId,
     input: InputRef<'data>,
     symbol_id_range: SymbolIdRange,
-    pub(crate) internal_symbols: InternalSymbols,
+    pub(crate) internal_symbols: InternalSymbols<'data>,
 }
 
 #[derive(Default, Debug)]
@@ -601,7 +602,7 @@ pub(crate) struct GnuHashLayout {
 }
 
 pub(crate) struct EpilogueLayout<'data> {
-    pub(crate) internal_symbols: InternalSymbols,
+    pub(crate) internal_symbols: InternalSymbols<'data>,
     pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     dynsym_start_index: u32,
@@ -619,17 +620,17 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) symbol_id_range: SymbolIdRange,
 }
 
-pub(crate) struct PreludeLayout {
+pub(crate) struct PreludeLayout<'data> {
     pub(crate) entry_symbol_id: Option<SymbolId>,
     pub(crate) tlsld_got_entry: Option<NonZeroU64>,
     pub(crate) identity: String,
     pub(crate) header_info: HeaderInfo,
-    pub(crate) internal_symbols: InternalSymbols,
+    pub(crate) internal_symbols: InternalSymbols<'data>,
     pub(crate) dynamic_linker: Option<CString>,
 }
 
-pub(crate) struct InternalSymbols {
-    pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
+pub(crate) struct InternalSymbols<'data> {
+    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
     pub(crate) start_symbol_id: SymbolId,
 }
 
@@ -914,7 +915,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
     }
 }
 
-impl HandlerData for PreludeLayoutState {
+impl HandlerData for PreludeLayoutState<'_> {
     fn file_id(&self) -> FileId {
         self.file_id
     }
@@ -924,7 +925,7 @@ impl HandlerData for PreludeLayoutState {
     }
 }
 
-impl<'data> SymbolRequestHandler<'data> for PreludeLayoutState {
+impl<'data> SymbolRequestHandler<'data> for PreludeLayoutState<'data> {
     fn load_symbol<'scope, A: Arch>(
         &mut self,
         _common: &mut CommonGroupState,
@@ -2566,7 +2567,7 @@ fn compute_file_sizes(
     })
 }
 
-impl std::fmt::Display for PreludeLayoutState {
+impl std::fmt::Display for PreludeLayoutState<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt("<prelude>", f)
     }
@@ -2882,8 +2883,8 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
     }
 }
 
-impl PreludeLayoutState {
-    fn new(input_state: resolution::ResolvedPrelude) -> Self {
+impl<'data> PreludeLayoutState<'data> {
+    fn new(input_state: resolution::ResolvedPrelude<'data>) -> Self {
         Self {
             file_id: PRELUDE_FILE_ID,
             symbol_id_range: SymbolIdRange::prelude(input_state.symbol_definitions.len()),
@@ -3070,7 +3071,7 @@ impl PreludeLayoutState {
                 }
 
                 // We always emit symbols that the user requested be undefined.
-                let mut should_emit = matches!(def_info, InternalSymDefInfo::ForceUndefined(_));
+                let mut should_emit = def_info.placement == SymbolPlacement::ForceUndefined;
 
                 // Keep the symbol if we're going to write the section, even though the symbol isn't
                 // referenced. It can be useful to have symbols like _GLOBAL_OFFSET_TABLE_ when
@@ -3230,7 +3231,7 @@ impl PreludeLayoutState {
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut ResolutionWriter,
         resources: &FinaliseLayoutResources<'_, '_>,
-    ) -> Result<PreludeLayout> {
+    ) -> Result<PreludeLayout<'data>> {
         let header_layout = resources
             .section_layouts
             .get(output_section_id::FILE_HEADER);
@@ -3277,7 +3278,7 @@ impl PreludeLayoutState {
     }
 }
 
-impl InternalSymbols {
+impl<'data> InternalSymbols<'data> {
     fn allocate_symbol_table_sizes(
         &self,
         sizes: &mut OutputSectionPartMap<u64>,
@@ -3346,13 +3347,13 @@ fn create_start_end_symbol_resolution(
         return None;
     }
 
-    let raw_value = match def_info {
-        InternalSymDefInfo::Undefined | InternalSymDefInfo::ForceUndefined(_) => 0,
-        InternalSymDefInfo::SectionStart(section_id) => {
+    let raw_value = match def_info.placement {
+        SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => 0,
+        SymbolPlacement::SectionStart(section_id) => {
             resources.section_layouts.get(section_id).mem_offset
         }
 
-        InternalSymDefInfo::SectionEnd(section_id) => {
+        SymbolPlacement::SectionEnd(section_id) => {
             let sec = resources.section_layouts.get(section_id);
             sec.mem_offset + sec.mem_size
         }
@@ -3393,7 +3394,7 @@ impl<'data> EpilogueLayoutState<'data> {
         };
     }
 
-    fn new(input_state: ResolvedEpilogue) -> EpilogueLayoutState<'data> {
+    fn new(input_state: ResolvedEpilogue<'data>) -> EpilogueLayoutState<'data> {
         EpilogueLayoutState {
             file_id: input_state.file_id,
             symbol_id_range: SymbolIdRange::epilogue(

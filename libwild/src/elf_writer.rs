@@ -1,7 +1,6 @@
 use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use self::elf::NoteHeader;
 use self::elf::NoteProperty;
-use self::elf::TLS_MODULE_BASE_SYMBOL_NAME;
 use self::elf::get_page_mask;
 use crate::alignment;
 use crate::arch::Arch;
@@ -2015,7 +2014,7 @@ fn adjust_relocation_based_on_value(
     let RelocationSize::ByteSize(rel_size) = rel_info.size else {
         bail!("Unexpected size for the addition/subtraction relocation");
     };
-    // Read only N bytes from the currente value based on the size of the relocation.
+    // Read only N bytes from the current value based on the size of the relocation.
     read_data[..rel_size].copy_from_slice(&out[offset_in_section..offset_in_section + rel_size]);
     let current_value = u64::from_le_bytes(read_data);
 
@@ -2595,7 +2594,7 @@ fn write_absolute_relocation<A: Arch>(
     }
 }
 
-impl PreludeLayout {
+impl PreludeLayout<'_> {
     fn write_file<A: Arch>(
         &self,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
@@ -3241,12 +3240,9 @@ fn write_internal_symbols(
 
         let mut address = resolution.value();
 
-        let st_type = if symbol_name.bytes() == TLS_MODULE_BASE_SYMBOL_NAME.as_bytes() {
+        if def_info.elf_symbol_type == object::elf::STT_TLS {
             address -= layout.tls_start_address();
-            object::elf::STT_TLS
-        } else {
-            object::elf::STT_NOTYPE
-        };
+        }
 
         // Mandatory RISC-V symbol defined by the default linker script as:
         // __global_pointer$ = MIN(__SDATA_BEGIN__ + 0x800, MAX(__DATA_BEGIN__ + 0x800, __BSS_END__ - 0x800));
@@ -3258,7 +3254,7 @@ fn write_internal_symbols(
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
 
-        entry.set_st_info(object::elf::STB_GLOBAL, st_type);
+        entry.set_st_info(object::elf::STB_GLOBAL, def_info.elf_symbol_type);
     }
     Ok(())
 }
