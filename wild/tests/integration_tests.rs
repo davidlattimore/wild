@@ -307,11 +307,7 @@ impl Architecture {
     }
 
     fn get_cross_sysroot_path(&self) -> String {
-        if is_host_opensuse() {
-            format!("/usr/{self}-suse-linux/sys-root")
-        } else {
-            format!("/usr/{self}-linux-gnu")
-        }
+        format!("/usr/{self}-linux-gnu")
     }
 }
 
@@ -374,10 +370,6 @@ fn get_host_architecture() -> Architecture {
         return Architecture::RISCV64;
     }
     todo!("Unsupported architecture")
-}
-
-fn is_host_opensuse() -> bool {
-    os_info::get().os_type() == Type::openSUSE
 }
 
 fn is_host_debian_based() -> bool {
@@ -1101,20 +1093,12 @@ fn get_c_compiler(
             Some(arch @ (Architecture::AArch64 | Architecture::RISCV64)),
             "gcc" | "g++",
             CLanguage::C,
-        ) => Ok(if is_host_opensuse() {
-            format!("{arch}-suse-linux-gcc")
-        } else {
-            format!("{arch}-linux-gnu-gcc")
-        }),
+        ) => Ok(format!("{arch}-linux-gnu-gcc")),
         (
             Some(arch @ (Architecture::AArch64 | Architecture::RISCV64)),
             "gcc" | "g++",
             CLanguage::Cpp,
-        ) => Ok(if is_host_opensuse() {
-            format!("{arch}-suse-linux-g++")
-        } else {
-            format!("{arch}-linux-gnu-g++")
-        }),
+        ) => Ok(format!("{arch}-linux-gnu-g++")),
         _ => bail!("Unsupported compiler and or architecture `{compiler}` / {cross_arch:?}"),
     }
 }
@@ -2131,11 +2115,7 @@ fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
     [Architecture::AArch64, Architecture::RISCV64]
         .into_iter()
         .filter_map(|arch| {
-            let path = PathBuf::from(if is_host_opensuse() {
-                format!("/usr/{arch}-suse-linux/bin/{name}")
-            } else {
-                format!("/usr/{arch}-linux-gnu/bin/{name}")
-            });
+            let path = PathBuf::from(format!("/usr/{arch}-linux-gnu/bin/{name}"));
             if path.exists() {
                 Some((arch, path))
             } else {
