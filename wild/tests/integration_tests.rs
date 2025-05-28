@@ -36,6 +36,9 @@
 //! ExpectDynSym:symbol-name [section] [offset-in-section] As for ExpectSym, but for dynamic
 //! symbols.
 //!
+//! NoSym:symbol-name Checks that the specified symbol name is not defined in either .symtab or
+//! .dynsym.
+//!
 //! ExpectComment: Checks that the comment in the .comment section is equal to the supplied
 //! argument. If no ExpectComment directives are given then .comment isn't checked. The argument may
 //! end with '*' which matches anything.
@@ -544,6 +547,7 @@ struct Assertions {
     expected_symtab_entries: Vec<ExpectedSymtabEntry>,
     expected_dynsym_entries: Vec<ExpectedSymtabEntry>,
     expected_comments: Vec<String>,
+    no_sym: HashSet<String>,
     does_not_contain: Vec<String>,
     contains_strings: Vec<String>,
 }
@@ -740,6 +744,9 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                     .assertions
                     .expected_comments
                     .push(arg.trim().to_owned()),
+                "NoSym" => {
+                    config.assertions.no_sym.insert(arg.trim().to_owned());
+                }
                 "DoesNotContain" => config
                     .assertions
                     .does_not_contain
@@ -1719,6 +1726,8 @@ impl Assertions {
 
         verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols())?;
         verify_symbol_assertions(&obj, &self.expected_dynsym_entries, obj.dynamic_symbols())?;
+        self.verify_symbols_absent(obj.symbols(), ".symtab")?;
+        self.verify_symbols_absent(obj.dynamic_symbols(), ".dynsym")?;
         self.verify_comment_section(&obj, linker_used)?;
         self.verify_strings(&bytes)?;
         Ok(())
@@ -1771,6 +1780,28 @@ impl Assertions {
                 bail!("Binary doesn't contain `{needle}` when it should");
             }
         }
+        Ok(())
+    }
+
+    fn verify_symbols_absent(
+        &self,
+        symbols: object::read::elf::ElfSymbolIterator<object::elf::FileHeader64<LittleEndian>>,
+        table_name: &str,
+    ) -> Result {
+        if self.no_sym.is_empty() {
+            return Ok(());
+        }
+
+        for sym in symbols {
+            if let Ok(name) = sym.name() {
+                if self.no_sym.contains(name) {
+                    bail!(
+                        "Symbol `{name}` was supposed to be absent, but was found in {table_name}"
+                    );
+                }
+            }
+        }
+
         Ok(())
     }
 }
