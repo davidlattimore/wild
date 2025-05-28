@@ -528,8 +528,10 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
             DT_BIND_NOW => (Cow::Borrowed("DT_BIND_NOW"), Converter::None),
             DT_INIT_ARRAY => (Cow::Borrowed("DT_INIT_ARRAY"), Converter::SectionAddress),
             DT_FINI_ARRAY => (Cow::Borrowed("DT_FINI_ARRAY"), Converter::SectionAddress),
+            DT_PREINIT_ARRAY => (Cow::Borrowed("DT_PREINIT_ARRAY"), Converter::SectionAddress),
             DT_INIT_ARRAYSZ => (Cow::Borrowed("DT_INIT_ARRAYSZ"), Converter::None),
             DT_FINI_ARRAYSZ => (Cow::Borrowed("DT_FINI_ARRAYSZ"), Converter::None),
+            DT_PREINIT_ARRAYSZ => (Cow::Borrowed("DT_PREINIT_ARRAYSZ"), Converter::None),
             DT_RUNPATH => (Cow::Borrowed("DT_RUNPATH"), Converter::DynStrOffset),
             DT_FLAGS => (
                 Cow::Borrowed("DT_FLAGS"),
@@ -541,8 +543,7 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
                     Some("STATIC_TLS"),
                 ]),
             ),
-            DT_PREINIT_ARRAY => (Cow::Borrowed("DT_PREINIT_ARRAY"), Converter::None),
-            DT_PREINIT_ARRAYSZ => (Cow::Borrowed("DT_PREINIT_ARRAYSZ"), Converter::None),
+
             DT_SYMTAB_SHNDX => (Cow::Borrowed("DT_SYMTAB_SHNDX"), Converter::None),
             DT_FLAGS_1 => (
                 Cow::Borrowed("DT_FLAGS_1"),
