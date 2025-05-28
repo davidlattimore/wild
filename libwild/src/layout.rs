@@ -3904,26 +3904,28 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
-        for rel in self.relocations(section.index)? {
-            let modifier = process_relocation::<A>(
-                self,
-                common,
-                rel,
-                self.object.section(section.index)?,
-                resources,
-                queue,
-                true,
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to copy section {} from file {self}",
-                    section_debug(self.object, section.index)
+        if A::local_symbols_in_debug_info() {
+            for rel in self.relocations(section.index)? {
+                let modifier = process_relocation::<A>(
+                    self,
+                    common,
+                    rel,
+                    self.object.section(section.index)?,
+                    resources,
+                    queue,
+                    true,
                 )
-            })?;
-            ensure!(
-                modifier == RelocationModifier::Normal,
-                "All debug relocations must be processed"
-            );
+                .with_context(|| {
+                    format!(
+                        "Failed to copy section {} from file {self}",
+                        section_debug(self.object, section.index)
+                    )
+                })?;
+                ensure!(
+                    modifier == RelocationModifier::Normal,
+                    "All debug relocations must be processed"
+                );
+            }
         }
 
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
