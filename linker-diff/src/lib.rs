@@ -273,9 +273,6 @@ impl Config {
                     // #732
                     ".dynamic.DT_RELA",
                     ".dynamic.DT_RELAENT",
-                    // #732
-                    ".dynamic.DT_PREINIT_ARRAY",
-                    ".dynamic.DT_PREINIT_ARRAYSZ",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
