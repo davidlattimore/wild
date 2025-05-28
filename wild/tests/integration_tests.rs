@@ -436,12 +436,13 @@ struct Config {
 
 /// These configs are used by the config file specified in `$WILD_TEST_CONFIG`
 #[derive(serde::Deserialize, Default, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 struct TestConfig {
     #[serde(default)]
     rustc_channel: RustcChannel,
 
     #[serde(default)]
-    qemu_arch: Option<Architecture>,
+    qemu_arch: Vec<Architecture>,
 
     #[serde(default)]
     allow_rust_musl_target: bool,
@@ -2343,7 +2344,7 @@ fn integration_test(
     let host_arch = get_host_architecture();
 
     for &arch in ALL_ARCHITECTURES {
-        if arch != host_arch && test_config.qemu_arch != Some(arch) {
+        if arch != host_arch && !test_config.qemu_arch.contains(&arch) {
             continue;
         }
 
@@ -2399,10 +2400,14 @@ fn read_test_config() -> Result<TestConfig> {
 
     // The environment variable can override the config file setting.
     if let Ok(cross_arch) = std::env::var("WILD_TEST_CROSS") {
-        config.qemu_arch = Some(
-            Architecture::from_str(&cross_arch)
-                .with_context(|| format!("Unknown WILD_TEST_CROSS value `{cross_arch}`"))?,
-        );
+        config.qemu_arch = cross_arch
+            .split(',')
+            .map(|s| {
+                let s = s.trim();
+                Architecture::from_str(s)
+                    .with_context(|| format!("Unknown WILD_TEST_CROSS value `{s}`"))
+            })
+            .collect::<Result<Vec<Architecture>>>()?
     }
 
     Ok(config)

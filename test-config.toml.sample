@@ -1,3 +1,4 @@
-rustc_channel = FILLHERE # `"stable"`, `"beta"`, `"nightly"` or "default"
-qemu_arch = FILLHERE # `aarch64` or `riscv64`
-allow_rust_musl_target = FILLHERE # `true` or `false`
+# Setting to nightly enables a few more tests, e.g. cranelift backend
+rustc_channel = "default" # `"stable"`, `"beta"`, `"nightly"` or "default"
+qemu_arch = [] # `aarch64` or `riscv64`
+allow_rust_musl_target = false # `true` or `false`
