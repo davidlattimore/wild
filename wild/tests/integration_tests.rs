@@ -901,6 +901,9 @@ impl Program<'_> {
         } else {
             Command::new(&self.link_output.binary)
         };
+        // Similarly to cargo test, capture all the run-time output, where e.g. panic
+        // messages might be confusing to the user.
+        command.stdout(Stdio::null()).stderr(Stdio::null());
 
         let spawn_result = spawn_with_retry(&mut command, 10);
 
