@@ -2384,7 +2384,7 @@ fn apply_relocation<A: Arch>(
             .wrapping_add(addend as u64),
         RelocationKind::TpOffRiscV => resolution
             .value()
-            .wrapping_sub(layout.tls_start_address_riscv64())
+            .wrapping_sub(layout.tls_start_address())
             .wrapping_add(addend as u64),
         RelocationKind::TlsDesc => resolution
             .tls_descriptor_got_address()?
