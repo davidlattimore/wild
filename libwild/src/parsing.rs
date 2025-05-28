@@ -103,8 +103,7 @@ pub(crate) enum ParsedInput<'data> {
 }
 
 pub(crate) struct Prelude<'data> {
-    pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
-    undefined: &'data [String],
+    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
 }
 
 pub(crate) struct ParsedInputObject<'data> {
@@ -119,8 +118,7 @@ pub(crate) struct ParsedInputObject<'data> {
 pub(crate) struct ProcessedLinkerScript<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) file_id: FileId,
-    pub(crate) symbol_names: Vec<UnversionedSymbolName<'data>>,
-    pub(crate) symbol_defs: Vec<InternalSymDefInfo>,
+    pub(crate) symbol_defs: Vec<InternalSymDefInfo<'data>>,
     pub(crate) symbol_id_range: SymbolIdRange,
 }
 
@@ -140,7 +138,14 @@ impl Epilogue {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) enum InternalSymDefInfo {
+pub(crate) struct InternalSymDefInfo<'data> {
+    pub(crate) placement: SymbolPlacement,
+    pub(crate) name: &'data [u8],
+    pub(crate) elf_symbol_type: u8,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SymbolPlacement {
     /// Symbol 0 - the undefined symbol.
     Undefined,
 
@@ -152,12 +157,18 @@ pub(crate) enum InternalSymDefInfo {
     SectionEnd(OutputSectionId),
 
     /// An undefined symbol supplied by the user, e.g. via `--undefined=symbol-name`.
-    ForceUndefined(UndefinedSymbolIndex),
+    ForceUndefined,
 }
 
-/// The index of an undefined symbol supplied by the user, e.g. via the `--undefined=symbol-name`.
-#[derive(Clone, Copy)]
-pub(crate) struct UndefinedSymbolIndex(u32);
+impl<'data> InternalSymDefInfo<'data> {
+    pub(crate) fn notype(placement: SymbolPlacement, name: &'data [u8]) -> Self {
+        Self {
+            placement,
+            name,
+            elf_symbol_type: object::elf::STT_NOTYPE,
+        }
+    }
+}
 
 impl<'data> ParsedInputObject<'data> {
     fn new(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
@@ -236,7 +247,8 @@ impl ParsedInput<'_> {
 impl<'data> Prelude<'data> {
     fn new(args: &'data Args) -> Self {
         // The undefined symbol must always be symbol 0.
-        let mut symbol_definitions = vec![InternalSymDefInfo::Undefined];
+        let mut symbol_definitions =
+            vec![InternalSymDefInfo::notype(SymbolPlacement::Undefined, &[])];
 
         for section_id in output_section_id::built_in_section_ids() {
             // If we're producing non-relocatable, static executable, then don't define any symbols
@@ -258,58 +270,51 @@ impl<'data> Prelude<'data> {
                 continue;
             }
 
-            if def.start_symbol_name(args.output_kind()).is_some() {
-                symbol_definitions.push(InternalSymDefInfo::SectionStart(section_id));
+            if let Some(name) = def.start_symbol_name {
+                symbol_definitions.push(InternalSymDefInfo::notype(
+                    SymbolPlacement::SectionStart(section_id),
+                    name.as_bytes(),
+                ));
             }
 
-            if def.end_symbol_name(args.output_kind()).is_some() {
-                symbol_definitions.push(InternalSymDefInfo::SectionEnd(section_id));
+            if let Some(name) = def.end_symbol_name {
+                symbol_definitions.push(InternalSymDefInfo::notype(
+                    SymbolPlacement::SectionEnd(section_id),
+                    name.as_bytes(),
+                ));
             }
         }
 
-        symbol_definitions.extend(
-            (0..args.undefined.len())
-                .map(|i| InternalSymDefInfo::ForceUndefined(UndefinedSymbolIndex(i as u32))),
-        );
+        // We define _TLS_MODULE_BASE_ either at the start or end of the TLS segment, depending on
+        // whether we're building a shared object or an executable. This symbol is used for TLSDESC.
+        // See https://www.fsfla.org/~lxoliva/writeups/TLS/RFC-TLSDESC-x86.txt for more details.
+        symbol_definitions.push(InternalSymDefInfo {
+            placement: if args.output_kind() == OutputKind::SharedObject {
+                SymbolPlacement::SectionStart(output_section_id::TDATA)
+            } else {
+                SymbolPlacement::SectionEnd(output_section_id::TBSS)
+            },
+            name: b"_TLS_MODULE_BASE_",
+            elf_symbol_type: object::elf::STT_TLS,
+        });
 
-        Self {
-            symbol_definitions,
-            undefined: &args.undefined,
-        }
+        symbol_definitions.extend(args.undefined.iter().map(|name| {
+            InternalSymDefInfo::notype(SymbolPlacement::ForceUndefined, name.as_bytes())
+        }));
+
+        Self { symbol_definitions }
     }
 
-    pub(crate) fn symbol_name(
-        &self,
-        symbol_id: SymbolId,
-        output_kind: OutputKind,
-    ) -> UnversionedSymbolName<'data> {
+    pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> UnversionedSymbolName<'data> {
         let def = &self.symbol_definitions[symbol_id.as_usize()];
-        let name = match def {
-            InternalSymDefInfo::Undefined => Some(""),
-            InternalSymDefInfo::SectionStart(section_id) => {
-                section_id.built_in_details().start_symbol_name(output_kind)
-            }
-            InternalSymDefInfo::SectionEnd(section_id) => {
-                section_id.built_in_details().end_symbol_name(output_kind)
-            }
-            InternalSymDefInfo::ForceUndefined(i) => Some(self.undefined[i.0 as usize].as_str()),
-        }
-        .unwrap();
-        UnversionedSymbolName::new(name.as_bytes())
-    }
-
-    pub(crate) fn get_undefined_name(
-        &self,
-        undefined_symbol_index: UndefinedSymbolIndex,
-    ) -> &'data [u8] {
-        self.undefined[undefined_symbol_index.0 as usize].as_bytes()
+        UnversionedSymbolName::new(def.name)
     }
 }
 
 impl<'data> ProcessedLinkerScript<'data> {
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> UnversionedSymbolName<'data> {
         let local_index = self.symbol_id_range.id_to_offset(symbol_id);
-        self.symbol_names[local_index]
+        UnversionedSymbolName::new(self.symbol_defs[local_index].name)
     }
 }
 

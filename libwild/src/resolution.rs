@@ -26,6 +26,7 @@ use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ParsedInputObject;
+use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::PartId;
 use crate::string_merging::MergedStringsSection;
@@ -407,10 +408,10 @@ pub(crate) struct ResolvedGroup<'data> {
 
 pub(crate) enum ResolvedFile<'data> {
     NotLoaded(NotLoaded),
-    Prelude(ResolvedPrelude),
+    Prelude(ResolvedPrelude<'data>),
     Object(ResolvedObject<'data>),
     LinkerScript(ResolvedLinkerScript<'data>),
-    Epilogue(ResolvedEpilogue),
+    Epilogue(ResolvedEpilogue<'data>),
 }
 
 pub(crate) struct NotLoaded {
@@ -475,8 +476,8 @@ impl UnloadedSection {
 pub(crate) struct FrameIndex(NonZeroU32);
 
 #[derive(Clone)]
-pub(crate) struct ResolvedPrelude {
-    pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
+pub(crate) struct ResolvedPrelude<'data> {
+    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
 }
 
 pub(crate) struct ResolvedObject<'data> {
@@ -503,14 +504,14 @@ pub(crate) struct ResolvedLinkerScript<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) file_id: FileId,
     pub(crate) symbol_id_range: SymbolIdRange,
-    pub(crate) symbol_definitions: Vec<InternalSymDefInfo>,
+    pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
 }
 
 #[derive(Clone)]
-pub(crate) struct ResolvedEpilogue {
+pub(crate) struct ResolvedEpilogue<'data> {
     pub(crate) file_id: FileId,
     pub(crate) start_symbol_id: SymbolId,
-    pub(crate) custom_start_stop_defs: Vec<InternalSymDefInfo>,
+    pub(crate) custom_start_stop_defs: Vec<InternalSymDefInfo<'data>>,
 }
 
 #[tracing::instrument(skip_all, name = "Assign section IDs")]
@@ -607,11 +608,9 @@ fn load_prelude(
     // object defines such a symbol, request that the object be loaded. Also, point our undefined
     // symbol record to the definition.
     for (def_info, definition_out) in prelude.symbol_definitions.iter().zip(definitions_out) {
-        match def_info {
-            InternalSymDefInfo::ForceUndefined(undefined_symbol_index) => {
-                let name = prelude.get_undefined_name(*undefined_symbol_index);
-
-                load_symbol_named(resources, definition_out, name);
+        match def_info.placement {
+            SymbolPlacement::ForceUndefined => {
+                load_symbol_named(resources, definition_out, def_info.name);
             }
             _ => {}
         }
@@ -636,7 +635,7 @@ fn canonicalise_undefined_symbols<'data>(
     output_sections: &OutputSections,
     groups: &[ResolvedGroup],
     symbol_db: &mut SymbolDb<'data>,
-    custom_start_stop_defs: &mut Vec<InternalSymDefInfo>,
+    custom_start_stop_defs: &mut Vec<InternalSymDefInfo<'data>>,
 ) -> Result {
     let mut name_to_id: PassThroughHashMap<UnversionedSymbolName<'data>, SymbolId> =
         Default::default();
@@ -706,7 +705,7 @@ fn canonicalise_undefined_symbols<'data>(
 fn allocate_start_stop_symbol_id<'data>(
     name: PreHashed<UnversionedSymbolName<'data>>,
     symbol_db: &mut SymbolDb<'data>,
-    custom_start_stop_defs: &mut Vec<InternalSymDefInfo>,
+    custom_start_stop_defs: &mut Vec<InternalSymDefInfo<'data>>,
     output_sections: &OutputSections,
 ) -> Option<SymbolId> {
     let symbol_name_bytes = name.bytes();
@@ -724,9 +723,9 @@ fn allocate_start_stop_symbol_id<'data>(
     let symbol_id = symbol_db.add_start_stop_symbol(name);
 
     let def_info = if is_start {
-        InternalSymDefInfo::SectionStart(section_id)
+        InternalSymDefInfo::notype(SymbolPlacement::SectionStart(section_id), name.bytes())
     } else {
-        InternalSymDefInfo::SectionEnd(section_id)
+        InternalSymDefInfo::notype(SymbolPlacement::SectionEnd(section_id), name.bytes())
     };
 
     custom_start_stop_defs.push(def_info);
