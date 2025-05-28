@@ -2,6 +2,8 @@
 //#DiffIgnore:section.tdata.alignment
 // We include some more archive members than what other linkers do (#162).
 //#DiffIgnore:debug_info.missing_unit
+// TODO: RISC-V BFD linker keeps multiple .dynsym symbols
+//#DiffIgnore:dynsym.*
 
 //#Config:llvm-static:default
 //#CompArgs:--target x86_64-unknown-linux-musl -C relocation-model=static -C target-feature=+crt-static -C debuginfo=2

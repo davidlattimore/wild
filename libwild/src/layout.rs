@@ -817,7 +817,7 @@ fn allocate_resolution(
         mem_sizes.increment(part_id::GOT, elf::GOT_ENTRY_SIZE * 2);
         // For executables, the TLS module ID is known at link time. For shared objects, we
         // need a runtime relocation to fill it in.
-        if !output_kind.is_executable() {
+        if !output_kind.is_executable() || value_flags.is_dynamic() {
             mem_sizes.increment(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
         }
         if value_flags.is_interposable() && has_dynamic_symbol {
@@ -2865,11 +2865,19 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
             ResolutionFlags::empty()
         }
         RelocationKind::Absolute
+        | RelocationKind::AbsoluteSet
+        | RelocationKind::AbsoluteSetWord6
+        | RelocationKind::AbsoluteAddition
+        | RelocationKind::AbsoluteSubtraction
+        | RelocationKind::AbsoluteSubtractionWord6
         | RelocationKind::Relative
+        | RelocationKind::RelativeRISCVLow12
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
         | RelocationKind::TpOffAArch64
-        | RelocationKind::SymRelGotBase => ResolutionFlags::DIRECT,
+        | RelocationKind::TpOffRiscV
+        | RelocationKind::SymRelGotBase
+        | RelocationKind::PairSubtraction => ResolutionFlags::DIRECT,
         RelocationKind::None | RelocationKind::AbsoluteAArch64 => ResolutionFlags::empty(),
     }
 }
@@ -3805,7 +3813,7 @@ impl<'data> ObjectLayoutState<'data> {
             )
             .with_context(|| {
                 format!(
-                    "Failed to copy section `{}` from file {self}",
+                    "Failed to copy section {} from file {self}",
                     section_debug(self.object, section.index)
                 )
             })?;

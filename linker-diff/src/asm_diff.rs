@@ -2239,6 +2239,7 @@ impl<'data> RelaxationTester<'data> {
     ) -> Result<u64> {
         let mut relative_to = match relocation_info.kind {
             RelocationKind::Relative
+            | RelocationKind::RelativeRISCVLow12
             | RelocationKind::PltRelative
             | RelocationKind::TlsGd
             | RelocationKind::TlsLd
@@ -2257,6 +2258,11 @@ impl<'data> RelaxationTester<'data> {
                 .got_base_address
                 .context("Missing GOT base address")?,
             RelocationKind::Absolute
+            | RelocationKind::AbsoluteSet
+            | RelocationKind::AbsoluteSetWord6
+            | RelocationKind::AbsoluteAddition
+            | RelocationKind::AbsoluteSubtraction
+            | RelocationKind::AbsoluteSubtractionWord6
             | RelocationKind::Got
             | RelocationKind::TlsGdGot
             | RelocationKind::GotTpOffGot
@@ -2266,7 +2272,9 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::DtpOff
             | RelocationKind::TpOff
             | RelocationKind::TpOffAArch64
+            | RelocationKind::TpOffRiscV
             | RelocationKind::TlsDescCall
+            | RelocationKind::PairSubtraction
             | RelocationKind::None => 0,
         };
 
@@ -2439,14 +2447,22 @@ fn value_kind_for_relocation(
     address_index: &AddressIndex,
 ) -> Option<ValueKind> {
     let kind = match relocation_kind {
-        RelocationKind::Absolute | RelocationKind::AbsoluteAArch64 => {
+        RelocationKind::Absolute
+        | RelocationKind::AbsoluteAArch64
+        | RelocationKind::AbsoluteSet
+        | RelocationKind::AbsoluteSetWord6
+        | RelocationKind::AbsoluteAddition
+        | RelocationKind::AbsoluteSubtraction
+        | RelocationKind::AbsoluteSubtractionWord6 => {
             if address_index.is_relocatable() {
                 ValueKind::Unwrapped(BasicValueKind::AbsoluteValue)
             } else {
                 return None;
             }
         }
-        RelocationKind::Relative | RelocationKind::SymRelGotBase => {
+        RelocationKind::Relative
+        | RelocationKind::RelativeRISCVLow12
+        | RelocationKind::SymRelGotBase => {
             return None;
         }
         RelocationKind::PltRelative | RelocationKind::PltRelGotBase => ValueKind::OptionalPlt,
@@ -2474,7 +2490,13 @@ fn value_kind_for_relocation(
             // Same as above.
             ValueKind::Got(BasicValueKind::TlsGd)
         }
-        RelocationKind::TlsDescCall | RelocationKind::None => return None,
+        RelocationKind::TlsDescCall | RelocationKind::None | RelocationKind::PairSubtraction => {
+            return None;
+        }
+        // TODO
+        RelocationKind::TpOffRiscV => {
+            return None;
+        }
     };
 
     Some(kind)
@@ -3353,14 +3375,21 @@ impl<'data> GotIndex<'data> {
                 RelocationKind::TlsDescCall => Ok(Referent::TlsDescCall),
                 RelocationKind::Absolute
                 | RelocationKind::AbsoluteAArch64
+                | RelocationKind::AbsoluteSet
+                | RelocationKind::AbsoluteSetWord6
+                | RelocationKind::AbsoluteAddition
+                | RelocationKind::AbsoluteSubtraction
+                | RelocationKind::AbsoluteSubtractionWord6
                 | RelocationKind::Relative
+                | RelocationKind::RelativeRISCVLow12
                 | RelocationKind::SymRelGotBase
                 | RelocationKind::GotRelGotBase
                 | RelocationKind::Got
                 | RelocationKind::PltRelGotBase
                 | RelocationKind::PltRelative
                 | RelocationKind::GotRelative
-                | RelocationKind::None => Ok(Referent::Absolute(*raw_value)),
+                | RelocationKind::None
+                | RelocationKind::PairSubtraction => Ok(Referent::Absolute(*raw_value)),
                 RelocationKind::TlsGd
                 | RelocationKind::TlsGdGot
                 | RelocationKind::TlsGdGotBase
@@ -3370,6 +3399,7 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::DtpOff
                 | RelocationKind::TpOff
                 | RelocationKind::TpOffAArch64
+                | RelocationKind::TpOffRiscV
                 | RelocationKind::TlsDesc
                 | RelocationKind::TlsDescGot
                 | RelocationKind::TlsDescGotBase => {

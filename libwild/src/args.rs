@@ -651,6 +651,10 @@ const fn default_target_arch() -> Architecture {
     {
         Architecture::AArch64
     }
+    #[cfg(target_arch = "riscv64")]
+    {
+        Architecture::RISCV64
+    }
 }
 
 fn parse_from_argument_file(path: &Path) -> Result<Args> {
@@ -757,6 +761,7 @@ impl Args {
         match self.arch {
             Architecture::X86_64 => Alignment { exponent: 12 },
             Architecture::AArch64 => Alignment { exponent: 16 },
+            Architecture::RISCV64 => Alignment { exponent: 12 },
         }
     }
 

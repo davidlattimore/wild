@@ -29,6 +29,7 @@ pub(crate) mod parsing;
 pub(crate) mod part_id;
 pub(crate) mod program_segments;
 pub(crate) mod resolution;
+pub(crate) mod riscv64;
 pub(crate) mod save_dir;
 pub(crate) mod sharding;
 pub(crate) mod slice;
@@ -155,6 +156,7 @@ impl Linker {
         match args.arch {
             arch::Architecture::X86_64 => self.link_for_arch::<x86_64::X86_64>(args),
             arch::Architecture::AArch64 => self.link_for_arch::<aarch64::AArch64>(args),
+            arch::Architecture::RISCV64 => self.link_for_arch::<riscv64::RISCV64>(args),
         }
     }
 

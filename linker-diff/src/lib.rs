@@ -244,13 +244,16 @@ impl Config {
                 "segment.PT_GNU_RELRO.*",
                 "segment.PT_GNU_STACK.*",
                 "segment.PT_GNU_PROPERTY.*",
+                // TODO: RISC-v
+                "segment.SHT_RISCV_ATTRIBUTES.*",
+                "segment.LOAD.RW.alignment",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
         );
 
-        if arch == ArchKind::Aarch64 {
-            self.ignore.extend(
+        match arch {
+            ArchKind::Aarch64 => self.ignore.extend(
                 [
                     // Other linkers have a bigger initial PLT entry, thus the entsize is set to zero:
                     // https://sourceware.org/bugzilla/show_bug.cgi?id=26312
@@ -258,7 +261,26 @@ impl Config {
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
-            );
+            ),
+            ArchKind::RISCV64 => self.ignore.extend(
+                [
+                    // TODO: for some reason, main is put into .dynsym
+                    "dynsym.main.section",
+                    // #701
+                    "file-header.flags",
+                    // #700
+                    "section.riscv.attributes",
+                    // #732
+                    ".dynamic.DT_RELA",
+                    ".dynamic.DT_RELAENT",
+                    // #732
+                    ".dynamic.DT_PREINIT_ARRAY",
+                    ".dynamic.DT_PREINIT_ARRAYSZ",
+                ]
+                .into_iter()
+                .map(ToOwned::to_owned),
+            ),
+            ArchKind::X86_64 => {}
         }
 
         self.equiv.push((
@@ -588,6 +610,10 @@ impl Report {
             }
             ArchKind::Aarch64 => {
                 self.report_arch_specific_diffs::<crate::aarch64::AArch64>(objects);
+            }
+
+            ArchKind::RISCV64 => {
+                // TODO
             }
         }
     }

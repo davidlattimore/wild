@@ -114,6 +114,8 @@ use object::read::elf::ProgramHeader;
 use os_info::Type;
 use rstest::fixture;
 use rstest::rstest;
+use serde::Deserialize;
+use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -131,6 +133,7 @@ use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
+use strum::Display;
 use strum::EnumString;
 use wait_timeout::ChildExt;
 
@@ -268,33 +271,38 @@ enum LinkerInvocationMode {
     Script,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, EnumString, Display)]
+#[strum(serialize_all = "snake_case")]
 enum Architecture {
     X86_64,
+    #[strum(serialize = "aarch64")]
     AArch64,
+    RISCV64,
 }
 
-const ALL_ARCHITECTURES: &[Architecture] = &[Architecture::X86_64, Architecture::AArch64];
+const ALL_ARCHITECTURES: &[Architecture] = &[
+    Architecture::X86_64,
+    Architecture::AArch64,
+    Architecture::RISCV64,
+];
 
 impl Architecture {
-    fn name(&self) -> &'static str {
-        match self {
-            Architecture::X86_64 => "x86_64",
-            Architecture::AArch64 => "aarch64",
-        }
-    }
-
     fn emulation_name(&self) -> &'static str {
         match self {
             Architecture::X86_64 => "x86_64",
             Architecture::AArch64 => "aarch64elf",
+            Architecture::RISCV64 => "elf64lriscv",
         }
     }
 
-    fn default_target_triple(&self) -> &'static str {
+    fn default_target_triple(&self) -> String {
+        format!("{self}-unknown-linux-gnu")
+    }
+
+    fn default_target_triple_rustc(&self) -> String {
         match self {
-            Architecture::X86_64 => "x86_64-unknown-linux-gnu",
-            Architecture::AArch64 => "aarch64-unknown-linux-gnu",
+            Architecture::RISCV64 => "riscv64gc-unknown-linux-gnu".to_string(),
+            other => other.default_target_triple(),
         }
     }
 
@@ -312,6 +320,7 @@ fn dynamic_linker_path(cross_arch: Option<Architecture>) -> &'static str {
         None => host_dynamic_linker_cached(),
         Some(Architecture::X86_64) => "/lib64/ld-linux-x86-64.so.2",
         Some(Architecture::AArch64) => "/lib/ld-linux-aarch64.so.1",
+        Some(Architecture::RISCV64) => "/lib/ld-linux-riscv64-lp64d.so.1",
     }
 }
 
@@ -350,12 +359,6 @@ fn get_dynamic_linker(path: impl AsRef<Path>) -> Option<String> {
     String::from_utf8(interp_data.to_owned()).ok()
 }
 
-impl Display for Architecture {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        Display::fmt(self.name(), f)
-    }
-}
-
 #[allow(unreachable_code)]
 fn get_host_architecture() -> Architecture {
     #[cfg(target_arch = "x86_64")]
@@ -365,6 +368,10 @@ fn get_host_architecture() -> Architecture {
     #[cfg(target_arch = "aarch64")]
     {
         return Architecture::AArch64;
+    }
+    #[cfg(target_arch = "riscv64")]
+    {
+        return Architecture::RISCV64;
     }
     todo!("Unsupported architecture")
 }
@@ -442,7 +449,7 @@ struct TestConfig {
     rustc_channel: RustcChannel,
 
     #[serde(default)]
-    use_qemu: bool,
+    qemu_arch: Option<Architecture>,
 
     #[serde(default)]
     allow_rust_musl_target: bool,
@@ -807,7 +814,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                             match arch.as_str() {
                                 "x86_64" => Ok(Architecture::X86_64),
                                 "aarch64" => Ok(Architecture::AArch64),
-                                _ => Err(error!("Unsupported architecture: `{}`", arch)),
+                                _ => bail!("Unsupported architecture: `{}`", arch),
                             }
                         })
                         .collect::<Result<Vec<_>>>()?;
@@ -1084,21 +1091,29 @@ fn get_c_compiler(
     compiler: &str,
     c_language: CLanguage,
     cross_arch: Option<Architecture>,
-) -> Result<&'static str> {
+) -> Result<String> {
     match (cross_arch, compiler, c_language) {
-        (None, "gcc", CLanguage::C) => Ok("gcc"),
-        (None, "gcc", CLanguage::Cpp) => Ok("g++"),
-        (None, "clang", CLanguage::C) => Ok("clang"),
-        (None, "clang", CLanguage::Cpp) => Ok("clang++"),
-        (Some(Architecture::AArch64), "gcc" | "g++", CLanguage::C) => Ok(if is_host_opensuse() {
-            "aarch64-suse-linux-gcc"
+        (None, "gcc", CLanguage::C) => Ok("gcc".to_string()),
+        (None, "gcc", CLanguage::Cpp) => Ok("g++".to_string()),
+        (None, "clang", CLanguage::C) => Ok("clang".to_string()),
+        (None, "clang", CLanguage::Cpp) => Ok("clang++".to_string()),
+        (
+            Some(arch @ (Architecture::AArch64 | Architecture::RISCV64)),
+            "gcc" | "g++",
+            CLanguage::C,
+        ) => Ok(if is_host_opensuse() {
+            format!("{arch}-suse-linux-gcc")
         } else {
-            "aarch64-linux-gnu-gcc"
+            format!("{arch}-linux-gnu-gcc")
         }),
-        (Some(Architecture::AArch64), "gcc" | "g++", CLanguage::Cpp) => Ok(if is_host_opensuse() {
-            "aarch64-suse-linux-g++"
+        (
+            Some(arch @ (Architecture::AArch64 | Architecture::RISCV64)),
+            "gcc" | "g++",
+            CLanguage::Cpp,
+        ) => Ok(if is_host_opensuse() {
+            format!("{arch}-suse-linux-g++")
         } else {
-            "aarch64-linux-gnu-g++"
+            format!("{arch}-linux-gnu-g++")
         }),
         _ => bail!("Unsupported compiler and or architecture `{compiler}` / {cross_arch:?}"),
     }
@@ -1136,7 +1151,7 @@ fn build_obj(
             get_c_compiler(&config.compiler, CLanguage::C, cross_arch)?,
             CompilerKind::C,
         ),
-        "rs" => ("rustc", CompilerKind::Rust),
+        "rs" => ("rustc".to_string(), CompilerKind::Rust),
         "o" => return Ok(src_path),
         _ => bail!("Don't know how to compile {extension} files"),
     };
@@ -1198,7 +1213,7 @@ fn build_obj(
 
             if let Some(arch) = cross_arch {
                 let target = get_target(&compiler_args).cloned().unwrap_or_else(|_| {
-                    command.arg(format!("--target={}", arch.default_target_triple()));
+                    command.arg(format!("--target={}", arch.default_target_triple_rustc()));
                     arch.default_target_triple().to_owned()
                 });
                 let target_underscore = target.replace('-', "_");
@@ -1303,8 +1318,10 @@ fn get_target(compiler_args: &[String]) -> Result<&String> {
     bail!("No --target flag found");
 }
 
-fn cross_name(cross_arch: Option<Architecture>) -> &'static str {
-    cross_arch.map(|a| a.name()).unwrap_or("host")
+fn cross_name(cross_arch: Option<Architecture>) -> String {
+    cross_arch
+        .map(|a| a.to_string())
+        .unwrap_or("host".to_string())
 }
 
 /// Newer versions of rustc pass -soname=... to the linker when writing shared objects. This sets
@@ -2111,7 +2128,7 @@ fn find_bin(names: &[&str]) -> Result<PathBuf> {
 }
 
 fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
-    [Architecture::AArch64]
+    [Architecture::AArch64, Architecture::RISCV64]
         .into_iter()
         .filter_map(|arch| {
             let path = PathBuf::from(if is_host_opensuse() {
@@ -2324,7 +2341,8 @@ fn integration_test(
         "shared-priority.c",
         "shared.c",
         "duplicate_strong_symbols.c",
-        "preinit-array.c"
+        "preinit-array.c",
+        "exception.cc"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
@@ -2342,7 +2360,7 @@ fn integration_test(
     let host_arch = get_host_architecture();
 
     for &arch in ALL_ARCHITECTURES {
-        if arch != host_arch && !test_config.use_qemu {
+        if arch != host_arch && test_config.qemu_arch != Some(arch) {
             continue;
         }
 
@@ -2397,8 +2415,11 @@ fn read_test_config() -> Result<TestConfig> {
     };
 
     // The environment variable can override the config file setting.
-    if std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v == "aarch64") {
-        config.use_qemu = true;
+    if let Ok(cross_arch) = std::env::var("WILD_TEST_CROSS") {
+        config.qemu_arch = Some(
+            Architecture::from_str(&cross_arch)
+                .with_context(|| format!("Unknown WILD_TEST_CROSS value `{cross_arch}`"))?,
+        );
     }
 
     Ok(config)

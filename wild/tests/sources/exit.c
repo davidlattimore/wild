@@ -22,4 +22,14 @@ void exit_syscall(int exit_code) {
         : "r"(w8)
         : "cc", "memory");
 }
+#elif defined(__riscv)
+void exit_syscall(int exit_code) {
+    register long a7 __asm__("a7") = 93;
+    register long a0 __asm__("a0") = exit_code;
+    __asm__ __volatile__(
+        "ecall"
+        : /* no output */
+        : "r"(a7), "r"(a0)
+        : "memory");
+}
 #endif

@@ -9,6 +9,9 @@
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:section.got
+// TODO: RISC-V BFD linker keeps the symbol in .dynsym section
+//#DiffIgnore:section.rela.dyn
+//#DiffIgnore:dynsym.var1.section
 
 //#Config:shared-first-archive-not-loaded:default
 //#Shared:shared-priority-1.c

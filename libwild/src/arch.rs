@@ -9,6 +9,7 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::SectionFlags;
 use linker_utils::relaxation::RelocationModifier;
 use object::elf::EM_AARCH64;
+use object::elf::EM_RISCV;
 use object::elf::EM_X86_64;
 use std::borrow::Cow;
 use std::str::FromStr;
@@ -30,12 +31,18 @@ pub(crate) trait Arch {
 
     // Get string representation of a relocation specific for the architecture.
     fn rel_type_to_string(r_type: u32) -> Cow<'static, str>;
+
+    // Get DTV OFFSET.
+    fn get_dtv_offset() -> u64 {
+        0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Architecture {
     X86_64,
     AArch64,
+    RISCV64,
 }
 
 impl FromStr for Architecture {
@@ -45,6 +52,7 @@ impl FromStr for Architecture {
         match s {
             "elf_x86_64" => Ok(Architecture::X86_64),
             "aarch64elf" | "aarch64linux" => Ok(Architecture::AArch64),
+            "elf64lriscv" => Ok(Architecture::RISCV64),
             _ => bail!("-m {s} is not yet supported"),
         }
     }
@@ -57,6 +65,7 @@ impl TryFrom<u16> for Architecture {
         match arch {
             EM_X86_64 => Ok(Self::X86_64),
             EM_AARCH64 => Ok(Self::AArch64),
+            EM_RISCV => Ok(Self::RISCV64),
             _ => bail!("Unsupported architecture: 0x{:x}", arch),
         }
     }

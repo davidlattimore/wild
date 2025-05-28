@@ -8,8 +8,8 @@ use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_MASK;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_SIZE;
 use linker_utils::aarch64::RelaxationKind;
 use linker_utils::aarch64::relocation_type_from_raw;
+use linker_utils::elf::AArch64Instruction;
 use linker_utils::elf::DynamicRelocationKind;
-use linker_utils::elf::RelocationInstruction;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::aarch64_rel_type_to_string;
@@ -69,13 +69,13 @@ impl crate::arch::Arch for AArch64 {
         let plt_page_address = plt_address & DEFAULT_AARCH64_PAGE_IGNORED_MASK;
         let offset = got_address.wrapping_sub(plt_page_address);
         ensure!(offset < (1 << 32), "PLT is more than 4GiB away from GOT");
-        RelocationInstruction::Adr.write_to_value(
+        AArch64Instruction::Adr.write_to_value(
             // The immediate value represents a distance in pages.
             offset / DEFAULT_AARCH64_PAGE_SIZE,
             false,
             &mut plt_entry[0..4],
         );
-        RelocationInstruction::LdrRegister.write_to_value(
+        AArch64Instruction::LdrRegister.write_to_value(
             // The immediate offset is scaled by 8 as we are loading 8 bytes.
             (offset & DEFAULT_AARCH64_PAGE_MASK) / 8,
             false,

@@ -1,6 +1,7 @@
 //#AbstractConfig:default
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.data
+//#DiffIgnore:section.sdata
 //#DiffIgnore:section.rodata.alignment
 //#DiffIgnore:section.bss.alignment
 // On aarch64, GNU ld puts the copy relocation for this symbol in .data.rel.ro rather than .bss.

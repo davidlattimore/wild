@@ -143,7 +143,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "miniz_oxide",
- "object",
+ "object 0.36.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "rustc-demangle",
  "windows-targets",
 ]
@@ -647,6 +647,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
+name = "leb128"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "884e2677b40cc8c339eaefcb701c32ef1fd2493d71118dc0ca4b6a736c93bd67"
+
+[[package]]
 name = "libc"
 version = "0.2.172"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -689,7 +695,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "normalize-path",
- "object",
+ "object 0.36.7 (git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32)",
  "rayon",
  "sharded-offset-map",
  "sharded-vec-writer",
@@ -730,7 +736,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "object",
+ "object 0.36.7 (git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32)",
  "rayon",
  "symbolic-demangle",
  "tempfile",
@@ -762,7 +768,8 @@ name = "linker-utils"
 version = "0.5.0"
 dependencies = [
  "anyhow",
- "object",
+ "leb128",
+ "object 0.36.7 (git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32)",
 ]
 
 [[package]]
@@ -855,6 +862,14 @@ name = "object"
 version = "0.36.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "object"
+version = "0.36.7"
+source = "git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32#61474b7de8074f91b78ad24ff2424e54a22f8b32"
 dependencies = [
  "memchr",
 ]
@@ -1540,7 +1555,7 @@ dependencies = [
  "libwild",
  "linker-diff",
  "mimalloc",
- "object",
+ "object 0.36.7 (git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32)",
  "os_info",
  "rstest",
  "serde",
