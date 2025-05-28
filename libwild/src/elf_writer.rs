@@ -2470,8 +2470,10 @@ fn apply_debug_relocation<A: Arch>(
     let value = if let Some(resolution) = resolution {
         match rel_info.kind {
             RelocationKind::Absolute
+            | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
-            | RelocationKind::AbsoluteSubtraction => {
+            | RelocationKind::AbsoluteSubtraction
+            | RelocationKind::AbsoluteSubtractionWord6 => {
                 let mut value = resolution.value_with_addend(
                     addend,
                     symbol_index,
@@ -2482,7 +2484,10 @@ fn apply_debug_relocation<A: Arch>(
                 // Adjust the relocation value based on the value at the place.
                 if matches!(
                     rel_info.kind,
-                    RelocationKind::AbsoluteSubtraction | RelocationKind::AbsoluteAddition
+                    RelocationKind::AbsoluteAddition
+                        | RelocationKind::AbsoluteSubtraction
+                        | RelocationKind::AbsoluteSetWord6
+                        | RelocationKind::AbsoluteSubtractionWord6
                 ) {
                     value = adjust_relocation_based_on_value(
                         value,
