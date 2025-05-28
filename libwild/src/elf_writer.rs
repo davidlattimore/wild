@@ -2470,6 +2470,7 @@ fn apply_debug_relocation<A: Arch>(
     let value = if let Some(resolution) = resolution {
         match rel_info.kind {
             RelocationKind::Absolute
+            | RelocationKind::AbsoluteSet
             | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
             | RelocationKind::AbsoluteSubtraction
