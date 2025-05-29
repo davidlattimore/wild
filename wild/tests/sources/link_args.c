@@ -3,6 +3,8 @@
 //#LinkArgs:--strip-all
 //#EnableLinker:lld
 //#DiffIgnore:file-header.entry
+// TODO: #795
+//#Arch: x86_64,aarch64
 
 //#Config:single-threaded
 //#Object:runtime.c
