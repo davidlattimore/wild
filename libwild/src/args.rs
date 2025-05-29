@@ -290,11 +290,22 @@ impl Default for Args {
 
 // Parse the supplied input arguments, which should not include the program name.
 pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Args> {
+    use crate::input_data::MAX_FILES_PER_GROUP;
+
+    let files_per_group = std::env::var(FILES_PER_GROUP_ENV)
+        .ok()
+        .map(|s| s.parse())
+        .transpose()?;
+
+    if let Some(x) = files_per_group {
+        ensure!(
+            x <= MAX_FILES_PER_GROUP,
+            "{FILES_PER_GROUP_ENV}={x} but maximum is {MAX_FILES_PER_GROUP}"
+        );
+    }
+
     let mut args = Args {
-        files_per_group: std::env::var(FILES_PER_GROUP_ENV)
-            .ok()
-            .map(|s| s.parse())
-            .transpose()?,
+        files_per_group,
         ..Default::default()
     };
 
