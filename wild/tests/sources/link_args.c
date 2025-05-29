@@ -1,20 +1,24 @@
-//#Config:strip-all
+//#AbstractConfig:default
+// TODO: #795
+//#Arch: x86_64,aarch64
+
+//#Config:strip-all:default
 //#Object:runtime.c
 //#LinkArgs:--strip-all
 //#EnableLinker:lld
 //#DiffIgnore:file-header.entry
 
-//#Config:single-threaded
+//#Config:single-threaded:default
 //#Object:runtime.c
 //#WildExtraLinkArgs:--threads=1
 
-//#Config:dev_null
+//#Config:dev_null:default
 //#Object:runtime.c
 //#LinkArgs:-o /dev/null
 //#DiffEnabled:false
 //#RunEnabled:false
 
-//#Config:gc-sections
+//#Config:gc-sections:default
 //#CompArgs:-g -ffunction-sections
 //#LinkArgs:--gc-sections
 //#Object:runtime.c

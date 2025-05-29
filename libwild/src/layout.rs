@@ -2729,6 +2729,7 @@ fn process_relocation<A: Arch>(
     section: &object::elf::SectionHeader64<LittleEndian>,
     resources: &GraphResources,
     queue: &mut LocalWorkQueue,
+    is_debug_section: bool,
 ) -> Result<RelocationModifier> {
     let args = resources.symbol_db.args;
     let mut next_modifier = RelocationModifier::Normal;
@@ -2793,7 +2794,7 @@ fn process_relocation<A: Arch>(
         {
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
-            } else {
+            } else if !is_debug_section {
                 bail!(
                     "Cannot apply relocation {} to read-only section. \
                     Please recompile with -fPIC or link with -no-pie",
@@ -3762,7 +3763,8 @@ impl<'data> ObjectLayoutState<'data> {
                 self.load_section::<A>(common, queue, *unloaded, section_index, resources)?;
             }
             SectionSlot::UnloadedDebugInfo(part_id) => {
-                self.load_debug_section(common, *part_id, section_index)?;
+                // On RISC-V, the debug info sections contain relocations to local symbols (e.g. labels).
+                self.load_debug_section::<A>(common, queue, *part_id, section_index, resources)?;
             }
             SectionSlot::Discard => {
                 bail!(
@@ -3811,6 +3813,7 @@ impl<'data> ObjectLayoutState<'data> {
                 self.object.section(section.index)?,
                 resources,
                 queue,
+                false,
             )
             .with_context(|| {
                 format!(
@@ -3867,7 +3870,15 @@ impl<'data> ObjectLayoutState<'data> {
             // section.
             if let Some(eh_frame_section) = self.eh_frame_section {
                 for rel in frame_data_relocations {
-                    process_relocation::<A>(self, common, rel, eh_frame_section, resources, queue)?;
+                    process_relocation::<A>(
+                        self,
+                        common,
+                        rel,
+                        eh_frame_section,
+                        resources,
+                        queue,
+                        false,
+                    )?;
                 }
             }
         }
@@ -3882,14 +3893,41 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_debug_section(
+    fn load_debug_section<A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
+        queue: &mut LocalWorkQueue,
+
         part_id: PartId,
         section_index: SectionIndex,
+        resources: &GraphResources<'data, '_>,
     ) -> Result {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
+        if A::local_symbols_in_debug_info() {
+            for rel in self.relocations(section.index)? {
+                let modifier = process_relocation::<A>(
+                    self,
+                    common,
+                    rel,
+                    self.object.section(section.index)?,
+                    resources,
+                    queue,
+                    true,
+                )
+                .with_context(|| {
+                    format!(
+                        "Failed to copy section {} from file {self}",
+                        section_debug(self.object, section.index)
+                    )
+                })?;
+                ensure!(
+                    modifier == RelocationModifier::Normal,
+                    "All debug relocations must be processed"
+                );
+            }
+        }
+
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
         common.section_loaded(part_id, header, section);
         self.sections[section_index.0] = SectionSlot::LoadedDebugInfo(section);
@@ -4338,7 +4376,15 @@ fn process_eh_frame_data<'data, A: Arch>(
 
                 // We currently always load all CIEs, so any relocations found in CIEs always need
                 // to be processed.
-                process_relocation::<A>(object, common, rel, eh_frame_section, resources, queue)?;
+                process_relocation::<A>(
+                    object,
+                    common,
+                    rel,
+                    eh_frame_section,
+                    resources,
+                    queue,
+                    false,
+                )?;
 
                 if let Some(local_sym_index) = rel.symbol(e, false) {
                     let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);

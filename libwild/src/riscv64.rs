@@ -66,6 +66,10 @@ impl crate::arch::Arch for RISCV64 {
     fn get_dtv_offset() -> u64 {
         0x800
     }
+
+    fn local_symbols_in_debug_info() -> bool {
+        true
+    }
 }
 
 #[derive(Debug, Clone)]

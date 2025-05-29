@@ -36,6 +36,9 @@ pub(crate) trait Arch {
     fn get_dtv_offset() -> u64 {
         0
     }
+
+    // Some architectures use debug info relocation that depend on local symbols.
+    fn local_symbols_in_debug_info() -> bool;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

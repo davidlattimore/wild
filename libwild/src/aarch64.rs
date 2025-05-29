@@ -83,6 +83,10 @@ impl crate::arch::Arch for AArch64 {
         );
         Ok(())
     }
+
+    fn local_symbols_in_debug_info() -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone)]

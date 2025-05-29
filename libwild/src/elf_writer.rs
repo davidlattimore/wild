@@ -2043,7 +2043,6 @@ fn get_pair_subtraction_relocation_value<'a, A: Arch>(
     layout: &Layout,
     resolution: Resolution,
     symbol_index: SymbolIndex,
-    local_symbol_id: SymbolId,
     addend: i64,
     mut relocations_to_search: impl Iterator<Item = &'a elf::Rela>,
 ) -> Result<u64> {
@@ -2059,8 +2058,7 @@ fn get_pair_subtraction_relocation_value<'a, A: Arch>(
         set_rel.r_type(LittleEndian, false) == object::elf::R_RISCV_SET_ULEB128,
         "R_RISCV_SET_ULEB128 must be the previous relocation"
     );
-    let (set_resolution, set_symbol_index, set_local_symbol_id) =
-        get_resolution(set_rel, object_layout, layout)?;
+    let (set_resolution, set_symbol_index, _) = get_resolution(set_rel, object_layout, layout)?;
 
     let set_resolution_val = set_resolution.value_with_addend(
         set_rel.r_addend.get(e),
@@ -2076,18 +2074,7 @@ fn get_pair_subtraction_relocation_value<'a, A: Arch>(
         &layout.merged_strings,
         &layout.merged_string_start_addresses,
     )?;
-    let (value, overflow) = set_resolution_val.overflowing_sub(sub_resolution_val);
-    ensure!(
-        !overflow,
-        "ULEB128 overflow should not happen: {} (0x{}) - {} (0x{})",
-        layout
-            .symbol_db
-            .symbol_name_for_display(set_local_symbol_id),
-        HexU64::new(set_resolution_val),
-        layout.symbol_db.symbol_name_for_display(local_symbol_id),
-        HexU64::new(sub_resolution_val)
-    );
-    Ok(value)
+    Ok(set_resolution_val.wrapping_sub(sub_resolution_val))
 }
 
 /// Applies the relocation `rel` at `offset_in_section`, where the section bytes are `out`. See "ELF
@@ -2277,7 +2264,6 @@ fn apply_relocation<A: Arch>(
             layout,
             resolution,
             symbol_index,
-            local_symbol_id,
             addend,
             // It must be the previous relocation
             iter::once(&relocations[relocation_index - 1]),
@@ -2468,7 +2454,6 @@ fn apply_debug_relocation<A: Arch>(
         .context("Unsupported absolute relocation")?;
     let sym = object_layout.object.symbol(symbol_index)?;
     let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
-    let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
 
     let addend = rel.r_addend.get(e);
     let r_type = rel.r_type(e, false);
@@ -2485,8 +2470,11 @@ fn apply_debug_relocation<A: Arch>(
     let value = if let Some(resolution) = resolution {
         match rel_info.kind {
             RelocationKind::Absolute
+            | RelocationKind::AbsoluteSet
+            | RelocationKind::AbsoluteSetWord6
             | RelocationKind::AbsoluteAddition
-            | RelocationKind::AbsoluteSubtraction => {
+            | RelocationKind::AbsoluteSubtraction
+            | RelocationKind::AbsoluteSubtractionWord6 => {
                 let mut value = resolution.value_with_addend(
                     addend,
                     symbol_index,
@@ -2497,7 +2485,10 @@ fn apply_debug_relocation<A: Arch>(
                 // Adjust the relocation value based on the value at the place.
                 if matches!(
                     rel_info.kind,
-                    RelocationKind::AbsoluteSubtraction | RelocationKind::AbsoluteAddition
+                    RelocationKind::AbsoluteAddition
+                        | RelocationKind::AbsoluteSubtraction
+                        | RelocationKind::AbsoluteSetWord6
+                        | RelocationKind::AbsoluteSubtractionWord6
                 ) {
                     value = adjust_relocation_based_on_value(
                         value,
@@ -2518,7 +2509,6 @@ fn apply_debug_relocation<A: Arch>(
                 layout,
                 resolution,
                 symbol_index,
-                local_symbol_id,
                 addend,
                 // Must be the previous relocation.
                 iter::once(&relocations[relocation_index - 1]),

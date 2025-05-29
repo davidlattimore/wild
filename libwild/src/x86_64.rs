@@ -77,6 +77,10 @@ impl crate::arch::Arch for X86_64 {
     fn rel_type_to_string(r_type: u32) -> std::borrow::Cow<'static, str> {
         x86_64_rel_type_to_string(r_type)
     }
+
+    fn local_symbols_in_debug_info() -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone)]
