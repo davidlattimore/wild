@@ -1,5 +1,6 @@
 use crate::args::Args;
 use crate::input_data::FileId;
+use crate::input_data::MAX_FILES_PER_GROUP;
 use crate::parsing::Epilogue;
 use crate::parsing::ParsedInputObject;
 use crate::parsing::ParsedInputs;
@@ -58,8 +59,11 @@ pub(crate) fn group_files<'data>(
 
     groups.push(Group::Prelude(parsed_inputs.prelude));
 
-    let mut num_symbols = 0;
-    let mut num_files = 0;
+    let mut num_symbols = parsed_inputs
+        .objects
+        .first()
+        .map_or(0, |obj| obj.symbol_id_range.len());
+    let mut num_files = 1;
 
     groups.extend(
         parsed_inputs
@@ -84,6 +88,12 @@ pub(crate) fn group_files<'data>(
             })
             .enumerate()
             .map(|(i, group_objects)| {
+                debug_assert!(
+                    group_objects.len() <= MAX_FILES_PER_GROUP as usize,
+                    "Group is too large: {}",
+                    group_objects.len()
+                );
+
                 for (file_number, obj) in group_objects.iter_mut().enumerate() {
                     obj.set_file_id(FileId::new(i as u32 + 1, file_number as u32));
                 }
