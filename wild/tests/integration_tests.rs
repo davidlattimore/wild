@@ -2430,7 +2430,9 @@ fn read_test_config() -> Result<TestConfig> {
     };
 
     // The environment variable can override the config file setting.
-    if let Ok(cross_arch) = std::env::var("WILD_TEST_CROSS") {
+    if let Ok(cross_arch) = std::env::var("WILD_TEST_CROSS")
+        && !cross_arch.is_empty()
+    {
         config.qemu_arch = cross_arch
             .split(',')
             .map(|s| {
