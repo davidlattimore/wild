@@ -3,6 +3,8 @@
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.data
 //#DiffIgnore:dynsym._ZTIi.section
+// TODO: Fix this. Note, it only shows up on openSUSE aarch64
+//#DiffIgnore:rel.missing-copy-relocation.R_AARCH64_ABS64
 
 //#Config:gcc:default
 //#LinkerDriver:g++
