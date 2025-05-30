@@ -86,7 +86,6 @@ pub struct Args {
     output_kind: Option<OutputKind>,
     is_dynamic_executable: bool,
     relocation_model: RelocationModel,
-    ignore_bsymbolic: bool,
 }
 
 #[derive(Debug)]
@@ -283,7 +282,6 @@ impl Default for Args {
             relro: true,
             entry: None,
             b_symbolic: BSymbolicKind::None,
-            ignore_bsymbolic: false,
         }
     }
 }
@@ -395,17 +393,16 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             modifier_stack.last_mut().unwrap().allow_shared = false;
         } else if long_arg_eq("Bdynamic") {
             modifier_stack.last_mut().unwrap().allow_shared = true;
-        } else if long_arg_eq("Bsymbolic-functions") && !args.ignore_bsymbolic {
+        } else if long_arg_eq("Bsymbolic-functions") {
             args.b_symbolic = BSymbolicKind::Functions;
-        } else if long_arg_eq("Bsymbolic-non-weak-functions") && !args.ignore_bsymbolic {
+        } else if long_arg_eq("Bsymbolic-non-weak-functions") {
             args.b_symbolic = BSymbolicKind::NonWeakFunctions;
-        } else if long_arg_eq("Bsymbolic-non-weak") && !args.ignore_bsymbolic {
+        } else if long_arg_eq("Bsymbolic-non-weak") {
             args.b_symbolic = BSymbolicKind::NonWeak;
-        } else if long_arg_eq("Bsymbolic") && !args.ignore_bsymbolic {
+        } else if long_arg_eq("Bsymbolic") {
             args.b_symbolic = BSymbolicKind::All;
         } else if long_arg_eq("Bno-symbolic") {
             args.b_symbolic = BSymbolicKind::None;
-            args.ignore_bsymbolic = true;
         } else if arg == "-o" {
             args.output = input
                 .next()
