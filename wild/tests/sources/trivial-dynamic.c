@@ -19,9 +19,19 @@
 //#Config:nodelete:default
 //#LinkArgs:-z now -z nodelete
 
+//#Config:symbolic:default
+//#LinkArgs:-z now -Bsymbolic
+// TODO: Set these
+//#DiffIgnore:.dynamic.DT_FLAGS.SYMBOLIC
+//#DiffIgnore:.dynamic.DT_SYMBOLIC
+
 #include "runtime.h"
 
 int foo(void);
+
+typedef int(*get_int_fn_t)(void);
+
+get_int_fn_t foo_ptr = foo;
 
 void _start(void) {
     runtime_init();
@@ -29,5 +39,10 @@ void _start(void) {
     if (foo() != 10) {
         exit_syscall(20);
     }
+
+    if (foo_ptr() != 10) {
+        exit_syscall(21);
+    }
+
     exit_syscall(42);
 }
