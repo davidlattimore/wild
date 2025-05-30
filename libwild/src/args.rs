@@ -64,6 +64,7 @@ pub struct Args {
     pub(crate) undefined: Vec<String>,
     pub(crate) relro: bool,
     pub(crate) entry: Option<String>,
+    pub(crate) explicitly_export_dynamic: bool,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -191,7 +192,6 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "nostdlib",
     // TODO
     "no-undefined-version",
-    "export-dynamic",
     "fatal-warnings",
     "color-diagnostics",
     "undefined-version",
@@ -204,7 +204,6 @@ const IGNORED_FLAGS: &[&str] = &[
     "disable-new-dtags",
     "fix-cortex-a53-835769",
     "fix-cortex-a53-843419",
-    "no-export-dynamic",
     "Bsymbolic",
     "Bsymbolic-non-weak-functions", // LLD specific
     "Bsymbolic-non-weak",           // LLD specific
@@ -286,6 +285,7 @@ impl Default for Args {
             relro: true,
             entry: None,
             b_symbolic: BSymbolicKind::None,
+            explicitly_export_dynamic: false,
         }
     }
 }
@@ -539,6 +539,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.should_write_eh_frame_hdr = true;
         } else if long_arg_eq("shared") {
             args.output_kind = Some(OutputKind::SharedObject);
+        } else if long_arg_eq("export-dynamic") || arg == "-E" {
+            args.explicitly_export_dynamic = true;
+        } else if long_arg_eq("no-export-dynamic") {
+            args.explicitly_export_dynamic = false;
         } else if let Some(rest) = long_arg_split_prefix("soname=") {
             args.soname = Some(rest.to_owned());
         } else if long_arg_eq("soname") {
