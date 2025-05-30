@@ -2533,7 +2533,10 @@ fn apply_debug_relocation<A: Arch>(
             _ => bail!("Could not find a relocation resolution for a debug info section"),
         }
     } else {
-        bail!("Could not find a relocation resolution for a debug info section");
+        // Debug info can sometimes contain relocations for symbols from other objects. If we didn't
+        // load those symbols, then we need to use the tombstone value. Careful, we don't have any
+        // tests for this, but building chromium does trigger this branch.
+        section_tombstone_value
     };
 
     write_relocation_to_buffer(rel_info, value, &mut out[offset_in_section as usize..])?;
