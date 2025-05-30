@@ -64,7 +64,7 @@ The following platforms / architectures are currently supported:
 
 * x86-64 on Linux
 * ARM64 on Linux
-* RISC-V (riscv64gc) on Linux (initial support: #[678])
+* RISC-V (riscv64gc) on Linux (initial support: [#678](https://github.com/davidlattimore/wild/issues/678))
 
 The following is working with the caveat that there may be bugs:
 
@@ -366,5 +366,3 @@ at your option.
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in
 Wild by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any
 additional terms or conditions.
-
-[#678]: https://github.com/davidlattimore/wild/issues/678
