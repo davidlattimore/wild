@@ -19,6 +19,10 @@
 //#Config:nodelete:default
 //#LinkArgs:-z now -z nodelete
 
+//#Config:export-dynamic:default
+//#LinkArgs:-z now --export-dynamic 
+//#ExpectDynSym: runtime_init
+
 #include "runtime.h"
 
 int foo(void);
