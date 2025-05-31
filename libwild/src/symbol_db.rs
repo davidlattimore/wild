@@ -1029,10 +1029,22 @@ fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFl
         // Symbols defined in an executable cannot be interposed since the executable is always the
         // first place checked for a symbol by the dynamic loader.
         || (args.output_kind().is_executable() && !is_undefined)
+        || args.b_symbolic == args::BSymbolicKind::All
         // `-Bsymbolic-functions`
         || (
             args.b_symbolic == args::BSymbolicKind::Functions
             && sym.st_type() == object::elf::STT_FUNC
+        )
+        // `-Bsymbolic-non-weak`
+        || (
+            args.b_symbolic == args::BSymbolicKind::NonWeak
+            && sym.st_bind() != object::elf::STB_WEAK
+        )
+        // `-Bsymbolic-non-weak-functions`
+        || (
+            args.b_symbolic == args::BSymbolicKind::NonWeakFunctions
+            && (sym.st_type() == object::elf::STT_FUNC
+            && sym.st_bind() != object::elf::STB_WEAK)
         );
 
     let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {
