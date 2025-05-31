@@ -541,7 +541,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.relocation_model = RelocationModel::NonRelocatable;
         } else if long_arg_eq("eh-frame-hdr") {
             args.should_write_eh_frame_hdr = true;
-        } else if long_arg_eq("shared") {
+        } else if long_arg_eq("shared") || long_arg_eq("Bshareable") {
             args.output_kind = Some(OutputKind::SharedObject);
         } else if let Some(rest) = long_arg_split_prefix("soname=") {
             args.soname = Some(rest.to_owned());
