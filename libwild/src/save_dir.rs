@@ -205,7 +205,7 @@ impl SaveDirState {
             self.copy_file(parent)?;
         }
 
-        let meta = std::fs::metadata(source_path)
+        let meta = std::fs::symlink_metadata(source_path)
             .with_context(|| format!("Failed to read metadata for `{}`", source_path.display()))?;
 
         if meta.is_dir() {
@@ -215,11 +215,16 @@ impl SaveDirState {
                 })?;
             }
         } else if meta.is_symlink() {
-            let target = std::fs::read_link(source_path)
+            let directory = source_path.parent().context("Invalid path")?;
+            let mut target = std::fs::read_link(source_path)
                 .with_context(|| format!("Failed to read symlink `{}`", source_path.display()))?;
 
             if target.is_absolute() {
-                todo!("Implement support for handling absolute symlinks");
+                self.copy_file(&target)?;
+                target = make_relative_path(&target, directory);
+            } else {
+                let absolute_target = directory.join(&target);
+                self.copy_file(&absolute_target)?;
             }
 
             std::os::unix::fs::symlink(&target, &dest_path).with_context(|| {
@@ -229,8 +234,6 @@ impl SaveDirState {
                     target.display()
                 )
             })?;
-
-            return self.copy_file(&target);
         } else {
             if is_thin_archive(source_path) {
                 self.handle_thin_archive(source_path)?;
@@ -285,6 +288,33 @@ impl SaveDirState {
     }
 }
 
+/// Returns a relative path to reach `target` from `directory`. Both should be absolute paths.
+fn make_relative_path(target: &Path, directory: &Path) -> PathBuf {
+    assert!(target.is_absolute());
+    assert!(directory.is_absolute());
+    let mut out = PathBuf::new();
+    let mut t = target.components().peekable();
+    let mut d = directory.components().peekable();
+
+    // Skip over common components.
+    while let (Some(next_t), Some(next_d)) = (t.peek(), d.peek()) {
+        if next_t == next_d {
+            t.next();
+            d.next();
+        } else {
+            break;
+        }
+    }
+
+    for _ in d {
+        out.push("..");
+    }
+
+    out.extend(t);
+
+    out
+}
+
 fn is_thin_archive(path: &Path) -> bool {
     (|| -> Result<bool> {
         let mut file = File::open(path)?;
@@ -307,4 +337,28 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
     path.iter()
         .filter(|p| p.as_encoded_bytes() != b"/")
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    #[track_caller]
+    fn check_relative(t: &str, d: &str, expected: &str) {
+        let actual = super::make_relative_path(Path::new(t), Path::new(d));
+        assert_eq!(actual, Path::new(expected));
+    }
+
+    #[test]
+    fn test_make_relative_path() {
+        check_relative("/baz.txt", "/", "baz.txt");
+        check_relative("/foo/bar/baz.txt", "/foo/bar", "baz.txt");
+        check_relative("/foo/bar/baz.txt", "/foo/bag", "../bar/baz.txt");
+        check_relative("/foo/bar/baz.txt", "/", "foo/bar/baz.txt");
+        check_relative(
+            "/foo/bar/baz.txt",
+            "/a/b/c/d/",
+            "../../../../foo/bar/baz.txt",
+        );
+    }
 }
