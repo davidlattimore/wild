@@ -1,4 +1,5 @@
 # Setting to nightly enables a few more tests, e.g. cranelift backend
 rustc_channel = "default" # `"stable"`, `"beta"`, `"nightly"` or "default"
-qemu_arch = [] # `aarch64` or `riscv64`
+qemu_arch = [] # `["X86_64"]`, `["AArch64"]`, `["RISCV64"]`
 allow_rust_musl_target = false # `true` or `false`
+diff_ignore = [] # ["rule1, "rule2"]
