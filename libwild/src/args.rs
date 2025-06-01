@@ -52,6 +52,7 @@ pub struct Args {
     pub(crate) rpath: Option<String>,
     pub(crate) soname: Option<String>,
     pub(crate) files_per_group: Option<u32>,
+    pub(crate) exclude_libs: bool,
     pub(crate) gc_sections: bool,
     pub(crate) should_fork: bool,
     pub(crate) build_id: BuildIdOption,
@@ -273,6 +274,7 @@ impl Default for Args {
             file_write_mode: None,
             build_id: BuildIdOption::None,
             files_per_group: None,
+            exclude_libs: false,
             no_undefined: false,
             should_print_version: false,
             sysroot: None,
@@ -456,6 +458,12 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.num_threads = available_parallelism();
         } else if let Some(rest) = long_arg_split_prefix("thread-count=") {
             args.num_threads = NonZeroUsize::try_from(rest.parse::<usize>()?)?;
+        } else if long_arg_eq("exclude-libs") {
+            let param = input.next().context("Missing argument to --exclude-libs")?;
+            if param.as_ref() != "ALL" {
+                warn_unsupported("--exclude-libs other than ALL")?;
+            }
+            args.exclude_libs = true;
         } else if long_arg_eq("no-threads") {
             args.num_threads = NonZeroUsize::new(1).unwrap();
         } else if long_arg_eq("strip-all") || arg == "-s" {
