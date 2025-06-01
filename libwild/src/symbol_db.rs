@@ -1015,60 +1015,10 @@ fn load_symbols_from_file<'data>(
             object: &s.object,
             args,
             version_script,
+            archive_semantics: s.input.has_archive_semantics(),
         }
         .load_symbols(s.file_id, symbols_out, outputs)
     }
-}
-
-fn value_flags_from_elf_symbol(sym: &crate::elf::Symbol, args: &Args) -> ValueFlags {
-    let is_undefined = sym.is_undefined(LittleEndian);
-
-    let non_interposable = sym.st_visibility() != object::elf::STV_DEFAULT
-        || sym.is_local()
-        || args.output_kind().is_static_executable()
-        // Symbols defined in an executable cannot be interposed since the executable is always the
-        // first place checked for a symbol by the dynamic loader.
-        || (!is_undefined && (
-            args.output_kind().is_executable()
-            || args.b_symbolic == args::BSymbolicKind::All
-            // `-Bsymbolic-functions`
-            || (
-                args.b_symbolic == args::BSymbolicKind::Functions
-                && sym.st_type() == object::elf::STT_FUNC
-            )
-            // `-Bsymbolic-non-weak`
-            || (
-                args.b_symbolic == args::BSymbolicKind::NonWeak
-                && sym.st_bind() != object::elf::STB_WEAK
-            )
-            // `-Bsymbolic-non-weak-functions`
-            || (
-                args.b_symbolic == args::BSymbolicKind::NonWeakFunctions
-                && (sym.st_type() == object::elf::STT_FUNC
-                && sym.st_bind() != object::elf::STB_WEAK)
-            )
-        ));
-
-    let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {
-        ValueFlags::ABSOLUTE
-    } else if sym.st_type() == object::elf::STT_GNU_IFUNC {
-        ValueFlags::IFUNC
-    } else if is_undefined {
-        if non_interposable {
-            ValueFlags::ABSOLUTE
-        } else {
-            // If we can't bypass the GOT, then an undefined symbol might be able to be defined at
-            // runtime by a dynamic library that gets loaded.
-            ValueFlags::DYNAMIC | ValueFlags::ABSOLUTE
-        }
-    } else {
-        ValueFlags::ADDRESS
-    };
-
-    if non_interposable {
-        flags |= ValueFlags::NON_INTERPOSABLE;
-    }
-    flags
 }
 
 struct SymbolInfoWriter<'out> {
@@ -1193,6 +1143,7 @@ struct RegularObjectSymbolLoader<'a, 'data> {
     object: &'a crate::elf::File<'data>,
     args: &'a Args,
     version_script: &'a VersionScript<'a>,
+    archive_semantics: bool,
 }
 
 struct DynamicObjectSymbolLoader<'a, 'data> {
@@ -1237,8 +1188,56 @@ impl<'a, 'data> DynamicObjectSymbolLoader<'a, 'data> {
 }
 
 impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
-    fn compute_value_flags(&self, symbol: &crate::elf::Symbol) -> ValueFlags {
-        value_flags_from_elf_symbol(symbol, self.args)
+    fn compute_value_flags(&self, sym: &crate::elf::Symbol) -> ValueFlags {
+        let is_undefined = sym.is_undefined(LittleEndian);
+
+        let non_interposable = sym.st_visibility() != object::elf::STV_DEFAULT
+            || sym.is_local()
+            || self.args.output_kind().is_static_executable()
+            // Symbols defined in an executable cannot be interposed since the executable is always the
+            // first place checked for a symbol by the dynamic loader.
+            || (!is_undefined && (
+                self.args.output_kind().is_executable()
+                || (self.args.exclude_libs && self.archive_semantics)
+                || self.args.b_symbolic == args::BSymbolicKind::All
+                // `-Bsymbolic-functions`
+                || (
+                    self.args.b_symbolic == args::BSymbolicKind::Functions
+                    && sym.st_type() == object::elf::STT_FUNC
+                )
+                // `-Bsymbolic-non-weak`
+                || (
+                    self.args.b_symbolic == args::BSymbolicKind::NonWeak
+                    && sym.st_bind() != object::elf::STB_WEAK
+                )
+                // `-Bsymbolic-non-weak-functions`
+                || (
+                    self.args.b_symbolic == args::BSymbolicKind::NonWeakFunctions
+                    && (sym.st_type() == object::elf::STT_FUNC
+                    && sym.st_bind() != object::elf::STB_WEAK)
+                )
+            ));
+
+        let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {
+            ValueFlags::ABSOLUTE
+        } else if sym.st_type() == object::elf::STT_GNU_IFUNC {
+            ValueFlags::IFUNC
+        } else if is_undefined {
+            if non_interposable {
+                ValueFlags::ABSOLUTE
+            } else {
+                // If we can't bypass the GOT, then an undefined symbol might be able to be defined at
+                // runtime by a dynamic library that gets loaded.
+                ValueFlags::DYNAMIC | ValueFlags::ABSOLUTE
+            }
+        } else {
+            ValueFlags::ADDRESS
+        };
+
+        if non_interposable {
+            flags |= ValueFlags::NON_INTERPOSABLE;
+        }
+        flags
     }
 
     fn should_downgrade_to_local(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {

@@ -3744,7 +3744,9 @@ impl<'data> ObjectLayoutState<'data> {
             process_gnu_property_note(self, note_gnu_property_index)?;
         }
 
-        if resources.symbol_db.args.output_kind() == OutputKind::SharedObject {
+        if resources.symbol_db.args.output_kind() == OutputKind::SharedObject
+            && (!resources.symbol_db.args.exclude_libs || !self.input.has_archive_semantics())
+        {
             self.load_non_hidden_symbols::<A>(common, resources, queue)?;
         }
 
