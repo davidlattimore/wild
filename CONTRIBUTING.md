@@ -66,9 +66,9 @@ Currently, the behavior for the following test options can be configured using t
 - `rustc_channel`: Specifies which Rust compiler channel to use when running tests that build Rust
   code. The default value is "default", which means no explicit toolchain is specified.
 
-- `use_qemu`: Determines whether to run tests for architectures different from the host. This
+- `qemu_arch`: List of additional architectures (different from the host) to run tests for. This
   setting is overridden by the `$WILD_TEST_CROSS` environment variable. The default value is
-  `false`.
+  `[]`.
 
 - `allow_rust_musl_target`: Specifies whether to allow the musl target Rust. The default value is
   `false`, so you’ll need to set it to `true` if you want to run tests targeting musl.
