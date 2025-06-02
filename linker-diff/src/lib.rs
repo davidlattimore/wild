@@ -47,6 +47,7 @@ mod segment;
 mod symbol_diff;
 mod symtab;
 mod trace;
+mod utils;
 mod version_diff;
 mod x86_64;
 
