@@ -143,7 +143,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "miniz_oxide",
- "object 0.36.7 (registry+https://github.com/rust-lang/crates.io-index)",
+ "object 0.36.7",
  "rustc-demangle",
  "windows-targets",
 ]
@@ -290,7 +290,7 @@ version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fde0e0ec90c9dfb3b4b1a0891a7dcd0e2bffde2f7efed5fe7c9bb00e5bfb915e"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -419,7 +419,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "976dd42dc7e85965fe702eb8164f21f450704bdde31faefd6471dba214cb594e"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -442,7 +442,7 @@ checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
 dependencies = [
  "cfg-if",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -694,7 +694,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "object 0.36.7 (git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32)",
+ "object 0.37.0",
  "rayon",
  "sharded-offset-map",
  "sharded-vec-writer",
@@ -735,7 +735,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "object 0.36.7 (git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32)",
+ "object 0.37.0",
  "rayon",
  "symbolic-demangle",
  "tempfile",
@@ -768,7 +768,7 @@ version = "0.5.0"
 dependencies = [
  "anyhow",
  "leb128",
- "object 0.36.7 (git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32)",
+ "object 0.37.0",
 ]
 
 [[package]]
@@ -861,8 +861,9 @@ dependencies = [
 
 [[package]]
 name = "object"
-version = "0.36.7"
-source = "git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32#61474b7de8074f91b78ad24ff2424e54a22f8b32"
+version = "0.37.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6273adb7096cf9ab4335f258e627d8230e69d40d45567d678f552dcec6245215"
 dependencies = [
  "memchr",
 ]
@@ -1111,7 +1112,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1313,7 +1314,7 @@ dependencies = [
  "getrandom",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1548,7 +1549,7 @@ dependencies = [
  "libwild",
  "linker-diff",
  "mimalloc",
- "object 0.36.7 (git+https://github.com/gimli-rs/object?rev=61474b7de8074f91b78ad24ff2424e54a22f8b32)",
+ "object 0.37.0",
  "os_info",
  "rstest",
  "serde",
