@@ -5,7 +5,6 @@ use crate::archive::ArchiveIterator;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
-use foldhash::HashSet;
 use std::fs::File;
 use std::io::BufWriter;
 use std::io::Read;
@@ -41,7 +40,7 @@ impl SaveDir {
         ))))
     }
 
-    pub(crate) fn finish(&self, filenames: &HashSet<PathBuf>) -> Result {
+    pub(crate) fn finish<'a, I: Iterator<Item = &'a PathBuf>>(&self, filenames: I) -> Result {
         if let Some(state) = self.0.as_ref() {
             state.finish(filenames)?;
         }
@@ -112,7 +111,7 @@ impl SaveDirState {
     /// Finalise the save directory. Makes sure that all `filenames` have been copied, writes the
     /// `run-with` file and if the environment variable is set to indicate that we should skip
     /// linking, then exit.
-    fn finish(&self, filenames: &HashSet<PathBuf>) -> Result {
+    fn finish<'a, I: Iterator<Item = &'a PathBuf>>(&self, filenames: I) -> Result {
         for filename in filenames {
             self.copy_file(filename)?;
         }

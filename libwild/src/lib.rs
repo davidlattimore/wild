@@ -48,6 +48,7 @@ pub(crate) mod version_script;
 pub(crate) mod x86_64;
 
 pub use args::Args;
+use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
 use error::AlreadyInitialised;
 use input_data::InputData;
@@ -60,7 +61,6 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use typed_arena::Arena;
 
 /// Runs the linker and cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
@@ -129,7 +129,7 @@ impl Linker {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
-            inputs: Default::default(),
+            inputs: Arena::new(),
             herd: Default::default(),
             shutdown_scope: Default::default(),
             _link_scope: tracing::info_span!("Link").entered(),
@@ -166,11 +166,11 @@ impl Linker {
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
         let output = elf_writer::Output::new(args);
 
-        let (input_data, linker_scripts) = input_data::InputData::from_args(args, &self.inputs)?;
+        let input_data = input_data::InputData::from_args(args, &self.inputs)?;
 
         // Note, we propagate errors from `link_with_input_data` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
-        let result = self.link_with_input_data::<A>(output, &input_data, &linker_scripts, args);
+        let result = self.link_with_input_data::<A>(output, &input_data, args);
 
         input_data.verify_inputs_unchanged()?;
 
@@ -181,7 +181,6 @@ impl Linker {
         &'data self,
         mut output: elf_writer::Output,
         input_data: &InputData<'data>,
-        linker_scripts: &[InputLinkerScript<'data>],
         args: &'data Args,
     ) -> error::Result<LinkerOutput<'data>> {
         let inputs = archive_splitter::split_archives(input_data)?;
@@ -189,7 +188,7 @@ impl Linker {
 
         let (parsed_inputs, layout_rules) = parsing::parse_input_files(
             &inputs,
-            linker_scripts,
+            &input_data.linker_scripts,
             args,
             &mut output_sections,
             &self.herd,
@@ -201,7 +200,7 @@ impl Linker {
             groups,
             input_data.version_script_data,
             args,
-            linker_scripts,
+            &input_data.linker_scripts,
         )?;
 
         let resolved = resolution::resolve_symbols_and_sections(
@@ -236,7 +235,7 @@ impl Default for Linker {
 impl Drop for Linker {
     fn drop(&mut self) {
         let _span = tracing::info_span!("Drop inputs").entered();
-        self.inputs = Default::default();
+        self.inputs = Arena::new();
         self.herd = Default::default();
     }
 }
