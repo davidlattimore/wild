@@ -205,15 +205,18 @@ impl SaveDirState {
             self.copy_file(parent)?;
         }
 
+        // We need to check again if `dest_path` exists because paths containing ".." mean that
+        // creating the parent of `dest_path` might actually have created `dest_path`.
+        if dest_path.exists() {
+            return Ok(());
+        }
+
         let meta = std::fs::symlink_metadata(source_path)
             .with_context(|| format!("Failed to read metadata for `{}`", source_path.display()))?;
 
         if meta.is_dir() {
-            if !dest_path.exists() {
-                std::fs::create_dir(&dest_path).with_context(|| {
-                    format!("Failed to create directory `{}`", dest_path.display())
-                })?;
-            }
+            std::fs::create_dir(&dest_path)
+                .with_context(|| format!("Failed to create directory `{}`", dest_path.display()))?;
         } else if meta.is_symlink() {
             let directory = source_path.parent().context("Invalid path")?;
             let mut target = std::fs::read_link(source_path)
