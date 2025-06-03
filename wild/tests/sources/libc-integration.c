@@ -65,17 +65,21 @@
 //#EnableLinker:lld
 //#DiffIgnore:section.relro_padding
 
+// In addition to testing gcc-dynamic-pie, this also checks -L with a path that does not exist. It's
+// necessary to test this on a test with a linker driver, so that we test that the savedir mechanism
+// works with a non-existent path. Linker-driver tests are more expensive, so we double-up with
+// testing other stuff.
 //#Config:gcc-dynamic-pie:shared
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkerDriver:gcc
-//#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkArgs:-dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now -L./does/not/exist
 
 //#Config:gcc-dynamic-no-pie:shared
 //#CompArgs:-g -no-pie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkerDriver:gcc
-//#LinkArgs:-dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#LinkArgs:-dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now -L/does/not/exist
 
 //#Config:gcc-dynamic-pie-large:shared
 //#CompArgs:-g -fpie -DDYNAMIC_DEP -mcmodel=large
