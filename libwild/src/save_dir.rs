@@ -258,7 +258,12 @@ impl SaveDirState {
     }
 
     fn handle_file(&self, arg: &str) -> Result {
-        self.copy_file(&std::path::absolute(Path::new(arg))?)
+        let path = std::path::absolute(Path::new(arg))?;
+        if std::fs::exists(&path).is_ok_and(|exists| exists) {
+            self.copy_file(&path)
+        } else {
+            Ok(())
+        }
     }
 
     /// Copies the files listed by the thin archive.
