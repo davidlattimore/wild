@@ -95,6 +95,7 @@ use object::read::elf::Sym as _;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
+use rayon::slice::ParallelSliceMut;
 use std::fmt::Display;
 use std::io::Write;
 use std::iter;
@@ -590,7 +591,7 @@ fn split_output_into_sections<'out>(
 fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {
     let entry_bytes = &mut eh_frame_hdr[size_of::<elf::EhFrameHdr>()..];
     let entries: &mut [elf::EhFrameHdrEntry] = bytemuck::cast_slice_mut(entry_bytes);
-    entries.sort_by_key(|e| e.frame_ptr);
+    entries.par_sort_by_key(|e| e.frame_ptr);
 }
 
 /// Splits the writable buffers for each segment further into separate buffers for each alignment.
