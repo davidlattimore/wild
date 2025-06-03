@@ -1649,6 +1649,17 @@ impl<'data> ObjectLayout<'data> {
                     .with_context(|| {
                         format!("Failed to copy {}", layout.symbol_debug(symbol_id))
                     })?;
+
+                if layout.symbol_db.args.got_plt_syms {
+                    write_got_plt_syms(layout, &info, symbol_writer, symbol_id).with_context(
+                        || {
+                            format!(
+                                "Failed to write GOT/PLT symbol for {}",
+                                layout.symbol_debug(symbol_id)
+                            )
+                        },
+                    )?;
+                }
             }
         }
         Ok(())
@@ -1999,6 +2010,57 @@ fn get_resolution(
             )
         })?;
     Ok((resolution, symbol_index, local_symbol_id))
+}
+
+fn write_got_plt_syms(
+    layout: &Layout,
+    info: &SymbolCopyInfo<'_>,
+    symbol_writer: &mut SymbolTableWriter<'_, '_, '_>,
+    symbol_id: SymbolId,
+) -> Result {
+    let resolution = layout
+        .local_symbol_resolution(symbol_id)
+        .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
+    let current_res_flags = resolution.resolution_flags;
+    if !current_res_flags.needs_got() && !current_res_flags.needs_plt() {
+        return Ok(());
+    }
+
+    let mut write_sym = |suffix: &[u8],
+                         section_id: OutputSectionId,
+                         get_value: fn(&Resolution) -> Result<u64>|
+     -> Result {
+        let mut symbol_name = info.name.to_vec();
+        symbol_name.extend_from_slice(suffix);
+
+        let shndx = layout
+            .output_sections
+            .output_index_of_section(section_id)
+            .context(format!(
+                "Tried to write dynamic symbol in {section_id} section that's not being output"
+            ))?;
+
+        let value = get_value(resolution)?;
+
+        symbol_writer
+            .define_symbol(true, shndx, value, 0, &symbol_name)
+            .with_context(|| {
+                format!(
+                    "Failed to copy {} symbol for {}",
+                    std::str::from_utf8(suffix).unwrap_or("unknown"),
+                    layout.symbol_debug(symbol_id)
+                )
+            })?;
+
+        Ok(())
+    };
+
+    write_sym(b"$got", output_section_id::GOT, Resolution::got_address)?;
+    if current_res_flags.needs_plt() {
+        write_sym(b"$plt", output_section_id::PLT_GOT, Resolution::plt_address)?;
+    }
+
+    Ok(())
 }
 
 /// Adjust relocation value based on the actual value at the place of a relocation.

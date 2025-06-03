@@ -718,6 +718,19 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
                 &mut common.mem_sizes,
                 symbol_db.args.output_kind(),
             );
+
+            if symbol_db.args.got_plt_syms && resolution_flags.get().needs_got() {
+                let name = symbol_db.symbol_name(symbol_id)?;
+                let name_len = name.len() + 4; // "$got" or "$plt" suffix
+
+                let entry_size = size_of::<elf::SymtabEntry>() as u64;
+                common.allocate(part_id::SYMTAB_LOCAL, entry_size);
+                common.allocate(part_id::STRTAB, name_len as u64 + 1);
+                if resolution_flags.get().needs_plt() {
+                    common.allocate(part_id::SYMTAB_LOCAL, entry_size);
+                    common.allocate(part_id::STRTAB, name_len as u64 + 1);
+                }
+            }
         }
         if symbol_db.args.should_output_symbol_versions() {
             let num_dynamic_symbols =
