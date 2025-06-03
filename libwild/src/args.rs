@@ -82,6 +82,7 @@ pub struct Args {
     pub(crate) verify_allocation_consistency: bool,
     pub(crate) should_print_version: bool,
     pub(crate) demangle: bool,
+    pub(crate) got_plt_syms: bool,
 
     pub(crate) b_symbolic: BSymbolicKind,
 
@@ -284,6 +285,7 @@ impl Default for Args {
             entry: None,
             b_symbolic: BSymbolicKind::None,
             explicitly_export_dynamic: false,
+            got_plt_syms: false,
         }
     }
 }
@@ -620,6 +622,8 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.demangle = true;
         } else if long_arg_eq("no-demangle") {
             args.demangle = false;
+        } else if long_arg_eq("got-plt-syms") {
+            args.got_plt_syms = true;
         } else if let Some(path) = arg.strip_prefix('@') {
             if input.next().is_some() || arg_num > 1 {
                 bail!("Mixing of @{{filename}} and regular arguments isn't supported");
