@@ -14,6 +14,17 @@
 //#Config:no-pie:default
 //#CompArgs:-fno-pie
 
+//#Config:got-plt-syms:default
+//#LinkArgs:--got-plt-syms
+//#SkipLinker:ld
+//#DiffEnabled:false
+//#ExpectSym:compute_value10$got .got
+//#ExpectSym:compute_value32$got .got
+//#ExpectSym:compute_unused$got .got
+//#ExpectSym:compute_value10$plt .plt.got
+//#ExpectSym:compute_value32$plt .plt.got
+//#ExpectSym:compute_unused$plt .plt.got
+
 #include "runtime.h"
 #include "init.h"
 #include "ifunc_init.h"
