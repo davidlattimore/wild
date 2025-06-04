@@ -104,6 +104,9 @@
 //!
 //! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the
 //! musl Rust toolchain.
+//!
+//! AutoAddObjects:{bool} Whether to automatically add input objects for the test to the command
+//! line. Defaults to true.
 
 use itertools::Itertools;
 use libwild::bail;
@@ -431,6 +434,7 @@ struct Config {
     requires_glibc: bool,
     requires_clang_with_tlsdesc: bool,
     requires_nightly_rustc: bool,
+    auto_add_objects: bool,
     version_script: Option<PathBuf>,
     rustc_channel: RustcChannel,
     requires_rust_musl: bool,
@@ -656,6 +660,7 @@ impl Config {
             requires_glibc: false,
             requires_clang_with_tlsdesc: false,
             requires_nightly_rustc: false,
+            auto_add_objects: true,
             version_script: None,
             rustc_channel: RustcChannel::Default,
             requires_rust_musl: false,
@@ -770,13 +775,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                 "EnableLinker" => {
                     config.enabled_linkers.insert(arg.trim().to_owned());
                 }
-                "Cross" => {
-                    config.cross_enabled = match arg.trim() {
-                        "true" => true,
-                        "false" => false,
-                        other => bail!("Unsupported value for Cross '{other}'"),
-                    }
-                }
+                "Cross" => config.cross_enabled = parse_bool(arg, "Cross")?,
                 "ExpectError" => {
                     config.expect_errors.push(arg.trim().to_owned());
                     // If there are errors, then there's nothing to run and nothing to diff.
@@ -789,6 +788,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                         .ok_or_else(|| error!("DiffIgnore missing '='"))
                         .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
                 ),
+                "AutoAddObjects" => config.auto_add_objects = parse_bool(arg, "AutoAddObjects")?,
                 input_type @ ("Object" | "Archive" | "ThinArchive" | "Shared" | "LinkerScript") => {
                     let input_type = InputType::from_str(input_type)?;
                     let files = arg
@@ -846,6 +846,14 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
     }
 
     Ok(configs)
+}
+
+fn parse_bool(arg: &str, opt_name: &str) -> Result<bool> {
+    match arg.trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => bail!("Unsupported value for {opt_name} '{other}'"),
+    }
 }
 
 impl ProgramInputs {
@@ -1491,9 +1499,11 @@ impl LinkCommand {
             command.env("OUT", output_path);
             command.arg(script);
             command.arg(linker.path(cross_arch));
-            for input in extra_inputs {
-                command.args(input.prefix_arg);
-                command.arg(&input.path);
+            if config.auto_add_objects {
+                for input in extra_inputs {
+                    command.args(input.prefix_arg);
+                    command.arg(&input.path);
+                }
             }
             invocation_mode = LinkerInvocationMode::Script;
         } else {
@@ -1586,9 +1596,11 @@ impl LinkCommand {
             if !linker_args.args.iter().any(|arg| arg == "-o") {
                 command.arg("-o").arg(output_path);
             }
-            for input in inputs {
-                command.args(input.prefix_arg);
-                command.arg(&input.path);
+            if config.auto_add_objects {
+                for input in inputs {
+                    command.args(input.prefix_arg);
+                    command.arg(&input.path);
+                }
             }
         }
 

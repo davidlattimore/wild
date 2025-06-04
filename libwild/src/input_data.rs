@@ -423,7 +423,7 @@ impl<'data, 'ch> TemporaryState<'data, 'ch> {
             self.load_input(input, work_sender)?;
         }
 
-        loop {
+        while self.outstanding_work_items > 0 {
             while let Some(loaded) = self.try_recv_response(response_recv) {
                 let loaded_state = match loaded.files {
                     ResponseKind::Regular(input_file) => LoadedFileState::Loaded(input_file),
@@ -448,9 +448,6 @@ impl<'data, 'ch> TemporaryState<'data, 'ch> {
                 self.files[loaded.file_index.0] = Some(loaded_state);
 
                 self.outstanding_work_items -= 1;
-                if self.outstanding_work_items == 0 {
-                    return Ok(());
-                }
             }
 
             // We've run out of work to receive from workers, so process a work item ourselves. This
@@ -461,6 +458,8 @@ impl<'data, 'ch> TemporaryState<'data, 'ch> {
                 let _ = self.response_sender.send(response);
             }
         }
+
+        Ok(())
     }
 
     /// Sends a request to load `input` unless it has already been requested. In either case, return

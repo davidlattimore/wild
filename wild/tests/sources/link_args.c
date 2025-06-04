@@ -24,6 +24,10 @@
 //#Object:runtime.c
 //#NoSym:this_function_is_not_used
 
+//#Config:no-args
+//#AutoAddObjects:false
+//#ExpectError:no input files
+
 #include "runtime.h"
 
 void _start(void) {

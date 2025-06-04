@@ -138,7 +138,7 @@ pub(crate) fn resolve_symbols_in_files<'data>(
 
     let num_objects = symbol_db.num_objects();
     if num_objects == 0 {
-        bail!("Cannot link with 0 input files");
+        bail!("no input files");
     }
     let outputs = Outputs::new(num_objects);
 
