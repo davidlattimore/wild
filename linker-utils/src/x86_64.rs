@@ -39,6 +39,10 @@ pub enum RelaxationKind {
     /// Transform local dynamic (LD) into local exec.
     TlsLdToLocalExec,
 
+    /// Transform local dynamic (LD) into local exec when the subsequent instruction is an indirect
+    /// call instruction.
+    TlsLdToLocalExecNoPlt,
+
     /// Transform local dynamic (LD) into local exec with extra padding because the previous
     /// instruction was 64 bit.
     TlsLdToLocalExec64,
@@ -138,6 +142,13 @@ impl RelaxationKind {
                 ]);
                 *offset_in_section += 5;
             }
+            RelaxationKind::TlsLdToLocalExecNoPlt => {
+                section_bytes[offset - 3..offset + 10].copy_from_slice(&[
+                    // mov %fs:0,%rax
+                    0x66, 0x66, 0x66, 0x66, 0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0,
+                ]);
+                *offset_in_section += 5;
+            }
             RelaxationKind::TlsLdToLocalExec64 => {
                 section_bytes[offset - 3..offset + 19].copy_from_slice(&[
                     // nopw (%rax,%rax)
@@ -178,6 +189,7 @@ impl RelaxationKind {
             | RelaxationKind::TlsGdToLocalExec
             | RelaxationKind::TlsGdToLocalExecLarge
             | RelaxationKind::TlsLdToLocalExec
+            | RelaxationKind::TlsLdToLocalExecNoPlt
             | RelaxationKind::TlsLdToLocalExec64
             | RelaxationKind::TlsDescToLocalExec
             | RelaxationKind::TlsDescToInitialExec => RelocationModifier::SkipNextRelocation,
