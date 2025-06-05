@@ -5,9 +5,29 @@ use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
 use crate::elf::extract_bit;
 use crate::elf::extract_bits;
+use crate::relaxation::RelocationModifier;
 use crate::utils::or_from_slice;
 use leb128;
 use std::io::Cursor;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelaxationKind {
+    /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
+    NoOp,
+}
+
+impl RelaxationKind {
+    pub fn apply(self, _section_bytes: &mut [u8], _offset_in_section: &mut u64, _addend: &mut i64) {
+        match self {
+            RelaxationKind::NoOp => {}
+        }
+    }
+
+    #[must_use]
+    pub fn next_modifier(&self) -> RelocationModifier {
+        RelocationModifier::Normal
+    }
+}
 
 #[must_use]
 pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {

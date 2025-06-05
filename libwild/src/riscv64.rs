@@ -1,11 +1,15 @@
+use crate::arch::Arch;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
 use crate::error::Result;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCVInstruction;
+use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::riscv64_rel_type_to_string;
+use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
+use linker_utils::riscv64::RelaxationKind;
 
 pub(crate) struct RISCV64;
 
@@ -73,7 +77,10 @@ impl crate::arch::Arch for RISCV64 {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Relaxation {}
+pub(crate) struct Relaxation {
+    kind: RelaxationKind,
+    rel_info: RelocationKindInfo,
+}
 
 impl crate::arch::Relaxation for Relaxation {
     #[allow(unused_variables)]
@@ -90,20 +97,52 @@ impl crate::arch::Relaxation for Relaxation {
     where
         Self: std::marker::Sized,
     {
+        let mut relocation = RISCV64::relocation_from_raw(relocation_kind).unwrap();
+        let interposable = value_flags.is_interposable();
+
+        // All relaxations below only apply to executable code, so we shouldn't attempt them if a
+        // relocation is in a non-executable section.
+        if !section_flags.contains(shf::EXECINSTR) {
+            return None;
+        }
+
+        let offset = offset_in_section as usize;
+        // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
+        // because fetching it contains potential error paths, the optimiser probably can't optimise
+        // away fetching it.
+
+        match relocation_kind {
+            object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT if !interposable => {
+                if non_zero_address {
+                    relocation.kind = RelocationKind::Relative;
+                    return Some(Relaxation {
+                        kind: RelaxationKind::NoOp,
+                        rel_info: relocation,
+                    });
+                }
+                // GNU ld replaces: 'bl 0' with 'nop'
+                // TODO
+            }
+
+            _ => (),
+        }
+
         None
     }
 
-    fn apply(&self, _section_bytes: &mut [u8], _offset_in_section: &mut u64, _addend: &mut i64) {}
+    fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64) {
+        self.kind.apply(section_bytes, offset_in_section, addend);
+    }
 
     fn rel_info(&self) -> RelocationKindInfo {
-        todo!("")
+        self.rel_info
     }
 
     fn debug_kind(&self) -> impl std::fmt::Debug {
-        todo!("")
+        &self.kind
     }
 
     fn next_modifier(&self) -> RelocationModifier {
-        todo!("")
+        self.kind.next_modifier()
     }
 }
