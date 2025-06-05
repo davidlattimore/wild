@@ -2475,6 +2475,16 @@ fn apply_relocation<A: Arch>(
                 symbol_name = layout.symbol_db.symbol_name_for_display(local_symbol_id),
             )
         });
+        tracing::trace!(
+            %value_flags,
+            %resolution_flags,
+            relaxation_kind = ?relaxation.debug_kind(),
+            ?rel_info.kind,
+            %rel_info.size,
+            value,
+            value_hex = %HexU64::new(value),
+            symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
+            "relaxation applied");
     } else {
         trace.emit(original_place, || {
             format!(
