@@ -159,17 +159,15 @@ impl RelaxationKind {
                 *offset_in_section += 15;
             }
             RelaxationKind::TlsDescToLocalExec => {
-                section_bytes[offset - 3..offset + 6].copy_from_slice(&[
+                section_bytes[offset - 3..offset + 4].copy_from_slice(&[
                     // mov {offset},%rax
-                    0x48, 0xc7, 0xc0, 0, 0, 0, 0, // xchg   %ax,%ax
-                    0x66, 0x90,
+                    0x48, 0xc7, 0xc0, 0, 0, 0, 0,
                 ]);
             }
             RelaxationKind::TlsDescToInitialExec => {
-                section_bytes[offset - 3..offset + 6].copy_from_slice(&[
+                section_bytes[offset - 3..offset + 4].copy_from_slice(&[
                     // mov {GOT}(%rip),%rax
-                    0x48, 0x8b, 0x05, 0, 0, 0, 0, // xchg   %ax,%ax
-                    0x66, 0x90,
+                    0x48, 0x8b, 0x05, 0, 0, 0, 0,
                 ]);
             }
             RelaxationKind::SkipTlsDescCall => {
@@ -190,9 +188,7 @@ impl RelaxationKind {
             | RelaxationKind::TlsGdToLocalExecLarge
             | RelaxationKind::TlsLdToLocalExec
             | RelaxationKind::TlsLdToLocalExecNoPlt
-            | RelaxationKind::TlsLdToLocalExec64
-            | RelaxationKind::TlsDescToLocalExec
-            | RelaxationKind::TlsDescToInitialExec => RelocationModifier::SkipNextRelocation,
+            | RelaxationKind::TlsLdToLocalExec64 => RelocationModifier::SkipNextRelocation,
             RelaxationKind::MovIndirectToLea
             | RelaxationKind::MovIndirectToAbsolute
             | RelaxationKind::RexMovIndirectToAbsolute
@@ -200,6 +196,8 @@ impl RelaxationKind {
             | RelaxationKind::RexCmpIndirectToAbsolute
             | RelaxationKind::CallIndirectToRelative
             | RelaxationKind::JmpIndirectToRelative
+            | RelaxationKind::TlsDescToLocalExec
+            | RelaxationKind::TlsDescToInitialExec
             | RelaxationKind::NoOp
             | RelaxationKind::SkipTlsDescCall => RelocationModifier::Normal,
         }
