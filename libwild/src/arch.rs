@@ -14,6 +14,11 @@ use object::elf::EM_X86_64;
 use std::borrow::Cow;
 use std::str::FromStr;
 
+pub(crate) enum TCBPlacement {
+    AfterTLSSegment,
+    StartOfTLSSegment,
+}
+
 pub(crate) trait Arch {
     type Relaxation: Relaxation;
 
@@ -39,6 +44,11 @@ pub(crate) trait Arch {
 
     // Some architectures use debug info relocation that depend on local symbols.
     fn local_symbols_in_debug_info() -> bool;
+
+    // Get TCB placement variant.
+    fn tcb_placement() -> TCBPlacement {
+        TCBPlacement::AfterTLSSegment
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -980,9 +980,14 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
             );
         }
         if self.output_kind.is_executable() {
-            // Convert the address to an offset relative to the TCB which is the end of the
-            // TLS segment.
-            *got_entry = address.wrapping_sub(self.tls.end);
+            // Convert the address to an offset relative to the TCB.
+            let value = match A::tcb_placement() {
+                crate::arch::TCBPlacement::AfterTLSSegment => address.wrapping_sub(self.tls.end),
+                crate::arch::TCBPlacement::StartOfTLSSegment => {
+                    address.wrapping_sub(self.tls.start)
+                }
+            };
+            *got_entry = value;
         } else {
             debug_assert_bail!(
                 *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
