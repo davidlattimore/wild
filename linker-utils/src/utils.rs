@@ -10,3 +10,10 @@ pub fn or_from_slice(dest: &mut [u8], mask_bytes: &[u8]) {
         dest[i] |= *v;
     }
 }
+
+// And `mask` slice with the `dest` slice using AND operation.
+pub fn and_from_slice(dest: &mut [u8], mask_bytes: &[u8]) {
+    for (i, v) in mask_bytes.iter().enumerate() {
+        dest[i] &= *v;
+    }
+}
