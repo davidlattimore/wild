@@ -984,7 +984,8 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
             let value = match A::tcb_placement() {
                 crate::arch::TCBPlacement::AfterTLSSegment => address.wrapping_sub(self.tls.end),
                 crate::arch::TCBPlacement::StartOfTLSSegment => {
-                    address.wrapping_sub(self.tls.start)
+                    println!("{} {}", HexU64::new(self.tls.start), HexU64::new(address));
+                    dbg!(address.wrapping_sub(self.tls.start))
                 }
             };
             *got_entry = value;

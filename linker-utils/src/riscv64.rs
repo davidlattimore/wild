@@ -380,6 +380,7 @@ impl RISCVInstruction {
                 mask |= extract_bit(extracted_value, 11) << 20;
                 mask |= extract_bits(extracted_value, 1, 11) << 21;
                 mask |= extract_bit(extracted_value, 20) << 31;
+                println!("{mask:x}");
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::CBType => {
