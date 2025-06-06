@@ -277,11 +277,11 @@ struct CustomSectionIds {
     nonalloc: Vec<OutputSectionId>,
 }
 
-impl OutputSections<'_> {
+impl<'data> OutputSections<'data> {
     /// Returns an iterator that emits all section IDs and their info.
     pub(crate) fn ids_with_info(
         &self,
-    ) -> impl Iterator<Item = (OutputSectionId, &SectionOutputInfo)> {
+    ) -> impl Iterator<Item = (OutputSectionId, &SectionOutputInfo<'data>)> {
         self.section_infos.iter()
     }
 

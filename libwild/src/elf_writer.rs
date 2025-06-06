@@ -3629,8 +3629,8 @@ struct DynamicEntriesWriter<'out> {
     out: &'out mut [DynamicEntry],
 }
 
-impl DynamicEntriesWriter<'_> {
-    fn new(buffer: &mut [u8]) -> DynamicEntriesWriter {
+impl<'out> DynamicEntriesWriter<'out> {
+    fn new(buffer: &'out mut [u8]) -> DynamicEntriesWriter<'out> {
         DynamicEntriesWriter {
             out: slice_from_all_bytes_mut(buffer),
         }

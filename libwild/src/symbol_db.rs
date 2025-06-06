@@ -543,7 +543,7 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions[symbol_id.as_usize()] = new_definition;
     }
 
-    pub(crate) fn file(&self, file_id: FileId) -> ParsedInput {
+    pub(crate) fn file<'db>(&'db self, file_id: FileId) -> ParsedInput<'db> {
         match &self.groups[file_id.group()] {
             Group::Prelude(prelude) => ParsedInput::Prelude(prelude),
             Group::Objects(parsed_input_objects) => {
@@ -593,7 +593,7 @@ impl<'data> SymbolDb<'data> {
 
     pub(crate) fn all_unversioned_symbols(
         &self,
-    ) -> impl Iterator<Item = (&PreHashed<UnversionedSymbolName>, &SymbolId)> {
+    ) -> impl Iterator<Item = (&PreHashed<UnversionedSymbolName<'data>>, &SymbolId)> {
         self.buckets.iter().flat_map(|b| b.name_to_id.iter())
     }
 

@@ -1138,9 +1138,9 @@ impl CommonGroupState<'_> {
     }
 }
 
-fn create_global_address_emitter(
-    symbol_resolution_flags: &[ResolutionFlags],
-) -> GlobalAddressEmitter {
+fn create_global_address_emitter<'state>(
+    symbol_resolution_flags: &'state [ResolutionFlags],
+) -> GlobalAddressEmitter<'state> {
     GlobalAddressEmitter {
         symbol_resolution_flags,
     }
@@ -1502,7 +1502,7 @@ impl WorkItem {
 }
 
 impl<'data> Layout<'data> {
-    pub(crate) fn prelude(&self) -> &PreludeLayout {
+    pub(crate) fn prelude(&self) -> &PreludeLayout<'data> {
         let Some(FileLayout::Prelude(i)) = self.group_layouts.first().and_then(|g| g.files.first())
         else {
             panic!("Prelude layout not found at expected offset");
@@ -1652,7 +1652,7 @@ impl<'data> Layout<'data> {
         self.symbol_resolution_flags[symbol_id.as_usize()]
     }
 
-    pub(crate) fn file_layout(&self, file_id: FileId) -> &FileLayout {
+    pub(crate) fn file_layout(&self, file_id: FileId) -> &FileLayout<'data> {
         let group_layout = &self.group_layouts[file_id.group()];
         &group_layout.files[file_id.file()]
     }
@@ -1672,7 +1672,7 @@ impl<'data> Layout<'data> {
             > 0
     }
 
-    pub(crate) fn info_inputs(&self) -> InfoInputs {
+    pub(crate) fn info_inputs<'layout>(&'layout self) -> InfoInputs<'layout> {
         InfoInputs {
             section_part_layouts: &self.section_part_layouts,
             non_addressable_counts: &self.non_addressable_counts,

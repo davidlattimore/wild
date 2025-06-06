@@ -397,7 +397,7 @@ mod tests {
     use crate::args::InputSpec;
     use itertools::assert_equal;
 
-    fn parse_script(text: &str) -> Result<LinkerScript> {
+    fn parse_script<'a>(text: &'a str) -> Result<LinkerScript<'a>> {
         LinkerScript::parse(text.as_bytes(), Path::new("test-linker-script.txt"))
     }
 

@@ -394,7 +394,7 @@ impl<'data, A: Arch> RelaxationGroup<'data, A> {
         }
     }
 
-    fn matches_if_ok(&self) -> Option<Vec<RelaxationMatch<A>>> {
+    fn matches_if_ok(&self) -> Option<Vec<RelaxationMatch<'data, A>>> {
         self.match_results
             .iter()
             .map(|r| match r {
@@ -405,7 +405,7 @@ impl<'data, A: Arch> RelaxationGroup<'data, A> {
             .ok()
     }
 
-    fn matches_skipping_nops(&self) -> Vec<&RelaxationMatchResult<A>> {
+    fn matches_skipping_nops(&self) -> Vec<&RelaxationMatchResult<'data, A>> {
         self.match_results
             .iter()
             .filter(|result| !matches!(result, RelaxationMatchResult::Matched(m) if m.relaxation.relaxation_kind.is_replace_with_no_op()))
