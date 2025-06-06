@@ -187,7 +187,7 @@ impl<'data> VersionScript<'data> {
             .count() as u16
     }
 
-    pub(crate) fn version_iter(&self) -> impl Iterator<Item = &Version> {
+    pub(crate) fn version_iter(&self) -> impl Iterator<Item = &Version<'data>> {
         self.versions.iter()
     }
 

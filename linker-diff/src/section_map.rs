@@ -225,7 +225,10 @@ impl<'data> IndexedLayout<'data> {
         Ok(())
     }
 
-    pub(crate) fn get_section_info(&self, section_id: InputSectionId) -> Option<&SectionInfo> {
+    pub(crate) fn get_section_info(
+        &self,
+        section_id: InputSectionId,
+    ) -> Option<&SectionInfo<'data>> {
         self.files[section_id.file_index].sections[section_id.section_index.0].as_ref()
     }
 
@@ -242,7 +245,10 @@ impl<'data> IndexedLayout<'data> {
         &self.files[section_id.file_index]
     }
 
-    pub(crate) fn input_filename_for_section(&self, section_id: InputSectionId) -> &FileIdentifier {
+    pub(crate) fn input_filename_for_section(
+        &self,
+        section_id: InputSectionId,
+    ) -> &FileIdentifier<'data> {
         &self.input_file_for_section(section_id).identifier
     }
 
@@ -351,7 +357,7 @@ pub(crate) struct InputSectionId {
     pub(crate) section_index: object::SectionIndex,
 }
 
-impl SectionInfo<'_> {
+impl<'data> SectionInfo<'data> {
     pub(crate) fn index(&self) -> object::SectionIndex {
         self.section_id.section_index
     }
@@ -360,7 +366,7 @@ impl SectionInfo<'_> {
         &self,
         offset: u64,
         layout: &IndexedLayout,
-    ) -> Result<FunctionInfo> {
+    ) -> Result<FunctionInfo<'data>> {
         if self.functions.is_empty() {
             bail!(
                 "Cannot diff section with no functions: {}",

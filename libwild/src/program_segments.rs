@@ -154,7 +154,10 @@ impl ProgramSegmentId {
         )
     }
 
-    pub(crate) fn display(self, program_segments: &ProgramSegments) -> ProgramSegmentDisplay {
+    pub(crate) fn display<'a>(
+        self,
+        program_segments: &'a ProgramSegments,
+    ) -> ProgramSegmentDisplay<'a> {
         ProgramSegmentDisplay {
             id: self,
             program_segments,
