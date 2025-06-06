@@ -1,5 +1,5 @@
 use crate::arch::Arch;
-use crate::arch::TCBPlacement::StartOfTLSSegment;
+use crate::arch::TCBPlacement;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
 use crate::error::Result;
@@ -76,8 +76,8 @@ impl crate::arch::Arch for RISCV64 {
         true
     }
 
-    fn tcb_placement() -> crate::arch::TCBPlacement {
-        StartOfTLSSegment
+    fn tcb_placement() -> TCBPlacement {
+        TCBPlacement::AfterTP
     }
 }
 

@@ -5,6 +5,7 @@ use self::elf::get_page_mask;
 use crate::alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
+use crate::arch::TCBPlacement;
 use crate::args::Args;
 use crate::args::BuildIdOption;
 use crate::args::FileWriteMode;
@@ -982,11 +983,8 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         if self.output_kind.is_executable() {
             // Convert the address to an offset relative to the TCB.
             let value = match A::tcb_placement() {
-                crate::arch::TCBPlacement::AfterTLSSegment => address.wrapping_sub(self.tls.end),
-                crate::arch::TCBPlacement::StartOfTLSSegment => {
-                    println!("{} {}", HexU64::new(self.tls.start), HexU64::new(address));
-                    dbg!(address.wrapping_sub(self.tls.start))
-                }
+                TCBPlacement::BeforeTP => address.wrapping_sub(self.tls.end),
+                TCBPlacement::AfterTP => address.wrapping_sub(self.tls.start),
             };
             *got_entry = value;
         } else {

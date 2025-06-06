@@ -359,7 +359,7 @@ impl RISCVInstruction {
                 // For instance, -10i32 (0xfffffff6) should become 0x0 (HI20) and 0xff6 (LO12).
                 let mask = (extract_bits(extracted_value.wrapping_add(0x800), 12, 32) as u32) << 12;
                 // mask low 12 bits
-                and_from_slice(dest, 0xfffu32.to_le_bytes().as_slice());
+                and_from_slice(dest, 0b1111_1111_1111u32.to_le_bytes().as_slice());
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::IType => {
