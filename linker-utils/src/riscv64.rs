@@ -6,6 +6,7 @@ use crate::elf::RelocationSize;
 use crate::elf::extract_bit;
 use crate::elf::extract_bits;
 use crate::relaxation::RelocationModifier;
+use crate::utils::and_from_slice;
 use crate::utils::or_from_slice;
 use leb128;
 use std::io::Cursor;
@@ -357,15 +358,24 @@ impl RISCVInstruction {
                 // value is a small negative value.
                 // For instance, -10i32 (0xfffffff6) should become 0x0 (HI20) and 0xff6 (LO12).
                 let mask = (extract_bits(extracted_value.wrapping_add(0x800), 12, 32) as u32) << 12;
+                // mask low 12 bits
+                and_from_slice(dest, 0xfffu32.to_le_bytes().as_slice());
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::IType => {
                 let mask = extracted_value << 20;
+                and_from_slice(dest, 0b1111_1111_1111_1111_1111u32.to_le_bytes().as_slice());
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::SType => {
                 let mut mask = extract_bits(extracted_value, 0, 5) << 7;
                 mask |= extract_bits(extracted_value, 5, 12) << 25;
+                and_from_slice(
+                    dest,
+                    0b0000_0001_1111_1111_1111_0000_0111_1111u32
+                        .to_le_bytes()
+                        .as_slice(),
+                );
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::BType => {
@@ -373,6 +383,12 @@ impl RISCVInstruction {
                 mask |= extract_bits(extracted_value, 1, 5) << 8;
                 mask |= extract_bits(extracted_value, 5, 11) << 25;
                 mask |= extract_bit(extracted_value, 12) << 31;
+                and_from_slice(
+                    dest,
+                    0b0000_0001_1111_1111_1111_0000_0111_1111u32
+                        .to_le_bytes()
+                        .as_slice(),
+                );
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::JType => {
@@ -380,7 +396,7 @@ impl RISCVInstruction {
                 mask |= extract_bit(extracted_value, 11) << 20;
                 mask |= extract_bits(extracted_value, 1, 11) << 21;
                 mask |= extract_bit(extracted_value, 20) << 31;
-                println!("{mask:x}");
+                and_from_slice(dest, 0b1111_1111_1111u32.to_le_bytes().as_slice());
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::CBType => {
@@ -391,6 +407,7 @@ impl RISCVInstruction {
                 mask |= extract_bits(extracted_value, 3, 5) << 10;
                 mask |= extract_bit(extracted_value, 8) << 12;
                 // The compressed instruction only takes 2 bytes.
+                and_from_slice(dest, 0b1110_0011_1000_0011u16.to_le_bytes().as_slice());
                 or_from_slice(dest, &mask.to_le_bytes()[..2]);
             }
             RISCVInstruction::CJType => {
@@ -403,6 +420,7 @@ impl RISCVInstruction {
                 mask |= extract_bit(extracted_value, 4) << 11;
                 mask |= extract_bit(extracted_value, 11) << 12;
                 // The compressed instruction only takes 2 bytes.
+                and_from_slice(dest, 0b1110_0000_0000_0011u16.to_le_bytes().as_slice());
                 or_from_slice(dest, &mask.to_le_bytes()[..2]);
             }
             RISCVInstruction::ULEB128 => {
