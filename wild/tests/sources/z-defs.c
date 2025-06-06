@@ -1,4 +1,4 @@
-//#LinkArgs:-Bshareable -z defs
+//#LinkArgs:-Bshareable -z defs -z now
 //#Mode:dynamic
 //#ExpectError:foo
 
