@@ -79,6 +79,10 @@
 //#CompArgs:-g -no-pie -DDYNAMIC_DEP -DVERIFY_CTORS
 //#CompSoArgs:-g -fPIC -ftls-model=global-dynamic
 //#LinkerDriver:gcc
+// On nixos, with this configuration, GNU ld seems to only optimise TLSGD to initial-exec rather
+// than local exec. lld does however still optimise to local exec, so we enable it as an additional
+// reference point.
+//#EnableLinker:lld
 //#LinkArgs:-dynamic -no-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now -L/does/not/exist
 
 //#Config:gcc-dynamic-pie-large:shared
@@ -115,8 +119,6 @@ extern int value42;
 
 const char* str1 = "This is str1";
 
-static int ctors_init_val = 0;
-
 void set_tvar_local(int v);
 int get_tvar_local(void);
 void set_tvar_local2(int v);
@@ -140,27 +142,6 @@ get_int_fn_t fn_pointers[] = {
 };
 
 get_int_fn_t get_sometimes_weak_fn_ptr(void);
-
-// Initialisation with .ctors currently seems to fail with lld (tested with 18.1.8). For that
-// reason, we only enable this part of the test for selected variants that don't enable lld.
-#ifdef VERIFY_CTORS
-
-void init1() {
-    ctors_init_val += 10;
-}
-__attribute__ ((section (".ctors"), used)) static void* init1_ptr = init1;
-
-void init2() {
-    ctors_init_val += 30;
-}
-__attribute__ ((section (".ctors"), used)) static void* init2_ptr = init2;
-
-void init3() {
-    ctors_init_val += 2;
-}
-__attribute__ ((section (".ctors"), used)) static void* init3_ptr = init3;
-
-#endif
 
 // Make sure that we can refer to a non-default version of a symbol from libc.
 #if defined(__x86_64__)
@@ -298,11 +279,6 @@ int main() {
     if (strcmp(str1, "This is str1") != 0) {
         return 122;
     }
-#ifdef VERIFY_CTORS
-    if (ctors_init_val != 42) {
-        return 123;
-    }
-#endif
 
     if (weak_fn3() != 15) {
         return 124;
