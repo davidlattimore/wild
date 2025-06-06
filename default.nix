@@ -180,15 +180,15 @@ rustPlatform.buildRustPackage (finalAttrs: {
       in
       lib.optionalAttrs stdenv.hostPlatform.isLinux {
         adapterGcc = helloTest "adapter-gcc" (
-          hello.override (_: {
+          hello.override {
             stdenv = useWildLinker gccStdenv;
-          })
+          }
         );
 
         adapterClang = helloTest "adapter-clang" (
           hello.override {
             stdenv = useWildLinker clangStdenv;
-          })
+          }
         );
       };
   };
