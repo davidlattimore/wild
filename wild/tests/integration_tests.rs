@@ -2134,14 +2134,16 @@ fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Re
 fn setup_wild_ld_symlink() -> Result {
     let wild = wild_path();
     let wild_ld_path = wild.with_file_name("ld");
-    if !wild_ld_path.exists() {
-        std::os::unix::fs::symlink(wild, &wild_ld_path).with_context(|| {
-            format!(
-                "Failed to symlink `{}` to `{}`",
-                wild_ld_path.display(),
-                wild.display()
-            )
-        })?;
+    if let Err(error) = std::os::unix::fs::symlink(wild, &wild_ld_path) {
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            Err(error).with_context(|| {
+                format!(
+                    "Failed to symlink `{}` to `{}`",
+                    wild_ld_path.display(),
+                    wild.display()
+                )
+            })?
+        }
     }
     Ok(())
 }
