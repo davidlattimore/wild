@@ -52,6 +52,7 @@ use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use std::num::NonZeroU32;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::thread::Thread;
@@ -1063,6 +1064,8 @@ bitflags! {
     }
 }
 
+pub(crate) struct AtomicValueFlags(AtomicU8);
+
 impl ValueFlags {
     /// Returns self merged with `other` which should be the flags for the local (possibly
     /// non-canonical symbol definition). Sometimes an object will reference a symbol that it
@@ -1107,6 +1110,24 @@ impl ValueFlags {
     #[must_use]
     pub(crate) fn is_interposable(self) -> bool {
         !self.contains(ValueFlags::NON_INTERPOSABLE)
+    }
+
+    pub(crate) fn as_atomic(self) -> AtomicValueFlags {
+        AtomicValueFlags(AtomicU8::new(self.0.bits()))
+    }
+}
+
+impl AtomicValueFlags {
+    pub(crate) fn get(&self) -> ValueFlags {
+        ValueFlags::from_bits_retain(self.0.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn or_assign(&self, flags: ValueFlags) {
+        self.0.fetch_or(flags.bits(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn into_non_atomic(self) -> ValueFlags {
+        ValueFlags::from_bits_retain(self.0.into_inner())
     }
 }
 
