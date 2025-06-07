@@ -1,6 +1,6 @@
-// #LinkArgs:-Bshareable -z defs
-// #Static:false
-// #ExpectError:foo
+//#LinkArgs:-Bshareable -z defs
+//#Static:false
+//#ExpectError:foo
 
 int foo(void);
 

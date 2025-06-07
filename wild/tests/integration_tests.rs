@@ -2371,7 +2371,8 @@ fn integration_test(
         "shared.c",
         "duplicate_strong_symbols.c",
         "preinit-array.c",
-        "exception.cc"
+        "exception.cc",
+        "z-defs.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
