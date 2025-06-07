@@ -63,28 +63,28 @@ let
     };
   };
 
-  cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+  cargoToml = builtins.fromTOML (builtins.readFile ../Cargo.toml);
 
   fs = lib.fileset;
 
   # Only track files checked into git, and then specify files to ignore that
   # are tracked in git too.
   # This can reduce rebuilds with Nix.
-  files = fs.difference (fs.gitTracked ./.) (
+  files = fs.difference (fs.gitTracked ../.) (
     fs.unions [
-      ./.gitignore
-      ./flake.lock
-      ./docker
-      ./test-config.toml.sample
-      ./test-config-ci.toml
-      ./.dockerignore
-      ./cackle.toml
-      ./dist-workspace.toml
-      ./rustfmt.toml
-      ./LICENSE-MIT
-      ./LICENSE-APACHE
-      (fs.fileFilter (file: file.hasExt "md") ./.)
-      (fs.fileFilter (file: file.hasExt "nix") ./.)
+      ../.gitignore
+      ../flake.lock
+      ../docker
+      ../test-config.toml.sample
+      ../test-config-ci.toml
+      ../.dockerignore
+      ../cackle.toml
+      ../dist-workspace.toml
+      ../rustfmt.toml
+      ../LICENSE-MIT
+      ../LICENSE-APACHE
+      (fs.fileFilter (file: file.hasExt "md") ../.)
+      (fs.fileFilter (file: file.hasExt "nix") ../.)
     ]
   );
 in
@@ -95,7 +95,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   pname = "wild";
 
   src = fs.toSource {
-    root = ./.;
+    root = ../.;
     fileset = files;
   };
 
@@ -108,7 +108,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   useFetchCargoVendor = true;
   cargoLock = {
-    lockFile = ./Cargo.lock;
+    lockFile = ../Cargo.lock;
     allowBuiltinFetchGit = true;
   };
 

@@ -43,26 +43,11 @@
           inherit (common.${system}) pkgs rustPlatform;
         in
         {
-          default = pkgs.callPackage ./. { inherit rustPlatform; };
+          default = pkgs.callPackage ./nix { inherit rustPlatform; };
         }
       );
 
-      overlays.default =
-        final: prev:
-        let
-          rustToolchain = (rust-overlay.lib.mkRustBin { } final).beta.latest.minimal;
-          rustPlatform = final.makeRustPlatform {
-            rustc = rustToolchain;
-            cargo = rustToolchain;
-          };
-        in
-        {
-          wild = final.callPackage ./. { inherit rustPlatform; };
-          useWildLinker = import ./adapter.nix {
-            pkgs = final;
-            lib = final.lib;
-          };
-        };
+      overlays.default = import ./nix/overlay.nix;
 
       formatter = forAllSystems (system: common.${system}.pkgs.nixfmt-tree);
 
@@ -74,11 +59,11 @@
         {
           wild = self.packages.${system}.default.overrideAttrs { doCheck = true; };
         }
-        // ((pkgs.callPackage ./. { inherit rustPlatform; }).tests)
+        // ((pkgs.callPackage ./nix { inherit rustPlatform; }).tests)
       );
 
       devShells = forAllSystems (system: {
-        default = common.${system}.pkgs.callPackage ./shell.nix { };
+        default = common.${system}.pkgs.callPackage ./nix/shell.nix { };
       });
     };
 }
