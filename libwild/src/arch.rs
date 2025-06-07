@@ -14,6 +14,15 @@ use object::elf::EM_X86_64;
 use std::borrow::Cow;
 use std::str::FromStr;
 
+// Based on the following article: https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
+// There are 2 variants where are TCB (thread control block) placed relative to the thread pointer ($tp).
+pub(crate) enum TCBPlacement {
+    // TP is placed at the end of TCB.
+    BeforeTP,
+    // TP is placed at the beginning of TCB.
+    AfterTP,
+}
+
 pub(crate) trait Arch {
     type Relaxation: Relaxation;
 
@@ -39,6 +48,9 @@ pub(crate) trait Arch {
 
     // Some architectures use debug info relocation that depend on local symbols.
     fn local_symbols_in_debug_info() -> bool;
+
+    // Get TCB placement variant.
+    fn tcb_placement() -> TCBPlacement;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
