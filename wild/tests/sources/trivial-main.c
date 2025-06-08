@@ -3,6 +3,7 @@
 //#LinkArgs:-Wl,-z,now
 //#DiffIgnore:section.rodata
 //#DiffIgnore:section.data
+//#DiffIgnore:section.data.alignment
 
 //#Config:gcc:default
 
