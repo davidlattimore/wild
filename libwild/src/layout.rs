@@ -3760,7 +3760,8 @@ impl<'data> ObjectLayoutState<'data> {
 
         if resources.symbol_db.args.output_kind() == OutputKind::SharedObject
             && (!resources.symbol_db.args.exclude_libs || !self.input.has_archive_semantics())
-            || resources.symbol_db.args.explicitly_export_dynamic
+            || resources.symbol_db.args.needs_dynsym()
+                && resources.symbol_db.args.explicitly_export_dynamic
         {
             self.load_non_hidden_symbols::<A>(common, resources, queue)?;
         }
