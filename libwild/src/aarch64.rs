@@ -154,18 +154,19 @@ impl crate::arch::Relaxation for Relaxation {
 
         match relocation_kind {
             object::elf::R_AARCH64_CALL26 | object::elf::R_AARCH64_JUMP26 if !interposable => {
-                if non_zero_address {
+                return if non_zero_address {
                     relocation.kind = RelocationKind::Relative;
-                    return Some(Relaxation {
+                    Some(Relaxation {
                         kind: RelaxationKind::NoOp,
                         rel_info: relocation,
-                    });
-                }
-                // GNU ld replaces: 'bl 0' with 'nop'
-                return Some(Relaxation {
-                    kind: RelaxationKind::ReplaceWithNop,
-                    rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
-                });
+                    })
+                } else {
+                    // GNU ld replaces: 'bl 0' with 'nop'
+                    Some(Relaxation {
+                        kind: RelaxationKind::ReplaceWithNop,
+                        rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
+                    })
+                };
             }
 
             object::elf::R_AARCH64_TLSDESC_ADR_PAGE21

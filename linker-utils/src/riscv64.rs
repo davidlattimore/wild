@@ -15,12 +15,22 @@ use std::io::Cursor;
 pub enum RelaxationKind {
     /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
     NoOp,
+
+    /// Replace with nop
+    ReplaceWithNop,
 }
 
 impl RelaxationKind {
-    pub fn apply(self, _section_bytes: &mut [u8], _offset_in_section: &mut u64, _addend: &mut i64) {
+    pub fn apply(self, section_bytes: &mut [u8], offset_in_section: &mut u64, _addend: &mut i64) {
+        let offset = *offset_in_section as usize;
         match self {
             RelaxationKind::NoOp => {}
+            RelaxationKind::ReplaceWithNop => {
+                section_bytes[offset..offset + 4].copy_from_slice(&[
+                    0x01, 0x0, // nop
+                    0x01, 0x0, // nop
+                ]);
+            }
         }
     }
 

@@ -11,6 +11,7 @@ use linker_utils::elf::riscv64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::riscv64::RelaxationKind;
+use linker_utils::riscv64::relocation_type_from_raw;
 
 pub(crate) struct RISCV64;
 
@@ -118,15 +119,19 @@ impl crate::arch::Relaxation for Relaxation {
 
         match relocation_kind {
             object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT if !interposable => {
-                if non_zero_address {
+                return if non_zero_address {
                     relocation.kind = RelocationKind::Relative;
-                    return Some(Relaxation {
+                    Some(Relaxation {
                         kind: RelaxationKind::NoOp,
                         rel_info: relocation,
-                    });
-                }
-                // GNU ld replaces: 'bl 0' with 'nop'
-                // TODO
+                    })
+                } else {
+                    // GNU ld replaces: 'bl 0' with 'nop'
+                    Some(Relaxation {
+                        kind: RelaxationKind::ReplaceWithNop,
+                        rel_info: relocation_type_from_raw(object::elf::R_RISCV_NONE).unwrap(),
+                    })
+                };
             }
 
             _ => (),
