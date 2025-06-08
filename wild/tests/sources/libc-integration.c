@@ -11,8 +11,6 @@
 //#CompArgs:-g -ftls-model=global-dynamic
 //#RequiresGlibc:true
 //#Cross: false
-// TODO: There are multiple variants of the test-case that fail with the BFD linker on RISC-V arch.
-//#Arch: x86_64, aarch64
 
 //#AbstractConfig:shared:default
 //#Shared:libc-integration-0.c,libc-integration-0b.c
