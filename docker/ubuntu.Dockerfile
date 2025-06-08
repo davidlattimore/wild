@@ -7,7 +7,11 @@ FROM ubuntu:25.04 AS chef
 RUN apt-get update && \
     apt-get install -y \
         clang \
+        llvm \
         lld \
+        mold \
+        gdb \
+        valgrind \
         less \
         qemu-user \
         gcc-aarch64-linux-gnu \
@@ -17,7 +21,9 @@ RUN apt-get update && \
         g++-riscv64-linux-gnu \
         binutils-riscv64-linux-gnu \
         build-essential \
+        elfutils \
         rustup \
+        vim \
         && \
     rm -rf /var/lib/apt/lists/*
 RUN rustup toolchain install nightly && \
