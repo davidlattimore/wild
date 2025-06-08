@@ -151,7 +151,7 @@ fn base_dir() -> &'static Path {
 }
 
 fn build_dir() -> PathBuf {
-    base_dir().join("tests/build")
+    std::env::var("WILD_TEST_BUILD_DIR").map_or(base_dir().join("tests/build"), PathBuf::from)
 }
 
 struct ProgramInputs {
