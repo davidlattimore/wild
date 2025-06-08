@@ -276,7 +276,7 @@ impl Output {
     }
 
     #[tracing::instrument(skip_all, name = "Write output file")]
-    pub fn write<'data, A: Arch>(&mut self, layout: &Layout<'data>) -> Result {
+    pub fn write<'data, A: Arch>(&self, layout: &Layout<'data>) -> Result {
         if layout.args().write_layout {
             write_layout(layout)?;
         }
@@ -309,7 +309,7 @@ impl Output {
     }
 
     #[tracing::instrument(skip_all, name = "Create output file")]
-    fn create_file_non_lazily(&mut self, file_size: u64) -> Result<SizedOutput> {
+    fn create_file_non_lazily(&self, file_size: u64) -> Result<SizedOutput> {
         SizedOutput::new(
             self.path.clone(),
             file_size,
