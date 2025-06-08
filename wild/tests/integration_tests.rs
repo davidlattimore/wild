@@ -2418,18 +2418,10 @@ fn integration_test(
 }
 
 fn read_test_config() -> Result<TestConfig> {
-    let config_default_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("test-config.toml");
+    let config_default_path = base_dir().parent().unwrap().join("test-config.toml");
 
     let config_path = std::env::var("WILD_TEST_CONFIG")
-        .map(|config_path| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap()
-                .join(config_path)
-        })
+        .map(|config_path| base_dir().parent().unwrap().join(config_path))
         .unwrap_or_else(|_| config_default_path.clone());
 
     let mut config = if config_path.exists() {
