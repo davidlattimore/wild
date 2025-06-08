@@ -15,6 +15,7 @@
 //#Compiler:clang
 //#LinkArgs:-static
 //#DiffIgnore:section.rela.plt.link
+//#DiffIgnore:section.sdata
 
 //#Config:clang:default
 //#Compiler: clang
