@@ -271,9 +271,6 @@ impl Config {
                     "file-header.flags",
                     // #700
                     "section.riscv.attributes",
-                    // #732
-                    ".dynamic.DT_RELA",
-                    ".dynamic.DT_RELAENT",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
