@@ -198,5 +198,11 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Restore Nix Store
+        uses: nix-community/cache-nix-action/restore@v6
+        id: cache
+        with:
+          primary-key: ${{ runner.os }}-${{ hashFiles( 'flake.lock' )}}
+      
       - name: Run ${{ matrix.check }}
         run: nix build .#checks.x86_64-linux.${{ matrix.check }} -L --show-trace
