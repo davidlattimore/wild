@@ -346,6 +346,9 @@ impl RISCVInstruction {
     // Encode computed relocation value and store it based on the encoding of an instruction.
     // A handy page where one can easily find instruction encoding:
     // https://msyksphinz-self.github.io/riscv-isadoc/html/index.html.
+
+    // During the build of the static libc.a, there are various places where the immediate operand
+    // of an instruction is already filled up. Thus, we zero the bits before a relocation value is applied.
     pub fn write_to_value(self, extracted_value: u64, _negative: bool, dest: &mut [u8]) {
         match self {
             RISCVInstruction::UIType => {
