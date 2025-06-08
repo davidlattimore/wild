@@ -115,7 +115,7 @@ use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 
 #[tracing::instrument(skip_all, name = "Layout")]
-pub fn compute<'data, 'symbol_db, A: Arch>(
+pub fn compute<'data, A: Arch>(
     symbol_db: SymbolDb<'data>,
     resolved: ResolutionOutputs<'data>,
     mut output_sections: OutputSections<'data>,

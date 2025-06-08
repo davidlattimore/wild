@@ -933,7 +933,7 @@ pub(crate) fn is_mapping_symbol_name(name: &[u8]) -> bool {
 }
 
 #[tracing::instrument(skip_all, name = "Read symbols")]
-fn read_symbols<'data, 'out>(
+fn read_symbols<'data>(
     groups: &[Group<'data>],
     version_script: &VersionScript,
     symbols_out_by_group: &mut [SymbolInfoWriter],

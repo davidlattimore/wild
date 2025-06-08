@@ -112,7 +112,7 @@ pub fn resolve_symbols_and_sections<'data>(
 }
 
 #[tracing::instrument(skip_all, name = "Resolve symbols")]
-pub(crate) fn resolve_symbols_in_files<'data>(
+fn resolve_symbols_in_files<'data>(
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result<(Vec<ResolvedGroup<'data>>, SegQueue<UndefinedSymbol<'data>>)> {
     let mut symbol_definitions = symbol_db.take_definitions();
@@ -302,7 +302,7 @@ fn resolve_group<'data, 'definitions>(
 fn resolve_sections<'data>(
     groups: &mut [ResolvedGroup<'data>],
     herd: &'data bumpalo_herd::Herd,
-    symbol_db: &mut SymbolDb<'data>,
+    symbol_db: &SymbolDb<'data>,
     layout_rules: &LayoutRules<'data>,
 ) -> Result {
     let loaded_metrics: LoadedMetrics = Default::default();
