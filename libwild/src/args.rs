@@ -27,7 +27,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
+use std::sync::atomic::Ordering;
 
 pub struct Args {
     pub(crate) arch: Architecture,
@@ -88,7 +90,7 @@ pub struct Args {
     pub(crate) relax: bool,
 
     output_kind: Option<OutputKind>,
-    is_dynamic_executable: bool,
+    pub(crate) is_dynamic_executable: AtomicBool,
     relocation_model: RelocationModel,
 }
 
@@ -230,7 +232,7 @@ impl Default for Args {
             lib_search_path: Vec::new(),
             inputs: Vec::new(),
             output: Arc::from(Path::new("a.out")),
-            is_dynamic_executable: false,
+            is_dynamic_executable: AtomicBool::new(false),
             dynamic_linker: None,
             output_kind: None,
             time_phases: false,
@@ -415,10 +417,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                 .map(|a| Arc::from(Path::new(a.as_ref())))
                 .context("Missing argument to -o")?;
         } else if long_arg_eq("dynamic-linker") {
-            args.is_dynamic_executable = true;
+            args.is_dynamic_executable.store(true, Ordering::Relaxed);
             args.dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
         } else if let Some(rest) = long_arg_split_prefix("dynamic-linker=") {
-            args.is_dynamic_executable = true;
+            args.is_dynamic_executable.store(true, Ordering::Relaxed);
             args.dynamic_linker = Some(Box::from(Path::new(rest)));
         } else if long_arg_eq("no-dynamic-linker") {
             args.dynamic_linker = None;
@@ -794,7 +796,7 @@ impl Args {
 
     pub(crate) fn output_kind(&self) -> OutputKind {
         self.output_kind.unwrap_or({
-            if self.is_dynamic_executable {
+            if self.is_dynamic_executable.load(Ordering::Relaxed) {
                 OutputKind::DynamicExecutable(self.relocation_model)
             } else {
                 OutputKind::StaticExecutable(self.relocation_model)
