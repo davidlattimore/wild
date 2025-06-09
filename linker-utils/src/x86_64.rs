@@ -163,6 +163,7 @@ impl RelaxationKind {
                     // mov {offset},%rax
                     0x48, 0xc7, 0xc0, 0, 0, 0, 0,
                 ]);
+                *addend = 0;
             }
             RelaxationKind::TlsDescToInitialExec => {
                 section_bytes[offset - 3..offset + 4].copy_from_slice(&[
