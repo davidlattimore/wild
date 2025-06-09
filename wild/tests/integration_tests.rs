@@ -2373,6 +2373,7 @@ fn integration_test(
         "preinit-array.c",
         "exception.cc",
         "z-defs.c"
+        "z-undefs.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
