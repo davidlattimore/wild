@@ -90,7 +90,7 @@ impl crate::arch::Arch for AArch64 {
     }
 
     fn tcb_placement() -> TCBPlacement {
-        // TODO: double-check
+        // TODO: #864
         TCBPlacement::BeforeTP
     }
 }
