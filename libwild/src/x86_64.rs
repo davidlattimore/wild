@@ -308,11 +308,8 @@ impl crate::arch::Relaxation for Relaxation {
                     }
                 }
             }
-            // TODO: It looks to me like we should be able to optimise to local-exec for any
-            // executable, not just static executables. However, currently the test fails if we try
-            // this. Investigate why.
             object::elf::R_X86_64_GOTPC32_TLSDESC
-                if !interposable && output_kind.is_static_executable() =>
+                if !interposable && output_kind.is_executable() =>
             {
                 // We assume that the instruction that this relocation applies to is a REX-prefixed
                 // LEA instruction.
