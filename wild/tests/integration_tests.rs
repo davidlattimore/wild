@@ -2193,7 +2193,7 @@ fn available_linkers() -> Result<Vec<Linker>> {
         Linker::ThirdParty(ThirdPartyLinker {
             name: "ld",
             gcc_name: "bfd",
-            path: find_bin(&["ld"])?,
+            path: find_bin(&["ld.bfd", "ld"])?,
             cross_paths: find_cross_paths("ld"),
             enabled_by_default: true,
         }),
