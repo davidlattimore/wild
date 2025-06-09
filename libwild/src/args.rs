@@ -438,6 +438,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                 "defs" => args.no_undefined = true,
                 "undefs" => args.no_undefined = false,
                 "muldefs" => args.allow_multiple_definitions = true,
+                "undefs" => args.no_undefined = false,
                 _ => {
                     warn_unsupported(&format!("-z {arg}"))?;
                     // TODO: Handle these

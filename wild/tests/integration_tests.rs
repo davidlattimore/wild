@@ -2533,11 +2533,11 @@ fn integration_test(
         "linker-plugin-lto.c",
         "preinit-array.c",
         "exception.cc",
-        "z-defs.c",
-        "z-undefs.c"
-        "export-dynamic.c"
+        "export-dynamic.c",
         "unresolved-symbols-object.c",
         "unresolved-symbols-shared.c"
+        "z-defs.c"
+        "z-undefs.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),

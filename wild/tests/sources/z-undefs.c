@@ -1,4 +1,4 @@
-//#LinkArgs:-Bshareable -z undefs
+//#LinkArgs:-Bshareable -z undefs -z now
 //#Static:false
 
 int foo(void);
