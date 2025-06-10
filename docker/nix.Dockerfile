@@ -11,7 +11,7 @@ RUN nix-shell --run "rustup toolchain install nightly"
 
 WORKDIR /wild
 
-FROM chef as planner
+FROM chef AS planner
 COPY . .
 RUN nix-shell --run "cargo chef prepare --recipe-path recipe.json"
 
@@ -21,4 +21,4 @@ COPY shell.nix shell.nix
 RUN nix-shell --run "cargo chef cook --all-targets --recipe-path recipe.json"
 COPY . .
 
-ENTRYPOINT nix-shell
+ENTRYPOINT ["nix-shell"]
