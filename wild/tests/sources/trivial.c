@@ -2,7 +2,6 @@
 //#ExpectSym: _start .text
 //#ExpectSym: exit_syscall .text
 //#EnableLinker:lld
-//#LinkArgs: -v
 
 #include "runtime.h"
 
