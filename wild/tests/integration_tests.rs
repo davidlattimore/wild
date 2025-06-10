@@ -1619,6 +1619,9 @@ impl LinkCommand {
                     command.env(libwild::args::WRITE_TRACE_ENV, "1");
                 }
             }
+        } else {
+            // Silent stderr as it leaks to the output of cargo test
+            command.stderr(Stdio::piped());
         }
 
         let mut link_command = LinkCommand {
