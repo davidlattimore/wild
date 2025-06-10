@@ -12,6 +12,7 @@ pub(crate) mod elf;
 pub(crate) mod elf_writer;
 pub mod error;
 pub(crate) mod file_kind;
+pub(crate) mod file_writer;
 pub(crate) mod fs;
 pub(crate) mod gc_stats;
 pub(crate) mod grouping;
@@ -164,7 +165,7 @@ impl Linker {
         &'layout_inputs self,
         args: &'layout_inputs Args,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
-        let output = elf_writer::Output::new(args);
+        let output = file_writer::Output::new(args);
 
         let input_data = input_data::InputData::from_args(args, &self.inputs)?;
 
@@ -179,7 +180,7 @@ impl Linker {
 
     fn link_with_input_data<'data, A: arch::Arch>(
         &'data self,
-        mut output: elf_writer::Output,
+        mut output: file_writer::Output,
         input_data: &InputData<'data>,
         args: &'data Args,
     ) -> error::Result<LinkerOutput<'data>> {
@@ -212,7 +213,7 @@ impl Linker {
 
         let layout = layout::compute::<A>(symbol_db, resolved, output_sections, &mut output)?;
 
-        output.write::<A>(&layout)?;
+        output.write(&layout, elf_writer::write::<A>)?;
         diff::maybe_diff()?;
 
         // We've finished linking. We consider everything from this point onwards as shutdown.

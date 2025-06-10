@@ -28,6 +28,7 @@ use crate::error;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
+use crate::file_writer;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
@@ -119,7 +120,7 @@ pub fn compute<'data, A: Arch>(
     symbol_db: SymbolDb<'data>,
     resolved: ResolutionOutputs<'data>,
     mut output_sections: OutputSections<'data>,
-    output: &mut elf_writer::Output,
+    output: &mut file_writer::Output,
 ) -> Result<Layout<'data>> {
     let ResolutionOutputs {
         groups,
@@ -5550,6 +5551,18 @@ fn test_no_disallowed_overlaps() {
 impl Display for ResolutionFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         bitflags::parser::to_writer(self, f)
+    }
+}
+
+pub(crate) struct ResFlagsDisplay<'a>(pub(crate) &'a Resolution);
+
+impl Display for ResFlagsDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "value_flags = {} resolution_flags = {}",
+            self.0.value_flags, self.0.resolution_flags
+        )
     }
 }
 
