@@ -115,6 +115,12 @@ you'll need to format with nightly. Before you upload your PR, you should run th
 cargo +nightly fmt
 ```
 
+### Naming
+
+When in doubt, do what is done in the Rust standard library. e.g. when making a name CamelCase, only
+the first letter of each "word" should be uppercase even if the "word" is an acronym. You can see
+this in the standard library with types like `TcpStream` and `IoSlice`.
+
 ### One import per line
 
 One style thing that might be slightly different is that we use one import per line. i.e. we don't

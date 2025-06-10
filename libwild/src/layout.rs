@@ -2886,7 +2886,7 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
         | RelocationKind::AbsoluteSubtraction
         | RelocationKind::AbsoluteSubtractionWord6
         | RelocationKind::Relative
-        | RelocationKind::RelativeRISCVLow12
+        | RelocationKind::RelativeRiscVLow12
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
         | RelocationKind::TpOffAArch64
