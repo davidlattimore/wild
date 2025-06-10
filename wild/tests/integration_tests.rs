@@ -283,6 +283,7 @@ enum Architecture {
     X86_64,
     #[strum(serialize = "aarch64")]
     AArch64,
+    #[strum(serialize = "riscv64")]
     RISCV64,
 }
 
@@ -809,15 +810,8 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                     config.support_architectures = arg
                         .trim()
                         .split(",")
-                        .map(|arch| {
-                            let arch = arch.trim().to_lowercase();
-                            match arch.as_str() {
-                                "x86_64" => Ok(Architecture::X86_64),
-                                "aarch64" => Ok(Architecture::AArch64),
-                                _ => bail!("Unsupported architecture: `{}`", arch),
-                            }
-                        })
-                        .collect::<Result<Vec<_>>>()?;
+                        .map(|arch| Architecture::from_str(arch.trim()))
+                        .collect::<Result<Vec<_>, _>>()?;
                 }
                 "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
                 "RequiresClangWithTlsDesc" => {
