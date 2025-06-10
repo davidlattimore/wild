@@ -5,7 +5,7 @@ use self::elf::get_page_mask;
 use crate::alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
-use crate::arch::TCBPlacement;
+use crate::arch::TcbPlacement;
 use crate::args::Args;
 use crate::args::BuildIdOption;
 use crate::args::FileWriteMode;
@@ -983,8 +983,8 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         if self.output_kind.is_executable() {
             // Convert the address to an offset relative to the TCB.
             let value = match A::tcb_placement() {
-                TCBPlacement::BeforeTP => address.wrapping_sub(self.tls.end),
-                TCBPlacement::AfterTP => address.wrapping_sub(self.tls.start),
+                TcbPlacement::BeforeTp => address.wrapping_sub(self.tls.end),
+                TcbPlacement::AfterTp => address.wrapping_sub(self.tls.start),
             };
             *got_entry = value;
         } else {
@@ -2250,7 +2250,7 @@ fn apply_relocation<A: Arch>(
             )?
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
-        RelocationKind::RelativeRISCVLow12 => {
+        RelocationKind::RelativeRiscVLow12 => {
             // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of relocations where the later
             // one actually points to a label of the HI20 relocations and thus we need to find it. The relocation is typically
             // right before the LO12_* relocation.

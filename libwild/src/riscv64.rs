@@ -1,19 +1,19 @@
 use crate::arch::Arch;
-use crate::arch::TCBPlacement;
+use crate::arch::TcbPlacement;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
 use crate::error::Result;
 use linker_utils::elf::DynamicRelocationKind;
-use linker_utils::elf::RISCVInstruction;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
+use linker_utils::elf::RiscVInstruction;
 use linker_utils::elf::riscv64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::riscv64::RelaxationKind;
 use linker_utils::riscv64::relocation_type_from_raw;
 
-pub(crate) struct RISCV64;
+pub(crate) struct RiscV64;
 
 const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0x17, 0x0e, 0x0, 0x0, // auipc t3,offset_high(&(.got.plt[n])
@@ -26,7 +26,7 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
-impl crate::arch::Arch for RISCV64 {
+impl crate::arch::Arch for RiscV64 {
     type Relaxation = Relaxation;
 
     fn elf_header_arch_magic() -> u16 {
@@ -61,7 +61,7 @@ impl crate::arch::Arch for RISCV64 {
         debug_assert!(plt_address < got_address);
 
         plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
-        RISCVInstruction::UIType.write_to_value(
+        RiscVInstruction::UiType.write_to_value(
             got_address.wrapping_sub(plt_address),
             false,
             &mut plt_entry[0..8],
@@ -77,8 +77,8 @@ impl crate::arch::Arch for RISCV64 {
         true
     }
 
-    fn tcb_placement() -> TCBPlacement {
-        TCBPlacement::AfterTP
+    fn tcb_placement() -> TcbPlacement {
+        TcbPlacement::AfterTp
     }
 }
 
@@ -103,7 +103,7 @@ impl crate::arch::Relaxation for Relaxation {
     where
         Self: std::marker::Sized,
     {
-        let mut relocation = RISCV64::relocation_from_raw(relocation_kind).unwrap();
+        let mut relocation = RiscV64::relocation_from_raw(relocation_kind).unwrap();
         let interposable = value_flags.is_interposable();
 
         // All relaxations below only apply to executable code, so we shouldn't attempt them if a
