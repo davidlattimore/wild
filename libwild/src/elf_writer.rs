@@ -8,9 +8,7 @@ use crate::arch::Relaxation as _;
 use crate::arch::TcbPlacement;
 use crate::args::Args;
 use crate::args::BuildIdOption;
-use crate::args::FileWriteMode;
 use crate::args::OutputKind;
-use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf;
@@ -35,10 +33,15 @@ use crate::ensure;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::file_writer::SizedOutput;
+use crate::file_writer::excessive_allocation;
+use crate::file_writer::insufficient_allocation;
+use crate::file_writer::split_buffers_by_alignment;
+use crate::file_writer::split_output_by_group;
+use crate::file_writer::split_output_into_sections;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
-use crate::layout::GroupLayout;
 use crate::layout::HeaderInfo;
 use crate::layout::InternalSymbols;
 use crate::layout::Layout;
@@ -47,6 +50,7 @@ use crate::layout::NonAddressableCounts;
 use crate::layout::ObjectLayout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
+use crate::layout::ResFlagsDisplay;
 use crate::layout::Resolution;
 use crate::layout::ResolutionFlags;
 use crate::layout::Section;
@@ -60,6 +64,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
+use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
 use crate::resolution::SectionSlot;
@@ -85,7 +90,6 @@ use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::relaxation::RelocationModifier;
-use memmap2::MmapOptions;
 use object::LittleEndian;
 use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
@@ -98,494 +102,120 @@ use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
 use std::fmt::Display;
-use std::io::Write;
 use std::iter;
 use std::marker::PhantomData;
 use std::ops::BitAnd;
-use std::ops::Deref;
-use std::ops::DerefMut;
 use std::ops::Not as _;
 use std::ops::Range;
 use std::ops::Sub;
-use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
 use tracing::debug_span;
 use tracing::instrument;
 use uuid::Uuid;
 
-struct HexU64 {
-    value: u64,
-}
-
-impl HexU64 {
-    fn new(value: u64) -> Self {
-        Self { value }
-    }
-}
-
-impl Display for HexU64 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:#x}", self.value)
-    }
-}
-
-pub struct Output {
-    path: Arc<Path>,
-    creator: FileCreator,
-    file_write_mode: FileWriteMode,
-    should_write_trace: bool,
-}
-
-enum FileCreator {
-    Background {
-        sized_output_sender: Option<Sender<Result<SizedOutput>>>,
-        sized_output_recv: Receiver<Result<SizedOutput>>,
-    },
-    Regular {
-        file_size: Option<u64>,
-    },
-}
-
-pub(crate) struct SizedOutput {
-    file: std::fs::File,
-    out: OutputBuffer,
-    path: Arc<Path>,
-    trace: TraceOutput,
-}
-
-enum OutputBuffer {
-    Mmap(memmap2::MmapMut),
-    InMemory(Vec<u8>),
-}
-
-impl OutputBuffer {
-    fn new(file: &std::fs::File, file_size: u64) -> Self {
-        Self::new_mmapped(file, file_size)
-            .unwrap_or_else(|| Self::InMemory(vec![0; file_size as usize]))
+pub(crate) fn write<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout) -> Result {
+    write_file_contents::<A>(sized_output, layout)?;
+    if layout.args().validate_output {
+        crate::validation::validate_bytes(layout, &sized_output.out)?;
     }
 
-    fn new_mmapped(file: &std::fs::File, file_size: u64) -> Option<Self> {
-        file.set_len(file_size).ok()?;
-        let mmap = unsafe { MmapOptions::new().map_mut(file) }.ok()?;
-        Some(Self::Mmap(mmap))
+    if layout.args().should_write_eh_frame_hdr {
+        let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
+        sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
     }
+
+    write_gnu_build_id_note(sized_output, &layout.args().build_id, layout)?;
+    Ok(())
 }
 
-impl Deref for OutputBuffer {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            OutputBuffer::Mmap(mmap) => mmap.deref(),
-            OutputBuffer::InMemory(vec) => vec.deref(),
+fn write_gnu_build_id_note(
+    sized_output: &mut SizedOutput,
+    build_id_option: &BuildIdOption,
+    layout: &Layout,
+) -> Result {
+    let hash_placeholder;
+    let uuid_placeholder;
+    let build_id = match build_id_option {
+        BuildIdOption::Fast => {
+            hash_placeholder = compute_hash(sized_output);
+            hash_placeholder.as_bytes()
         }
-    }
-}
-
-impl DerefMut for OutputBuffer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            OutputBuffer::Mmap(mmap) => mmap.deref_mut(),
-            OutputBuffer::InMemory(vec) => vec.deref_mut(),
+        BuildIdOption::Hex(hex) => hex.as_slice(),
+        BuildIdOption::Uuid => {
+            uuid_placeholder = Uuid::new_v4();
+            uuid_placeholder.as_bytes()
         }
-    }
-}
-
-#[derive(Debug)]
-struct SectionAllocation {
-    id: OutputSectionId,
-    offset: usize,
-    size: usize,
-}
-
-impl Output {
-    pub(crate) fn new(args: &Args) -> Output {
-        let file_write_mode = args
-            .file_write_mode
-            .unwrap_or_else(|| default_file_write_mode(&args.output));
-
-        if args.num_threads.get() > 1 {
-            let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
-            Output {
-                path: args.output.clone(),
-                creator: FileCreator::Background {
-                    sized_output_sender: Some(sized_output_sender),
-                    sized_output_recv,
-                },
-                file_write_mode,
-                should_write_trace: args.write_trace,
-            }
-        } else {
-            Output {
-                path: args.output.clone(),
-                creator: FileCreator::Regular { file_size: None },
-                file_write_mode,
-                should_write_trace: args.write_trace,
-            }
-        }
-    }
-
-    pub(crate) fn set_size(&mut self, size: u64) {
-        match &mut self.creator {
-            FileCreator::Background {
-                sized_output_sender,
-                sized_output_recv: _,
-            } => {
-                let sender = sized_output_sender
-                    .take()
-                    .expect("set_size must only be called once");
-                let path = self.path.clone();
-
-                let write_mode = self.file_write_mode;
-                let should_write_trace = self.should_write_trace;
-
-                rayon::spawn(move || {
-                    if write_mode == FileWriteMode::UnlinkAndReplace {
-                        // Rename the old output file so that we can create a new file in its place.
-                        // Reusing the existing file would also be an option, but that wouldn't
-                        // error if the file is currently being executed.
-                        let renamed_old_file = path.with_extension("delete");
-                        let rename_status = std::fs::rename(&path, &renamed_old_file);
-
-                        // If there was an old output file that we renamed, then delete it. We do so
-                        // from a separate task so that it can run in the background while other
-                        // threads continue working. Deleting can take a while for large files.
-                        if rename_status.is_ok() {
-                            rayon::spawn(move || {
-                                let _ = std::fs::remove_file(renamed_old_file);
-                                // Note, we don't currently signal when we've finished deleting the
-                                // file. Based on experiments run on Linux 6.9.3, if we exit while
-                                // an unlink syscall is in progress on a separate thread, Linux will
-                                // wait for the unlink syscall to complete before terminating the
-                                // process.
-                            });
-                        }
-                    }
-
-                    // Create the output file.
-                    let sized_output = SizedOutput::new(path, size, write_mode, should_write_trace);
-
-                    // Pass it to the main thread, so that it can start writing it once layout finishes.
-                    let _ = sender.send(sized_output);
-                });
-            }
-            FileCreator::Regular { file_size } => *file_size = Some(size),
-        }
-    }
-
-    #[tracing::instrument(skip_all, name = "Write output file")]
-    pub fn write<'data, A: Arch>(&self, layout: &Layout<'data>) -> Result {
-        if layout.args().write_layout {
-            write_layout(layout)?;
-        }
-        let mut sized_output = match &self.creator {
-            FileCreator::Background {
-                sized_output_sender,
-                sized_output_recv,
-            } => {
-                assert!(sized_output_sender.is_none(), "set_size was never called");
-                wait_for_sized_output(sized_output_recv)?
-            }
-            FileCreator::Regular { file_size } => {
-                delete_old_output(&self.path);
-                let file_size = file_size.context("set_size was never called")?;
-                self.create_file_non_lazily(file_size)?
-            }
-        };
-        sized_output.write::<A>(layout)?;
-        sized_output.flush()?;
-        sized_output.trace.close()?;
-
-        // While we have the output file mmapped with write permission, the file will be locked and
-        // unusable, so we can't really say that we've finished writing it until we've unmapped it.
-        {
-            let _span = tracing::info_span!("Unmap output file").entered();
-            drop(sized_output);
-        }
-
-        Ok(())
-    }
-
-    #[tracing::instrument(skip_all, name = "Create output file")]
-    fn create_file_non_lazily(&self, file_size: u64) -> Result<SizedOutput> {
-        SizedOutput::new(
-            self.path.clone(),
-            file_size,
-            self.file_write_mode,
-            self.should_write_trace,
-        )
-    }
-}
-
-/// Returns the file write mode that we should use to write to the specified path.
-fn default_file_write_mode(path: &Path) -> FileWriteMode {
-    use std::os::unix::fs::FileTypeExt as _;
-
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return FileWriteMode::UnlinkAndReplace;
+        BuildIdOption::None => return Ok(()),
     };
 
-    let file_type = metadata.file_type();
+    let mut buffers = split_output_into_sections(layout, &mut sized_output.out);
+    let e = LittleEndian;
+    let (note_header, mut rest) =
+        from_bytes_mut::<NoteHeader>(buffers.get_mut(output_section_id::NOTE_GNU_BUILD_ID))
+            .map_err(|_| insufficient_allocation(".note.gnu.build-id"))?;
+    note_header.n_namesz.set(e, GNU_NOTE_NAME.len() as u32);
+    note_header.n_descsz.set(e, build_id.len() as u32);
+    note_header.n_type.set(e, NT_GNU_BUILD_ID);
 
-    // If we've been asked to write to a path that currently holds some exotic kind of file, then we
-    // don't want to delete it, even if we have permission to. For example, we don't want to delete
-    // `/dev/null` if we're running in a container as root.
-    if file_type.is_char_device()
-        || file_type.is_block_device()
-        || file_type.is_socket()
-        || file_type.is_fifo()
-    {
-        return FileWriteMode::UpdateInPlace;
-    }
+    let name_out = crate::slice::slice_take_prefix_mut(&mut rest, GNU_NOTE_NAME.len());
+    name_out.copy_from_slice(GNU_NOTE_NAME);
 
-    FileWriteMode::UnlinkAndReplace
+    rest.copy_from_slice(build_id);
+
+    Ok(())
 }
 
-/// Delete the old output file. Note, this is only used when running from a single thread.
-#[tracing::instrument(skip_all, name = "Delete old output")]
-fn delete_old_output(path: &Path) {
-    let _ = std::fs::remove_file(path);
+#[instrument(skip_all, name = "Compute build ID")]
+fn compute_hash(sized_output: &SizedOutput) -> blake3::Hash {
+    blake3::Hasher::new()
+        .update_rayon(&sized_output.out)
+        .finalize()
 }
 
-#[tracing::instrument(skip_all, name = "Wait for output file creation")]
-fn wait_for_sized_output(sized_output_recv: &Receiver<Result<SizedOutput>>) -> Result<SizedOutput> {
-    sized_output_recv.recv()?
-}
+#[tracing::instrument(skip_all, name = "Write data to file")]
+fn write_file_contents<'data, A: Arch>(
+    sized_output: &mut SizedOutput,
+    layout: &Layout<'data>,
+) -> Result {
+    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
 
-impl SizedOutput {
-    fn new(
-        path: Arc<Path>,
-        file_size: u64,
-        write_mode: FileWriteMode,
-        should_write_trace: bool,
-    ) -> Result<SizedOutput> {
-        let mut open_options = std::fs::OpenOptions::new();
+    let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
+    let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
+    groups_and_buffers
+        .into_par_iter()
+        .try_for_each(|(group, mut buffers)| -> Result {
+            let mut table_writer = TableWriter::from_layout(
+                layout,
+                group.dynstr_start_offset,
+                group.strtab_start_offset,
+                &mut buffers,
+                group.eh_frame_start_address,
+            );
 
-        // If another thread spawns a subprocess while we have this file open, we don't want the
-        // subprocess to inherit our file descriptor. This unfortunately doesn't prevent that, since
-        // unless and until the subprocess calls exec, it will inherit the file descriptor. However,
-        // assuming it eventually calls exec, this at least means that it inherits the file
-        // descriptor for less time. i.e. this doesn't really fix anything, but makes problems less bad.
-        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut open_options, libc::O_CLOEXEC);
-
-        match write_mode {
-            FileWriteMode::UnlinkAndReplace => {
-                open_options.truncate(true);
+            for file in &group.files {
+                file.write::<A>(&mut buffers, &mut table_writer, layout, &sized_output.trace)
+                    .with_context(|| format!("Failed copying from {file} to output file"))?;
             }
-            FileWriteMode::UpdateInPlace => {
-                open_options.truncate(false);
-            }
-        }
+            table_writer
+                .validate_empty(&group.mem_sizes)
+                .with_context(|| format!("validate_empty failed for {group}"))?;
+            Ok(())
+        })?;
 
-        let file = open_options
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&path)
-            .with_context(|| format!("Failed to open `{}`", path.display()))?;
+    for (output_section_id, _) in layout.output_sections.ids_with_info() {
+        let relocations = layout
+            .relocation_statistics
+            .get(output_section_id)
+            .load(Relaxed);
 
-        let out = OutputBuffer::new(&file, file_size);
-
-        let trace = TraceOutput::new(should_write_trace, &path);
-
-        Ok(SizedOutput {
-            file,
-            out,
-            path,
-            trace,
-        })
-    }
-
-    pub(crate) fn write<A: Arch>(&mut self, layout: &Layout) -> Result {
-        self.write_file_contents::<A>(layout)?;
-        if layout.args().validate_output {
-            crate::validation::validate_bytes(layout, &self.out)?;
-        }
-
-        if layout.args().should_write_eh_frame_hdr {
-            let mut section_buffers = split_output_into_sections(layout, &mut self.out);
-            sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
-        }
-
-        self.write_gnu_build_id_note(&layout.args().build_id, layout)?;
-        Ok(())
-    }
-
-    fn write_gnu_build_id_note(
-        &mut self,
-        build_id_option: &BuildIdOption,
-        layout: &Layout,
-    ) -> Result {
-        let hash_placeholder;
-        let uuid_placeholder;
-        let build_id = match build_id_option {
-            BuildIdOption::Fast => {
-                hash_placeholder = self.compute_hash();
-                hash_placeholder.as_bytes()
-            }
-            BuildIdOption::Hex(hex) => hex.as_slice(),
-            BuildIdOption::Uuid => {
-                uuid_placeholder = Uuid::new_v4();
-                uuid_placeholder.as_bytes()
-            }
-            BuildIdOption::None => return Ok(()),
-        };
-
-        let mut buffers = split_output_into_sections(layout, &mut self.out);
-        let e = LittleEndian;
-        let (note_header, mut rest) =
-            from_bytes_mut::<NoteHeader>(buffers.get_mut(output_section_id::NOTE_GNU_BUILD_ID))
-                .map_err(|_| insufficient_allocation(".note.gnu.build-id"))?;
-        note_header.n_namesz.set(e, GNU_NOTE_NAME.len() as u32);
-        note_header.n_descsz.set(e, build_id.len() as u32);
-        note_header.n_type.set(e, NT_GNU_BUILD_ID);
-
-        let name_out = crate::slice::slice_take_prefix_mut(&mut rest, GNU_NOTE_NAME.len());
-        name_out.copy_from_slice(GNU_NOTE_NAME);
-
-        rest.copy_from_slice(build_id);
-
-        Ok(())
-    }
-
-    #[instrument(skip_all, name = "Compute build ID")]
-    fn compute_hash(&self) -> blake3::Hash {
-        blake3::Hasher::new().update_rayon(&self.out).finalize()
-    }
-
-    fn flush(&mut self) -> Result {
-        match &self.out {
-            OutputBuffer::Mmap(_) => {}
-            OutputBuffer::InMemory(bytes) => self
-                .file
-                .write_all(bytes)
-                .with_context(|| format!("Failed to write to {}", self.path.display()))?,
-        }
-
-        // Making the file executable is best-effort only. For example if we're writing to a pipe or
-        // something, it isn't going to work and that's OK.
-        let _ = crate::fs::make_executable(&self.file);
-
-        Ok(())
-    }
-
-    #[tracing::instrument(skip_all, name = "Write data to file")]
-    pub(crate) fn write_file_contents<'data, A: Arch>(&mut self, layout: &Layout<'data>) -> Result {
-        let mut section_buffers = split_output_into_sections(layout, &mut self.out);
-
-        let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
-        let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
-        groups_and_buffers
-            .into_par_iter()
-            .try_for_each(|(group, mut buffers)| -> Result {
-                let mut table_writer = TableWriter::from_layout(
-                    layout,
-                    group.dynstr_start_offset,
-                    group.strtab_start_offset,
-                    &mut buffers,
-                    group.eh_frame_start_address,
-                );
-
-                for file in &group.files {
-                    file.write::<A>(&mut buffers, &mut table_writer, layout, &self.trace)
-                        .with_context(|| format!("Failed copying from {file} to output file"))?;
-                }
-                table_writer
-                    .validate_empty(&group.mem_sizes)
-                    .with_context(|| format!("validate_empty failed for {group}"))?;
-                Ok(())
-            })?;
-
-        for (output_section_id, _) in layout.output_sections.ids_with_info() {
-            let relocations = layout
-                .relocation_statistics
-                .get(output_section_id)
-                .load(Relaxed);
-
-            if relocations > 0 {
-                tracing::debug!(
+        if relocations > 0 {
+            tracing::debug!(
                     target: "metrics",
                     section = layout.output_sections.display_name(output_section_id),
                     relocations, "resolved relocations");
-            }
         }
-        Ok(())
     }
-}
-
-fn insufficient_allocation(section_name: &str) -> crate::error::Error {
-    error!(
-        "Insufficient {section_name} allocation. {}",
-        verify_allocations_message()
-    )
-}
-
-fn excessive_allocation(section_name: &str, remaining: u64, allocated: u64) -> crate::error::Error {
-    error!(
-        "Allocated too much space in {section_name}. {remaining} of {allocated} bytes remain. {}",
-        verify_allocations_message()
-    )
-}
-
-/// Returns a message suggesting to set an environment variable to help debug a failure, but only if
-/// it's not already set, since that would be confusing.
-fn verify_allocations_message() -> String {
-    if std::env::var(WRITE_VERIFY_ALLOCATIONS_ENV).is_ok_and(|v| v == "1") {
-        String::new()
-    } else {
-        format!("Setting {WRITE_VERIFY_ALLOCATIONS_ENV}=1 might give more info")
-    }
-}
-
-#[tracing::instrument(skip_all, name = "Split output buffers by group")]
-fn split_output_by_group<'layout, 'data, 'out>(
-    layout: &'layout Layout<'data>,
-    writable_buckets: &'out mut OutputSectionPartMap<&mut [u8]>,
-) -> Vec<(
-    &'layout GroupLayout<'data>,
-    OutputSectionPartMap<&'out mut [u8]>,
-)> {
-    layout
-        .group_layouts
-        .iter()
-        .map(|group| (group, writable_buckets.take_mut(&group.file_sizes)))
-        .collect()
-}
-
-fn split_output_into_sections<'out>(
-    layout: &Layout,
-    mut data: &'out mut [u8],
-) -> OutputSectionMap<&'out mut [u8]> {
-    let mut section_allocations = Vec::with_capacity(layout.section_layouts.len());
-    layout.section_layouts.for_each(|id, s| {
-        section_allocations.push(SectionAllocation {
-            id,
-            offset: s.file_offset,
-            size: s.file_size,
-        });
-    });
-    section_allocations.sort_by_key(|s| (s.offset, s.offset + s.size));
-
-    // OutputSectionMap is ordered by section ID, which is not the same as output order. We
-    // split the output file by output order, putting the relevant parts of the buffer into the
-    // map.
-    let mut section_data = OutputSectionMap::with_size(section_allocations.len());
-    let mut offset = 0;
-    for a in section_allocations {
-        let Some(padding) = a.offset.checked_sub(offset) else {
-            panic!(
-                "Offsets went backward when splitting output file {offset} to {}",
-                a.offset
-            );
-        };
-        slice_take_prefix_mut(&mut data, padding);
-        *section_data.get_mut(a.id) = slice_take_prefix_mut(&mut data, a.size);
-        offset = a.offset + a.size;
-    }
-    section_data
+    Ok(())
 }
 
 #[tracing::instrument(skip_all, name = "Sort .eh_frame_hdr")]
@@ -593,22 +223,6 @@ fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {
     let entry_bytes = &mut eh_frame_hdr[size_of::<elf::EhFrameHdr>()..];
     let entries: &mut [elf::EhFrameHdrEntry] = bytemuck::cast_slice_mut(entry_bytes);
     entries.par_sort_by_key(|e| e.frame_ptr);
-}
-
-/// Splits the writable buffers for each segment further into separate buffers for each alignment.
-fn split_buffers_by_alignment<'out>(
-    section_buffers: &'out mut OutputSectionMap<&mut [u8]>,
-    layout: &Layout,
-) -> OutputSectionPartMap<&'out mut [u8]> {
-    layout.section_part_layouts.output_order_map(
-        &layout.output_order,
-        |part_id, _alignment, rec| {
-            crate::slice::slice_take_prefix_mut(
-                section_buffers.get_mut(part_id.output_section_id()),
-                rec.file_size,
-            )
-        },
-    )
 }
 
 fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: &Layout) -> Result {
@@ -4036,34 +3650,10 @@ impl StrTabWriter<'_> {
     }
 }
 
-fn write_layout(layout: &Layout) -> Result {
-    let layout_path = linker_layout::layout_path(&layout.args().output);
-    write_layout_to(layout, &layout_path)
-        .with_context(|| format!("Failed to write layout to `{}`", layout_path.display()))
-}
-
-fn write_layout_to(layout: &Layout, path: &Path) -> Result {
-    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-    layout.layout_data().write(&mut file)?;
-    Ok(())
-}
-
 fn has_rela_dyn(inputs: &DynamicEntryInputs) -> bool {
     let relative = inputs.section_part_layouts.get(part_id::RELA_DYN_RELATIVE);
     let general = inputs.section_part_layouts.get(part_id::RELA_DYN_GENERAL);
     relative.mem_size > 0 || general.mem_size > 0
-}
-
-struct ResFlagsDisplay<'a>(&'a Resolution);
-
-impl Display for ResFlagsDisplay<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "value_flags = {} resolution_flags = {}",
-            self.0.value_flags, self.0.resolution_flags
-        )
-    }
 }
 
 pub(crate) fn verify_resolution_allocation(
