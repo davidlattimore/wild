@@ -55,3 +55,19 @@ impl TraceOutput {
         Ok(())
     }
 }
+
+pub(crate) struct HexU64 {
+    value: u64,
+}
+
+impl HexU64 {
+    pub(crate) fn new(value: u64) -> Self {
+        Self { value }
+    }
+}
+
+impl std::fmt::Display for HexU64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#x}", self.value)
+    }
+}
