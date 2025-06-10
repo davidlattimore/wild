@@ -8,7 +8,7 @@
 //#Config:gcc:default
 
 //#Config:gcc-static:default
-//#LinkArgs:-static
+//#LinkArgs:-static -Wl,--gc-sections
 //#DiffIgnore:section.rela.plt.link
 //#DiffIgnore:section.sdata
 
