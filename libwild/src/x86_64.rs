@@ -4,7 +4,7 @@
 //! static-PIE binary because dynamic relocations haven't yet been applied to the GOT yet.
 
 use crate::arch::Arch;
-use crate::arch::TCBPlacement;
+use crate::arch::TcbPlacement;
 use crate::args::OutputKind;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
@@ -83,8 +83,8 @@ impl crate::arch::Arch for X86_64 {
         false
     }
 
-    fn tcb_placement() -> TCBPlacement {
-        TCBPlacement::BeforeTP
+    fn tcb_placement() -> TcbPlacement {
+        TcbPlacement::BeforeTp
     }
 }
 

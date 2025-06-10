@@ -1,5 +1,5 @@
 use crate::arch::Arch;
-use crate::arch::TCBPlacement;
+use crate::arch::TcbPlacement;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::ensure;
 use crate::error;
@@ -89,9 +89,9 @@ impl crate::arch::Arch for AArch64 {
         false
     }
 
-    fn tcb_placement() -> TCBPlacement {
+    fn tcb_placement() -> TcbPlacement {
         // TODO: #864
-        TCBPlacement::BeforeTP
+        TcbPlacement::BeforeTp
     }
 }
 
