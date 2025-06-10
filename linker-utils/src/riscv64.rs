@@ -5,9 +5,40 @@ use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
 use crate::elf::extract_bit;
 use crate::elf::extract_bits;
+use crate::relaxation::RelocationModifier;
+use crate::utils::and_from_slice;
 use crate::utils::or_from_slice;
 use leb128;
 use std::io::Cursor;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelaxationKind {
+    /// Leave the instruction alone. Used when we only want to change the kind of relocation used.
+    NoOp,
+
+    /// Replace with nop
+    ReplaceWithNop,
+}
+
+impl RelaxationKind {
+    pub fn apply(self, section_bytes: &mut [u8], offset_in_section: &mut u64, _addend: &mut i64) {
+        let offset = *offset_in_section as usize;
+        match self {
+            RelaxationKind::NoOp => {}
+            RelaxationKind::ReplaceWithNop => {
+                section_bytes[offset..offset + 4].copy_from_slice(&[
+                    0x01, 0x0, // nop
+                    0x01, 0x0, // nop
+                ]);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn next_modifier(&self) -> RelocationModifier {
+        RelocationModifier::Normal
+    }
+}
 
 #[must_use]
 pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
@@ -321,10 +352,22 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
     })
 }
 
+const UTYPE_IMMEDIATE_MASK: u32 = 0b0000_0000_0000_0000_0000_1111_1111_1111;
+const ITYPE_IMMEDIATE_MASK: u32 = 0b0000_0000_0000_1111_1111_1111_1111_1111;
+const STYPE_IMMEDIATE_MASK: u32 = 0b0000_0001_1111_1111_1111_0000_0111_1111;
+const BTYPE_IMMEDIATE_MASK: u32 = 0b0000_0001_1111_1111_1111_0000_0111_1111;
+const JTYPE_IMMEDIATE_MASK: u32 = 0b0000_0000_0000_0000_0000_1111_1111_1111;
+
+const CBTYPE_IMMEDIATE_MASK: u16 = 0b1110_0011_1000_0011;
+const CJTYPE_IMMEDIATE_MASK: u16 = 0b1110_0000_0000_0011;
+
 impl RISCVInstruction {
     // Encode computed relocation value and store it based on the encoding of an instruction.
     // A handy page where one can easily find instruction encoding:
     // https://msyksphinz-self.github.io/riscv-isadoc/html/index.html.
+
+    // During the build of the static libc.a, there are various places where the immediate operand
+    // of an instruction is already filled up. Thus, we zero the bits before a relocation value is applied.
     pub fn write_to_value(self, extracted_value: u64, _negative: bool, dest: &mut [u8]) {
         match self {
             RISCVInstruction::UIType => {
@@ -337,15 +380,18 @@ impl RISCVInstruction {
                 // value is a small negative value.
                 // For instance, -10i32 (0xfffffff6) should become 0x0 (HI20) and 0xff6 (LO12).
                 let mask = (extract_bits(extracted_value.wrapping_add(0x800), 12, 32) as u32) << 12;
+                and_from_slice(dest, UTYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::IType => {
                 let mask = extracted_value << 20;
+                and_from_slice(dest, ITYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::SType => {
                 let mut mask = extract_bits(extracted_value, 0, 5) << 7;
                 mask |= extract_bits(extracted_value, 5, 12) << 25;
+                and_from_slice(dest, STYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::BType => {
@@ -353,6 +399,7 @@ impl RISCVInstruction {
                 mask |= extract_bits(extracted_value, 1, 5) << 8;
                 mask |= extract_bits(extracted_value, 5, 11) << 25;
                 mask |= extract_bit(extracted_value, 12) << 31;
+                and_from_slice(dest, BTYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::JType => {
@@ -360,6 +407,7 @@ impl RISCVInstruction {
                 mask |= extract_bit(extracted_value, 11) << 20;
                 mask |= extract_bits(extracted_value, 1, 11) << 21;
                 mask |= extract_bit(extracted_value, 20) << 31;
+                and_from_slice(dest, JTYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
                 or_from_slice(dest, &(mask as u32).to_le_bytes());
             }
             RISCVInstruction::CBType => {
@@ -370,6 +418,7 @@ impl RISCVInstruction {
                 mask |= extract_bits(extracted_value, 3, 5) << 10;
                 mask |= extract_bit(extracted_value, 8) << 12;
                 // The compressed instruction only takes 2 bytes.
+                and_from_slice(dest, CBTYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
                 or_from_slice(dest, &mask.to_le_bytes()[..2]);
             }
             RISCVInstruction::CJType => {
@@ -382,6 +431,7 @@ impl RISCVInstruction {
                 mask |= extract_bit(extracted_value, 4) << 11;
                 mask |= extract_bit(extracted_value, 11) << 12;
                 // The compressed instruction only takes 2 bytes.
+                and_from_slice(dest, CJTYPE_IMMEDIATE_MASK.to_le_bytes().as_slice());
                 or_from_slice(dest, &mask.to_le_bytes()[..2]);
             }
             RISCVInstruction::ULEB128 => {
@@ -399,5 +449,37 @@ impl RISCVInstruction {
     #[must_use]
     pub fn read_value(self, _bytes: &[u8]) -> (u64, bool) {
         todo!()
+    }
+}
+
+#[test]
+fn test_riscv_insn_immediate_mask() {
+    for (mask, insn) in &[
+        (UTYPE_IMMEDIATE_MASK, RISCVInstruction::UType),
+        (ITYPE_IMMEDIATE_MASK, RISCVInstruction::IType),
+        (STYPE_IMMEDIATE_MASK, RISCVInstruction::SType),
+        (BTYPE_IMMEDIATE_MASK, RISCVInstruction::BType),
+        (JTYPE_IMMEDIATE_MASK, RISCVInstruction::JType),
+    ] {
+        let mut dest = [0u8; 4];
+        let value = if matches!(insn, RISCVInstruction::UType) {
+            u64::MAX.wrapping_sub(0x800)
+        } else {
+            u64::MAX
+        };
+        insn.write_to_value(value, false, &mut dest);
+        assert_eq!(!mask, u32::from_le_bytes(dest));
+    }
+}
+
+#[test]
+fn test_riscv_insn_rvcimmediate_mask() {
+    for (mask, insn) in &[
+        (CBTYPE_IMMEDIATE_MASK, RISCVInstruction::CBType),
+        (CJTYPE_IMMEDIATE_MASK, RISCVInstruction::CJType),
+    ] {
+        let mut dest = [0u8; 2];
+        insn.write_to_value(u64::from(u16::MAX), false, &mut dest);
+        assert_eq!(!mask, u16::from_le_bytes(dest));
     }
 }
