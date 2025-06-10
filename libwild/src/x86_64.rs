@@ -309,24 +309,29 @@ impl crate::arch::Relaxation for Relaxation {
                 }
             }
             object::elf::R_X86_64_GOTPC32_TLSDESC
-                if !interposable && output_kind.is_static_executable() =>
+                if !interposable && output_kind.is_executable() =>
             {
-                // lea    0x0(%rip),%rax
-                if section_bytes.get(offset - 3..offset)? == [0x48, 0x8d, 0x05] {
-                    return create(
-                        RelaxationKind::TlsDescToLocalExec,
-                        object::elf::R_X86_64_TPOFF32,
-                    );
-                }
+                // We assume that the instruction that this relocation applies to is a REX-prefixed
+                // LEA instruction.
+                return create(
+                    RelaxationKind::TlsDescToLocalExec,
+                    object::elf::R_X86_64_TPOFF32,
+                );
             }
+            // Note, the conditions on this relaxation (is_executable) must match those on
+            // TLSDESC_CALL below.
             object::elf::R_X86_64_GOTPC32_TLSDESC if output_kind.is_executable() => {
-                // lea    0x0(%rip),%rax
-                if section_bytes.get(offset - 3..offset)? == [0x48, 0x8d, 0x05] {
-                    return create(
-                        RelaxationKind::TlsDescToInitialExec,
-                        object::elf::R_X86_64_GOTTPOFF,
-                    );
-                }
+                // We assume that the instruction that this relocation applies to is a REX-prefixed
+                // LEA instruction.
+                return create(
+                    RelaxationKind::TlsDescToInitialExec,
+                    object::elf::R_X86_64_GOTTPOFF,
+                );
+            }
+            // Note, the conditions on this relaxation (is_executable) must match those on
+            // GOTPC32_TLSDESC above.
+            object::elf::R_X86_64_TLSDESC_CALL if output_kind.is_executable() => {
+                return create(RelaxationKind::SkipTlsDescCall, object::elf::R_X86_64_NONE);
             }
             _ => return None,
         };

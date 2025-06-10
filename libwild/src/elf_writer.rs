@@ -127,7 +127,7 @@ impl HexU64 {
 
 impl Display for HexU64 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:x}", self.value)
+        write!(f, "{:#x}", self.value)
     }
 }
 
@@ -276,7 +276,7 @@ impl Output {
     }
 
     #[tracing::instrument(skip_all, name = "Write output file")]
-    pub fn write<'data, A: Arch>(&mut self, layout: &Layout<'data>) -> Result {
+    pub fn write<'data, A: Arch>(&self, layout: &Layout<'data>) -> Result {
         if layout.args().write_layout {
             write_layout(layout)?;
         }
@@ -309,7 +309,7 @@ impl Output {
     }
 
     #[tracing::instrument(skip_all, name = "Create output file")]
-    fn create_file_non_lazily(&mut self, file_size: u64) -> Result<SizedOutput> {
+    fn create_file_non_lazily(&self, file_size: u64) -> Result<SizedOutput> {
         SizedOutput::new(
             self.path.clone(),
             file_size,
@@ -2475,6 +2475,16 @@ fn apply_relocation<A: Arch>(
                 symbol_name = layout.symbol_db.symbol_name_for_display(local_symbol_id),
             )
         });
+        tracing::trace!(
+            %value_flags,
+            %resolution_flags,
+            relaxation_kind = ?relaxation.debug_kind(),
+            ?rel_info.kind,
+            %rel_info.size,
+            value,
+            value_hex = %HexU64::new(value),
+            symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
+            "relaxation applied");
     } else {
         trace.emit(original_place, || {
             format!(

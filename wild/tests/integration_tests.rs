@@ -151,7 +151,7 @@ fn base_dir() -> &'static Path {
 }
 
 fn build_dir() -> PathBuf {
-    base_dir().join("tests/build")
+    std::env::var("WILD_TEST_BUILD_DIR").map_or(base_dir().join("tests/build"), PathBuf::from)
 }
 
 struct ProgramInputs {
@@ -2134,14 +2134,16 @@ fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Re
 fn setup_wild_ld_symlink() -> Result {
     let wild = wild_path();
     let wild_ld_path = wild.with_file_name("ld");
-    if !wild_ld_path.exists() {
-        std::os::unix::fs::symlink(wild, &wild_ld_path).with_context(|| {
-            format!(
-                "Failed to symlink `{}` to `{}`",
-                wild_ld_path.display(),
-                wild.display()
-            )
-        })?;
+    if let Err(error) = std::os::unix::fs::symlink(wild, &wild_ld_path) {
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            Err(error).with_context(|| {
+                format!(
+                    "Failed to symlink `{}` to `{}`",
+                    wild_ld_path.display(),
+                    wild.display()
+                )
+            })?
+        }
     }
     Ok(())
 }
@@ -2191,7 +2193,7 @@ fn available_linkers() -> Result<Vec<Linker>> {
         Linker::ThirdParty(ThirdPartyLinker {
             name: "ld",
             gcc_name: "bfd",
-            path: find_bin(&["ld"])?,
+            path: find_bin(&["ld.bfd", "ld"])?,
             cross_paths: find_cross_paths("ld"),
             enabled_by_default: true,
         }),
@@ -2372,7 +2374,7 @@ fn integration_test(
         "duplicate_strong_symbols.c",
         "preinit-array.c",
         "exception.cc",
-        "z-defs.c"
+        "z-defs.c",
         "z-undefs.c"
     )]
     program_name: &'static str,
