@@ -422,6 +422,11 @@ For more information on contributing to `wild` see [CONTRIBUTING.md](CONTRIBUTIN
 
 For a high-level overview of Wild's design, see [DESIGN.md](DESIGN.md).
 
+## Chat server
+
+We have a Zulip server for Wild-related chat. You can join
+[here](https://wild.zulipchat.com/join/bbopdeg6howwjpaiyowngyde/).
+
 ## Further reading
 
 Many of the posts on [David's blog](https://davidlattimore.github.io/) are about various aspects of
