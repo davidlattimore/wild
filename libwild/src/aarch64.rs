@@ -4,6 +4,7 @@ use crate::elf::PLT_ENTRY_SIZE;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
+use crate::layout::Layout;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_MASK;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_SIZE;
@@ -92,6 +93,10 @@ impl crate::arch::Arch for AArch64 {
     fn tcb_placement() -> TcbPlacement {
         // TODO: #864
         TcbPlacement::BeforeTp
+    }
+
+    fn tp_offset_start(layout: &Layout<'_>) -> u64 {
+        layout.tls_start_address_aarch64()
     }
 }
 

@@ -80,6 +80,10 @@ impl crate::arch::Arch for RiscV64 {
     fn tcb_placement() -> TcbPlacement {
         TcbPlacement::AfterTp
     }
+
+    fn tp_offset_start(layout: &crate::layout::Layout) -> u64 {
+        layout.tls_start_address()
+    }
 }
 
 #[derive(Debug, Clone)]

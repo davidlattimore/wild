@@ -328,6 +328,10 @@ impl Arch for AArch64 {
             _ => true,
         }
     }
+
+    fn is_aarch64() -> bool {
+        true
+    }
 }
 
 const CHAINS: &[&[RType]] = &[

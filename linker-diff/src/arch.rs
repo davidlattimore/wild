@@ -131,6 +131,10 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
     /// that the address of foo is 0x12???, then a later relocation might tell us the low bits, so
     /// that we know the full address is 0x12345.
     fn is_complete_chain(chain: impl Iterator<Item = Self::RType>) -> bool;
+
+    fn is_aarch64() -> bool {
+        false
+    }
 }
 
 pub(crate) trait RType: Copy + Debug + Display + Eq + PartialEq {
