@@ -285,7 +285,11 @@ impl crate::arch::Relaxation for Relaxation {
                     TlsGdForm::Regular => RelaxationKind::TlsGdToLocalExec,
                     TlsGdForm::Large => RelaxationKind::TlsGdToLocalExecLarge,
                 };
-                return create(kind, object::elf::R_X86_64_TPOFF32, false);
+                return create(
+                    kind,
+                    object::elf::R_X86_64_TPOFF32,
+                    output_kind.is_static_executable(),
+                );
             }
             object::elf::R_X86_64_TLSGD if output_kind.is_executable() => {
                 let kind = match TlsGdForm::identify(section_bytes, offset)? {
@@ -306,7 +310,8 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::TlsLdToLocalExec,
                                 object::elf::R_X86_64_NONE,
-                                false,
+                                // TODO: verify
+                                true,
                             );
                         }
                         // TODO: Make a test for this. Also, the description of TlsLdToLocalExec64
@@ -315,7 +320,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::TlsLdToLocalExec64,
                                 object::elf::R_X86_64_NONE,
-                                false,
+                                true,
                             );
                         }
                         // PC-relative indirect call
@@ -323,7 +328,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::TlsLdToLocalExecNoPlt,
                                 object::elf::R_X86_64_NONE,
-                                false,
+                                true,
                             );
                         }
                         _ => {}
@@ -338,7 +343,7 @@ impl crate::arch::Relaxation for Relaxation {
                 return create(
                     RelaxationKind::TlsDescToLocalExec,
                     object::elf::R_X86_64_TPOFF32,
-                    false,
+                    output_kind.is_static_executable(),
                 );
             }
             // Note, the conditions on this relaxation (is_executable) must match those on
@@ -349,7 +354,7 @@ impl crate::arch::Relaxation for Relaxation {
                 return create(
                     RelaxationKind::TlsDescToInitialExec,
                     object::elf::R_X86_64_GOTTPOFF,
-                    false,
+                    output_kind.is_static_executable(),
                 );
             }
             // Note, the conditions on this relaxation (is_executable) must match those on
@@ -358,7 +363,7 @@ impl crate::arch::Relaxation for Relaxation {
                 return create(
                     RelaxationKind::SkipTlsDescCall,
                     object::elf::R_X86_64_NONE,
-                    false,
+                    output_kind.is_static_executable(),
                 );
             }
             _ => return None,
