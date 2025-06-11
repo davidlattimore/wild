@@ -1,5 +1,6 @@
 use crate::Binary;
 use crate::Result;
+use crate::asm_diff::BasicValueKind;
 use anyhow::Context;
 use anyhow::bail;
 use linker_utils::elf::BitMask;
@@ -132,9 +133,8 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
     /// that we know the full address is 0x12345.
     fn is_complete_chain(chain: impl Iterator<Item = Self::RType>) -> bool;
 
-    fn is_aarch64() -> bool {
-        false
-    }
+    /// Returns a `BasicValueKind` type that corresponds to a `RelocationKind::TpOff` relocation.
+    fn get_basic_value_for_tp_offset() -> BasicValueKind;
 }
 
 pub(crate) trait RType: Copy + Debug + Display + Eq + PartialEq {

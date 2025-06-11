@@ -1,5 +1,4 @@
 use crate::arch::Arch;
-use crate::arch::TcbPlacement;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::ensure;
 use crate::error;
@@ -88,11 +87,6 @@ impl crate::arch::Arch for AArch64 {
 
     fn local_symbols_in_debug_info() -> bool {
         false
-    }
-
-    fn tcb_placement() -> TcbPlacement {
-        // TODO: #864
-        TcbPlacement::BeforeTp
     }
 
     fn tp_offset_start(layout: &Layout<'_>) -> u64 {

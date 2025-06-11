@@ -1665,7 +1665,7 @@ fn arrow() -> ColoredString {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-enum BasicValueKind {
+pub(crate) enum BasicValueKind {
     /// The value is a pointer. We can do things like check to see if it's pointing to a PLT or
     /// GOT entry. If we tried to do that with things that weren't pointers, then we might get
     /// false PLT/GOT matches.
@@ -2468,11 +2468,7 @@ fn value_kind_for_relocation<A: Arch>(
             ValueKind::Got(BasicValueKind::Pointer)
         }
         RelocationKind::DtpOff => ValueKind::Unwrapped(BasicValueKind::TlsOffset),
-        RelocationKind::TpOff if A::is_aarch64() => {
-            ValueKind::Unwrapped(BasicValueKind::Aarch64TlsOffset)
-        }
-        RelocationKind::TpOff => ValueKind::Unwrapped(BasicValueKind::TlsOffset),
-
+        RelocationKind::TpOff => ValueKind::Unwrapped(A::get_basic_value_for_tp_offset()),
         RelocationKind::GotTpOff
         | RelocationKind::GotTpOffGot
         | RelocationKind::GotTpOffGotBase => ValueKind::Got(BasicValueKind::TlsOffset),
