@@ -3140,11 +3140,13 @@ impl<'data> AddressIndex<'data> {
         };
 
         let data = got_section.data()?;
-        let entry_size = size_of::<u64>();
+        // Ensure we don't try to cast it to `[u64]`, as it may not be aligned.
+        let (raw_entries, tail) = data.as_chunks::<{ size_of::<u64>() }>();
 
-        let raw_entries: &[u64] = object::slice_from_bytes(data, data.len() / entry_size)
-            .unwrap()
-            .0;
+        ensure!(
+            tail.is_empty(),
+            "GOT table `{table_name}` does not have an aligned length"
+        );
 
         let base = got_section.address();
         Ok(Some(GotIndex {
@@ -3268,7 +3270,7 @@ struct GotIndex<'data> {
     /// The addresses covered by this table.
     address_range: Range<u64>,
 
-    entries: &'data [u64],
+    entries: &'data [[u8; size_of::<u64>()]],
 }
 
 impl<'data> GotIndex<'data> {
@@ -3365,12 +3367,13 @@ impl<'data> GotIndex<'data> {
                 .entries
                 .get((offset / entry_size) as usize)
                 .context("got_address past end of index range")?;
+            let raw_value = u64::from_le_bytes(*raw_value);
 
             match relocation_kind {
                 RelocationKind::GotTpOff
                 | RelocationKind::GotTpOffGot
                 | RelocationKind::GotTpOffGotBase => {
-                    Ok(Referent::UnmatchedTlsOffset(*raw_value as i64))
+                    Ok(Referent::UnmatchedTlsOffset(raw_value as i64))
                 }
                 RelocationKind::TlsDescCall => Ok(Referent::TlsDescCall),
                 RelocationKind::Absolute
@@ -3389,7 +3392,7 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::PltRelative
                 | RelocationKind::GotRelative
                 | RelocationKind::None
-                | RelocationKind::PairSubtraction => Ok(Referent::Absolute(*raw_value)),
+                | RelocationKind::PairSubtraction => Ok(Referent::Absolute(raw_value)),
                 RelocationKind::TlsGd
                 | RelocationKind::TlsGdGot
                 | RelocationKind::TlsGdGotBase
