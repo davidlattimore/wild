@@ -2890,8 +2890,6 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
         | RelocationKind::RelativeRiscVLow12
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
-        | RelocationKind::TpOffAArch64
-        | RelocationKind::TpOffRiscV
         | RelocationKind::SymRelGotBase
         | RelocationKind::PairSubtraction => ResolutionFlags::DIRECT,
         RelocationKind::None | RelocationKind::AbsoluteAArch64 => ResolutionFlags::empty(),
