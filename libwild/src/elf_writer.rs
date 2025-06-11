@@ -5,7 +5,6 @@ use self::elf::get_page_mask;
 use crate::alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
-use crate::arch::TcbPlacement;
 use crate::args::Args;
 use crate::args::BuildIdOption;
 use crate::args::OutputKind;
@@ -517,7 +516,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         }
     }
 
-    fn process_resolution<A: Arch>(&mut self, res: &Resolution) -> Result {
+    fn process_resolution<A: Arch>(&mut self, layout: Option<&Layout>, res: &Resolution) -> Result {
         let Some(got_address) = res.got_address else {
             return Ok(());
         };
@@ -531,7 +530,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             || resolution_flags.needs_got_tls_descriptor()
         {
             if resolution_flags.needs_got_tls_offset() {
-                self.process_got_tls_offset::<A>(res, got_address)?;
+                self.process_got_tls_offset::<A>(
+                    res,
+                    layout.context("Layout must be present")?,
+                    got_address,
+                )?;
                 got_address += crate::elf::GOT_ENTRY_SIZE;
             }
             if resolution_flags.needs_got_tls_module() {
@@ -575,7 +578,12 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         Ok(())
     }
 
-    fn process_got_tls_offset<A: Arch>(&mut self, res: &Resolution, got_address: u64) -> Result {
+    fn process_got_tls_offset<A: Arch>(
+        &mut self,
+        res: &Resolution,
+        layout: &Layout,
+        got_address: u64,
+    ) -> Result {
         let got_entry = self.take_next_got_entry()?;
         if res.value_flags.is_dynamic()
             || (res.resolution_flags.needs_export_dynamic() && res.value_flags.is_interposable())
@@ -597,11 +605,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         }
         if self.output_kind.is_executable() {
             // Convert the address to an offset relative to the TCB.
-            let value = match A::tcb_placement() {
-                TcbPlacement::BeforeTp => address.wrapping_sub(self.tls.end),
-                TcbPlacement::AfterTp => address.wrapping_sub(self.tls.start),
-            };
-            *got_entry = value;
+
+            *got_entry = address.wrapping_sub(A::tp_offset_start(layout));
         } else {
             debug_assert_bail!(
                 *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
@@ -1090,12 +1095,14 @@ fn write_object<A: Arch>(
     for (symbol_id, resolution) in layout.resolutions_in_range(object.symbol_id_range) {
         let _span = tracing::trace_span!("Symbol", %symbol_id).entered();
         if let Some(res) = resolution {
-            table_writer.process_resolution::<A>(res).with_context(|| {
-                format!(
-                    "Failed to process `{}` with resolution {res:?}",
-                    layout.symbol_debug(symbol_id)
-                )
-            })?;
+            table_writer
+                .process_resolution::<A>(Some(layout), res)
+                .with_context(|| {
+                    format!(
+                        "Failed to process `{}` with resolution {res:?}",
+                        layout.symbol_debug(symbol_id)
+                    )
+                })?;
 
             // Dynamic symbols that we define are handled by the epilogue so that they can be
             // written in the correct order. Here, we only need to handle weak symbols that we
@@ -2362,26 +2369,32 @@ fn write_plt_got_entries<A: Arch>(
     // Write a pair of GOT entries for use by any TLSLD or TLSGD relocations.
     if let Some(got_address) = prelude.tlsld_got_entry {
         if layout.args().output_kind().is_executable() {
-            table_writer.process_resolution::<A>(&Resolution {
-                raw_value: crate::elf::CURRENT_EXE_TLS_MOD,
-                dynamic_symbol_index: None,
-                got_address: Some(got_address),
-                plt_address: None,
-                resolution_flags: ResolutionFlags::GOT,
-                value_flags: ValueFlags::ABSOLUTE,
-            })?;
+            table_writer.process_resolution::<A>(
+                Some(layout),
+                &Resolution {
+                    raw_value: crate::elf::CURRENT_EXE_TLS_MOD,
+                    dynamic_symbol_index: None,
+                    got_address: Some(got_address),
+                    plt_address: None,
+                    resolution_flags: ResolutionFlags::GOT,
+                    value_flags: ValueFlags::ABSOLUTE,
+                },
+            )?;
         } else {
             table_writer.take_next_got_entry()?;
             table_writer.write_dtpmod_relocation::<A>(got_address.get(), 0)?;
         }
-        table_writer.process_resolution::<A>(&Resolution {
-            raw_value: 0,
-            dynamic_symbol_index: None,
-            got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
-            plt_address: None,
-            resolution_flags: ResolutionFlags::GOT,
-            value_flags: ValueFlags::ABSOLUTE,
-        })?;
+        table_writer.process_resolution::<A>(
+            Some(layout),
+            &Resolution {
+                raw_value: 0,
+                dynamic_symbol_index: None,
+                got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
+                plt_address: None,
+                resolution_flags: ResolutionFlags::GOT,
+                value_flags: ValueFlags::ABSOLUTE,
+            },
+        )?;
     }
 
     write_internal_symbols_plt_got_entries::<A>(&prelude.internal_symbols, table_writer, layout)?;
@@ -3394,9 +3407,11 @@ fn write_internal_symbols_plt_got_entries<A: Arch>(
             continue;
         }
         if let Some(res) = layout.local_symbol_resolution(symbol_id) {
-            table_writer.process_resolution::<A>(res).with_context(|| {
-                format!("Failed to process `{}`", layout.symbol_debug(symbol_id))
-            })?;
+            table_writer
+                .process_resolution::<A>(Some(layout), res)
+                .with_context(|| {
+                    format!("Failed to process `{}`", layout.symbol_debug(symbol_id))
+                })?;
         }
     }
     Ok(())
@@ -3448,12 +3463,14 @@ fn write_dynamic_file<A: Arch>(
                 }
             }
 
-            table_writer.process_resolution::<A>(res).with_context(|| {
-                format!(
-                    "Failed to write {}",
-                    layout.symbol_db.symbol_debug(symbol_id)
-                )
-            })?;
+            table_writer
+                .process_resolution::<A>(Some(layout), res)
+                .with_context(|| {
+                    format!(
+                        "Failed to write {}",
+                        layout.symbol_db.symbol_debug(symbol_id)
+                    )
+                })?;
         }
     }
 
@@ -3671,6 +3688,6 @@ pub(crate) fn verify_resolution_allocation(
         debug_symbol_writer,
         0,
     );
-    table_writer.process_resolution::<crate::x86_64::X86_64>(resolution)?;
+    table_writer.process_resolution::<crate::x86_64::X86_64>(None, resolution)?;
     table_writer.validate_empty(mem_sizes)
 }

@@ -1,5 +1,4 @@
 use crate::arch::Arch;
-use crate::arch::TcbPlacement;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
 use crate::error::Result;
@@ -75,10 +74,6 @@ impl crate::arch::Arch for RiscV64 {
 
     fn local_symbols_in_debug_info() -> bool {
         true
-    }
-
-    fn tcb_placement() -> TcbPlacement {
-        TcbPlacement::AfterTp
     }
 
     fn tp_offset_start(layout: &crate::layout::Layout) -> u64 {
