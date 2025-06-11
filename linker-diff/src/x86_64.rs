@@ -4,6 +4,7 @@ use crate::arch::PltEntry;
 use crate::arch::RType as _;
 use crate::arch::Relaxation;
 use crate::arch::RelaxationByteRange;
+use crate::asm_diff::BasicValueKind;
 use iced_x86::Formatter as _;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -367,6 +368,10 @@ impl Arch for X86_64 {
     fn is_complete_chain(_chain: impl Iterator<Item = Self::RType>) -> bool {
         // We don't use relocation chains on x86, so all chains are "complete".
         true
+    }
+
+    fn get_basic_value_for_tp_offset() -> crate::asm_diff::BasicValueKind {
+        BasicValueKind::TlsOffset
     }
 }
 

@@ -2,6 +2,7 @@ use crate::arch::Arch;
 use crate::arch::Instruction;
 use crate::arch::Relaxation;
 use crate::arch::RelaxationByteRange;
+use crate::asm_diff::BasicValueKind;
 use anyhow::Context;
 use anyhow::Result;
 use itertools::Itertools;
@@ -329,8 +330,8 @@ impl Arch for AArch64 {
         }
     }
 
-    fn is_aarch64() -> bool {
-        true
+    fn get_basic_value_for_tp_offset() -> crate::asm_diff::BasicValueKind {
+        BasicValueKind::Aarch64TlsOffset
     }
 }
 
