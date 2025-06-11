@@ -102,4 +102,6 @@ pub(crate) trait Relaxation {
     fn debug_kind(&self) -> impl std::fmt::Debug;
 
     fn next_modifier(&self) -> RelocationModifier;
+
+    fn is_mandatory(&self) -> bool;
 }

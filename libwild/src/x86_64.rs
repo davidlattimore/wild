@@ -91,6 +91,7 @@ impl crate::arch::Arch for X86_64 {
 pub(crate) struct Relaxation {
     kind: RelaxationKind,
     rel_info: RelocationKindInfo,
+    mandatory: bool,
 }
 
 impl crate::arch::Relaxation for Relaxation {
@@ -108,11 +109,15 @@ impl crate::arch::Relaxation for Relaxation {
         // looks.
         #[allow(clippy::unnecessary_wraps)]
         #[inline(always)]
-        fn create(kind: RelaxationKind, new_r_type: u32) -> Option<Relaxation> {
+        fn create(kind: RelaxationKind, new_r_type: u32, mandatory: bool) -> Option<Relaxation> {
             // This only fails for relocation types that we don't support and if we relax to a type
             // we don't support, then that's a bug.
             let rel_info = X86_64::relocation_from_raw(new_r_type).unwrap();
-            Some(Relaxation { kind, rel_info })
+            Some(Relaxation {
+                kind,
+                rel_info,
+                mandatory,
+            })
         }
 
         let is_known_address = value_flags.is_address();
@@ -128,7 +133,7 @@ impl crate::arch::Relaxation for Relaxation {
         if value_flags.is_ifunc() {
             return match relocation_kind {
                 object::elf::R_X86_64_PC32 => {
-                    return create(RelaxationKind::NoOp, object::elf::R_X86_64_PLT32);
+                    return create(RelaxationKind::NoOp, object::elf::R_X86_64_PLT32, true);
                 }
                 _ => None,
             };
@@ -164,6 +169,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::RexMovIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
+                                true,
                             );
                         }
                         // sub *x(%rip), reg
@@ -171,6 +177,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::RexSubIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
+                                true,
                             );
                         }
                         // cmp *x(%rip), reg
@@ -178,6 +185,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::RexCmpIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
+                                true,
                             );
                         }
                         _ => return None,
@@ -189,6 +197,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::MovIndirectToLea,
                                 object::elf::R_X86_64_PC32,
+                                true,
                             );
                         }
                         _ => return None,
@@ -203,11 +212,13 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::MovIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
+                                true,
                             );
                         } else if !interposable {
                             return create(
                                 RelaxationKind::MovIndirectToLea,
                                 object::elf::R_X86_64_PC32,
+                                true,
                             );
                         }
                     }
@@ -220,6 +231,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::CallIndirectToRelative,
                                 object::elf::R_X86_64_PC32,
+                                true,
                             );
                         }
                         // jmp *x(%rip)
@@ -227,6 +239,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::JmpIndirectToRelative,
                                 object::elf::R_X86_64_PC32,
+                                true,
                             );
                         }
                         _ => return None,
@@ -241,6 +254,7 @@ impl crate::arch::Relaxation for Relaxation {
                         return create(
                             RelaxationKind::MovIndirectToLea,
                             object::elf::R_X86_64_PC32,
+                            false,
                         );
                     }
                     _ => {}
@@ -254,23 +268,24 @@ impl crate::arch::Relaxation for Relaxation {
                         return create(
                             RelaxationKind::RexMovIndirectToAbsolute,
                             object::elf::R_X86_64_TPOFF32,
+                            false,
                         );
                     }
                     _ => {}
                 }
             }
             object::elf::R_X86_64_PLT32 if !interposable => {
-                return create(RelaxationKind::NoOp, object::elf::R_X86_64_PC32);
+                return create(RelaxationKind::NoOp, object::elf::R_X86_64_PC32, true);
             }
             object::elf::R_X86_64_PLTOFF64 if !interposable => {
-                return create(RelaxationKind::NoOp, object::elf::R_X86_64_GOTOFF64);
+                return create(RelaxationKind::NoOp, object::elf::R_X86_64_GOTOFF64, false);
             }
             object::elf::R_X86_64_TLSGD if !interposable && output_kind.is_executable() => {
                 let kind = match TlsGdForm::identify(section_bytes, offset)? {
                     TlsGdForm::Regular => RelaxationKind::TlsGdToLocalExec,
                     TlsGdForm::Large => RelaxationKind::TlsGdToLocalExecLarge,
                 };
-                return create(kind, object::elf::R_X86_64_TPOFF32);
+                return create(kind, object::elf::R_X86_64_TPOFF32, false);
             }
             object::elf::R_X86_64_TLSGD if output_kind.is_executable() => {
                 let kind = match TlsGdForm::identify(section_bytes, offset)? {
@@ -280,7 +295,7 @@ impl crate::arch::Relaxation for Relaxation {
                         return None;
                     }
                 };
-                return create(kind, object::elf::R_X86_64_GOTTPOFF);
+                return create(kind, object::elf::R_X86_64_GOTTPOFF, false);
             }
             object::elf::R_X86_64_TLSLD if output_kind.is_executable() => {
                 // lea    0x0(%rip),%rdi
@@ -291,6 +306,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::TlsLdToLocalExec,
                                 object::elf::R_X86_64_NONE,
+                                false,
                             );
                         }
                         // TODO: Make a test for this. Also, the description of TlsLdToLocalExec64
@@ -299,6 +315,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::TlsLdToLocalExec64,
                                 object::elf::R_X86_64_NONE,
+                                false,
                             );
                         }
                         // PC-relative indirect call
@@ -306,6 +323,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::TlsLdToLocalExecNoPlt,
                                 object::elf::R_X86_64_NONE,
+                                false,
                             );
                         }
                         _ => {}
@@ -320,6 +338,7 @@ impl crate::arch::Relaxation for Relaxation {
                 return create(
                     RelaxationKind::TlsDescToLocalExec,
                     object::elf::R_X86_64_TPOFF32,
+                    false,
                 );
             }
             // Note, the conditions on this relaxation (is_executable) must match those on
@@ -330,12 +349,17 @@ impl crate::arch::Relaxation for Relaxation {
                 return create(
                     RelaxationKind::TlsDescToInitialExec,
                     object::elf::R_X86_64_GOTTPOFF,
+                    false,
                 );
             }
             // Note, the conditions on this relaxation (is_executable) must match those on
             // GOTPC32_TLSDESC above.
             object::elf::R_X86_64_TLSDESC_CALL if output_kind.is_executable() => {
-                return create(RelaxationKind::SkipTlsDescCall, object::elf::R_X86_64_NONE);
+                return create(
+                    RelaxationKind::SkipTlsDescCall,
+                    object::elf::R_X86_64_NONE,
+                    false,
+                );
             }
             _ => return None,
         };
@@ -356,6 +380,10 @@ impl crate::arch::Relaxation for Relaxation {
 
     fn next_modifier(&self) -> RelocationModifier {
         self.kind.next_modifier()
+    }
+
+    fn is_mandatory(&self) -> bool {
+        self.mandatory
     }
 }
 
