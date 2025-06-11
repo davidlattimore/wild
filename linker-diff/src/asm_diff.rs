@@ -1965,7 +1965,7 @@ impl<'data> RelaxationTester<'data> {
             let relative_to = self.get_relative_to::<A>(offset, relocation_info)?;
 
             if let Some(kind) =
-                value_kind_for_relocation(relocation_info.kind, &self.bin.address_index)
+                value_kind_for_relocation::<A>(relocation_info.kind, &self.bin.address_index)
             {
                 value_kind = kind;
             }
@@ -2271,8 +2271,6 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::TlsLdGot
             | RelocationKind::DtpOff
             | RelocationKind::TpOff
-            | RelocationKind::TpOffAArch64
-            | RelocationKind::TpOffRiscV
             | RelocationKind::TlsDescCall
             | RelocationKind::PairSubtraction
             | RelocationKind::None => 0,
@@ -2442,7 +2440,7 @@ fn matches_are_compatible<A: Arch>(matches: &[RelaxationMatch<'_, A>]) -> bool {
 }
 
 /// Returns what kind of value we can expect when we extract the value written by a relocation.
-fn value_kind_for_relocation(
+fn value_kind_for_relocation<A: Arch>(
     relocation_kind: RelocationKind,
     address_index: &AddressIndex,
 ) -> Option<ValueKind> {
@@ -2469,10 +2467,12 @@ fn value_kind_for_relocation(
         RelocationKind::Got | RelocationKind::GotRelGotBase | RelocationKind::GotRelative => {
             ValueKind::Got(BasicValueKind::Pointer)
         }
-        RelocationKind::DtpOff | RelocationKind::TpOff => {
-            ValueKind::Unwrapped(BasicValueKind::TlsOffset)
+        RelocationKind::DtpOff => ValueKind::Unwrapped(BasicValueKind::TlsOffset),
+        RelocationKind::TpOff if A::is_aarch64() => {
+            ValueKind::Unwrapped(BasicValueKind::Aarch64TlsOffset)
         }
-        RelocationKind::TpOffAArch64 => ValueKind::Unwrapped(BasicValueKind::Aarch64TlsOffset),
+        RelocationKind::TpOff => ValueKind::Unwrapped(BasicValueKind::TlsOffset),
+
         RelocationKind::GotTpOff
         | RelocationKind::GotTpOffGot
         | RelocationKind::GotTpOffGotBase => ValueKind::Got(BasicValueKind::TlsOffset),
@@ -2491,10 +2491,6 @@ fn value_kind_for_relocation(
             ValueKind::Got(BasicValueKind::TlsGd)
         }
         RelocationKind::TlsDescCall | RelocationKind::None | RelocationKind::PairSubtraction => {
-            return None;
-        }
-        // TODO
-        RelocationKind::TpOffRiscV => {
             return None;
         }
     };
@@ -3398,8 +3394,6 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::TlsLdGotBase
                 | RelocationKind::DtpOff
                 | RelocationKind::TpOff
-                | RelocationKind::TpOffAArch64
-                | RelocationKind::TpOffRiscV
                 | RelocationKind::TlsDesc
                 | RelocationKind::TlsDescGot
                 | RelocationKind::TlsDescGotBase => {

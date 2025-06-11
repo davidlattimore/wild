@@ -826,12 +826,6 @@ pub enum RelocationKind {
     /// The offset of a TLS variable within the executable's TLS storage.
     TpOff,
 
-    /// The offset of a TLS variable within the executable's TLS storage, AArch64 TLS block layout.
-    TpOffAArch64,
-
-    /// The offset of a TLS variable within the executable's TLS storage, RISC-V TLS block layout.
-    TpOffRiscV,
-
     /// The address of a TLS descriptor structure, relative to the place of the relocation.
     TlsDesc,
 
@@ -867,7 +861,7 @@ impl RelocationKind {
                 | Self::TlsLd
                 | Self::TlsLdGot
                 | Self::TlsLdGotBase
-                | Self::TpOffAArch64
+                | Self::TpOff
         )
     }
 }

@@ -3,6 +3,7 @@
 use crate::args::OutputKind;
 use crate::bail;
 use crate::error::Result;
+use crate::layout::Layout;
 use crate::resolution::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -51,6 +52,8 @@ pub(crate) trait Arch {
 
     // Get TCB placement variant.
     fn tcb_placement() -> TcbPlacement;
+
+    fn tp_offset_start(layout: &Layout) -> u64;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

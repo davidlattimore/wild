@@ -2034,15 +2034,7 @@ fn apply_relocation<A: Arch>(
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::TpOff => resolution
             .value()
-            .wrapping_sub(layout.tls_end_address())
-            .wrapping_add(addend as u64),
-        RelocationKind::TpOffAArch64 => resolution
-            .value()
-            .wrapping_sub(layout.tls_start_address_aarch64())
-            .wrapping_add(addend as u64),
-        RelocationKind::TpOffRiscV => resolution
-            .value()
-            .wrapping_sub(layout.tls_start_address())
+            .wrapping_sub(A::tp_offset_start(layout))
             .wrapping_add(addend as u64),
         RelocationKind::TlsDesc => resolution
             .tls_descriptor_got_address()?

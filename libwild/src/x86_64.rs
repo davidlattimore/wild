@@ -86,6 +86,10 @@ impl crate::arch::Arch for X86_64 {
     fn tcb_placement() -> TcbPlacement {
         TcbPlacement::BeforeTp
     }
+
+    fn tp_offset_start(layout: &crate::layout::Layout) -> u64 {
+        layout.tls_end_address()
+    }
 }
 
 #[derive(Debug, Clone)]
