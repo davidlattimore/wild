@@ -1574,10 +1574,11 @@ impl LinkCommand {
 
                     if direct_config.is_static {
                         command.arg("-static");
-                    } else {
-                        command
-                            .arg("-dynamic-linker")
-                            .arg(dynamic_linker_path(cross_arch));
+                    // TODO: `export-dynamic` test reproduces the problem only when using neither `-static` nor `-dynamic-linker`
+                    // } else {
+                    //     command
+                    //         .arg("-dynamic-linker")
+                    //         .arg(dynamic_linker_path(cross_arch));
                     }
 
                     if let Some(version_script) = &config.version_script {
@@ -2371,7 +2372,8 @@ fn integration_test(
         "duplicate_strong_symbols.c",
         "preinit-array.c",
         "exception.cc",
-        "z-defs.c"
+        "z-defs.c",
+        "export-dynamic.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
