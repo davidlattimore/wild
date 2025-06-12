@@ -2388,6 +2388,7 @@ fn integration_test(
         "exception.cc",
         "z-defs.c",
         "z-undefs.c"
+        "export-dynamic.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
