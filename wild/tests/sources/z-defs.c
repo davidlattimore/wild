@@ -1,5 +1,5 @@
 //#LinkArgs:-Bshareable -z defs
-//#Static:false
+//#Mode:dynamic
 //#ExpectError:foo
 
 int foo(void);

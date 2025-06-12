@@ -1,5 +1,5 @@
 //#LinkerScript:linker-script.ld
-//#Static:false
+//#Mode:dynamic
 //#LinkArgs:-shared -z now
 //#RunEnabled:false
 //#DiffIgnore:section.got
