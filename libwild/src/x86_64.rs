@@ -310,8 +310,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::TlsLdToLocalExec,
                                 object::elf::R_X86_64_NONE,
-                                // TODO: verify
-                                true,
+                                false,
                             );
                         }
                         // TODO: Make a test for this. Also, the description of TlsLdToLocalExec64
@@ -320,7 +319,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::TlsLdToLocalExec64,
                                 object::elf::R_X86_64_NONE,
-                                true,
+                                false,
                             );
                         }
                         // PC-relative indirect call
@@ -328,7 +327,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::TlsLdToLocalExecNoPlt,
                                 object::elf::R_X86_64_NONE,
-                                true,
+                                false,
                             );
                         }
                         _ => {}
