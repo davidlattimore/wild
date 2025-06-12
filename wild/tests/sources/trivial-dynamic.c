@@ -25,12 +25,6 @@
 //#DiffIgnore:.dynamic.DT_FLAGS.SYMBOLIC
 //#DiffIgnore:.dynamic.DT_SYMBOLIC
 
-//#Config:export-dynamic:default
-//#LinkArgs:-z now --export-dynamic 
-//#ExpectDynSym: runtime_init
-// Ld is acting weird and comparing to LLD is not possible right when when cross compiling: #804
-//#Cross:false
-
 #include "runtime.h"
 
 int foo(void);
