@@ -1,7 +1,7 @@
 //#Config:default
 //#Object:runtime.c
 //#EnableLinker:lld
-//#Static:false
+//#Mode:dynamic
 //#LinkArgs:-z now
 //#Shared:trivial-dynamic-2.c
 //#EnableLinker:lld

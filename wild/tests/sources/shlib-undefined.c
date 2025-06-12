@@ -1,6 +1,6 @@
 //#AbstractConfig:default
 //#Object:runtime.c
-//#Static:false
+//#Mode:dynamic
 //#Shared:shlib-undefined-2.c
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT

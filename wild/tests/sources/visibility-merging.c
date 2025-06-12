@@ -1,4 +1,4 @@
-//#Static:false
+//#Mode:dynamic
 //#LinkArgs:-shared -z now
 //#Object:visibility-merging-1.c
 //#RunEnabled:false

@@ -483,15 +483,18 @@ enum RustcChannel {
     Nightly,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct DirectConfig {
-    is_static: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, EnumString, Default)]
+#[strum(serialize_all = "snake_case")]
+enum Mode {
+    Dynamic,
+    #[default]
+    Static,
+    Unspecified,
 }
 
-impl Default for DirectConfig {
-    fn default() -> Self {
-        Self { is_static: true }
-    }
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+struct DirectConfig {
+    mode: Mode,
 }
 
 impl Config {
@@ -767,7 +770,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                     .assertions
                     .contains_strings
                     .push(arg.trim().to_owned()),
-                "Static" => config.linker_driver.direct_mut()?.is_static = arg.parse()?,
+                "Mode" => config.linker_driver.direct_mut()?.mode = arg.parse()?,
                 "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
                 "DiffEnabled" => {
                     config.should_diff = arg.parse().context("Invalid bool for DiffEnabled")?
@@ -1577,12 +1580,16 @@ impl LinkCommand {
                         command.arg("-m").arg(arch.emulation_name());
                     }
 
-                    if direct_config.is_static {
-                        command.arg("-static");
-                    } else {
-                        command
-                            .arg("-dynamic-linker")
-                            .arg(dynamic_linker_path(cross_arch));
+                    match direct_config.mode {
+                        Mode::Dynamic => {
+                            command
+                                .arg("-dynamic-linker")
+                                .arg(dynamic_linker_path(cross_arch));
+                        }
+                        Mode::Static => {
+                            command.arg("-static");
+                        }
+                        Mode::Unspecified => {}
                     }
 
                     if let Some(version_script) = &config.version_script {
