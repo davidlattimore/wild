@@ -7,7 +7,7 @@
 //#Config:default
 //#RunEnabled:false
 //#LinkArgs:-shared -z now
-//#Static:false
+//#Mode:dynamic
 // TODO: https://rust-lang.zulipchat.com/#narrow/channel/421156-gsoc/topic/Project.3A.20Improve.20Wild.20linker.20test.20suites/near/521482968
 //#Cross:false
 //#Archive:shared-a1.c,shared-a2.c

@@ -1,6 +1,6 @@
 // Makes sure that having both verdef and verneed doesn't cause problems.
 
-//#Static:false
+//#Mode:dynamic
 //#Object:runtime.c
 //#VersionScript:mixed-verdef-verneed.map
 //#Shared:mixed-verdef-verneed-2.c

@@ -1,6 +1,6 @@
 //#Object:runtime.c
 //#EnableLinker:lld
-//#Static:false
+//#Mode:dynamic
 //#CompSoArgs:-fPIC
 //#LinkArgs:-z now
 //#Shared:copy-relocations-2.c
