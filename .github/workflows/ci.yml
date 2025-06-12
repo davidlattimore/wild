@@ -143,8 +143,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Install Nix
         uses: nixbuild/nix-quick-install-action@v30
@@ -158,8 +156,32 @@ jobs:
           echo "Matrix: $matrix"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"      
 
+  nix-cache:
+    name: Refresh Nix Cache
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Wild
+        run: nix build -L --show-trace
+
+      - name: Cache Nix Store
+        uses: nix-community/cache-nix-action/save@v6
+        id: cache
+        with:
+          primary-key: ${{ runner.os }}-${{ hashFiles( 'flake.lock' ) }}
+
   nix-checks:
-    needs: calc-matrix
+    needs:
+      - calc-matrix
+      - nix-cache
     strategy:
       fail-fast: false
       matrix:
@@ -170,13 +192,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Install Nix
         uses: cachix/install-nix-action@v31
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Restore Nix Store
+        uses: nix-community/cache-nix-action/restore@v6
+        id: cache
+        with:
+          primary-key: ${{ runner.os }}-${{ hashFiles( 'flake.lock' )}}
+      
       - name: Run ${{ matrix.check }}
         run: nix build .#checks.x86_64-linux.${{ matrix.check }} -L --show-trace
