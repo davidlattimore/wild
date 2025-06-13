@@ -2368,6 +2368,8 @@ fn write_plt_got_entries<A: Arch>(
 ) -> Result {
     // Write a pair of GOT entries for use by any TLSLD or TLSGD relocations.
     if let Some(got_address) = prelude.tlsld_got_entry {
+        let mut raw_value = 0;
+
         if layout.args().output_kind().is_executable() {
             table_writer.process_resolution::<A>(
                 Some(layout),
@@ -2380,14 +2382,19 @@ fn write_plt_got_entries<A: Arch>(
                     value_flags: ValueFlags::ABSOLUTE,
                 },
             )?;
+
+            // For executables, DTPOFF values are negative values relative to the thread pointer,
+            // which is at the end of the TLS segment.
+            raw_value = A::tp_offset_start(layout) - layout.tls_start_address();
         } else {
             table_writer.take_next_got_entry()?;
             table_writer.write_dtpmod_relocation::<A>(got_address.get(), 0)?;
         }
+
         table_writer.process_resolution::<A>(
             Some(layout),
             &Resolution {
-                raw_value: 0,
+                raw_value,
                 dynamic_symbol_index: None,
                 got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
                 plt_address: None,
