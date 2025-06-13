@@ -58,6 +58,7 @@ pub struct Args {
     pub(crate) build_id: BuildIdOption,
     pub(crate) file_write_mode: Option<FileWriteMode>,
     pub(crate) no_undefined: bool,
+    pub(crate) allow_shlib_undefined: bool,
     pub(crate) needs_origin_handling: bool,
     pub(crate) needs_nodelete_handling: bool,
     pub(crate) allow_copy_relocations: bool,
@@ -276,6 +277,7 @@ impl Default for Args {
             files_per_group: None,
             exclude_libs: false,
             no_undefined: false,
+            allow_shlib_undefined: false,
             should_print_version: false,
             sysroot: None,
             save_dir: Default::default(),
@@ -604,6 +606,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             // Using debug fuel with more than one thread would likely give non-deterministic
             // results.
             args.num_threads = NonZeroUsize::new(1).unwrap();
+        } else if long_arg_eq("allow-shlib-undefined") {
+            args.allow_shlib_undefined = true;
+        } else if long_arg_eq("no-allow-shlib-undefined") {
+            args.allow_shlib_undefined = false;
         } else if long_arg_eq("no-undefined") {
             args.no_undefined = true;
         } else if let Some(rest) = long_arg_split_prefix("undefined=") {

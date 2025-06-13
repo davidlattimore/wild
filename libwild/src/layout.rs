@@ -4857,30 +4857,47 @@ impl<'data> DynamicLayoutState<'data> {
 
         common.allocate(part_id::DYNSTR, self.lib_name.len() as u64 + 1);
 
-        self.request_all_undefined_symbols(resources, queue);
-
-        Ok(())
+        self.request_all_undefined_symbols(resources, queue)
     }
 
     fn request_all_undefined_symbols(
         &self,
         resources: &GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
-    ) {
+    ) -> Result {
         for symbol_id in self.symbol_id_range() {
-            if resources.symbol_db.is_canonical(symbol_id) {
-                continue;
-            }
-
             let definition_symbol_id = resources.symbol_db.definition(symbol_id);
-            let file_id = resources.symbol_db.file_id_for_symbol(definition_symbol_id);
 
-            queue.send_work(
-                resources,
-                file_id,
-                WorkItem::ExportDynamic(definition_symbol_id),
-            );
+            let value_flags = resources
+                .symbol_db
+                .local_symbol_value_flags(definition_symbol_id);
+
+            if value_flags.is_dynamic() && value_flags.is_absolute() {
+                // Our shared object references an undefined symbol. Whether that is an error or
+                // not, depends on flags and whether the symbol is weak.
+                if !resources.symbol_db.args.allow_shlib_undefined {
+                    let symbol = self
+                        .object
+                        .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
+                    if !symbol.is_weak() {
+                        bail!(
+                            "undefined reference to `{}` from {self}",
+                            resources.symbol_db.symbol_name_for_display(symbol_id)
+                        );
+                    }
+                }
+            } else if definition_symbol_id != symbol_id {
+                let file_id = resources.symbol_db.file_id_for_symbol(definition_symbol_id);
+
+                queue.send_work(
+                    resources,
+                    file_id,
+                    WorkItem::ExportDynamic(definition_symbol_id),
+                );
+            }
         }
+
+        Ok(())
     }
 
     fn finalise_copy_relocations(
