@@ -217,7 +217,12 @@ impl Linker {
         )?;
 
         if self.is_wild() || !is_newer(so_path, obj_paths.iter()) || !command.can_skip {
-            command.run(config)?;
+            // If we're expecting errors, those errors should only occur when we link the final
+            // binary, not when we link any dependent shared objects.
+            let mut config = config.clone();
+            config.expect_errors = Vec::new();
+
+            command.run(&config)?;
             write_cmd_file(so_path, &command.to_string())?;
         }
 
@@ -1657,7 +1662,9 @@ impl LinkCommand {
                 .with_context(|| format!("Failed to run command: {:?}", self.command))?;
 
             if output.status.success() {
-                bail!("Linker returned exit status of 0, when an error was expected");
+                bail!(
+                    "Linker returned exit status of 0, when an error was expected. Command:\n{self}",
+                );
             }
 
             for expected_error in &config.expect_errors {
@@ -2363,6 +2370,7 @@ fn integration_test(
         "visibility-merging.c",
         "tls-local-exec.c",
         "undefined_symbols.c",
+        "shlib-undefined.c",
         "whole_archive.c",
         "entry_arg.c",
         "dynamic-bss-only.c",
