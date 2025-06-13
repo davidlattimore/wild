@@ -1619,9 +1619,6 @@ impl LinkCommand {
                     command.env(libwild::args::WRITE_TRACE_ENV, "1");
                 }
             }
-        } else {
-            // Silent stderr as it leaks to the output of cargo test
-            command.stderr(Stdio::piped());
         }
 
         let mut link_command = LinkCommand {
@@ -1705,13 +1702,15 @@ impl LinkCommand {
             return Ok(());
         }
 
-        let status = self
+        let output = self
             .command
-            .status()
+            .output()
             .with_context(|| format!("Failed to run command: {:?}", self.command))?;
 
-        if !status.success() {
-            bail!("Linker failed. Relink with:\n{self}");
+        if !output.status.success() {
+            let mut messages = String::from_utf8_lossy(&output.stdout).into_owned();
+            messages.push_str(&String::from_utf8_lossy(&output.stderr));
+            bail!("Linker failed:\n{messages}\nRelink with:\n{self}");
         }
         Ok(())
     }
