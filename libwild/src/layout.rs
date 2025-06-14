@@ -4875,7 +4875,8 @@ impl<'data> DynamicLayoutState<'data> {
             if value_flags.is_dynamic() && value_flags.is_absolute() {
                 // Our shared object references an undefined symbol. Whether that is an error or
                 // not, depends on flags and whether the symbol is weak.
-                if !resources.symbol_db.args.allow_shlib_undefined {
+                let args = resources.symbol_db.args;
+                if !args.allow_shlib_undefined && args.output_kind().is_executable() {
                     let symbol = self
                         .object
                         .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
