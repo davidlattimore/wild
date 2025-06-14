@@ -720,10 +720,12 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
                 symbol_db.args.output_kind(),
             );
 
-            if symbol_db.args.got_plt_syms && resolution_flags.get().needs_got() {
+            if symbol_db.args.got_plt_syms
+                && resolution_flags.get().needs_got()
+                && value_flags.is_dynamic()
+            {
                 let name = symbol_db.symbol_name(symbol_id)?;
                 let name_len = name.len() + 4; // "$got" or "$plt" suffix
-
                 let entry_size = size_of::<elf::SymtabEntry>() as u64;
                 common.allocate(part_id::SYMTAB_LOCAL, entry_size);
                 common.allocate(part_id::STRTAB, name_len as u64 + 1);

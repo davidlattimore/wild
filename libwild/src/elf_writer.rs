@@ -1273,15 +1273,13 @@ fn write_symbols(
             symbol_writer
                 .copy_symbol(sym, info.name, section_id, symbol_value)
                 .with_context(|| format!("Failed to copy {}", layout.symbol_debug(symbol_id)))?;
-
-            if layout.symbol_db.args.got_plt_syms {
-                write_got_plt_syms(layout, &info, symbol_writer, symbol_id).with_context(|| {
-                    format!(
-                        "Failed to write GOT/PLT symbol for {}",
-                        layout.symbol_debug(symbol_id)
-                    )
-                })?;
-            }
+        } else if layout.symbol_db.args.got_plt_syms {
+            write_got_plt_syms(layout, symbol_writer, symbol_id).with_context(|| {
+                format!(
+                    "Failed to write GOT/PLT symbol for {}",
+                    layout.symbol_debug(symbol_id)
+                )
+            })?;
         }
     }
     Ok(())
@@ -1632,15 +1630,20 @@ fn get_resolution(
 
 fn write_got_plt_syms(
     layout: &Layout,
-    info: &SymbolCopyInfo<'_>,
     symbol_writer: &mut SymbolTableWriter<'_, '_>,
     symbol_id: SymbolId,
 ) -> Result {
-    let resolution = layout
-        .local_symbol_resolution(symbol_id)
-        .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
+    let resolution = layout.merged_symbol_resolution(symbol_id);
+    if resolution.is_none() {
+        return Ok(());
+    }
+
+    let resolution = resolution.unwrap();
     let current_res_flags = resolution.resolution_flags;
-    if !current_res_flags.needs_got() && !current_res_flags.needs_plt() {
+    let value_flags = layout.symbol_db.symbol_value_flags(symbol_id);
+
+    // We only create additional GOT/PLT symbols for dynamic symbols that need GOT/PLT.
+    if !current_res_flags.needs_got() && !value_flags.is_dynamic() {
         return Ok(());
     }
 
@@ -1648,8 +1651,8 @@ fn write_got_plt_syms(
                          section_id: OutputSectionId,
                          get_value: fn(&Resolution) -> Result<u64>|
      -> Result {
-        let mut symbol_name = info.name.to_vec();
-        symbol_name.extend_from_slice(suffix);
+        let mut symbol_name = layout.symbol_db.symbol_name(symbol_id)?.to_string();
+        symbol_name.push_str(std::str::from_utf8(suffix).unwrap_or("unknown"));
 
         let shndx = layout
             .output_sections
@@ -1658,10 +1661,9 @@ fn write_got_plt_syms(
                 "Tried to write dynamic symbol in {section_id} section that's not being output"
             ))?;
 
-        let value = get_value(resolution)?;
-
+        let value = get_value(&resolution)?;
         symbol_writer
-            .define_symbol(true, shndx, value, 0, &symbol_name)
+            .define_symbol(true, shndx, value, 0, symbol_name.as_bytes())
             .with_context(|| {
                 format!(
                     "Failed to copy {} symbol for {}",
