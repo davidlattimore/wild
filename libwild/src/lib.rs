@@ -57,6 +57,7 @@ use input_data::InputFile;
 use input_data::InputLinkerScript;
 use layout_rules::LayoutRules;
 use output_section_id::OutputSections;
+use std::sync::atomic::Ordering;
 pub use subprocess::run_in_subprocess;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
@@ -186,6 +187,14 @@ impl Linker {
     ) -> error::Result<LinkerOutput<'data>> {
         let inputs = archive_splitter::split_archives(input_data)?;
         let mut output_sections = OutputSections::with_base_address(args.base_address());
+
+        if args.output_kind().is_static_executable()
+            && inputs
+                .iter()
+                .any(|input| input.kind == crate::file_kind::FileKind::ElfDynamic)
+        {
+            args.is_dynamic_executable.store(true, Ordering::Relaxed);
+        }
 
         let (parsed_inputs, layout_rules) = parsing::parse_input_files(
             &inputs,
