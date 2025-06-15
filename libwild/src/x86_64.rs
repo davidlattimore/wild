@@ -169,7 +169,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::RexMovIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
-                                true,
+                                output_kind.is_static_executable(),
                             );
                         }
                         // sub *x(%rip), reg
@@ -177,7 +177,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::RexSubIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
-                                true,
+                                output_kind.is_static_executable(),
                             );
                         }
                         // cmp *x(%rip), reg
@@ -185,7 +185,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::RexCmpIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
-                                true,
+                                output_kind.is_static_executable(),
                             );
                         }
                         _ => return None,
@@ -197,7 +197,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::MovIndirectToLea,
                                 object::elf::R_X86_64_PC32,
-                                true,
+                                output_kind.is_static_executable(),
                             );
                         }
                         _ => return None,
@@ -212,13 +212,13 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::MovIndirectToAbsolute,
                                 object::elf::R_X86_64_32,
-                                true,
+                                output_kind.is_static_executable(),
                             );
                         } else if !interposable {
                             return create(
                                 RelaxationKind::MovIndirectToLea,
                                 object::elf::R_X86_64_PC32,
-                                true,
+                                output_kind.is_static_executable(),
                             );
                         }
                     }
@@ -231,7 +231,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::CallIndirectToRelative,
                                 object::elf::R_X86_64_PC32,
-                                true,
+                                output_kind.is_static_executable(),
                             );
                         }
                         // jmp *x(%rip)
@@ -239,7 +239,7 @@ impl crate::arch::Relaxation for Relaxation {
                             return create(
                                 RelaxationKind::JmpIndirectToRelative,
                                 object::elf::R_X86_64_PC32,
-                                true,
+                                output_kind.is_static_executable(),
                             );
                         }
                         _ => return None,
