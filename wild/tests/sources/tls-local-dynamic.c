@@ -12,6 +12,10 @@
 //#LinkArgs:-Wl,-z,now,--no-relax
 //#DiffEnabled:false
 
+//#Config:gcc-no-relax-aarch64:gcc-no-relax
+//#CompArgs:-ftls-model=local-dynamic -fPIC -O2 -mtls-dialect=trad
+//#Arch:aarch64
+
 _Thread_local long foo = 42;
 
 int main()
