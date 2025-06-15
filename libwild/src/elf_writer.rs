@@ -1797,7 +1797,7 @@ fn apply_relocation<A: Arch>(
     let rel_info;
     let output_kind = layout.args().output_kind();
 
-    let mut relaxation = A::Relaxation::new(
+    let relaxation = A::Relaxation::new(
         r_type,
         out,
         offset_in_section,
@@ -1805,15 +1805,14 @@ fn apply_relocation<A: Arch>(
         output_kind,
         section_info.section_flags,
         resolution.raw_value != 0,
-    );
-    if let Some(relaxation) = &relaxation
-        && (layout.args().relax || relaxation.is_mandatory())
-    {
+    )
+    .filter(|relaxation| layout.args().relax || relaxation.is_mandatory());
+
+    if let Some(relaxation) = &relaxation {
         rel_info = relaxation.rel_info();
         relaxation.apply(out, &mut offset_in_section, &mut addend);
         next_modifier = relaxation.next_modifier();
     } else {
-        relaxation = None;
         rel_info = A::relocation_from_raw(r_type)?;
     }
 
