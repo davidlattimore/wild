@@ -1805,7 +1805,9 @@ fn apply_relocation<A: Arch>(
         output_kind,
         section_info.section_flags,
         resolution.raw_value != 0,
-    );
+    )
+    .filter(|relaxation| layout.args().relax || relaxation.is_mandatory());
+
     if let Some(relaxation) = &relaxation {
         rel_info = relaxation.rel_info();
         relaxation.apply(out, &mut offset_in_section, &mut addend);

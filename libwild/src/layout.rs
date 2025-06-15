@@ -2762,7 +2762,9 @@ fn process_relocation<A: Arch>(
             args.output_kind(),
             SectionFlags::from_header(section),
             true,
-        ) {
+        )
+        .filter(|relaxation| args.relax || relaxation.is_mandatory())
+        {
             next_modifier = relaxation.next_modifier();
             relaxation.rel_info()
         } else {

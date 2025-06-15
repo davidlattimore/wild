@@ -154,4 +154,8 @@ impl crate::arch::Relaxation for Relaxation {
     fn next_modifier(&self) -> RelocationModifier {
         self.kind.next_modifier()
     }
+
+    fn is_mandatory(&self) -> bool {
+        false
+    }
 }
