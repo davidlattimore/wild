@@ -101,7 +101,7 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
         section_address: u64,
         function_offset_in_section: u64,
         range: Range<u64>,
-    ) -> Vec<Instruction<Self>>;
+    ) -> Vec<Instruction<'_, Self>>;
 
     fn decode_plt_entry(plt_entry: &[u8], plt_base: u64, plt_offset: u64) -> Option<PltEntry>;
 
