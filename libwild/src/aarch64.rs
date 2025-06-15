@@ -167,7 +167,7 @@ impl crate::arch::Relaxation for Relaxation {
                     Some(Relaxation {
                         kind: RelaxationKind::ReplaceWithNop,
                         rel_info: relocation_type_from_raw(object::elf::R_AARCH64_NONE).unwrap(),
-                        mandatory: false,
+                        mandatory: output_kind.is_static_executable(),
                     })
                 };
             }

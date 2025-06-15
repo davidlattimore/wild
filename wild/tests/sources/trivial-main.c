@@ -17,6 +17,8 @@
 //#LinkArgs:-static-pie -Wl,--gc-sections -Wl,--no-relax
 //#DiffEnabled:false
 //#SkipLinker:ld
+// TODO: #874
+//#Arch: x86_64,aarch64
 
 //#Config:clang-static:default
 //#Compiler:clang
