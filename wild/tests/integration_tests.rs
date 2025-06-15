@@ -2368,6 +2368,7 @@ fn integration_test(
         "ctors.c",
         "visibility-merging.c",
         "tls-local-exec.c",
+        "tls-local-dynamic.c",
         "undefined_symbols.c",
         "shlib-undefined.c",
         "whole_archive.c",

@@ -84,8 +84,8 @@ pub struct Args {
     pub(crate) should_print_version: bool,
     pub(crate) demangle: bool,
     pub(crate) got_plt_syms: bool,
-
     pub(crate) b_symbolic: BSymbolicKind,
+    pub(crate) relax: bool,
 
     output_kind: Option<OutputKind>,
     is_dynamic_executable: bool,
@@ -198,7 +198,6 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "color-diagnostics",
     "undefined-version",
     "sort-common",
-    "no-relax",
 ];
 
 const IGNORED_FLAGS: &[&str] = &[
@@ -211,7 +210,6 @@ const IGNORED_FLAGS: &[&str] = &[
 // These flags map to the default behavior of the linker.
 const DEFAULT_FLAGS: &[&str] = &[
     "no-call-graph-profile-sort",
-    "relax",
     "no-copy-dt-needed-entries",
     "no-add-needed",
     "discard-locals",
@@ -288,6 +286,7 @@ impl Default for Args {
             b_symbolic: BSymbolicKind::None,
             explicitly_export_dynamic: false,
             got_plt_syms: false,
+            relax: true,
         }
     }
 }
@@ -632,6 +631,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.demangle = false;
         } else if long_arg_eq("got-plt-syms") {
             args.got_plt_syms = true;
+        } else if long_arg_eq("relax") {
+            args.relax = true;
+        } else if long_arg_eq("no-relax") {
+            args.relax = false;
         } else if let Some(path) = arg.strip_prefix('@') {
             if input.next().is_some() || arg_num > 1 {
                 bail!("Mixing of @{{filename}} and regular arguments isn't supported");
