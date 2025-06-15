@@ -275,10 +275,18 @@ impl crate::arch::Relaxation for Relaxation {
                 }
             }
             object::elf::R_X86_64_PLT32 if !interposable => {
-                return create(RelaxationKind::NoOp, object::elf::R_X86_64_PC32, true);
+                return create(
+                    RelaxationKind::NoOp,
+                    object::elf::R_X86_64_PC32,
+                    output_kind.is_static_executable(),
+                );
             }
             object::elf::R_X86_64_PLTOFF64 if !interposable => {
-                return create(RelaxationKind::NoOp, object::elf::R_X86_64_GOTOFF64, false);
+                return create(
+                    RelaxationKind::NoOp,
+                    object::elf::R_X86_64_GOTOFF64,
+                    output_kind.is_static_executable(),
+                );
             }
             object::elf::R_X86_64_TLSGD if !interposable && output_kind.is_executable() => {
                 let kind = match TlsGdForm::identify(section_bytes, offset)? {
