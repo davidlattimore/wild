@@ -87,6 +87,12 @@ pub(crate) struct Relaxation {
     rel_info: RelocationKindInfo,
 }
 
+macro_rules! rel_info_from_type {
+    ($r_type:expr) => {
+        const { relocation_type_from_raw($r_type).unwrap() }
+    };
+}
+
 impl crate::arch::Relaxation for Relaxation {
     #[allow(unused_variables)]
     #[inline(always)]
@@ -128,7 +134,7 @@ impl crate::arch::Relaxation for Relaxation {
                     // GNU ld replaces: 'bl 0' with 'nop'
                     Some(Relaxation {
                         kind: RelaxationKind::ReplaceWithNop,
-                        rel_info: relocation_type_from_raw(object::elf::R_RISCV_NONE).unwrap(),
+                        rel_info: rel_info_from_type!(object::elf::R_RISCV_NONE),
                     })
                 };
             }

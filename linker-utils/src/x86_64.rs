@@ -1,4 +1,7 @@
+use crate::elf::AllowedRange;
 use crate::elf::RelocationKind;
+use crate::elf::RelocationKindInfo;
+use crate::elf::RelocationSize;
 use crate::relaxation::RelocationModifier;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,10 +208,9 @@ impl RelaxationKind {
     }
 }
 
-/// Returns the supplied x86-64 relocation type split into a relocation kind and a size (in bytes)
-/// for the relocation. Returns `None` if the r_type isn't recognised.
+/// Returns the supplied x86-64 relocation as RelocationKindType. Returns `None` if the r_type isn't recognised.
 #[must_use]
-pub fn relocation_kind_and_size(r_type: u32) -> Option<(RelocationKind, usize)> {
+pub const fn relocation_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
     let (kind, size) = match r_type {
         object::elf::R_X86_64_64 => (RelocationKind::Absolute, 8),
         object::elf::R_X86_64_PC32 => (RelocationKind::Relative, 4),
@@ -245,5 +247,12 @@ pub fn relocation_kind_and_size(r_type: u32) -> Option<(RelocationKind, usize)> 
         object::elf::R_X86_64_NONE => (RelocationKind::None, 0),
         _ => return None,
     };
-    Some((kind, size))
+
+    Some(RelocationKindInfo {
+        kind,
+        size: RelocationSize::ByteSize(size),
+        mask: None,
+        range: AllowedRange::no_check(),
+        alignment: 1,
+    })
 }
