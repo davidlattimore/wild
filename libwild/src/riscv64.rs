@@ -87,6 +87,12 @@ pub(crate) struct Relaxation {
     rel_info: RelocationKindInfo,
 }
 
+macro_rules! rel_info_from_type {
+    ($r_type:expr) => {
+        const { relocation_type_from_raw($r_type).unwrap() }
+    };
+}
+
 impl crate::arch::Relaxation for Relaxation {
     #[allow(unused_variables)]
     #[inline(always)]
@@ -112,9 +118,6 @@ impl crate::arch::Relaxation for Relaxation {
         }
 
         let offset = offset_in_section as usize;
-        // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
-        // because fetching it contains potential error paths, the optimiser probably can't optimise
-        // away fetching it.
 
         match relocation_kind {
             object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT if !interposable => {
@@ -128,7 +131,7 @@ impl crate::arch::Relaxation for Relaxation {
                     // GNU ld replaces: 'bl 0' with 'nop'
                     Some(Relaxation {
                         kind: RelaxationKind::ReplaceWithNop,
-                        rel_info: relocation_type_from_raw(object::elf::R_RISCV_NONE).unwrap(),
+                        rel_info: rel_info_from_type!(object::elf::R_RISCV_NONE),
                     })
                 };
             }
