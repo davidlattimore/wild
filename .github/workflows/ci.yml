@@ -135,7 +135,7 @@ jobs:
         uses: crate-ci/typos@v1.33.1
 
   calc-matrix:
-    name: Find Nix Checks
+    name: Find Nix checks
     runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.calc-matrix.outputs.matrix }}
@@ -151,37 +151,16 @@ jobs:
         with:
           nix_on_tmpfs: true
 
-      - name: Calculate Check
+      - name: Calculate check
         id: calc-matrix
         run: |
           matrix=$(nix flake show --json | jq -c '.checks."x86_64-linux"|keys_unsorted')
           echo "Matrix: $matrix"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"      
 
-  nix-cache:
-    name: Refresh Nix Cache
-    runs-on: ubuntu-24.04
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v30
-
-      - name: Build Wild
-        run: nix build -L --show-trace
-
-      - name: Cache Nix Store
-        uses: nix-community/cache-nix-action/save@v6
-        id: cache
-        with:
-          primary-key: ${{ runner.os }}-${{ hashFiles( 'flake.lock', 'Cargo.lock' ) }}
-
   nix-checks:
     needs:
       - calc-matrix
-      - nix-cache
     strategy:
       fail-fast: false
       matrix:
@@ -198,7 +177,7 @@ jobs:
       - name: Install Nix
         uses: nixbuild/nix-quick-install-action@v30
 
-      - name: Restore Nix Store
+      - name: Restore Nix store
         uses: nix-community/cache-nix-action/restore@v6
         id: cache
         with:
