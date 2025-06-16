@@ -13,3 +13,4 @@ heaptrack*.zst
 .cargo/config.toml
 dhat-heap.json
 test-config.toml
+result
