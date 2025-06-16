@@ -428,15 +428,7 @@ impl crate::arch::RType for RType {
     }
 
     fn opt_relocation_info(self) -> Option<RelocationKindInfo> {
-        linker_utils::x86_64::relocation_kind_and_size(self.0).map(|(kind, size_in_bytes)| {
-            RelocationKindInfo {
-                kind,
-                size: linker_utils::elf::RelocationSize::ByteSize(size_in_bytes),
-                mask: None,
-                range: linker_utils::elf::AllowedRange::no_check(),
-                alignment: 1,
-            }
-        })
+        linker_utils::x86_64::relocation_from_raw(self.0)
     }
 
     fn dynamic_relocation_kind(self) -> Option<DynamicRelocationKind> {
