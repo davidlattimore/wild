@@ -118,9 +118,6 @@ impl crate::arch::Relaxation for Relaxation {
         }
 
         let offset = offset_in_section as usize;
-        // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
-        // because fetching it contains potential error paths, the optimiser probably can't optimise
-        // away fetching it.
 
         match relocation_kind {
             object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT if !interposable => {
