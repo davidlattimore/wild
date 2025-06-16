@@ -9,6 +9,8 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+
+    crane.url = "github:ipetkov/crane";
   };
 
   outputs =
@@ -16,11 +18,12 @@
       self,
       nixpkgs,
       rust-overlay,
+      crane,
     }:
     let
       forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
 
-      common = forAllSystems (system: {
+      common = forAllSystems (system: rec {
         pkgs = import nixpkgs {
           inherit system;
           overlays = [
@@ -29,41 +32,48 @@
           ];
         };
 
-        rustToolchain = common.${system}.pkgs.rust-bin.beta.latest.minimal;
-        rustPlatform = common.${system}.pkgs.makeRustPlatform {
-          rustc = common.${system}.rustToolchain;
-          cargo = common.${system}.rustToolchain;
-        };
+        craneLib = (crane.mkLib pkgs).overrideToolchain (p: p.rust-bin.beta.latest.minimal);
       });
     in
     {
       packages = forAllSystems (
         system:
         let
-          inherit (common.${system}) pkgs rustPlatform;
+          inherit (common.${system}) pkgs craneLib;
         in
         {
-          default = pkgs.callPackage ./nix { inherit rustPlatform; };
+          default = pkgs.callPackage ./nix { inherit craneLib; };
         }
       );
 
-      overlays.default = import ./nix/overlay.nix;
+      overlays.default = import ./nix/overlay.nix crane;
 
       formatter = forAllSystems (system: common.${system}.pkgs.nixfmt-tree);
 
       checks = forAllSystems (
         system:
         let
-          inherit (common.${system}) pkgs rustPlatform;
+          inherit (common.${system}) pkgs craneLib;
+          inherit (self.packages.${system}) default;
         in
         {
-          wild = self.packages.${system}.default.overrideAttrs { doCheck = true; };
+          wild = default.overrideAttrs {
+            doCheck = true;
+            doInstallCheck = false;
+            # Skip the build phase and don't install anything
+            # because it ends up building libwild twice. Once for the buildPhase,
+            # once for the checkPhase.
+            dontBuild = true;
+            installPhase = "touch $out";
+          };
         }
-        // ((pkgs.callPackage ./nix { inherit rustPlatform; }).tests)
+        // ((pkgs.callPackage ./nix { inherit craneLib; }).tests)
       );
 
       devShells = forAllSystems (system: {
-        default = common.${system}.pkgs.callPackage ./nix/shell.nix { };
+        default = common.${system}.pkgs.callPackage ./nix/shell.nix {
+          inherit (common.${system}) craneLib;
+        };
       });
     };
 }
