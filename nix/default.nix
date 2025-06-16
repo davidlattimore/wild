@@ -6,12 +6,10 @@
   clangStdenv,
   fetchpatch,
   makeBinaryWrapper,
-  rustPlatform,
-  nix-update-script,
+  craneLib,
   versionCheckHook,
   buildPackages,
   runCommandCC,
-  testers,
   hello,
   clang,
   binutils-unwrapped-all-targets,
@@ -87,125 +85,128 @@ let
       (fs.fileFilter (file: file.hasExt "nix") ../.)
     ]
   );
+
+  commonArgs = {
+    pname = "wild";
+    inherit (cargoToml.workspace.package) version;
+
+    strictDeps = true;
+    src = fs.toSource {
+      root = ../.;
+      fileset = files;
+    };
+
+    # wild's tests compare the outputs of several different linkers. nixpkgs's
+    # patching and wrappers change the output behavior, so we must make sure
+    # that their behavior is compatible.
+    checkInputs = [
+      glibc.out
+      glibc.static
+    ];
+    preCheck = ''
+      export LD_LIBRARY_PATH=${
+        lib.makeLibraryPath [
+          stdenv.cc.cc.lib
+        ]
+      }:$LD_LIBRARY_PATH
+
+      export PATH=${
+        lib.makeBinPath [
+          binutils-unwrapped-all-targets
+          clang
+          gccWrapper
+          gppWrapper
+          lld
+        ]
+      }:$PATH
+    '';
+  };
 in
-rustPlatform.buildRustPackage (finalAttrs: {
-  inherit (cargoToml.workspace.package) version;
+craneLib.buildPackage (
+  commonArgs
+  // rec {
+    patches = [
+      (fetchpatch {
+        url = "https://github.com/davidlattimore/wild/pull/831.patch";
+        hash = "sha256-UywEVaaqnin0PBsRqDLIZXSI6QdtQ9WHetuQrAfUlNo=";
+      })
+    ];
 
-  strictDeps = true;
-  pname = "wild";
+    cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-  src = fs.toSource {
-    root = ../.;
-    fileset = files;
-  };
+    cargoBuildCommand = "cargo build --profile release -p wild-linker";
 
-  patches = [
-    (fetchpatch {
-      url = "https://github.com/davidlattimore/wild/pull/831.patch";
-      hash = "sha256-UywEVaaqnin0PBsRqDLIZXSI6QdtQ9WHetuQrAfUlNo=";
-    })
-  ];
+    doCheck = false;
 
-  useFetchCargoVendor = true;
-  cargoLock = {
-    lockFile = ../Cargo.lock;
-    allowBuiltinFetchGit = true;
-  };
+    passthru = {
+      inherit cargoArtifacts commonArgs;
 
-  cargoBuildFlags = [ "-p wild-linker" ];
-
-  # wild's tests compare the outputs of several different linkers. nixpkgs's
-  # patching and wrappers change the output behavior, so we must make sure
-  # that their behavior is compatible.
-  doCheck = false;
-  checkInputs = [
-    glibc.out
-    glibc.static
-  ];
-  preCheck = ''
-    export LD_LIBRARY_PATH=${
-      lib.makeLibraryPath [
-        stdenv.cc.cc.lib
-      ]
-    }:$LD_LIBRARY_PATH
-
-    export PATH=${
-      lib.makeBinPath [
-        binutils-unwrapped-all-targets
-        clang
+      gccWrappers = [
         gccWrapper
         gppWrapper
-        lld
-      ]
-    }:$PATH
-  '';
-
-  passthru = {
-    gccWrappers = [
-      gccWrapper
-      gppWrapper
-    ];
-    tests =
-      let
-        helloTest =
-          name: helloWild:
-          let
-            command = "$READELF -p .comment ${lib.getExe helloWild}";
-            emulator = stdenv.hostPlatform.emulator buildPackages;
-          in
-          runCommandCC "wild-${name}-test" { passthru = { inherit helloWild; }; } ''
-            echo "Testing running the 'hello' binary which should be linked with 'wild'" >&2
-            ${emulator} ${lib.getExe helloWild}
-            echo "Checking for wild in the '.comment' section" >&2
-            if output=$(${command} 2>&1); then
-              if grep -Fw -- "Wild" - <<< "$output"; then
-                touch $out
+      ];
+      tests =
+        let
+          helloTest =
+            name: helloWild:
+            let
+              command = "$READELF -p .comment ${lib.getExe helloWild}";
+              emulator = stdenv.hostPlatform.emulator buildPackages;
+            in
+            runCommandCC "wild-${name}-test" { passthru = { inherit helloWild; }; } ''
+              echo "Testing running the 'hello' binary which should be linked with 'wild'" >&2
+              ${emulator} ${lib.getExe helloWild}
+              echo "Checking for wild in the '.comment' section" >&2
+              if output=$(${command} 2>&1); then
+                if grep -Fw -- "Wild" - <<< "$output"; then
+                  touch $out
+                else
+                  echo "No mention of 'wild' detected in the '.comment' section" >&2
+                  echo "The command was:" >&2
+                  echo "${command}" >&2
+                  echo "The output was:" >&2
+                  echo "$output" >&2
+                  exit 1
+                fi
               else
-                echo "No mention of 'wild' detected in the '.comment' section" >&2
-                echo "The command was:" >&2
-                echo "${command}" >&2
-                echo "The output was:" >&2
+                echo -n "${command}" >&2
+                echo " returned a non-zero exit code." >&2
                 echo "$output" >&2
                 exit 1
               fi
-            else
-              echo -n "${command}" >&2
-              echo " returned a non-zero exit code." >&2
-              echo "$output" >&2
-              exit 1
-            fi
-          '';
+            '';
 
-        useWildLinker = import ./adapter.nix { inherit pkgs lib; };
-      in
-      lib.optionalAttrs stdenv.hostPlatform.isLinux {
-        adapterGcc = helloTest "adapter-gcc" (
-          hello.override {
-            stdenv = useWildLinker gccStdenv;
-          }
-        );
+          useWildLinker = import ./adapter.nix { inherit pkgs lib; };
+        in
+        lib.optionalAttrs stdenv.hostPlatform.isLinux {
+          adapterGcc = helloTest "adapter-gcc" (
+            hello.override {
+              stdenv = useWildLinker gccStdenv;
+            }
+          );
 
-        adapterClang = helloTest "adapter-clang" (
-          hello.override {
-            stdenv = useWildLinker clangStdenv;
-          }
-        );
-      };
-  };
+          adapterClang = helloTest "adapter-clang" (
+            hello.override {
+              stdenv = useWildLinker clangStdenv;
+            }
+          );
+        };
+    };
 
-  doInstallCheck = true;
-  nativeInstallCheckInputs = [ versionCheckHook ];
-  versionCheckProgramArg = "--version";
+    doInstallCheck = true;
+    nativeInstallCheckInputs = [ versionCheckHook ];
+    versionCheckProgramArg = "--version";
 
-  meta = {
-    changelog = "https://github.com/davidlattimore/wild/blob/${finalAttrs.version}/CHANGELOG.md";
-    description = "A very fast linker for Linux";
-    homepage = "https://github.com/davidlattimore/wild";
-    license = [
-      lib.licenses.asl20 # or
-      lib.licenses.mit
-    ];
-    mainProgram = "wild";
-    platforms = lib.platforms.linux;
-  };
-})
+    meta = {
+      changelog = "https://github.com/davidlattimore/wild/blob/${commonArgs.version}/CHANGELOG.md";
+      description = "A very fast linker for Linux";
+      homepage = "https://github.com/davidlattimore/wild";
+      license = [
+        lib.licenses.asl20 # or
+        lib.licenses.mit
+      ];
+      mainProgram = "wild";
+      platforms = lib.platforms.linux;
+    };
+  }
+)

@@ -1,14 +1,10 @@
 # TODO(RossSmyth): One 1.87 is on nixpkgs unstable, remove the rust-overlay requirement.
-final: prev:
+crane: final: prev:
 let
-  rustToolchain = final.rust-bin.beta.latest.minimal;
-  rustPlatform = final.makeRustPlatform {
-    rustc = rustToolchain;
-    cargo = rustToolchain;
-  };
+  craneLib = (crane.mkLib final).overrideToolchain (p: p.rust-bin.beta.latest.minimal);
 in
 {
-  wild = final.callPackage ./. { inherit rustPlatform; };
+  wild = final.callPackage ./. { inherit craneLib; };
   useWildLinker = import ./adapter.nix {
     pkgs = final;
     lib = final.lib;
