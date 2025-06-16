@@ -2379,7 +2379,8 @@ fn integration_test(
         "duplicate_strong_symbols.c",
         "preinit-array.c",
         "exception.cc",
-        "z-defs.c"
+        "z-defs.c",
+        "z-undefs.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
