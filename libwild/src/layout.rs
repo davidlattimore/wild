@@ -79,13 +79,6 @@ use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::SectionIndex;
-use object::elf::GNU_PROPERTY_AARCH64_FEATURE_1_AND;
-use object::elf::GNU_PROPERTY_X86_UINT32_AND_HI;
-use object::elf::GNU_PROPERTY_X86_UINT32_AND_LO;
-use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_HI;
-use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_LO;
-use object::elf::GNU_PROPERTY_X86_UINT32_OR_HI;
-use object::elf::GNU_PROPERTY_X86_UINT32_OR_LO;
 use object::elf::Rela64;
 use object::elf::gnu_hash;
 use object::read::elf::Dyn as _;
@@ -145,7 +138,7 @@ pub fn compute<'data, A: Arch>(
 
     finalise_copy_relocations(&mut group_states, &symbol_db, &symbol_resolution_flags)?;
     merge_dynamic_symbol_definitions(&mut group_states)?;
-    merge_gnu_property_notes(&mut group_states)?;
+    merge_gnu_property_notes::<A>(&mut group_states)?;
 
     finalise_all_sizes(
         &symbol_db,
@@ -354,7 +347,7 @@ fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) -> Result {
     Ok(())
 }
 
-enum PropertyClass {
+pub(crate) enum PropertyClass {
     // A bit in the output pr_data is set if it is set in any relocatable input.
     // If all bits in the output pr_data field are zero, this property should be removed from output.
     Or,
@@ -368,20 +361,8 @@ enum PropertyClass {
     AndOr,
 }
 
-fn get_property_class(property_type: u32) -> Option<PropertyClass> {
-    match property_type {
-        GNU_PROPERTY_X86_UINT32_AND_LO..=GNU_PROPERTY_X86_UINT32_AND_HI => Some(PropertyClass::And),
-        GNU_PROPERTY_AARCH64_FEATURE_1_AND => Some(PropertyClass::And),
-        GNU_PROPERTY_X86_UINT32_OR_LO..=GNU_PROPERTY_X86_UINT32_OR_HI => Some(PropertyClass::Or),
-        GNU_PROPERTY_X86_UINT32_OR_AND_LO..=GNU_PROPERTY_X86_UINT32_OR_AND_HI => {
-            Some(PropertyClass::AndOr)
-        }
-        _ => None,
-    }
-}
-
 #[tracing::instrument(skip_all, name = "Merge GNU property notes")]
-fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
+fn merge_gnu_property_notes<A: Arch>(group_states: &mut [GroupState]) -> Result {
     let properties_per_file = group_states
         .iter()
         .flat_map(|group| {
@@ -400,7 +381,7 @@ fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
     let mut property_map = HashMap::new();
     for file_props in &properties_per_file {
         for prop in *file_props {
-            let property_class = get_property_class(prop.ptype)
+            let property_class = A::get_property_class(prop.ptype)
                 .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
             property_map
                 .entry(prop.ptype)
@@ -420,7 +401,7 @@ fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
         .into_iter()
         .sorted_by_key(|x| x.0)
         .filter_map(|(property_type, property_value)| {
-            let property_class = get_property_class(property_type).unwrap();
+            let property_class = A::get_property_class(property_type).unwrap();
             let type_present_in_all = properties_per_file.iter().all(|props_per_file| {
                 props_per_file
                     .iter()
