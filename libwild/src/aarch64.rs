@@ -4,6 +4,7 @@ use crate::ensure;
 use crate::error;
 use crate::error::Result;
 use crate::layout::Layout;
+use crate::layout::PropertyClass;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_MASK;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_SIZE;
@@ -16,6 +17,7 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::aarch64_rel_type_to_string;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
+use object::elf::GNU_PROPERTY_AARCH64_FEATURE_1_AND;
 
 pub(crate) struct AArch64;
 
@@ -91,6 +93,13 @@ impl crate::arch::Arch for AArch64 {
 
     fn tp_offset_start(layout: &Layout<'_>) -> u64 {
         layout.tls_start_address_aarch64()
+    }
+
+    fn get_property_class(property_type: u32) -> Option<PropertyClass> {
+        match property_type {
+            GNU_PROPERTY_AARCH64_FEATURE_1_AND => Some(PropertyClass::And),
+            _ => None,
+        }
     }
 }
 
