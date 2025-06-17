@@ -94,6 +94,7 @@ impl crate::arch::Arch for RiscV64 {
             eflags
                 .iter()
                 .map(|flag| flag & EF_RISCV_FLOAT_ABI)
+                .unique()
                 .exactly_one()
                 .is_ok(),
             "Float ABI flag mismatch"
@@ -102,6 +103,7 @@ impl crate::arch::Arch for RiscV64 {
             eflags
                 .iter()
                 .map(|flag| flag & EF_RISCV_RVE)
+                .unique()
                 .exactly_one()
                 .is_ok(),
             "RVE flag mismatch"
