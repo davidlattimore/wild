@@ -23,10 +23,7 @@ use std::ffi::c_void;
 pub unsafe fn run_in_subprocess(args: &Args) -> ! {
     let exit_code = match subprocess_result(args) {
         Ok(code) => code,
-        Err(error) => {
-            eprintln!("Error: {error:?}");
-            -1
-        }
+        Err(error) => crate::error::report_error_and_exit(&error),
     };
     std::process::exit(exit_code);
 }

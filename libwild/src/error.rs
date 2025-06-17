@@ -1,3 +1,4 @@
+use colored::Colorize as _;
 use std::fmt::Display;
 
 pub type Result<T = (), E = Error> = core::result::Result<T, E>;
@@ -173,4 +174,13 @@ impl std::fmt::Debug for Error {
         }
         Ok(())
     }
+}
+
+pub fn report_error(error: &Error) {
+    eprintln!("wild: {}: {error:?}", "error".red());
+}
+
+pub fn report_error_and_exit(error: &Error) -> ! {
+    report_error(error);
+    std::process::exit(-1);
 }
