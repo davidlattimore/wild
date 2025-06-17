@@ -96,6 +96,10 @@ impl crate::arch::Arch for X86_64 {
             _ => None,
         }
     }
+
+    fn merge_eflags(_eflags: &[u32]) -> Result<u32> {
+        Ok(0)
+    }
 }
 
 macro_rules! rel_info_from_type {

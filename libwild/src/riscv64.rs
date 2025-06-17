@@ -1,7 +1,9 @@
 use crate::arch::Arch;
 use crate::elf::PLT_ENTRY_SIZE;
+use crate::ensure;
 use crate::error;
 use crate::error::Result;
+use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -11,6 +13,8 @@ use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::riscv64::RelaxationKind;
 use linker_utils::riscv64::relocation_type_from_raw;
+use object::elf::EF_RISCV_FLOAT_ABI;
+use object::elf::EF_RISCV_RVE;
 
 pub(crate) struct RiscV64;
 
@@ -82,6 +86,29 @@ impl crate::arch::Arch for RiscV64 {
 
     fn get_property_class(_property_type: u32) -> Option<crate::layout::PropertyClass> {
         None
+    }
+
+    fn merge_eflags(eflags: &[u32]) -> Result<u32> {
+        let or_eflags = eflags.iter().fold(0, |acc, x| acc | x);
+        ensure!(
+            eflags
+                .iter()
+                .map(|flag| flag & EF_RISCV_FLOAT_ABI)
+                .exactly_one()
+                .is_ok(),
+            "Float ABI flag mismatch"
+        );
+        ensure!(
+            eflags
+                .iter()
+                .map(|flag| flag & EF_RISCV_RVE)
+                .exactly_one()
+                .is_ok(),
+            "RVE flag mismatch"
+        );
+        // TODO: add RV64ILP32
+
+        Ok(or_eflags)
     }
 }
 
