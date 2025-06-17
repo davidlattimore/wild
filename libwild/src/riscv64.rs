@@ -108,7 +108,16 @@ impl crate::arch::Arch for RiscV64 {
                 .is_ok(),
             "RVE flag mismatch"
         );
-        // TODO: add RV64ILP32
+        // TODO: use object crate constant
+        ensure!(
+            eflags
+                .iter()
+                .map(|flag| flag & 0x0020)
+                .unique()
+                .exactly_one()
+                .is_ok(),
+            "RV64ILP32 flag mismatch"
+        );
 
         Ok(or_eflags)
     }
