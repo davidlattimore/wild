@@ -87,9 +87,10 @@ pub(crate) struct Relaxation {
     rel_info: RelocationKindInfo,
 }
 
-#[track_caller]
-const fn rel_info_from_type(r_type: u32) -> RelocationKindInfo {
-    relocation_type_from_raw(r_type).unwrap()
+macro_rules! rel_info_from_type {
+    ($r_type:expr) => {
+        const { relocation_type_from_raw($r_type).unwrap() }
+    };
 }
 
 impl crate::arch::Relaxation for Relaxation {
@@ -130,7 +131,7 @@ impl crate::arch::Relaxation for Relaxation {
                     // GNU ld replaces: 'bl 0' with 'nop'
                     Some(Relaxation {
                         kind: RelaxationKind::ReplaceWithNop,
-                        rel_info: rel_info_from_type(object::elf::R_RISCV_NONE),
+                        rel_info: rel_info_from_type!(object::elf::R_RISCV_NONE),
                     })
                 };
             }
