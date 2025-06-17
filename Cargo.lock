@@ -716,6 +716,7 @@ dependencies = [
  "bumpalo-herd",
  "bytemuck",
  "bytesize",
+ "colored",
  "colosseum",
  "crossbeam-channel",
  "crossbeam-queue",
