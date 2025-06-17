@@ -376,23 +376,23 @@ fn merge_gnu_property_notes<A: Arch>(group_states: &mut [GroupState]) -> Result 
         })
         .collect_vec();
 
-    // Merge bits of each property type based on type: OR or AND operation. When a property type
-    // is newly added to the map, we start either with zero or all bits-set (PropertyClass::And).
+    // Merge bits of each property type based on type: OR or AND operation.
     let mut property_map = HashMap::new();
+
     for file_props in &properties_per_file {
         for prop in *file_props {
             let property_class = A::get_property_class(prop.ptype)
                 .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
             property_map
                 .entry(prop.ptype)
-                .and_modify(|e| {
+                .and_modify(|entry: &mut (u32, PropertyClass)| {
                     if matches!(property_class, PropertyClass::And) {
-                        *e &= prop.data;
+                        entry.0 &= prop.data;
                     } else {
-                        *e |= prop.data;
+                        entry.0 |= prop.data;
                     }
                 })
-                .or_insert_with(|| prop.data);
+                .or_insert_with(|| (prop.data, property_class));
         }
     }
 
@@ -400,8 +400,7 @@ fn merge_gnu_property_notes<A: Arch>(group_states: &mut [GroupState]) -> Result 
     let output_properties = property_map
         .into_iter()
         .sorted_by_key(|x| x.0)
-        .filter_map(|(property_type, property_value)| {
-            let property_class = A::get_property_class(property_type).unwrap();
+        .filter_map(|(property_type, (property_value, property_class))| {
             let type_present_in_all = properties_per_file.iter().all(|props_per_file| {
                 props_per_file
                     .iter()
