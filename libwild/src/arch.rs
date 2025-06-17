@@ -4,6 +4,7 @@ use crate::args::OutputKind;
 use crate::bail;
 use crate::error::Result;
 use crate::layout::Layout;
+use crate::layout::PropertyClass;
 use crate::resolution::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -45,6 +46,9 @@ pub(crate) trait Arch {
     // a different place based on the following article:
     // https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
     fn tp_offset_start(layout: &Layout) -> u64;
+
+    // Classify a GNU property note.
+    fn get_property_class(property_type: u32) -> Option<PropertyClass>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

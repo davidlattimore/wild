@@ -79,6 +79,10 @@ impl crate::arch::Arch for RiscV64 {
     fn tp_offset_start(layout: &crate::layout::Layout) -> u64 {
         layout.tls_start_address()
     }
+
+    fn get_property_class(_property_type: u32) -> Option<crate::layout::PropertyClass> {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]

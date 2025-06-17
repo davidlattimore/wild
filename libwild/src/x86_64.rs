@@ -7,6 +7,7 @@ use crate::args::OutputKind;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
 use crate::error::Result;
+use crate::layout::PropertyClass;
 use crate::resolution::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -16,6 +17,12 @@ use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::x86_64::RelaxationKind;
 use linker_utils::x86_64::relocation_from_raw;
+use object::elf::GNU_PROPERTY_X86_UINT32_AND_HI;
+use object::elf::GNU_PROPERTY_X86_UINT32_AND_LO;
+use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_HI;
+use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_LO;
+use object::elf::GNU_PROPERTY_X86_UINT32_OR_HI;
+use object::elf::GNU_PROPERTY_X86_UINT32_OR_LO;
 
 pub(crate) struct X86_64;
 
@@ -73,6 +80,21 @@ impl crate::arch::Arch for X86_64 {
 
     fn tp_offset_start(layout: &crate::layout::Layout) -> u64 {
         layout.tls_end_address()
+    }
+
+    fn get_property_class(property_type: u32) -> Option<crate::layout::PropertyClass> {
+        match property_type {
+            GNU_PROPERTY_X86_UINT32_AND_LO..=GNU_PROPERTY_X86_UINT32_AND_HI => {
+                Some(PropertyClass::And)
+            }
+            GNU_PROPERTY_X86_UINT32_OR_LO..=GNU_PROPERTY_X86_UINT32_OR_HI => {
+                Some(PropertyClass::Or)
+            }
+            GNU_PROPERTY_X86_UINT32_OR_AND_LO..=GNU_PROPERTY_X86_UINT32_OR_AND_HI => {
+                Some(PropertyClass::AndOr)
+            }
+            _ => None,
+        }
     }
 }
 
