@@ -49,6 +49,10 @@ pub(crate) trait Arch {
 
     // Classify a GNU property note.
     fn get_property_class(property_type: u32) -> Option<PropertyClass>;
+
+    // Merge e_flags of the input files and provide an error
+    // if the flags are not compatible.
+    fn merge_eflags(eflags: &[u32]) -> Result<u32>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

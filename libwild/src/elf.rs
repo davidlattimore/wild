@@ -65,6 +65,9 @@ pub(crate) struct File<'data> {
 
     /// Number of verdef versions according to the dynamic table.
     pub(crate) verdefnum: u64,
+
+    /// e_flags from the header.
+    pub(crate) eflags: u32,
 }
 
 // Not needing Drop opens the option of storing this type in an arena that doesn't support dropping
@@ -77,6 +80,7 @@ impl<'data> File<'data> {
         let endian = header.endian()?;
         let architecture = header.e_machine(endian).try_into()?;
         let sections = header.sections(endian, data)?;
+        let eflags = header.e_flags(endian);
 
         let mut symbols = SymbolTable::default();
         let mut versym: &[Versym] = &[];
@@ -123,6 +127,7 @@ impl<'data> File<'data> {
             versym,
             verdef,
             verdefnum,
+            eflags,
         })
     }
 

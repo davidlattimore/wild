@@ -139,6 +139,7 @@ pub fn compute<'data, A: Arch>(
     finalise_copy_relocations(&mut group_states, &symbol_db, &symbol_resolution_flags)?;
     merge_dynamic_symbol_definitions(&mut group_states)?;
     merge_gnu_property_notes::<A>(&mut group_states)?;
+    merge_eflags::<A>(&mut group_states)?;
 
     finalise_all_sizes(
         &symbol_db,
@@ -324,6 +325,17 @@ fn finalise_all_sizes<'data>(
     })
 }
 
+fn get_prelude_mut<'a, 'data>(
+    group_states: &'a mut [GroupState<'data>],
+) -> &'a mut PreludeLayoutState<'data> {
+    let Some(FileLayoutState::Prelude(prelude)) =
+        group_states.first_mut().and_then(|g| g.files.first_mut())
+    else {
+        panic!("Internal error, prelude must be first");
+    };
+    prelude
+}
+
 fn get_epilogue_mut<'a, 'data>(
     group_states: &'a mut [GroupState<'data>],
 ) -> &'a mut EpilogueLayoutState<'data> {
@@ -423,6 +435,26 @@ fn merge_gnu_property_notes<A: Arch>(group_states: &mut [GroupState]) -> Result 
 
     let epilogue = get_epilogue_mut(group_states);
     epilogue.gnu_property_notes = output_properties;
+    Ok(())
+}
+
+#[tracing::instrument(skip_all, name = "Merge e_flags")]
+fn merge_eflags<A: Arch>(group_states: &mut [GroupState]) -> Result {
+    let eflags = group_states
+        .iter()
+        .flat_map(|group| {
+            group.files.iter().filter_map(|file| {
+                if let FileLayoutState::Object(object) = file {
+                    Some(object.object.eflags)
+                } else {
+                    None
+                }
+            })
+        })
+        .collect_vec();
+
+    let prelude = get_prelude_mut(group_states);
+    prelude.eflags = A::merge_eflags(&eflags)?;
     Ok(())
 }
 
@@ -552,6 +584,7 @@ struct PreludeLayoutState<'data> {
     header_info: Option<HeaderInfo>,
     dynamic_linker: Option<CString>,
     shstrtab_size: u64,
+    eflags: u32,
 }
 
 pub(crate) struct EpilogueLayoutState<'data> {
@@ -2893,6 +2926,7 @@ impl<'data> PreludeLayoutState<'data> {
             header_info: None,
             dynamic_linker: None,
             shstrtab_size: 0,
+            eflags: 0,
         }
     }
 
@@ -3199,6 +3233,7 @@ impl<'data> PreludeLayoutState<'data> {
                 .expect("output section count must fit in a u16"),
 
             active_segment_ids,
+            eflags: self.eflags,
         };
 
         // Allocate space for headers based on segment and section counts.
@@ -3618,6 +3653,7 @@ impl<'data> EpilogueLayoutState<'data> {
 pub(crate) struct HeaderInfo {
     pub(crate) num_output_sections_with_content: u16,
     pub(crate) active_segment_ids: Vec<ProgramSegmentId>,
+    pub(crate) eflags: u32,
 }
 
 impl HeaderInfo {
@@ -5499,6 +5535,7 @@ fn test_no_disallowed_overlaps() {
         active_segment_ids: (0..program_segments.len())
             .map(ProgramSegmentId::new)
             .collect(),
+        eflags: 0,
     };
 
     let mut section_index = 0;
