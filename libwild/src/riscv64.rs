@@ -127,6 +127,7 @@ impl crate::arch::Arch for RiscV64 {
 pub(crate) struct Relaxation {
     kind: RelaxationKind,
     rel_info: RelocationKindInfo,
+    mandatory: bool,
 }
 
 macro_rules! rel_info_from_type {
@@ -168,12 +169,14 @@ impl crate::arch::Relaxation for Relaxation {
                     Some(Relaxation {
                         kind: RelaxationKind::NoOp,
                         rel_info: relocation,
+                        mandatory: output_kind.is_static_executable(),
                     })
                 } else {
                     // GNU ld replaces: 'bl 0' with 'nop'
                     Some(Relaxation {
                         kind: RelaxationKind::ReplaceWithNop,
                         rel_info: rel_info_from_type!(object::elf::R_RISCV_NONE),
+                        mandatory: output_kind.is_static_executable(),
                     })
                 };
             }
@@ -201,6 +204,6 @@ impl crate::arch::Relaxation for Relaxation {
     }
 
     fn is_mandatory(&self) -> bool {
-        false
+        self.mandatory
     }
 }
