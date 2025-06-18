@@ -241,7 +241,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
-        // TODO: right now, no relaxation is implemented and so we can skip the relocation
+        // TODO: #876: right now, no relaxation is implemented and so we can skip the relocation
         object::elf::R_RISCV_ALIGN => (
             RelocationKind::None,
             RelocationSize::ByteSize(0),
@@ -335,7 +335,7 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
-        // TODO: support TLSDESC once glibc supports the feature: #712
+        // TODO: #712: support TLSDESC once glibc supports the feature
         object::elf::R_RISCV_TLSDESC_HI20 => return None,
         object::elf::R_RISCV_TLSDESC_LOAD_LO12 => return None,
         object::elf::R_RISCV_TLSDESC_ADD_LO12 => return None,
