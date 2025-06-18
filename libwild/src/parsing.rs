@@ -179,7 +179,7 @@ impl<'data> ParsedInputObject<'data> {
 
         if object.arch != args.arch {
             bail!(
-                "`{}` has incompatible architecture: {:?}, expecting {:?}",
+                "`{}` has incompatible architecture: {}, expecting {}",
                 input.input,
                 object.arch,
                 args.arch,

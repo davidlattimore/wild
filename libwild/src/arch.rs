@@ -14,6 +14,7 @@ use object::elf::EM_AARCH64;
 use object::elf::EM_RISCV;
 use object::elf::EM_X86_64;
 use std::borrow::Cow;
+use std::fmt::Display;
 use std::str::FromStr;
 
 pub(crate) trait Arch {
@@ -85,6 +86,17 @@ impl TryFrom<u16> for Architecture {
             EM_RISCV => Ok(Self::RISCV64),
             _ => bail!("Unsupported architecture: 0x{:x}", arch),
         }
+    }
+}
+
+impl Display for Architecture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let arch = match self {
+            Architecture::X86_64 => "x86_64",
+            Architecture::AArch64 => "aarch64",
+            Architecture::RISCV64 => "riscv64",
+        };
+        write!(f, "{arch}")
     }
 }
 
