@@ -3,6 +3,7 @@
 use crate::archive;
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
+use crate::archive::EntryMeta;
 use crate::args::Args;
 use crate::args::Input;
 use crate::args::InputSpec;
@@ -21,15 +22,29 @@ use foldhash::fast::RandomState;
 use memmap2::Mmap;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
+use std::fmt::Display;
 use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
 pub(crate) struct InputData<'data> {
+    /// These are actual files on disk. We mostly only need to keep these so that we can verify that
+    /// they didn't change while we were running.
     pub(crate) files: Vec<&'data InputFile>,
+
+    /// This is like `files`, but archives have been split into their separate parts.
+    pub(crate) inputs: Vec<InputBytes<'data>>,
+
     pub(crate) version_script_data: Option<VersionScriptData<'data>>,
     pub(crate) linker_scripts: Vec<InputLinkerScript<'data>>,
+}
+
+pub(crate) struct InputBytes<'data> {
+    pub(crate) input: InputRef<'data>,
+    pub(crate) kind: FileKind,
+    pub(crate) data: &'data [u8],
+    pub(crate) modifiers: Modifiers,
 }
 
 #[derive(Clone, Copy)]
@@ -122,6 +137,7 @@ struct TemporaryState<'data, 'ch> {
 
 enum LoadedFileState<'data> {
     Loaded(&'data InputFile),
+    Archive(&'data InputFile, Vec<InputBytes<'data>>),
     ThinArchive(Vec<&'data InputFile>),
     LinkerScript(LoadedLinkerScriptState<'data>),
     Error(Error),
@@ -154,6 +170,7 @@ struct OpenFileResponse<'data> {
 
 enum ResponseKind<'data> {
     Regular(&'data InputFile),
+    Archive(&'data InputFile, Vec<InputBytes<'data>>),
     ThinArchiveFiles(Vec<&'data InputFile>),
     LinkerScript(LoadedLinkerScript<'data>),
     Error(Error),
@@ -216,6 +233,7 @@ impl<'data> InputData<'data> {
 
         let mut inputs = Self {
             files: Vec::new(),
+            inputs: Vec::new(),
             linker_scripts: Vec::new(),
             version_script_data,
         };
@@ -282,8 +300,17 @@ impl<'data> InputData<'data> {
     ) -> Result {
         match core::mem::take(&mut files[index.0]) {
             None => {}
-            Some(LoadedFileState::Loaded(input_file)) => self.files.push(input_file),
+            Some(LoadedFileState::Loaded(input_file)) => {
+                self.inputs.push(InputBytes::from_file(input_file));
+                self.files.push(input_file);
+            }
+            Some(LoadedFileState::Archive(input_file, mut parts)) => {
+                self.inputs.append(&mut parts);
+                self.files.push(input_file);
+            }
             Some(LoadedFileState::ThinArchive(mut input_files)) => {
+                self.inputs
+                    .extend(input_files.iter().map(|file| InputBytes::from_file(file)));
                 self.files.append(&mut input_files);
             }
             Some(LoadedFileState::LinkerScript(loaded_linker_script_state)) => {
@@ -359,6 +386,7 @@ fn process_open_file_request<'data>(
         let input_file = inputs_arena.alloc(input_file);
 
         Ok(match kind {
+            FileKind::Archive => process_archive(input_file)?,
             FileKind::ThinArchive => process_thin_archive(input_file, args, inputs_arena)?,
             FileKind::Text => process_linker_script(input_file, args)?,
             _ => ResponseKind::Regular(input_file),
@@ -371,6 +399,56 @@ fn process_open_file_request<'data>(
         file_index: request.file_index,
         files,
     }
+}
+
+fn process_archive<'data>(input_file: &'data InputFile) -> Result<ResponseKind<'data>> {
+    let mut extended_filenames = None;
+    let mut outputs = Vec::new();
+
+    for entry in ArchiveIterator::from_archive_bytes(input_file.data())? {
+        let entry = entry?;
+        match entry {
+            ArchiveEntry::Ignored => {}
+            ArchiveEntry::Filenames(t) => extended_filenames = Some(t),
+            ArchiveEntry::Regular(archive_entry) => {
+                let archive_and_member_name = || {
+                    format!(
+                        "{} @ {}",
+                        input_file.filename.to_string_lossy(),
+                        archive_entry
+                            .identifier(extended_filenames)
+                            .as_path()
+                            .to_string_lossy()
+                    )
+                };
+                let kind =
+                    FileKind::identify_bytes(archive_entry.entry_data).with_context(|| {
+                        format!("Failed to parse archive `{}`", archive_and_member_name())
+                    })?;
+                if kind != FileKind::ElfObject {
+                    bail!(
+                        "Archive member is not an object `{}`",
+                        archive_and_member_name()
+                    )
+                }
+                outputs.push(InputBytes {
+                    kind,
+                    input: InputRef {
+                        file: input_file,
+                        entry: Some(EntryMeta {
+                            identifier: archive_entry.identifier(extended_filenames),
+                            from: archive_entry.data_range(),
+                        }),
+                    },
+                    data: archive_entry.entry_data,
+                    modifiers: input_file.modifiers,
+                });
+            }
+            ArchiveEntry::Thin(_) => unreachable!(),
+        }
+    }
+
+    Ok(ResponseKind::Archive(input_file, outputs))
 }
 
 fn process_thin_archive<'data>(
@@ -426,10 +504,9 @@ impl<'data, 'ch> TemporaryState<'data, 'ch> {
         while self.outstanding_work_items > 0 {
             while let Some(loaded) = self.try_recv_response(response_recv) {
                 let loaded_state = match loaded.files {
-                    ResponseKind::Regular(input_file) => LoadedFileState::Loaded(input_file),
-                    ResponseKind::ThinArchiveFiles(input_files) => {
-                        LoadedFileState::ThinArchive(input_files)
-                    }
+                    ResponseKind::Regular(file) => LoadedFileState::Loaded(file),
+                    ResponseKind::Archive(file, parts) => LoadedFileState::Archive(file, parts),
+                    ResponseKind::ThinArchiveFiles(files) => LoadedFileState::ThinArchive(files),
                     ResponseKind::LinkerScript(loaded) => {
                         let file_indexes = loaded
                             .extra_inputs
@@ -701,5 +778,22 @@ impl<'data> InputRef<'data> {
 
     pub(crate) fn has_archive_semantics(&self) -> bool {
         self.entry.is_some() || self.file.modifiers.archive_semantics
+    }
+}
+
+impl Display for InputBytes<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.input, f)
+    }
+}
+
+impl<'data> InputBytes<'data> {
+    pub(crate) fn from_file(file: &'data crate::input_data::InputFile) -> InputBytes<'data> {
+        InputBytes {
+            input: InputRef { file, entry: None },
+            kind: file.kind,
+            data: file.data(),
+            modifiers: file.modifiers,
+        }
     }
 }
