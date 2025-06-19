@@ -129,10 +129,12 @@ use std::fs::File;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io::ErrorKind;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::process::ExitStatus;
 use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::Once;
@@ -919,9 +921,12 @@ impl Program<'_> {
         } else {
             Command::new(&self.link_output.binary)
         };
-        // Similarly to cargo test, capture all the run-time output, where e.g. panic
-        // messages might be confusing to the user.
-        command.stdout(Stdio::null()).stderr(Stdio::null());
+
+        // Similarly to cargo test, capture all the run-time output, since it may contain useful
+        // error messages. We only show it if the exit status is a failure since otherwise messages
+        // that are expected, e.g. panic messages, would be potentially confusing to see.
+        let (mut recv, send) = std::io::pipe()?;
+        command.stdout(send.try_clone()?).stderr(send);
 
         let spawn_result = spawn_with_retry(&mut command, 10);
 
@@ -932,20 +937,34 @@ impl Program<'_> {
             )
         })?;
 
-        let status = match child.wait_timeout(std::time::Duration::from_millis(500))? {
-            Some(s) => s,
-            None => {
-                child.kill()?;
-                bail!("Binary ran for too long");
+        // We need to drop command here since it holds a copy or two of our send pipe. While they
+        // are open, our `recv_to_end` call below can't finish.
+        drop(command);
+
+        let mut output = Vec::new();
+
+        let status = std::thread::scope(|scope| -> Result<ExitStatus> {
+            scope.spawn(|| {
+                let _ = recv.read_to_end(&mut output);
+            });
+
+            match child.wait_timeout(std::time::Duration::from_millis(500))? {
+                Some(s) => Ok(s),
+                None => {
+                    child.kill()?;
+                    bail!("Binary ran for too long");
+                }
             }
-        };
+        })?;
+
+        let output = String::from_utf8_lossy(&output);
 
         let exit_code = status
             .code()
-            .ok_or_else(|| error!("Binary exited with signal"))?;
+            .ok_or_else(|| error!("Binary exited with signal: {output}"))?;
 
         if exit_code != 42 {
-            bail!("Binary exited with unexpected exit code {exit_code}");
+            bail!("Binary exited with unexpected exit code {exit_code}: {output}");
         }
 
         Ok(())
