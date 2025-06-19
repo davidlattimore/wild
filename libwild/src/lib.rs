@@ -2,7 +2,6 @@ pub(crate) mod aarch64;
 pub(crate) mod alignment;
 pub(crate) mod arch;
 pub(crate) mod archive;
-pub(crate) mod archive_splitter;
 pub mod args;
 pub(crate) mod debug_trace;
 pub(crate) mod diagnostics;
@@ -185,11 +184,11 @@ impl Linker {
         input_data: &InputData<'data>,
         args: &'data Args,
     ) -> error::Result<LinkerOutput<'data>> {
-        let inputs = archive_splitter::split_archives(input_data)?;
         let mut output_sections = OutputSections::with_base_address(args.base_address());
 
         if args.output_kind().is_static_executable()
-            && inputs
+            && input_data
+                .inputs
                 .iter()
                 .any(|input| input.kind == crate::file_kind::FileKind::ElfDynamic)
         {
@@ -197,7 +196,7 @@ impl Linker {
         }
 
         let (parsed_inputs, layout_rules) = parsing::parse_input_files(
-            &inputs,
+            &input_data.inputs,
             &input_data.linker_scripts,
             args,
             &mut output_sections,
