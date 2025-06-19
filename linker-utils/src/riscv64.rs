@@ -241,9 +241,8 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
             AllowedRange::no_check(),
             1,
         ),
-        // TODO: #876: right now, no relaxation is implemented and so we can skip the relocation
         object::elf::R_RISCV_ALIGN => (
-            RelocationKind::None,
+            RelocationKind::Alignment,
             RelocationSize::ByteSize(0),
             None,
             AllowedRange::no_check(),

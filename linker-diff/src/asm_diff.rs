@@ -2273,7 +2273,8 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::TpOff
             | RelocationKind::TlsDescCall
             | RelocationKind::PairSubtraction
-            | RelocationKind::None => 0,
+            | RelocationKind::None
+            | RelocationKind::Alignment => 0,
         };
 
         relative_to &= A::get_relocation_base_mask(&relocation_info);
@@ -2486,7 +2487,10 @@ fn value_kind_for_relocation<A: Arch>(
             // Same as above.
             ValueKind::Got(BasicValueKind::TlsGd)
         }
-        RelocationKind::TlsDescCall | RelocationKind::None | RelocationKind::PairSubtraction => {
+        RelocationKind::TlsDescCall
+        | RelocationKind::None
+        | RelocationKind::PairSubtraction
+        | RelocationKind::Alignment => {
             return None;
         }
     };
@@ -3381,7 +3385,8 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::PltRelative
                 | RelocationKind::GotRelative
                 | RelocationKind::None
-                | RelocationKind::PairSubtraction => Ok(Referent::Absolute(*raw_value)),
+                | RelocationKind::PairSubtraction
+                | RelocationKind::Alignment => Ok(Referent::Absolute(*raw_value)),
                 RelocationKind::TlsGd
                 | RelocationKind::TlsGdGot
                 | RelocationKind::TlsGdGotBase
