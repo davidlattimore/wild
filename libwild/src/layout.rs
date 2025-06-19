@@ -2907,7 +2907,9 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
         | RelocationKind::TpOff
         | RelocationKind::SymRelGotBase
         | RelocationKind::PairSubtraction => ResolutionFlags::DIRECT,
-        RelocationKind::None | RelocationKind::AbsoluteAArch64 => ResolutionFlags::empty(),
+        RelocationKind::None | RelocationKind::AbsoluteAArch64 | RelocationKind::Alignment => {
+            ResolutionFlags::empty()
+        }
     }
 }
 

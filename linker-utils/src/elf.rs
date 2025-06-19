@@ -841,6 +841,9 @@ pub enum RelocationKind {
     /// No relocation needs to be applied. Produced when we eliminate a relocation due to an
     /// optimisation.
     None,
+
+    /// The address must fulfill the alignment requirement.
+    Alignment,
 }
 
 impl RelocationKind {

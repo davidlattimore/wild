@@ -1779,15 +1779,34 @@ fn apply_relocation<A: Arch>(
 
     let e = LittleEndian;
     let r_type = rel.r_type(e, false);
+    let mut addend = rel.r_addend.get(e);
 
-    if A::relocation_from_raw(r_type)?.kind == RelocationKind::None {
-        return Ok(RelocationModifier::Normal);
+    match A::relocation_from_raw(r_type)?.kind {
+        RelocationKind::None => return Ok(RelocationModifier::Normal),
+        RelocationKind::Alignment => {
+            let addend = addend as u64;
+            let address = section_address + rel.r_offset(e);
+            ensure!(
+                addend.is_power_of_two(),
+                "A power of 2 expected for Alignment relocation: {}",
+                addend
+            );
+            // Must be aligned to N-bytes, where N is the smallest power of two
+            // that is greater than the value of the addend field.
+            let expected_alignment = addend.next_power_of_two();
+            ensure!(
+                addend % expected_alignment == 0,
+                "Unsatisfied alignment ({expected_alignment} bytes) at address: {}",
+                HexU64::new(address)
+            );
+            return Ok(RelocationModifier::Normal);
+        }
+        _ => {}
     }
 
     let (resolution, symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
     let value_flags = resolution.value_flags;
     let resolution_flags = resolution.resolution_flags;
-    let mut addend = rel.r_addend.get(e);
     let mut next_modifier = RelocationModifier::Normal;
     let rel_info;
     let output_kind = layout.args().output_kind();
@@ -2055,6 +2074,7 @@ fn apply_relocation<A: Arch>(
             .wrapping_add(addend as u64)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::None | RelocationKind::TlsDescCall => 0,
+        RelocationKind::Alignment => unreachable!(),
     };
 
     let offset_in_section = offset_in_section as usize;
