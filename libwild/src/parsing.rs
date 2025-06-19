@@ -1,6 +1,5 @@
 use crate::LayoutRules;
 use crate::OutputSections;
-use crate::archive_splitter::InputBytes;
 use crate::args::Args;
 use crate::args::Modifiers;
 use crate::args::OutputKind;
@@ -11,6 +10,7 @@ use crate::error::Context as _;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::input_data::FileId;
+use crate::input_data::InputBytes;
 use crate::input_data::InputLinkerScript;
 use crate::input_data::InputRef;
 use crate::input_data::UNINITIALISED_FILE_ID;
