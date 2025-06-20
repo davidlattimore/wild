@@ -1,6 +1,6 @@
 //#Shared:runtime.c
 //#EnableLinker:lld
-//#Static:false
+//#Mode:dynamic
 //#LinkArgs:-z now
 //#Shared:data-pointers-2.c
 //#EnableLinker:lld

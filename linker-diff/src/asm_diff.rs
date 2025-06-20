@@ -394,7 +394,7 @@ impl<'data, A: Arch> RelaxationGroup<'data, A> {
         }
     }
 
-    fn matches_if_ok(&self) -> Option<Vec<RelaxationMatch<A>>> {
+    fn matches_if_ok(&self) -> Option<Vec<RelaxationMatch<'data, A>>> {
         self.match_results
             .iter()
             .map(|r| match r {
@@ -405,7 +405,7 @@ impl<'data, A: Arch> RelaxationGroup<'data, A> {
             .ok()
     }
 
-    fn matches_skipping_nops(&self) -> Vec<&RelaxationMatchResult<A>> {
+    fn matches_skipping_nops(&self) -> Vec<&RelaxationMatchResult<'data, A>> {
         self.match_results
             .iter()
             .filter(|result| !matches!(result, RelaxationMatchResult::Matched(m) if m.relaxation.relaxation_kind.is_replace_with_no_op()))
@@ -1665,7 +1665,7 @@ fn arrow() -> ColoredString {
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-enum BasicValueKind {
+pub(crate) enum BasicValueKind {
     /// The value is a pointer. We can do things like check to see if it's pointing to a PLT or
     /// GOT entry. If we tried to do that with things that weren't pointers, then we might get
     /// false PLT/GOT matches.
@@ -1965,7 +1965,7 @@ impl<'data> RelaxationTester<'data> {
             let relative_to = self.get_relative_to::<A>(offset, relocation_info)?;
 
             if let Some(kind) =
-                value_kind_for_relocation(relocation_info.kind, &self.bin.address_index)
+                value_kind_for_relocation::<A>(relocation_info.kind, &self.bin.address_index)
             {
                 value_kind = kind;
             }
@@ -2239,7 +2239,7 @@ impl<'data> RelaxationTester<'data> {
     ) -> Result<u64> {
         let mut relative_to = match relocation_info.kind {
             RelocationKind::Relative
-            | RelocationKind::RelativeRISCVLow12
+            | RelocationKind::RelativeRiscVLow12
             | RelocationKind::PltRelative
             | RelocationKind::TlsGd
             | RelocationKind::TlsLd
@@ -2271,11 +2271,10 @@ impl<'data> RelaxationTester<'data> {
             | RelocationKind::TlsLdGot
             | RelocationKind::DtpOff
             | RelocationKind::TpOff
-            | RelocationKind::TpOffAArch64
-            | RelocationKind::TpOffRiscV
             | RelocationKind::TlsDescCall
             | RelocationKind::PairSubtraction
-            | RelocationKind::None => 0,
+            | RelocationKind::None
+            | RelocationKind::Alignment => 0,
         };
 
         relative_to &= A::get_relocation_base_mask(&relocation_info);
@@ -2442,7 +2441,7 @@ fn matches_are_compatible<A: Arch>(matches: &[RelaxationMatch<'_, A>]) -> bool {
 }
 
 /// Returns what kind of value we can expect when we extract the value written by a relocation.
-fn value_kind_for_relocation(
+fn value_kind_for_relocation<A: Arch>(
     relocation_kind: RelocationKind,
     address_index: &AddressIndex,
 ) -> Option<ValueKind> {
@@ -2461,7 +2460,7 @@ fn value_kind_for_relocation(
             }
         }
         RelocationKind::Relative
-        | RelocationKind::RelativeRISCVLow12
+        | RelocationKind::RelativeRiscVLow12
         | RelocationKind::SymRelGotBase => {
             return None;
         }
@@ -2469,10 +2468,8 @@ fn value_kind_for_relocation(
         RelocationKind::Got | RelocationKind::GotRelGotBase | RelocationKind::GotRelative => {
             ValueKind::Got(BasicValueKind::Pointer)
         }
-        RelocationKind::DtpOff | RelocationKind::TpOff => {
-            ValueKind::Unwrapped(BasicValueKind::TlsOffset)
-        }
-        RelocationKind::TpOffAArch64 => ValueKind::Unwrapped(BasicValueKind::Aarch64TlsOffset),
+        RelocationKind::DtpOff => ValueKind::Unwrapped(BasicValueKind::TlsOffset),
+        RelocationKind::TpOff => ValueKind::Unwrapped(A::get_basic_value_for_tp_offset()),
         RelocationKind::GotTpOff
         | RelocationKind::GotTpOffGot
         | RelocationKind::GotTpOffGotBase => ValueKind::Got(BasicValueKind::TlsOffset),
@@ -2490,11 +2487,10 @@ fn value_kind_for_relocation(
             // Same as above.
             ValueKind::Got(BasicValueKind::TlsGd)
         }
-        RelocationKind::TlsDescCall | RelocationKind::None | RelocationKind::PairSubtraction => {
-            return None;
-        }
-        // TODO
-        RelocationKind::TpOffRiscV => {
+        RelocationKind::TlsDescCall
+        | RelocationKind::None
+        | RelocationKind::PairSubtraction
+        | RelocationKind::Alignment => {
             return None;
         }
     };
@@ -3384,7 +3380,7 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::AbsoluteSubtraction
                 | RelocationKind::AbsoluteSubtractionWord6
                 | RelocationKind::Relative
-                | RelocationKind::RelativeRISCVLow12
+                | RelocationKind::RelativeRiscVLow12
                 | RelocationKind::SymRelGotBase
                 | RelocationKind::GotRelGotBase
                 | RelocationKind::Got
@@ -3392,7 +3388,8 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::PltRelative
                 | RelocationKind::GotRelative
                 | RelocationKind::None
-                | RelocationKind::PairSubtraction => Ok(Referent::Absolute(raw_value)),
+                | RelocationKind::PairSubtraction
+                | RelocationKind::Alignment => Ok(Referent::Absolute(raw_value)),
                 RelocationKind::TlsGd
                 | RelocationKind::TlsGdGot
                 | RelocationKind::TlsGdGotBase
@@ -3401,8 +3398,6 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::TlsLdGotBase
                 | RelocationKind::DtpOff
                 | RelocationKind::TpOff
-                | RelocationKind::TpOffAArch64
-                | RelocationKind::TpOffRiscV
                 | RelocationKind::TlsDesc
                 | RelocationKind::TlsDescGot
                 | RelocationKind::TlsDescGotBase => {

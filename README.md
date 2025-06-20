@@ -39,6 +39,81 @@ To build and install the latest, unreleased code:
 cargo install --locked --bin wild --git https://github.com/davidlattimore/wild.git wild-linker
 ```
 
+### Nix
+> [!IMPORTANT]
+> Wild with Nix currently relies on rust-overlay because 1.87 is still on nixpkgs staging.
+> This requirement shall be removed once 1.87 is on nixpkgs unstable.
+
+Wild include a flake, a derivation for building Wild, and a stdenv adapter
+in-tree. If the overlay is applied these are provided for you. Just add it to
+your flake inputs. A devShell example is also shown with the flake.
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nix/nixos-unstable";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    wild = {
+      url = "github:davidlattimore/wild";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs =
+    {
+      self,
+      nixpkgs,
+      wild,
+      rust-overlay,
+    }:
+    let
+      pkgs = import nixpkgs {
+        system = "x86_64-linux";
+        overlays = [
+          (import rust-overlay)
+          wild.overlays.default
+        ];
+      };
+
+      wildStdenv = pkgs.useWildLinker pkgs.stdenv;
+    in
+    {
+      packages.x86_64-linux.default = pkgs.callPackage ./package.nix { stdenv = wildStdenv; };
+
+      devShell.x86_64-linux.default = pkgs.mkShell.override { stdenv = wildStdenv; } {
+        inputsFrom = [ self.packages.x86_64-linux.default ];
+        packages = [
+          pkgs.rust-analyzer
+        ];
+      };
+    };
+}
+```
+Without flakes (npins shown):
+
+1. `$ npins add github davidlattimore wild -b main`
+2. `$ npins add github oxalica rust-overlay -b master`
+
+```nix
+let
+  sources = import ./npins;
+  wild = import "${sources.wild}/nix/overlay.nix";
+  pkgs = import sources.nixpkgs {
+    overlays = [
+      (import sources.rust-overlay)
+      wild
+    ];
+  };
+  wildStdenv = pkgs.useWildLinker pkgs.stdenv;
+in
+{
+  package = pkgs.callPackage ./package.nix { stdenv = wildStdenv; };
+}
+```
+
 ## Using as your default linker
 
 If you'd like to use Wild as your default linker for building Rust code, you can put the following
@@ -346,6 +421,11 @@ RUSTFLAGS="-Clinker=clang -Clink-args=--ld-path=wild" cargo test
 For more information on contributing to `wild` see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 For a high-level overview of Wild's design, see [DESIGN.md](DESIGN.md).
+
+## Chat server
+
+We have a Zulip server for Wild-related chat. You can join
+[here](https://wild.zulipchat.com/join/bbopdeg6howwjpaiyowngyde/).
 
 ## Further reading
 

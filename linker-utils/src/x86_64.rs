@@ -1,4 +1,7 @@
+use crate::elf::AllowedRange;
 use crate::elf::RelocationKind;
+use crate::elf::RelocationKindInfo;
+use crate::elf::RelocationSize;
 use crate::relaxation::RelocationModifier;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +41,10 @@ pub enum RelaxationKind {
 
     /// Transform local dynamic (LD) into local exec.
     TlsLdToLocalExec,
+
+    /// Transform local dynamic (LD) into local exec when the subsequent instruction is an indirect
+    /// call instruction.
+    TlsLdToLocalExecNoPlt,
 
     /// Transform local dynamic (LD) into local exec with extra padding because the previous
     /// instruction was 64 bit.
@@ -138,6 +145,13 @@ impl RelaxationKind {
                 ]);
                 *offset_in_section += 5;
             }
+            RelaxationKind::TlsLdToLocalExecNoPlt => {
+                section_bytes[offset - 3..offset + 10].copy_from_slice(&[
+                    // mov %fs:0,%rax
+                    0x66, 0x66, 0x66, 0x66, 0x64, 0x48, 0x8b, 0x04, 0x25, 0, 0, 0, 0,
+                ]);
+                *offset_in_section += 5;
+            }
             RelaxationKind::TlsLdToLocalExec64 => {
                 section_bytes[offset - 3..offset + 19].copy_from_slice(&[
                     // nopw (%rax,%rax)
@@ -148,17 +162,16 @@ impl RelaxationKind {
                 *offset_in_section += 15;
             }
             RelaxationKind::TlsDescToLocalExec => {
-                section_bytes[offset - 3..offset + 6].copy_from_slice(&[
+                section_bytes[offset - 3..offset + 4].copy_from_slice(&[
                     // mov {offset},%rax
-                    0x48, 0xc7, 0xc0, 0, 0, 0, 0, // xchg   %ax,%ax
-                    0x66, 0x90,
+                    0x48, 0xc7, 0xc0, 0, 0, 0, 0,
                 ]);
+                *addend = 0;
             }
             RelaxationKind::TlsDescToInitialExec => {
-                section_bytes[offset - 3..offset + 6].copy_from_slice(&[
+                section_bytes[offset - 3..offset + 4].copy_from_slice(&[
                     // mov {GOT}(%rip),%rax
-                    0x48, 0x8b, 0x05, 0, 0, 0, 0, // xchg   %ax,%ax
-                    0x66, 0x90,
+                    0x48, 0x8b, 0x05, 0, 0, 0, 0,
                 ]);
             }
             RelaxationKind::SkipTlsDescCall => {
@@ -178,9 +191,8 @@ impl RelaxationKind {
             | RelaxationKind::TlsGdToLocalExec
             | RelaxationKind::TlsGdToLocalExecLarge
             | RelaxationKind::TlsLdToLocalExec
-            | RelaxationKind::TlsLdToLocalExec64
-            | RelaxationKind::TlsDescToLocalExec
-            | RelaxationKind::TlsDescToInitialExec => RelocationModifier::SkipNextRelocation,
+            | RelaxationKind::TlsLdToLocalExecNoPlt
+            | RelaxationKind::TlsLdToLocalExec64 => RelocationModifier::SkipNextRelocation,
             RelaxationKind::MovIndirectToLea
             | RelaxationKind::MovIndirectToAbsolute
             | RelaxationKind::RexMovIndirectToAbsolute
@@ -188,16 +200,17 @@ impl RelaxationKind {
             | RelaxationKind::RexCmpIndirectToAbsolute
             | RelaxationKind::CallIndirectToRelative
             | RelaxationKind::JmpIndirectToRelative
+            | RelaxationKind::TlsDescToLocalExec
+            | RelaxationKind::TlsDescToInitialExec
             | RelaxationKind::NoOp
             | RelaxationKind::SkipTlsDescCall => RelocationModifier::Normal,
         }
     }
 }
 
-/// Returns the supplied x86-64 relocation type split into a relocation kind and a size (in bytes)
-/// for the relocation. Returns `None` if the r_type isn't recognised.
+/// Returns the supplied x86-64 relocation as RelocationKindType. Returns `None` if the r_type isn't recognised.
 #[must_use]
-pub fn relocation_kind_and_size(r_type: u32) -> Option<(RelocationKind, usize)> {
+pub const fn relocation_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
     let (kind, size) = match r_type {
         object::elf::R_X86_64_64 => (RelocationKind::Absolute, 8),
         object::elf::R_X86_64_PC32 => (RelocationKind::Relative, 4),
@@ -234,5 +247,12 @@ pub fn relocation_kind_and_size(r_type: u32) -> Option<(RelocationKind, usize)> 
         object::elf::R_X86_64_NONE => (RelocationKind::None, 0),
         _ => return None,
     };
-    Some((kind, size))
+
+    Some(RelocationKindInfo {
+        kind,
+        size: RelocationSize::ByteSize(size),
+        mask: None,
+        range: AllowedRange::no_check(),
+        alignment: 1,
+    })
 }

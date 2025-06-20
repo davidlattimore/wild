@@ -8,7 +8,7 @@
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#Arch: x86_64
 //#RequiresGlibc:true
-//#Static:false
+//#Mode:dynamic
 
 #include "runtime.h"
 

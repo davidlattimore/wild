@@ -4,6 +4,7 @@ use crate::arch::PltEntry;
 use crate::arch::RType as _;
 use crate::arch::Relaxation;
 use crate::arch::RelaxationByteRange;
+use crate::asm_diff::BasicValueKind;
 use iced_x86::Formatter as _;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -47,6 +48,7 @@ impl Arch for X86_64 {
             Self::RelaxationKind::TlsGdToLocalExecLarge => RelaxationByteRange::new(3, 22),
             Self::RelaxationKind::TlsGdToInitialExec => RelaxationByteRange::new(4, 16),
             Self::RelaxationKind::TlsLdToLocalExec => RelaxationByteRange::new(3, 12),
+            Self::RelaxationKind::TlsLdToLocalExecNoPlt => RelaxationByteRange::new(3, 13),
             Self::RelaxationKind::TlsLdToLocalExec64 => RelaxationByteRange::new(3, 22),
             Self::RelaxationKind::SkipTlsDescCall => RelaxationByteRange::new(0, 2),
             Self::RelaxationKind::TlsDescToLocalExec => RelaxationByteRange::new(3, 7),
@@ -166,6 +168,10 @@ impl Arch for X86_64 {
                     Self::RelaxationKind::TlsLdToLocalExec,
                     object::elf::R_X86_64_NONE,
                 );
+                relax(
+                    Self::RelaxationKind::TlsLdToLocalExecNoPlt,
+                    object::elf::R_X86_64_NONE,
+                );
             }
             (SectionKind::Text, object::elf::R_X86_64_TLSDESC_CALL) => {
                 relax(
@@ -188,12 +194,12 @@ impl Arch for X86_64 {
         relaxation_kind.apply(section_bytes, offset_in_section, addend);
     }
 
-    fn decode_instructions_in_range(
-        section_bytes: &[u8],
+    fn decode_instructions_in_range<'data>(
+        section_bytes: &'data [u8],
         section_address: u64,
         function_offset_in_section: u64,
         range: std::ops::Range<u64>,
-    ) -> Vec<Instruction<Self>> {
+    ) -> Vec<Instruction<'data, Self>> {
         let mut instructions = Vec::new();
 
         let mut decoder = AsmDecoder::new(
@@ -363,6 +369,10 @@ impl Arch for X86_64 {
         // We don't use relocation chains on x86, so all chains are "complete".
         true
     }
+
+    fn get_basic_value_for_tp_offset() -> crate::asm_diff::BasicValueKind {
+        BasicValueKind::TlsOffset
+    }
 }
 
 struct AsmDecoder<'data> {
@@ -418,15 +428,7 @@ impl crate::arch::RType for RType {
     }
 
     fn opt_relocation_info(self) -> Option<RelocationKindInfo> {
-        linker_utils::x86_64::relocation_kind_and_size(self.0).map(|(kind, size_in_bytes)| {
-            RelocationKindInfo {
-                kind,
-                size: linker_utils::elf::RelocationSize::ByteSize(size_in_bytes),
-                mask: None,
-                range: linker_utils::elf::AllowedRange::no_check(),
-                alignment: 1,
-            }
-        })
+        linker_utils::x86_64::relocation_from_raw(self.0)
     }
 
     fn dynamic_relocation_kind(self) -> Option<DynamicRelocationKind> {

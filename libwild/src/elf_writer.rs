@@ -7,9 +7,7 @@ use crate::arch::Arch;
 use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::BuildIdOption;
-use crate::args::FileWriteMode;
 use crate::args::OutputKind;
-use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf;
@@ -34,10 +32,15 @@ use crate::ensure;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
+use crate::file_writer::SizedOutput;
+use crate::file_writer::excessive_allocation;
+use crate::file_writer::insufficient_allocation;
+use crate::file_writer::split_buffers_by_alignment;
+use crate::file_writer::split_output_by_group;
+use crate::file_writer::split_output_into_sections;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
-use crate::layout::GroupLayout;
 use crate::layout::HeaderInfo;
 use crate::layout::InternalSymbols;
 use crate::layout::Layout;
@@ -46,6 +49,7 @@ use crate::layout::NonAddressableCounts;
 use crate::layout::ObjectLayout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
+use crate::layout::ResFlagsDisplay;
 use crate::layout::Resolution;
 use crate::layout::ResolutionFlags;
 use crate::layout::Section;
@@ -59,6 +63,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
+use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
 use crate::resolution::SectionSlot;
@@ -84,7 +89,6 @@ use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::relaxation::RelocationModifier;
-use memmap2::MmapOptions;
 use object::LittleEndian;
 use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
@@ -95,518 +99,132 @@ use object::read::elf::Sym as _;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
+use rayon::slice::ParallelSliceMut;
 use std::fmt::Display;
-use std::io::Write;
 use std::iter;
 use std::marker::PhantomData;
 use std::ops::BitAnd;
-use std::ops::Deref;
-use std::ops::DerefMut;
 use std::ops::Not as _;
 use std::ops::Range;
 use std::ops::Sub;
-use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
 use tracing::debug_span;
 use tracing::instrument;
 use uuid::Uuid;
 
-struct HexU64 {
-    value: u64,
-}
-
-impl HexU64 {
-    fn new(value: u64) -> Self {
-        Self { value }
-    }
-}
-
-impl Display for HexU64 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:x}", self.value)
-    }
-}
-
-pub struct Output {
-    path: Arc<Path>,
-    creator: FileCreator,
-    file_write_mode: FileWriteMode,
-    should_write_trace: bool,
-}
-
-enum FileCreator {
-    Background {
-        sized_output_sender: Option<Sender<Result<SizedOutput>>>,
-        sized_output_recv: Receiver<Result<SizedOutput>>,
-    },
-    Regular {
-        file_size: Option<u64>,
-    },
-}
-
-pub(crate) struct SizedOutput {
-    file: std::fs::File,
-    out: OutputBuffer,
-    path: Arc<Path>,
-    trace: TraceOutput,
-}
-
-enum OutputBuffer {
-    Mmap(memmap2::MmapMut),
-    InMemory(Vec<u8>),
-}
-
-impl OutputBuffer {
-    fn new(file: &std::fs::File, file_size: u64) -> Self {
-        Self::new_mmapped(file, file_size)
-            .unwrap_or_else(|| Self::InMemory(vec![0; file_size as usize]))
+pub(crate) fn write<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout) -> Result {
+    write_file_contents::<A>(sized_output, layout)?;
+    if layout.args().validate_output {
+        crate::validation::validate_bytes(layout, &sized_output.out)?;
     }
 
-    fn new_mmapped(file: &std::fs::File, file_size: u64) -> Option<Self> {
-        file.set_len(file_size).ok()?;
-        let mmap = unsafe { MmapOptions::new().map_mut(file) }.ok()?;
-        Some(Self::Mmap(mmap))
+    if layout.args().should_write_eh_frame_hdr {
+        let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
+        sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
     }
+
+    write_gnu_build_id_note(sized_output, &layout.args().build_id, layout)?;
+    Ok(())
 }
 
-impl Deref for OutputBuffer {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        match self {
-            OutputBuffer::Mmap(mmap) => mmap.deref(),
-            OutputBuffer::InMemory(vec) => vec.deref(),
+fn write_gnu_build_id_note(
+    sized_output: &mut SizedOutput,
+    build_id_option: &BuildIdOption,
+    layout: &Layout,
+) -> Result {
+    let hash_placeholder;
+    let uuid_placeholder;
+    let build_id = match build_id_option {
+        BuildIdOption::Fast => {
+            hash_placeholder = compute_hash(sized_output);
+            hash_placeholder.as_bytes()
         }
-    }
-}
-
-impl DerefMut for OutputBuffer {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        match self {
-            OutputBuffer::Mmap(mmap) => mmap.deref_mut(),
-            OutputBuffer::InMemory(vec) => vec.deref_mut(),
+        BuildIdOption::Hex(hex) => hex.as_slice(),
+        BuildIdOption::Uuid => {
+            uuid_placeholder = Uuid::new_v4();
+            uuid_placeholder.as_bytes()
         }
-    }
-}
-
-#[derive(Debug)]
-struct SectionAllocation {
-    id: OutputSectionId,
-    offset: usize,
-    size: usize,
-}
-
-impl Output {
-    pub(crate) fn new(args: &Args) -> Output {
-        let file_write_mode = args
-            .file_write_mode
-            .unwrap_or_else(|| default_file_write_mode(&args.output));
-
-        if args.num_threads.get() > 1 {
-            let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
-            Output {
-                path: args.output.clone(),
-                creator: FileCreator::Background {
-                    sized_output_sender: Some(sized_output_sender),
-                    sized_output_recv,
-                },
-                file_write_mode,
-                should_write_trace: args.write_trace,
-            }
-        } else {
-            Output {
-                path: args.output.clone(),
-                creator: FileCreator::Regular { file_size: None },
-                file_write_mode,
-                should_write_trace: args.write_trace,
-            }
-        }
-    }
-
-    pub(crate) fn set_size(&mut self, size: u64) {
-        match &mut self.creator {
-            FileCreator::Background {
-                sized_output_sender,
-                sized_output_recv: _,
-            } => {
-                let sender = sized_output_sender
-                    .take()
-                    .expect("set_size must only be called once");
-                let path = self.path.clone();
-
-                let write_mode = self.file_write_mode;
-                let should_write_trace = self.should_write_trace;
-
-                rayon::spawn(move || {
-                    if write_mode == FileWriteMode::UnlinkAndReplace {
-                        // Rename the old output file so that we can create a new file in its place.
-                        // Reusing the existing file would also be an option, but that wouldn't
-                        // error if the file is currently being executed.
-                        let renamed_old_file = path.with_extension("delete");
-                        let rename_status = std::fs::rename(&path, &renamed_old_file);
-
-                        // If there was an old output file that we renamed, then delete it. We do so
-                        // from a separate task so that it can run in the background while other
-                        // threads continue working. Deleting can take a while for large files.
-                        if rename_status.is_ok() {
-                            rayon::spawn(move || {
-                                let _ = std::fs::remove_file(renamed_old_file);
-                                // Note, we don't currently signal when we've finished deleting the
-                                // file. Based on experiments run on Linux 6.9.3, if we exit while
-                                // an unlink syscall is in progress on a separate thread, Linux will
-                                // wait for the unlink syscall to complete before terminating the
-                                // process.
-                            });
-                        }
-                    }
-
-                    // Create the output file.
-                    let sized_output = SizedOutput::new(path, size, write_mode, should_write_trace);
-
-                    // Pass it to the main thread, so that it can start writing it once layout finishes.
-                    let _ = sender.send(sized_output);
-                });
-            }
-            FileCreator::Regular { file_size } => *file_size = Some(size),
-        }
-    }
-
-    #[tracing::instrument(skip_all, name = "Write output file")]
-    pub fn write<'data, A: Arch>(&mut self, layout: &Layout<'data>) -> Result {
-        if layout.args().write_layout {
-            write_layout(layout)?;
-        }
-        let mut sized_output = match &self.creator {
-            FileCreator::Background {
-                sized_output_sender,
-                sized_output_recv,
-            } => {
-                assert!(sized_output_sender.is_none(), "set_size was never called");
-                wait_for_sized_output(sized_output_recv)?
-            }
-            FileCreator::Regular { file_size } => {
-                delete_old_output(&self.path);
-                let file_size = file_size.context("set_size was never called")?;
-                self.create_file_non_lazily(file_size)?
-            }
-        };
-        sized_output.write::<A>(layout)?;
-        sized_output.flush()?;
-        sized_output.trace.close()?;
-
-        // While we have the output file mmapped with write permission, the file will be locked and
-        // unusable, so we can't really say that we've finished writing it until we've unmapped it.
-        {
-            let _span = tracing::info_span!("Unmap output file").entered();
-            drop(sized_output);
-        }
-
-        Ok(())
-    }
-
-    #[tracing::instrument(skip_all, name = "Create output file")]
-    fn create_file_non_lazily(&mut self, file_size: u64) -> Result<SizedOutput> {
-        SizedOutput::new(
-            self.path.clone(),
-            file_size,
-            self.file_write_mode,
-            self.should_write_trace,
-        )
-    }
-}
-
-/// Returns the file write mode that we should use to write to the specified path.
-fn default_file_write_mode(path: &Path) -> FileWriteMode {
-    use std::os::unix::fs::FileTypeExt as _;
-
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return FileWriteMode::UnlinkAndReplace;
+        BuildIdOption::None => return Ok(()),
     };
 
-    let file_type = metadata.file_type();
+    let mut buffers = split_output_into_sections(layout, &mut sized_output.out);
+    let e = LittleEndian;
+    let (note_header, mut rest) =
+        from_bytes_mut::<NoteHeader>(buffers.get_mut(output_section_id::NOTE_GNU_BUILD_ID))
+            .map_err(|_| insufficient_allocation(".note.gnu.build-id"))?;
+    note_header.n_namesz.set(e, GNU_NOTE_NAME.len() as u32);
+    note_header.n_descsz.set(e, build_id.len() as u32);
+    note_header.n_type.set(e, NT_GNU_BUILD_ID);
 
-    // If we've been asked to write to a path that currently holds some exotic kind of file, then we
-    // don't want to delete it, even if we have permission to. For example, we don't want to delete
-    // `/dev/null` if we're running in a container as root.
-    if file_type.is_char_device()
-        || file_type.is_block_device()
-        || file_type.is_socket()
-        || file_type.is_fifo()
-    {
-        return FileWriteMode::UpdateInPlace;
-    }
+    let name_out = crate::slice::slice_take_prefix_mut(&mut rest, GNU_NOTE_NAME.len());
+    name_out.copy_from_slice(GNU_NOTE_NAME);
 
-    FileWriteMode::UnlinkAndReplace
+    rest.copy_from_slice(build_id);
+
+    Ok(())
 }
 
-/// Delete the old output file. Note, this is only used when running from a single thread.
-#[tracing::instrument(skip_all, name = "Delete old output")]
-fn delete_old_output(path: &Path) {
-    let _ = std::fs::remove_file(path);
+#[instrument(skip_all, name = "Compute build ID")]
+fn compute_hash(sized_output: &SizedOutput) -> blake3::Hash {
+    blake3::Hasher::new()
+        .update_rayon(&sized_output.out)
+        .finalize()
 }
 
-#[tracing::instrument(skip_all, name = "Wait for output file creation")]
-fn wait_for_sized_output(sized_output_recv: &Receiver<Result<SizedOutput>>) -> Result<SizedOutput> {
-    sized_output_recv.recv()?
-}
+#[tracing::instrument(skip_all, name = "Write data to file")]
+fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout) -> Result {
+    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
 
-impl SizedOutput {
-    fn new(
-        path: Arc<Path>,
-        file_size: u64,
-        write_mode: FileWriteMode,
-        should_write_trace: bool,
-    ) -> Result<SizedOutput> {
-        let mut open_options = std::fs::OpenOptions::new();
+    let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
+    let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
+    groups_and_buffers
+        .into_par_iter()
+        .try_for_each(|(group, mut buffers)| -> Result {
+            let mut table_writer = TableWriter::from_layout(
+                layout,
+                group.dynstr_start_offset,
+                group.strtab_start_offset,
+                &mut buffers,
+                group.eh_frame_start_address,
+            );
 
-        // If another thread spawns a subprocess while we have this file open, we don't want the
-        // subprocess to inherit our file descriptor. This unfortunately doesn't prevent that, since
-        // unless and until the subprocess calls exec, it will inherit the file descriptor. However,
-        // assuming it eventually calls exec, this at least means that it inherits the file
-        // descriptor for less time. i.e. this doesn't really fix anything, but makes problems less bad.
-        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut open_options, libc::O_CLOEXEC);
-
-        match write_mode {
-            FileWriteMode::UnlinkAndReplace => {
-                open_options.truncate(true);
-            }
-            FileWriteMode::UpdateInPlace => {
-                open_options.truncate(false);
-            }
-        }
-
-        let file = open_options
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&path)
-            .with_context(|| format!("Failed to open `{}`", path.display()))?;
-
-        let out = OutputBuffer::new(&file, file_size);
-
-        let trace = TraceOutput::new(should_write_trace, &path);
-
-        Ok(SizedOutput {
-            file,
-            out,
-            path,
-            trace,
-        })
-    }
-
-    pub(crate) fn write<A: Arch>(&mut self, layout: &Layout) -> Result {
-        self.write_file_contents::<A>(layout)?;
-        if layout.args().validate_output {
-            crate::validation::validate_bytes(layout, &self.out)?;
-        }
-
-        if layout.args().should_write_eh_frame_hdr {
-            let mut section_buffers = split_output_into_sections(layout, &mut self.out);
-            sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
-        }
-
-        self.write_gnu_build_id_note(&layout.args().build_id, layout)?;
-        Ok(())
-    }
-
-    fn write_gnu_build_id_note(
-        &mut self,
-        build_id_option: &BuildIdOption,
-        layout: &Layout,
-    ) -> Result {
-        let hash_placeholder;
-        let uuid_placeholder;
-        let build_id = match build_id_option {
-            BuildIdOption::Fast => {
-                hash_placeholder = self.compute_hash();
-                hash_placeholder.as_bytes()
-            }
-            BuildIdOption::Hex(hex) => hex.as_slice(),
-            BuildIdOption::Uuid => {
-                uuid_placeholder = Uuid::new_v4();
-                uuid_placeholder.as_bytes()
-            }
-            BuildIdOption::None => return Ok(()),
-        };
-
-        let mut buffers = split_output_into_sections(layout, &mut self.out);
-        let e = LittleEndian;
-        let (note_header, mut rest) =
-            from_bytes_mut::<NoteHeader>(buffers.get_mut(output_section_id::NOTE_GNU_BUILD_ID))
-                .map_err(|_| insufficient_allocation(".note.gnu.build-id"))?;
-        note_header.n_namesz.set(e, GNU_NOTE_NAME.len() as u32);
-        note_header.n_descsz.set(e, build_id.len() as u32);
-        note_header.n_type.set(e, NT_GNU_BUILD_ID);
-
-        let name_out = crate::slice::slice_take_prefix_mut(&mut rest, GNU_NOTE_NAME.len());
-        name_out.copy_from_slice(GNU_NOTE_NAME);
-
-        rest.copy_from_slice(build_id);
-
-        Ok(())
-    }
-
-    #[instrument(skip_all, name = "Compute build ID")]
-    fn compute_hash(&self) -> blake3::Hash {
-        blake3::Hasher::new().update_rayon(&self.out).finalize()
-    }
-
-    fn flush(&mut self) -> Result {
-        match &self.out {
-            OutputBuffer::Mmap(_) => {}
-            OutputBuffer::InMemory(bytes) => self
-                .file
-                .write_all(bytes)
-                .with_context(|| format!("Failed to write to {}", self.path.display()))?,
-        }
-
-        // Making the file executable is best-effort only. For example if we're writing to a pipe or
-        // something, it isn't going to work and that's OK.
-        let _ = crate::fs::make_executable(&self.file);
-
-        Ok(())
-    }
-
-    #[tracing::instrument(skip_all, name = "Write data to file")]
-    pub(crate) fn write_file_contents<'data, A: Arch>(&mut self, layout: &Layout<'data>) -> Result {
-        let mut section_buffers = split_output_into_sections(layout, &mut self.out);
-
-        let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
-        let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
-        groups_and_buffers
-            .into_par_iter()
-            .try_for_each(|(group, mut buffers)| -> Result {
-                let mut table_writer = TableWriter::from_layout(
-                    layout,
-                    group.dynstr_start_offset,
-                    group.strtab_start_offset,
+            for file in &group.files {
+                write_file::<A>(
+                    file,
                     &mut buffers,
-                    group.eh_frame_start_address,
-                );
+                    &mut table_writer,
+                    layout,
+                    &sized_output.trace,
+                )
+                .with_context(|| format!("Failed copying from {file} to output file"))?;
+            }
+            table_writer
+                .validate_empty(&group.mem_sizes)
+                .with_context(|| format!("validate_empty failed for {group}"))?;
+            Ok(())
+        })?;
 
-                for file in &group.files {
-                    file.write::<A>(&mut buffers, &mut table_writer, layout, &self.trace)
-                        .with_context(|| format!("Failed copying from {file} to output file"))?;
-                }
-                table_writer
-                    .validate_empty(&group.mem_sizes)
-                    .with_context(|| format!("validate_empty failed for {group}"))?;
-                Ok(())
-            })?;
+    for (output_section_id, _) in layout.output_sections.ids_with_info() {
+        let relocations = layout
+            .relocation_statistics
+            .get(output_section_id)
+            .load(Relaxed);
 
-        for (output_section_id, _) in layout.output_sections.ids_with_info() {
-            let relocations = layout
-                .relocation_statistics
-                .get(output_section_id)
-                .load(Relaxed);
-
-            if relocations > 0 {
-                tracing::debug!(
+        if relocations > 0 {
+            tracing::debug!(
                     target: "metrics",
                     section = layout.output_sections.display_name(output_section_id),
                     relocations, "resolved relocations");
-            }
         }
-        Ok(())
     }
-}
-
-fn insufficient_allocation(section_name: &str) -> crate::error::Error {
-    error!(
-        "Insufficient {section_name} allocation. {}",
-        verify_allocations_message()
-    )
-}
-
-fn excessive_allocation(section_name: &str, remaining: u64, allocated: u64) -> crate::error::Error {
-    error!(
-        "Allocated too much space in {section_name}. {remaining} of {allocated} bytes remain. {}",
-        verify_allocations_message()
-    )
-}
-
-/// Returns a message suggesting to set an environment variable to help debug a failure, but only if
-/// it's not already set, since that would be confusing.
-fn verify_allocations_message() -> String {
-    if std::env::var(WRITE_VERIFY_ALLOCATIONS_ENV).is_ok_and(|v| v == "1") {
-        String::new()
-    } else {
-        format!("Setting {WRITE_VERIFY_ALLOCATIONS_ENV}=1 might give more info")
-    }
-}
-
-#[tracing::instrument(skip_all, name = "Split output buffers by group")]
-fn split_output_by_group<'layout, 'data, 'out>(
-    layout: &'layout Layout<'data>,
-    writable_buckets: &'out mut OutputSectionPartMap<&mut [u8]>,
-) -> Vec<(
-    &'layout GroupLayout<'data>,
-    OutputSectionPartMap<&'out mut [u8]>,
-)> {
-    layout
-        .group_layouts
-        .iter()
-        .map(|group| (group, writable_buckets.take_mut(&group.file_sizes)))
-        .collect()
-}
-
-fn split_output_into_sections<'out>(
-    layout: &Layout,
-    mut data: &'out mut [u8],
-) -> OutputSectionMap<&'out mut [u8]> {
-    let mut section_allocations = Vec::with_capacity(layout.section_layouts.len());
-    layout.section_layouts.for_each(|id, s| {
-        section_allocations.push(SectionAllocation {
-            id,
-            offset: s.file_offset,
-            size: s.file_size,
-        });
-    });
-    section_allocations.sort_by_key(|s| (s.offset, s.offset + s.size));
-
-    // OutputSectionMap is ordered by section ID, which is not the same as output order. We
-    // split the output file by output order, putting the relevant parts of the buffer into the
-    // map.
-    let mut section_data = OutputSectionMap::with_size(section_allocations.len());
-    let mut offset = 0;
-    for a in section_allocations {
-        let Some(padding) = a.offset.checked_sub(offset) else {
-            panic!(
-                "Offsets went backward when splitting output file {offset} to {}",
-                a.offset
-            );
-        };
-        slice_take_prefix_mut(&mut data, padding);
-        *section_data.get_mut(a.id) = slice_take_prefix_mut(&mut data, a.size);
-        offset = a.offset + a.size;
-    }
-    section_data
+    Ok(())
 }
 
 #[tracing::instrument(skip_all, name = "Sort .eh_frame_hdr")]
 fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {
     let entry_bytes = &mut eh_frame_hdr[size_of::<elf::EhFrameHdr>()..];
     let entries: &mut [elf::EhFrameHdrEntry] = bytemuck::cast_slice_mut(entry_bytes);
-    entries.sort_by_key(|e| e.frame_ptr);
-}
-
-/// Splits the writable buffers for each segment further into separate buffers for each alignment.
-fn split_buffers_by_alignment<'out>(
-    section_buffers: &'out mut OutputSectionMap<&mut [u8]>,
-    layout: &Layout,
-) -> OutputSectionPartMap<&'out mut [u8]> {
-    layout.section_part_layouts.output_order_map(
-        &layout.output_order,
-        |part_id, _alignment, rec| {
-            crate::slice::slice_take_prefix_mut(
-                section_buffers.get_mut(part_id.output_section_id()),
-                rec.file_size,
-            )
-        },
-    )
+    entries.par_sort_by_key(|e| e.frame_ptr);
 }
 
 fn write_program_headers(program_headers_out: &mut ProgramHeaderWriter, layout: &Layout) -> Result {
@@ -678,13 +296,7 @@ fn populate_file_header<A: Arch>(
         e,
         u64::from(elf::FILE_HEADER_SIZE) + header_info.program_headers_size(),
     );
-    // TODO: #701
-    let e_flags = if A::elf_header_arch_magic() == object::elf::EM_RISCV {
-        object::elf::EF_RISCV_RVC | object::elf::EF_RISCV_FLOAT_ABI_DOUBLE
-    } else {
-        0
-    };
-    header.e_flags.set(e, e_flags);
+    header.e_flags.set(e, header_info.eflags);
     header.e_ehsize.set(e, elf::FILE_HEADER_SIZE);
     header.e_phentsize.set(e, elf::PROGRAM_HEADER_SIZE);
     header
@@ -704,24 +316,22 @@ fn populate_file_header<A: Arch>(
     Ok(())
 }
 
-impl<'data> FileLayout<'data> {
-    fn write<A: Arch>(
-        &self,
-        buffers: &mut OutputSectionPartMap<&mut [u8]>,
-        table_writer: &mut TableWriter,
-        layout: &Layout<'data>,
-        trace: &TraceOutput,
-    ) -> Result {
-        match self {
-            FileLayout::Object(s) => s.write_file::<A>(buffers, table_writer, layout, trace)?,
-            FileLayout::Prelude(s) => s.write_file::<A>(buffers, table_writer, layout)?,
-            FileLayout::Epilogue(s) => s.write_file::<A>(buffers, table_writer, layout)?,
-            FileLayout::LinkerScript(s) => s.write_file::<A>(table_writer, layout)?,
-            FileLayout::NotLoaded => {}
-            FileLayout::Dynamic(s) => s.write_file::<A>(table_writer, layout)?,
-        }
-        Ok(())
+fn write_file<A: Arch>(
+    file: &FileLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    table_writer: &mut TableWriter,
+    layout: &Layout,
+    trace: &TraceOutput,
+) -> Result {
+    match file {
+        FileLayout::Object(s) => write_object::<A>(s, buffers, table_writer, layout, trace)?,
+        FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, table_writer, layout)?,
+        FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers, table_writer, layout)?,
+        FileLayout::LinkerScript(s) => write_linker_script_state::<A>(s, table_writer, layout)?,
+        FileLayout::NotLoaded => {}
+        FileLayout::Dynamic(s) => write_dynamic_file::<A>(s, table_writer, layout)?,
     }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -820,7 +430,7 @@ impl<'out> VersionWriter<'out> {
     }
 }
 
-struct TableWriter<'data, 'layout, 'out> {
+struct TableWriter<'layout, 'out> {
     output_kind: OutputKind,
     got: &'out mut [u64],
     plt_got: &'out mut [u8],
@@ -828,8 +438,8 @@ struct TableWriter<'data, 'layout, 'out> {
     tls: Range<u64>,
     rela_dyn_relative: &'out mut [crate::elf::Rela],
     rela_dyn_general: &'out mut [crate::elf::Rela],
-    dynsym_writer: SymbolTableWriter<'data, 'layout, 'out>,
-    debug_symbol_writer: SymbolTableWriter<'data, 'layout, 'out>,
+    dynsym_writer: SymbolTableWriter<'layout, 'out>,
+    debug_symbol_writer: SymbolTableWriter<'layout, 'out>,
     eh_frame_start_address: u64,
     eh_frame: &'out mut [u8],
 
@@ -841,14 +451,14 @@ struct TableWriter<'data, 'layout, 'out> {
     version_writer: VersionWriter<'out>,
 }
 
-impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
+impl<'layout, 'out> TableWriter<'layout, 'out> {
     fn from_layout(
-        layout: &'layout Layout<'data>,
+        layout: &'layout Layout,
         dynstr_start_offset: u32,
         strtab_start_offset: u32,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
         eh_frame_start_address: u64,
-    ) -> TableWriter<'data, 'layout, 'out> {
+    ) -> TableWriter<'layout, 'out> {
         let dynsym_writer =
             SymbolTableWriter::new_dynamic(dynstr_start_offset, buffers, &layout.output_sections);
         let debug_symbol_writer =
@@ -868,10 +478,10 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         output_kind: OutputKind,
         tls: Range<u64>,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
-        dynsym_writer: SymbolTableWriter<'data, 'layout, 'out>,
-        debug_symbol_writer: SymbolTableWriter<'data, 'layout, 'out>,
+        dynsym_writer: SymbolTableWriter<'layout, 'out>,
+        debug_symbol_writer: SymbolTableWriter<'layout, 'out>,
         eh_frame_start_address: u64,
-    ) -> TableWriter<'data, 'layout, 'out> {
+    ) -> TableWriter<'layout, 'out> {
         let eh_frame = buffers.take(part_id::EH_FRAME);
         let eh_frame_hdr = buffers.take(part_id::EH_FRAME_HDR);
         let dynamic = DynamicEntriesWriter::new(buffers.take(part_id::DYNAMIC));
@@ -900,7 +510,7 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         }
     }
 
-    fn process_resolution<A: Arch>(&mut self, res: &Resolution) -> Result {
+    fn process_resolution<A: Arch>(&mut self, layout: Option<&Layout>, res: &Resolution) -> Result {
         let Some(got_address) = res.got_address else {
             return Ok(());
         };
@@ -914,7 +524,11 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
             || resolution_flags.needs_got_tls_descriptor()
         {
             if resolution_flags.needs_got_tls_offset() {
-                self.process_got_tls_offset::<A>(res, got_address)?;
+                self.process_got_tls_offset::<A>(
+                    res,
+                    layout.context("Layout must be present")?,
+                    got_address,
+                )?;
                 got_address += crate::elf::GOT_ENTRY_SIZE;
             }
             if resolution_flags.needs_got_tls_module() {
@@ -958,7 +572,12 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
         Ok(())
     }
 
-    fn process_got_tls_offset<A: Arch>(&mut self, res: &Resolution, got_address: u64) -> Result {
+    fn process_got_tls_offset<A: Arch>(
+        &mut self,
+        res: &Resolution,
+        layout: &Layout,
+        got_address: u64,
+    ) -> Result {
         let got_entry = self.take_next_got_entry()?;
         if res.value_flags.is_dynamic()
             || (res.resolution_flags.needs_export_dynamic() && res.value_flags.is_interposable())
@@ -979,9 +598,9 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
             );
         }
         if self.output_kind.is_executable() {
-            // Convert the address to an offset relative to the TCB which is the end of the
-            // TLS segment.
-            *got_entry = address.wrapping_sub(self.tls.end);
+            // Convert the address to an offset relative to the TCB.
+
+            *got_entry = address.wrapping_sub(A::tp_offset_start(layout));
         } else {
             debug_assert_bail!(
                 *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
@@ -1281,19 +900,19 @@ impl<'data, 'layout, 'out> TableWriter<'data, 'layout, 'out> {
     }
 }
 
-struct SymbolTableWriter<'data, 'layout, 'out> {
+struct SymbolTableWriter<'layout, 'out> {
     local_entries: &'out mut [SymtabEntry],
     global_entries: &'out mut [SymtabEntry],
-    output_sections: &'layout OutputSections<'data>,
+    output_sections: &'layout OutputSections<'layout>,
     strtab_writer: StrTabWriter<'out>,
     is_dynamic: bool,
 }
 
-impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
+impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     fn new(
         start_string_offset: u32,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
-        output_sections: &'layout OutputSections<'data>,
+        output_sections: &'layout OutputSections<'layout>,
     ) -> Self {
         let local_entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB_LOCAL));
         let global_entries = slice_from_all_bytes_mut(buffers.take(part_id::SYMTAB_GLOBAL));
@@ -1313,7 +932,7 @@ impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
     fn new_dynamic(
         string_offset: u32,
         buffers: &mut OutputSectionPartMap<&'out mut [u8]>,
-        output_sections: &'layout OutputSections<'data>,
+        output_sections: &'layout OutputSections,
     ) -> Self {
         let global_entries = slice_from_all_bytes_mut(buffers.take(part_id::DYNSYM));
         let strings = slice_from_all_bytes_mut(buffers.take(part_id::DYNSTR));
@@ -1444,167 +1063,171 @@ impl<'data, 'layout, 'out> SymbolTableWriter<'data, 'layout, 'out> {
     }
 }
 
-impl<'data> ObjectLayout<'data> {
-    fn write_file<A: Arch>(
-        &self,
-        buffers: &mut OutputSectionPartMap<&mut [u8]>,
-        table_writer: &mut TableWriter,
-        layout: &Layout<'data>,
-        trace: &TraceOutput,
-    ) -> Result {
-        let _span = debug_span!("write_file", filename = %self.input).entered();
-        let _file_span = layout.args().trace_span_for_file(self.file_id);
-        for sec in &self.sections {
-            match sec {
-                SectionSlot::Loaded(sec) => {
-                    self.write_section::<A>(layout, sec, buffers, table_writer, trace)?;
-                }
-                SectionSlot::LoadedDebugInfo(sec) => {
-                    self.write_debug_section::<A>(layout, sec, buffers)?;
-                }
-                SectionSlot::EhFrameData(section_index) => {
-                    self.write_eh_frame_data::<A>(*section_index, layout, table_writer, trace)?;
-                }
-                _ => (),
+fn write_object<A: Arch>(
+    object: &ObjectLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    table_writer: &mut TableWriter,
+    layout: &Layout,
+    trace: &TraceOutput,
+) -> Result {
+    let _span = debug_span!("write_file", filename = %object.input).entered();
+    let _file_span = layout.args().trace_span_for_file(object.file_id);
+    for sec in &object.sections {
+        match sec {
+            SectionSlot::Loaded(sec) => {
+                write_object_section::<A>(object, layout, sec, buffers, table_writer, trace)?;
             }
+            SectionSlot::LoadedDebugInfo(sec) => {
+                write_debug_section::<A>(object, layout, sec, buffers)?;
+            }
+            SectionSlot::EhFrameData(section_index) => {
+                write_eh_frame_data::<A>(object, *section_index, layout, table_writer, trace)?;
+            }
+            _ => (),
         }
-        for (symbol_id, resolution) in layout.resolutions_in_range(self.symbol_id_range) {
-            let _span = tracing::trace_span!("Symbol", %symbol_id).entered();
-            if let Some(res) = resolution {
-                table_writer.process_resolution::<A>(res).with_context(|| {
+    }
+    for (symbol_id, resolution) in layout.resolutions_in_range(object.symbol_id_range) {
+        let _span = tracing::trace_span!("Symbol", %symbol_id).entered();
+        if let Some(res) = resolution {
+            table_writer
+                .process_resolution::<A>(Some(layout), res)
+                .with_context(|| {
                     format!(
                         "Failed to process `{}` with resolution {res:?}",
                         layout.symbol_debug(symbol_id)
                     )
                 })?;
 
-                // Dynamic symbols that we define are handled by the epilogue so that they can be
-                // written in the correct order. Here, we only need to handle weak symbols that we
-                // reference that aren't defined by any shared objects we're linking against.
-                if res.value_flags.is_dynamic() {
-                    let symbol = self
-                        .object
-                        .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
-                    let name = self.object.symbol_name(symbol)?;
+            // Dynamic symbols that we define are handled by the epilogue so that they can be
+            // written in the correct order. Here, we only need to handle weak symbols that we
+            // reference that aren't defined by any shared objects we're linking against.
+            if res.value_flags.is_dynamic() {
+                let symbol = object
+                    .object
+                    .symbol(object.symbol_id_range.id_to_input(symbol_id))?;
+                let name = object.object.symbol_name(symbol)?;
+                table_writer
+                    .dynsym_writer
+                    .copy_symbol_shndx(symbol, name, 0, 0)?;
+                if layout.gnu_version_enabled() {
                     table_writer
-                        .dynsym_writer
-                        .copy_symbol_shndx(symbol, name, 0, 0)?;
-                    if layout.gnu_version_enabled() {
-                        table_writer
-                            .version_writer
-                            .set_next_symbol_version(object::elf::VER_NDX_GLOBAL)?;
-                    }
+                        .version_writer
+                        .set_next_symbol_version(object::elf::VER_NDX_GLOBAL)?;
                 }
             }
         }
+    }
 
-        if !layout.args().strip_all {
-            self.write_symbols(&mut table_writer.debug_symbol_writer, layout)?;
+    if !layout.args().strip_all {
+        write_symbols(object, &mut table_writer.debug_symbol_writer, layout)?;
+    }
+    Ok(())
+}
+
+fn write_object_section<A: Arch>(
+    object: &ObjectLayout,
+    layout: &Layout,
+    sec: &Section,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    table_writer: &mut TableWriter,
+    trace: &TraceOutput,
+) -> Result {
+    let out = write_section_raw(object, layout, sec, buffers)?;
+
+    apply_relocations::<A>(object, out, sec, layout, table_writer, trace).with_context(|| {
+        format!(
+            "Failed to apply relocations in section `{}` of {}",
+            object.object.section_display_name(sec.index),
+            object.input
+        )
+    })?;
+    if sec.resolution_flags.needs_got() || sec.resolution_flags.needs_plt() {
+        bail!("Section has GOT or PLT");
+    };
+    Ok(())
+}
+
+fn write_debug_section<A: Arch>(
+    object: &ObjectLayout,
+    layout: &Layout,
+    sec: &Section,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+) -> Result {
+    let out = write_section_raw(object, layout, sec, buffers)?;
+
+    apply_debug_relocations::<A>(object, out, sec, layout).with_context(|| {
+        format!(
+            "Failed to apply relocations in section `{}` of {}",
+            object.object.section_display_name(sec.index),
+            object.input
+        )
+    })?;
+    Ok(())
+}
+
+fn write_section_raw<'out>(
+    object: &ObjectLayout,
+    layout: &Layout,
+    sec: &Section,
+    buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
+) -> Result<&'out mut [u8]> {
+    if layout
+        .output_sections
+        .has_data_in_file(sec.output_section_id())
+    {
+        let section_buffer = buffers.get_mut(sec.output_part_id());
+        let allocation_size = sec.capacity() as usize;
+        if section_buffer.len() < allocation_size {
+            bail!(
+                "Insufficient space allocated to section `{}`. Tried to take {} bytes, but only {} remain",
+                object.object.section_display_name(sec.index),
+                allocation_size,
+                section_buffer.len()
+            );
         }
-        Ok(())
+        let out = slice_take_prefix_mut(section_buffer, allocation_size);
+        // Cut off any padding so that our output buffer is the size of our input buffer.
+        let object_section = object.object.section(sec.index)?;
+        let section_size = object.object.section_size(object_section)?;
+        let out: &'out mut [u8] = &mut out[..section_size as usize];
+        object.object.copy_section_data(object_section, out)?;
+        Ok(out)
+    } else {
+        Ok(&mut [])
     }
+}
 
-    fn write_section<A: Arch>(
-        &self,
-        layout: &Layout<'data>,
-        sec: &Section,
-        buffers: &mut OutputSectionPartMap<&mut [u8]>,
-        table_writer: &mut TableWriter,
-        trace: &TraceOutput,
-    ) -> Result {
-        let out = self.write_section_raw(layout, sec, buffers)?;
-        self.apply_relocations::<A>(out, sec, layout, table_writer, trace)
-            .with_context(|| {
-                format!(
-                    "Failed to apply relocations in section `{}` of {}",
-                    self.object.section_display_name(sec.index),
-                    self.input
-                )
-            })?;
-        if sec.resolution_flags.needs_got() || sec.resolution_flags.needs_plt() {
-            bail!("Section has GOT or PLT");
-        };
-        Ok(())
-    }
+/// Writes debug symbols.
+fn write_symbols(
+    object: &ObjectLayout,
+    symbol_writer: &mut SymbolTableWriter,
+    layout: &Layout,
+) -> Result {
+    for ((sym_index, sym), sym_state) in object
+        .object
+        .symbols
+        .enumerate()
+        .zip(&layout.symbol_resolution_flags[object.symbol_id_range.as_usize()])
+    {
+        let symbol_id = object.symbol_id_range.input_to_id(sym_index);
 
-    fn write_debug_section<A: Arch>(
-        &self,
-        layout: &Layout<'data>,
-        sec: &Section,
-        buffers: &mut OutputSectionPartMap<&mut [u8]>,
-    ) -> Result {
-        let out = self.write_section_raw(layout, sec, buffers)?;
-        self.apply_debug_relocations::<A>(out, sec, layout)
-            .with_context(|| {
-                format!(
-                    "Failed to apply relocations in section `{}` of {}",
-                    self.object.section_display_name(sec.index),
-                    self.input
-                )
-            })?;
-        Ok(())
-    }
-
-    fn write_section_raw<'out>(
-        &self,
-        layout: &Layout<'data>,
-        sec: &Section,
-        buffers: &'out mut OutputSectionPartMap<&mut [u8]>,
-    ) -> Result<&'out mut [u8]> {
-        if layout
-            .output_sections
-            .has_data_in_file(sec.output_section_id())
-        {
-            let section_buffer = buffers.get_mut(sec.output_part_id());
-            let allocation_size = sec.capacity() as usize;
-            if section_buffer.len() < allocation_size {
-                bail!(
-                    "Insufficient space allocated to section `{}`. Tried to take {} bytes, but only {} remain",
-                    self.object.section_display_name(sec.index),
-                    allocation_size,
-                    section_buffer.len()
-                );
-            }
-            let out = slice_take_prefix_mut(section_buffer, allocation_size);
-            // Cut off any padding so that our output buffer is the size of our input buffer.
-            let object_section = self.object.section(sec.index)?;
-            let section_size = self.object.section_size(object_section)?;
-            let out: &'out mut [u8] = &mut out[..section_size as usize];
-            self.object.copy_section_data(object_section, out)?;
-            Ok(out)
-        } else {
-            Ok(&mut [])
+        if layout.symbol_db.args.got_plt_syms {
+            write_got_plt_syms(layout, symbol_writer, symbol_id)?;
         }
-    }
+        if let Some(info) = SymbolCopyInfo::new(
+            object.object,
+            sym_index,
+            sym,
+            symbol_id,
+            &layout.symbol_db,
+            *sym_state,
+            &object.sections,
+        ) {
+            let e = LittleEndian;
 
-    /// Writes debug symbols.
-    fn write_symbols(
-        &self,
-        symbol_writer: &mut SymbolTableWriter,
-        layout: &Layout<'data>,
-    ) -> Result {
-        for ((sym_index, sym), sym_state) in self
-            .object
-            .symbols
-            .enumerate()
-            .zip(&layout.symbol_resolution_flags[self.symbol_id_range.as_usize()])
-        {
-            let symbol_id = self.symbol_id_range.input_to_id(sym_index);
-            if let Some(info) = SymbolCopyInfo::new(
-                self.object,
-                sym_index,
-                sym,
-                symbol_id,
-                &layout.symbol_db,
-                *sym_state,
-                &self.sections,
-            ) {
-                let e = LittleEndian;
-
-                let section_id = if let Some(section_index) =
-                    self.object.symbol_section(sym, sym_index)?
-                {
-                    match &self.sections[section_index.0] {
+            let section_id =
+                if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
+                    match &object.sections[section_index.0] {
                         SectionSlot::Loaded(section) => section.output_section_id(),
                         SectionSlot::MergeStrings(section) => section.part_id.output_section_id(),
                         SectionSlot::EhFrameData(..) => output_section_id::EH_FRAME,
@@ -1629,325 +1252,321 @@ impl<'data> ObjectLayout<'data> {
                     bail!("Attempted to output a symtab entry with an unexpected section type")
                 };
 
-                let section_id = layout.output_sections.primary_output_section(section_id);
+            let section_id = layout.output_sections.primary_output_section(section_id);
 
-                let Some(res) = layout.local_symbol_resolution(symbol_id) else {
-                    bail!("Missing resolution for {}", layout.symbol_debug(symbol_id));
-                };
-
-                let mut symbol_value = res.value_for_symbol_table();
-
-                if sym.st_type() == object::elf::STT_TLS {
-                    let tls_start_address = layout.segment_layouts.tls_start_address.context(
-                        "Writing TLS variable to symtab, but we don't have a TLS segment",
-                    )?;
-                    symbol_value -= tls_start_address;
-                }
-
-                symbol_writer
-                    .copy_symbol(sym, info.name, section_id, symbol_value)
-                    .with_context(|| {
-                        format!("Failed to copy {}", layout.symbol_debug(symbol_id))
-                    })?;
-            }
-        }
-        Ok(())
-    }
-
-    fn apply_relocations<A: Arch>(
-        &self,
-        out: &mut [u8],
-        section: &Section,
-        layout: &Layout<'data>,
-        table_writer: &mut TableWriter,
-        trace: &TraceOutput,
-    ) -> Result {
-        let section_address = self.section_resolutions[section.index.0]
-            .address()
-            .context("Attempted to apply relocations to a section that we didn't load")?;
-
-        let object_section = self.object.section(section.index)?;
-        let section_flags = SectionFlags::from_header(object_section);
-        let mut modifier = RelocationModifier::Normal;
-        let relocations = self.relocations(section.index)?;
-        layout
-            .relocation_statistics
-            .get(section.part_id.output_section_id())
-            .fetch_add(relocations.len() as u64, Relaxed);
-        for (i, rel) in relocations.iter().enumerate() {
-            if modifier == RelocationModifier::SkipNextRelocation {
-                modifier = RelocationModifier::Normal;
-                continue;
-            }
-            let offset_in_section = rel.r_offset.get(LittleEndian);
-            modifier = apply_relocation::<A>(
-                self,
-                offset_in_section,
-                rel,
-                SectionInfo {
-                    section_address,
-                    is_writable: section.is_writable,
-                    section_flags,
-                },
-                layout,
-                out,
-                table_writer,
-                trace,
-                relocations,
-                i,
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to apply {} at offset 0x{offset_in_section:x}",
-                    self.display_relocation::<A>(rel, layout)
-                )
-            })?;
-        }
-        Ok(())
-    }
-
-    fn apply_debug_relocations<A: Arch>(
-        &self,
-        out: &mut [u8],
-        section: &Section,
-        layout: &Layout<'data>,
-    ) -> Result {
-        let object_section = self.object.section(section.index)?;
-        let section_name = self.object.section_name(object_section)?;
-        let tombstone_value: u64 =
-            // TODO: Starting with DWARF 6, the tombstone value will be defined as -1 and -2.
-            // However, the change is premature as consumers of the DWARF format don't fully support
-            // the new tombstone values.
-            //
-            // Link: https://dwarfstd.org/issues/200609.1.html
-            if section_name == DEBUG_LOC_SECTION_NAME || section_name == DEBUG_RANGES_SECTION_NAME {
-                // These sections use zero as a list terminator.
-                1
-            } else {
-                0
+            let Some(res) = layout.local_symbol_resolution(symbol_id) else {
+                bail!("Missing resolution for {}", layout.symbol_debug(symbol_id));
             };
 
-        let relocations = self.relocations(section.index)?;
-        layout
-            .relocation_statistics
-            .get(section.part_id.output_section_id())
-            .fetch_add(relocations.len() as u64, Relaxed);
-        for (i, rel) in relocations.iter().enumerate() {
-            let offset_in_section = rel.r_offset.get(LittleEndian);
-            apply_debug_relocation::<A>(
-                self,
-                offset_in_section,
-                rel,
-                layout,
-                tombstone_value,
-                out,
-                relocations,
-                i,
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to apply {} at offset 0x{offset_in_section:x}",
-                    self.display_relocation::<A>(rel, layout)
-                )
-            })?;
-        }
-        Ok(())
-    }
+            let mut symbol_value = res.value_for_symbol_table();
 
-    fn write_eh_frame_data<A: Arch>(
-        &self,
-        eh_frame_section_index: object::SectionIndex,
-        layout: &Layout<'data>,
-        table_writer: &mut TableWriter,
-        trace: &TraceOutput,
-    ) -> Result {
-        let eh_frame_section = self.object.section(eh_frame_section_index)?;
-        let data = self.object.raw_section_data(eh_frame_section)?;
-        const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
-        let e = LittleEndian;
-        let section_flags = SectionFlags::from_header(eh_frame_section);
-        let mut relocations = self.relocations(eh_frame_section_index)?.iter().peekable();
-        let mut input_pos = 0;
-        let mut output_pos = 0;
-        let frame_info_ptr_base = table_writer.eh_frame_start_address;
-        let eh_frame_hdr_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME_HDR);
-
-        // Map from input offset to output offset of each CIE.
-        let mut cies_offset_conversion: FoldHashMap<u32, u32> = FoldHashMap::new();
-
-        while input_pos + PREFIX_LEN <= data.len() {
-            let prefix: elf::EhFrameEntryPrefix =
-                bytemuck::pod_read_unaligned(&data[input_pos..input_pos + PREFIX_LEN]);
-            let size = size_of_val(&prefix.length) + prefix.length as usize;
-            let next_input_pos = input_pos + size;
-            let next_output_pos = output_pos + size;
-            if next_input_pos > data.len() {
-                bail!("Invalid .eh_frame data");
+            if sym.st_type() == object::elf::STT_TLS {
+                let tls_start_address = layout
+                    .segment_layouts
+                    .tls_start_address
+                    .context("Writing TLS variable to symtab, but we don't have a TLS segment")?;
+                symbol_value -= tls_start_address;
             }
-            let mut should_keep = false;
-            let mut output_cie_offset = None;
-            if prefix.cie_id == 0 {
-                // This is a CIE
-                cies_offset_conversion.insert(input_pos as u32, output_pos as u32);
-                should_keep = true;
-            } else {
-                // This is an FDE
-                if let Some(rel) = relocations.peek() {
-                    let rel_offset = rel.r_offset.get(e);
-                    if rel_offset < next_input_pos as u64 {
-                        let is_pc_begin =
-                            (rel_offset as usize - input_pos) == elf::FDE_PC_BEGIN_OFFSET;
 
-                        if is_pc_begin {
-                            let Some(index) = rel.symbol(e, false) else {
-                                bail!("Unexpected absolute relocation in .eh_frame pc-begin");
-                            };
-                            let elf_symbol = &self.object.symbol(index)?;
-                            let Some(section_index) =
-                                self.object.symbol_section(elf_symbol, index)?
-                            else {
-                                bail!(
-                                    ".eh_frame pc-begin refers to symbol that's not defined in file"
-                                );
-                            };
-                            let offset_in_section =
-                                (elf_symbol.st_value(e) as i64 + rel.r_addend.get(e)) as u64;
-                            if let Some(section_address) =
-                                self.section_resolutions[section_index.0].address()
+            symbol_writer
+                .copy_symbol(sym, info.name, section_id, symbol_value)
+                .with_context(|| format!("Failed to copy {}", layout.symbol_debug(symbol_id)))?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_relocations<A: Arch>(
+    object: &ObjectLayout,
+    out: &mut [u8],
+    section: &Section,
+    layout: &Layout,
+    table_writer: &mut TableWriter,
+    trace: &TraceOutput,
+) -> Result {
+    let section_address = object.section_resolutions[section.index.0]
+        .address()
+        .context("Attempted to apply relocations to a section that we didn't load")?;
+
+    let object_section = object.object.section(section.index)?;
+    let section_flags = SectionFlags::from_header(object_section);
+    let mut modifier = RelocationModifier::Normal;
+    let relocations = object.relocations(section.index)?;
+    layout
+        .relocation_statistics
+        .get(section.part_id.output_section_id())
+        .fetch_add(relocations.len() as u64, Relaxed);
+    for (i, rel) in relocations.iter().enumerate() {
+        if modifier == RelocationModifier::SkipNextRelocation {
+            modifier = RelocationModifier::Normal;
+            continue;
+        }
+        let offset_in_section = rel.r_offset.get(LittleEndian);
+        modifier = apply_relocation::<A>(
+            object,
+            offset_in_section,
+            rel,
+            SectionInfo {
+                section_address,
+                is_writable: section.is_writable,
+                section_flags,
+            },
+            layout,
+            out,
+            table_writer,
+            trace,
+            relocations,
+            i,
+        )
+        .with_context(|| {
+            format!(
+                "Failed to apply {} at offset 0x{offset_in_section:x}",
+                display_relocation::<A>(object, rel, layout)
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn apply_debug_relocations<A: Arch>(
+    object: &ObjectLayout,
+    out: &mut [u8],
+    section: &Section,
+    layout: &Layout,
+) -> Result {
+    let object_section = object.object.section(section.index)?;
+    let section_name = object.object.section_name(object_section)?;
+
+    // TODO: Starting with DWARF 6, the tombstone value will be defined as -1 and -2.
+    // However, the change is premature as consumers of the DWARF format don't fully support
+    // the new tombstone values.
+    //
+    // Link: https://dwarfstd.org/issues/200609.1.html
+    let tombstone_value: u64 =
+        if section_name == DEBUG_LOC_SECTION_NAME || section_name == DEBUG_RANGES_SECTION_NAME {
+            // These sections use zero as a list terminator.
+            1
+        } else {
+            0
+        };
+
+    let relocations = object.relocations(section.index)?;
+    layout
+        .relocation_statistics
+        .get(section.part_id.output_section_id())
+        .fetch_add(relocations.len() as u64, Relaxed);
+    for (i, rel) in relocations.iter().enumerate() {
+        let offset_in_section = rel.r_offset.get(LittleEndian);
+        apply_debug_relocation::<A>(
+            object,
+            offset_in_section,
+            rel,
+            layout,
+            tombstone_value,
+            out,
+            relocations,
+            i,
+        )
+        .with_context(|| {
+            format!(
+                "Failed to apply {} at offset 0x{offset_in_section:x}",
+                display_relocation::<A>(object, rel, layout)
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn write_eh_frame_data<A: Arch>(
+    object: &ObjectLayout,
+    eh_frame_section_index: object::SectionIndex,
+    layout: &Layout,
+    table_writer: &mut TableWriter,
+    trace: &TraceOutput,
+) -> Result {
+    let eh_frame_section = object.object.section(eh_frame_section_index)?;
+    let data = object.object.raw_section_data(eh_frame_section)?;
+    const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
+    let e = LittleEndian;
+    let section_flags = SectionFlags::from_header(eh_frame_section);
+    let mut relocations = object
+        .relocations(eh_frame_section_index)?
+        .iter()
+        .peekable();
+    let mut input_pos = 0;
+    let mut output_pos = 0;
+    let frame_info_ptr_base = table_writer.eh_frame_start_address;
+    let eh_frame_hdr_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME_HDR);
+
+    // Map from input offset to output offset of each CIE.
+    let mut cies_offset_conversion: FoldHashMap<u32, u32> = FoldHashMap::new();
+
+    while input_pos + PREFIX_LEN <= data.len() {
+        let prefix: elf::EhFrameEntryPrefix =
+            bytemuck::pod_read_unaligned(&data[input_pos..input_pos + PREFIX_LEN]);
+        let size = size_of_val(&prefix.length) + prefix.length as usize;
+        let next_input_pos = input_pos + size;
+        let next_output_pos = output_pos + size;
+        if next_input_pos > data.len() {
+            bail!("Invalid .eh_frame data");
+        }
+        let mut should_keep = false;
+        let mut output_cie_offset = None;
+        if prefix.cie_id == 0 {
+            // This is a CIE
+            cies_offset_conversion.insert(input_pos as u32, output_pos as u32);
+            should_keep = true;
+        } else {
+            // This is an FDE
+            if let Some(rel) = relocations.peek() {
+                let rel_offset = rel.r_offset.get(e);
+                if rel_offset < next_input_pos as u64 {
+                    let is_pc_begin = (rel_offset as usize - input_pos) == elf::FDE_PC_BEGIN_OFFSET;
+
+                    if is_pc_begin {
+                        let Some(index) = rel.symbol(e, false) else {
+                            bail!("Unexpected absolute relocation in .eh_frame pc-begin");
+                        };
+                        let elf_symbol = &object.object.symbol(index)?;
+                        let Some(section_index) =
+                            object.object.symbol_section(elf_symbol, index)?
+                        else {
+                            bail!(".eh_frame pc-begin refers to symbol that's not defined in file");
+                        };
+                        let offset_in_section =
+                            (elf_symbol.st_value(e) as i64 + rel.r_addend.get(e)) as u64;
+                        if let Some(section_address) =
+                            object.section_resolutions[section_index.0].address()
+                        {
+                            if object
+                                .object
+                                .section(section_index)?
+                                .sh_size
+                                .get(LittleEndian)
+                                != 0
                             {
-                                if self
-                                    .object
-                                    .section(section_index)?
-                                    .sh_size
-                                    .get(LittleEndian)
-                                    != 0
-                                {
-                                    should_keep = true;
-                                    let cie_pointer_pos = input_pos as u32 + 4;
-                                    let input_cie_pos = cie_pointer_pos
-                                        .checked_sub(prefix.cie_id)
-                                        .with_context(|| {
-                                            format!(
-                                                "CIE pointer is {}, but we're at offset {}",
-                                                prefix.cie_id, cie_pointer_pos
-                                            )
-                                        })?;
+                                should_keep = true;
+                                let cie_pointer_pos = input_pos as u32 + 4;
+                                let input_cie_pos = cie_pointer_pos
+                                    .checked_sub(prefix.cie_id)
+                                    .with_context(|| {
+                                        format!(
+                                            "CIE pointer is {}, but we're at offset {}",
+                                            prefix.cie_id, cie_pointer_pos
+                                        )
+                                    })?;
 
-                                    if let Some(hdr_out) = table_writer.take_eh_frame_hdr_entry() {
-                                        let frame_ptr = (section_address + offset_in_section)
-                                            as i64
-                                            - eh_frame_hdr_address as i64;
-                                        let frame_info_ptr =
-                                            (frame_info_ptr_base + output_pos as u64) as i64
-                                                - eh_frame_hdr_address as i64;
-                                        *hdr_out = EhFrameHdrEntry {
-                                            frame_ptr: i32::try_from(frame_ptr)
-                                                .context("32 bit overflow in frame_ptr")?,
-                                            frame_info_ptr: i32::try_from(frame_info_ptr).context(
-                                                "32 bit overflow when computing frame_info_ptr",
-                                            )?,
-                                        };
-                                    }
-                                    // TODO: Experiment with skipping this lookup if the `input_cie_pos`
-                                    // is the same as the previous entry.
-                                    let output_cie_pos = cies_offset_conversion.get(&input_cie_pos).with_context(|| format!("FDE referenced CIE at {input_cie_pos}, but no CIE at that position"))?;
-                                    output_cie_offset =
-                                        Some(output_pos as u32 + 4 - *output_cie_pos);
+                                if let Some(hdr_out) = table_writer.take_eh_frame_hdr_entry() {
+                                    let frame_ptr = (section_address + offset_in_section) as i64
+                                        - eh_frame_hdr_address as i64;
+                                    let frame_info_ptr = (frame_info_ptr_base + output_pos as u64)
+                                        as i64
+                                        - eh_frame_hdr_address as i64;
+                                    *hdr_out = EhFrameHdrEntry {
+                                        frame_ptr: i32::try_from(frame_ptr)
+                                            .context("32 bit overflow in frame_ptr")?,
+                                        frame_info_ptr: i32::try_from(frame_info_ptr).context(
+                                            "32 bit overflow when computing frame_info_ptr",
+                                        )?,
+                                    };
                                 }
+                                // TODO: Experiment with skipping this lookup if the `input_cie_pos`
+                                // is the same as the previous entry.
+                                let output_cie_pos = cies_offset_conversion.get(&input_cie_pos).with_context(|| format!("FDE referenced CIE at {input_cie_pos}, but no CIE at that position"))?;
+                                output_cie_offset = Some(output_pos as u32 + 4 - *output_cie_pos);
                             }
                         }
                     }
                 }
             }
-            if should_keep {
-                let entry_out = table_writer.take_eh_frame_data(next_output_pos - output_pos)?;
-                entry_out.copy_from_slice(&data[input_pos..next_input_pos]);
-                if let Some(output_cie_offset) = output_cie_offset {
-                    entry_out[4..8].copy_from_slice(&output_cie_offset.to_le_bytes());
+        }
+        if should_keep {
+            let entry_out = table_writer.take_eh_frame_data(next_output_pos - output_pos)?;
+            entry_out.copy_from_slice(&data[input_pos..next_input_pos]);
+            if let Some(output_cie_offset) = output_cie_offset {
+                entry_out[4..8].copy_from_slice(&output_cie_offset.to_le_bytes());
+            }
+            while let Some(rel) = relocations.peek() {
+                let rel_offset = rel.r_offset.get(e);
+                if rel_offset >= next_input_pos as u64 {
+                    // This relocation belongs to the next entry.
+                    break;
                 }
-                while let Some(rel) = relocations.peek() {
-                    let rel_offset = rel.r_offset.get(e);
-                    if rel_offset >= next_input_pos as u64 {
-                        // This relocation belongs to the next entry.
-                        break;
-                    }
-                    apply_relocation::<A>(
-                        self,
-                        rel_offset - input_pos as u64,
-                        rel,
-                        SectionInfo {
-                            section_address: output_pos as u64
-                                + table_writer.eh_frame_start_address,
-                            is_writable: false,
-                            section_flags,
-                        },
-                        layout,
-                        entry_out,
-                        table_writer,
-                        trace,
-                        &[],
-                        0,
+                apply_relocation::<A>(
+                    object,
+                    rel_offset - input_pos as u64,
+                    rel,
+                    SectionInfo {
+                        section_address: output_pos as u64 + table_writer.eh_frame_start_address,
+                        is_writable: false,
+                        section_flags,
+                    },
+                    layout,
+                    entry_out,
+                    table_writer,
+                    trace,
+                    &[],
+                    0,
+                )
+                .with_context(|| {
+                    format!(
+                        "Failed to apply eh_frame {}",
+                        display_relocation::<A>(object, rel, layout)
                     )
-                    .with_context(|| {
-                        format!(
-                            "Failed to apply eh_frame {}",
-                            self.display_relocation::<A>(rel, layout)
-                        )
-                    })?;
+                })?;
+                relocations.next();
+            }
+            output_pos = next_output_pos;
+        } else {
+            // We're ignoring this entry, skip any relocations for it.
+            while let Some(rel) = relocations.peek() {
+                let rel_offset = rel.r_offset.get(e);
+                if rel_offset < next_input_pos as u64 {
                     relocations.next();
-                }
-                output_pos = next_output_pos;
-            } else {
-                // We're ignoring this entry, skip any relocations for it.
-                while let Some(rel) = relocations.peek() {
-                    let rel_offset = rel.r_offset.get(e);
-                    if rel_offset < next_input_pos as u64 {
-                        relocations.next();
-                    } else {
-                        break;
-                    }
+                } else {
+                    break;
                 }
             }
-            input_pos = next_input_pos;
         }
-
-        // Copy any remaining bytes in .eh_frame that aren't large enough to constitute an actual
-        // entry. crtend.o has a single u32 equal to 0 as an end marker.
-        let remaining = data.len() - input_pos;
-        if remaining > 0 {
-            table_writer
-                .take_eh_frame_data(remaining)?
-                .copy_from_slice(&data[input_pos..input_pos + remaining]);
-            output_pos += remaining;
-        }
-
-        table_writer.eh_frame_start_address += output_pos as u64;
-
-        Ok(())
+        input_pos = next_input_pos;
     }
 
-    fn display_relocation<'a, A: Arch>(
-        &'a self,
-        rel: &'a elf::Rela,
-        layout: &'a Layout<'data>,
-    ) -> DisplayRelocation<'a, 'data, A> {
-        DisplayRelocation::<'a, 'data, A> {
-            rel,
-            symbol_db: &layout.symbol_db,
-            object: self,
-            phantom: PhantomData,
-        }
+    // Copy any remaining bytes in .eh_frame that aren't large enough to constitute an actual
+    // entry. crtend.o has a single u32 equal to 0 as an end marker.
+    let remaining = data.len() - input_pos;
+    if remaining > 0 {
+        table_writer
+            .take_eh_frame_data(remaining)?
+            .copy_from_slice(&data[input_pos..input_pos + remaining]);
+        output_pos += remaining;
+    }
+
+    table_writer.eh_frame_start_address += output_pos as u64;
+
+    Ok(())
+}
+
+fn display_relocation<'a, A: Arch>(
+    object: &'a ObjectLayout,
+    rel: &'a elf::Rela,
+    layout: &'a Layout,
+) -> DisplayRelocation<'a, A> {
+    DisplayRelocation::<'a, A> {
+        rel,
+        symbol_db: &layout.symbol_db,
+        object,
+        phantom: PhantomData,
     }
 }
 
-struct DisplayRelocation<'a, 'data, A: Arch> {
+struct DisplayRelocation<'a, A: Arch> {
     rel: &'a elf::Rela,
-    symbol_db: &'a SymbolDb<'data>,
+    symbol_db: &'a SymbolDb<'a>,
     object: &'a ObjectLayout<'a>,
     phantom: PhantomData<A>,
 }
 
-impl<A: Arch> Display for DisplayRelocation<'_, '_, A> {
+impl<A: Arch> Display for DisplayRelocation<'_, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let e = LittleEndian;
         write!(
@@ -1999,6 +1618,62 @@ fn get_resolution(
             )
         })?;
     Ok((resolution, symbol_index, local_symbol_id))
+}
+
+fn write_got_plt_syms(
+    layout: &Layout,
+    symbol_writer: &mut SymbolTableWriter<'_, '_>,
+    symbol_id: SymbolId,
+) -> Result {
+    if !layout.symbol_db.is_canonical(symbol_id) {
+        return Ok(());
+    }
+
+    let Some(resolution) = layout.local_symbol_resolution(symbol_id) else {
+        return Ok(());
+    };
+
+    if !resolution.resolution_flags.needs_got() {
+        return Ok(());
+    }
+
+    let current_res_flags = resolution.resolution_flags;
+
+    let mut write_sym = |suffix: &[u8],
+                         section_id: OutputSectionId,
+                         get_value: fn(&Resolution) -> Result<u64>|
+     -> Result {
+        let mut symbol_name = layout.symbol_db.symbol_name(symbol_id)?.to_string();
+        symbol_name.push_str(std::str::from_utf8(suffix).unwrap_or("unknown"));
+
+        let shndx = layout
+            .output_sections
+            .output_index_of_section(section_id)
+            .context(format!(
+                "Tried to write dynamic symbol in {section_id} section that's not being output"
+            ))?;
+
+        let value = get_value(resolution)?;
+
+        symbol_writer
+            .define_symbol(true, shndx, value, 0, symbol_name.as_bytes())
+            .with_context(|| {
+                format!(
+                    "Failed to copy {} symbol for {}",
+                    std::str::from_utf8(suffix).unwrap_or("unknown"),
+                    layout.symbol_debug(symbol_id)
+                )
+            })?;
+
+        Ok(())
+    };
+
+    write_sym(b"$got", output_section_id::GOT, Resolution::got_address)?;
+    if current_res_flags.needs_plt() {
+        write_sym(b"$plt", output_section_id::PLT_GOT, Resolution::plt_address)?;
+    }
+
+    Ok(())
 }
 
 /// Adjust relocation value based on the actual value at the place of a relocation.
@@ -2104,15 +1779,34 @@ fn apply_relocation<A: Arch>(
 
     let e = LittleEndian;
     let r_type = rel.r_type(e, false);
+    let mut addend = rel.r_addend.get(e);
 
-    if A::relocation_from_raw(r_type)?.kind == RelocationKind::None {
-        return Ok(RelocationModifier::Normal);
+    match A::relocation_from_raw(r_type)?.kind {
+        RelocationKind::None => return Ok(RelocationModifier::Normal),
+        RelocationKind::Alignment => {
+            let addend = addend as u64;
+            let address = section_address + rel.r_offset(e);
+            ensure!(
+                addend.is_power_of_two(),
+                "A power of 2 expected for Alignment relocation: {}",
+                addend
+            );
+            // Must be aligned to N-bytes, where N is the smallest power of two
+            // that is greater than the value of the addend field.
+            let expected_alignment = addend.next_power_of_two();
+            ensure!(
+                addend % expected_alignment == 0,
+                "Unsatisfied alignment ({expected_alignment} bytes) at address: {}",
+                HexU64::new(address)
+            );
+            return Ok(RelocationModifier::Normal);
+        }
+        _ => {}
     }
 
     let (resolution, symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
     let value_flags = resolution.value_flags;
     let resolution_flags = resolution.resolution_flags;
-    let mut addend = rel.r_addend.get(e);
     let mut next_modifier = RelocationModifier::Normal;
     let rel_info;
     let output_kind = layout.args().output_kind();
@@ -2125,7 +1819,9 @@ fn apply_relocation<A: Arch>(
         output_kind,
         section_info.section_flags,
         resolution.raw_value != 0,
-    );
+    )
+    .filter(|relaxation| layout.args().relax || relaxation.is_mandatory());
+
     if let Some(relaxation) = &relaxation {
         rel_info = relaxation.rel_info();
         relaxation.apply(out, &mut offset_in_section, &mut addend);
@@ -2183,7 +1879,7 @@ fn apply_relocation<A: Arch>(
             )?
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
-        RelocationKind::RelativeRISCVLow12 => {
+        RelocationKind::RelativeRiscVLow12 => {
             // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of relocations where the later
             // one actually points to a label of the HI20 relocations and thus we need to find it. The relocation is typically
             // right before the LO12_* relocation.
@@ -2361,15 +2057,7 @@ fn apply_relocation<A: Arch>(
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::TpOff => resolution
             .value()
-            .wrapping_sub(layout.tls_end_address())
-            .wrapping_add(addend as u64),
-        RelocationKind::TpOffAArch64 => resolution
-            .value()
-            .wrapping_sub(layout.tls_start_address_aarch64())
-            .wrapping_add(addend as u64),
-        RelocationKind::TpOffRiscV => resolution
-            .value()
-            .wrapping_sub(layout.tls_start_address())
+            .wrapping_sub(A::tp_offset_start(layout))
             .wrapping_add(addend as u64),
         RelocationKind::TlsDesc => resolution
             .tls_descriptor_got_address()?
@@ -2386,6 +2074,7 @@ fn apply_relocation<A: Arch>(
             .wrapping_add(addend as u64)
             .wrapping_sub(layout.got_base().bitand(mask.got)),
         RelocationKind::None | RelocationKind::TlsDescCall => 0,
+        RelocationKind::Alignment => unreachable!(),
     };
 
     let offset_in_section = offset_in_section as usize;
@@ -2412,6 +2101,16 @@ fn apply_relocation<A: Arch>(
                 symbol_name = layout.symbol_db.symbol_name_for_display(local_symbol_id),
             )
         });
+        tracing::trace!(
+            %value_flags,
+            %resolution_flags,
+            relaxation_kind = ?relaxation.debug_kind(),
+            ?rel_info.kind,
+            %rel_info.size,
+            value,
+            value_hex = %HexU64::new(value),
+            symbol_name = %layout.symbol_db.symbol_name_for_display(local_symbol_id),
+            "relaxation applied");
     } else {
         trace.emit(original_place, || {
             format!(
@@ -2587,145 +2286,157 @@ fn write_absolute_relocation<A: Arch>(
     }
 }
 
-impl PreludeLayout<'_> {
-    fn write_file<A: Arch>(
-        &self,
-        buffers: &mut OutputSectionPartMap<&mut [u8]>,
-        table_writer: &mut TableWriter,
-        layout: &Layout,
-    ) -> Result {
-        let header: &mut FileHeader = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
-            .map_err(|_| error!("Invalid file header allocation"))?
-            .0;
-        populate_file_header::<A>(layout, &self.header_info, header)?;
+fn write_prelude<A: Arch>(
+    prelude: &PreludeLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    table_writer: &mut TableWriter,
+    layout: &Layout,
+) -> Result {
+    let header: &mut FileHeader = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
+        .map_err(|_| error!("Invalid file header allocation"))?
+        .0;
+    populate_file_header::<A>(layout, &prelude.header_info, header)?;
 
-        let mut program_headers =
-            ProgramHeaderWriter::new(buffers.get_mut(part_id::PROGRAM_HEADERS));
-        write_program_headers(&mut program_headers, layout)?;
+    let mut program_headers = ProgramHeaderWriter::new(buffers.get_mut(part_id::PROGRAM_HEADERS));
+    write_program_headers(&mut program_headers, layout)?;
 
-        write_section_headers(buffers.get_mut(part_id::SECTION_HEADERS), layout)?;
+    write_section_headers(buffers.get_mut(part_id::SECTION_HEADERS), layout)?;
 
-        write_section_header_strings(
-            buffers.get_mut(part_id::SHSTRTAB),
-            &layout.output_sections,
-            &layout.output_order,
-        );
+    write_section_header_strings(
+        buffers.get_mut(part_id::SHSTRTAB),
+        &layout.output_sections,
+        &layout.output_order,
+    );
 
-        self.write_plt_got_entries::<A>(layout, table_writer)?;
+    write_plt_got_entries::<A>(prelude, layout, table_writer)?;
 
-        if !layout.args().strip_all {
-            self.write_symbol_table_entries(&mut table_writer.debug_symbol_writer, layout)?;
-        }
-
-        if layout.args().should_write_eh_frame_hdr {
-            write_eh_frame_hdr(table_writer, layout)?;
-        }
-
-        self.write_merged_strings(buffers, layout);
-
-        self.write_interp(buffers);
-
-        // If we're emitting symbol versions, we should have only one - symbol 0 - the undefined
-        // symbol. It needs to be set as local.
-        if layout.gnu_version_enabled() {
-            table_writer
-                .version_writer
-                .set_next_symbol_version(object::elf::VER_NDX_GLOBAL)?;
-        }
-
-        // Define the null dynamic symbol.
-        if layout.args().needs_dynsym() {
-            table_writer
-                .dynsym_writer
-                .define_symbol(false, 0, 0, 0, &[])?;
-        }
-
-        Ok(())
+    if !layout.args().strip_all {
+        write_symbol_table_entries(prelude, &mut table_writer.debug_symbol_writer, layout)?;
     }
 
-    fn write_interp(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>) {
-        if let Some(dynamic_linker) = self.dynamic_linker.as_ref() {
-            buffers
-                .get_mut(part_id::INTERP)
-                .copy_from_slice(dynamic_linker.as_bytes_with_nul());
+    if layout.args().should_write_eh_frame_hdr {
+        write_eh_frame_hdr(table_writer, layout)?;
+    }
+
+    write_merged_strings(prelude, buffers, layout);
+
+    write_interp(prelude, buffers);
+
+    // If we're emitting symbol versions, we should have only one - symbol 0 - the undefined
+    // symbol. It needs to be set as local.
+    if layout.gnu_version_enabled() {
+        table_writer
+            .version_writer
+            .set_next_symbol_version(object::elf::VER_NDX_GLOBAL)?;
+    }
+
+    // Define the null dynamic symbol.
+    if layout.args().needs_dynsym() {
+        table_writer
+            .dynsym_writer
+            .define_symbol(false, 0, 0, 0, &[])?;
+    }
+
+    Ok(())
+}
+
+fn write_interp(prelude: &PreludeLayout, buffers: &mut OutputSectionPartMap<&mut [u8]>) {
+    if let Some(dynamic_linker) = prelude.dynamic_linker.as_ref() {
+        buffers
+            .get_mut(part_id::INTERP)
+            .copy_from_slice(dynamic_linker.as_bytes_with_nul());
+    }
+}
+
+fn write_merged_strings(
+    prelude: &PreludeLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    layout: &Layout,
+) {
+    layout.merged_strings.for_each(|section_id, merged| {
+        if merged.len() > 0 {
+            let buffer = buffers.get_mut(section_id.part_id_with_alignment(crate::alignment::MIN));
+
+            merged
+                .buckets
+                .iter()
+                .map(|b| (b, slice_take_prefix_mut(buffer, b.len())))
+                .par_bridge()
+                .for_each(|(bucket, mut buffer)| {
+                    for string in &bucket.strings {
+                        let dest = crate::slice::slice_take_prefix_mut(&mut buffer, string.len());
+                        dest.copy_from_slice(string);
+                    }
+                });
         }
-    }
+    });
 
-    fn write_merged_strings(&self, buffers: &mut OutputSectionPartMap<&mut [u8]>, layout: &Layout) {
-        layout.merged_strings.for_each(|section_id, merged| {
-            if merged.len() > 0 {
-                let buffer =
-                    buffers.get_mut(section_id.part_id_with_alignment(crate::alignment::MIN));
+    // Write linker identity into .comment section.
+    let comment_buffer =
+        buffers.get_mut(output_section_id::COMMENT.part_id_with_alignment(alignment::MIN));
+    crate::slice::slice_take_prefix_mut(comment_buffer, prelude.identity.len())
+        .copy_from_slice(prelude.identity.as_bytes());
+}
 
-                merged
-                    .buckets
-                    .iter()
-                    .map(|b| (b, slice_take_prefix_mut(buffer, b.len())))
-                    .par_bridge()
-                    .for_each(|(bucket, mut buffer)| {
-                        for string in &bucket.strings {
-                            let dest =
-                                crate::slice::slice_take_prefix_mut(&mut buffer, string.len());
-                            dest.copy_from_slice(string);
-                        }
-                    });
-            }
-        });
+fn write_plt_got_entries<A: Arch>(
+    prelude: &PreludeLayout,
+    layout: &Layout,
+    table_writer: &mut TableWriter,
+) -> Result {
+    // Write a pair of GOT entries for use by any TLSLD or TLSGD relocations.
+    if let Some(got_address) = prelude.tlsld_got_entry {
+        let mut raw_value = 0;
 
-        // Write linker identity into .comment section.
-        let comment_buffer =
-            buffers.get_mut(output_section_id::COMMENT.part_id_with_alignment(alignment::MIN));
-        crate::slice::slice_take_prefix_mut(comment_buffer, self.identity.len())
-            .copy_from_slice(self.identity.as_bytes());
-    }
-
-    fn write_plt_got_entries<A: Arch>(
-        &self,
-        layout: &Layout,
-        table_writer: &mut TableWriter,
-    ) -> Result {
-        // Write a pair of GOT entries for use by any TLSLD or TLSGD relocations.
-        if let Some(got_address) = self.tlsld_got_entry {
-            if layout.args().output_kind().is_executable() {
-                table_writer.process_resolution::<A>(&Resolution {
+        if layout.args().output_kind().is_executable() {
+            table_writer.process_resolution::<A>(
+                Some(layout),
+                &Resolution {
                     raw_value: crate::elf::CURRENT_EXE_TLS_MOD,
                     dynamic_symbol_index: None,
                     got_address: Some(got_address),
                     plt_address: None,
                     resolution_flags: ResolutionFlags::GOT,
                     value_flags: ValueFlags::ABSOLUTE,
-                })?;
-            } else {
-                table_writer.take_next_got_entry()?;
-                table_writer.write_dtpmod_relocation::<A>(got_address.get(), 0)?;
-            }
-            table_writer.process_resolution::<A>(&Resolution {
-                raw_value: 0,
+                },
+            )?;
+
+            // For executables, DTPOFF values are negative values relative to the thread pointer,
+            // which is at the end of the TLS segment.
+            raw_value = A::tp_offset_start(layout) - layout.tls_start_address();
+        } else {
+            table_writer.take_next_got_entry()?;
+            table_writer.write_dtpmod_relocation::<A>(got_address.get(), 0)?;
+        }
+
+        table_writer.process_resolution::<A>(
+            Some(layout),
+            &Resolution {
+                raw_value,
                 dynamic_symbol_index: None,
                 got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
                 plt_address: None,
                 resolution_flags: ResolutionFlags::GOT,
                 value_flags: ValueFlags::ABSOLUTE,
-            })?;
-        }
-
-        write_internal_symbols_plt_got_entries::<A>(&self.internal_symbols, table_writer, layout)?;
-        Ok(())
+            },
+        )?;
     }
 
-    fn write_symbol_table_entries(
-        &self,
-        symbol_writer: &mut SymbolTableWriter,
-        layout: &Layout,
-    ) -> Result {
-        // Define symbol 0. This needs to be a null placeholder.
-        symbol_writer.define_symbol(true, 0, 0, 0, &[])?;
+    write_internal_symbols_plt_got_entries::<A>(&prelude.internal_symbols, table_writer, layout)?;
+    Ok(())
+}
 
-        let internal_symbols = &self.internal_symbols;
+fn write_symbol_table_entries(
+    prelude: &PreludeLayout,
+    symbol_writer: &mut SymbolTableWriter,
+    layout: &Layout,
+) -> Result {
+    // Define symbol 0. This needs to be a null placeholder.
+    symbol_writer.define_symbol(true, 0, 0, 0, &[])?;
 
-        write_internal_symbols(internal_symbols, layout, symbol_writer)?;
-        Ok(())
-    }
+    let internal_symbols = &prelude.internal_symbols;
+
+    write_internal_symbols(internal_symbols, layout, symbol_writer)?;
+    Ok(())
 }
 
 fn write_verdef(
@@ -2857,60 +2568,60 @@ pub(crate) struct EpilogueOffsets {
     pub(crate) soname: Option<u32>,
 }
 
-impl LinkerScriptLayoutState<'_> {
-    fn write_file<A: Arch>(&self, table_writer: &mut TableWriter, layout: &Layout) -> Result {
+fn write_linker_script_state<A: Arch>(
+    script: &LinkerScriptLayoutState,
+    table_writer: &mut TableWriter,
+    layout: &Layout,
+) -> Result {
+    write_internal_symbols(
+        &script.internal_symbols,
+        layout,
+        &mut table_writer.debug_symbol_writer,
+    )?;
+
+    write_internal_symbols_plt_got_entries::<A>(&script.internal_symbols, table_writer, layout)?;
+
+    Ok(())
+}
+
+fn write_epilogue<A: Arch>(
+    epilogue: &EpilogueLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+    table_writer: &mut TableWriter,
+    layout: &Layout,
+) -> Result {
+    let mut epilogue_offsets = EpilogueOffsets::default();
+
+    write_internal_symbols_plt_got_entries::<A>(&epilogue.internal_symbols, table_writer, layout)?;
+
+    if !layout.args().strip_all {
         write_internal_symbols(
-            &self.internal_symbols,
+            &epilogue.internal_symbols,
             layout,
             &mut table_writer.debug_symbol_writer,
         )?;
-
-        write_internal_symbols_plt_got_entries::<A>(&self.internal_symbols, table_writer, layout)?;
-
-        Ok(())
     }
-}
-
-impl EpilogueLayout<'_> {
-    fn write_file<A: Arch>(
-        &self,
-        buffers: &mut OutputSectionPartMap<&mut [u8]>,
-        table_writer: &mut TableWriter,
-        layout: &Layout,
-    ) -> Result {
-        let mut epilogue_offsets = EpilogueOffsets::default();
-
-        write_internal_symbols_plt_got_entries::<A>(&self.internal_symbols, table_writer, layout)?;
-
-        if !layout.args().strip_all {
-            write_internal_symbols(
-                &self.internal_symbols,
-                layout,
-                &mut table_writer.debug_symbol_writer,
-            )?;
-        }
-        if layout.args().needs_dynamic() {
-            write_epilogue_dynamic_entries(layout, table_writer, &mut epilogue_offsets)?;
-        }
-        write_gnu_hash_tables(self, buffers)?;
-
-        write_dynamic_symbol_definitions(self, table_writer, layout)?;
-
-        if !&self.gnu_property_notes.is_empty() {
-            write_gnu_property_notes(self, buffers)?;
-        }
-
-        if let Some(verdefs) = &self.verdefs {
-            write_verdef(
-                verdefs,
-                table_writer,
-                layout.args().soname.as_ref().map(|s| s.as_bytes()),
-                &epilogue_offsets,
-            )?;
-        }
-
-        Ok(())
+    if layout.args().needs_dynamic() {
+        write_epilogue_dynamic_entries(layout, table_writer, &mut epilogue_offsets)?;
     }
+    write_gnu_hash_tables(epilogue, buffers)?;
+
+    write_dynamic_symbol_definitions(epilogue, table_writer, layout)?;
+
+    if !&epilogue.gnu_property_notes.is_empty() {
+        write_gnu_property_notes(epilogue, buffers)?;
+    }
+
+    if let Some(verdefs) = &epilogue.verdefs {
+        write_verdef(
+            verdefs,
+            table_writer,
+            layout.args().soname.as_ref().map(|s| s.as_bytes()),
+            &epilogue_offsets,
+        )?;
+    }
+
+    Ok(())
 }
 
 fn write_gnu_property_notes(
@@ -3194,7 +2905,7 @@ fn write_regular_object_dynamic_symbol_definition(
 fn write_internal_symbols(
     internal_symbols: &InternalSymbols,
     layout: &Layout,
-    symbol_writer: &mut SymbolTableWriter<'_, '_, '_>,
+    symbol_writer: &mut SymbolTableWriter<'_, '_>,
 ) -> Result {
     for (local_index, def_info) in internal_symbols.symbol_definitions.iter().enumerate() {
         let symbol_id = internal_symbols.start_symbol_id.add_usize(local_index);
@@ -3528,7 +3239,7 @@ impl DynamicEntryInputs<'_> {
     }
 }
 
-impl<'data> DynamicEntryWriter {
+impl DynamicEntryWriter {
     const fn new(tag: u32, cb: fn(&DynamicEntryInputs) -> u64) -> DynamicEntryWriter {
         DynamicEntryWriter {
             tag,
@@ -3549,11 +3260,11 @@ impl<'data> DynamicEntryWriter {
         }
     }
 
-    fn is_present(&self, inputs: &DynamicEntryInputs<'data>) -> bool {
+    fn is_present(&self, inputs: &DynamicEntryInputs) -> bool {
         (self.is_present_cb)(inputs)
     }
 
-    fn write(&self, out: &mut DynamicEntriesWriter, inputs: &DynamicEntryInputs<'data>) -> Result {
+    fn write(&self, out: &mut DynamicEntriesWriter, inputs: &DynamicEntryInputs) -> Result {
         if !self.is_present(inputs) {
             return Ok(());
         }
@@ -3566,8 +3277,8 @@ struct DynamicEntriesWriter<'out> {
     out: &'out mut [DynamicEntry],
 }
 
-impl DynamicEntriesWriter<'_> {
-    fn new(buffer: &mut [u8]) -> DynamicEntriesWriter {
+impl<'out> DynamicEntriesWriter<'out> {
+    fn new(buffer: &'out mut [u8]) -> DynamicEntriesWriter<'out> {
         DynamicEntriesWriter {
             out: slice_from_all_bytes_mut(buffer),
         }
@@ -3720,184 +3431,193 @@ fn write_internal_symbols_plt_got_entries<A: Arch>(
             continue;
         }
         if let Some(res) = layout.local_symbol_resolution(symbol_id) {
-            table_writer.process_resolution::<A>(res).with_context(|| {
-                format!("Failed to process `{}`", layout.symbol_debug(symbol_id))
-            })?;
+            table_writer
+                .process_resolution::<A>(Some(layout), res)
+                .with_context(|| {
+                    format!("Failed to process `{}`", layout.symbol_debug(symbol_id))
+                })?;
+        }
+
+        if layout.symbol_db.args.got_plt_syms {
+            write_got_plt_syms(layout, &mut table_writer.debug_symbol_writer, symbol_id)?;
         }
     }
     Ok(())
 }
 
-impl<'data> DynamicLayout<'data> {
-    fn write_file<A: Arch>(
-        &self,
-        table_writer: &mut TableWriter,
-        layout: &Layout<'data>,
-    ) -> Result {
-        self.write_so_name(table_writer)?;
+fn write_dynamic_file<A: Arch>(
+    object: &DynamicLayout,
+    table_writer: &mut TableWriter,
+    layout: &Layout,
+) -> Result {
+    write_so_name(object, table_writer)?;
 
-        self.write_copy_relocations::<A>(table_writer, layout)?;
+    write_copy_relocations::<A>(object, table_writer, layout)?;
 
-        for ((symbol_id, resolution), symbol) in layout
-            .resolutions_in_range(self.symbol_id_range)
-            .zip(self.object.symbols.iter())
-        {
-            if let Some(res) = resolution {
-                let name = self.object.symbol_name(symbol)?;
+    for ((symbol_id, resolution), symbol) in layout
+        .resolutions_in_range(object.symbol_id_range)
+        .zip(object.object.symbols.iter())
+    {
+        if layout.symbol_db.args.got_plt_syms {
+            write_got_plt_syms(layout, &mut table_writer.debug_symbol_writer, symbol_id)?;
+        }
+        if let Some(res) = resolution {
+            let name = object.object.symbol_name(symbol)?;
 
-                if res.resolution_flags.needs_copy_relocation() {
-                    // Symbol needs a copy relocation, which means that the dynamic symbol will be
-                    // written by the epilogue not by us. However, we do need to write a regular
-                    // symtab entry.
-                    table_writer.debug_symbol_writer.copy_symbol(
-                        symbol,
-                        name,
-                        output_section_id::BSS,
-                        res.value(),
+            if res.resolution_flags.needs_copy_relocation() {
+                // Symbol needs a copy relocation, which means that the dynamic symbol will be
+                // written by the epilogue not by us. However, we do need to write a regular
+                // symtab entry.
+                table_writer.debug_symbol_writer.copy_symbol(
+                    symbol,
+                    name,
+                    output_section_id::BSS,
+                    res.value(),
+                )?;
+            } else {
+                let entry = table_writer
+                    .dynsym_writer
+                    .define_symbol(false, 0, 0, 0, name)?;
+
+                // Note, we copy st_info, but not st_other since we don't want to copy the
+                // visibility. We want to emit the symbol with default visibility, otherwise the
+                // runtime loader may ignore dynamic relocations that reference the symbol.
+                entry.st_info = symbol.st_info();
+
+                if let Some(versym) = table_writer.version_writer.versym.as_mut() {
+                    write_symbol_version(
+                        object.input_symbol_versions,
+                        object.symbol_id_range.id_to_offset(symbol_id),
+                        &object.version_mapping,
+                        versym,
                     )?;
-                } else {
-                    let entry = table_writer
-                        .dynsym_writer
-                        .define_symbol(false, 0, 0, 0, name)?;
-
-                    // Note, we copy st_info, but not st_other since we don't want to copy the
-                    // visibility. We want to emit the symbol with default visibility, otherwise the
-                    // runtime loader may ignore dynamic relocations that reference the symbol.
-                    entry.st_info = symbol.st_info();
-
-                    if let Some(versym) = table_writer.version_writer.versym.as_mut() {
-                        write_symbol_version(
-                            self.input_symbol_versions,
-                            self.symbol_id_range.id_to_offset(symbol_id),
-                            &self.version_mapping,
-                            versym,
-                        )?;
-                    }
                 }
+            }
 
-                table_writer.process_resolution::<A>(res).with_context(|| {
+            table_writer
+                .process_resolution::<A>(Some(layout), res)
+                .with_context(|| {
                     format!(
                         "Failed to write {}",
                         layout.symbol_db.symbol_debug(symbol_id)
                     )
                 })?;
+        }
+    }
+
+    if let Some(verneed_info) = &object.verneed_info {
+        let mut verdefs = verneed_info.defs.clone();
+        let e = LittleEndian;
+
+        let strings = object.object.sections.strings(
+            e,
+            object.object.data,
+            verneed_info.string_table_index,
+        )?;
+
+        let ver_need = table_writer.version_writer.take_verneed()?;
+
+        let next_verneed_offset = if object.is_last_verneed {
+            0
+        } else {
+            (size_of::<Verneed>() + size_of::<Vernaux>() * verneed_info.version_count as usize)
+                as u32
+        };
+
+        ver_need.vn_version.set(e, 1);
+        ver_need.vn_cnt.set(e, verneed_info.version_count);
+        ver_need.vn_aux.set(e, size_of::<Verneed>() as u32);
+        ver_need.vn_next.set(e, next_verneed_offset);
+
+        let auxes = table_writer
+            .version_writer
+            .take_auxes(verneed_info.version_count)?;
+        let mut aux_index = 0;
+
+        while let Some((verdef, mut aux_iterator)) = verdefs.next()? {
+            let input_version = verdef.vd_ndx.get(e);
+            let flags = verdef.vd_flags.get(e);
+            let is_base = (flags & object::elf::VER_FLG_BASE) != 0;
+
+            if is_base {
+                let name_offset = table_writer
+                    .dynsym_writer
+                    .strtab_writer
+                    .write_str(object.lib_name);
+
+                ver_need.vn_file.set(e, name_offset);
+                continue;
+            }
+
+            if input_version == 0 {
+                bail!("Invalid version index");
+            }
+
+            let output_version = object
+                .version_mapping
+                .get(usize::from(input_version - 1))
+                .copied()
+                .unwrap_or_default();
+
+            if output_version != object::elf::VER_NDX_GLOBAL {
+                // Every VERDEF entry should have at least one AUX entry.
+                let aux_in = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
+                let name = aux_in.name(e, strings)?;
+                let name_offset = table_writer.dynsym_writer.strtab_writer.write_str(name);
+                let sysv_name_hash = object::elf::hash(name);
+                let is_last_aux = aux_index + 1 == auxes.len();
+
+                let aux_out = auxes
+                    .get_mut(aux_index)
+                    .context("Insufficient vernaux allocation")?;
+
+                let vna_next = if is_last_aux {
+                    0
+                } else {
+                    size_of::<Vernaux>() as u32
+                };
+
+                aux_out.vna_next.set(e, vna_next);
+                aux_out.vna_other.set(e, output_version);
+                aux_out.vna_name.set(e, name_offset);
+                aux_out.vna_hash.set(e, sysv_name_hash);
+                aux_index += 1;
             }
         }
-
-        if let Some(verneed_info) = &self.verneed_info {
-            let mut verdefs = verneed_info.defs.clone();
-            let e = LittleEndian;
-
-            let strings = self.object.sections.strings(
-                e,
-                self.object.data,
-                verneed_info.string_table_index,
-            )?;
-
-            let ver_need = table_writer.version_writer.take_verneed()?;
-
-            let next_verneed_offset = if self.is_last_verneed {
-                0
-            } else {
-                (size_of::<Verneed>() + size_of::<Vernaux>() * verneed_info.version_count as usize)
-                    as u32
-            };
-
-            ver_need.vn_version.set(e, 1);
-            ver_need.vn_cnt.set(e, verneed_info.version_count);
-            ver_need.vn_aux.set(e, size_of::<Verneed>() as u32);
-            ver_need.vn_next.set(e, next_verneed_offset);
-
-            let auxes = table_writer
-                .version_writer
-                .take_auxes(verneed_info.version_count)?;
-            let mut aux_index = 0;
-
-            while let Some((verdef, mut aux_iterator)) = verdefs.next()? {
-                let input_version = verdef.vd_ndx.get(e);
-                let flags = verdef.vd_flags.get(e);
-                let is_base = (flags & object::elf::VER_FLG_BASE) != 0;
-
-                if is_base {
-                    let name_offset = table_writer
-                        .dynsym_writer
-                        .strtab_writer
-                        .write_str(self.lib_name);
-
-                    ver_need.vn_file.set(e, name_offset);
-                    continue;
-                }
-
-                if input_version == 0 {
-                    bail!("Invalid version index");
-                }
-
-                let output_version = self
-                    .version_mapping
-                    .get(usize::from(input_version - 1))
-                    .copied()
-                    .unwrap_or_default();
-
-                if output_version != object::elf::VER_NDX_GLOBAL {
-                    // Every VERDEF entry should have at least one AUX entry.
-                    let aux_in = aux_iterator.next()?.context("VERDEF with no AUX entry")?;
-                    let name = aux_in.name(e, strings)?;
-                    let name_offset = table_writer.dynsym_writer.strtab_writer.write_str(name);
-                    let sysv_name_hash = object::elf::hash(name);
-                    let is_last_aux = aux_index + 1 == auxes.len();
-
-                    let aux_out = auxes
-                        .get_mut(aux_index)
-                        .context("Insufficient vernaux allocation")?;
-
-                    let vna_next = if is_last_aux {
-                        0
-                    } else {
-                        size_of::<Vernaux>() as u32
-                    };
-
-                    aux_out.vna_next.set(e, vna_next);
-                    aux_out.vna_other.set(e, output_version);
-                    aux_out.vna_name.set(e, name_offset);
-                    aux_out.vna_hash.set(e, sysv_name_hash);
-                    aux_index += 1;
-                }
-            }
-        }
-
-        Ok(())
     }
 
-    /// Write dynamic entry to indicate name of shared object to load.
-    fn write_so_name(&self, table_writer: &mut TableWriter) -> Result {
-        let needed_offset = table_writer
-            .dynsym_writer
-            .strtab_writer
-            .write_str(self.lib_name);
-        table_writer
-            .dynamic
-            .write(object::elf::DT_NEEDED, needed_offset.into())?;
-        Ok(())
+    Ok(())
+}
+
+/// Write dynamic entry to indicate name of shared object to load.
+fn write_so_name(object: &DynamicLayout, table_writer: &mut TableWriter) -> Result {
+    let needed_offset = table_writer
+        .dynsym_writer
+        .strtab_writer
+        .write_str(object.lib_name);
+    table_writer
+        .dynamic
+        .write(object::elf::DT_NEEDED, needed_offset.into())?;
+    Ok(())
+}
+
+fn write_copy_relocations<A: Arch>(
+    object: &DynamicLayout,
+    table_writer: &mut TableWriter,
+    layout: &Layout,
+) -> Result {
+    for &symbol_id in &object.copy_relocation_symbols {
+        write_copy_relocation_for_symbol::<A>(symbol_id, table_writer, layout).with_context(
+            || {
+                format!(
+                    "Failed to write copy relocation for {}",
+                    layout.symbol_debug(symbol_id)
+                )
+            },
+        )?;
     }
 
-    fn write_copy_relocations<A: Arch>(
-        &self,
-        table_writer: &mut TableWriter,
-        layout: &Layout<'data>,
-    ) -> Result {
-        for &symbol_id in &self.copy_relocation_symbols {
-            write_copy_relocation_for_symbol::<A>(symbol_id, table_writer, layout).with_context(
-                || {
-                    format!(
-                        "Failed to write copy relocation for {}",
-                        layout.symbol_debug(symbol_id)
-                    )
-                },
-            )?;
-        }
-
-        Ok(())
-    }
+    Ok(())
 }
 
 fn write_copy_relocation_for_symbol<A: Arch>(
@@ -3959,34 +3679,10 @@ impl StrTabWriter<'_> {
     }
 }
 
-fn write_layout(layout: &Layout) -> Result {
-    let layout_path = linker_layout::layout_path(&layout.args().output);
-    write_layout_to(layout, &layout_path)
-        .with_context(|| format!("Failed to write layout to `{}`", layout_path.display()))
-}
-
-fn write_layout_to(layout: &Layout, path: &Path) -> Result {
-    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-    layout.layout_data().write(&mut file)?;
-    Ok(())
-}
-
 fn has_rela_dyn(inputs: &DynamicEntryInputs) -> bool {
     let relative = inputs.section_part_layouts.get(part_id::RELA_DYN_RELATIVE);
     let general = inputs.section_part_layouts.get(part_id::RELA_DYN_GENERAL);
     relative.mem_size > 0 || general.mem_size > 0
-}
-
-struct ResFlagsDisplay<'a>(&'a Resolution);
-
-impl Display for ResFlagsDisplay<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "value_flags = {} resolution_flags = {}",
-            self.0.value_flags, self.0.resolution_flags
-        )
-    }
 }
 
 pub(crate) fn verify_resolution_allocation(
@@ -4023,6 +3719,6 @@ pub(crate) fn verify_resolution_allocation(
         debug_symbol_writer,
         0,
     );
-    table_writer.process_resolution::<crate::x86_64::X86_64>(resolution)?;
+    table_writer.process_resolution::<crate::x86_64::X86_64>(None, resolution)?;
     table_writer.validate_empty(mem_sizes)
 }

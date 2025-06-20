@@ -28,6 +28,7 @@ use crate::error;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
+use crate::file_writer;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
@@ -78,13 +79,6 @@ use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::SectionIndex;
-use object::elf::GNU_PROPERTY_AARCH64_FEATURE_1_AND;
-use object::elf::GNU_PROPERTY_X86_UINT32_AND_HI;
-use object::elf::GNU_PROPERTY_X86_UINT32_AND_LO;
-use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_HI;
-use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_LO;
-use object::elf::GNU_PROPERTY_X86_UINT32_OR_HI;
-use object::elf::GNU_PROPERTY_X86_UINT32_OR_LO;
 use object::elf::Rela64;
 use object::elf::gnu_hash;
 use object::read::elf::Dyn as _;
@@ -115,11 +109,11 @@ use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 
 #[tracing::instrument(skip_all, name = "Layout")]
-pub fn compute<'data, 'symbol_db, A: Arch>(
+pub fn compute<'data, A: Arch>(
     symbol_db: SymbolDb<'data>,
     resolved: ResolutionOutputs<'data>,
     mut output_sections: OutputSections<'data>,
-    output: &mut elf_writer::Output,
+    output: &mut file_writer::Output,
 ) -> Result<Layout<'data>> {
     let ResolutionOutputs {
         groups,
@@ -144,7 +138,8 @@ pub fn compute<'data, 'symbol_db, A: Arch>(
 
     finalise_copy_relocations(&mut group_states, &symbol_db, &symbol_resolution_flags)?;
     merge_dynamic_symbol_definitions(&mut group_states)?;
-    merge_gnu_property_notes(&mut group_states)?;
+    merge_gnu_property_notes::<A>(&mut group_states)?;
+    merge_eflags::<A>(&mut group_states)?;
 
     finalise_all_sizes(
         &symbol_db,
@@ -330,6 +325,17 @@ fn finalise_all_sizes<'data>(
     })
 }
 
+fn get_prelude_mut<'a, 'data>(
+    group_states: &'a mut [GroupState<'data>],
+) -> &'a mut PreludeLayoutState<'data> {
+    let Some(FileLayoutState::Prelude(prelude)) =
+        group_states.first_mut().and_then(|g| g.files.first_mut())
+    else {
+        panic!("Internal error, prelude must be first");
+    };
+    prelude
+}
+
 fn get_epilogue_mut<'a, 'data>(
     group_states: &'a mut [GroupState<'data>],
 ) -> &'a mut EpilogueLayoutState<'data> {
@@ -353,7 +359,7 @@ fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) -> Result {
     Ok(())
 }
 
-enum PropertyClass {
+pub(crate) enum PropertyClass {
     // A bit in the output pr_data is set if it is set in any relocatable input.
     // If all bits in the output pr_data field are zero, this property should be removed from output.
     Or,
@@ -367,20 +373,8 @@ enum PropertyClass {
     AndOr,
 }
 
-fn get_property_class(property_type: u32) -> Option<PropertyClass> {
-    match property_type {
-        GNU_PROPERTY_X86_UINT32_AND_LO..=GNU_PROPERTY_X86_UINT32_AND_HI => Some(PropertyClass::And),
-        GNU_PROPERTY_AARCH64_FEATURE_1_AND => Some(PropertyClass::And),
-        GNU_PROPERTY_X86_UINT32_OR_LO..=GNU_PROPERTY_X86_UINT32_OR_HI => Some(PropertyClass::Or),
-        GNU_PROPERTY_X86_UINT32_OR_AND_LO..=GNU_PROPERTY_X86_UINT32_OR_AND_HI => {
-            Some(PropertyClass::AndOr)
-        }
-        _ => None,
-    }
-}
-
 #[tracing::instrument(skip_all, name = "Merge GNU property notes")]
-fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
+fn merge_gnu_property_notes<A: Arch>(group_states: &mut [GroupState]) -> Result {
     let properties_per_file = group_states
         .iter()
         .flat_map(|group| {
@@ -394,23 +388,23 @@ fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
         })
         .collect_vec();
 
-    // Merge bits of each property type based on type: OR or AND operation. When a property type
-    // is newly added to the map, we start either with zero or all bits-set (PropertyClass::And).
+    // Merge bits of each property type based on type: OR or AND operation.
     let mut property_map = HashMap::new();
+
     for file_props in &properties_per_file {
         for prop in *file_props {
-            let property_class = get_property_class(prop.ptype)
+            let property_class = A::get_property_class(prop.ptype)
                 .ok_or_else(|| crate::error!("unclassified property type {}", prop.ptype))?;
             property_map
                 .entry(prop.ptype)
-                .and_modify(|e| {
+                .and_modify(|entry: &mut (u32, PropertyClass)| {
                     if matches!(property_class, PropertyClass::And) {
-                        *e &= prop.data;
+                        entry.0 &= prop.data;
                     } else {
-                        *e |= prop.data;
+                        entry.0 |= prop.data;
                     }
                 })
-                .or_insert_with(|| prop.data);
+                .or_insert_with(|| (prop.data, property_class));
         }
     }
 
@@ -418,8 +412,7 @@ fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
     let output_properties = property_map
         .into_iter()
         .sorted_by_key(|x| x.0)
-        .filter_map(|(property_type, property_value)| {
-            let property_class = get_property_class(property_type).unwrap();
+        .filter_map(|(property_type, (property_value, property_class))| {
             let type_present_in_all = properties_per_file.iter().all(|props_per_file| {
                 props_per_file
                     .iter()
@@ -442,6 +435,26 @@ fn merge_gnu_property_notes(group_states: &mut [GroupState]) -> Result {
 
     let epilogue = get_epilogue_mut(group_states);
     epilogue.gnu_property_notes = output_properties;
+    Ok(())
+}
+
+#[tracing::instrument(skip_all, name = "Merge e_flags")]
+fn merge_eflags<A: Arch>(group_states: &mut [GroupState]) -> Result {
+    let eflags = group_states
+        .iter()
+        .flat_map(|group| {
+            group.files.iter().filter_map(|file| {
+                if let FileLayoutState::Object(object) = file {
+                    Some(object.object.eflags)
+                } else {
+                    None
+                }
+            })
+        })
+        .collect_vec();
+
+    let prelude = get_prelude_mut(group_states);
+    prelude.eflags = A::merge_eflags(&eflags)?;
     Ok(())
 }
 
@@ -571,6 +584,7 @@ struct PreludeLayoutState<'data> {
     header_info: Option<HeaderInfo>,
     dynamic_linker: Option<CString>,
     shstrtab_size: u64,
+    eflags: u32,
 }
 
 pub(crate) struct EpilogueLayoutState<'data> {
@@ -718,6 +732,19 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
                 &mut common.mem_sizes,
                 symbol_db.args.output_kind(),
             );
+
+            if symbol_db.args.got_plt_syms && resolution_flags.get().needs_got() {
+                let name = symbol_db.symbol_name(symbol_id)?;
+                let name_len = name.len() + 4; // "$got" or "$plt" suffix
+
+                let entry_size = size_of::<elf::SymtabEntry>() as u64;
+                common.allocate(part_id::SYMTAB_LOCAL, entry_size);
+                common.allocate(part_id::STRTAB, name_len as u64 + 1);
+                if resolution_flags.get().needs_plt() {
+                    common.allocate(part_id::SYMTAB_LOCAL, entry_size);
+                    common.allocate(part_id::STRTAB, name_len as u64 + 1);
+                }
+            }
         }
         if symbol_db.args.should_output_symbol_versions() {
             let num_dynamic_symbols =
@@ -1125,9 +1152,9 @@ impl CommonGroupState<'_> {
     }
 }
 
-fn create_global_address_emitter(
-    symbol_resolution_flags: &[ResolutionFlags],
-) -> GlobalAddressEmitter {
+fn create_global_address_emitter<'state>(
+    symbol_resolution_flags: &'state [ResolutionFlags],
+) -> GlobalAddressEmitter<'state> {
     GlobalAddressEmitter {
         symbol_resolution_flags,
     }
@@ -1489,7 +1516,7 @@ impl WorkItem {
 }
 
 impl<'data> Layout<'data> {
-    pub(crate) fn prelude(&self) -> &PreludeLayout {
+    pub(crate) fn prelude(&self) -> &PreludeLayout<'data> {
         let Some(FileLayout::Prelude(i)) = self.group_layouts.first().and_then(|g| g.files.first())
         else {
             panic!("Prelude layout not found at expected offset");
@@ -1639,7 +1666,7 @@ impl<'data> Layout<'data> {
         self.symbol_resolution_flags[symbol_id.as_usize()]
     }
 
-    pub(crate) fn file_layout(&self, file_id: FileId) -> &FileLayout {
+    pub(crate) fn file_layout(&self, file_id: FileId) -> &FileLayout<'data> {
         let group_layout = &self.group_layouts[file_id.group()];
         &group_layout.files[file_id.file()]
     }
@@ -1659,7 +1686,7 @@ impl<'data> Layout<'data> {
             > 0
     }
 
-    pub(crate) fn info_inputs(&self) -> InfoInputs {
+    pub(crate) fn info_inputs<'layout>(&'layout self) -> InfoInputs<'layout> {
         InfoInputs {
             section_part_layouts: &self.section_part_layouts,
             non_addressable_counts: &self.non_addressable_counts,
@@ -2748,7 +2775,9 @@ fn process_relocation<A: Arch>(
             args.output_kind(),
             SectionFlags::from_header(section),
             true,
-        ) {
+        )
+        .filter(|relaxation| args.relax || relaxation.is_mandatory())
+        {
             next_modifier = relaxation.next_modifier();
             relaxation.rel_info()
         } else {
@@ -2873,14 +2902,14 @@ fn resolution_flags(rel_kind: RelocationKind) -> ResolutionFlags {
         | RelocationKind::AbsoluteSubtraction
         | RelocationKind::AbsoluteSubtractionWord6
         | RelocationKind::Relative
-        | RelocationKind::RelativeRISCVLow12
+        | RelocationKind::RelativeRiscVLow12
         | RelocationKind::DtpOff
         | RelocationKind::TpOff
-        | RelocationKind::TpOffAArch64
-        | RelocationKind::TpOffRiscV
         | RelocationKind::SymRelGotBase
         | RelocationKind::PairSubtraction => ResolutionFlags::DIRECT,
-        RelocationKind::None | RelocationKind::AbsoluteAArch64 => ResolutionFlags::empty(),
+        RelocationKind::None | RelocationKind::AbsoluteAArch64 | RelocationKind::Alignment => {
+            ResolutionFlags::empty()
+        }
     }
 }
 
@@ -2899,6 +2928,7 @@ impl<'data> PreludeLayoutState<'data> {
             header_info: None,
             dynamic_linker: None,
             shstrtab_size: 0,
+            eflags: 0,
         }
     }
 
@@ -3205,6 +3235,7 @@ impl<'data> PreludeLayoutState<'data> {
                 .expect("output section count must fit in a u16"),
 
             active_segment_ids,
+            eflags: self.eflags,
         };
 
         // Allocate space for headers based on segment and section counts.
@@ -3624,6 +3655,7 @@ impl<'data> EpilogueLayoutState<'data> {
 pub(crate) struct HeaderInfo {
     pub(crate) num_output_sections_with_content: u16,
     pub(crate) active_segment_ids: Vec<ProgramSegmentId>,
+    pub(crate) eflags: u32,
 }
 
 impl HeaderInfo {
@@ -3746,7 +3778,8 @@ impl<'data> ObjectLayoutState<'data> {
 
         if resources.symbol_db.args.output_kind() == OutputKind::SharedObject
             && (!resources.symbol_db.args.exclude_libs || !self.input.has_archive_semantics())
-            || resources.symbol_db.args.explicitly_export_dynamic
+            || resources.symbol_db.args.needs_dynsym()
+                && resources.symbol_db.args.explicitly_export_dynamic
         {
             self.load_non_hidden_symbols::<A>(common, resources, queue)?;
         }
@@ -4845,30 +4878,48 @@ impl<'data> DynamicLayoutState<'data> {
 
         common.allocate(part_id::DYNSTR, self.lib_name.len() as u64 + 1);
 
-        self.request_all_undefined_symbols(resources, queue);
-
-        Ok(())
+        self.request_all_undefined_symbols(resources, queue)
     }
 
     fn request_all_undefined_symbols(
         &self,
         resources: &GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
-    ) {
+    ) -> Result {
         for symbol_id in self.symbol_id_range() {
-            if resources.symbol_db.is_canonical(symbol_id) {
-                continue;
-            }
-
             let definition_symbol_id = resources.symbol_db.definition(symbol_id);
-            let file_id = resources.symbol_db.file_id_for_symbol(definition_symbol_id);
 
-            queue.send_work(
-                resources,
-                file_id,
-                WorkItem::ExportDynamic(definition_symbol_id),
-            );
+            let value_flags = resources
+                .symbol_db
+                .local_symbol_value_flags(definition_symbol_id);
+
+            if value_flags.is_dynamic() && value_flags.is_absolute() {
+                // Our shared object references an undefined symbol. Whether that is an error or
+                // not, depends on flags and whether the symbol is weak.
+                let args = resources.symbol_db.args;
+                if !args.allow_shlib_undefined && args.output_kind().is_executable() {
+                    let symbol = self
+                        .object
+                        .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
+                    if !symbol.is_weak() {
+                        bail!(
+                            "undefined reference to `{}` from {self}",
+                            resources.symbol_db.symbol_name_for_display(symbol_id)
+                        );
+                    }
+                }
+            } else if definition_symbol_id != symbol_id {
+                let file_id = resources.symbol_db.file_id_for_symbol(definition_symbol_id);
+
+                queue.send_work(
+                    resources,
+                    file_id,
+                    WorkItem::ExportDynamic(definition_symbol_id),
+                );
+            }
         }
+
+        Ok(())
     }
 
     fn finalise_copy_relocations(
@@ -5486,6 +5537,7 @@ fn test_no_disallowed_overlaps() {
         active_segment_ids: (0..program_segments.len())
             .map(ProgramSegmentId::new)
             .collect(),
+        eflags: 0,
     };
 
     let mut section_index = 0;
@@ -5537,6 +5589,18 @@ fn test_no_disallowed_overlaps() {
 impl Display for ResolutionFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         bitflags::parser::to_writer(self, f)
+    }
+}
+
+pub(crate) struct ResFlagsDisplay<'a>(pub(crate) &'a Resolution);
+
+impl Display for ResFlagsDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "value_flags = {} resolution_flags = {}",
+            self.0.value_flags, self.0.resolution_flags
+        )
     }
 }
 

@@ -104,6 +104,9 @@
 //!
 //! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the
 //! musl Rust toolchain.
+//!
+//! AutoAddObjects:{bool} Whether to automatically add input objects for the test to the command
+//! line. Defaults to true.
 
 use itertools::Itertools;
 use libwild::bail;
@@ -126,10 +129,12 @@ use std::fs::File;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io::ErrorKind;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::process::ExitStatus;
 use std::process::Stdio;
 use std::str::FromStr;
 use std::sync::Once;
@@ -148,7 +153,7 @@ fn base_dir() -> &'static Path {
 }
 
 fn build_dir() -> PathBuf {
-    base_dir().join("tests/build")
+    std::env::var("WILD_TEST_BUILD_DIR").map_or(base_dir().join("tests/build"), PathBuf::from)
 }
 
 struct ProgramInputs {
@@ -214,7 +219,12 @@ impl Linker {
         )?;
 
         if self.is_wild() || !is_newer(so_path, obj_paths.iter()) || !command.can_skip {
-            command.run(config)?;
+            // If we're expecting errors, those errors should only occur when we link the final
+            // binary, not when we link any dependent shared objects.
+            let mut config = config.clone();
+            config.expect_errors = Vec::new();
+
+            command.run(&config)?;
             write_cmd_file(so_path, &command.to_string())?;
         }
 
@@ -280,6 +290,7 @@ enum Architecture {
     X86_64,
     #[strum(serialize = "aarch64")]
     AArch64,
+    #[strum(serialize = "riscv64")]
     RISCV64,
 }
 
@@ -431,6 +442,7 @@ struct Config {
     requires_glibc: bool,
     requires_clang_with_tlsdesc: bool,
     requires_nightly_rustc: bool,
+    auto_add_objects: bool,
     version_script: Option<PathBuf>,
     rustc_channel: RustcChannel,
     requires_rust_musl: bool,
@@ -473,15 +485,18 @@ enum RustcChannel {
     Nightly,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct DirectConfig {
-    is_static: bool,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, EnumString, Default)]
+#[strum(serialize_all = "snake_case")]
+enum Mode {
+    Dynamic,
+    #[default]
+    Static,
+    Unspecified,
 }
 
-impl Default for DirectConfig {
-    fn default() -> Self {
-        Self { is_static: true }
-    }
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+struct DirectConfig {
+    mode: Mode,
 }
 
 impl Config {
@@ -656,6 +671,7 @@ impl Config {
             requires_glibc: false,
             requires_clang_with_tlsdesc: false,
             requires_nightly_rustc: false,
+            auto_add_objects: true,
             version_script: None,
             rustc_channel: RustcChannel::Default,
             requires_rust_musl: false,
@@ -756,7 +772,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                     .assertions
                     .contains_strings
                     .push(arg.trim().to_owned()),
-                "Static" => config.linker_driver.direct_mut()?.is_static = arg.parse()?,
+                "Mode" => config.linker_driver.direct_mut()?.mode = arg.parse()?,
                 "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
                 "DiffEnabled" => {
                     config.should_diff = arg.parse().context("Invalid bool for DiffEnabled")?
@@ -770,13 +786,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                 "EnableLinker" => {
                     config.enabled_linkers.insert(arg.trim().to_owned());
                 }
-                "Cross" => {
-                    config.cross_enabled = match arg.trim() {
-                        "true" => true,
-                        "false" => false,
-                        other => bail!("Unsupported value for Cross '{other}'"),
-                    }
-                }
+                "Cross" => config.cross_enabled = parse_bool(arg, "Cross")?,
                 "ExpectError" => {
                     config.expect_errors.push(arg.trim().to_owned());
                     // If there are errors, then there's nothing to run and nothing to diff.
@@ -789,6 +799,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                         .ok_or_else(|| error!("DiffIgnore missing '='"))
                         .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
                 ),
+                "AutoAddObjects" => config.auto_add_objects = parse_bool(arg, "AutoAddObjects")?,
                 input_type @ ("Object" | "Archive" | "ThinArchive" | "Shared" | "LinkerScript") => {
                     let input_type = InputType::from_str(input_type)?;
                     let files = arg
@@ -809,15 +820,8 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
                     config.support_architectures = arg
                         .trim()
                         .split(",")
-                        .map(|arch| {
-                            let arch = arch.trim().to_lowercase();
-                            match arch.as_str() {
-                                "x86_64" => Ok(Architecture::X86_64),
-                                "aarch64" => Ok(Architecture::AArch64),
-                                _ => bail!("Unsupported architecture: `{}`", arch),
-                            }
-                        })
-                        .collect::<Result<Vec<_>>>()?;
+                        .map(|arch| Architecture::from_str(arch.trim()))
+                        .collect::<Result<Vec<_>, _>>()?;
                 }
                 "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
                 "RequiresClangWithTlsDesc" => {
@@ -846,6 +850,14 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
     }
 
     Ok(configs)
+}
+
+fn parse_bool(arg: &str, opt_name: &str) -> Result<bool> {
+    match arg.trim() {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => bail!("Unsupported value for {opt_name} '{other}'"),
+    }
 }
 
 impl ProgramInputs {
@@ -909,9 +921,12 @@ impl Program<'_> {
         } else {
             Command::new(&self.link_output.binary)
         };
-        // Similarly to cargo test, capture all the run-time output, where e.g. panic
-        // messages might be confusing to the user.
-        command.stdout(Stdio::null()).stderr(Stdio::null());
+
+        // Similarly to cargo test, capture all the run-time output, since it may contain useful
+        // error messages. We only show it if the exit status is a failure since otherwise messages
+        // that are expected, e.g. panic messages, would be potentially confusing to see.
+        let (mut recv, send) = std::io::pipe()?;
+        command.stdout(send.try_clone()?).stderr(send);
 
         let spawn_result = spawn_with_retry(&mut command, 10);
 
@@ -922,20 +937,34 @@ impl Program<'_> {
             )
         })?;
 
-        let status = match child.wait_timeout(std::time::Duration::from_millis(500))? {
-            Some(s) => s,
-            None => {
-                child.kill()?;
-                bail!("Binary ran for too long");
+        // We need to drop command here since it holds a copy or two of our send pipe. While they
+        // are open, our `recv_to_end` call below can't finish.
+        drop(command);
+
+        let mut output = Vec::new();
+
+        let status = std::thread::scope(|scope| -> Result<ExitStatus> {
+            scope.spawn(|| {
+                let _ = recv.read_to_end(&mut output);
+            });
+
+            match child.wait_timeout(std::time::Duration::from_millis(500))? {
+                Some(s) => Ok(s),
+                None => {
+                    child.kill()?;
+                    bail!("Binary ran for too long");
+                }
             }
-        };
+        })?;
+
+        let output = String::from_utf8_lossy(&output);
 
         let exit_code = status
             .code()
-            .ok_or_else(|| error!("Binary exited with signal"))?;
+            .ok_or_else(|| error!("Binary exited with signal: {output}"))?;
 
         if exit_code != 42 {
-            bail!("Binary exited with unexpected exit code {exit_code}");
+            bail!("Binary exited with unexpected exit code {exit_code}: {output}");
         }
 
         Ok(())
@@ -1491,9 +1520,11 @@ impl LinkCommand {
             command.env("OUT", output_path);
             command.arg(script);
             command.arg(linker.path(cross_arch));
-            for input in extra_inputs {
-                command.args(input.prefix_arg);
-                command.arg(&input.path);
+            if config.auto_add_objects {
+                for input in extra_inputs {
+                    command.args(input.prefix_arg);
+                    command.arg(&input.path);
+                }
             }
             invocation_mode = LinkerInvocationMode::Script;
         } else {
@@ -1568,12 +1599,16 @@ impl LinkCommand {
                         command.arg("-m").arg(arch.emulation_name());
                     }
 
-                    if direct_config.is_static {
-                        command.arg("-static");
-                    } else {
-                        command
-                            .arg("-dynamic-linker")
-                            .arg(dynamic_linker_path(cross_arch));
+                    match direct_config.mode {
+                        Mode::Dynamic => {
+                            command
+                                .arg("-dynamic-linker")
+                                .arg(dynamic_linker_path(cross_arch));
+                        }
+                        Mode::Static => {
+                            command.arg("-static");
+                        }
+                        Mode::Unspecified => {}
                     }
 
                     if let Some(version_script) = &config.version_script {
@@ -1586,9 +1621,11 @@ impl LinkCommand {
             if !linker_args.args.iter().any(|arg| arg == "-o") {
                 command.arg("-o").arg(output_path);
             }
-            for input in inputs {
-                command.args(input.prefix_arg);
-                command.arg(&input.path);
+            if config.auto_add_objects {
+                for input in inputs {
+                    command.args(input.prefix_arg);
+                    command.arg(&input.path);
+                }
             }
         }
 
@@ -1648,7 +1685,9 @@ impl LinkCommand {
                 .with_context(|| format!("Failed to run command: {:?}", self.command))?;
 
             if output.status.success() {
-                bail!("Linker returned exit status of 0, when an error was expected");
+                bail!(
+                    "Linker returned exit status of 0, when an error was expected. Command:\n{self}",
+                );
             }
 
             for expected_error in &config.expect_errors {
@@ -1696,13 +1735,15 @@ impl LinkCommand {
             return Ok(());
         }
 
-        let status = self
+        let output = self
             .command
-            .status()
+            .output()
             .with_context(|| format!("Failed to run command: {:?}", self.command))?;
 
-        if !status.success() {
-            bail!("Linker failed. Relink with:\n{self}");
+        if !output.status.success() {
+            let mut messages = String::from_utf8_lossy(&output.stdout).into_owned();
+            messages.push_str(&String::from_utf8_lossy(&output.stderr));
+            bail!("Linker failed:\n{messages}\nRelink with:\n{self}");
         }
         Ok(())
     }
@@ -2122,14 +2163,16 @@ fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Re
 fn setup_wild_ld_symlink() -> Result {
     let wild = wild_path();
     let wild_ld_path = wild.with_file_name("ld");
-    if !wild_ld_path.exists() {
-        std::os::unix::fs::symlink(wild, &wild_ld_path).with_context(|| {
-            format!(
-                "Failed to symlink `{}` to `{}`",
-                wild_ld_path.display(),
-                wild.display()
-            )
-        })?;
+    if let Err(error) = std::os::unix::fs::symlink(wild, &wild_ld_path) {
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            Err(error).with_context(|| {
+                format!(
+                    "Failed to symlink `{}` to `{}`",
+                    wild_ld_path.display(),
+                    wild.display()
+                )
+            })?
+        }
     }
     Ok(())
 }
@@ -2179,7 +2222,7 @@ fn available_linkers() -> Result<Vec<Linker>> {
         Linker::ThirdParty(ThirdPartyLinker {
             name: "ld",
             gcc_name: "bfd",
-            path: find_bin(&["ld"])?,
+            path: find_bin(&["ld.bfd", "ld"])?,
             cross_paths: find_cross_paths("ld"),
             enabled_by_default: true,
         }),
@@ -2348,9 +2391,12 @@ fn integration_test(
         "basic-comdat.s",
         "input_does_not_exist.c",
         "ifunc2.c",
+        "ctors.c",
         "visibility-merging.c",
         "tls-local-exec.c",
+        "tls-local-dynamic.c",
         "undefined_symbols.c",
+        "shlib-undefined.c",
         "whole_archive.c",
         "entry_arg.c",
         "dynamic-bss-only.c",
@@ -2358,7 +2404,9 @@ fn integration_test(
         "shared.c",
         "duplicate_strong_symbols.c",
         "preinit-array.c",
-        "exception.cc"
+        "exception.cc",
+        "z-defs.c",
+        "export-dynamic.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
@@ -2397,18 +2445,10 @@ fn integration_test(
 }
 
 fn read_test_config() -> Result<TestConfig> {
-    let config_default_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("test-config.toml");
+    let config_default_path = base_dir().parent().unwrap().join("test-config.toml");
 
     let config_path = std::env::var("WILD_TEST_CONFIG")
-        .map(|config_path| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap()
-                .join(config_path)
-        })
+        .map(|config_path| base_dir().parent().unwrap().join(config_path))
         .unwrap_or_else(|_| config_default_path.clone());
 
     let mut config = if config_path.exists() {

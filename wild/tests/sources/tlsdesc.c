@@ -6,14 +6,14 @@
 //#DiffIgnore:section.rodata
 
 //#Config:gcc-tls-desc:default
-//#CompArgs:-mtls-dialect=gnu2
+//#CompArgs:-mtls-dialect=gnu2 -fPIC -O2
 //#LinkerDriver:gcc
 //#LinkArgs:-Wl,-z,now
 //#Object:tlsdesc-obj.c
 //#Arch: x86_64
 
 //#Config:gcc-tls-desc-aarch64:gcc-tls-desc
-//#CompArgs:-mtls-dialect=desc
+//#CompArgs:-mtls-dialect=desc -fPIC
 //#Arch: aarch64
 
 //#Config:gcc-tls-desc-pie:gcc-tls-desc
@@ -40,13 +40,13 @@
 //#Arch: aarch64
 
 //#Config:clang-tls-desc:gcc-tls-desc
-//#CompArgs:-mtls-dialect=gnu2
+//#CompArgs:-mtls-dialect=gnu2 -fPIC
 //#Compiler:clang
 //#RequiresClangWithTlsDesc:true
 //#Arch: x86_64
 
 //#Config:clang-tls-desc-aarch64:clang-tls-desc
-//#CompArgs:-mtls-dialect=desc
+//#CompArgs:-mtls-dialect=desc -fPIC
 //#Arch: aarch64
 
 //#Config:clang-tls-desc-shared:clang-tls-desc
@@ -55,7 +55,7 @@
 //#Arch: x86_64
 
 //#Config:clang-tls-desc-shared-aarch64:clang-tls-desc-shared
-//#CompArgs:-mtls-dialect=desc
+//#CompArgs:-mtls-dialect=desc -fPIC
 //#Arch: aarch64
 
 int get_value();

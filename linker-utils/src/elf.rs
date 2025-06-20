@@ -765,7 +765,7 @@ pub enum RelocationKind {
     /// The address of the symbol, relative to the place of the relocation. The address of the relocation
     /// points to an instruction for which the R_RISCV_PCREL_HI20 relocation is used and that is the place
     /// we make this relocation relative to.
-    RelativeRISCVLow12,
+    RelativeRiscVLow12,
 
     /// The address of the symbol, relative to the base address of the GOT.
     SymRelGotBase,
@@ -826,12 +826,6 @@ pub enum RelocationKind {
     /// The offset of a TLS variable within the executable's TLS storage.
     TpOff,
 
-    /// The offset of a TLS variable within the executable's TLS storage, AArch64 TLS block layout.
-    TpOffAArch64,
-
-    /// The offset of a TLS variable within the executable's TLS storage, RISC-V TLS block layout.
-    TpOffRiscV,
-
     /// The address of a TLS descriptor structure, relative to the place of the relocation.
     TlsDesc,
 
@@ -847,6 +841,9 @@ pub enum RelocationKind {
     /// No relocation needs to be applied. Produced when we eliminate a relocation due to an
     /// optimisation.
     None,
+
+    /// The address must fulfill the alignment requirement.
+    Alignment,
 }
 
 impl RelocationKind {
@@ -867,7 +864,7 @@ impl RelocationKind {
                 | Self::TlsLd
                 | Self::TlsLdGot
                 | Self::TlsLdGotBase
-                | Self::TpOffAArch64
+                | Self::TpOff
         )
     }
 }
@@ -996,14 +993,14 @@ pub enum AArch64Instruction {
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
-pub enum RISCVInstruction {
+pub enum RiscVInstruction {
     // The relocation encoding actually modifies the consecutive pair of instructions:
     //   10:	00000097          	auipc	ra,0x0	10: R_RISCV_CALL_PLT	symbol_name
     //   14:	000080e7          	jalr	ra # 10 <main+0x10>
     //
     // That makes the relocation pretty unusual as one would expect 2 relocations:
     // https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc#procedure-calls
-    UIType,
+    UiType,
 
     // Encodes high 20 bits of 32-bit value and encodes the bits to upper part.
     UType,
@@ -1025,19 +1022,19 @@ pub enum RISCVInstruction {
 
     // Specifies a field as the immediate field in a CB-type (compressed branch) instruction
     // https://riscv.github.io/riscv-isa-manual/snapshot/unprivileged/#_control_transfer_instructions_2
-    CBType,
+    CbType,
 
-    // Specifies a field as the immediate field in a CB-type (compressed jump) instruction
-    CJType,
+    // Specifies a field as the immediate field in a CJ-type (compressed jump) instruction
+    CjType,
 
     // Encode the value using ULEB128 encoding (the size of the output is variable based on the value)
-    ULEB128,
+    Uleb128,
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum RelocationInstruction {
     AArch64(AArch64Instruction),
-    RISCV(RISCVInstruction),
+    RiscV(RiscVInstruction),
 }
 
 impl RelocationInstruction {
@@ -1061,7 +1058,7 @@ impl RelocationInstruction {
     pub fn write_to_value(self, extracted_value: u64, negative: bool, dest: &mut [u8]) {
         match self {
             Self::AArch64(insn) => insn.write_to_value(extracted_value, negative, dest),
-            Self::RISCV(insn) => insn.write_to_value(extracted_value, negative, dest),
+            Self::RiscV(insn) => insn.write_to_value(extracted_value, negative, dest),
         }
     }
 
@@ -1071,7 +1068,7 @@ impl RelocationInstruction {
     pub fn read_value(self, bytes: &[u8]) -> (u64, bool) {
         match self {
             Self::AArch64(insn) => insn.read_value(bytes),
-            Self::RISCV(insn) => insn.read_value(bytes),
+            Self::RiscV(insn) => insn.read_value(bytes),
         }
     }
 
@@ -1080,7 +1077,7 @@ impl RelocationInstruction {
     pub fn write_windows_size(self) -> usize {
         match self {
             Self::AArch64(..) => 4,
-            Self::RISCV(..) => 10,
+            Self::RiscV(..) => 10,
         }
     }
 }
@@ -1118,10 +1115,10 @@ impl RelocationSize {
     pub(crate) const fn bit_mask_riscv(
         bit_start: u32,
         bit_end: u32,
-        instruction: RISCVInstruction,
+        instruction: RiscVInstruction,
     ) -> RelocationSize {
         Self::BitMasking(BitMask::new(
-            RelocationInstruction::RISCV(instruction),
+            RelocationInstruction::RiscV(instruction),
             bit_start,
             bit_end,
         ))

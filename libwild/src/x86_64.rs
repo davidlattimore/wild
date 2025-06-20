@@ -3,21 +3,26 @@
 //! work unless they're performed. e.g. it uses GOT relocations in _start, which cannot work in a
 //! static-PIE binary because dynamic relocations haven't yet been applied to the GOT yet.
 
-use crate::arch::Arch;
 use crate::args::OutputKind;
 use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
 use crate::error::Result;
+use crate::layout::PropertyClass;
 use crate::resolution::ValueFlags;
-use linker_utils::elf::AllowedRange;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
-use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::shf;
 use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::x86_64::RelaxationKind;
+use linker_utils::x86_64::relocation_from_raw;
+use object::elf::GNU_PROPERTY_X86_UINT32_AND_HI;
+use object::elf::GNU_PROPERTY_X86_UINT32_AND_LO;
+use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_HI;
+use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_LO;
+use object::elf::GNU_PROPERTY_X86_UINT32_OR_HI;
+use object::elf::GNU_PROPERTY_X86_UINT32_OR_LO;
 
 pub(crate) struct X86_64;
 
@@ -40,20 +45,11 @@ impl crate::arch::Arch for X86_64 {
 
     #[inline(always)]
     fn relocation_from_raw(r_type: u32) -> Result<RelocationKindInfo> {
-        let (kind, size) =
-            linker_utils::x86_64::relocation_kind_and_size(r_type).ok_or_else(|| {
-                error!(
-                    "Unsupported relocation type {}",
-                    Self::rel_type_to_string(r_type)
-                )
-            })?;
-
-        Ok(RelocationKindInfo {
-            kind,
-            size: RelocationSize::ByteSize(size),
-            mask: None,
-            range: AllowedRange::no_check(),
-            alignment: 1,
+        linker_utils::x86_64::relocation_from_raw(r_type).ok_or_else(|| {
+            error!(
+                "Unsupported relocation type {}",
+                Self::rel_type_to_string(r_type)
+            )
         })
     }
 
@@ -81,12 +77,42 @@ impl crate::arch::Arch for X86_64 {
     fn local_symbols_in_debug_info() -> bool {
         false
     }
+
+    fn tp_offset_start(layout: &crate::layout::Layout) -> u64 {
+        layout.tls_end_address()
+    }
+
+    fn get_property_class(property_type: u32) -> Option<crate::layout::PropertyClass> {
+        match property_type {
+            GNU_PROPERTY_X86_UINT32_AND_LO..=GNU_PROPERTY_X86_UINT32_AND_HI => {
+                Some(PropertyClass::And)
+            }
+            GNU_PROPERTY_X86_UINT32_OR_LO..=GNU_PROPERTY_X86_UINT32_OR_HI => {
+                Some(PropertyClass::Or)
+            }
+            GNU_PROPERTY_X86_UINT32_OR_AND_LO..=GNU_PROPERTY_X86_UINT32_OR_AND_HI => {
+                Some(PropertyClass::AndOr)
+            }
+            _ => None,
+        }
+    }
+
+    fn merge_eflags(_eflags: &[u32]) -> Result<u32> {
+        Ok(0)
+    }
+}
+
+macro_rules! rel_info_from_type {
+    ($r_type:expr) => {
+        const { relocation_from_raw($r_type).unwrap() }
+    };
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct Relaxation {
     kind: RelaxationKind,
     rel_info: RelocationKindInfo,
+    mandatory: bool,
 }
 
 impl crate::arch::Relaxation for Relaxation {
@@ -100,17 +126,6 @@ impl crate::arch::Relaxation for Relaxation {
         section_flags: SectionFlags,
         _non_zero_address: bool,
     ) -> Option<Self> {
-        // TODO: Consider removing Option. There are a few callers though, so need to see how this
-        // looks.
-        #[allow(clippy::unnecessary_wraps)]
-        #[inline(always)]
-        fn create(kind: RelaxationKind, new_r_type: u32) -> Option<Relaxation> {
-            // This only fails for relocation types that we don't support and if we relax to a type
-            // we don't support, then that's a bug.
-            let rel_info = X86_64::relocation_from_raw(new_r_type).unwrap();
-            Some(Relaxation { kind, rel_info })
-        }
-
         let is_known_address = value_flags.is_address();
         let is_absolute = value_flags.is_absolute() && !value_flags.is_dynamic();
         let non_relocatable = !output_kind.is_relocatable();
@@ -124,7 +139,11 @@ impl crate::arch::Relaxation for Relaxation {
         if value_flags.is_ifunc() {
             return match relocation_kind {
                 object::elf::R_X86_64_PC32 => {
-                    return create(RelaxationKind::NoOp, object::elf::R_X86_64_PLT32);
+                    return Some(Relaxation {
+                        kind: RelaxationKind::NoOp,
+                        rel_info: rel_info_from_type!(object::elf::R_X86_64_PLT32),
+                        mandatory: true,
+                    });
                 }
                 _ => None,
             };
@@ -137,9 +156,7 @@ impl crate::arch::Relaxation for Relaxation {
         }
 
         let offset = offset_in_section as usize;
-        // TODO: Try fetching the symbol kind lazily. For most relocation, we don't need it, but
-        // because fetching it contains potential error paths, the optimiser probably can't optimise
-        // away fetching it.
+
         match relocation_kind {
             object::elf::R_X86_64_REX_GOTPCRELX => {
                 if offset < 3 {
@@ -157,24 +174,27 @@ impl crate::arch::Relaxation for Relaxation {
                     match b1 {
                         // mov *x(%rip), reg
                         0x8b => {
-                            return create(
-                                RelaxationKind::RexMovIndirectToAbsolute,
-                                object::elf::R_X86_64_32,
-                            );
+                            return Some(Relaxation {
+                                kind: RelaxationKind::RexMovIndirectToAbsolute,
+                                rel_info: rel_info_from_type!(object::elf::R_X86_64_32),
+                                mandatory: output_kind.is_static_executable(),
+                            });
                         }
                         // sub *x(%rip), reg
                         0x2b => {
-                            return create(
-                                RelaxationKind::RexSubIndirectToAbsolute,
-                                object::elf::R_X86_64_32,
-                            );
+                            return Some(Relaxation {
+                                kind: RelaxationKind::RexSubIndirectToAbsolute,
+                                rel_info: rel_info_from_type!(object::elf::R_X86_64_32),
+                                mandatory: output_kind.is_static_executable(),
+                            });
                         }
                         // cmp *x(%rip), reg
                         0x3b => {
-                            return create(
-                                RelaxationKind::RexCmpIndirectToAbsolute,
-                                object::elf::R_X86_64_32,
-                            );
+                            return Some(Relaxation {
+                                kind: RelaxationKind::RexCmpIndirectToAbsolute,
+                                rel_info: rel_info_from_type!(object::elf::R_X86_64_32),
+                                mandatory: output_kind.is_static_executable(),
+                            });
                         }
                         _ => return None,
                     }
@@ -182,10 +202,11 @@ impl crate::arch::Relaxation for Relaxation {
                     match b1 {
                         // mov *x(%rip), reg
                         0x8b => {
-                            return create(
-                                RelaxationKind::MovIndirectToLea,
-                                object::elf::R_X86_64_PC32,
-                            );
+                            return Some(Relaxation {
+                                kind: RelaxationKind::MovIndirectToLea,
+                                rel_info: rel_info_from_type!(object::elf::R_X86_64_PC32),
+                                mandatory: output_kind.is_static_executable(),
+                            });
                         }
                         _ => return None,
                     }
@@ -196,15 +217,17 @@ impl crate::arch::Relaxation for Relaxation {
                     // mov *x(%rip), reg
                     0x8b => {
                         if is_absolute || is_absolute_address {
-                            return create(
-                                RelaxationKind::MovIndirectToAbsolute,
-                                object::elf::R_X86_64_32,
-                            );
+                            return Some(Relaxation {
+                                kind: RelaxationKind::MovIndirectToAbsolute,
+                                rel_info: rel_info_from_type!(object::elf::R_X86_64_32),
+                                mandatory: output_kind.is_static_executable(),
+                            });
                         } else if !interposable {
-                            return create(
-                                RelaxationKind::MovIndirectToLea,
-                                object::elf::R_X86_64_PC32,
-                            );
+                            return Some(Relaxation {
+                                kind: RelaxationKind::MovIndirectToLea,
+                                rel_info: rel_info_from_type!(object::elf::R_X86_64_PC32),
+                                mandatory: output_kind.is_static_executable(),
+                            });
                         }
                     }
                     _ => {}
@@ -213,17 +236,19 @@ impl crate::arch::Relaxation for Relaxation {
                     match section_bytes.get(offset - 2..offset)? {
                         // call *x(%rip)
                         [0xff, 0x15] => {
-                            return create(
-                                RelaxationKind::CallIndirectToRelative,
-                                object::elf::R_X86_64_PC32,
-                            );
+                            return Some(Relaxation {
+                                kind: RelaxationKind::CallIndirectToRelative,
+                                rel_info: rel_info_from_type!(object::elf::R_X86_64_PC32),
+                                mandatory: output_kind.is_static_executable(),
+                            });
                         }
                         // jmp *x(%rip)
                         [0xff, 0x25] => {
-                            return create(
-                                RelaxationKind::JmpIndirectToRelative,
-                                object::elf::R_X86_64_PC32,
-                            );
+                            return Some(Relaxation {
+                                kind: RelaxationKind::JmpIndirectToRelative,
+                                rel_info: rel_info_from_type!(object::elf::R_X86_64_PC32),
+                                mandatory: output_kind.is_static_executable(),
+                            });
                         }
                         _ => return None,
                     }
@@ -234,10 +259,11 @@ impl crate::arch::Relaxation for Relaxation {
                 match section_bytes.get(offset - 2)? {
                     // mov *x(%rip), reg
                     0x8b => {
-                        return create(
-                            RelaxationKind::MovIndirectToLea,
-                            object::elf::R_X86_64_PC32,
-                        );
+                        return Some(Relaxation {
+                            kind: RelaxationKind::MovIndirectToLea,
+                            rel_info: rel_info_from_type!(object::elf::R_X86_64_PC32),
+                            mandatory: false,
+                        });
                     }
                     _ => {}
                 }
@@ -247,26 +273,39 @@ impl crate::arch::Relaxation for Relaxation {
                 match section_bytes.get(offset - 3..offset - 1)? {
                     // mov *x(%rip), reg
                     [0x48 | 0x4c, 0x8b] => {
-                        return create(
-                            RelaxationKind::RexMovIndirectToAbsolute,
-                            object::elf::R_X86_64_TPOFF32,
-                        );
+                        return Some(Relaxation {
+                            kind: RelaxationKind::RexMovIndirectToAbsolute,
+                            rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
+                            mandatory: false,
+                        });
                     }
                     _ => {}
                 }
             }
             object::elf::R_X86_64_PLT32 if !interposable => {
-                return create(RelaxationKind::NoOp, object::elf::R_X86_64_PC32);
+                return Some(Relaxation {
+                    kind: RelaxationKind::NoOp,
+                    rel_info: rel_info_from_type!(object::elf::R_X86_64_PC32),
+                    mandatory: output_kind.is_static_executable(),
+                });
             }
             object::elf::R_X86_64_PLTOFF64 if !interposable => {
-                return create(RelaxationKind::NoOp, object::elf::R_X86_64_GOTOFF64);
+                return Some(Relaxation {
+                    kind: RelaxationKind::NoOp,
+                    rel_info: rel_info_from_type!(object::elf::R_X86_64_GOTOFF64),
+                    mandatory: output_kind.is_static_executable(),
+                });
             }
             object::elf::R_X86_64_TLSGD if !interposable && output_kind.is_executable() => {
                 let kind = match TlsGdForm::identify(section_bytes, offset)? {
                     TlsGdForm::Regular => RelaxationKind::TlsGdToLocalExec,
                     TlsGdForm::Large => RelaxationKind::TlsGdToLocalExecLarge,
                 };
-                return create(kind, object::elf::R_X86_64_TPOFF32);
+                return Some(Relaxation {
+                    kind,
+                    rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
+                    mandatory: output_kind.is_static_executable(),
+                });
             }
             object::elf::R_X86_64_TLSGD if output_kind.is_executable() => {
                 let kind = match TlsGdForm::identify(section_bytes, offset)? {
@@ -276,41 +315,75 @@ impl crate::arch::Relaxation for Relaxation {
                         return None;
                     }
                 };
-                return create(kind, object::elf::R_X86_64_GOTTPOFF);
+                return Some(Relaxation {
+                    kind,
+                    rel_info: rel_info_from_type!(object::elf::R_X86_64_GOTTPOFF),
+                    mandatory: false,
+                });
             }
             object::elf::R_X86_64_TLSLD if output_kind.is_executable() => {
                 // lea    0x0(%rip),%rdi
                 if section_bytes.get(offset - 3..offset)? == [0x48, 0x8d, 0x3d] {
-                    if section_bytes.get(offset + 4..offset + 6) == Some(&[0x48, 0xb8]) {
-                        // The previous instruction was 64 bit, so we use a slightly different
-                        // relaxation with extra padding.
-                        return create(
-                            RelaxationKind::TlsLdToLocalExec64,
-                            object::elf::R_X86_64_NONE,
-                        );
+                    match section_bytes.get(offset + 4..offset + 6) {
+                        // PC-relative direct call
+                        Some(&[0xe8, _]) => {
+                            return Some(Relaxation {
+                                kind: RelaxationKind::TlsLdToLocalExec,
+                                rel_info: rel_info_from_type!(object::elf::R_X86_64_NONE),
+                                mandatory: false,
+                            });
+                        }
+                        // TODO: Make a test for this. Also, the description of TlsLdToLocalExec64
+                        // possibly doesn't match what we're actually checking here.
+                        Some(&[0x48, 0xb8]) => {
+                            return Some(Relaxation {
+                                kind: RelaxationKind::TlsLdToLocalExec64,
+                                rel_info: rel_info_from_type!(object::elf::R_X86_64_NONE),
+                                mandatory: false,
+                            });
+                        }
+                        // PC-relative indirect call
+                        Some(&[0xff, 0x15]) => {
+                            return Some(Relaxation {
+                                kind: RelaxationKind::TlsLdToLocalExecNoPlt,
+                                rel_info: rel_info_from_type!(object::elf::R_X86_64_NONE),
+                                mandatory: false,
+                            });
+                        }
+                        _ => {}
                     }
-                    return create(RelaxationKind::TlsLdToLocalExec, object::elf::R_X86_64_NONE);
                 }
             }
             object::elf::R_X86_64_GOTPC32_TLSDESC
-                if !interposable && output_kind.is_static_executable() =>
+                if !interposable && output_kind.is_executable() =>
             {
-                // lea    0x0(%rip),%rax
-                if section_bytes.get(offset - 3..offset)? == [0x48, 0x8d, 0x05] {
-                    return create(
-                        RelaxationKind::TlsDescToLocalExec,
-                        object::elf::R_X86_64_TPOFF32,
-                    );
-                }
+                // We assume that the instruction that this relocation applies to is a REX-prefixed
+                // LEA instruction.
+                return Some(Relaxation {
+                    kind: RelaxationKind::TlsDescToLocalExec,
+                    rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
+                    mandatory: output_kind.is_static_executable(),
+                });
             }
+            // Note, the conditions on this relaxation (is_executable) must match those on
+            // TLSDESC_CALL below.
             object::elf::R_X86_64_GOTPC32_TLSDESC if output_kind.is_executable() => {
-                // lea    0x0(%rip),%rax
-                if section_bytes.get(offset - 3..offset)? == [0x48, 0x8d, 0x05] {
-                    return create(
-                        RelaxationKind::TlsDescToInitialExec,
-                        object::elf::R_X86_64_GOTTPOFF,
-                    );
-                }
+                // We assume that the instruction that this relocation applies to is a REX-prefixed
+                // LEA instruction.
+                return Some(Relaxation {
+                    kind: RelaxationKind::TlsDescToInitialExec,
+                    rel_info: rel_info_from_type!(object::elf::R_X86_64_GOTTPOFF),
+                    mandatory: output_kind.is_static_executable(),
+                });
+            }
+            // Note, the conditions on this relaxation (is_executable) must match those on
+            // GOTPC32_TLSDESC above.
+            object::elf::R_X86_64_TLSDESC_CALL if output_kind.is_executable() => {
+                return Some(Relaxation {
+                    kind: RelaxationKind::SkipTlsDescCall,
+                    rel_info: rel_info_from_type!(object::elf::R_X86_64_NONE),
+                    mandatory: output_kind.is_static_executable(),
+                });
             }
             _ => return None,
         };
@@ -331,6 +404,10 @@ impl crate::arch::Relaxation for Relaxation {
 
     fn next_modifier(&self) -> RelocationModifier {
         self.kind.next_modifier()
+    }
+
+    fn is_mandatory(&self) -> bool {
+        self.mandatory
     }
 }
 

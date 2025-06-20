@@ -28,14 +28,16 @@ bytemuck = { version = "1.10.0", features = ["derive"] }
 bytesize = "2.0.0"
 clap = { version = "4.0.0", features = ["derive"] }
 colored = "3.0.0"
+colosseum = "0.2.2"
 crossbeam-queue = "0.3.10"
 crossbeam-utils = "0.8.18"
+crossbeam-channel = "0.5.15"
 dhat = { version = "0.3.3" }
 fallible-iterator = "0.3.0"
 fd-lock = "4.0.0"
 flate2 = { version = "1.1.0", features = ["zlib-rs"] }
 foldhash = "0.1.0"
-gimli = "0.31.0"
+gimli = "0.32.0"
 hashbrown = "0.15.1"
 hex = "0.4.0"
 iced-x86 = { version = "1.17.0", default-features = false, features = [
@@ -75,10 +77,9 @@ tracing-subscriber = { version = "0.3.16", default-features = false, features = 
     "fmt",
     "registry",
 ] }
-typed-arena = "2.0.0"
 uuid = { version = "1.0.0", features = ["v4"] }
 wait-timeout = "0.2.0"
-which = "7.0.2"
+which = "8.0.0"
 winnow = { version = "0.7.0", features = ["simd"] }
 zstd = "0.13.0"
 

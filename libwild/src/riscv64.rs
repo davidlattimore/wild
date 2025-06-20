@@ -1,13 +1,22 @@
+use crate::arch::Arch;
 use crate::elf::PLT_ENTRY_SIZE;
+use crate::ensure;
 use crate::error;
 use crate::error::Result;
+use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
-use linker_utils::elf::RISCVInstruction;
+use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
+use linker_utils::elf::RiscVInstruction;
 use linker_utils::elf::riscv64_rel_type_to_string;
+use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
+use linker_utils::riscv64::RelaxationKind;
+use linker_utils::riscv64::relocation_type_from_raw;
+use object::elf::EF_RISCV_FLOAT_ABI;
+use object::elf::EF_RISCV_RVE;
 
-pub(crate) struct RISCV64;
+pub(crate) struct RiscV64;
 
 const PLT_ENTRY_TEMPLATE: &[u8] = &[
     0x17, 0x0e, 0x0, 0x0, // auipc t3,offset_high(&(.got.plt[n])
@@ -20,7 +29,7 @@ const _ASSERTS: () = {
     assert!(PLT_ENTRY_TEMPLATE.len() as u64 == PLT_ENTRY_SIZE);
 };
 
-impl crate::arch::Arch for RISCV64 {
+impl crate::arch::Arch for RiscV64 {
     type Relaxation = Relaxation;
 
     fn elf_header_arch_magic() -> u16 {
@@ -55,7 +64,7 @@ impl crate::arch::Arch for RISCV64 {
         debug_assert!(plt_address < got_address);
 
         plt_entry.copy_from_slice(PLT_ENTRY_TEMPLATE);
-        RISCVInstruction::UIType.write_to_value(
+        RiscVInstruction::UiType.write_to_value(
             got_address.wrapping_sub(plt_address),
             false,
             &mut plt_entry[0..8],
@@ -70,10 +79,62 @@ impl crate::arch::Arch for RISCV64 {
     fn local_symbols_in_debug_info() -> bool {
         true
     }
+
+    fn tp_offset_start(layout: &crate::layout::Layout) -> u64 {
+        layout.tls_start_address()
+    }
+
+    fn get_property_class(_property_type: u32) -> Option<crate::layout::PropertyClass> {
+        None
+    }
+
+    fn merge_eflags(eflags: &[u32]) -> Result<u32> {
+        let or_eflags = eflags.iter().fold(0, |acc, x| acc | x);
+        ensure!(
+            eflags
+                .iter()
+                .map(|flag| flag & EF_RISCV_FLOAT_ABI)
+                .unique()
+                .exactly_one()
+                .is_ok(),
+            "Float ABI flag mismatch"
+        );
+        ensure!(
+            eflags
+                .iter()
+                .map(|flag| flag & EF_RISCV_RVE)
+                .unique()
+                .exactly_one()
+                .is_ok(),
+            "RVE flag mismatch"
+        );
+        // TODO: use object crate constant
+        ensure!(
+            eflags
+                .iter()
+                .map(|flag| flag & 0x0020)
+                .unique()
+                .exactly_one()
+                .is_ok(),
+            "RV64ILP32 flag mismatch"
+        );
+
+        Ok(or_eflags)
+    }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Relaxation {}
+pub(crate) struct Relaxation {
+    kind: RelaxationKind,
+    rel_info: RelocationKindInfo,
+    mandatory: bool,
+}
+
+macro_rules! rel_info_from_type {
+    ($r_type:expr) => {
+        const { relocation_type_from_raw($r_type).unwrap() }
+    };
+}
 
 impl crate::arch::Relaxation for Relaxation {
     #[allow(unused_variables)]
@@ -90,20 +151,59 @@ impl crate::arch::Relaxation for Relaxation {
     where
         Self: std::marker::Sized,
     {
+        let mut relocation = RiscV64::relocation_from_raw(relocation_kind).unwrap();
+        let interposable = value_flags.is_interposable();
+
+        // All relaxations below only apply to executable code, so we shouldn't attempt them if a
+        // relocation is in a non-executable section.
+        if !section_flags.contains(shf::EXECINSTR) {
+            return None;
+        }
+
+        let offset = offset_in_section as usize;
+
+        match relocation_kind {
+            object::elf::R_RISCV_CALL | object::elf::R_RISCV_CALL_PLT if !interposable => {
+                return if non_zero_address {
+                    relocation.kind = RelocationKind::Relative;
+                    Some(Relaxation {
+                        kind: RelaxationKind::NoOp,
+                        rel_info: relocation,
+                        mandatory: output_kind.is_static_executable(),
+                    })
+                } else {
+                    // GNU ld replaces: 'bl 0' with 'nop'
+                    Some(Relaxation {
+                        kind: RelaxationKind::ReplaceWithNop,
+                        rel_info: rel_info_from_type!(object::elf::R_RISCV_NONE),
+                        mandatory: output_kind.is_static_executable(),
+                    })
+                };
+            }
+
+            _ => (),
+        }
+
         None
     }
 
-    fn apply(&self, _section_bytes: &mut [u8], _offset_in_section: &mut u64, _addend: &mut i64) {}
+    fn apply(&self, section_bytes: &mut [u8], offset_in_section: &mut u64, addend: &mut i64) {
+        self.kind.apply(section_bytes, offset_in_section, addend);
+    }
 
     fn rel_info(&self) -> RelocationKindInfo {
-        todo!("")
+        self.rel_info
     }
 
     fn debug_kind(&self) -> impl std::fmt::Debug {
-        todo!("")
+        &self.kind
     }
 
     fn next_modifier(&self) -> RelocationModifier {
-        todo!("")
+        self.kind.next_modifier()
+    }
+
+    fn is_mandatory(&self) -> bool {
+        self.mandatory
     }
 }

@@ -6,7 +6,13 @@ static MIMALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-fn main() -> libwild::error::Result {
+fn main() {
+    if let Err(error) = run() {
+        libwild::error::report_error_and_exit(&error)
+    }
+}
+
+fn run() -> libwild::error::Result {
     #[cfg(feature = "dhat")]
     let _profiler = dhat::Profiler::new_heap();
 

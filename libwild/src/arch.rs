@@ -3,6 +3,8 @@
 use crate::args::OutputKind;
 use crate::bail;
 use crate::error::Result;
+use crate::layout::Layout;
+use crate::layout::PropertyClass;
 use crate::resolution::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -12,6 +14,7 @@ use object::elf::EM_AARCH64;
 use object::elf::EM_RISCV;
 use object::elf::EM_X86_64;
 use std::borrow::Cow;
+use std::fmt::Display;
 use std::str::FromStr;
 
 pub(crate) trait Arch {
@@ -39,6 +42,18 @@ pub(crate) trait Arch {
 
     // Some architectures use debug info relocation that depend on local symbols.
     fn local_symbols_in_debug_info() -> bool;
+
+    // Get position of the $tp (thread pointer) in the TLS section. Each platform defines
+    // a different place based on the following article:
+    // https://maskray.me/blog/2021-02-14-all-about-thread-local-storage#tls-variants
+    fn tp_offset_start(layout: &Layout) -> u64;
+
+    // Classify a GNU property note.
+    fn get_property_class(property_type: u32) -> Option<PropertyClass>;
+
+    // Merge e_flags of the input files and provide an error
+    // if the flags are not compatible.
+    fn merge_eflags(eflags: &[u32]) -> Result<u32>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +89,17 @@ impl TryFrom<u16> for Architecture {
     }
 }
 
+impl Display for Architecture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let arch = match self {
+            Architecture::X86_64 => "x86_64",
+            Architecture::AArch64 => "aarch64",
+            Architecture::RISCV64 => "riscv64",
+        };
+        write!(f, "{arch}")
+    }
+}
+
 pub(crate) trait Relaxation {
     /// Tries to create a relaxation for the relocation of the specified kind, to be applied at the
     /// specified offset in the supplied section.
@@ -96,4 +122,6 @@ pub(crate) trait Relaxation {
     fn debug_kind(&self) -> impl std::fmt::Debug;
 
     fn next_modifier(&self) -> RelocationModifier;
+
+    fn is_mandatory(&self) -> bool;
 }

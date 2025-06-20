@@ -2,6 +2,7 @@ use crate::arch::Arch;
 use crate::arch::Instruction;
 use crate::arch::Relaxation;
 use crate::arch::RelaxationByteRange;
+use crate::asm_diff::BasicValueKind;
 use anyhow::Context;
 use anyhow::Result;
 use itertools::Itertools;
@@ -206,12 +207,12 @@ impl Arch for AArch64 {
         String::new()
     }
 
-    fn decode_instructions_in_range(
-        section_bytes: &[u8],
+    fn decode_instructions_in_range<'data>(
+        section_bytes: &'data [u8],
         section_address: u64,
         _function_offset_in_section: u64,
         range: std::ops::Range<u64>,
-    ) -> Vec<crate::arch::Instruction<Self>> {
+    ) -> Vec<crate::arch::Instruction<'data, Self>> {
         let mut offset = range.start & !3;
 
         let mut instructions = Vec::new();
@@ -327,6 +328,10 @@ impl Arch for AArch64 {
             [r_type] => !NOT_IN_ISOLATION.contains(r_type),
             _ => true,
         }
+    }
+
+    fn get_basic_value_for_tp_offset() -> crate::asm_diff::BasicValueKind {
+        BasicValueKind::Aarch64TlsOffset
     }
 }
 

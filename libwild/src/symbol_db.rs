@@ -23,6 +23,7 @@ use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SymbolPlacement;
+use crate::resolution::AtomicValueFlags;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::ValueFlags;
@@ -47,6 +48,8 @@ use std::collections::hash_map;
 use std::fmt::Display;
 use std::mem::replace;
 use std::mem::take;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use symbolic_demangle::demangle;
 
 pub struct SymbolDb<'data> {
@@ -80,6 +83,16 @@ pub struct SymbolDb<'data> {
 
     /// The name of the entry symbol if overridden by a linker script.
     entry: Option<&'data [u8]>,
+}
+
+/// Borrows from a SymbolDb, but allows temporary atomic access to some of the tables. These tables
+/// are returned to the original SymbolDb when the AtomicSymbolDb is dropped. If the AtomicSymbolDb
+/// gets leaked, then the tables in the original SymbolDb will remain empty. Provides some, but not
+/// all of the APIs provided by SymbolDb.
+struct AtomicSymbolDb<'data, 'db> {
+    db: &'db mut SymbolDb<'data>,
+    definitions: Vec<AtomicSymbolId>,
+    symbol_value_flags: Vec<AtomicValueFlags>,
 }
 
 struct SymbolBucket<'data> {
@@ -117,6 +130,8 @@ struct PendingVersionedSymbol<'data> {
 /// symbol ID 0 is reserved for the undefined symbol.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct SymbolId(u32);
+
+struct AtomicSymbolId(AtomicU32);
 
 /// A range of symbol IDs that are defined by the same input file.
 ///
@@ -515,6 +530,25 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions = definitions;
     }
 
+    fn borrow_atomic<'db>(&'db mut self) -> AtomicSymbolDb<'data, 'db> {
+        let definitions = self
+            .take_definitions()
+            .into_iter()
+            .map(|id| id.as_atomic())
+            .collect();
+
+        let value_flags = take(&mut self.symbol_value_flags)
+            .into_iter()
+            .map(|flags| flags.as_atomic())
+            .collect();
+
+        AtomicSymbolDb {
+            db: self,
+            definitions,
+            symbol_value_flags: value_flags,
+        }
+    }
+
     pub(crate) fn file_id_for_symbol(&self, symbol_id: SymbolId) -> FileId {
         self.symbol_file_ids
             .get(symbol_id.as_usize())
@@ -543,7 +577,7 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions[symbol_id.as_usize()] = new_definition;
     }
 
-    pub(crate) fn file(&self, file_id: FileId) -> ParsedInput {
+    pub(crate) fn file<'db>(&'db self, file_id: FileId) -> ParsedInput<'db> {
         match &self.groups[file_id.group()] {
             Group::Prelude(prelude) => ParsedInput::Prelude(prelude),
             Group::Objects(parsed_input_objects) => {
@@ -593,7 +627,7 @@ impl<'data> SymbolDb<'data> {
 
     pub(crate) fn all_unversioned_symbols(
         &self,
-    ) -> impl Iterator<Item = (&PreHashed<UnversionedSymbolName>, &SymbolId)> {
+    ) -> impl Iterator<Item = (&PreHashed<UnversionedSymbolName<'data>>, &SymbolId)> {
         self.buckets.iter().flat_map(|b| b.name_to_id.iter())
     }
 
@@ -710,32 +744,26 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
     resolved: &[ResolvedGroup],
 ) -> Result {
     let mut buckets = take(&mut symbol_db.buckets);
+    let atomic_symbol_db = symbol_db.borrow_atomic();
     let error_queue = SegQueue::new();
 
-    let replacements: Vec<Vec<SymbolReplacement>> = buckets
-        .par_iter_mut()
-        .map(|bucket| {
-            let mut local_replacements = Vec::new();
+    buckets.par_iter_mut().for_each(|bucket| {
+        process_alternatives(
+            &mut bucket.alternative_definitions,
+            &error_queue,
+            &atomic_symbol_db,
+            resolved,
+        );
 
-            process_alternatives(
-                &mut bucket.alternative_definitions,
-                &mut local_replacements,
-                &error_queue,
-                symbol_db,
-                resolved,
-            );
+        process_alternatives(
+            &mut bucket.alternative_versioned_definitions,
+            &error_queue,
+            &atomic_symbol_db,
+            resolved,
+        );
+    });
 
-            process_alternatives(
-                &mut bucket.alternative_versioned_definitions,
-                &mut local_replacements,
-                &error_queue,
-                symbol_db,
-                resolved,
-            );
-
-            local_replacements
-        })
-        .collect();
+    drop(atomic_symbol_db);
 
     let mut duplicate_errors: Vec<Error> = error_queue.into_iter().collect();
     duplicate_errors.sort_by_key(|e| e.to_string());
@@ -750,33 +778,9 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
         bail!("Duplicate symbols detected: {error_details}");
     }
 
-    for r in replacements.iter().flat_map(|r| r.iter()) {
-        // TODO: Currently we only make the symbol non-interposable, but we should also actually
-        // change its visibility too. We need somewhere to store this information. We also need
-        // linker-diff to report when we get exported dynamic symbols wrong.
-        if r.visibility != Visibility::Default {
-            let value_flags = &mut symbol_db.symbol_value_flags[r.replace.as_usize()];
-            if !value_flags.contains(ValueFlags::DYNAMIC) {
-                *value_flags |= ValueFlags::NON_INTERPOSABLE;
-            }
-        }
-        symbol_db.replace_definition(r.replace, r.selected);
-    }
-
     symbol_db.buckets = buckets;
 
     Ok(())
-}
-
-#[derive(Clone, Copy)]
-struct SymbolReplacement {
-    /// The symbol to be replaced.
-    replace: SymbolId,
-
-    /// The symbol that was selected as the definition to use.
-    selected: SymbolId,
-
-    visibility: Visibility,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -788,9 +792,8 @@ enum Visibility {
 
 fn process_alternatives(
     alternative_definitions: &mut HashMap<SymbolId, Vec<SymbolId>>,
-    local_replacements: &mut Vec<SymbolReplacement>,
     error_queue: &SegQueue<Error>,
-    symbol_db: &SymbolDb,
+    symbol_db: &AtomicSymbolDb,
     resolved: &[ResolvedGroup],
 ) {
     for (first, alternatives) in replace(
@@ -809,18 +812,18 @@ fn process_alternatives(
 
         match select_symbol(symbol_db, first, &alternatives, resolved) {
             Ok(selected) => {
-                local_replacements.push(SymbolReplacement {
-                    replace: first,
-                    selected,
-                    visibility,
-                });
+                symbol_db.update_definition(first, selected);
 
-                for alt in alternatives {
-                    local_replacements.push(SymbolReplacement {
-                        replace: alt,
-                        selected,
-                        visibility,
-                    });
+                for &alt in &alternatives {
+                    symbol_db.update_definition(alt, selected);
+                }
+
+                if visibility != Visibility::Default {
+                    symbol_db.handle_non_default_visibility(first);
+
+                    for alt in alternatives {
+                        symbol_db.handle_non_default_visibility(alt);
+                    }
                 }
             }
             Err(err) => {
@@ -833,7 +836,7 @@ fn process_alternatives(
 /// Selects which version of the symbol to use.
 #[inline(always)]
 fn select_symbol(
-    symbol_db: &SymbolDb,
+    symbol_db: &AtomicSymbolDb,
     symbol_id: SymbolId,
     alternatives: &[SymbolId],
     resolved: &[ResolvedGroup],
@@ -844,7 +847,7 @@ fn select_symbol(
     let all_symbols = std::iter::once(symbol_id).chain(alternatives.iter().copied());
 
     for alt in all_symbols {
-        if symbol_db.symbol_value_flags(alt).is_dynamic() {
+        if symbol_db.local_symbol_value_flags(alt).is_dynamic() {
             continue;
         }
 
@@ -930,7 +933,7 @@ pub(crate) fn is_mapping_symbol_name(name: &[u8]) -> bool {
 }
 
 #[tracing::instrument(skip_all, name = "Read symbols")]
-fn read_symbols<'data, 'out>(
+fn read_symbols<'data>(
     groups: &[Group<'data>],
     version_script: &VersionScript,
     symbols_out_by_group: &mut [SymbolInfoWriter],
@@ -1433,6 +1436,20 @@ impl SymbolId {
     pub(crate) fn next(self) -> Self {
         Self(self.0 + 1)
     }
+
+    fn as_atomic(self) -> AtomicSymbolId {
+        AtomicSymbolId(AtomicU32::new(self.0))
+    }
+}
+
+impl AtomicSymbolId {
+    fn store(&self, selected: SymbolId) {
+        self.0.store(selected.0, Ordering::Relaxed);
+    }
+
+    fn into_non_atomic(self) -> SymbolId {
+        SymbolId(self.0.into_inner())
+    }
 }
 
 impl TryFrom<usize> for SymbolId {
@@ -1531,6 +1548,68 @@ impl<'data> SymbolLoadOutputs<'data> {
         self.pending_symbols_by_bucket[pending.name.hash() as usize % num_buckets]
             .versioned_symbols
             .push(pending);
+    }
+}
+
+impl<'data, 'db> AtomicSymbolDb<'data, 'db> {
+    fn input_symbol_visibility(&self, symbol_id: SymbolId) -> Visibility {
+        self.db.input_symbol_visibility(symbol_id)
+    }
+
+    fn update_definition(&self, to_update: SymbolId, new_definition: SymbolId) {
+        self.definitions[to_update.as_usize()].store(new_definition);
+    }
+
+    /// Update value flags for `symbol_id` given that we've now changed its visibility to something
+    /// other than default.
+    fn handle_non_default_visibility(&self, symbol_id: SymbolId) {
+        // TODO: Currently we only make the symbol non-interposable, but we should also actually
+        // change its visibility too. We need somewhere to store this information. We also need
+        // linker-diff to report when we get exported dynamic symbols wrong.
+        let flags = &self.symbol_value_flags[symbol_id.as_usize()];
+        if !flags.get().contains(ValueFlags::DYNAMIC) {
+            flags.or_assign(ValueFlags::NON_INTERPOSABLE);
+        }
+    }
+
+    fn local_symbol_value_flags(&self, symbol_id: SymbolId) -> ValueFlags {
+        self.symbol_value_flags[symbol_id.as_usize()].get()
+    }
+
+    fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> SymbolStrength {
+        self.db.symbol_strength(symbol_id, resolved)
+    }
+
+    fn is_in_comdat_group(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> bool {
+        self.db.is_in_comdat_group(symbol_id, resolved)
+    }
+
+    fn symbol_name_for_display(&self, symbol_id: SymbolId) -> SymbolNameDisplay<'data> {
+        self.db.symbol_name_for_display(symbol_id)
+    }
+
+    fn file<'a>(&'a self, file_id: FileId) -> ParsedInput<'a> {
+        self.db.file(file_id)
+    }
+
+    fn file_id_for_symbol(&self, symbol_id: SymbolId) -> FileId {
+        self.db.file_id_for_symbol(symbol_id)
+    }
+}
+
+impl Drop for AtomicSymbolDb<'_, '_> {
+    fn drop(&mut self) {
+        // Convert our atomic tables back to non-atomic tables and return them to the symbol-db that
+        // we took them from. This operation should be basically free, at least in optimised builds.
+        self.db.symbol_definitions = take(&mut self.definitions)
+            .into_iter()
+            .map(|id| id.into_non_atomic())
+            .collect();
+
+        self.db.symbol_value_flags = take(&mut self.symbol_value_flags)
+            .into_iter()
+            .map(|f| f.into_non_atomic())
+            .collect();
     }
 }
 

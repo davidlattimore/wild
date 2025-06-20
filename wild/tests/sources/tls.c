@@ -24,6 +24,10 @@
 //#Config:local-exec:default
 //#CompArgs:-ftls-model=local-exec
 
+//#Config:local-dynamic-no-plt:default
+//#CompArgs:-ftls-model=local-dynamic -Wa,-mrelax-relocations=yes -fPIC -fno-plt
+//#Variant: 1
+
 #include "runtime.h"
 #include "init_tls.h"
 

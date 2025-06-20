@@ -17,7 +17,6 @@ RUN zypper install -y -t pattern devel_C_C++ && \
         lld \
         vim \
         less
-RUN rustup toolchain install nightly
 RUN cargo install --locked cargo-chef
 RUN rustup toolchain install nightly && \
     rustup target add --toolchain nightly \

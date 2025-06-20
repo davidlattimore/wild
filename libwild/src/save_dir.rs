@@ -2,13 +2,14 @@
 
 use crate::archive::ArchiveEntry;
 use crate::archive::ArchiveIterator;
+use crate::args::Modifiers;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
-use foldhash::HashSet;
-use std::fs::File;
+use crate::file_kind::FileKind;
+use crate::input_data::FileData;
+use crate::linker_script::LinkerScript;
 use std::io::BufWriter;
-use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -41,7 +42,7 @@ impl SaveDir {
         ))))
     }
 
-    pub(crate) fn finish(&self, filenames: &HashSet<PathBuf>) -> Result {
+    pub(crate) fn finish<'a, I: Iterator<Item = &'a PathBuf>>(&self, filenames: I) -> Result {
         if let Some(state) = self.0.as_ref() {
             state.finish(filenames)?;
         }
@@ -112,7 +113,7 @@ impl SaveDirState {
     /// Finalise the save directory. Makes sure that all `filenames` have been copied, writes the
     /// `run-with` file and if the environment variable is set to indicate that we should skip
     /// linking, then exit.
-    fn finish(&self, filenames: &HashSet<PathBuf>) -> Result {
+    fn finish<'a, I: Iterator<Item = &'a PathBuf>>(&self, filenames: I) -> Result {
         for filename in filenames {
             self.copy_file(filename)?;
         }
@@ -238,8 +239,20 @@ impl SaveDirState {
                 )
             })?;
         } else {
-            if is_thin_archive(source_path) {
-                self.handle_thin_archive(source_path)?;
+            if let Ok(data) = FileData::new(source_path, false) {
+                match FileKind::identify_bytes(&data) {
+                    Ok(FileKind::ThinArchive) => self.handle_thin_archive(source_path)?,
+                    Ok(FileKind::Text) => {
+                        // We don't want to prevent the save-dir mechanism from working just because
+                        // we failed to parse a linker script, so in case of failure, we fall
+                        // through to just copying the file as-is.
+                        if let Ok(updated_bytes) = make_linker_script_relative(&data, source_path) {
+                            std::fs::write(dest_path, updated_bytes)?;
+                            return Ok(());
+                        }
+                    }
+                    _ => {}
+                }
             }
 
             // To save disk space, we first attempt to hard link the file. If that fails, then just copy it.
@@ -258,7 +271,12 @@ impl SaveDirState {
     }
 
     fn handle_file(&self, arg: &str) -> Result {
-        self.copy_file(&std::path::absolute(Path::new(arg))?)
+        let path = std::path::absolute(Path::new(arg))?;
+        if std::fs::exists(&path).is_ok_and(|exists| exists) {
+            self.copy_file(&path)
+        } else {
+            Ok(())
+        }
     }
 
     /// Copies the files listed by the thin archive.
@@ -291,42 +309,51 @@ impl SaveDirState {
     }
 }
 
+fn make_linker_script_relative(bytes: &[u8], source_path: &Path) -> Result<Vec<u8>> {
+    let script = LinkerScript::parse(bytes, source_path)?;
+
+    let mut absolute_paths = Vec::new();
+    script.foreach_input(Modifiers::default(), |input| {
+        if let crate::args::InputSpec::File(path) = input.spec {
+            if path.is_absolute() {
+                absolute_paths.push(path);
+            }
+        }
+
+        Ok(())
+    })?;
+
+    let mut text = String::from_utf8(bytes.to_owned())?;
+
+    let script_dir = source_path.parent().context("Invalid path")?;
+
+    for path in absolute_paths {
+        let relative_path = make_relative_path(&path, script_dir);
+        let relative_str = relative_path.to_str().context("Path isn't valid UTF-8")?;
+        let path_str = path.to_str().context("Path isn't valid UTF-8")?;
+        text = text.replace(path_str, relative_str);
+    }
+
+    Ok(text.into_bytes())
+}
+
 /// Returns a relative path to reach `target` from `directory`. Both should be absolute paths.
 fn make_relative_path(target: &Path, directory: &Path) -> PathBuf {
     assert!(target.is_absolute());
     assert!(directory.is_absolute());
     let mut out = PathBuf::new();
-    let mut t = target.components().peekable();
-    let mut d = directory.components().peekable();
+    let mut p = directory;
 
-    // Skip over common components.
-    while let (Some(next_t), Some(next_d)) = (t.peek(), d.peek()) {
-        if next_t == next_d {
-            t.next();
-            d.next();
-        } else {
-            break;
-        }
-    }
-
-    for _ in d {
+    // If `target` and `directory` share some common prefix, then our path may not be as short as
+    // possible, but it should still work.
+    while let Some(parent) = p.parent() {
         out.push("..");
+        p = parent;
     }
 
-    out.extend(t);
+    out.extend(target.iter());
 
     out
-}
-
-fn is_thin_archive(path: &Path) -> bool {
-    (|| -> Result<bool> {
-        let mut file = File::open(path)?;
-
-        let mut buffer = [0; object::archive::THIN_MAGIC.len()];
-        file.read_exact(&mut buffer)?;
-        Ok(buffer == object::archive::THIN_MAGIC)
-    })()
-    .unwrap_or(false)
 }
 
 fn write_copied_file_arg(out: &mut BufWriter<&mut std::fs::File>, path: &Path) -> Result {
@@ -340,28 +367,4 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
     path.iter()
         .filter(|p| p.as_encoded_bytes() != b"/")
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::Path;
-
-    #[track_caller]
-    fn check_relative(t: &str, d: &str, expected: &str) {
-        let actual = super::make_relative_path(Path::new(t), Path::new(d));
-        assert_eq!(actual, Path::new(expected));
-    }
-
-    #[test]
-    fn test_make_relative_path() {
-        check_relative("/baz.txt", "/", "baz.txt");
-        check_relative("/foo/bar/baz.txt", "/foo/bar", "baz.txt");
-        check_relative("/foo/bar/baz.txt", "/foo/bag", "../bar/baz.txt");
-        check_relative("/foo/bar/baz.txt", "/", "foo/bar/baz.txt");
-        check_relative(
-            "/foo/bar/baz.txt",
-            "/a/b/c/d/",
-            "../../../../foo/bar/baz.txt",
-        );
-    }
 }

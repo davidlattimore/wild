@@ -217,6 +217,7 @@ impl Config {
                 // address is known and within +/-1MB. We don't as yet.
                 "rel.missing-opt.R_AARCH64_ADR_GOT_PAGE.AdrpToAdr.*",
                 "rel.missing-opt.R_AARCH64_ADR_PREL_PG_HI21.AdrpToAdr.*",
+                "rel.extra-opt.R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21.MovzXnLsl16.*",
                 // The other linkers set properties on sections if all input sections have that
                 // property. For sections like .rodata, this seems like an unimportant behaviour to
                 // replicate.
@@ -270,9 +271,6 @@ impl Config {
                     "file-header.flags",
                     // #700
                     "section.riscv.attributes",
-                    // #732
-                    ".dynamic.DT_RELA",
-                    ".dynamic.DT_RELAENT",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
@@ -375,7 +373,11 @@ impl<'data> Binary<'data> {
 
     /// Looks up a symbol, first trying to get a global, or failing that a local. If multiple
     /// symbols have the same name, then `hint_address` is used to select which one to return.
-    pub(crate) fn symbol_by_name(&self, name: &[u8], hint_address: u64) -> NameLookupResult {
+    pub(crate) fn symbol_by_name<'file: 'data>(
+        &'file self,
+        name: &[u8],
+        hint_address: u64,
+    ) -> NameLookupResult<'data, 'file> {
         match self.lookup_symbol(&self.name_index.globals_by_name, name, hint_address) {
             NameLookupResult::Undefined => {
                 self.lookup_symbol(&self.name_index.locals_by_name, name, hint_address)
@@ -384,12 +386,12 @@ impl<'data> Binary<'data> {
         }
     }
 
-    fn lookup_symbol(
-        &self,
+    fn lookup_symbol<'file: 'data>(
+        &'file self,
         symbol_map: &HashMap<&[u8], Vec<object::SymbolIndex>>,
         name: &[u8],
         hint_address: u64,
-    ) -> NameLookupResult {
+    ) -> NameLookupResult<'data, 'file> {
         let indexes = symbol_map.get(name).map(Vec::as_slice).unwrap_or_default();
 
         if indexes.len() >= 2 {
@@ -416,16 +418,25 @@ impl<'data> Binary<'data> {
         }
     }
 
-    fn section_by_name(&self, name: &str) -> Option<ElfSection64<LittleEndian>> {
+    fn section_by_name<'file: 'data>(
+        &'file self,
+        name: &str,
+    ) -> Option<ElfSection64<'data, 'file, LittleEndian>> {
         self.section_by_name_bytes(name.as_bytes())
     }
 
-    fn section_by_name_bytes(&self, name: &[u8]) -> Option<ElfSection64<LittleEndian>> {
+    fn section_by_name_bytes<'file: 'data>(
+        &'file self,
+        name: &[u8],
+    ) -> Option<ElfSection64<'data, 'file, LittleEndian>> {
         let index = self.sections_by_name.get(name)?.index;
         self.elf_file.section_by_index(index).ok()
     }
 
-    fn section_containing_address(&self, address: u64) -> Option<ElfSection64<LittleEndian>> {
+    fn section_containing_address<'file: 'data>(
+        &'file self,
+        address: u64,
+    ) -> Option<ElfSection64<'file, 'data, LittleEndian>> {
         self.elf_file
             .sections()
             .find(|sec| (sec.address()..sec.address() + sec.size()).contains(&address))

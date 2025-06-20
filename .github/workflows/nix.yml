@@ -1,0 +1,32 @@
+name: Refresh Nix Cache
+
+on:
+  push:
+    branches: [ 'main' ]
+    paths:
+      - flake.lock
+      - Cargo.lock
+  workflow_dispatch:
+
+jobs:
+  nix-cache:
+    name: Refresh Nix Cache
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@v30
+
+      - name: Build Wild
+        run: |
+          nix build -L --show-trace
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action/save@v6
+        id: cache
+        with:
+          primary-key: ${{ runner.os }}-${{ hashFiles( 'flake.lock', 'Cargo.lock' ) }}
+

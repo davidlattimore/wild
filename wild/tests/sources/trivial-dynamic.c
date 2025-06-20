@@ -1,7 +1,7 @@
 //#Config:default
 //#Object:runtime.c
 //#EnableLinker:lld
-//#Static:false
+//#Mode:dynamic
 //#LinkArgs:-z now
 //#Shared:trivial-dynamic-2.c
 //#EnableLinker:lld
@@ -24,12 +24,6 @@
 // TODO: Set these
 //#DiffIgnore:.dynamic.DT_FLAGS.SYMBOLIC
 //#DiffIgnore:.dynamic.DT_SYMBOLIC
-
-//#Config:export-dynamic:default
-//#LinkArgs:-z now --export-dynamic 
-//#ExpectDynSym: runtime_init
-// Ld is acting weird and comparing to LLD is not possible right when when cross compiling: #804
-//#Cross:false
 
 #include "runtime.h"
 

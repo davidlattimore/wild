@@ -483,7 +483,13 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
 
     let entries: &[object::elf::Dyn64<LittleEndian>] = slice_from_all_bytes(dynamic.data()?);
     let mut got_null = false;
+
+    // The following relies on the BFD order of the tags, but seems the easiest way how to catch
+    // a situation where it emits RELA=0x, RELASZ=0, RELAENT=X.
+    let mut rela_is_null = false;
+
     for entry in entries {
+        let value = entry.d_val(e);
         let (tag_name, converter) = match entry.d_tag(e) as u32 {
             // Ignore DT_NULL. All linkers should emit at least one, but many emit more than one.
             DT_NULL => {
@@ -500,13 +506,24 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
             DT_HASH => (Cow::Borrowed("DT_HASH"), Converter::None),
             DT_STRTAB => (Cow::Borrowed("DT_STRTAB"), Converter::SectionAddress),
             DT_SYMTAB => (Cow::Borrowed("DT_SYMTAB"), Converter::SectionAddress),
-            DT_RELA => (Cow::Borrowed("DT_RELA"), Converter::SectionAddress),
+            DT_RELA => {
+                if value == 0 {
+                    rela_is_null = true;
+                    continue;
+                }
+                (Cow::Borrowed("DT_RELA"), Converter::SectionAddress)
+            }
             DT_RELASZ => {
                 // Ignore sizes for now.
                 continue;
                 //(Cow::Borrowed("DT_RELASZ"), Converter::None)
             }
-            DT_RELAENT => (Cow::Borrowed("DT_RELAENT"), Converter::None),
+            DT_RELAENT => {
+                if rela_is_null {
+                    continue;
+                }
+                (Cow::Borrowed("DT_RELAENT"), Converter::None)
+            }
             DT_STRSZ => {
                 // Ignore sizes for now.
                 continue;
@@ -628,7 +645,7 @@ fn read_dynamic_fields(obj: &Binary) -> Result<FieldValues> {
             bail!("Found {tag_name} after DT_NULL");
         }
 
-        values.insert(tag_name, entry.d_val(e), converter, obj);
+        values.insert(tag_name, value, converter, obj);
     }
 
     if !got_null {

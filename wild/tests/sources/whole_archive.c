@@ -1,7 +1,6 @@
 //#Object:runtime.c
 //#LinkArgs:--whole-archive
 //#Archive:whole_archive0.c
-//#Cross:false
 
 #include "runtime.h"
 

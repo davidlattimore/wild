@@ -27,7 +27,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
+use std::sync::atomic::Ordering;
 
 pub struct Args {
     pub(crate) arch: Architecture,
@@ -58,6 +60,7 @@ pub struct Args {
     pub(crate) build_id: BuildIdOption,
     pub(crate) file_write_mode: Option<FileWriteMode>,
     pub(crate) no_undefined: bool,
+    pub(crate) allow_shlib_undefined: bool,
     pub(crate) needs_origin_handling: bool,
     pub(crate) needs_nodelete_handling: bool,
     pub(crate) allow_copy_relocations: bool,
@@ -82,11 +85,12 @@ pub struct Args {
     pub(crate) verify_allocation_consistency: bool,
     pub(crate) should_print_version: bool,
     pub(crate) demangle: bool,
-
+    pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
+    pub(crate) relax: bool,
 
     output_kind: Option<OutputKind>,
-    is_dynamic_executable: bool,
+    pub(crate) is_dynamic_executable: AtomicBool,
     relocation_model: RelocationModel,
 }
 
@@ -196,7 +200,6 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "color-diagnostics",
     "undefined-version",
     "sort-common",
-    "no-relax",
 ];
 
 const IGNORED_FLAGS: &[&str] = &[
@@ -209,7 +212,6 @@ const IGNORED_FLAGS: &[&str] = &[
 // These flags map to the default behavior of the linker.
 const DEFAULT_FLAGS: &[&str] = &[
     "no-call-graph-profile-sort",
-    "relax",
     "no-copy-dt-needed-entries",
     "no-add-needed",
     "discard-locals",
@@ -230,7 +232,7 @@ impl Default for Args {
             lib_search_path: Vec::new(),
             inputs: Vec::new(),
             output: Arc::from(Path::new("a.out")),
-            is_dynamic_executable: false,
+            is_dynamic_executable: AtomicBool::new(false),
             dynamic_linker: None,
             output_kind: None,
             time_phases: false,
@@ -275,6 +277,7 @@ impl Default for Args {
             files_per_group: None,
             exclude_libs: false,
             no_undefined: false,
+            allow_shlib_undefined: false,
             should_print_version: false,
             sysroot: None,
             save_dir: Default::default(),
@@ -284,6 +287,8 @@ impl Default for Args {
             entry: None,
             b_symbolic: BSymbolicKind::None,
             explicitly_export_dynamic: false,
+            got_plt_syms: false,
+            relax: true,
         }
     }
 }
@@ -353,6 +358,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                 "noexecstack" => args.execstack = false,
                 "nocopyreloc" => args.allow_copy_relocations = false,
                 "nodelete" => args.needs_nodelete_handling = true,
+                "defs" => args.no_undefined = true,
                 _ => {
                     warn_unsupported(&format!("-z {arg}"))?;
                     // TODO: Handle these
@@ -411,10 +417,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                 .map(|a| Arc::from(Path::new(a.as_ref())))
                 .context("Missing argument to -o")?;
         } else if long_arg_eq("dynamic-linker") {
-            args.is_dynamic_executable = true;
+            args.is_dynamic_executable.store(true, Ordering::Relaxed);
             args.dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
         } else if let Some(rest) = long_arg_split_prefix("dynamic-linker=") {
-            args.is_dynamic_executable = true;
+            args.is_dynamic_executable.store(true, Ordering::Relaxed);
             args.dynamic_linker = Some(Box::from(Path::new(rest)));
         } else if long_arg_eq("no-dynamic-linker") {
             args.dynamic_linker = None;
@@ -600,6 +606,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             // Using debug fuel with more than one thread would likely give non-deterministic
             // results.
             args.num_threads = NonZeroUsize::new(1).unwrap();
+        } else if long_arg_eq("allow-shlib-undefined") {
+            args.allow_shlib_undefined = true;
+        } else if long_arg_eq("no-allow-shlib-undefined") {
+            args.allow_shlib_undefined = false;
         } else if long_arg_eq("no-undefined") {
             args.no_undefined = true;
         } else if let Some(rest) = long_arg_split_prefix("undefined=") {
@@ -620,6 +630,12 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.demangle = true;
         } else if long_arg_eq("no-demangle") {
             args.demangle = false;
+        } else if long_arg_eq("got-plt-syms") {
+            args.got_plt_syms = true;
+        } else if long_arg_eq("relax") {
+            args.relax = true;
+        } else if long_arg_eq("no-relax") {
+            args.relax = false;
         } else if let Some(path) = arg.strip_prefix('@') {
             if input.next().is_some() || arg_num > 1 {
                 bail!("Mixing of @{{filename}} and regular arguments isn't supported");
@@ -780,7 +796,7 @@ impl Args {
 
     pub(crate) fn output_kind(&self) -> OutputKind {
         self.output_kind.unwrap_or({
-            if self.is_dynamic_executable {
+            if self.is_dynamic_executable.load(Ordering::Relaxed) {
                 OutputKind::DynamicExecutable(self.relocation_model)
             } else {
                 OutputKind::StaticExecutable(self.relocation_model)
