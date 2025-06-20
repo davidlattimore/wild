@@ -1,15 +1,6 @@
 {
   inputs = {
     nixpkgs.url = "https://nixos.org/channels/nixos-unstable/nixexprs.tar.xz";
-
-    # TODO: once rust 1.87 (nixos/nixpkgs#407444) hits unstable
-    # and davidlattimore/wild#831 no longer depends on rust nightly,
-    # we should switch to the standard nixpkgs rustPlatform
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
     crane.url = "github:ipetkov/crane";
   };
 
@@ -17,7 +8,6 @@
     {
       self,
       nixpkgs,
-      rust-overlay,
       crane,
     }:
     let
@@ -27,12 +17,11 @@
         pkgs = import nixpkgs {
           inherit system;
           overlays = [
-            self.overlays.default
-            (import rust-overlay)
+            (import self)
           ];
         };
 
-        craneLib = (crane.mkLib pkgs).overrideToolchain (p: p.rust-bin.beta.latest.minimal);
+        craneLib = crane.mkLib pkgs;
       });
     in
     {
@@ -46,7 +35,7 @@
         }
       );
 
-      overlays.default = import ./nix/overlay.nix crane;
+      overlays.default = import self;
 
       formatter = forAllSystems (system: common.${system}.pkgs.nixfmt-tree);
 

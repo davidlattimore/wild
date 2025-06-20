@@ -40,9 +40,6 @@ cargo install --locked --bin wild --git https://github.com/davidlattimore/wild.g
 ```
 
 ### Nix
-> [!IMPORTANT]
-> Wild with Nix currently relies on rust-overlay because 1.87 is still on nixpkgs staging.
-> This requirement shall be removed once 1.87 is on nixpkgs unstable.
 
 Wild include a flake, a derivation for building Wild, and a stdenv adapter
 in-tree. If the overlay is applied these are provided for you. Just add it to
@@ -52,10 +49,6 @@ your flake inputs. A devShell example is also shown with the flake.
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nix/nixos-unstable";
-    rust-overlay = {
-      url = "github:oxalica/rust-overlay";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     wild = {
       url = "github:davidlattimore/wild";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -67,14 +60,12 @@ your flake inputs. A devShell example is also shown with the flake.
       self,
       nixpkgs,
       wild,
-      rust-overlay,
     }:
     let
       pkgs = import nixpkgs {
         system = "x86_64-linux";
         overlays = [
-          (import rust-overlay)
-          wild.overlays.default
+          (import wild)
         ];
       };
 
@@ -95,16 +86,13 @@ your flake inputs. A devShell example is also shown with the flake.
 Without flakes (npins shown):
 
 1. `$ npins add github davidlattimore wild -b main`
-2. `$ npins add github oxalica rust-overlay -b master`
 
 ```nix
 let
   sources = import ./npins;
-  wild = import "${sources.wild}/nix/overlay.nix";
   pkgs = import sources.nixpkgs {
     overlays = [
-      (import sources.rust-overlay)
-      wild
+      (import sources.wild)
     ];
   };
   wildStdenv = pkgs.useWildLinker pkgs.stdenv;
