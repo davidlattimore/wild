@@ -17,6 +17,9 @@
   glibc,
   lld,
 }:
+assert lib.assertMsg (lib.versionAtLeast "1.87.0" pkgs.rustc.version)
+  "Wild requires at least Rust 1.87.0, this instance of nixpkgs has Rust ${pkgs.rustc.version}";
+
 let
   # Write a wrapper for GCC that passes -B to *unwrapped* binutils.
   # This ensures that if -fuse-ld=bfd is used, gcc picks up unwrapped ld.bfd
