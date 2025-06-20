@@ -135,56 +135,54 @@ jobs:
       - name: Spell Check Repo
         uses: crate-ci/typos@v1.33.1
 
-  # TODO: Renenable Nix stuff once it doesn't depend on patching an unmerged PR.
+  calc-matrix:
+    name: Find Nix checks
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.calc-matrix.outputs.matrix }}
 
-  # calc-matrix:
-  #   name: Find Nix checks
-  #   runs-on: ubuntu-24.04
-  #   outputs:
-  #     matrix: ${{ steps.calc-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v4
-  #       with:
-  #         fetch-depth: 0
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@v30
+        with:
+          nix_on_tmpfs: true
 
-  #     - name: Install Nix
-  #       uses: nixbuild/nix-quick-install-action@v30
-  #       with:
-  #         nix_on_tmpfs: true
+      - name: Calculate check
+        id: calc-matrix
+        run: |
+          matrix=$(nix flake show --json | jq -c '.checks."x86_64-linux"|keys_unsorted')
+          echo "Matrix: $matrix"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"      
 
-  #     - name: Calculate check
-  #       id: calc-matrix
-  #       run: |
-  #         matrix=$(nix flake show --json | jq -c '.checks."x86_64-linux"|keys_unsorted')
-  #         echo "Matrix: $matrix"
-  #         echo "matrix=$matrix" >> "$GITHUB_OUTPUT"      
+  nix-checks:
+    needs:
+      - calc-matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        check: ${{ fromJson(needs.calc-matrix.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    name: Nix/${{ matrix.check }}
 
-  # nix-checks:
-  #   needs:
-  #     - calc-matrix
-  #   strategy:
-  #     fail-fast: false
-  #     matrix:
-  #       check: ${{ fromJson(needs.calc-matrix.outputs.matrix) }}
-  #   runs-on: ubuntu-24.04
-  #   name: Nix/${{ matrix.check }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v4
-  #       with:
-  #         fetch-depth: 0
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@v30
 
-  #     - name: Install Nix
-  #       uses: nixbuild/nix-quick-install-action@v30
-
-  #     - name: Restore Nix store
-  #       uses: nix-community/cache-nix-action/restore@v6
-  #       id: cache
-  #       with:
-  #         primary-key: ${{ runner.os }}-${{ hashFiles( 'flake.lock', 'Cargo.lock') }}
+      - name: Restore Nix store
+        uses: nix-community/cache-nix-action/restore@v6
+        id: cache
+        with:
+          primary-key: ${{ runner.os }}-${{ hashFiles( 'flake.lock', 'Cargo.lock') }}
           
-  #     - name: Run ${{ matrix.check }}
-  #       run: nix build .#checks.x86_64-linux.${{ matrix.check }} -L --show-trace
+      - name: Run ${{ matrix.check }}
+        run: nix build .#checks.x86_64-linux.${{ matrix.check }} -L --show-trace
