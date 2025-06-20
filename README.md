@@ -65,7 +65,7 @@ your flake inputs. A devShell example is also shown with the flake.
       pkgs = import nixpkgs {
         system = "x86_64-linux";
         overlays = [
-          wild.overlays.default
+          (import wild)
         ];
       };
 
@@ -86,16 +86,13 @@ your flake inputs. A devShell example is also shown with the flake.
 Without flakes (npins shown):
 
 1. `$ npins add github davidlattimore wild -b main`
-2. `$ npins add github ipetkob crane -b master`
 
 ```nix
 let
   sources = import ./npins;
-  crane = { mkLib = import sources.crane; };
-  wild = import "${sources.wild}/nix/overlay.nix" crane;
   pkgs = import sources.nixpkgs {
     overlays = [
-      wild
+      (import sources.wild)
     ];
   };
   wildStdenv = pkgs.useWildLinker pkgs.stdenv;

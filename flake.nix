@@ -17,7 +17,7 @@
         pkgs = import nixpkgs {
           inherit system;
           overlays = [
-            self.overlays.default
+            (import self)
           ];
         };
 
@@ -35,7 +35,7 @@
         }
       );
 
-      overlays.default = import ./nix/overlay.nix crane;
+      overlays.default = import self;
 
       formatter = forAllSystems (system: common.${system}.pkgs.nixfmt-tree);
 
