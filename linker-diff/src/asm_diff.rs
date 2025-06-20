@@ -3136,13 +3136,15 @@ impl<'data> AddressIndex<'data> {
         };
 
         let data = got_section.data()?;
-        // Ensure we don't try to cast it to `[u64]`, as it may not be aligned.
-        let (raw_entries, tail) = data.as_chunks::<{ size_of::<u64>() }>();
-
-        ensure!(
-            tail.is_empty(),
-            "GOT table `{table_name}` does not have an aligned length"
-        );
+        let raw_entries: &[u64] = if data.is_empty() {
+            // An empty .got may not be aligned, so we avoid calling object::slice_from_bytes.
+            &[]
+        } else {
+            let entry_size = size_of::<u64>();
+            object::slice_from_bytes(data, data.len() / entry_size)
+                .unwrap()
+                .0
+        };
 
         let base = got_section.address();
         Ok(Some(GotIndex {
@@ -3266,7 +3268,7 @@ struct GotIndex<'data> {
     /// The addresses covered by this table.
     address_range: Range<u64>,
 
-    entries: &'data [[u8; size_of::<u64>()]],
+    entries: &'data [u64],
 }
 
 impl<'data> GotIndex<'data> {
@@ -3359,11 +3361,10 @@ impl<'data> GotIndex<'data> {
             }
         } else {
             // No dynamic relocation, just read from the original file data.
-            let raw_value = self
+            let raw_value = *self
                 .entries
                 .get((offset / entry_size) as usize)
                 .context("got_address past end of index range")?;
-            let raw_value = u64::from_le_bytes(*raw_value);
 
             match relocation_kind {
                 RelocationKind::GotTpOff
