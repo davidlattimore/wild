@@ -3136,11 +3136,15 @@ impl<'data> AddressIndex<'data> {
         };
 
         let data = got_section.data()?;
-        let entry_size = size_of::<u64>();
-
-        let raw_entries: &[u64] = object::slice_from_bytes(data, data.len() / entry_size)
-            .unwrap()
-            .0;
+        let raw_entries: &[u64] = if data.is_empty() {
+            // An empty .got may not be aligned, so we avoid calling object::slice_from_bytes.
+            &[]
+        } else {
+            let entry_size = size_of::<u64>();
+            object::slice_from_bytes(data, data.len() / entry_size)
+                .unwrap()
+                .0
+        };
 
         let base = got_section.address();
         Ok(Some(GotIndex {
@@ -3357,7 +3361,7 @@ impl<'data> GotIndex<'data> {
             }
         } else {
             // No dynamic relocation, just read from the original file data.
-            let raw_value = self
+            let raw_value = *self
                 .entries
                 .get((offset / entry_size) as usize)
                 .context("got_address past end of index range")?;
@@ -3366,7 +3370,7 @@ impl<'data> GotIndex<'data> {
                 RelocationKind::GotTpOff
                 | RelocationKind::GotTpOffGot
                 | RelocationKind::GotTpOffGotBase => {
-                    Ok(Referent::UnmatchedTlsOffset(*raw_value as i64))
+                    Ok(Referent::UnmatchedTlsOffset(raw_value as i64))
                 }
                 RelocationKind::TlsDescCall => Ok(Referent::TlsDescCall),
                 RelocationKind::Absolute
@@ -3386,7 +3390,7 @@ impl<'data> GotIndex<'data> {
                 | RelocationKind::GotRelative
                 | RelocationKind::None
                 | RelocationKind::PairSubtraction
-                | RelocationKind::Alignment => Ok(Referent::Absolute(*raw_value)),
+                | RelocationKind::Alignment => Ok(Referent::Absolute(raw_value)),
                 RelocationKind::TlsGd
                 | RelocationKind::TlsGdGot
                 | RelocationKind::TlsGdGotBase
