@@ -125,13 +125,6 @@ in
 craneLib.buildPackage (
   commonArgs
   // rec {
-    patches = [
-      (fetchpatch {
-        url = "https://github.com/davidlattimore/wild/pull/831.patch";
-        hash = "sha256-UywEVaaqnin0PBsRqDLIZXSI6QdtQ9WHetuQrAfUlNo=";
-      })
-    ];
-
     cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
     cargoBuildCommand = "cargo build --profile release -p wild-linker";
