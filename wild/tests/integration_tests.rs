@@ -193,7 +193,7 @@ impl Linker {
 
     fn link_shared(
         &self,
-        obj_paths: &[PathBuf],
+        objects: &[BuiltObject],
         so_path: &Path,
         config: &Config,
         cross_arch: Option<Architecture>,
@@ -208,17 +208,17 @@ impl Linker {
 
         let mut command = LinkCommand::new(
             self,
-            &obj_paths
-                .iter()
-                .map(|p| LinkerInput::new(p.clone()))
-                .collect_vec(),
+            &objects.iter().flat_map(|o| o.inputs()).collect_vec(),
             so_path,
             &linker_args,
             config,
             cross_arch,
         )?;
 
-        if self.is_wild() || !is_newer(so_path, obj_paths.iter()) || !command.can_skip {
+        if self.is_wild()
+            || !is_newer(so_path, objects.iter().map(|o| &o.path))
+            || !command.can_skip
+        {
             // If we're expecting errors, those errors should only occur when we link the final
             // binary, not when we link any dependent shared objects.
             let mut config = config.clone();
@@ -519,6 +519,14 @@ impl Config {
         }
         linker.enabled_by_default()
     }
+
+    /// Returns the configuration that should be used when building our dependencies. This is a copy
+    /// of the current config with anything that shouldn't be inherited cleared.
+    fn config_for_deps(&self) -> Config {
+        let mut out = self.clone();
+        out.deps = Vec::new();
+        out
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -680,14 +688,29 @@ impl Config {
     }
 }
 
-fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Config>> {
+fn parse_single_config(src_path: &Path, default_config: &Config) -> Result<Config> {
+    let mut configs = parse_configs(src_path, default_config)?;
+    let Some(config) = configs.pop() else {
+        unreachable!();
+    };
+
+    if !configs.is_empty() {
+        bail!(
+            "Multiple configs is not supported in this context: `{}`",
+            src_path.display()
+        );
+    }
+
+    Ok(config)
+}
+
+fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Config>> {
     let source = std::fs::read_to_string(src_filename)
         .with_context(|| format!("Failed to read {}", src_filename.display()))?;
     let is_rust = src_filename.extension().is_some_and(|ext| ext == "rs");
 
     let mut configs = Vec::new();
     let mut config_name_to_index = HashMap::new();
-    let default_config = Config::new(test_config);
     let mut config = default_config.clone();
 
     for line in source.lines() {
@@ -696,7 +719,7 @@ fn parse_configs(src_filename: &Path, test_config: &TestConfig) -> Result<Vec<Co
             let arg = arg.trim();
             match directive {
                 "Config" | "AbstractConfig" => {
-                    if config != default_config {
+                    if &config != default_config {
                         let index = configs.len();
                         config_name_to_index.insert(config.name.clone(), index);
                         configs.push(config);
@@ -884,6 +907,7 @@ impl ProgramInputs {
             linker,
             cross_arch,
         );
+
         let inputs = std::iter::once(primary)
             .chain(
                 config
@@ -894,10 +918,12 @@ impl ProgramInputs {
             .collect::<Result<Vec<_>>>()?;
 
         let link_output = linker.link(self.name(), &inputs, config, cross_arch)?;
+
         let shared_objects = inputs
             .into_iter()
             .filter(|input| input.path.extension().is_some_and(|ext| ext == "so"))
             .collect();
+
         Ok(Program {
             link_output,
             assertions: &config.assertions,
@@ -1019,6 +1045,7 @@ impl Display for Config {
     }
 }
 
+#[derive(Clone)]
 struct LinkerInput {
     prefix_arg: Option<&'static str>,
     path: PathBuf,
@@ -1051,6 +1078,18 @@ impl LinkerInput {
     }
 }
 
+struct BuiltObject {
+    path: PathBuf,
+    inputs: Vec<LinkerInput>,
+}
+impl BuiltObject {
+    fn inputs(&self) -> Vec<LinkerInput> {
+        let mut inputs = vec![LinkerInput::new(self.path.clone())];
+        inputs.extend(self.inputs.iter().cloned());
+        inputs
+    }
+}
+
 /// Creates a linker input from a source file. This will be either an object file or an archive.
 fn build_linker_input(
     dep: &Dep,
@@ -1064,29 +1103,32 @@ fn build_linker_input(
         }
     }
 
-    let obj_paths = dep
+    let config = config.config_for_deps();
+
+    let objects = dep
         .files
         .iter()
-        .map(|file| build_obj(file, config, dep.input_type, cross_arch))
-        .collect::<Result<Vec<PathBuf>>>()?;
+        .map(|file| build_obj(file, &config, linker, dep.input_type, cross_arch))
+        .collect::<Result<Vec<BuiltObject>>>()?;
 
     // When building archives or shared objects, we use the name of the first object to determine
     // the name.
-    let first_obj_path = obj_paths
+    let first_obj_path = &objects
         .first()
-        .context("At least one object is required")?;
+        .context("At least one object is required")?
+        .path;
 
     match dep.input_type {
         InputType::Archive | InputType::ThinArchive => {
             let thin = matches!(dep.input_type, InputType::ThinArchive);
             let archive_path = first_obj_path.with_extension("a");
-            if !is_newer(&archive_path, obj_paths.iter()) {
-                make_archive(&archive_path, &obj_paths, thin)?;
+            if !is_newer(&archive_path, objects.iter().map(|o| &o.path)) {
+                make_archive(&archive_path, &objects, thin)?;
             }
             Ok(LinkerInput::new(archive_path))
         }
         InputType::Object => {
-            if obj_paths.len() > 1 {
+            if objects.len() > 1 {
                 bail!(
                     "Multiple source files on a single line is only supported with Shared/Archive"
                 );
@@ -1096,7 +1138,7 @@ fn build_linker_input(
         }
         InputType::SharedObject => {
             let so_path = first_obj_path.with_extension(format!("{linker}.so"));
-            let out = linker.link_shared(&obj_paths, &so_path, config, cross_arch)?;
+            let out = linker.link_shared(&objects, &so_path, &config, cross_arch)?;
             let assertions = Assertions::default();
             assertions
                 .check_path(&out.path, linker)
@@ -1147,14 +1189,30 @@ fn get_c_compiler(
 fn build_obj(
     file: &FilenameArgumentPair,
     config: &Config,
+    linker: &Linker,
     input_type: InputType,
     cross_arch: Option<Architecture>,
-) -> Result<PathBuf> {
+) -> Result<BuiltObject> {
     let src_path = src_path(&file.filename);
 
     if input_type == InputType::LinkerScript {
-        return Ok(src_path);
+        return Ok(BuiltObject {
+            path: src_path,
+            inputs: Vec::new(),
+        });
     }
+
+    let mut config = config.clone();
+
+    if input_type == InputType::SharedObject {
+        config = parse_single_config(&src_path, &config)?;
+    }
+
+    let inputs = config
+        .deps
+        .iter()
+        .map(|dep| build_linker_input(dep, &config, linker, cross_arch))
+        .try_collect()?;
 
     let extension = src_path
         .extension()
@@ -1176,9 +1234,15 @@ fn build_obj(
             CompilerKind::C,
         ),
         "rs" => ("rustc".to_string(), CompilerKind::Rust),
-        "o" => return Ok(src_path),
+        "o" => {
+            return Ok(BuiltObject {
+                path: src_path,
+                inputs,
+            });
+        }
         _ => bail!("Don't know how to compile {extension} files"),
     };
+
     // For Rust programs, we don't have an easy way to separate compilation from linking, so we
     // output Rust compilation to a directory containing copies of the object files and a script to
     // perform the link step.
@@ -1306,7 +1370,10 @@ fn build_obj(
     let _write_lock = output_file_lock.write().unwrap();
 
     if is_newer(&output_path, std::iter::once(&src_path)) {
-        return Ok(output_path);
+        return Ok(BuiltObject {
+            path: output_path,
+            inputs,
+        });
     }
 
     let status = command.status().with_context(|| {
@@ -1324,7 +1391,10 @@ fn build_obj(
         bail!("Compilation failed: {}", command_as_str(&command));
     }
 
-    Ok(output_path)
+    Ok(BuiltObject {
+        path: output_path,
+        inputs,
+    })
 }
 
 /// Returns the value of the --target flag.
@@ -1475,7 +1545,7 @@ impl Linker {
     }
 }
 
-fn make_archive(archive_path: &Path, paths: &[PathBuf], thin: bool) -> Result {
+fn make_archive(archive_path: &Path, objects: &[BuiltObject], thin: bool) -> Result {
     let _ = std::fs::remove_file(archive_path);
     let mut cmd = Command::new("ar");
     cmd.arg("cr");
@@ -1489,11 +1559,11 @@ fn make_archive(archive_path: &Path, paths: &[PathBuf], thin: bool) -> Result {
         cmd.current_dir(archive_dir);
         cmd.arg(archive_path.strip_prefix(archive_dir).unwrap());
 
-        for path in paths {
-            cmd.arg(path.strip_prefix(archive_dir).unwrap_or(path));
+        for o in objects {
+            cmd.arg(o.path.strip_prefix(archive_dir).unwrap_or(&o.path));
         }
     } else {
-        cmd.arg(archive_path).args(paths);
+        cmd.arg(archive_path).args(objects.iter().map(|o| &o.path));
     }
     let status = cmd.status()?;
     if !status.success() {
@@ -1730,7 +1800,7 @@ impl LinkCommand {
 
             linker
                 .run(&parsed_args)
-                .with_context(|| format!("libwild reported error. Rerun command(s):\n {self}"))?;
+                .with_context(|| format!("libwild reported error. Rerun command(s):\n{self}"))?;
 
             return Ok(());
         }
@@ -1976,6 +2046,10 @@ impl Display for LinkCommand {
         for sub in &self.input_commands {
             writeln!(f, "{sub}")?;
         }
+
+        // A bit of indentation makes it easier to see the start of the command, especially when it
+        // wraps over several lines and there are multiple commands.
+        write!(f, "        ")?;
 
         let mut command_str = self.command.get_program().to_string_lossy();
 
@@ -2418,7 +2492,7 @@ fn integration_test(
     let test_config = read_test_config()?;
 
     let filename = &program_inputs.source_file;
-    let configs = parse_configs(&src_path(filename), &test_config)
+    let configs = parse_configs(&src_path(filename), &Config::new(&test_config))
         .with_context(|| format!("Failed to parse test parameters from `{filename}`"))?;
 
     let host_arch = get_host_architecture();
