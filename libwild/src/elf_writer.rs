@@ -2696,7 +2696,7 @@ fn write_riscv_attributes(
             }
             RiscVAttribute::Arch(arch) => {
                 leb128::write::unsigned(&mut writer, TAG_RISCV_ARCH)?;
-                writer.write_all(arch.as_bytes())?;
+                writer.write_all(arch.to_attribute_string().as_bytes())?;
                 writer.write_all(b"\0")?;
             }
             &RiscVAttribute::UnalignedAccess(access) => {

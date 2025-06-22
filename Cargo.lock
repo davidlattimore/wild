@@ -726,6 +726,7 @@ dependencies = [
  "gimli 0.32.0",
  "hashbrown",
  "hex",
+ "indexmap",
  "itertools",
  "leb128",
  "libc",

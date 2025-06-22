@@ -70,6 +70,7 @@ use crate::symbol_db::is_mapping_symbol_name;
 use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
+use indexmap::IndexMap;
 use itertools::Itertools;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RelocationKind;
@@ -488,20 +489,28 @@ fn merge_riscv_attributes<A: Arch>(group_states: &mut [GroupState]) -> Result {
         .collect_vec();
 
     let mut merged = Vec::new();
-    let arch_value = attributes
+
+    let mut arch_components = IndexMap::new();
+    for (name, version) in attributes
         .iter()
         .filter_map(|a| {
             if let RiscVAttribute::Arch(arch) = a {
-                Some(arch)
+                Some(&arch.map)
             } else {
                 None
             }
         })
-        .unique()
-        .at_most_one()
-        .expect("Multiple values for RiscVAttribute::Arch tag found");
-    if let Some(arch) = arch_value {
-        merged.push(RiscVAttribute::Arch(arch.clone()));
+        .flatten()
+    {
+        arch_components
+            .entry(name.clone())
+            .and_modify(|v: &mut (u64, u64)| *v = (*v).max(*version))
+            .or_insert(*version);
+    }
+    if !arch_components.is_empty() {
+        merged.push(RiscVAttribute::Arch(RiscVArch {
+            map: arch_components,
+        }));
     }
 
     if let Some(align) = attributes
@@ -1282,11 +1291,26 @@ pub(crate) struct GnuProperty {
 }
 
 #[derive(Debug)]
+pub(crate) struct RiscVArch {
+    map: IndexMap<String, (u64, u64)>,
+}
+
+impl RiscVArch {
+    pub(crate) fn to_attribute_string(&self) -> String {
+        self.map
+            .iter()
+            .map(|(arch, (major, minor))| format!("{arch}{major}p{minor}"))
+            .join("_")
+            .to_string()
+    }
+}
+
+#[derive(Debug)]
 pub(crate) enum RiscVAttribute {
     /// Indicates the stack alignment requirement in bytes.
     StackAlign(u64),
     /// Indicates the target architecture of this object.
-    Arch(String),
+    Arch(RiscVArch),
     /// Indicates whether to impose unaligned memory accesses in code generation.
     UnalignedAccess(bool),
 }
@@ -3571,7 +3595,7 @@ impl<'data> EpilogueLayoutState<'data> {
                     }
                     RiscVAttribute::Arch(arch) => {
                         size_of_uleb_encoded(TAG_RISCV_ARCH)
-                        +arch.len() + 1
+                        +arch.to_attribute_string().len() + 1
                     }
                     RiscVAttribute::UnalignedAccess(_) => {
                         size_of_uleb_encoded(TAG_RISCV_UNALIGNED_ACCESS) + 1
@@ -4717,7 +4741,30 @@ fn process_riscv_attributes(
             }
             TAG_RISCV_ARCH => {
                 let arch = read_string(&mut content).context("Cannot read arch attributes")?;
-                object.riscv_attributes.push(RiscVAttribute::Arch(arch));
+                let components = arch
+                    .split('_')
+                    .map(|part| {
+                        let mut it = part.chars().rev();
+                        let minor = it
+                            .next()
+                            .ok_or_else(|| crate::error!("Cannot parse minor"))?
+                            .to_string();
+                        let p = it
+                            .next()
+                            .ok_or_else(|| crate::error!("Cannot parse 'p' separator"))?;
+                        ensure!(p == 'p', "Separator expected");
+                        let major = it
+                            .next()
+                            .ok_or_else(|| crate::error!("Cannot parse major"))?
+                            .to_string();
+                        let name = String::from_iter(it.rev());
+                        Ok((name, (major.parse()?, minor.parse()?)))
+                    })
+                    .collect::<Result<IndexMap<_, _>>>()?;
+
+                object
+                    .riscv_attributes
+                    .push(RiscVAttribute::Arch(RiscVArch { map: components }));
             }
             TAG_RISCV_UNALIGNED_ACCESS => {
                 let access = read_uleb128(&mut content).context("Cannot read unaligned access")?;
