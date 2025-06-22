@@ -3965,6 +3965,10 @@ impl<'data> ObjectLayoutState<'data> {
             process_gnu_property_note(self, note_gnu_property_index)?;
         }
         if let Some(riscv_attributes_index) = riscv_attributes_section {
+            ensure!(
+                A::elf_header_arch_magic() == object::elf::EM_RISCV,
+                ".riscv.attribute section is supported only for riscv64 target"
+            );
             process_riscv_attributes(self, riscv_attributes_index)
                 .context("Cannot parse .riscv.attributes section")?;
         }
