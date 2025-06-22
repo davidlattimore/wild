@@ -468,6 +468,72 @@ fn merge_eflags<A: Arch>(group_states: &mut [GroupState]) -> Result {
     Ok(())
 }
 
+#[tracing::instrument(skip_all, name = "Merge .riscv.attributes sections")]
+fn merge_riscv_attributes<A: Arch>(group_states: &mut [GroupState]) -> Result {
+    let attributes = group_states
+        .iter()
+        .flat_map(|group| {
+            group.files.iter().filter_map(|file| {
+                if let FileLayoutState::Object(object) = file {
+                    Some(&object.riscv_attributes)
+                } else {
+                    None
+                }
+            })
+        })
+        .flatten()
+        .collect_vec();
+
+    let mut merged = Vec::new();
+    let arch_value = attributes
+        .iter()
+        .filter_map(|a| {
+            if let RiscVAttribute::Arch(arch) = a {
+                Some(arch)
+            } else {
+                None
+            }
+        })
+        .unique()
+        .at_most_one()
+        .expect("Multiple values for RiscVAttribute::Arch tag found");
+    if let Some(arch) = arch_value {
+        merged.push(RiscVAttribute::Arch(arch.clone()));
+    }
+
+    if let Some(align) = attributes
+        .iter()
+        .filter_map(|a| {
+            if let RiscVAttribute::StackAlign(align) = a {
+                Some(align)
+            } else {
+                None
+            }
+        })
+        .max()
+    {
+        merged.push(RiscVAttribute::StackAlign(*align));
+    }
+    if let Some(access) = attributes
+        .iter()
+        .filter_map(|a| {
+            if let RiscVAttribute::UnalignedAccess(access) = a {
+                Some(access)
+            } else {
+                None
+            }
+        })
+        .max()
+    {
+        merged.push(RiscVAttribute::UnalignedAccess(*access));
+    }
+
+    let prelude = get_prelude_mut(group_states);
+    prelude.riscv_attributes = merged;
+
+    Ok(())
+}
+
 fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout>) -> u64 {
     let mut file_size = 0;
     section_layouts.for_each(|_, s| file_size = file_size.max(s.file_offset + s.file_size));
@@ -595,6 +661,7 @@ struct PreludeLayoutState<'data> {
     dynamic_linker: Option<CString>,
     shstrtab_size: u64,
     eflags: u32,
+    riscv_attributes: Vec<RiscVAttribute>,
 }
 
 pub(crate) struct EpilogueLayoutState<'data> {
@@ -1188,7 +1255,7 @@ struct ObjectLayoutState<'data> {
     eh_frame_size: u64,
 
     gnu_property_notes: Vec<GnuProperty>,
-    riscv_attributes: Vec<RiscVAttributeSubsection>,
+    riscv_attributes: Vec<RiscVAttribute>,
 }
 
 #[derive(Default)]
@@ -1210,7 +1277,7 @@ pub(crate) struct GnuProperty {
 }
 
 #[derive(Debug)]
-pub(crate) enum RiscVAttributeSubsection {
+pub(crate) enum RiscVAttribute {
     /// Indicates the stack alignment requirement in bytes.
     StackAlign(u64),
     /// Indicates the target architecture of this object.
@@ -2950,6 +3017,7 @@ impl<'data> PreludeLayoutState<'data> {
             dynamic_linker: None,
             shstrtab_size: 0,
             eflags: 0,
+            riscv_attributes: Vec::new(),
         }
     }
 
@@ -4598,19 +4666,17 @@ fn process_riscv_attributes(
                 let align = read_uleb128(&mut content).context("Cannot read stack alignment")?;
                 object
                     .riscv_attributes
-                    .push(RiscVAttributeSubsection::StackAlign(align));
+                    .push(RiscVAttribute::StackAlign(align));
             }
             TAG_RISCV_ARCH => {
                 let arch = read_string(&mut content).context("Cannot read arch attributes")?;
-                object
-                    .riscv_attributes
-                    .push(RiscVAttributeSubsection::Arch(arch))
+                object.riscv_attributes.push(RiscVAttribute::Arch(arch))
             }
             TAG_RISCV_UNALIGNED_ACCESS => {
                 let access = read_uleb128(&mut content).context("Cannot read unaligned access")?;
                 object
                     .riscv_attributes
-                    .push(RiscVAttributeSubsection::UnalignedAccess(access > 0));
+                    .push(RiscVAttribute::UnalignedAccess(access > 0));
             }
             TAG_RISCV_PRIV_SPEC | TAG_RISCV_PRIV_SPEC_MINOR | TAG_RISCV_PRIV_SPEC_REVISION => {
                 bail!("Deprecated tag: {tag}");
