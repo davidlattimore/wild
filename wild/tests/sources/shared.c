@@ -30,7 +30,8 @@
 //#Config:nosymbolic:default
 //#LinkArgs:-shared -z now -Bno-symbolic
 
-//TODO: The lld included in Ubuntu 22.04 is old and doesn't implement the `-Bsymbolic-non-weak` option.
+//TODO: Add a test for `-Bsymbolic-non-weak`. The lld included in Ubuntu 22.04 is old and doesn't
+//implement the `-Bsymbolic-non-weak` option.
 
 //#Config:symbolic-non-weak-functions:default
 //#LinkArgs:-shared -z now -Bsymbolic-non-weak-functions
