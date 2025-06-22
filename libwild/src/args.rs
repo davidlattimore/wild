@@ -1133,7 +1133,7 @@ mod tests {
             Some(PathBuf::from_str("a.ver").unwrap())
         );
         assert_eq!(args.soname, Some("bar".to_owned()));
-        assert_eq!(args.num_threads, NonZeroUsize::new(1).unwrap());
+        assert_eq!(args.num_threads, Some(NonZeroUsize::new(1).unwrap()));
         assert!(args.should_print_version);
         assert_eq!(
             args.sysroot,
