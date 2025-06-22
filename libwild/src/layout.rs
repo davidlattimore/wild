@@ -4757,15 +4757,14 @@ fn process_riscv_attributes(
     let tag = read_uleb128(&mut content).context("Cannot read tag of subsection")?;
     ensure!(tag == TAG_RISCV_WHOLE_FILE, "Whole file tag expected");
     let _size = read_u32(&mut content)?;
+    let mut attributes = Vec::new();
 
     while !content.is_empty() {
         let tag = read_uleb128(&mut content).context("Cannot read tag of sub-subsection")?;
-        match tag {
+        let attribute = match tag {
             TAG_RISCV_STACK_ALIGN => {
                 let align = read_uleb128(&mut content).context("Cannot read stack alignment")?;
-                object
-                    .riscv_attributes
-                    .push(RiscVAttribute::StackAlign(align));
+                RiscVAttribute::StackAlign(align)
             }
             TAG_RISCV_ARCH => {
                 let arch = read_string(&mut content).context("Cannot read arch attributes")?;
@@ -4790,36 +4789,26 @@ fn process_riscv_attributes(
                     })
                     .collect::<Result<IndexMap<_, _>>>()?;
 
-                object
-                    .riscv_attributes
-                    .push(RiscVAttribute::Arch(RiscVArch { map: components }));
+                RiscVAttribute::Arch(RiscVArch { map: components })
             }
             TAG_RISCV_UNALIGNED_ACCESS => {
                 let access = read_uleb128(&mut content).context("Cannot read unaligned access")?;
-                object
-                    .riscv_attributes
-                    .push(RiscVAttribute::UnalignedAccess(access > 0));
+                RiscVAttribute::UnalignedAccess(access > 0)
             }
             TAG_RISCV_PRIV_SPEC => {
                 let version =
                     read_uleb128(&mut content).context("Cannot read privileged major version")?;
-                object
-                    .riscv_attributes
-                    .push(RiscVAttribute::PrivilegedSpecMajor(version));
+                RiscVAttribute::PrivilegedSpecMajor(version)
             }
             TAG_RISCV_PRIV_SPEC_MINOR => {
                 let version =
                     read_uleb128(&mut content).context("Cannot read privileged minor version")?;
-                object
-                    .riscv_attributes
-                    .push(RiscVAttribute::PrivilegedSpecMinor(version));
+                RiscVAttribute::PrivilegedSpecMinor(version)
             }
             TAG_RISCV_PRIV_SPEC_REVISION => {
                 let version = read_uleb128(&mut content)
                     .context("Cannot read privileged revision version")?;
-                object
-                    .riscv_attributes
-                    .push(RiscVAttribute::PrivilegedSpecRevision(version));
+                RiscVAttribute::PrivilegedSpecRevision(version)
             }
             TAG_RISCV_ATOMIC_ABI => {
                 let _abi = read_uleb128(&mut content).context("Cannot read atomic ABI")?;
@@ -4832,9 +4821,11 @@ fn process_riscv_attributes(
             _ => {
                 bail!("Unsupported tag: {tag}");
             }
-        }
+        };
+        attributes.push(attribute);
     }
 
+    object.riscv_attributes = attributes;
     ensure!(content.is_empty(), "Unexpected multiple sub-sections");
 
     Ok(())
