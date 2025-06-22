@@ -2708,15 +2708,15 @@ fn write_riscv_attributes(
             }
             &RiscVAttribute::PrivilegedSpecMajor(version) => {
                 leb128::write::unsigned(&mut writer, TAG_RISCV_PRIV_SPEC)?;
-                leb128::write::unsigned(&mut writer, u64::from(version))?;
+                leb128::write::unsigned(&mut writer, version)?;
             }
             &RiscVAttribute::PrivilegedSpecMinor(version) => {
                 leb128::write::unsigned(&mut writer, TAG_RISCV_PRIV_SPEC_MINOR)?;
-                leb128::write::unsigned(&mut writer, u64::from(version))?;
+                leb128::write::unsigned(&mut writer, version)?;
             }
             &RiscVAttribute::PrivilegedSpecRevision(version) => {
                 leb128::write::unsigned(&mut writer, TAG_RISCV_PRIV_SPEC_REVISION)?;
-                leb128::write::unsigned(&mut writer, u64::from(version))?;
+                leb128::write::unsigned(&mut writer, version)?;
             }
         }
     }
