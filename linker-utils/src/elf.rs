@@ -724,7 +724,7 @@ pub const RISCV_ATTRIBUTE_VENDOR_NAME: &str = "riscv";
 
 // RISC-V ELF Tag constants, see: https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc#risc-v-specific-dynamic-section-tags
 pub mod riscvattr {
-    // Attibutes relate to whole file.
+    // Attributes relate to whole file.
     pub const TAG_RISCV_WHOLE_FILE: u64 = 1;
     // Indicates the stack alignment requirement in bytes (ULEB128).
     pub const TAG_RISCV_STACK_ALIGN: u64 = 4;
