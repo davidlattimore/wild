@@ -573,6 +573,8 @@ pub mod secnames {
     pub const GROUP_SECTION_NAME: &[u8] = GROUP_SECTION_NAME_STR.as_bytes();
     pub const DATA_REL_RO_SECTION_NAME_STR: &str = ".data.rel.ro";
     pub const DATA_REL_RO_SECTION_NAME: &[u8] = DATA_REL_RO_SECTION_NAME_STR.as_bytes();
+    pub const RISCV_ATTRIBUTES_SECTION_NAME_STR: &str = ".riscv.attributes";
+    pub const RISCV_ATTRIBUTES_SECTION_NAME: &[u8] = RISCV_ATTRIBUTES_SECTION_NAME_STR.as_bytes();
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -716,6 +718,28 @@ impl std::ops::BitAnd for SegmentFlags {
 
 /// Dynamic thread vector pointers point 0x800 past the start of each TLS block.
 pub const RISCV_TLS_DTV_OFFSET: u64 = 0x800;
+
+// RISC-V ELF Tag constants, see: https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc#risc-v-specific-dynamic-section-tags
+pub mod riscvattr {
+    // Attibutes relate to whole file.
+    pub const TAG_RISCV_WHOLE_FILE: u64 = 1;
+    // Indicates the stack alignment requirement in bytes (ULEB128).
+    pub const TAG_RISCV_STACK_ALIGN: u64 = 4;
+    // Indicates the target architecture of this object (NTBS).
+    pub const TAG_RISCV_ARCH: u64 = 5;
+    // Indicates whether to impose unaligned memory accesses in code generation (ULEB128).
+    pub const TAG_RISCV_UNALIGNED_ACCESS: u64 = 6;
+    // Indicates the major version of the privileged specification (ULEB128, deprecated).
+    pub const TAG_RISCV_PRIV_SPEC: u64 = 8;
+    // Indicates the minor version of the privileged specification (ULEB128, deprecated).
+    pub const TAG_RISCV_PRIV_SPEC_MINOR: u64 = 10;
+    // Indicates the revision version of the privileged specification (ULEB128, deprecated).
+    pub const TAG_RISCV_PRIV_SPEC_REVISION: u64 = 12;
+    // Indicates which version of the atomics ABI is being used (ULEB128).
+    pub const TAG_RISCV_ATOMIC_ABI: u64 = 14;
+    // Indicates the usage definition of the X3 register (ULEB128).
+    pub const TAG_RISCV_X3_REG_USAGE: u64 = 16;
+}
 
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -
 /// https://uclibc.org/docs/elf-64-gen.pdf. For information on the TLS related relocations, see "ELF

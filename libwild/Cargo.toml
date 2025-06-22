@@ -30,6 +30,7 @@ libc = { workspace = true }
 linker-layout = { path = "../linker-layout", version = "0.5.0" }
 linker-trace = { path = "../linker-trace", version = "0.5.0" }
 linker-utils = { path = "../linker-utils", version = "0.5.0" }
+leb128 = {workspace = true}
 memchr = { workspace = true }
 memmap2 = { workspace = true }
 object = { workspace = true }

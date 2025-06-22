@@ -75,6 +75,15 @@ use linker_utils::elf::RelocationKind;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use linker_utils::elf::pt;
+use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
+use linker_utils::elf::riscvattr::TAG_RISCV_ATOMIC_ABI;
+use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC;
+use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC_MINOR;
+use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC_REVISION;
+use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
+use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
+use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
+use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
 use linker_utils::elf::shf;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
@@ -94,6 +103,7 @@ use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
 use smallvec::SmallVec;
 use std::collections::HashMap;
+use std::ffi::CStr;
 use std::ffi::CString;
 use std::fmt::Display;
 use std::mem::replace;
@@ -1178,6 +1188,7 @@ struct ObjectLayoutState<'data> {
     eh_frame_size: u64,
 
     gnu_property_notes: Vec<GnuProperty>,
+    riscv_attributes: Vec<RiscVAttributeSubsection>,
 }
 
 #[derive(Default)]
@@ -1196,6 +1207,16 @@ struct ExceptionFrame<'data> {
 pub(crate) struct GnuProperty {
     pub(crate) ptype: u32,
     pub(crate) data: u32,
+}
+
+#[derive(Debug)]
+pub(crate) enum RiscVAttributeSubsection {
+    /// Indicates the stack alignment requirement in bytes.
+    StackAlign(u64),
+    /// Indicates the target architecture of this object.
+    Arch(String),
+    /// Indicates whether to impose unaligned memory accesses in code generation.
+    UnalignedAccess(bool),
 }
 
 #[derive(Default)]
@@ -1959,7 +1980,7 @@ fn compute_total_section_part_sizes(
 /// Section flags that should be propagated from input sections to the output section in which they
 /// are placed. Note, the inversion, so we keep all flags other than the one listed here.
 const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags =
-    SectionFlags::from_u32(!object::elf::SHF_GROUP & !object::elf::SHF_GNU_RETAIN);
+    SectionFlags::from_u32(!object::elf::SHF_GROUP);
 
 /// Propagates attributes from input sections to the output sections into which they were placed.
 #[tracing::instrument(skip_all, name = "Propagate section attributes")]
@@ -3687,6 +3708,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             relocations: non_dynamic.relocations,
             cies: Default::default(),
             gnu_property_notes: Default::default(),
+            riscv_attributes: Default::default(),
         })
     } else {
         FileLayoutState::Dynamic(DynamicLayoutState {
@@ -3717,6 +3739,7 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result {
         let mut eh_frame_section = None;
         let mut note_gnu_property_section = None;
+        let mut riscv_attributes_section = None;
 
         let no_gc = !resources.symbol_db.args.gc_sections;
 
@@ -3756,6 +3779,9 @@ impl<'data> ObjectLayoutState<'data> {
                 SectionSlot::NoteGnuProperty(index) => {
                     note_gnu_property_section = Some(*index);
                 }
+                SectionSlot::RiscvVAttributes(index) => {
+                    riscv_attributes_section = Some(*index);
+                }
                 _ => (),
             }
         }
@@ -3774,6 +3800,9 @@ impl<'data> ObjectLayoutState<'data> {
         }
         if let Some(note_gnu_property_index) = note_gnu_property_section {
             process_gnu_property_note(self, note_gnu_property_index)?;
+        }
+        if let Some(riscv_attributes_index) = riscv_attributes_section {
+            process_riscv_attributes(self, riscv_attributes_index)?;
         }
 
         if resources.symbol_db.args.output_kind() == OutputKind::SharedObject
@@ -3811,7 +3840,8 @@ impl<'data> ObjectLayoutState<'data> {
             SectionSlot::Loaded(_)
             | SectionSlot::EhFrameData(..)
             | SectionSlot::LoadedDebugInfo(..)
-            | SectionSlot::NoteGnuProperty(..) => {}
+            | SectionSlot::NoteGnuProperty(..)
+            | SectionSlot::RiscvVAttributes(..) => {}
             SectionSlot::MergeStrings(sec) => {
                 // We currently always load everything in merge-string sections. i.e. we don't GC
                 // unreferenced data. So the only thing we need to do here is propagate section
@@ -4520,6 +4550,86 @@ fn process_gnu_property_note(
             });
         }
     }
+
+    Ok(())
+}
+
+fn process_riscv_attributes(
+    object: &mut ObjectLayoutState,
+    riscv_attributes_section_index: object::SectionIndex,
+) -> Result {
+    let section = object.object.section(riscv_attributes_section_index)?;
+    let e = LittleEndian;
+
+    let content = section.data(e, object.object.data)?;
+    ensure!(content.starts_with(b"A"), "Header must start with 'A'");
+    let mut content = &content[1..];
+
+    let read_uleb128 = |content: &mut &[u8]| leb128::read::unsigned(content);
+    let read_string = |content: &mut &[u8]| -> Result<String> {
+        let string = CStr::from_bytes_until_nul(content)?;
+        *content = &content[string.count_bytes() + 1..];
+        Ok(string.to_string_lossy().to_string())
+    };
+    let read_u32 = |content: &mut &[u8]| -> Result<u32> {
+        let value = u32::from_le_bytes(content[..4].try_into()?);
+        *content = &content[4..];
+        Ok(value)
+    };
+
+    // Expect only one subsection
+    let _size = read_u32(&mut content)?;
+    let vendor = read_string(&mut content).context("Cannot read vendor string")?;
+    dbg!(&vendor);
+    ensure!(
+        vendor == "riscv",
+        "Unsupported vendor ('{vendor:?}') subsection"
+    );
+
+    // Assume only one sub-sub-section
+    let tag = read_uleb128(&mut content).context("Cannot read tag of subsection")?;
+    ensure!(tag == TAG_RISCV_WHOLE_FILE, "Whole file tag expected");
+    let _size = read_u32(&mut content)?;
+
+    while !content.is_empty() {
+        let tag = read_uleb128(&mut content).context("Cannot read tag of sub-subsection")?;
+        match tag {
+            TAG_RISCV_STACK_ALIGN => {
+                let align = read_uleb128(&mut content).context("Cannot read stack alignment")?;
+                object
+                    .riscv_attributes
+                    .push(RiscVAttributeSubsection::StackAlign(align));
+            }
+            TAG_RISCV_ARCH => {
+                let arch = read_string(&mut content).context("Cannot read arch attributes")?;
+                object
+                    .riscv_attributes
+                    .push(RiscVAttributeSubsection::Arch(arch))
+            }
+            TAG_RISCV_UNALIGNED_ACCESS => {
+                let access = read_uleb128(&mut content).context("Cannot read unaligned access")?;
+                object
+                    .riscv_attributes
+                    .push(RiscVAttributeSubsection::UnalignedAccess(access > 0));
+            }
+            TAG_RISCV_PRIV_SPEC | TAG_RISCV_PRIV_SPEC_MINOR | TAG_RISCV_PRIV_SPEC_REVISION => {
+                bail!("Deprecated tag: {tag}");
+            }
+            TAG_RISCV_ATOMIC_ABI => {
+                let _abi = read_uleb128(&mut content).context("Cannot read atomic ABI")?;
+                bail!("TAG_RISCV_ATOMIC_ABI is not supported yet");
+            }
+            TAG_RISCV_X3_REG_USAGE => {
+                let _x3 = read_uleb128(&mut content).context("Cannot read x3 register usage")?;
+                bail!("TAG_RISCV_X3_REG_USAGE is not supported yet");
+            }
+            _ => {
+                bail!("Unsupported tag: {tag}");
+            }
+        }
+    }
+
+    ensure!(content.is_empty(), "Unexpected multiple sub-sections");
 
     Ok(())
 }

@@ -727,6 +727,7 @@ dependencies = [
  "hashbrown",
  "hex",
  "itertools",
+ "leb128",
  "libc",
  "linker-layout",
  "linker-trace",

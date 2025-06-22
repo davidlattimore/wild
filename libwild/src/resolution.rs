@@ -448,6 +448,9 @@ pub(crate) enum SectionSlot {
 
     // GNU property section (.note.gnu.property)
     NoteGnuProperty(object::SectionIndex),
+
+    // RISC-V attributes section (.riscv.attributes)
+    RiscvVAttributes(object::SectionIndex),
 }
 
 #[derive(Clone, Copy)]
@@ -823,6 +826,9 @@ fn resolve_sections_for_object<'data>(
                     unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
                     unloaded_section.start_stop_eligible = !section_name.starts_with(b".");
                 }
+                SectionRuleOutcome::RiscVAttribute => {
+                    return Ok(SectionSlot::RiscvVAttributes(input_section_index));
+                }
             };
 
             if unloaded_section.part_id == part_id::CUSTOM_PLACEHOLDER {
@@ -1017,7 +1023,7 @@ impl SectionSlot {
             SectionSlot::MergeStrings(section) => section.part_id = part_id,
             SectionSlot::UnloadedDebugInfo(out) => *out = part_id,
             SectionSlot::LoadedDebugInfo(section) => section.part_id = part_id,
-            SectionSlot::NoteGnuProperty(_) => {}
+            SectionSlot::NoteGnuProperty(_) | SectionSlot::RiscvVAttributes(_) => {}
         }
     }
 
