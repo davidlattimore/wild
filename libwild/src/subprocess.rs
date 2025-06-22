@@ -40,7 +40,7 @@ fn subprocess_result(args: &mut Args) -> Result<i32> {
         0 => {
             // Fork success in child - Run linker in this process.
             crate::setup_tracing(args)?;
-            crate::setup_thread_pool(args)?;
+            let _tokens = crate::setup_thread_pool(args)?;
             let linker = crate::Linker::new();
             let _outputs = linker.run(args)?;
             inform_parent_done(&fds);

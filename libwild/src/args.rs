@@ -21,6 +21,8 @@ use crate::error::Result;
 use crate::input_data::FileId;
 use crate::linker_script::maybe_forced_sysroot;
 use crate::save_dir::SaveDir;
+use jobserver::Acquired;
+use jobserver::Client;
 use rayon::ThreadPoolBuilder;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -720,13 +722,28 @@ impl Args {
         parse(input)
     }
 
-    pub(crate) fn setup_thread_pool(&mut self) -> Result {
-        self.available_threads = self.num_threads.unwrap_or_else(|| available_parallelism());
+    pub(crate) fn setup_thread_pool(&mut self) -> Result<Vec<Acquired>> {
+        let mut tokens = Vec::new();
+        self.available_threads = self.num_threads.unwrap_or_else(|| {
+            // SAFETY: should be called early before other descriptors are opened
+            unsafe {
+                if let Some(client) = Client::from_env() {
+                    while let Ok(Some(acquired)) = client.try_acquire() {
+                        tokens.push(acquired);
+                    }
+                    tracing::trace!(count = tokens.len(), "Acquired jobserver tokens");
+                    // Our parent "holds" one jobserver token, add it.
+                    NonZeroUsize::new((tokens.len() + 1).max(1)).unwrap()
+                } else {
+                    available_parallelism()
+                }
+            }
+        });
 
         ThreadPoolBuilder::new()
             .num_threads(self.available_threads.get())
             .build_global()?;
-        Ok(())
+        Ok(tokens)
     }
 
     pub(crate) fn base_address(&self) -> u64 {

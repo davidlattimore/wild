@@ -27,6 +27,7 @@ hashbrown = { workspace = true }
 hex = { workspace = true }
 indexmap = { workspace = true }
 itertools = { workspace = true }
+jobserver = "0.1.33"
 libc = { workspace = true }
 linker-layout = { path = "../linker-layout", version = "0.5.0" }
 linker-trace = { path = "../linker-trace", version = "0.5.0" }

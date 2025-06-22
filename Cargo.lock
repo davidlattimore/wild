@@ -728,6 +728,7 @@ dependencies = [
  "hex",
  "indexmap",
  "itertools",
+ "jobserver",
  "leb128",
  "libc",
  "linker-layout",
