@@ -52,6 +52,7 @@ use crate::layout::PreludeLayout;
 use crate::layout::ResFlagsDisplay;
 use crate::layout::Resolution;
 use crate::layout::ResolutionFlags;
+use crate::layout::RiscVAttribute;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
 use crate::layout::VersionDef;
@@ -78,19 +79,27 @@ use crate::symbol_db::SymbolId;
 use foldhash::HashMap as FoldHashMap;
 use foldhash::HashMapExt as _;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::pf;
+use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
+use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC;
+use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
+use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
+use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
 use linker_utils::elf::secnames::DEBUG_LOC_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_RANGES_SECTION_NAME;
 use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
+use linker_utils::elf::secnames::RISCV_ATTRIBUTES_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
+use object::ReadCacheOps;
 use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
@@ -102,6 +111,9 @@ use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
 use std::fmt::Display;
+use std::io::Cursor;
+use std::io::Seek;
+use std::io::Write;
 use std::iter;
 use std::marker::PhantomData;
 use std::ops::BitAnd;
@@ -2612,6 +2624,9 @@ fn write_epilogue<A: Arch>(
     if !&epilogue.gnu_property_notes.is_empty() {
         write_gnu_property_notes(epilogue, buffers)?;
     }
+    if !&epilogue.riscv_attributes.is_empty() {
+        write_riscv_attributes(epilogue, buffers)?;
+    }
 
     if let Some(verdefs) = &epilogue.verdefs {
         write_verdef(
@@ -2652,6 +2667,45 @@ fn write_gnu_property_notes(
         property.pr_padding = 0;
     }
 
+    Ok(())
+}
+
+fn write_riscv_attributes(
+    epilogue: &EpilogueLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+) -> Result {
+    let mut writer = Cursor::new(Vec::new());
+    writer.write_all(b"A")?;
+    leb128::write::unsigned(&mut writer, TAG_RISCV_WHOLE_FILE)?;
+    writer.write_all(RISCV_ATTRIBUTE_VENDOR_NAME.as_bytes())?;
+    writer.write_all(b"\0")?;
+    writer.write_all(
+        (epilogue.riscv_attributes_length - 1)
+            .to_le_bytes()
+            .as_slice(),
+    )?;
+    for tag in &epilogue.riscv_attributes {
+        match tag {
+            &RiscVAttribute::StackAlign(align) => {
+                leb128::write::unsigned(&mut writer, TAG_RISCV_STACK_ALIGN)?;
+                leb128::write::unsigned(&mut writer, align)?;
+            }
+            RiscVAttribute::Arch(arch) => {
+                leb128::write::unsigned(&mut writer, TAG_RISCV_ARCH)?;
+                writer.write_all(arch.as_bytes())?;
+                writer.write_all(b"\0")?;
+            }
+            &RiscVAttribute::UnalignedAccess(access) => {
+                leb128::write::unsigned(&mut writer, TAG_RISCV_UNALIGNED_ACCESS)?;
+                leb128::write::unsigned(&mut writer, u64::from(access))?;
+            }
+        }
+    }
+
+    writer.rewind()?;
+    buffers
+        .get_mut(part_id::RISCV_ATTRIBUTES)
+        .copy_from_slice(&writer.into_inner());
     Ok(())
 }
 

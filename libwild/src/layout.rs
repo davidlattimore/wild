@@ -71,6 +71,7 @@ use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use itertools::Itertools;
+use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
@@ -106,6 +107,7 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::fmt::Display;
+use std::io::Cursor;
 use std::mem::replace;
 use std::mem::size_of;
 use std::mem::swap;
@@ -150,6 +152,7 @@ pub fn compute<'data, A: Arch>(
     merge_dynamic_symbol_definitions(&mut group_states)?;
     merge_gnu_property_notes::<A>(&mut group_states)?;
     merge_eflags::<A>(&mut group_states)?;
+    merge_riscv_attributes::<A>(&mut group_states)?;
 
     finalise_all_sizes(
         &symbol_db,
@@ -528,8 +531,8 @@ fn merge_riscv_attributes<A: Arch>(group_states: &mut [GroupState]) -> Result {
         merged.push(RiscVAttribute::UnalignedAccess(*access));
     }
 
-    let prelude = get_prelude_mut(group_states);
-    prelude.riscv_attributes = merged;
+    let epilogue = get_epilogue_mut(group_states);
+    epilogue.riscv_attributes = merged;
 
     Ok(())
 }
@@ -661,7 +664,6 @@ struct PreludeLayoutState<'data> {
     dynamic_linker: Option<CString>,
     shstrtab_size: u64,
     eflags: u32,
-    riscv_attributes: Vec<RiscVAttribute>,
 }
 
 pub(crate) struct EpilogueLayoutState<'data> {
@@ -673,6 +675,7 @@ pub(crate) struct EpilogueLayoutState<'data> {
     gnu_hash_layout: Option<GnuHashLayout>,
     gnu_property_notes: Vec<GnuProperty>,
     build_id_size: Option<usize>,
+    riscv_attributes: Vec<RiscVAttribute>,
 
     verdefs: Option<Vec<VersionDef>>,
 }
@@ -699,6 +702,8 @@ pub(crate) struct EpilogueLayout<'data> {
     dynsym_start_index: u32,
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
     pub(crate) verdefs: Option<Vec<VersionDef>>,
+    pub(crate) riscv_attributes: Vec<RiscVAttribute>,
+    pub(crate) riscv_attributes_length: u32,
 }
 
 pub(crate) struct ObjectLayout<'data> {
@@ -3017,7 +3022,6 @@ impl<'data> PreludeLayoutState<'data> {
             dynamic_linker: None,
             shstrtab_size: 0,
             eflags: 0,
-            riscv_attributes: Vec::new(),
         }
     }
 
@@ -3531,6 +3535,7 @@ impl<'data> EpilogueLayoutState<'data> {
             gnu_property_notes: Default::default(),
             build_id_size: Default::default(),
             verdefs: Default::default(),
+            riscv_attributes: Default::default(),
         }
     }
 
@@ -3542,6 +3547,37 @@ impl<'data> EpilogueLayoutState<'data> {
                 + GNU_NOTE_NAME.len()
                 + self.gnu_property_notes.len() * GNU_NOTE_PROPERTY_ENTRY_SIZE) as u64
         }
+    }
+
+    fn riscv_attributes_section_size(&self) -> u64 {
+        let size_of_uleb_encoded = |value| {
+            let mut cursor = Cursor::new([0u8; 10]);
+            leb128::write::unsigned(&mut cursor, value).unwrap()
+        };
+
+        (if self.riscv_attributes.is_empty() {
+            0
+        } else {
+            1 // 'A'
+            + 4 // sizeof(u32)
+            + size_of_uleb_encoded(TAG_RISCV_WHOLE_FILE)
+            + RISCV_ATTRIBUTE_VENDOR_NAME.len() + 1
+            + self.riscv_attributes.iter().map(|attr| {
+                match attr {
+                    RiscVAttribute::StackAlign(align) => {
+                        size_of_uleb_encoded(TAG_RISCV_STACK_ALIGN) +
+                        size_of_uleb_encoded(*align)
+                    }
+                    RiscVAttribute::Arch(arch) => {
+                        size_of_uleb_encoded(TAG_RISCV_ARCH)
+                        +arch.len() + 1
+                    }
+                    RiscVAttribute::UnalignedAccess(_) => {
+                        size_of_uleb_encoded(TAG_RISCV_UNALIGNED_ACCESS) + 1
+                    }
+                }
+            }).sum::<usize>()
+        }) as u64
     }
 
     fn gnu_build_id_note_section_size(&self) -> Option<u64> {
@@ -3600,6 +3636,10 @@ impl<'data> EpilogueLayoutState<'data> {
         common.allocate(
             part_id::NOTE_GNU_PROPERTY,
             self.gnu_property_notes_section_size(),
+        );
+        common.allocate(
+            part_id::RISCV_ATTRIBUTES,
+            self.riscv_attributes_section_size(),
         );
 
         if let Some(build_id_sec_size) = self.gnu_build_id_note_section_size() {
@@ -3714,6 +3754,10 @@ impl<'data> EpilogueLayoutState<'data> {
             part_id::NOTE_GNU_PROPERTY,
             self.gnu_property_notes_section_size(),
         );
+        memory_offsets.increment(
+            part_id::RISCV_ATTRIBUTES,
+            self.riscv_attributes_section_size(),
+        );
 
         if let Some(build_id_sec_size) = self.gnu_build_id_note_section_size() {
             memory_offsets.increment(part_id::NOTE_GNU_BUILD_ID, build_id_sec_size);
@@ -3730,6 +3774,7 @@ impl<'data> EpilogueLayoutState<'data> {
             );
         }
 
+        let riscv_attributes_length = self.riscv_attributes_section_size() as u32;
         Ok(EpilogueLayout {
             internal_symbols: self.internal_symbols,
             gnu_hash_layout: self.gnu_hash_layout,
@@ -3737,6 +3782,8 @@ impl<'data> EpilogueLayoutState<'data> {
             dynsym_start_index,
             gnu_property_notes: self.gnu_property_notes,
             verdefs: self.verdefs,
+            riscv_attributes: dbg!(self.riscv_attributes),
+            riscv_attributes_length,
         })
     }
 }
@@ -4648,9 +4695,8 @@ fn process_riscv_attributes(
     // Expect only one subsection
     let _size = read_u32(&mut content)?;
     let vendor = read_string(&mut content).context("Cannot read vendor string")?;
-    dbg!(&vendor);
     ensure!(
-        vendor == "riscv",
+        vendor == RISCV_ATTRIBUTE_VENDOR_NAME,
         "Unsupported vendor ('{vendor:?}') subsection"
     );
 
@@ -4670,7 +4716,7 @@ fn process_riscv_attributes(
             }
             TAG_RISCV_ARCH => {
                 let arch = read_string(&mut content).context("Cannot read arch attributes")?;
-                object.riscv_attributes.push(RiscVAttribute::Arch(arch))
+                object.riscv_attributes.push(RiscVAttribute::Arch(arch));
             }
             TAG_RISCV_UNALIGNED_ACCESS => {
                 let access = read_uleb128(&mut content).context("Cannot read unaligned access")?;

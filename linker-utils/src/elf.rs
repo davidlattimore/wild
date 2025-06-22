@@ -364,6 +364,7 @@ pub mod sht {
     pub const HIPROC: SectionType = SectionType(object::elf::SHT_HIPROC);
     pub const LOUSER: SectionType = SectionType(object::elf::SHT_LOUSER);
     pub const HIUSER: SectionType = SectionType(object::elf::SHT_HIUSER);
+    pub const RISCV_ATTRIBUTES: SectionType = SectionType(object::elf::SHT_RISCV_ATTRIBUTES);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -718,6 +719,8 @@ impl std::ops::BitAnd for SegmentFlags {
 
 /// Dynamic thread vector pointers point 0x800 past the start of each TLS block.
 pub const RISCV_TLS_DTV_OFFSET: u64 = 0x800;
+
+pub const RISCV_ATTRIBUTE_VENDOR_NAME: &str = "riscv";
 
 // RISC-V ELF Tag constants, see: https://github.com/riscv-non-isa/riscv-elf-psabi-doc/blob/master/riscv-elf.adoc#risc-v-specific-dynamic-section-tags
 pub mod riscvattr {
