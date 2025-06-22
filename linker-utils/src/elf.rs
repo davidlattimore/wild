@@ -433,7 +433,8 @@ impl std::fmt::Display for SectionFlags {
             (shf::GROUP, "G"),
             (shf::TLS, "T"),
             (shf::COMPRESSED, "C"),
-            (shf::GNU_RETAIN, "R"),
+            // TODO: ld linker sometimes propagates the flag
+            // (shf::GNU_RETAIN, "R"),
         ] {
             if self.contains(flag) {
                 f.write_str(ch)?;
