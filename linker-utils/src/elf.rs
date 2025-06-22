@@ -726,6 +726,11 @@ impl std::ops::BitAnd for SegmentFlags {
     }
 }
 
+// RISC-V related constants
+
+/// Dynamic thread vector pointers point 0x800 past the start of each TLS block.
+pub const RISCV_TLS_DTV_OFFSET: u64 = 0x800;
+
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -
 /// https://uclibc.org/docs/elf-64-gen.pdf. For information on the TLS related relocations, see "ELF
 /// Handling For Thread-Local Storage" - https://www.uclibc.org/docs/tls.pdf.

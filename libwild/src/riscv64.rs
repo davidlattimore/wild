@@ -5,6 +5,7 @@ use crate::error;
 use crate::error::Result;
 use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RiscVInstruction;
@@ -73,7 +74,7 @@ impl crate::arch::Arch for RiscV64 {
     }
 
     fn get_dtv_offset() -> u64 {
-        0x800
+        RISCV_TLS_DTV_OFFSET
     }
 
     fn local_symbols_in_debug_info() -> bool {
