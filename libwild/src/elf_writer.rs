@@ -2674,6 +2674,7 @@ fn write_riscv_attributes(
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
+    // TODO: write the output directly to the output buffer
     let mut writer = Cursor::new(Vec::with_capacity(
         epilogue.riscv_attributes_length as usize,
     ));
