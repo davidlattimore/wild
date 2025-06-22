@@ -421,38 +421,24 @@ impl From<u64> for SectionFlags {
 
 impl std::fmt::Display for SectionFlags {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.contains(shf::WRITE) {
-            f.write_str("W")?;
-        }
-        if self.contains(shf::ALLOC) {
-            f.write_str("A")?;
-        }
-        if self.contains(shf::EXECINSTR) {
-            f.write_str("X")?;
-        }
-        if self.contains(shf::MERGE) {
-            f.write_str("M")?;
-        }
-        if self.contains(shf::STRINGS) {
-            f.write_str("S")?;
-        }
-        if self.contains(shf::INFO_LINK) {
-            f.write_str("I")?;
-        }
-        if self.contains(shf::LINK_ORDER) {
-            f.write_str("L")?;
-        }
-        if self.contains(shf::OS_NONCONFORMING) {
-            f.write_str("O")?;
-        }
-        if self.contains(shf::GROUP) {
-            f.write_str("G")?;
-        }
-        if self.contains(shf::TLS) {
-            f.write_str("T")?;
-        }
-        if self.contains(shf::COMPRESSED) {
-            f.write_str("C")?;
+        for (flag, ch) in [
+            (shf::WRITE, "W"),
+            (shf::ALLOC, "A"),
+            (shf::EXECINSTR, "X"),
+            (shf::MERGE, "M"),
+            (shf::STRINGS, "S"),
+            (shf::INFO_LINK, "I"),
+            (shf::LINK_ORDER, "L"),
+            (shf::OS_NONCONFORMING, "O"),
+            (shf::GROUP, "G"),
+            (shf::TLS, "T"),
+            (shf::COMPRESSED, "C"),
+            // TODO: ld linker sometimes propagates the flag
+            // (shf::GNU_RETAIN, "R"),
+        ] {
+            if self.contains(flag) {
+                f.write_str(ch)?;
+            }
         }
         Ok(())
     }
