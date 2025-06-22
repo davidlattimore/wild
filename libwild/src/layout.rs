@@ -3783,7 +3783,7 @@ impl<'data> EpilogueLayoutState<'data> {
             dynsym_start_index,
             gnu_property_notes: self.gnu_property_notes,
             verdefs: self.verdefs,
-            riscv_attributes: dbg!(self.riscv_attributes),
+            riscv_attributes: self.riscv_attributes,
             riscv_attributes_length,
         })
     }
