@@ -87,19 +87,16 @@ use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::pf;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
-use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC;
 use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
 use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
 use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
 use linker_utils::elf::secnames::DEBUG_LOC_SECTION_NAME;
 use linker_utils::elf::secnames::DEBUG_RANGES_SECTION_NAME;
 use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
-use linker_utils::elf::secnames::RISCV_ATTRIBUTES_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
-use object::ReadCacheOps;
 use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
@@ -2674,16 +2671,18 @@ fn write_riscv_attributes(
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
-    let mut writer = Cursor::new(Vec::new());
+    let mut writer = Cursor::new(Vec::with_capacity(
+        epilogue.riscv_attributes_length as usize,
+    ));
     writer.write_all(b"A")?;
-    leb128::write::unsigned(&mut writer, TAG_RISCV_WHOLE_FILE)?;
-    writer.write_all(RISCV_ATTRIBUTE_VENDOR_NAME.as_bytes())?;
-    writer.write_all(b"\0")?;
     writer.write_all(
         (epilogue.riscv_attributes_length - 1)
             .to_le_bytes()
             .as_slice(),
     )?;
+    leb128::write::unsigned(&mut writer, TAG_RISCV_WHOLE_FILE)?;
+    writer.write_all(RISCV_ATTRIBUTE_VENDOR_NAME.as_bytes())?;
+    writer.write_all(b"\0")?;
     for tag in &epilogue.riscv_attributes {
         match tag {
             &RiscVAttribute::StackAlign(align) => {
