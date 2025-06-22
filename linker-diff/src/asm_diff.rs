@@ -798,6 +798,17 @@ fn diff_key_for_res_mismatch<A: Arch>(
                 return "rel.dynamic-plt-bypass".to_owned();
             }
         }
+        (Referent::Named(ours, _), Referent::Undefined(_)) => {
+            // We defined a symbol that the reference linker didn't.
+            return format!("rel.extra-symbol.{ours}");
+        }
+        (Referent::Named(_, _), Referent::DynamicRelocation(_)) => {
+            if resolutions[0].reference.indirection == Indirection::Got
+                && resolutions[1].reference.indirection == Indirection::Got
+            {
+                return format!("rel.missing-got-dynamic.{}", bin_attributes.output_kind);
+            }
+        }
         _ => {}
     }
 
@@ -3660,6 +3671,15 @@ impl Display for SymtabEntryInfo<'_> {
             Visibility::Other(other) => write!(f, " (vis={other})")?,
         }
         Ok(())
+    }
+}
+
+impl Display for OutputKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OutputKind::Executable => write!(f, "executable"),
+            OutputKind::SharedObject => write!(f, "shared-object"),
+        }
     }
 }
 

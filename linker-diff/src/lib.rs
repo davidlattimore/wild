@@ -259,6 +259,12 @@ impl Config {
                     // Other linkers have a bigger initial PLT entry, thus the entsize is set to zero:
                     // https://sourceware.org/bugzilla/show_bug.cgi?id=26312
                     "section.plt.entsize",
+                    // On Alpine Linux, aarch64, GNU ld seems to emit the _DYNAMIC symbol without a
+                    // section index instead of pointing it at the .dynamic section.
+                    "rel.extra-symbol._DYNAMIC",
+                    // Also on Alpine Linux, aarch64, it seems that GNU ld is emitting an
+                    // unnecessary GLOB_DAT relocation in a GOT entry.
+                    "rel.missing-got-dynamic.executable",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
