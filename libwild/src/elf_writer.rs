@@ -78,6 +78,7 @@ use crate::symbol_db::SymbolId;
 use foldhash::HashMap as FoldHashMap;
 use foldhash::HashMapExt as _;
 use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
 use linker_utils::elf::RelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
@@ -2951,7 +2952,7 @@ fn write_internal_symbols(
         // Mandatory RISC-V symbol defined by the default linker script as:
         // __global_pointer$ = MIN(__SDATA_BEGIN__ + 0x800, MAX(__DATA_BEGIN__ + 0x800, __BSS_END__ - 0x800));
         if symbol_name.bytes() == GLOBAL_POINTER_SYMBOL_NAME.as_bytes() {
-            address += 0x800;
+            address += RISCV_TLS_DTV_OFFSET;
         }
 
         let entry = symbol_writer
