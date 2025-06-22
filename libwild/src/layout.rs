@@ -544,6 +544,45 @@ fn merge_riscv_attributes<A: Arch>(group_states: &mut [GroupState]) -> Result {
     {
         merged.push(RiscVAttribute::UnalignedAccess(*access));
     }
+    if let Some(version) = attributes
+        .iter()
+        .filter_map(|a| {
+            if let RiscVAttribute::PrivilegedSpecMajor(version) = a {
+                Some(version)
+            } else {
+                None
+            }
+        })
+        .max()
+    {
+        merged.push(RiscVAttribute::PrivilegedSpecMajor(*version));
+    }
+    if let Some(version) = attributes
+        .iter()
+        .filter_map(|a| {
+            if let RiscVAttribute::PrivilegedSpecMinor(version) = a {
+                Some(version)
+            } else {
+                None
+            }
+        })
+        .max()
+    {
+        merged.push(RiscVAttribute::PrivilegedSpecMinor(*version));
+    }
+    if let Some(version) = attributes
+        .iter()
+        .filter_map(|a| {
+            if let RiscVAttribute::PrivilegedSpecRevision(version) = a {
+                Some(version)
+            } else {
+                None
+            }
+        })
+        .max()
+    {
+        merged.push(RiscVAttribute::PrivilegedSpecRevision(*version));
+    }
 
     let epilogue = get_epilogue_mut(group_states);
     epilogue.riscv_attributes = merged;
