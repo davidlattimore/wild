@@ -2684,9 +2684,14 @@ fn write_riscv_attributes(
     writer.write_all(RISCV_ATTRIBUTE_VENDOR_NAME.as_bytes())?;
     writer.write_all(b"\0")?;
     writer.write_all(
-        (epilogue.riscv_attributes_length - 1 - 1 - RISCV_ATTRIBUTE_VENDOR_NAME.len() as u32 - 1)
-            .to_le_bytes()
-            .as_slice(),
+        (epilogue.riscv_attributes_length
+            - 1
+            - 4
+            - 1
+            - RISCV_ATTRIBUTE_VENDOR_NAME.len() as u32
+            - 1)
+        .to_le_bytes()
+        .as_slice(),
     )?;
     for tag in &epilogue.riscv_attributes {
         match tag {
