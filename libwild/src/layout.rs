@@ -1959,7 +1959,7 @@ fn compute_total_section_part_sizes(
 /// Section flags that should be propagated from input sections to the output section in which they
 /// are placed. Note, the inversion, so we keep all flags other than the one listed here.
 const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags =
-    SectionFlags::from_u32(!object::elf::SHF_GROUP);
+    SectionFlags::from_u32(!object::elf::SHF_GROUP & !object::elf::SHF_GNU_RETAIN);
 
 /// Propagates attributes from input sections to the output sections into which they were placed.
 #[tracing::instrument(skip_all, name = "Propagate section attributes")]
