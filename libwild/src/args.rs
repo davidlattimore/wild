@@ -722,6 +722,11 @@ impl Args {
         parse(input)
     }
 
+    /// Sets up the thread pool, using the explicit number of threads if specified,
+    /// or falling back to the jobserver protocol if available.
+    /// and return the number of token which will be returned at drop place.
+    ///
+    /// https://www.gnu.org/software/make/manual/html_node/POSIX-Jobserver.html
     pub(crate) fn setup_thread_pool(&mut self) -> Result<Vec<Acquired>> {
         let mut tokens = Vec::new();
         self.available_threads = self.num_threads.unwrap_or_else(|| {
