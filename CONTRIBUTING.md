@@ -76,7 +76,7 @@ Currently, the behavior for the following test options can be configured using t
 - `diff_ignore`: Adds extra rules to ignore certain diffs. This can be useful if you're developing
   on a system with an older version of GNU ld that doesn't perform certain optimisations.
 
-- `external_test_suites`: Allows running the test suite of other linkers (note: this is an experimental option currently only supporting the mold test suite)
+- `external_test_suites`: A list of external test suites to run. This is useful for running tests that are not part of the Wild project but are relevant to the functionality being tested. The default value is `[]`, and currently only "mold" is supported.
 
 A sample configuration file is provided as `test-config.toml.sample`. By default, Wild uses
 `test-config.toml` as the configuration file. If you have written your configuration in a different

@@ -1,0 +1,3 @@
+[submodule "external_test_suites/mold"]
+	path = external_test_suites/mold
+	url = https://github.com/rui314/mold

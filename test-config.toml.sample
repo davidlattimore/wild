@@ -3,4 +3,4 @@ rustc_channel = "default" # `"stable"`, `"beta"`, `"nightly"` or "default"
 qemu_arch = [] # `["X86_64"]`, `["AArch64"]`, `["RISCV64"]`
 allow_rust_musl_target = false # `true` or `false`
 diff_ignore = [] # ["rule1, "rule2"]
-external_test_suites = [] # ["/path/to/suite1", "/path/to/suite2"]
+external_test_suites = [] # ["test1", "test2"]

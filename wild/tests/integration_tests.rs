@@ -467,7 +467,7 @@ struct TestConfig {
     diff_ignore: Vec<String>,
 
     #[serde(default)]
-    external_test_suites: Vec<String>,
+    external_test_suites: Vec<ExternalTestSuites>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, Debug, Default)]
@@ -487,8 +487,9 @@ enum RustcChannel {
     Nightly,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ExternalTest {
+#[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, Debug)]
+#[serde(rename_all = "snake_case")]
+enum ExternalTestSuites {
     Mold,
 }
 
@@ -2434,82 +2435,36 @@ fn integration_test(
     Ok(())
 }
 
-fn run_external_test_suites(external_test_suites_path: &str) -> Result {
-    let external_test_suites_path = PathBuf::from(external_test_suites_path);
-    if !external_test_suites_path.exists() {
-        bail!(
-            "External test suites path `{}` does not exist",
-            external_test_suites_path.display()
-        );
+#[rstest]
+fn exec_mold_tests(
+    #[files("../external_test_suites/mold/test/*.sh")] mold_test: PathBuf,
+) -> Result {
+    let test_config = read_test_config()?;
+    if !test_config
+        .external_test_suites
+        .contains(&ExternalTestSuites::Mold)
+    {
+        return Ok(());
     }
-
-    match detect_external_test_suites(&external_test_suites_path) {
-        Some(ExternalTest::Mold) => {
-            exec_mold_tests(&external_test_suites_path)?;
-        }
-        None => {
-            bail!(
-                "No valid external test suites found at `{}`",
-                external_test_suites_path.display()
-            );
-        }
-    }
-
-    Ok(())
-}
-
-fn detect_external_test_suites(path: &Path) -> Option<ExternalTest> {
-    let test_path = PathBuf::from(path);
-    if test_path.exists() && test_path.is_dir() {
-        let common_inc_path = test_path.join("common.inc");
-        if common_inc_path.exists() && common_inc_path.is_file() {
-            return Some(ExternalTest::Mold);
-        }
-    }
-
-    None
-}
-
-fn exec_mold_tests(mold_test_path: &Path) -> Result {
-    let mut failed_tests = Vec::new();
 
     let path = env::var("PATH").unwrap();
     let current_dir = env::current_dir()?;
     let wild_dir = current_dir.parent().unwrap().join("fakes-debug");
 
-    for entry in std::fs::read_dir(mold_test_path)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() && entry.path().extension() == Some("sh".as_ref()) {
-            let output = Command::new("bash")
-                .arg("-c")
-                .arg(entry.path())
-                .env("PATH", format!("{wild_dir:?}:{path}"))
-                .output()?;
+    let output = Command::new("bash")
+        .arg("-c")
+        .arg(&mold_test)
+        .env("PATH", format!("{wild_dir:?}:{path}"))
+        .output()?;
 
-            if !output.status.success() {
-                failed_tests.push((
-                    entry.path().to_path_buf(),
-                    output.status,
-                    String::from_utf8_lossy(&output.stdout).to_string(),
-                    String::from_utf8_lossy(&output.stderr).to_string(),
-                ));
-            }
-        }
-    }
-
-    if !failed_tests.is_empty() {
-        let mut error_message = String::from("The following mold tests failed:\n");
-
-        for (path, status, stdout, stderr) in failed_tests {
-            error_message.push_str(&format!(
-                "\n==== Test: {} (status: {}) ====\nstdout: {}\nstderr: {}\n",
-                path.display(),
-                status,
-                stdout,
-                stderr
-            ));
-        }
-
+    if !output.status.success() {
+        let error_message = format!(
+            "Mold test `{}` failed with status: {}\nstdout: {}\nstderr: {}",
+            mold_test.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         return Err(error_message.into());
     }
 
@@ -2556,20 +2511,4 @@ fn read_test_config() -> Result<TestConfig> {
     }
 
     Ok(config)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_external_test_suites() -> Result {
-        let test_config = read_test_config()?;
-
-        for test_suite in &test_config.external_test_suites {
-            run_external_test_suites(test_suite)?;
-        }
-
-        Ok(())
-    }
 }
