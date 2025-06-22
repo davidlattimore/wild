@@ -16,13 +16,13 @@ fn run() -> libwild::error::Result {
     #[cfg(feature = "dhat")]
     let _profiler = dhat::Profiler::new_heap();
 
-    let args = libwild::Args::parse(|| std::env::args().skip(1))?;
+    let mut args = libwild::Args::parse(|| std::env::args().skip(1))?;
 
     if args.should_fork() {
         // Safety: We haven't spawned any threads yet.
-        unsafe { libwild::run_in_subprocess(&args) };
+        unsafe { libwild::run_in_subprocess(&mut args) };
     } else {
         // Run the linker in this process without forking.
-        libwild::run(&args)
+        libwild::run(&mut args)
     }
 }

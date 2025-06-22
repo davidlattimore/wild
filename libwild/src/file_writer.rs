@@ -95,7 +95,7 @@ impl Output {
             .file_write_mode
             .unwrap_or_else(|| default_file_write_mode(&args.output));
 
-        if args.num_threads.get() > 1 {
+        if args.available_threads.get() > 1 {
             let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
             Output {
                 path: args.output.clone(),

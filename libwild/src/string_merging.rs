@@ -186,7 +186,7 @@ pub(crate) fn merge_strings<'data>(
 
     let mut output_string_sections = output_sections.new_section_map::<MergedStringsSection>();
 
-    let reuse_pool = ReusePool::new(args.num_threads.get());
+    let reuse_pool = ReusePool::new(args.available_threads.get());
 
     input_sections_by_output.try_for_each(|section_id, input_sections| {
         let output_section = output_string_sections.get_mut(section_id);
@@ -325,7 +325,7 @@ impl<'data> MergedStringsSection<'data> {
             return Ok(());
         }
 
-        let num_threads = args.num_threads.get();
+        let num_threads = args.available_threads.get();
 
         let mut resources =
             create_split_resources(&mut self.string_offsets, input_sections, num_threads);

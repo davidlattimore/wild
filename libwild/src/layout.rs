@@ -2250,7 +2250,7 @@ fn find_required_sections<'data, A: Arch>(
     let num_workers = groups_in.len();
     let (worker_slots, groups) = create_worker_slots(groups_in, output_sections, symbol_db);
 
-    let num_threads = symbol_db.args.num_threads.get();
+    let num_threads = symbol_db.args.available_threads.get();
 
     let idle_threads = (num_threads > 1).then(|| ArrayQueue::new(num_threads - 1));
     let resources = GraphResources {

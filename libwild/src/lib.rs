@@ -65,7 +65,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 /// Runs the linker and cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
-pub fn run(args: &Args) -> error::Result {
+pub fn run(args: &mut Args) -> error::Result {
     setup_tracing(args)?;
     setup_thread_pool(args)?;
     let linker = Linker::new();
@@ -93,7 +93,7 @@ pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
 /// Sets up the global thread pool based on the supplied arguments, in particular --threads. This
 /// can only be called once. Calling this at all is optional. If it isn't called, then a default
 /// thread pool will be used - i.e. any argument to --threads will be ignored.
-pub fn setup_thread_pool(args: &Args) -> error::Result {
+pub fn setup_thread_pool(args: &mut Args) -> error::Result {
     args.setup_thread_pool()
 }
 

@@ -37,7 +37,7 @@ pub struct Args {
     pub(crate) inputs: Vec<Input>,
     pub(crate) output: Arc<Path>,
     pub(crate) dynamic_linker: Option<Box<Path>>,
-    pub(crate) num_threads: NonZeroUsize,
+    pub num_threads: Option<NonZeroUsize>,
     pub(crate) strip_all: bool,
     pub(crate) strip_debug: bool,
     pub(crate) prepopulate_maps: bool,
@@ -92,6 +92,9 @@ pub struct Args {
     output_kind: Option<OutputKind>,
     pub(crate) is_dynamic_executable: AtomicBool,
     relocation_model: RelocationModel,
+
+    /// The number of actually available threads (considering jobserver)
+    pub(crate) available_threads: NonZeroUsize,
 }
 
 #[derive(Debug)]
@@ -220,8 +223,8 @@ const DEFAULT_FLAGS: &[&str] = &[
     "enable-new-dtags",
 ];
 
-pub(crate) fn available_parallelism() -> std::num::NonZeroUsize {
-    std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::new(1).unwrap())
+pub(crate) fn available_parallelism() -> NonZeroUsize {
+    std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap())
 }
 
 impl Default for Args {
@@ -236,7 +239,7 @@ impl Default for Args {
             dynamic_linker: None,
             output_kind: None,
             time_phases: false,
-            num_threads: available_parallelism(),
+            num_threads: None,
             strip_all: false,
             strip_debug: false,
             // For now, we default to --gc-sections. This is different to other linkers, but other than
@@ -289,6 +292,7 @@ impl Default for Args {
             explicitly_export_dynamic: false,
             got_plt_syms: false,
             relax: true,
+            available_threads: NonZeroUsize::new(1).unwrap(),
         }
     }
 }
@@ -458,12 +462,12 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         } else if long_arg_eq("time") {
             args.time_phases = true;
         } else if let Some(rest) = long_arg_split_prefix("threads=") {
-            args.num_threads = NonZeroUsize::try_from(rest.parse::<usize>()?)?;
+            args.num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
         } else if long_arg_eq("threads") {
             // Default behaviour (multiple threads)
-            args.num_threads = available_parallelism();
+            args.num_threads = None;
         } else if let Some(rest) = long_arg_split_prefix("thread-count=") {
-            args.num_threads = NonZeroUsize::try_from(rest.parse::<usize>()?)?;
+            args.num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
         } else if long_arg_eq("exclude-libs") {
             let param = input.next().context("Missing argument to --exclude-libs")?;
             if param.as_ref() != "ALL" {
@@ -471,7 +475,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             }
             args.exclude_libs = true;
         } else if long_arg_eq("no-threads") {
-            args.num_threads = NonZeroUsize::new(1).unwrap();
+            args.num_threads = Some(NonZeroUsize::new(1).unwrap());
         } else if long_arg_eq("strip-all") || arg == "-s" {
             args.strip_all = true;
             args.strip_debug = true;
@@ -605,7 +609,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.debug_fuel = Some(AtomicI64::new(rest.parse()?));
             // Using debug fuel with more than one thread would likely give non-deterministic
             // results.
-            args.num_threads = NonZeroUsize::new(1).unwrap();
+            args.num_threads = Some(NonZeroUsize::new(1).unwrap());
         } else if long_arg_eq("allow-shlib-undefined") {
             args.allow_shlib_undefined = true;
         } else if long_arg_eq("no-allow-shlib-undefined") {
@@ -716,9 +720,11 @@ impl Args {
         parse(input)
     }
 
-    pub(crate) fn setup_thread_pool(&self) -> Result {
+    pub(crate) fn setup_thread_pool(&mut self) -> Result {
+        self.available_threads = self.num_threads.unwrap_or_else(|| available_parallelism());
+
         ThreadPoolBuilder::new()
-            .num_threads(self.num_threads.get())
+            .num_threads(self.available_threads.get())
             .build_global()?;
         Ok(())
     }
