@@ -3561,6 +3561,7 @@ impl<'data> EpilogueLayoutState<'data> {
             1 // 'A'
             + 4 // sizeof(u32)
             + size_of_uleb_encoded(TAG_RISCV_WHOLE_FILE)
+            + 4 // sizeof(u32)
             + RISCV_ATTRIBUTE_VENDOR_NAME.len() + 1
             + self.riscv_attributes.iter().map(|attr| {
                 match attr {
