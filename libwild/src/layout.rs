@@ -485,6 +485,9 @@ fn merge_riscv_attributes<A: Arch>(group_states: &mut [GroupState]) -> Result {
                 }
             })
         })
+        // Sort by the number of ISAs: better output ordering
+        .sorted_by(|x| x.len())
+        .rev()
         .flatten()
         .collect_vec();
 
@@ -502,6 +505,8 @@ fn merge_riscv_attributes<A: Arch>(group_states: &mut [GroupState]) -> Result {
         })
         .flatten()
     {
+        // Right now, we merge all the ISA extensions and use the maximum version.
+        // TODO: Add more verifier that rejects invalid combination of extensions.
         arch_components
             .entry(name.clone())
             .and_modify(|v: &mut (u64, u64)| *v = (*v).max(*version))
