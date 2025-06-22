@@ -87,6 +87,9 @@ use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::pf;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
+use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC;
+use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC_MINOR;
+use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC_REVISION;
 use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
 use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
 use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
@@ -2702,6 +2705,18 @@ fn write_riscv_attributes(
             &RiscVAttribute::UnalignedAccess(access) => {
                 leb128::write::unsigned(&mut writer, TAG_RISCV_UNALIGNED_ACCESS)?;
                 leb128::write::unsigned(&mut writer, u64::from(access))?;
+            }
+            &RiscVAttribute::PrivilegedSpecMajor(version) => {
+                leb128::write::unsigned(&mut writer, TAG_RISCV_PRIV_SPEC)?;
+                leb128::write::unsigned(&mut writer, u64::from(version))?;
+            }
+            &RiscVAttribute::PrivilegedSpecMinor(version) => {
+                leb128::write::unsigned(&mut writer, TAG_RISCV_PRIV_SPEC_MINOR)?;
+                leb128::write::unsigned(&mut writer, u64::from(version))?;
+            }
+            &RiscVAttribute::PrivilegedSpecRevision(version) => {
+                leb128::write::unsigned(&mut writer, TAG_RISCV_PRIV_SPEC_REVISION)?;
+                leb128::write::unsigned(&mut writer, u64::from(version))?;
             }
         }
     }

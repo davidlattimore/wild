@@ -1318,6 +1318,12 @@ pub(crate) enum RiscVAttribute {
     Arch(RiscVArch),
     /// Indicates whether to impose unaligned memory accesses in code generation.
     UnalignedAccess(bool),
+    /// Indicates the major version of the privileged specification.
+    PrivilegedSpecMajor(u64),
+    /// Indicates the major version of the privileged specification.
+    PrivilegedSpecMinor(u64),
+    /// Indicates the revision version of the privileged specification.
+    PrivilegedSpecRevision(u64),
 }
 
 #[derive(Default)]
@@ -3595,17 +3601,29 @@ impl<'data> EpilogueLayoutState<'data> {
             + self.riscv_attributes.iter().map(|attr| {
                 match attr {
                     RiscVAttribute::StackAlign(align) => {
-                        size_of_uleb_encoded(TAG_RISCV_STACK_ALIGN) +
-                        size_of_uleb_encoded(*align)
-                    }
+                                        size_of_uleb_encoded(TAG_RISCV_STACK_ALIGN) +
+                                        size_of_uleb_encoded(*align)
+                                    }
                     RiscVAttribute::Arch(arch) => {
-                        size_of_uleb_encoded(TAG_RISCV_ARCH)
-                        +arch.to_attribute_string().len() + 1
-                    }
+                                        size_of_uleb_encoded(TAG_RISCV_ARCH)
+                                        +arch.to_attribute_string().len() + 1
+                                    }
                     RiscVAttribute::UnalignedAccess(_) => {
-                        size_of_uleb_encoded(TAG_RISCV_UNALIGNED_ACCESS) + 1
+                                        size_of_uleb_encoded(TAG_RISCV_UNALIGNED_ACCESS) + 1
+                                    }
+                    RiscVAttribute::PrivilegedSpecMajor(version) => {
+                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC) +
+                                        size_of_uleb_encoded(*version)
+                    },
+                    RiscVAttribute::PrivilegedSpecMinor(version) => {
+                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC_MINOR) +
+                                        size_of_uleb_encoded(*version)
                     }
-                }
+                    RiscVAttribute::PrivilegedSpecRevision(version) => {
+                                        size_of_uleb_encoded(TAG_RISCV_PRIV_SPEC_REVISION) +
+                                        size_of_uleb_encoded(*version)
+                    }
+                                    }
             }).sum::<usize>()
         }) as u64
     }
@@ -4778,8 +4796,26 @@ fn process_riscv_attributes(
                     .riscv_attributes
                     .push(RiscVAttribute::UnalignedAccess(access > 0));
             }
-            TAG_RISCV_PRIV_SPEC | TAG_RISCV_PRIV_SPEC_MINOR | TAG_RISCV_PRIV_SPEC_REVISION => {
-                bail!("Deprecated tag: {tag}");
+            TAG_RISCV_PRIV_SPEC => {
+                let version =
+                    read_uleb128(&mut content).context("Cannot read privileged major version")?;
+                object
+                    .riscv_attributes
+                    .push(RiscVAttribute::PrivilegedSpecMajor(version));
+            }
+            TAG_RISCV_PRIV_SPEC_MINOR => {
+                let version =
+                    read_uleb128(&mut content).context("Cannot read privileged minor version")?;
+                object
+                    .riscv_attributes
+                    .push(RiscVAttribute::PrivilegedSpecMinor(version));
+            }
+            TAG_RISCV_PRIV_SPEC_REVISION => {
+                let version = read_uleb128(&mut content)
+                    .context("Cannot read privileged revision version")?;
+                object
+                    .riscv_attributes
+                    .push(RiscVAttribute::PrivilegedSpecRevision(version));
             }
             TAG_RISCV_ATOMIC_ABI => {
                 let _abi = read_uleb128(&mut content).context("Cannot read atomic ABI")?;
