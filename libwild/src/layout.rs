@@ -25,7 +25,7 @@ use crate::elf::Versym;
 use crate::elf_writer;
 use crate::ensure;
 use crate::error;
-use crate::error::Context as _;
+use crate::error::Context;
 use crate::error::Error;
 use crate::error::Result;
 use crate::file_writer;
@@ -486,7 +486,7 @@ fn merge_riscv_attributes<A: Arch>(group_states: &mut [GroupState]) -> Result {
             })
         })
         // Sort by the number of ISAs: better output ordering
-        .sorted_by(|x| x.len())
+        .sorted_by_key(|x| x.len())
         .rev()
         .flatten()
         .collect_vec();
@@ -3947,7 +3947,8 @@ impl<'data> ObjectLayoutState<'data> {
             process_gnu_property_note(self, note_gnu_property_index)?;
         }
         if let Some(riscv_attributes_index) = riscv_attributes_section {
-            process_riscv_attributes(self, riscv_attributes_index)?;
+            process_riscv_attributes(self, riscv_attributes_index)
+                .context("Cannot parse .riscv.attributes section")?;
         }
 
         if resources.symbol_db.args.output_kind() == OutputKind::SharedObject
