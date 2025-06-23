@@ -45,6 +45,7 @@ iced-x86 = { version = "1.17.0", default-features = false, features = [
     "decoder",
     "gas",
 ] }
+indexmap = "2.9.0"
 itertools = "0.14.0"
 leb128 = "0.2.5"
 libc = "0.2.152"

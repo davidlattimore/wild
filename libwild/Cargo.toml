@@ -25,6 +25,7 @@ foldhash = { workspace = true }
 gimli = { workspace = true }
 hashbrown = { workspace = true }
 hex = { workspace = true }
+indexmap = { workspace = true }
 itertools = { workspace = true }
 libc = { workspace = true }
 linker-layout = { path = "../linker-layout", version = "0.5.0" }
@@ -44,7 +45,6 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 winnow = { workspace = true }
 zstd = { workspace = true }
-indexmap = "2.9.0"
 
 [dev-dependencies]
 ar = "0.9.0"
