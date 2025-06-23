@@ -833,25 +833,27 @@ fn process_alternatives(
     }
 }
 
-/// Selects which version of the symbol to use.
+/// Selects which version of the symbol to use. For more information on symbol priority, see
+/// https://maskray.me/blog/2021-06-20-linker-symbol-resolution
 #[inline(always)]
 fn select_symbol(
     symbol_db: &AtomicSymbolDb,
-    symbol_id: SymbolId,
+    first_id: SymbolId,
     alternatives: &[SymbolId],
     resolved: &[ResolvedGroup],
 ) -> Result<SymbolId> {
     let mut max_common = None;
     let mut strong_symbol = None;
+    let mut first_weak = None;
 
-    let all_symbols = std::iter::once(symbol_id).chain(alternatives.iter().copied());
-
-    for alt in all_symbols {
-        if symbol_db.local_symbol_value_flags(alt).is_dynamic() {
+    for id in std::iter::once(first_id).chain(alternatives.iter().copied()) {
+        // Dynamic symbols, even strong ones, don't override non-dynamic weak symbols, so in this
+        // first pass, we ignore dynamic symbols.
+        if symbol_db.local_symbol_value_flags(id).is_dynamic() {
             continue;
         }
 
-        let strength = symbol_db.symbol_strength(alt, resolved);
+        let strength = symbol_db.symbol_strength(id, resolved);
         match strength {
             SymbolStrength::Strong => {
                 if let Some(existing) = strong_symbol {
@@ -859,17 +861,22 @@ fn select_symbol(
                     // strong definitions, then we don't emit errors if all the strong definitions
                     // are defined in COMDAT group sections.
                     if !symbol_db.is_in_comdat_group(existing, resolved)
-                        || !symbol_db.is_in_comdat_group(alt, resolved)
+                        || !symbol_db.is_in_comdat_group(id, resolved)
                     {
                         bail!(
                             "{}, defined in {} and {}",
-                            symbol_db.symbol_name_for_display(symbol_id),
+                            symbol_db.symbol_name_for_display(first_id),
                             symbol_db.file(symbol_db.file_id_for_symbol(existing)),
-                            symbol_db.file(symbol_db.file_id_for_symbol(alt)),
+                            symbol_db.file(symbol_db.file_id_for_symbol(id)),
                         );
                     }
                 } else {
-                    strong_symbol = Some(alt);
+                    strong_symbol = Some(id);
+                }
+            }
+            SymbolStrength::Weak | SymbolStrength::GnuUnique => {
+                if first_weak.is_none() {
+                    first_weak = Some(id);
                 }
             }
             SymbolStrength::Common(size) => {
@@ -878,9 +885,9 @@ fn select_symbol(
                         continue;
                     }
                 }
-                max_common = Some((size, alt));
+                max_common = Some((size, id));
             }
-            _ => {}
+            SymbolStrength::Undefined => {}
         }
     }
 
@@ -892,19 +899,21 @@ fn select_symbol(
         return Ok(alt);
     }
 
-    let first_strength = symbol_db.symbol_strength(symbol_id, resolved);
-    if first_strength != SymbolStrength::Undefined {
-        return Ok(symbol_id);
+    if let Some(id) = first_weak {
+        return Ok(id);
     }
 
-    for &alt in alternatives.iter().rev() {
+    // If we've made it this far, then the symbol is only defined in shared objects. Pick the first
+    // definition. Note, we don't check for duplicate strong definitions here because it's OK for
+    // multiple shared objects to define the same symbol strongly.
+    for alt in std::iter::once(first_id).chain(alternatives.iter().copied()) {
         let strength = symbol_db.symbol_strength(alt, resolved);
         if strength != SymbolStrength::Undefined {
             return Ok(alt);
         }
     }
 
-    Ok(symbol_id)
+    Ok(first_id)
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
