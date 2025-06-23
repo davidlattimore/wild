@@ -148,7 +148,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v30
+        uses: nixbuild/nix-quick-install-action@v31
         with:
           nix_on_tmpfs: true
 
@@ -176,7 +176,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v30
+        uses: nixbuild/nix-quick-install-action@v31
 
       - name: Restore Nix store
         uses: nix-community/cache-nix-action/restore@v6
