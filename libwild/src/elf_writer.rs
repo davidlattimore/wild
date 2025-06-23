@@ -112,7 +112,6 @@ use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
 use std::fmt::Display;
 use std::io::Cursor;
-use std::io::Seek;
 use std::io::Write;
 use std::iter;
 use std::marker::PhantomData;
@@ -2674,10 +2673,7 @@ fn write_riscv_attributes(
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
-    // TODO: write the output directly to the output buffer
-    let mut writer = Cursor::new(Vec::with_capacity(
-        epilogue.riscv_attributes_length as usize,
-    ));
+    let mut writer = Cursor::new(&mut **buffers.get_mut(part_id::RISCV_ATTRIBUTES));
     writer.write_all(b"A")?;
     writer.write_all(
         (epilogue.riscv_attributes_length - 1)
@@ -2722,10 +2718,6 @@ fn write_riscv_attributes(
         }
     }
 
-    writer.rewind()?;
-    buffers
-        .get_mut(part_id::RISCV_ATTRIBUTES)
-        .copy_from_slice(&writer.into_inner());
     Ok(())
 }
 
