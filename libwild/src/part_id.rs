@@ -41,8 +41,9 @@ pub(crate) const SYMTAB_LOCAL: PartId = PartId(20);
 pub(crate) const SYMTAB_GLOBAL: PartId = PartId(21);
 pub(crate) const RELA_DYN_RELATIVE: PartId = PartId(22);
 pub(crate) const RELA_DYN_GENERAL: PartId = PartId(23);
+pub(crate) const RISCV_ATTRIBUTES: PartId = PartId(24);
 
-pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 24;
+pub(crate) const NUM_SINGLE_PART_SECTIONS: u32 = 25;
 
 #[cfg(test)]
 pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_SINGLE_PART_SECTIONS as usize

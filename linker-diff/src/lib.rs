@@ -275,8 +275,6 @@ impl Config {
                     "dynsym.main.section",
                     // #701
                     "file-header.flags",
-                    // #700
-                    "section.riscv.attributes",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
