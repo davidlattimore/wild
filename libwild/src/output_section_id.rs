@@ -98,6 +98,7 @@ pub(crate) const SYMTAB_GLOBAL: OutputSectionId = part_id::SYMTAB_GLOBAL.output_
 pub(crate) const RELA_DYN_RELATIVE: OutputSectionId =
     part_id::RELA_DYN_RELATIVE.output_section_id();
 pub(crate) const RELA_DYN_GENERAL: OutputSectionId = part_id::RELA_DYN_GENERAL.output_section_id();
+pub(crate) const RISCV_ATTRIBUTES: OutputSectionId = part_id::RISCV_ATTRIBUTES.output_section_id();
 
 pub(crate) const RODATA: OutputSectionId = OutputSectionId::regular(0);
 pub(crate) const INIT_ARRAY: OutputSectionId = OutputSectionId::regular(1);
@@ -585,6 +586,11 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Secondary(RELA_DYN_RELATIVE),
         ..DEFAULT_DEFS
     },
+    BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(RISCV_ATTRIBUTES_SECTION_NAME)),
+        ty: sht::RISCV_ATTRIBUTES,
+        ..DEFAULT_DEFS
+    },
     // Start of regular sections
     BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(RODATA_SECTION_NAME)),
@@ -870,6 +876,7 @@ impl CustomSectionIds {
 
         builder.add_sections(&self.nonalloc);
         builder.add_section(COMMENT);
+        builder.add_section(RISCV_ATTRIBUTES);
         builder.add_section(SHSTRTAB);
         builder.add_section(SYMTAB_LOCAL);
         builder.add_section(SYMTAB_GLOBAL);
@@ -1211,6 +1218,7 @@ fn test_constant_ids() {
         (DYNSTR, DYNSTR_SECTION_NAME),
         (RELA_DYN_RELATIVE, RELA_DYN_SECTION_NAME),
         (RELA_DYN_GENERAL, &[]),
+        (RISCV_ATTRIBUTES, RISCV_ATTRIBUTES_SECTION_NAME),
         (GCC_EXCEPT_TABLE, GCC_EXCEPT_TABLE_SECTION_NAME),
         (INTERP, INTERP_SECTION_NAME),
         (GNU_VERSION, GNU_VERSION_SECTION_NAME),
@@ -1228,7 +1236,7 @@ fn test_constant_ids() {
     for (id, name) in check {
         match id.built_in_details().kind {
             SectionKind::Primary(section_name) => {
-                assert_eq!(section_name.bytes(), *name);
+                assert_eq!(section_name.to_string(), String::from_utf8_lossy(name));
             }
             SectionKind::Secondary(_) => assert!(name.is_empty()),
         }

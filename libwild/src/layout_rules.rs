@@ -75,6 +75,7 @@ pub(crate) enum SectionRuleOutcome {
     EhFrame,
     NoteGnuProperty,
     Debug,
+    RiscVAttribute,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -356,6 +357,10 @@ const BUILT_IN_RULES: &[SectionRule<'static>] = &[
     SectionRule::exact(
         secnames::NOTE_GNU_PROPERTY_SECTION_NAME,
         SectionRuleOutcome::NoteGnuProperty,
+    ),
+    SectionRule::exact(
+        secnames::RISCV_ATTRIBUTES_SECTION_NAME,
+        SectionRuleOutcome::RiscVAttribute,
     ),
     SectionRule::prefix(b".debug_", SectionRuleOutcome::Debug),
 ];
