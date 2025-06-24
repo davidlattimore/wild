@@ -71,21 +71,6 @@
 //! SecEquiv:{sec-name}={sec-name} Tells linker-diff that the two section names should be considered
 //! as equivalent.
 //!
-//! Object:{source-filename}[:extra-compilation-args] Builds the specified filename as a regular
-//! object and adds it to the link.
-//!
-//! Archive:{source-filename}[:extra-compilation-args] Builds the specified filename as an archive
-//! and adds it to the link.
-//!
-//! ThinArchive:{source-filename}[:extra-compilation-args] Builds the specified filename as a thin
-//! archive and adds it to the link.
-//!
-//! Shared:{source-filename}[:extra-compilation-args] Builds the specified filename as a shared
-//! object and adds it to the link.
-//!
-//! LinkerScript:{source-filename} Adds a linker script. It will be added as -T {source-filename},
-//! so will replace the built-in linker script.
-//!
 //! Compiler:gcc|g++|clang|clang++ Specifies what compiler should be used to compile C/C++ code.
 //!
 //! Arch:{arch1}[,{arch2}...] Specifies which architectures this test should be run with. Defaults
@@ -107,6 +92,26 @@
 //!
 //! AutoAddObjects:{bool} Whether to automatically add input objects for the test to the command
 //! line. Defaults to true.
+//!
+//! ## Inputs
+//!
+//! The following input types support an optional template parameter. This should look something
+//! like `Shared:template(--push-state --as-needed $O --pop-state):filename.c`.
+//!
+//! Object:{source-filename}[:extra-compilation-args] Builds the specified filename as a regular
+//! object and adds it to the link.
+//!
+//! Archive:{source-filename}[:extra-compilation-args] Builds the specified filename as an archive
+//! and adds it to the link.
+//!
+//! ThinArchive:{source-filename}[:extra-compilation-args] Builds the specified filename as a thin
+//! archive and adds it to the link.
+//!
+//! Shared:{source-filename}[:extra-compilation-args] Builds the specified filename as a shared
+//! object and adds it to the link.
+//!
+//! LinkerScript:{source-filename} Adds a linker script. It will be added as -T {source-filename},
+//! so will replace the built-in linker script.
 
 use itertools::Itertools;
 use libwild::bail;
@@ -147,6 +152,8 @@ use wait_timeout::ChildExt;
 
 type Result<T = (), E = libwild::error::Error> = core::result::Result<T, E>;
 type ElfFile64<'data> = object::read::elf::ElfFile64<'data, LittleEndian>;
+
+const TEMPLATE_PLACEHOLDER: &str = "$O";
 
 fn base_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -547,7 +554,10 @@ enum Compiler {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FilenameArgumentPair {
+    /// The source file to be compiled.
     filename: String,
+
+    /// The arguments with which to compile the source file.
     args: ArgumentSet,
 }
 
@@ -564,6 +574,10 @@ impl FilenameArgumentPair {
 struct Dep {
     files: Vec<FilenameArgumentPair>,
     input_type: InputType,
+
+    /// Overrides how the dependency will be added to the command-line with $O as a placeholder for
+    /// the output file.
+    template: Option<Vec<String>>,
 }
 
 #[derive(Default, Clone, PartialEq, Eq)]
@@ -829,6 +843,21 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 "AutoAddObjects" => config.auto_add_objects = parse_bool(arg, "AutoAddObjects")?,
                 input_type @ ("Object" | "Archive" | "ThinArchive" | "Shared" | "LinkerScript") => {
                     let input_type = InputType::from_str(input_type)?;
+
+                    let mut arg = arg;
+                    let mut template = None;
+                    if let Some(rest) = arg.strip_prefix("template(") {
+                        let (t, rest) = rest
+                            .split_once("):")
+                            .with_context(|| format!("Missing '):' in {arg}"))?;
+                        let parts = t.split(' ').map(|p| p.to_owned()).collect_vec();
+                        if !parts.iter().any(|a| a.contains(TEMPLATE_PLACEHOLDER)) {
+                            bail!("Template `{t}` must contain {TEMPLATE_PLACEHOLDER}");
+                        }
+                        template = Some(parts);
+                        arg = rest;
+                    }
+
                     let files = arg
                         .split(",")
                         .map(|arg| {
@@ -840,7 +869,11 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                         })
                         .collect::<Result<Vec<_>>>()?;
 
-                    config.deps.push(Dep { files, input_type })
+                    config.deps.push(Dep {
+                        files,
+                        input_type,
+                        template,
+                    })
                 }
                 "Compiler" => config.compiler = arg.trim().to_owned(),
                 "Arch" => {
@@ -906,6 +939,7 @@ impl ProgramInputs {
                     ArgumentSet::empty(),
                 )],
                 input_type: InputType::Object,
+                template: None,
             },
             config,
             linker,
@@ -1054,6 +1088,7 @@ struct LinkerInput {
     prefix_arg: Option<&'static str>,
     path: PathBuf,
     command: Option<LinkCommand>,
+    template: Option<Vec<String>>,
 }
 
 impl LinkerInput {
@@ -1062,6 +1097,7 @@ impl LinkerInput {
             prefix_arg: None,
             path,
             command: None,
+            template: None,
         }
     }
 
@@ -1070,6 +1106,7 @@ impl LinkerInput {
             prefix_arg: None,
             path,
             command: Some(command),
+            template: None,
         }
     }
 
@@ -1078,6 +1115,7 @@ impl LinkerInput {
             prefix_arg: Some(prefix),
             path,
             command: None,
+            template: None,
         }
     }
 }
@@ -1122,14 +1160,14 @@ fn build_linker_input(
         .context("At least one object is required")?
         .path;
 
-    match dep.input_type {
+    let mut linker_input = match dep.input_type {
         InputType::Archive | InputType::ThinArchive => {
             let thin = matches!(dep.input_type, InputType::ThinArchive);
             let archive_path = first_obj_path.with_extension("a");
             if !is_newer(&archive_path, objects.iter().map(|o| &o.path)) {
                 make_archive(&archive_path, &objects, thin)?;
             }
-            Ok(LinkerInput::new(archive_path))
+            LinkerInput::new(archive_path)
         }
         InputType::Object => {
             if objects.len() > 1 {
@@ -1138,7 +1176,7 @@ fn build_linker_input(
                 );
             }
 
-            Ok(LinkerInput::new(first_obj_path.clone()))
+            LinkerInput::new(first_obj_path.clone())
         }
         InputType::SharedObject => {
             let so_path = first_obj_path.with_extension(format!("{linker}.so"));
@@ -1147,10 +1185,14 @@ fn build_linker_input(
             assertions
                 .check_path(&out.path, linker)
                 .with_context(|| format!("Assertions failed for `{}`", out.path.display()))?;
-            Ok(out)
+            out
         }
-        InputType::LinkerScript => Ok(LinkerInput::new_prefixed(first_obj_path.to_owned(), "-T")),
-    }
+        InputType::LinkerScript => LinkerInput::new_prefixed(first_obj_path.to_owned(), "-T"),
+    };
+
+    linker_input.template = dep.template.clone();
+
+    Ok(linker_input)
 }
 
 #[derive(Debug)]
@@ -1594,12 +1636,7 @@ impl LinkCommand {
             command.env("OUT", output_path);
             command.arg(script);
             command.arg(linker.path(cross_arch));
-            if config.auto_add_objects {
-                for input in extra_inputs {
-                    command.args(input.prefix_arg);
-                    command.arg(&input.path);
-                }
-            }
+            add_inputs_to_command(config, extra_inputs, &mut command);
             invocation_mode = LinkerInvocationMode::Script;
         } else {
             let linker_path = linker.path(cross_arch);
@@ -1692,15 +1729,12 @@ impl LinkCommand {
                     command.arg("--gc-sections").args(&linker_args.args);
                 }
             }
+
             if !linker_args.args.iter().any(|arg| arg == "-o") {
                 command.arg("-o").arg(output_path);
             }
-            if config.auto_add_objects {
-                for input in inputs {
-                    command.args(input.prefix_arg);
-                    command.arg(&input.path);
-                }
-            }
+
+            add_inputs_to_command(config, inputs, &mut command);
         }
 
         if linker.is_wild() {
@@ -1738,6 +1772,7 @@ impl LinkCommand {
             opt_save_dir,
             output_path: output_path.to_owned(),
         };
+
         // We allow skipping linking if all the object files and the version script
         // are unchanged and are older than our output file, but not if we're linking
         // with our linker, since we're always changing that. We also require that the
@@ -1821,6 +1856,29 @@ impl LinkCommand {
             bail!("Linker failed:\n{messages}\nRelink with:\n{self}");
         }
         Ok(())
+    }
+}
+
+fn add_inputs_to_command(config: &Config, inputs: &[LinkerInput], command: &mut Command) {
+    if !config.auto_add_objects {
+        return;
+    }
+
+    for input in inputs {
+        command.args(input.prefix_arg);
+        if let Some(template) = input.template.as_ref() {
+            let path_str = input.path.to_str().expect("Non-UTF-8 paths not supported");
+
+            for a in template {
+                if a.contains(TEMPLATE_PLACEHOLDER) {
+                    command.arg(a.replace(TEMPLATE_PLACEHOLDER, path_str));
+                } else {
+                    command.arg(a);
+                }
+            }
+        } else {
+            command.arg(&input.path);
+        }
     }
 }
 
