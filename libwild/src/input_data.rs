@@ -58,10 +58,6 @@ pub(crate) struct FileId(u32);
 
 pub(crate) const PRELUDE_FILE_ID: FileId = FileId::new(0, 0);
 
-/// It's convenient for parsed files to know their FileId, however we don't decide their file IDs
-/// until we create the groups, which happens after parsing. So we need a placeholder.
-pub(crate) const UNINITIALISED_FILE_ID: FileId = FileId::from_encoded(0xffff_ffff);
-
 pub(crate) struct InputFile {
     pub(crate) filename: PathBuf,
 

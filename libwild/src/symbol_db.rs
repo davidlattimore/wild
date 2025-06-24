@@ -9,19 +9,18 @@ use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
 use crate::grouping::Group;
+use crate::grouping::SequencedInput;
+use crate::grouping::SequencedInputObject;
+use crate::grouping::SequencedLinkerScript;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::hash::hash_bytes;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
-use crate::input_data::UNINITIALISED_FILE_ID;
 use crate::input_data::VersionScriptData;
 use crate::output_section_id::OutputSectionId;
 use crate::parsing::InternalSymDefInfo;
-use crate::parsing::ParsedInput;
-use crate::parsing::ParsedInputObject;
 use crate::parsing::Prelude;
-use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SymbolPlacement;
 use crate::resolution::AtomicValueFlags;
 use crate::resolution::ResolvedFile;
@@ -178,10 +177,6 @@ impl SymbolIdRange {
 
     pub(crate) fn start(&self) -> SymbolId {
         self.start_symbol_id
-    }
-
-    pub(crate) fn set_start(&mut self, start: SymbolId) {
-        self.start_symbol_id = start;
     }
 
     pub(crate) fn as_usize(&self) -> std::ops::Range<usize> {
@@ -425,7 +420,7 @@ impl<'data> SymbolDb<'data> {
                 let obj = &parsed_input_objects[file_id.file()];
                 let local_index = symbol_id.to_input(obj.symbol_id_range);
 
-                let Ok(obj_symbol) = obj.object.symbol(local_index) else {
+                let Ok(obj_symbol) = obj.parsed.object.symbol(local_index) else {
                     return Visibility::Default;
                 };
 
@@ -577,14 +572,14 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions[symbol_id.as_usize()] = new_definition;
     }
 
-    pub(crate) fn file<'db>(&'db self, file_id: FileId) -> ParsedInput<'db> {
+    pub(crate) fn file<'db>(&'db self, file_id: FileId) -> SequencedInput<'db> {
         match &self.groups[file_id.group()] {
-            Group::Prelude(prelude) => ParsedInput::Prelude(prelude),
+            Group::Prelude(prelude) => SequencedInput::Prelude(prelude),
             Group::Objects(parsed_input_objects) => {
-                ParsedInput::Object(&parsed_input_objects[file_id.file()])
+                SequencedInput::Object(&parsed_input_objects[file_id.file()])
             }
-            Group::LinkerScripts(scripts) => ParsedInput::LinkerScript(&scripts[file_id.file()]),
-            Group::Epilogue(epilogue) => ParsedInput::Epilogue(epilogue),
+            Group::LinkerScripts(scripts) => SequencedInput::LinkerScript(&scripts[file_id.file()]),
+            Group::Epilogue(epilogue) => SequencedInput::Epilogue(epilogue),
         }
     }
 
@@ -971,7 +966,9 @@ fn read_symbols<'data>(
                             &mut outputs,
                             args,
                         )
-                        .with_context(|| format!("Failed to load symbols from `{}`", obj.input))?;
+                        .with_context(|| {
+                            format!("Failed to load symbols from `{}`", obj.parsed.input)
+                        })?;
                     }
                 }
                 Group::LinkerScripts(scripts) => {
@@ -990,11 +987,11 @@ fn read_symbols<'data>(
 }
 
 fn load_linker_script_symbols<'data>(
-    script: &ProcessedLinkerScript<'data>,
+    script: &SequencedLinkerScript<'data>,
     symbols_out: &mut SymbolInfoWriter,
     outputs: &mut SymbolLoadOutputs<'data>,
 ) {
-    for (offset, definition) in script.symbol_defs.iter().enumerate() {
+    for (offset, definition) in script.parsed.symbol_defs.iter().enumerate() {
         let symbol_id = script.symbol_id_range.offset_to_id(offset);
 
         outputs.add_non_versioned(PendingSymbol::from_prehashed(
@@ -1014,20 +1011,24 @@ fn load_linker_script_symbols<'data>(
 }
 
 fn load_symbols_from_file<'data>(
-    s: &ParsedInputObject<'data>,
+    s: &SequencedInputObject<'data>,
     version_script: &VersionScript,
     symbols_out: &mut SymbolInfoWriter,
     outputs: &mut SymbolLoadOutputs<'data>,
     args: &Args,
 ) -> Result {
     if s.is_dynamic() {
-        DynamicObjectSymbolLoader::new(&s.object)?.load_symbols(s.file_id, symbols_out, outputs)
+        DynamicObjectSymbolLoader::new(&s.parsed.object)?.load_symbols(
+            s.file_id,
+            symbols_out,
+            outputs,
+        )
     } else {
         RegularObjectSymbolLoader {
-            object: &s.object,
+            object: &s.parsed.object,
             args,
             version_script,
-            archive_semantics: s.input.has_archive_semantics(),
+            archive_semantics: s.parsed.input.has_archive_semantics(),
         }
         .load_symbols(s.file_id, symbols_out, outputs)
     }
@@ -1056,7 +1057,6 @@ impl<'out> SymbolInfoWriter<'out> {
     }
 
     fn set_next(&mut self, value_flags: ValueFlags, resolution: SymbolId, file_id: FileId) {
-        debug_assert!(file_id != UNINITIALISED_FILE_ID);
         self.value_kinds.push(value_flags);
         self.resolutions.push(resolution);
         self.file_ids.push(file_id);
@@ -1371,27 +1371,32 @@ impl std::fmt::Display for SymbolDebug<'_, '_> {
         }
         if symbol_name.bytes().is_empty() {
             match file {
-                ParsedInput::Prelude(_) => write!(f, "<unnamed internal symbol>")?,
-                ParsedInput::Object(o) => {
+                SequencedInput::Prelude(_) => write!(f, "<unnamed internal symbol>")?,
+                SequencedInput::Object(o) => {
                     let symbol_index = symbol_id.to_input(file.symbol_id_range());
                     if let Some(section_name) = o
+                        .parsed
                         .object
                         .symbol(symbol_index)
                         .ok()
                         .and_then(|symbol| {
-                            o.object.symbol_section(symbol, symbol_index).ok().flatten()
+                            o.parsed
+                                .object
+                                .symbol_section(symbol, symbol_index)
+                                .ok()
+                                .flatten()
                         })
-                        .map(|section_index| o.object.section_display_name(section_index))
+                        .map(|section_index| o.parsed.object.section_display_name(section_index))
                     {
                         write!(f, "section `{section_name}`")?;
                     } else {
                         write!(f, "<unnamed symbol>")?;
                     }
                 }
-                ParsedInput::LinkerScript(s) => {
-                    write!(f, "Symbol from linker script `{}`", s.input)?;
+                SequencedInput::LinkerScript(s) => {
+                    write!(f, "Symbol from linker script `{}`", s.parsed.input)?;
                 }
-                ParsedInput::Epilogue(_) => write!(f, "<unnamed custom-section symbol>")?,
+                SequencedInput::Epilogue(_) => write!(f, "<unnamed custom-section symbol>")?,
             }
         } else {
             write!(f, "symbol `{}`", self.db.symbol_name_for_display(symbol_id))?;
@@ -1597,7 +1602,7 @@ impl<'data, 'db> AtomicSymbolDb<'data, 'db> {
         self.db.symbol_name_for_display(symbol_id)
     }
 
-    fn file<'a>(&'a self, file_id: FileId) -> ParsedInput<'a> {
+    fn file<'a>(&'a self, file_id: FileId) -> SequencedInput<'a> {
         self.db.file(file_id)
     }
 
