@@ -195,15 +195,12 @@ impl Linker {
             args.is_dynamic_executable.store(true, Ordering::Relaxed);
         }
 
-        let (parsed_inputs, layout_rules) = parsing::parse_input_files(
-            &input_data.inputs,
-            &input_data.linker_scripts,
-            args,
-            &mut output_sections,
-            &self.herd,
-        )?;
+        let (linker_scripts, layout_rules) =
+            parsing::process_linker_scripts(&input_data.linker_scripts, &mut output_sections)?;
 
-        let groups = grouping::group_files(parsed_inputs, args);
+        let parsed_inputs = parsing::parse_input_files(&input_data.inputs, linker_scripts, args)?;
+
+        let groups = grouping::group_files(parsed_inputs, args, &self.herd);
 
         let mut symbol_db = symbol_db::SymbolDb::build(
             groups,

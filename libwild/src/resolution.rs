@@ -12,12 +12,12 @@ use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
 use crate::grouping::Group;
+use crate::grouping::SequencedInputObject;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
-use crate::input_data::UNINITIALISED_FILE_ID;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::layout_rules::SectionRules;
 use crate::output_section_id::CustomSectionDetails;
@@ -25,7 +25,6 @@ use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
 use crate::output_section_map::OutputSectionMap;
 use crate::parsing::InternalSymDefInfo;
-use crate::parsing::ParsedInputObject;
 use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::PartId;
@@ -273,11 +272,11 @@ fn resolve_group<'data, 'definitions>(
                     definitions_out_per_file.push(AtomicTake::empty());
 
                     ResolvedFile::LinkerScript(ResolvedLinkerScript {
-                        input: s.input.clone(),
+                        input: s.parsed.input.clone(),
                         file_id: s.file_id,
                         symbol_id_range: s.symbol_id_range,
                         // TODO: Consider alternative to cloning this.
-                        symbol_definitions: s.symbol_defs.clone(),
+                        symbol_definitions: s.parsed.symbol_defs.clone(),
                     })
                 })
                 .collect();
@@ -289,7 +288,7 @@ fn resolve_group<'data, 'definitions>(
 
             ResolvedGroup {
                 files: vec![ResolvedFile::Epilogue(ResolvedEpilogue {
-                    file_id: UNINITIALISED_FILE_ID,
+                    file_id: epilogue.file_id,
                     start_symbol_id: epilogue.start_symbol_id,
                     custom_start_stop_defs: Vec::new(),
                 })],
@@ -568,7 +567,7 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
         }
         Group::Objects(parsed_input_objects) => {
             let obj = &parsed_input_objects[file_id.file()];
-            let input = obj.input.clone();
+            let input = obj.parsed.input.clone();
             let res = ResolvedObject::new(
                 obj,
                 resources,
@@ -739,7 +738,7 @@ fn allocate_start_stop_symbol_id<'data>(
 
 impl<'data> ResolvedObject<'data> {
     fn new(
-        obj: &'data ParsedInputObject<'data>,
+        obj: &'data SequencedInputObject<'data>,
         resources: &ResolutionResources<'data, '_, '_>,
         definitions_out: &mut [SymbolId],
         undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
@@ -763,8 +762,8 @@ impl<'data> ResolvedObject<'data> {
         }
 
         Ok(Self {
-            input: obj.input.clone(),
-            object: &obj.object,
+            input: obj.parsed.input.clone(),
+            object: &obj.parsed.object,
             file_id: obj.file_id,
             symbol_id_range: obj.symbol_id_range,
             non_dynamic,
@@ -867,12 +866,13 @@ fn resolve_sections_for_object<'data>(
 }
 
 fn resolve_symbols<'data>(
-    obj: &ParsedInputObject<'data>,
+    obj: &SequencedInputObject<'data>,
     resources: &ResolutionResources<'data, '_, '_>,
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     definitions_out: &mut [SymbolId],
 ) -> Result {
-    obj.object
+    obj.parsed
+        .object
         .symbols
         .enumerate()
         .zip(definitions_out)
@@ -893,12 +893,13 @@ fn resolve_symbols<'data>(
 }
 
 fn resolve_dynamic_symbols<'data>(
-    obj: &ParsedInputObject<'data>,
+    obj: &SequencedInputObject<'data>,
     resources: &ResolutionResources<'data, '_, '_>,
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     definitions_out: &mut [SymbolId],
 ) -> Result {
-    obj.object
+    obj.parsed
+        .object
         .symbols
         .enumerate()
         .zip(definitions_out)
@@ -924,7 +925,7 @@ fn resolve_symbol<'data>(
     local_symbol: &crate::elf::SymtabEntry,
     definition_out: &mut SymbolId,
     resources: &ResolutionResources<'data, '_, '_>,
-    obj: &ParsedInputObject<'data>,
+    obj: &SequencedInputObject<'data>,
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
     is_from_shared_object: bool,
 ) -> Result {
@@ -938,7 +939,7 @@ fn resolve_symbol<'data>(
         return Ok(());
     }
 
-    let name_info = RawSymbolName::parse(obj.object.symbol_name(local_symbol)?);
+    let name_info = RawSymbolName::parse(obj.parsed.object.symbol_name(local_symbol)?);
 
     debug_assert_bail!(
         !local_symbol.is_local(),
