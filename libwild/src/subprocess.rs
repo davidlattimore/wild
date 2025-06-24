@@ -2,6 +2,7 @@ use crate::Args;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
+use jobserver::Client;
 use libc::c_char;
 use libc::fork;
 use libc::pid_t;
@@ -39,8 +40,13 @@ fn subprocess_result(args: &mut Args) -> Result<i32> {
     match unsafe { fork() } {
         0 => {
             // Fork success in child - Run linker in this process.
+
+            // SAFETY: Should be called early before other descriptors are opened and
+            // so we open it before the arguments are parsed (can open a file).
+            let jobserver_client = unsafe { Client::from_env() };
+
             crate::setup_tracing(args)?;
-            let _tokens = crate::setup_thread_pool(args)?;
+            let _tokens = crate::setup_thread_pool(args, jobserver_client)?;
             let linker = crate::Linker::new();
             let _outputs = linker.run(args)?;
             inform_parent_done(&fds);
@@ -48,7 +54,11 @@ fn subprocess_result(args: &mut Args) -> Result<i32> {
         }
         -1 => {
             // Fork failure in the parent - Fallback to running linker in this process
-            crate::run(args)?;
+
+            // SAFETY: Should be called early before other descriptors are opened and
+            // so we open it before the arguments are parsed (can open a file).
+            let jobserver_client = unsafe { Client::from_env() };
+            crate::run(args, jobserver_client)?;
             Ok(0)
         }
         pid => {

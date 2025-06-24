@@ -55,6 +55,7 @@ use input_data::InputData;
 use input_data::InputFile;
 use input_data::InputLinkerScript;
 use jobserver::Acquired;
+use jobserver::Client;
 use layout_rules::LayoutRules;
 use output_section_id::OutputSections;
 use std::sync::atomic::Ordering;
@@ -66,9 +67,9 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 /// Runs the linker and cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
-pub fn run(args: &mut Args) -> error::Result {
+pub fn run(args: &mut Args, jobserver_client: Option<Client>) -> error::Result {
     setup_tracing(args)?;
-    let _tokens = setup_thread_pool(args)?;
+    let _tokens = setup_thread_pool(args, jobserver_client)?;
     let linker = Linker::new();
     linker.run(args)?;
     Ok(())
@@ -94,8 +95,11 @@ pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
 /// Sets up the global thread pool based on the supplied arguments, in particular --threads. This
 /// can only be called once. Calling this at all is optional. If it isn't called, then a default
 /// thread pool will be used - i.e. any argument to --threads will be ignored.
-pub fn setup_thread_pool(args: &mut Args) -> error::Result<Vec<Acquired>> {
-    args.setup_thread_pool()
+pub fn setup_thread_pool(
+    args: &mut Args,
+    jobserver_client: Option<Client>,
+) -> error::Result<Vec<Acquired>> {
+    args.setup_thread_pool(jobserver_client)
 }
 
 /// This is effectively a data store for use while linking. It takes ownership of all the input data

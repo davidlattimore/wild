@@ -727,21 +727,21 @@ impl Args {
     /// and return the number of token which will be returned at drop place.
     ///
     /// https://www.gnu.org/software/make/manual/html_node/POSIX-Jobserver.html
-    pub(crate) fn setup_thread_pool(&mut self) -> Result<Vec<Acquired>> {
+    pub(crate) fn setup_thread_pool(
+        &mut self,
+        jobserver_client: Option<Client>,
+    ) -> Result<Vec<Acquired>> {
         let mut tokens = Vec::new();
         self.available_threads = self.num_threads.unwrap_or_else(|| {
-            // SAFETY: should be called early before other descriptors are opened
-            unsafe {
-                if let Some(client) = Client::from_env() {
-                    while let Ok(Some(acquired)) = client.try_acquire() {
-                        tokens.push(acquired);
-                    }
-                    tracing::trace!(count = tokens.len(), "Acquired jobserver tokens");
-                    // Our parent "holds" one jobserver token, add it.
-                    NonZeroUsize::new((tokens.len() + 1).max(1)).unwrap()
-                } else {
-                    available_parallelism()
+            if let Some(client) = jobserver_client {
+                while let Ok(Some(acquired)) = client.try_acquire() {
+                    tokens.push(acquired);
                 }
+                tracing::trace!(count = tokens.len(), "Acquired jobserver tokens");
+                // Our parent "holds" one jobserver token, add it.
+                NonZeroUsize::new((tokens.len() + 1).max(1)).unwrap()
+            } else {
+                available_parallelism()
             }
         });
 
