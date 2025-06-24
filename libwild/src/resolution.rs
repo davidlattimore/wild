@@ -956,8 +956,14 @@ fn resolve_symbol<'data>(
             let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
 
             if symbol_file_id != obj.file_id && !local_symbol.is_weak() {
-                // Undefined symbols in shared objects don't trigger loading of other objects.
-                if !is_from_shared_object {
+                // Undefined symbols in shared objects should actually activate as-needed shared
+                // objects, however the rules for whether this should result in a DT_NEEDED entry
+                // are kind of subtle, so for now, we don't activate shared objects from shared
+                // objects. See
+                // https://github.com/davidlattimore/wild/issues/930#issuecomment-3007027924 for
+                // more details. TODO: Fix this.
+                if !is_from_shared_object || !resources.symbol_db.file(symbol_file_id).is_dynamic()
+                {
                     resources.request_file_id(symbol_file_id);
                 }
             } else if symbol_file_id != PRELUDE_FILE_ID {
