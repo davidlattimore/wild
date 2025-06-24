@@ -452,6 +452,14 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             // Since we currently only support GNU hash, there's no state to update.
         } else if let Some(rest) = long_arg_split_prefix("entry=") {
             args.entry = Some(rest.to_owned());
+        } else if long_arg_eq("entry") {
+            args.entry = Some(
+                input
+                    .next()
+                    .context("Missing argument to --entry")?
+                    .as_ref()
+                    .to_owned(),
+            );
         } else if arg == "-e" {
             args.entry = Some(
                 input
@@ -567,10 +575,17 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         } else if let Some(script) = long_arg_split_prefix("script=") {
             args.save_dir.handle_file(script)?;
             args.add_script(script);
+        } else if long_arg_eq("script") {
+            let script = input.next().context("Missing argument to --script")?;
+            args.save_dir.handle_file(script.as_ref())?;
+            args.add_script(script.as_ref());
         } else if arg == "-T" {
             let script = input.next().context("Missing argument to -T")?;
             args.save_dir.handle_file(script.as_ref())?;
             args.add_script(script.as_ref());
+        } else if let Some(rest) = arg.strip_prefix("-T") {
+            args.save_dir.handle_file(rest.as_ref())?;
+            args.add_script(rest.as_ref());
         } else if let Some(script) = long_arg_split_prefix("version-script=") {
             args.save_dir.handle_file(script)?;
             args.version_script_path = Some(PathBuf::from(script));
