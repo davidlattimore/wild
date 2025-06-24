@@ -235,6 +235,14 @@ impl SequencedInput<'_> {
             ),
         }
     }
+
+    pub(crate) fn is_dynamic(&self) -> bool {
+        if let SequencedInput::Object(o) = self {
+            o.is_dynamic()
+        } else {
+            false
+        }
+    }
 }
 
 impl Display for GroupsDisplay<'_, '_> {

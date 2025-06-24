@@ -10,8 +10,8 @@
 //#Mode:dynamic
 // TODO: https://rust-lang.zulipchat.com/#narrow/channel/421156-gsoc/topic/Project.3A.20Improve.20Wild.20linker.20test.20suites/near/521482968
 //#Cross:false
-//#Archive:shared-a1.c,shared-a2.c
 //#Shared:shared-s1.c
+//#Archive:shared-a1.c,shared-a2.c
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:.dynamic.DT_NEEDED
