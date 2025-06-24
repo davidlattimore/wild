@@ -7,7 +7,6 @@ use crate::error::Result;
 use crate::hash::hash_bytes;
 use crate::input_data::InputLinkerScript;
 use crate::input_data::InputRef;
-use crate::input_data::UNINITIALISED_FILE_ID;
 use crate::linker_script;
 use crate::linker_script::ContentsCommand;
 use crate::linker_script::SectionCommand;
@@ -17,8 +16,6 @@ use crate::output_section_id::SectionName;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::ProcessedLinkerScript;
 use crate::parsing::SymbolPlacement;
-use crate::symbol_db::SymbolId;
-use crate::symbol_db::SymbolIdRange;
 use hashbrown::HashTable;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
@@ -188,16 +185,12 @@ impl<'data> LayoutRulesBuilder<'data> {
             }
         }
 
-        let symbol_id_range = SymbolIdRange::input(SymbolId::undefined(), symbol_defs.len());
-
         Ok(ProcessedLinkerScript {
             symbol_defs,
             input: InputRef {
                 file: input.input_file,
                 entry: None,
             },
-            file_id: UNINITIALISED_FILE_ID,
-            symbol_id_range,
         })
     }
 
