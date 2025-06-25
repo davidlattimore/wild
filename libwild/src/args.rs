@@ -660,6 +660,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             }
             return parse_from_argument_file(Path::new(path));
         } else if long_arg_eq("help") {
+            // The following listing is something autoconf detection relies on.
+            println!("wild: supported targets: elf64-x86-64 elf64-littleaarch64 elf64-littleriscv");
+            println!("wild: supported emulations: elf_x86_64 aarch64elf elf64lriscv");
+            println!();
             bail!("Sorry, help isn't implemented yet");
         } else if strip_option(arg)
             .is_some_and(|stripped_arg| DEFAULT_FLAGS.contains(&stripped_arg))
