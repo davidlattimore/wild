@@ -465,9 +465,6 @@ struct TestConfig {
     /// version of GNU ld that doesn't perform certain optimisations.
     #[serde(default)]
     diff_ignore: Vec<String>,
-
-    #[serde(default)]
-    external_test_suites: Vec<ExternalTestSuites>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, Debug, Default)]
@@ -485,12 +482,6 @@ enum RustcChannel {
     /// Use the nightly toolchain. This enables nightly-only tests, including those that use the
     /// cranelift backed. It thus requires that the cranelift backend is installed.
     Nightly,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
-enum ExternalTestSuites {
-    Mold,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, EnumString, Default)]
@@ -2436,17 +2427,10 @@ fn integration_test(
 }
 
 #[rstest]
+#[cfg(feature = "mold_tests")]
 fn exec_mold_tests(
     #[files("../external_test_suites/mold/test/*.sh")] mold_test: PathBuf,
 ) -> Result {
-    let test_config = read_test_config()?;
-    if !test_config
-        .external_test_suites
-        .contains(&ExternalTestSuites::Mold)
-    {
-        return Ok(());
-    }
-
     let path = env::var("PATH").unwrap();
     let current_dir = env::current_dir()?;
     let wild_dir = current_dir.parent().unwrap().join("fakes-debug");
