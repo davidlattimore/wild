@@ -2,7 +2,6 @@ use crate::Args;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
-use jobserver::Client;
 use libc::c_char;
 use libc::fork;
 use libc::pid_t;
@@ -21,7 +20,7 @@ use std::ffi::c_void;
 /// # Safety
 /// Must not be called once threads have been spawned. Calling this function from main is generally
 /// the best way to ensure this.
-pub unsafe fn run_in_subprocess(args: &mut Args) -> ! {
+pub unsafe fn run_in_subprocess(args: Args) -> ! {
     let exit_code = match subprocess_result(args) {
         Ok(code) => code,
         Err(error) => crate::error::report_error_and_exit(&error),
@@ -29,7 +28,7 @@ pub unsafe fn run_in_subprocess(args: &mut Args) -> ! {
     std::process::exit(exit_code);
 }
 
-fn subprocess_result(args: &mut Args) -> Result<i32> {
+fn subprocess_result(args: Args) -> Result<i32> {
     let mut fds: [c_int; 2] = [0; 2];
     // create the pipe used to communicate between the parent and child processes - exit on failure
     make_pipe(&mut fds).context("make_pipe")?;
@@ -41,24 +40,17 @@ fn subprocess_result(args: &mut Args) -> Result<i32> {
         0 => {
             // Fork success in child - Run linker in this process.
 
-            // SAFETY: Should be called early before other descriptors are opened and
-            // so we open it before the arguments are parsed (can open a file).
-            let jobserver_client = unsafe { Client::from_env() };
-
-            crate::setup_tracing(args)?;
-            let _tokens = crate::setup_thread_pool(args, jobserver_client)?;
+            crate::setup_tracing(&args)?;
+            let args = args.activate_thread_pool()?;
             let linker = crate::Linker::new();
-            let _outputs = linker.run(args)?;
+            let _outputs = linker.run(&args)?;
             inform_parent_done(&fds);
             Ok(0)
         }
         -1 => {
             // Fork failure in the parent - Fallback to running linker in this process
 
-            // SAFETY: Should be called early before other descriptors are opened and
-            // so we open it before the arguments are parsed (can open a file).
-            let jobserver_client = unsafe { Client::from_env() };
-            crate::run(args, jobserver_client)?;
+            crate::run(args)?;
             Ok(0)
         }
         pid => {

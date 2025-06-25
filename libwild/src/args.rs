@@ -97,6 +97,15 @@ pub struct Args {
 
     /// The number of actually available threads (considering jobserver)
     pub(crate) available_threads: NonZeroUsize,
+
+    jobserver_client: Option<Client>,
+}
+
+/// Represents a command-line argument that specifies the number of threads to use,
+/// triggering activation of the thread pool.
+pub struct ActivatedArgs {
+    pub args: Args,
+    _jobserver_tokens: Vec<Acquired>,
 }
 
 #[derive(Debug)]
@@ -294,6 +303,7 @@ impl Default for Args {
             explicitly_export_dynamic: false,
             got_plt_syms: false,
             relax: true,
+            jobserver_client: None,
             available_threads: NonZeroUsize::new(1).unwrap(),
         }
     }
@@ -302,6 +312,10 @@ impl Default for Args {
 // Parse the supplied input arguments, which should not include the program name.
 pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Args> {
     use crate::input_data::MAX_FILES_PER_GROUP;
+
+    // SAFETY: Should be called early before other descriptors are opened and
+    // so we open it before the arguments are parsed (can open a file).
+    let jobserver_client = unsafe { Client::from_env() };
 
     let files_per_group = std::env::var(FILES_PER_GROUP_ENV)
         .ok()
@@ -317,6 +331,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
 
     let mut args = Args {
         files_per_group,
+        jobserver_client,
         ..Default::default()
     };
 
@@ -722,35 +737,6 @@ impl Args {
         parse(input)
     }
 
-    /// Sets up the thread pool, using the explicit number of threads if specified,
-    /// or falling back to the jobserver protocol if available.
-    /// and return the number of token which will be returned at drop place.
-    ///
-    /// https://www.gnu.org/software/make/manual/html_node/POSIX-Jobserver.html
-    pub(crate) fn setup_thread_pool(
-        &mut self,
-        jobserver_client: Option<Client>,
-    ) -> Result<Vec<Acquired>> {
-        let mut tokens = Vec::new();
-        self.available_threads = self.num_threads.unwrap_or_else(|| {
-            if let Some(client) = jobserver_client {
-                while let Ok(Some(acquired)) = client.try_acquire() {
-                    tokens.push(acquired);
-                }
-                tracing::trace!(count = tokens.len(), "Acquired jobserver tokens");
-                // Our parent "holds" one jobserver token, add it.
-                NonZeroUsize::new((tokens.len() + 1).max(1)).unwrap()
-            } else {
-                available_parallelism()
-            }
-        });
-
-        ThreadPoolBuilder::new()
-            .num_threads(self.available_threads.get())
-            .build_global()?;
-        Ok(tokens)
-    }
-
     pub(crate) fn base_address(&self) -> u64 {
         if self.is_relocatable() {
             0
@@ -848,6 +834,35 @@ impl Args {
             search_first: None,
             modifiers: Modifiers::default(),
         });
+    }
+
+    /// Sets up the thread pool, using the explicit number of threads if specified,
+    /// or falling back to the jobserver protocol if available.
+    ///
+    /// https://www.gnu.org/software/make/manual/html_node/POSIX-Jobserver.html
+    pub fn activate_thread_pool(mut self) -> Result<ActivatedArgs> {
+        let mut tokens = Vec::new();
+        self.available_threads = self.num_threads.unwrap_or_else(|| {
+            if let Some(client) = &self.jobserver_client {
+                while let Ok(Some(acquired)) = client.try_acquire() {
+                    tokens.push(acquired);
+                }
+                tracing::trace!(count = tokens.len(), "Acquired jobserver tokens");
+                // Our parent "holds" one jobserver token, add it.
+                NonZeroUsize::new((tokens.len() + 1).max(1)).unwrap()
+            } else {
+                available_parallelism()
+            }
+        });
+
+        ThreadPoolBuilder::new()
+            .num_threads(self.available_threads.get())
+            .build_global()?;
+
+        Ok(ActivatedArgs {
+            args: self,
+            _jobserver_tokens: tokens,
+        })
     }
 }
 

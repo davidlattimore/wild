@@ -1797,6 +1797,7 @@ impl LinkCommand {
 
             // This call is expected to error for all but the first call.
             let _ = libwild::setup_tracing(&parsed_args);
+            let parsed_args = parsed_args.activate_thread_pool()?;
 
             linker
                 .run(&parsed_args)
