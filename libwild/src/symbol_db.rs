@@ -1544,7 +1544,7 @@ impl<'data> PendingVersionedSymbol<'data> {
 
 /// Decides how many buckets we should use for symbol names.
 fn num_symbol_hash_buckets(args: &Args) -> usize {
-    args.num_threads.get()
+    args.available_threads.get()
 }
 
 impl<'data> SymbolLoadOutputs<'data> {

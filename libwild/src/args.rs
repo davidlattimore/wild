@@ -21,6 +21,8 @@ use crate::error::Result;
 use crate::input_data::FileId;
 use crate::linker_script::maybe_forced_sysroot;
 use crate::save_dir::SaveDir;
+use jobserver::Acquired;
+use jobserver::Client;
 use rayon::ThreadPoolBuilder;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -37,7 +39,7 @@ pub struct Args {
     pub(crate) inputs: Vec<Input>,
     pub(crate) output: Arc<Path>,
     pub(crate) dynamic_linker: Option<Box<Path>>,
-    pub(crate) num_threads: NonZeroUsize,
+    pub num_threads: Option<NonZeroUsize>,
     pub(crate) strip_all: bool,
     pub(crate) strip_debug: bool,
     pub(crate) prepopulate_maps: bool,
@@ -92,6 +94,18 @@ pub struct Args {
     output_kind: Option<OutputKind>,
     pub(crate) is_dynamic_executable: AtomicBool,
     relocation_model: RelocationModel,
+
+    /// The number of actually available threads (considering jobserver)
+    pub(crate) available_threads: NonZeroUsize,
+
+    jobserver_client: Option<Client>,
+}
+
+/// Represents a command-line argument that specifies the number of threads to use,
+/// triggering activation of the thread pool.
+pub struct ActivatedArgs {
+    pub args: Args,
+    _jobserver_tokens: Vec<Acquired>,
 }
 
 #[derive(Debug)]
@@ -220,10 +234,6 @@ const DEFAULT_FLAGS: &[&str] = &[
     "enable-new-dtags",
 ];
 
-pub(crate) fn available_parallelism() -> std::num::NonZeroUsize {
-    std::thread::available_parallelism().unwrap_or(std::num::NonZeroUsize::new(1).unwrap())
-}
-
 impl Default for Args {
     fn default() -> Self {
         Args {
@@ -236,7 +246,7 @@ impl Default for Args {
             dynamic_linker: None,
             output_kind: None,
             time_phases: false,
-            num_threads: available_parallelism(),
+            num_threads: None,
             strip_all: false,
             strip_debug: false,
             // For now, we default to --gc-sections. This is different to other linkers, but other than
@@ -289,6 +299,8 @@ impl Default for Args {
             explicitly_export_dynamic: false,
             got_plt_syms: false,
             relax: true,
+            jobserver_client: None,
+            available_threads: NonZeroUsize::new(1).unwrap(),
         }
     }
 }
@@ -296,6 +308,10 @@ impl Default for Args {
 // Parse the supplied input arguments, which should not include the program name.
 pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Args> {
     use crate::input_data::MAX_FILES_PER_GROUP;
+
+    // SAFETY: Should be called early before other descriptors are opened and
+    // so we open it before the arguments are parsed (can open a file).
+    let jobserver_client = unsafe { Client::from_env() };
 
     let files_per_group = std::env::var(FILES_PER_GROUP_ENV)
         .ok()
@@ -311,6 +327,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
 
     let mut args = Args {
         files_per_group,
+        jobserver_client,
         ..Default::default()
     };
 
@@ -458,12 +475,12 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         } else if long_arg_eq("time") {
             args.time_phases = true;
         } else if let Some(rest) = long_arg_split_prefix("threads=") {
-            args.num_threads = NonZeroUsize::try_from(rest.parse::<usize>()?)?;
+            args.num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
         } else if long_arg_eq("threads") {
             // Default behaviour (multiple threads)
-            args.num_threads = available_parallelism();
+            args.num_threads = None;
         } else if let Some(rest) = long_arg_split_prefix("thread-count=") {
-            args.num_threads = NonZeroUsize::try_from(rest.parse::<usize>()?)?;
+            args.num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
         } else if long_arg_eq("exclude-libs") {
             let param = input.next().context("Missing argument to --exclude-libs")?;
             if param.as_ref() != "ALL" {
@@ -471,7 +488,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             }
             args.exclude_libs = true;
         } else if long_arg_eq("no-threads") {
-            args.num_threads = NonZeroUsize::new(1).unwrap();
+            args.num_threads = Some(NonZeroUsize::new(1).unwrap());
         } else if long_arg_eq("strip-all") || arg == "-s" {
             args.strip_all = true;
             args.strip_debug = true;
@@ -605,7 +622,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.debug_fuel = Some(AtomicI64::new(rest.parse()?));
             // Using debug fuel with more than one thread would likely give non-deterministic
             // results.
-            args.num_threads = NonZeroUsize::new(1).unwrap();
+            args.num_threads = Some(NonZeroUsize::new(1).unwrap());
         } else if long_arg_eq("allow-shlib-undefined") {
             args.allow_shlib_undefined = true;
         } else if long_arg_eq("no-allow-shlib-undefined") {
@@ -716,13 +733,6 @@ impl Args {
         parse(input)
     }
 
-    pub(crate) fn setup_thread_pool(&self) -> Result {
-        ThreadPoolBuilder::new()
-            .num_threads(self.num_threads.get())
-            .build_global()?;
-        Ok(())
-    }
-
     pub(crate) fn base_address(&self) -> u64 {
         if self.is_relocatable() {
             0
@@ -820,6 +830,36 @@ impl Args {
             search_first: None,
             modifiers: Modifiers::default(),
         });
+    }
+
+    /// Sets up the thread pool, using the explicit number of threads if specified,
+    /// or falling back to the jobserver protocol if available.
+    ///
+    /// https://www.gnu.org/software/make/manual/html_node/POSIX-Jobserver.html
+    pub fn activate_thread_pool(mut self) -> Result<ActivatedArgs> {
+        let mut tokens = Vec::new();
+        self.available_threads = self.num_threads.unwrap_or_else(|| {
+            if let Some(client) = &self.jobserver_client {
+                while let Ok(Some(acquired)) = client.try_acquire() {
+                    tokens.push(acquired);
+                }
+                tracing::trace!(count = tokens.len(), "Acquired jobserver tokens");
+                // Our parent "holds" one jobserver token, add it.
+                NonZeroUsize::new((tokens.len() + 1).max(1)).unwrap()
+            } else {
+                std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap())
+            }
+        });
+
+        // The pool might be already initialized, suppress the error intentionally.
+        let _ = ThreadPoolBuilder::new()
+            .num_threads(self.available_threads.get())
+            .build_global();
+
+        Ok(ActivatedArgs {
+            args: self,
+            _jobserver_tokens: tokens,
+        })
     }
 }
 
@@ -1110,7 +1150,7 @@ mod tests {
             Some(PathBuf::from_str("a.ver").unwrap())
         );
         assert_eq!(args.soname, Some("bar".to_owned()));
-        assert_eq!(args.num_threads, NonZeroUsize::new(1).unwrap());
+        assert_eq!(args.num_threads, Some(NonZeroUsize::new(1).unwrap()));
         assert!(args.should_print_version);
         assert_eq!(
             args.sysroot,

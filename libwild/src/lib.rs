@@ -47,6 +47,7 @@ pub(crate) mod verification;
 pub(crate) mod version_script;
 pub(crate) mod x86_64;
 
+use crate::args::ActivatedArgs;
 pub use args::Args;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
@@ -65,11 +66,11 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 /// Runs the linker and cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
-pub fn run(args: &Args) -> error::Result {
-    setup_tracing(args)?;
-    setup_thread_pool(args)?;
+pub fn run(args: Args) -> error::Result {
+    setup_tracing(&args)?;
+    let args = args.activate_thread_pool()?;
     let linker = Linker::new();
-    linker.run(args)?;
+    linker.run(&args)?;
     Ok(())
 }
 
@@ -88,13 +89,6 @@ pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
             .try_init()
             .map_err(|_| AlreadyInitialised)
     }
-}
-
-/// Sets up the global thread pool based on the supplied arguments, in particular --threads. This
-/// can only be called once. Calling this at all is optional. If it isn't called, then a default
-/// thread pool will be used - i.e. any argument to --threads will be ignored.
-pub fn setup_thread_pool(args: &Args) -> error::Result {
-    args.setup_thread_pool()
 }
 
 /// This is effectively a data store for use while linking. It takes ownership of all the input data
@@ -142,8 +136,9 @@ impl Linker {
     /// return, the output file should be usable.
     pub fn run<'layout_inputs>(
         &'layout_inputs self,
-        args: &'layout_inputs Args,
+        args: &'layout_inputs ActivatedArgs,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
+        let args = &args.args;
         if args.should_print_version {
             println!(
                 "Wild version {} (compatible with GNU linkers)",
