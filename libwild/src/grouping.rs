@@ -159,7 +159,7 @@ pub(crate) fn group_files<'data>(
 
 /// Decides after how many symbols, we should start a new group.
 fn determine_symbols_per_group(parsed_inputs: &ParsedInputs, args: &Args) -> usize {
-    let num_threads = args.num_threads.get();
+    let num_threads = args.available_threads.get();
 
     // If we're running with a single thread, then we might as well put everything into a single
     // group.

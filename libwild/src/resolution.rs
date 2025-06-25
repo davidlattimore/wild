@@ -142,7 +142,7 @@ fn resolve_symbols_in_files<'data>(
     }
     let outputs = Outputs::new(num_objects);
 
-    let num_threads = symbol_db.args.num_threads.get();
+    let num_threads = symbol_db.args.available_threads.get();
 
     let resources = ResolutionResources {
         definitions_per_file: &definitions_per_group_and_file,

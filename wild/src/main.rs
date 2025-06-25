@@ -20,9 +20,9 @@ fn run() -> libwild::error::Result {
 
     if args.should_fork() {
         // Safety: We haven't spawned any threads yet.
-        unsafe { libwild::run_in_subprocess(&args) };
+        unsafe { libwild::run_in_subprocess(args) };
     } else {
         // Run the linker in this process without forking.
-        libwild::run(&args)
+        libwild::run(args)
     }
 }
