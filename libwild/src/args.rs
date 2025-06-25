@@ -851,7 +851,7 @@ impl Args {
             }
         });
 
-        // The pool might be already initialized, supress the error intentionally.
+        // The pool might be already initialized, suppress the error intentionally.
         let _ = ThreadPoolBuilder::new()
             .num_threads(self.available_threads.get())
             .build_global();
