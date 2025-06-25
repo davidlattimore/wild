@@ -2431,12 +2431,12 @@ fn integration_test(
 fn exec_mold_tests(
     #[files("../external_test_suites/mold/test/*.sh")] mold_test: PathBuf,
 ) -> Result {
-    let path = env::var("PATH").unwrap();
+    let path = env::var("PATH")?;
     let current_dir = env::current_dir()?;
     let wild_dir = current_dir.parent().unwrap().join("fakes-debug");
 
     let output = Command::new("bash")
-        .arg("-c")
+        .current_dir("../fakes-debug")
         .arg(&mold_test)
         .env("PATH", format!("{wild_dir:?}:{path}"))
         .output()?;
