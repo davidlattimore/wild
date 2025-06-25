@@ -2437,17 +2437,17 @@ fn exec_mold_tests(
 
     let output = Command::new("bash")
         .current_dir("../fakes-debug")
-        .arg(&mold_test)
+        .arg("-c")
+        .arg(format!("{} 2>&1", mold_test.display()))
         .env("PATH", format!("{wild_dir:?}:{path}"))
         .output()?;
 
     if !output.status.success() {
         let error_message = format!(
-            "Mold test `{}` failed with status: {}\nstdout: {}\nstderr: {}",
+            "Mold test `{}` failed with status: {}\nOutput:\n{}",
             mold_test.display(),
             output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(&output.stdout)
         );
         return Err(error_message.into());
     }
