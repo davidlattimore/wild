@@ -47,8 +47,8 @@
 //!
 //! Contains:{string} Checks that the output binary does contain the specified string.
 //!
-//! Static:{bool} Only applicable when LinkerDriver=none. Defaults to true. Set to false to disable
-//! passing `-static` to the linker.
+//! Mode:{mode} Set linking mode to static (default), dynamic or unspecified. Cannot be used
+//! together with LinkerDriver.
 //!
 //! DiffIgnore:{diff-key} Add an extra linker-diff ignore directive.
 //!
@@ -795,7 +795,11 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                     .assertions
                     .contains_strings
                     .push(arg.trim().to_owned()),
-                "Mode" => config.linker_driver.direct_mut()?.mode = arg.parse()?,
+                "Mode" => {
+                    config.linker_driver.direct_mut()?.mode = arg
+                        .parse()
+                        .with_context(|| format!("Invalid Mode `{arg}`"))?
+                }
                 "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
                 "DiffEnabled" => {
                     config.should_diff = arg.parse().context("Invalid bool for DiffEnabled")?
@@ -2448,6 +2452,7 @@ fn integration_test(
         "string_merging.c",
         "comments.c",
         "eh_frame.c",
+        "symbol-priority.c",
         "trivial_asm.s",
         "non-alloc.s",
         "gnu-unique.c",

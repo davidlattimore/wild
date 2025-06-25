@@ -1,4 +1,5 @@
 use crate::args::Args;
+use crate::error::Result;
 use crate::input_data::FileId;
 use crate::input_data::MAX_FILES_PER_GROUP;
 use crate::parsing::Epilogue;
@@ -6,15 +7,36 @@ use crate::parsing::ParsedInputObject;
 use crate::parsing::ParsedInputs;
 use crate::parsing::Prelude;
 use crate::parsing::ProcessedLinkerScript;
+use crate::sharding::ShardKey as _;
+use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use std::fmt::Display;
 
 pub(crate) enum Group<'data> {
     Prelude(Prelude<'data>),
-    Objects(&'data [ParsedInputObject<'data>]),
-    LinkerScripts(Vec<ProcessedLinkerScript<'data>>),
+    Objects(&'data [SequencedInputObject<'data>]),
+    LinkerScripts(Vec<SequencedLinkerScript<'data>>),
     Epilogue(Epilogue),
+}
+
+pub(crate) struct SequencedInputObject<'data> {
+    pub(crate) parsed: ParsedInputObject<'data>,
+    pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) file_id: FileId,
+}
+
+pub(crate) struct SequencedLinkerScript<'data> {
+    pub(crate) parsed: ProcessedLinkerScript<'data>,
+    pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) file_id: FileId,
+}
+
+pub(crate) enum SequencedInput<'data> {
+    Prelude(&'data Prelude<'data>),
+    Object(&'data SequencedInputObject<'data>),
+    LinkerScript(&'data SequencedLinkerScript<'data>),
+    Epilogue(&'data Epilogue),
 }
 
 impl Group<'_> {
@@ -48,69 +70,87 @@ impl Group<'_> {
     }
 }
 
+#[tracing::instrument(skip_all, name = "Group files")]
 pub(crate) fn group_files<'data>(
     parsed_inputs: ParsedInputs<'data>,
     args: &Args,
+    herd: &'data bumpalo_herd::Herd,
 ) -> Vec<Group<'data>> {
-    let files_per_group = determine_max_files_per_group(args);
+    let max_files_per_group = determine_max_files_per_group(args);
     let symbols_per_group = determine_symbols_per_group(&parsed_inputs, args);
 
-    let mut groups = Vec::with_capacity(parsed_inputs.objects.len() / files_per_group + 3);
+    let mut groups = Vec::with_capacity(parsed_inputs.objects.len() / max_files_per_group + 3);
 
+    let mut next_symbol_id = SymbolId::undefined();
+    next_symbol_id = next_symbol_id.add_usize(parsed_inputs.prelude.symbol_definitions.len());
     groups.push(Group::Prelude(parsed_inputs.prelude));
 
-    let mut num_symbols = parsed_inputs
-        .objects
-        .first()
-        .map_or(0, |obj| obj.symbol_id_range.len());
-    let mut num_files = 1;
+    let mut objects = parsed_inputs.objects.into_iter().peekable();
 
-    groups.extend(
-        parsed_inputs
-            .objects
-            .chunk_by_mut(|_, obj| {
-                let num_file_symbols = obj.symbol_id_range.len();
+    let mut num_symbols_in_group = 0;
+    let mut group_objects = Vec::new();
 
-                // Finish the current group if we've reached the maximum number of files for the group, if
-                // the new file would put us over the per-group symbol limit.
-                let start_new = num_files >= files_per_group
-                    || (num_files > 0 && num_symbols + num_file_symbols > symbols_per_group);
+    let allocator = herd.get();
 
-                if start_new {
-                    num_files = 0;
-                    num_symbols = 0;
-                }
+    while let Some(obj) = objects.next() {
+        let file_id = FileId::new(groups.len() as u32, group_objects.len() as u32);
+        let num_symbols_in_file = obj.object.symbols.len();
 
-                num_files += 1;
-                num_symbols += num_file_symbols;
+        group_objects.push(SequencedInputObject {
+            parsed: obj,
+            symbol_id_range: SymbolIdRange::input(next_symbol_id, num_symbols_in_file),
+            file_id,
+        });
 
-                !start_new
-            })
-            .enumerate()
-            .map(|(i, group_objects)| {
-                debug_assert!(
-                    group_objects.len() <= MAX_FILES_PER_GROUP as usize,
-                    "Group is too large: {}",
-                    group_objects.len()
-                );
+        next_symbol_id = next_symbol_id.add_usize(num_symbols_in_file);
 
-                for (file_number, obj) in group_objects.iter_mut().enumerate() {
-                    obj.set_file_id(FileId::new(i as u32 + 1, file_number as u32));
-                }
+        num_symbols_in_group += num_symbols_in_file;
 
-                Group::Objects(group_objects)
-            }),
-    );
+        // Finish the current group if we've reached the maximum number of files for the group, if
+        // this is the last file or if the next file would put us over the per-group symbol limit.
+        let finish_group = group_objects.len() >= max_files_per_group
+            || objects.peek().is_none_or(|next_obj| {
+                num_symbols_in_group + next_obj.object.symbols.len() > symbols_per_group
+            });
 
-    let mut linker_scripts = parsed_inputs.linker_scripts;
-    for (i, script) in linker_scripts.iter_mut().enumerate() {
-        script.file_id = FileId::new(groups.len() as u32, i as u32);
+        if finish_group {
+            num_symbols_in_group = 0;
+
+            debug_assert!(
+                group_objects.len() <= MAX_FILES_PER_GROUP as usize,
+                "Group is too large: {}",
+                group_objects.len()
+            );
+
+            let objects_slice =
+                allocator.alloc_slice_fill_iter(core::mem::take(&mut group_objects));
+
+            groups.push(Group::Objects(objects_slice));
+        }
     }
+
+    let linker_scripts = parsed_inputs
+        .linker_scripts
+        .into_iter()
+        .enumerate()
+        .map(|(i, script)| {
+            let symbol_id_range = SymbolIdRange::input(next_symbol_id, script.num_symbols());
+            next_symbol_id = next_symbol_id.add_usize(symbol_id_range.len());
+
+            SequencedLinkerScript {
+                parsed: script,
+                file_id: FileId::new(groups.len() as u32, i as u32),
+                symbol_id_range,
+            }
+        })
+        .collect();
+
     groups.push(Group::LinkerScripts(linker_scripts));
 
-    let mut epilogue = parsed_inputs.epilogue;
-    epilogue.file_id = FileId::new(groups.len() as u32, 0);
-    groups.push(Group::Epilogue(epilogue));
+    groups.push(Group::Epilogue(Epilogue {
+        file_id: FileId::new(groups.len() as u32, 0),
+        start_symbol_id: next_symbol_id,
+    }));
 
     tracing::trace!("GROUPS:\n{}", GroupsDisplay(&groups));
 
@@ -119,8 +159,6 @@ pub(crate) fn group_files<'data>(
 
 /// Decides after how many symbols, we should start a new group.
 fn determine_symbols_per_group(parsed_inputs: &ParsedInputs, args: &Args) -> usize {
-    let num_symbols = parsed_inputs.num_symbols();
-
     let num_threads = args.available_threads.get();
 
     // If we're running with a single thread, then we might as well put everything into a single
@@ -135,7 +173,7 @@ fn determine_symbols_per_group(parsed_inputs: &ParsedInputs, args: &Args) -> usi
     // after the others.
     const GROUPS_PER_THREAD: usize = 30;
 
-    1.max(num_symbols / num_threads / GROUPS_PER_THREAD)
+    1.max(parsed_inputs.num_symbols / num_threads / GROUPS_PER_THREAD)
 }
 
 /// Decides the maximum number of files that we'll put into one group.
@@ -151,12 +189,66 @@ fn determine_max_files_per_group(args: &Args) -> usize {
 
 struct GroupsDisplay<'a, 'data>(&'a [Group<'data>]);
 
+impl<'data> SequencedInputObject<'data> {
+    pub(crate) fn symbol_name(
+        &self,
+        symbol_id: crate::symbol_db::SymbolId,
+    ) -> Result<UnversionedSymbolName<'data>> {
+        let index = symbol_id.to_input(self.symbol_id_range);
+        let symbol = self.parsed.object.symbol(index)?;
+        Ok(UnversionedSymbolName::new(
+            self.parsed.object.symbol_name(symbol)?,
+        ))
+    }
+
+    /// Returns whether this input should be skipped if there are no non-weak references to symbols
+    /// it defines. This is true for archive entries for which --whole-archive is false and shared
+    /// objects for which --as-needed is true.
+    pub(crate) fn is_optional(&self) -> bool {
+        (self.parsed.input.has_archive_semantics() && !self.parsed.modifiers.whole_archive)
+            || (self.is_dynamic() && self.parsed.modifiers.as_needed)
+    }
+
+    pub(crate) fn is_dynamic(&self) -> bool {
+        self.parsed.is_dynamic
+    }
+}
+
+impl<'data> SequencedLinkerScript<'data> {
+    pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> UnversionedSymbolName<'data> {
+        let local_index = self.symbol_id_range.id_to_offset(symbol_id);
+        UnversionedSymbolName::new(self.parsed.symbol_defs[local_index].name)
+    }
+}
+
+impl SequencedInput<'_> {
+    pub(crate) fn symbol_id_range(&self) -> SymbolIdRange {
+        match self {
+            SequencedInput::Prelude(o) => SymbolIdRange::prelude(o.symbol_definitions.len()),
+            SequencedInput::Object(o) => o.symbol_id_range,
+            SequencedInput::LinkerScript(o) => o.symbol_id_range,
+            SequencedInput::Epilogue(o) => SymbolIdRange::epilogue(
+                o.start_symbol_id,
+                // The epilogue allocates symbols after inputs are parsed, so it effectively owns
+                // the rest of the symbol ID space.
+                u32::MAX as usize - o.start_symbol_id.as_usize(),
+            ),
+        }
+    }
+}
+
 impl Display for GroupsDisplay<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (i, group) in self.0.iter().enumerate() {
             writeln!(f, "{i}: {group}")?;
         }
         Ok(())
+    }
+}
+
+impl std::fmt::Display for SequencedInputObject<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.parsed.input, f)
     }
 }
 
@@ -169,6 +261,17 @@ impl Display for Group<'_> {
             }
             Group::LinkerScripts(scripts) => write!(f, "{} linker script(s)", scripts.len()),
             Group::Epilogue(_) => write!(f, "<epilogue>"),
+        }
+    }
+}
+
+impl std::fmt::Display for SequencedInput<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SequencedInput::Prelude(_) => std::fmt::Display::fmt("<prelude>", f),
+            SequencedInput::Object(o) => std::fmt::Display::fmt(o, f),
+            SequencedInput::LinkerScript(o) => std::fmt::Display::fmt(&o.parsed, f),
+            SequencedInput::Epilogue(_) => std::fmt::Display::fmt("<epilogue>", f),
         }
     }
 }

@@ -1,3 +1,4 @@
+use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout::AtomicResolutionFlags;
@@ -89,29 +90,29 @@ impl<'data> SymbolInfoPrinter<'data> {
                 let input;
 
                 match file {
-                    crate::parsing::ParsedInput::Prelude(_) => {
+                    SequencedInput::Prelude(_) => {
                         input = "  <prelude>".to_owned();
                         sym_debug = "Prelude symbol".to_owned();
                     }
-                    crate::parsing::ParsedInput::Object(o) => match o.object.symbol(local_index) {
+                    SequencedInput::Object(o) => match o.parsed.object.symbol(local_index) {
                         Ok(sym) => {
                             sym_debug = crate::symbol::SymDebug(sym).to_string();
-                            input = o.input.to_string();
+                            input = o.parsed.input.to_string();
                         }
                         Err(e) => {
                             println!(
                                 "  Corrupted input (file_id #{file_id}) {}: {}",
-                                o.input,
+                                o.parsed.input,
                                 e.to_string()
                             );
                             continue;
                         }
                     },
-                    crate::parsing::ParsedInput::LinkerScript(s) => {
+                    SequencedInput::LinkerScript(s) => {
                         sym_debug = "Linker script symbol".to_owned();
-                        input = s.input.to_string();
+                        input = s.parsed.input.to_string();
                     }
-                    crate::parsing::ParsedInput::Epilogue(_) => {
+                    SequencedInput::Epilogue(_) => {
                         input = "  <epilogue>".to_owned();
                         sym_debug = "Epilogue symbol".to_owned();
                     }
