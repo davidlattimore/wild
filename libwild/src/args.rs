@@ -234,10 +234,6 @@ const DEFAULT_FLAGS: &[&str] = &[
     "enable-new-dtags",
 ];
 
-pub(crate) fn available_parallelism() -> NonZeroUsize {
-    std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap())
-}
-
 impl Default for Args {
     fn default() -> Self {
         Args {
@@ -851,7 +847,7 @@ impl Args {
                 // Our parent "holds" one jobserver token, add it.
                 NonZeroUsize::new((tokens.len() + 1).max(1)).unwrap()
             } else {
-                available_parallelism()
+                std::thread::available_parallelism().unwrap_or(NonZeroUsize::new(1).unwrap())
             }
         });
 
