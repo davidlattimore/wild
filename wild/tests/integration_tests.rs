@@ -129,6 +129,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::env;
 use std::fmt::Display;
 use std::fs::File;
 use std::hash::Hash;
@@ -2578,6 +2579,35 @@ fn integration_test(
             config.rustc_channel = test_config.rustc_channel;
             run_with_config(&program_inputs, &config, arch, &linkers)?
         }
+    }
+
+    Ok(())
+}
+
+#[rstest]
+#[cfg(feature = "mold_tests")]
+fn exec_mold_tests(
+    #[files("../external_test_suites/mold/test/*.sh")] mold_test: PathBuf,
+) -> Result {
+    let path = env::var("PATH")?;
+    let current_dir = env::current_dir()?;
+    let wild_dir = current_dir.parent().unwrap().join("fakes-debug");
+
+    let output = Command::new("bash")
+        .current_dir("../fakes-debug")
+        .arg("-c")
+        .arg(format!("{} 2>&1", mold_test.display()))
+        .env("PATH", format!("{wild_dir:?}:{path}"))
+        .output()?;
+
+    if !output.status.success() {
+        let error_message = format!(
+            "Mold test `{}` failed with status: {}\nOutput:\n{}",
+            mold_test.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stdout)
+        );
+        return Err(error_message.into());
     }
 
     Ok(())

@@ -60,17 +60,18 @@ jobs:
         if: ${{ env.CI == 'true' }}
       - run: echo "WILD_TEST_CROSS=aarch64,riscv64" >> $GITHUB_ENV
         if: ${{ matrix.test-qemu }}
-      - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap binutils-aarch64-linux-gnu binutils-riscv64-linux-gnu
+      - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap binutils-aarch64-linux-gnu binutils-riscv64-linux-gnu git
         if: ${{ contains(matrix.container, 'ubuntu') }}
-      - run: apt-get update && apt-get -y install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
+      - run: apt-get update && apt-get -y install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-riscv64-linux-gnu g++-riscv64-linux-gnu git
         if: ${{ matrix.test-qemu }}
-      - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
+      - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap git
         if: ${{ contains(matrix.container, 'opensuse') }}
-      - run: apk add build-base lld clang bash curl
+      - run: apk add build-base lld clang bash curl git
         if: ${{ contains(matrix.container, 'alpine') }}
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
         with:
@@ -174,6 +175,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - name: Install Nix
         uses: nixbuild/nix-quick-install-action@v31
