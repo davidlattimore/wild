@@ -42,3 +42,5 @@ which = { workspace = true }
 default = ["fork"]
 
 fork = ["libwild/fork"]
+
+mold_tests = []
