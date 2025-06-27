@@ -166,12 +166,12 @@ fn symbol_with_address(obj: &Binary, address: u64, allow_empty: bool) -> Option<
         if !allow_empty && sym.size() == 0 {
             continue;
         }
-        if sym.address() == address {
-            if let Ok(name) = sym.name() {
-                if !name.is_empty() && name != "$x" {
-                    return Some(name.to_owned());
-                }
-            }
+        if sym.address() == address
+            && let Ok(name) = sym.name()
+            && !name.is_empty()
+            && name != "$x"
+        {
+            return Some(name.to_owned());
         }
     }
 
@@ -270,15 +270,15 @@ fn section_or_equiv<'data, 'file: 'data>(
         return Some(section);
     }
     for (a, b) in &config.equiv {
-        if name == a.as_bytes() {
-            if let Some(section) = object.section_by_name_bytes(b.as_bytes()) {
-                return Some(section);
-            }
+        if name == a.as_bytes()
+            && let Some(section) = object.section_by_name_bytes(b.as_bytes())
+        {
+            return Some(section);
         }
-        if name == b.as_bytes() {
-            if let Some(section) = object.section_by_name_bytes(a.as_bytes()) {
-                return Some(section);
-            }
+        if name == b.as_bytes()
+            && let Some(section) = object.section_by_name_bytes(a.as_bytes())
+        {
+            return Some(section);
         }
     }
     None

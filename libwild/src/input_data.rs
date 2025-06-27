@@ -352,12 +352,11 @@ fn process_linker_script<'data>(
     script.foreach_input(input_file.modifiers, |mut input| {
         input.search_first = Some(directory.to_owned());
 
-        if let (Some(sysroot), InputSpec::File(file)) = (args.sysroot.as_ref(), &mut input.spec) {
-            if let Some(new_file) =
+        if let (Some(sysroot), InputSpec::File(file)) = (args.sysroot.as_ref(), &mut input.spec)
+            && let Some(new_file) =
                 crate::linker_script::maybe_apply_sysroot(&script_path, file, sysroot)
-            {
-                *file = new_file;
-            }
+        {
+            *file = new_file;
         }
 
         extra_inputs.push(input);
@@ -617,17 +616,17 @@ impl Input {
     fn path(&self, args: &Args) -> Result<InputPath> {
         match &self.spec {
             InputSpec::File(p) => {
-                if self.search_first.is_some() || p.parent() == Some(Path::new("")) {
-                    if let Some(path) = search_for_file(
+                if (self.search_first.is_some() || p.parent() == Some(Path::new("")))
+                    && let Some(path) = search_for_file(
                         &args.lib_search_path,
                         self.search_first.as_ref(),
                         p.as_ref(),
-                    ) {
-                        return Ok(InputPath {
-                            absolute: std::path::absolute(path)?,
-                            original: p.as_ref().to_owned(),
-                        });
-                    }
+                    )
+                {
+                    return Ok(InputPath {
+                        absolute: std::path::absolute(path)?,
+                        original: p.as_ref().to_owned(),
+                    });
                 }
                 Ok(InputPath {
                     absolute: p.as_ref().to_owned(),

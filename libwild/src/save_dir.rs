@@ -314,10 +314,10 @@ fn make_linker_script_relative(bytes: &[u8], source_path: &Path) -> Result<Vec<u
 
     let mut absolute_paths = Vec::new();
     script.foreach_input(Modifiers::default(), |input| {
-        if let crate::args::InputSpec::File(path) = input.spec {
-            if path.is_absolute() {
-                absolute_paths.push(path);
-            }
+        if let crate::args::InputSpec::File(path) = input.spec
+            && path.is_absolute()
+        {
+            absolute_paths.push(path);
         }
 
         Ok(())
