@@ -211,14 +211,14 @@ impl<'data> IndexedLayout<'data> {
 
         let mut last: Option<&SectionInfo> = None;
         for section in sections {
-            if let Some(last) = last {
-                if section.addresses.start < last.addresses.end {
-                    bail!(
-                        "{} overlaps with {}",
-                        DisplaySection::new(last, &self.files),
-                        DisplaySection::new(section, &self.files)
-                    );
-                }
+            if let Some(last) = last
+                && section.addresses.start < last.addresses.end
+            {
+                bail!(
+                    "{} overlaps with {}",
+                    DisplaySection::new(last, &self.files),
+                    DisplaySection::new(section, &self.files)
+                );
             }
             last = Some(section);
         }

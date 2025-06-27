@@ -91,10 +91,10 @@ fn should_skip_mold_test(path: &Path) -> bool {
         return false;
     }
 
-    if let Some(skip_list) = load_skip_tests_config() {
-        if skip_list.contains(&file_name.to_string()) {
-            return true;
-        }
+    if let Some(skip_list) = load_skip_tests_config()
+        && skip_list.contains(&file_name.to_string())
+    {
+        return true;
     }
 
     let Some(name) = file_name.strip_prefix("arch-") else {

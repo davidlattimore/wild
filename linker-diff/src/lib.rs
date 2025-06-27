@@ -400,10 +400,10 @@ impl<'data> Binary<'data> {
 
         if indexes.len() >= 2 {
             for sym_index in indexes {
-                if let Ok(sym) = self.elf_file.symbol_by_index(*sym_index) {
-                    if sym.address() == hint_address {
-                        return NameLookupResult::Defined(sym);
-                    }
+                if let Ok(sym) = self.elf_file.symbol_by_index(*sym_index)
+                    && sym.address() == hint_address
+                {
+                    return NameLookupResult::Defined(sym);
                 }
             }
 
