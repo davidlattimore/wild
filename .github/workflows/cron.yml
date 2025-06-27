@@ -25,6 +25,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      pull-requests: write
 
     steps:
       - name: Checkout
@@ -45,9 +46,11 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git add flake.lock
           git commit -m "[Automated] Update flake.lock"
-          git push -f origin nix_update 
+          git push -f origin nix_update
 
       - name: Create PR
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr create \
             --base main \
