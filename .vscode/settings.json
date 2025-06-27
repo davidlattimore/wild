@@ -1,5 +1,8 @@
 {
     "rust-analyzer.linkedProjects": [
         "Cargo.toml",
-    ]
+    ],
+    "search.exclude": {
+        "/external_test_suites/": true
+    }
 }
