@@ -11,6 +11,7 @@ use crate::hash::PreHashed;
 use crate::input_data::VersionScriptData;
 use crate::linker_script::skip_comments_and_whitespace;
 use crate::symbol::UnversionedSymbolName;
+use glob::Pattern;
 use std::collections::HashSet;
 use winnow::BStr;
 use winnow::Parser;
@@ -38,14 +39,17 @@ pub(crate) struct Version<'data> {
 struct MatchRules<'data> {
     matches_all: bool,
     exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
-    prefixes: Vec<&'data [u8]>,
+    globs: Vec<Pattern>,
 }
 
 impl<'data> MatchRules<'data> {
     fn push(&mut self, pattern: SymbolMatcher<'data>) {
         match pattern {
             SymbolMatcher::All => self.matches_all = true,
-            SymbolMatcher::Prefix(prefix) => self.prefixes.push(prefix),
+            SymbolMatcher::Glob(glob) => self.globs.push(
+                // TODO
+                Pattern::new(str::from_utf8(glob).unwrap()).unwrap(),
+            ),
             SymbolMatcher::Exact(exact) => {
                 self.exact.insert(UnversionedSymbolName::prehashed(exact));
             }
@@ -56,9 +60,10 @@ impl<'data> MatchRules<'data> {
         self.matches_all
             || self.exact.contains(name)
             || self
-                .prefixes
+                .globs
                 .iter()
-                .any(|prefix| name.bytes().starts_with(prefix))
+                // TODO
+                .any(|glob| glob.matches(str::from_utf8(name.bytes()).unwrap()))
     }
 
     fn merge(&mut self, other: &MatchRules<'data>) {
@@ -68,19 +73,19 @@ impl<'data> MatchRules<'data> {
 
         if self.matches_all {
             self.exact.clear();
-            self.prefixes.clear();
+            self.globs.clear();
             return;
         }
 
         self.exact.extend(&other.exact);
-        self.prefixes.extend(&other.prefixes);
+        self.globs.extend(other.globs.iter().cloned());
     }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum SymbolMatcher<'data> {
     All,
-    Prefix(&'data [u8]),
+    Glob(&'data [u8]),
     Exact(&'data [u8]),
 }
 
@@ -261,22 +266,14 @@ fn parse_matcher<'data>(input: &mut &'data BStr) -> winnow::Result<SymbolMatcher
         ";".parse_next(input)?;
     }
 
-    if token == b"*" {
-        return Ok(SymbolMatcher::All);
-    }
-
-    if let Some(prefix) = token.strip_suffix(b"*") {
-        if prefix.contains(&b'*') {
-            return Err(ContextError::new());
-        }
-        return Ok(SymbolMatcher::Prefix(prefix));
-    }
-
-    if token.contains(&b'*') {
-        return Err(ContextError::new());
-    }
-
-    Ok(SymbolMatcher::Exact(token))
+    let token = token.trim_ascii_end();
+    Ok(if token == b"*" {
+        SymbolMatcher::All
+    } else if token.contains(&b'*') {
+        SymbolMatcher::Glob(token)
+    } else {
+        SymbolMatcher::Exact(token)
+    })
 }
 
 fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]> {
@@ -311,7 +308,7 @@ impl std::fmt::Debug for MatchRules<'_> {
         f.debug_struct("MatchRules")
             .field("matches_all", &self.matches_all)
             .field("exact", &self.exact)
-            .field("prefixes", &self.prefixes)
+            .field("prefixes", &self.globs)
             .finish()
     }
 }
@@ -331,6 +328,8 @@ mod tests {
                         /* Single-line comment */
                         foo; /* Trailing comment */
                         bar*;
+                        best_*_fn*;
+                        *_wrapper  ;
                     local:
                         /* Multi-line
                            comment */
@@ -347,12 +346,8 @@ mod tests {
             ["foo"],
         );
         assert_equal(
-            script
-                .globals
-                .prefixes
-                .iter()
-                .map(|s| std::str::from_utf8(s).unwrap()),
-            ["bar"],
+            script.globals.globs.iter().map(|glob| glob.as_str()),
+            ["bar*", "best_*_fn*", "*_wrapper"],
         );
         assert!(script.locals.matches_all);
     }
@@ -385,12 +380,8 @@ mod tests {
             ["foo1", "foo2"],
         );
         assert_equal(
-            script
-                .locals
-                .prefixes
-                .iter()
-                .map(|s| std::str::from_utf8(s).unwrap()),
-            ["old"],
+            script.locals.globs.iter().map(|glob| glob.as_str()),
+            ["old*"],
         );
 
         let version = &script.versions[1];
@@ -405,12 +396,8 @@ mod tests {
             ["foo1"],
         );
         assert_equal(
-            version
-                .symbols
-                .prefixes
-                .iter()
-                .map(|s| std::str::from_utf8(s).unwrap()),
-            ["old"],
+            version.symbols.globs.iter().map(|glob| glob.as_str()),
+            ["old*"],
         );
 
         let version = &script.versions[2];
