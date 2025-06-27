@@ -452,6 +452,14 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             // Since we currently only support GNU hash, there's no state to update.
         } else if let Some(rest) = long_arg_split_prefix("entry=") {
             args.entry = Some(rest.to_owned());
+        } else if arg == "-e" {
+            args.entry = Some(
+                input
+                    .next()
+                    .context("Missing argument to -e")?
+                    .as_ref()
+                    .to_owned(),
+            );
         } else if long_arg_eq("build-id") {
             args.build_id = BuildIdOption::Fast;
         } else if let Some(build_id_value) = long_arg_split_prefix("build-id=") {
@@ -486,6 +494,11 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         } else if long_arg_eq("exclude-libs") {
             let param = input.next().context("Missing argument to --exclude-libs")?;
             if param.as_ref() != "ALL" {
+                warn_unsupported("--exclude-libs other than ALL")?;
+            }
+            args.exclude_libs = true;
+        } else if let Some(value) = long_arg_split_prefix("exclude-libs=") {
+            if value != "ALL" {
                 warn_unsupported("--exclude-libs other than ALL")?;
             }
             args.exclude_libs = true;
