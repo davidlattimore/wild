@@ -214,6 +214,7 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "color-diagnostics",
     "undefined-version",
     "sort-common",
+    "stats",
 ];
 
 const IGNORED_FLAGS: &[&str] = &[
