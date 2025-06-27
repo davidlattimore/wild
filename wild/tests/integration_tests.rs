@@ -2584,6 +2584,15 @@ fn integration_test(
     Ok(())
 }
 
+fn get_wild_test_cross() -> Option<Vec<Architecture>> {
+    std::env::var("WILD_TEST_CROSS").ok().map(|cross_arch| {
+        cross_arch
+            .split(',')
+            .filter_map(|s| Architecture::from_str(s).ok())
+            .collect()
+    })
+}
+
 #[rstest]
 #[cfg(feature = "mold_tests")]
 fn exec_mold_tests(
@@ -2592,6 +2601,10 @@ fn exec_mold_tests(
     let path = env::var("PATH")?;
     let current_dir = env::current_dir()?;
     let wild_dir = current_dir.parent().unwrap().join("fakes-debug");
+
+    if should_skip_mold_test(&mold_test) {
+        return Ok(());
+    }
 
     let output = Command::new("bash")
         .current_dir("../fakes-debug")
@@ -2611,6 +2624,42 @@ fn exec_mold_tests(
     }
 
     Ok(())
+}
+
+#[cfg(feature = "mold_tests")]
+fn should_skip_mold_test(path: &Path) -> bool {
+    if !path.exists() || path.extension() != Some(std::ffi::OsStr::new("sh")) {
+        return true;
+    }
+
+    let file_name = match path.file_name().and_then(|os_str| os_str.to_str()) {
+        Some(name) => name,
+        None => return true,
+    };
+
+    if !file_name.starts_with("arch-") {
+        return false;
+    }
+
+    let test_arch = file_name["arch-".len()..]
+        .split('-')
+        .next()
+        .unwrap_or_default();
+
+    let current_arch = get_host_architecture();
+    let cross_archs = get_wild_test_cross().unwrap_or_default();
+    match test_arch {
+        "x86_64" => {
+            current_arch != Architecture::X86_64 && !cross_archs.contains(&Architecture::X86_64)
+        }
+        "aarch64" => {
+            current_arch != Architecture::AArch64 && !cross_archs.contains(&Architecture::AArch64)
+        }
+        "riscv64" => {
+            current_arch != Architecture::RISCV64 && !cross_archs.contains(&Architecture::RISCV64)
+        }
+        _ => true,
+    }
 }
 
 fn read_test_config() -> Result<TestConfig> {
@@ -2639,17 +2688,9 @@ fn read_test_config() -> Result<TestConfig> {
         );
     };
 
-    // The environment variable can override the config file setting.
-    if let Ok(cross_arch) = std::env::var("WILD_TEST_CROSS") {
-        config.qemu_arch = cross_arch
-            .split(',')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(|s| {
-                Architecture::from_str(s)
-                    .with_context(|| format!("Unknown WILD_TEST_CROSS value `{s}`"))
-            })
-            .collect::<Result<Vec<Architecture>>>()?
+    // The environment variable `WILD_TEST_CROSS` can override the config file setting.
+    if let Some(qemu_arch_from_env) = get_wild_test_cross() {
+        config.qemu_arch = qemu_arch_from_env;
     }
 
     Ok(config)
