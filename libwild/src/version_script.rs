@@ -46,10 +46,7 @@ impl<'data> MatchRules<'data> {
     fn push(&mut self, pattern: SymbolMatcher<'data>) {
         match pattern {
             SymbolMatcher::All => self.matches_all = true,
-            SymbolMatcher::Glob(glob) => self.globs.push(
-                // TODO
-                Pattern::new(str::from_utf8(glob).unwrap()).unwrap(),
-            ),
+            SymbolMatcher::Glob(glob) => self.globs.push(glob),
             SymbolMatcher::Exact(exact) => {
                 self.exact.insert(UnversionedSymbolName::prehashed(exact));
             }
@@ -59,11 +56,9 @@ impl<'data> MatchRules<'data> {
     fn matches(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
         self.matches_all
             || self.exact.contains(name)
-            || self
-                .globs
-                .iter()
-                // TODO
-                .any(|glob| glob.matches(str::from_utf8(name.bytes()).unwrap()))
+            || self.globs.iter().any(|glob| {
+                glob.matches(str::from_utf8(name.bytes()).expect("Valid utf-8 identifier expected"))
+            })
     }
 
     fn merge(&mut self, other: &MatchRules<'data>) {
@@ -82,10 +77,10 @@ impl<'data> MatchRules<'data> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 enum SymbolMatcher<'data> {
     All,
-    Glob(&'data [u8]),
+    Glob(Pattern),
     Exact(&'data [u8]),
 }
 
@@ -270,7 +265,14 @@ fn parse_matcher<'data>(input: &mut &'data BStr) -> winnow::Result<SymbolMatcher
     Ok(if token == b"*" {
         SymbolMatcher::All
     } else if token.contains(&b'*') {
-        SymbolMatcher::Glob(token)
+        SymbolMatcher::Glob(
+            Pattern::new(str::from_utf8(token).map_err(|_| {
+                ContextError::from_external_error(input, VersionScriptError::InvalidUtf8String)
+            })?)
+            .map_err(|_: glob::PatternError| {
+                ContextError::from_external_error(input, VersionScriptError::InvalidGlobPattern)
+            })?,
+        )
     } else {
         SymbolMatcher::Exact(token)
     })
@@ -283,13 +285,19 @@ fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]>
 #[derive(Debug)]
 enum VersionScriptError {
     UnknownParentVersion,
+    InvalidUtf8String,
+    InvalidGlobPattern,
 }
 
 impl std::error::Error for VersionScriptError {}
 
 impl std::fmt::Display for VersionScriptError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Unknown parent version")
+        match self {
+            VersionScriptError::InvalidGlobPattern => write!(f, "Invalid glob pattern"),
+            VersionScriptError::InvalidUtf8String => write!(f, "Invalid utf-8 string"),
+            VersionScriptError::UnknownParentVersion => write!(f, "Unknown parent version"),
+        }
     }
 }
 
