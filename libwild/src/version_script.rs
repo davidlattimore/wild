@@ -358,6 +358,12 @@ mod tests {
             ["bar*", "best_*_fn*", "*_wrapper"],
         );
         assert!(script.locals.matches_all);
+
+        let globals = script.globals;
+        assert!(globals.matches(&UnversionedSymbolName::prehashed(b"main_wrapper")));
+        assert!(globals.matches(&UnversionedSymbolName::prehashed(b"bar_bar_bar")));
+        assert!(globals.matches(&UnversionedSymbolName::prehashed(b"best_foo_fn_barus")));
+        assert!(!globals.matches(&UnversionedSymbolName::prehashed(b"best_fn")));
     }
 
     #[test]
