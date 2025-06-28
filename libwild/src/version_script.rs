@@ -54,16 +54,17 @@ impl<'data> MatchRules<'data> {
     }
 
     fn matches(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
-        self.matches_all
-            || self.exact.contains(name)
-            || self.globs.iter().any(|glob| {
-                glob.matches(str::from_utf8(name.bytes()).unwrap_or_else(|_| {
-                    panic!(
-                        "Valid utf-8 identifier expected: {}",
-                        String::from_utf8_lossy(name.bytes())
-                    )
-                }))
-            })
+        if self.matches_all || self.exact.contains(name) {
+            return true;
+        }
+
+        let symbol_name = str::from_utf8(name.bytes()).unwrap_or_else(|_| {
+            panic!(
+                "Valid utf-8 identifier expected: {}",
+                String::from_utf8_lossy(name.bytes())
+            )
+        });
+        self.globs.iter().any(|glob| glob.matches(symbol_name))
     }
 
     fn merge(&mut self, other: &MatchRules<'data>) {
