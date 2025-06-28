@@ -724,6 +724,7 @@ dependencies = [
  "flate2",
  "foldhash",
  "gimli 0.32.0",
+ "glob",
  "hashbrown",
  "hex",
  "indexmap",
