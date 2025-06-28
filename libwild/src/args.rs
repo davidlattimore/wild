@@ -364,6 +364,12 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             assert!(option.ends_with('='));
             strip_option(arg).and_then(|stripped_arg| stripped_arg.strip_prefix(option))
         };
+        let mut get_next_argument = |arg_name| -> Result<S> {
+            input
+                .next()
+                .context(format!("Missing argument to {arg_name}"))
+        };
+
         let mut handle_z_option = |arg: &str| -> Result {
             match arg {
                 "now" => {}
@@ -394,9 +400,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             };
 
             let dir = if rest.is_empty() {
-                handle_sysroot(Path::new(
-                    input.next().context("Missing argument to -L")?.as_ref(),
-                ))
+                handle_sysroot(Path::new(get_next_argument(arg)?.as_ref()))
             } else {
                 handle_sysroot(Path::new(rest))
             };
@@ -430,10 +434,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         } else if long_arg_eq("Bno-symbolic") {
             args.b_symbolic = BSymbolicKind::None;
         } else if arg == "-o" {
-            args.output = input
-                .next()
-                .map(|a| Arc::from(Path::new(a.as_ref())))
-                .context("Missing argument to -o")?;
+            args.output = get_next_argument(arg).map(|a| Arc::from(Path::new(a.as_ref())))?;
         } else if long_arg_eq("dynamic-linker") {
             args.is_dynamic_executable.store(true, Ordering::Relaxed);
             args.dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
@@ -451,22 +452,8 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             // Since we currently only support GNU hash, there's no state to update.
         } else if let Some(rest) = long_arg_split_prefix("entry=") {
             args.entry = Some(rest.to_owned());
-        } else if long_arg_eq("entry") {
-            args.entry = Some(
-                input
-                    .next()
-                    .context("Missing argument to --entry")?
-                    .as_ref()
-                    .to_owned(),
-            );
-        } else if arg == "-e" {
-            args.entry = Some(
-                input
-                    .next()
-                    .context("Missing argument to -e")?
-                    .as_ref()
-                    .to_owned(),
-            );
+        } else if long_arg_eq("entry") || arg == "-e" {
+            args.entry = Some(get_next_argument(arg)?.as_ref().to_owned());
         } else if long_arg_eq("build-id") {
             args.build_id = BuildIdOption::Fast;
         } else if let Some(build_id_value) = long_arg_split_prefix("build-id=") {
@@ -499,7 +486,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         } else if let Some(rest) = long_arg_split_prefix("thread-count=") {
             args.num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
         } else if long_arg_eq("exclude-libs") {
-            let param = input.next().context("Missing argument to --exclude-libs")?;
+            let param = get_next_argument(arg)?;
             if param.as_ref() != "ALL" {
                 warn_unsupported("--exclude-libs other than ALL")?;
             }
@@ -525,7 +512,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         } else if long_arg_eq("update-in-place") {
             args.file_write_mode = Some(FileWriteMode::UpdateInPlace);
         } else if arg == "-m" {
-            let arg_value = input.next().context("Missing argument to -m")?;
+            let arg_value = get_next_argument(arg)?;
             let arg_value = arg_value.as_ref();
             args.arch = Architecture::from_str(arg_value)?;
         } else if let Some(arg_value) = arg.strip_prefix("-m") {
@@ -533,7 +520,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         } else if long_arg_eq("EB") {
             bail!("Big-endian target is not supported");
         } else if arg == "-z" {
-            handle_z_option(input.next().context("Missing argument to -z")?.as_ref())?;
+            handle_z_option(get_next_argument(arg)?.as_ref())?;
         } else if let Some(arg) = arg.strip_prefix("-z") {
             handle_z_option(arg)?;
         } else if let Some(_rest) = arg.strip_prefix("-O") {
@@ -564,22 +551,14 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                 bail!("Mismatched --pop-state");
             }
         } else if long_arg_eq("version-script") {
-            let script = input
-                .next()
-                .context("Missing argument to -version-script")?
-                .as_ref()
-                .to_owned();
+            let script = get_next_argument(arg)?.as_ref().to_owned();
             args.save_dir.handle_file(&script)?;
             args.version_script_path = Some(PathBuf::from(script));
         } else if let Some(script) = long_arg_split_prefix("script=") {
             args.save_dir.handle_file(script)?;
             args.add_script(script);
-        } else if long_arg_eq("script") {
-            let script = input.next().context("Missing argument to --script")?;
-            args.save_dir.handle_file(script.as_ref())?;
-            args.add_script(script.as_ref());
-        } else if arg == "-T" {
-            let script = input.next().context("Missing argument to -T")?;
+        } else if long_arg_eq("script") || arg == "-T" {
+            let script = get_next_argument(arg)?;
             args.save_dir.handle_file(script.as_ref())?;
             args.add_script(script.as_ref());
         } else if let Some(rest) = arg.strip_prefix("-T") {
@@ -589,7 +568,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.save_dir.handle_file(script)?;
             args.version_script_path = Some(PathBuf::from(script));
         } else if long_arg_eq("rpath") {
-            let value = input.next().context("Missing argument to -rpath")?;
+            let value = get_next_argument(arg)?;
             append_rpath(&mut args.rpath, value.as_ref());
         } else if let Some(rest) = long_arg_split_prefix("rpath=") {
             append_rpath(&mut args.rpath, rest);
@@ -610,21 +589,11 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         } else if let Some(rest) = long_arg_split_prefix("soname=") {
             args.soname = Some(rest.to_owned());
         } else if long_arg_eq("soname") {
-            args.soname = Some(
-                input
-                    .next()
-                    .context("Missing argument to -soname")?
-                    .as_ref()
-                    .to_owned(),
-            );
+            args.soname = Some(get_next_argument(arg)?.as_ref().to_owned());
         } else if long_arg_split_prefix("plugin-opt=").is_some() {
             // TODO: Implement support for linker plugins.
         } else if long_arg_eq("plugin") {
-            let other = input
-                .next()
-                .context("Missing argument to --plugin")?
-                .as_ref()
-                .to_owned();
+            let other = get_next_argument(arg)?.as_ref().to_owned();
             warn_unsupported(&format!("--plugin {other}"))?;
         } else if let Some(rest) = long_arg_split_prefix("dependency-file=") {
             warn_unsupported(&format!("--dependency-file={rest}"))?;
@@ -662,13 +631,8 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.undefined.push(rest.to_owned());
         } else if let Some(rest) = arg.strip_prefix("-u") {
             if rest.is_empty() {
-                args.undefined.push(
-                    input
-                        .next()
-                        .context("Missing argument to -u")?
-                        .as_ref()
-                        .to_owned(),
-                );
+                args.undefined
+                    .push(get_next_argument(arg)?.as_ref().to_owned());
             } else {
                 args.undefined.push(rest.to_owned());
             }
