@@ -593,6 +593,15 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             append_rpath(&mut args.rpath, value.as_ref());
         } else if let Some(rest) = long_arg_split_prefix("rpath=") {
             append_rpath(&mut args.rpath, rest);
+        } else if arg == "-R" {
+            let value = input.next().context("Missing argument to -R")?;
+            // For compatibility reasons, if the -R option is directory, it is as the -rpath option,
+            // otherwise it is --just-symbols.
+            if Path::new(value.as_ref()).is_dir() {
+                append_rpath(&mut args.rpath, value.as_ref());
+            } else {
+                unrecognised.push("`-R`");
+            }
         } else if long_arg_eq("no-string-merge") {
             args.merge_strings = false;
         } else if long_arg_eq("pie") {
