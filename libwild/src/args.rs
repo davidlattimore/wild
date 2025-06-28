@@ -1165,6 +1165,9 @@ mod tests {
         "-rpath",
         "foo/",
         "-rpath=bar/",
+        "-Rbaz",
+        "-R",
+        "somewhere",
     ];
 
     #[track_caller]
@@ -1207,7 +1210,7 @@ mod tests {
             InputSpec::File(f) => f.as_ref() == Path::new("lib85caec4suo0pxg06jm2ma7b0o.so"),
             InputSpec::Lib(_) => false,
         }));
-        assert_eq!(args.rpath.as_deref(), Some("foo/:bar/"));
+        assert_eq!(args.rpath.as_deref(), Some("foo/:bar/:baz:somewhere"));
     }
 
     #[test]
