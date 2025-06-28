@@ -602,8 +602,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.explicitly_export_dynamic = false;
         } else if let Some(rest) = long_arg_split_prefix("soname=") {
             args.soname = Some(rest.to_owned());
-        } else if long_arg_eq("soname") {
+        } else if long_arg_eq("soname") || arg == "-h" {
             args.soname = Some(get_next_argument(arg)?.as_ref().to_owned());
+        } else if let Some(rest) = arg.strip_prefix("-h") {
+            args.soname = Some(rest.to_owned());
         } else if long_arg_split_prefix("plugin-opt=").is_some() {
             // TODO: Implement support for linker plugins.
         } else if long_arg_eq("plugin") {
