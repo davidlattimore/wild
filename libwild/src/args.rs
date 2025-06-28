@@ -384,6 +384,15 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             }
             Ok(())
         };
+        let mut handle_r_option = |value: &str| {
+            // For compatibility reasons, if the -R option is directory, it is treated as the -rpath option,
+            // otherwise it is a separate option --just-symbols.
+            if Path::new(value).is_file() {
+                unrecognised.push(format!("`-R,{value}(filename)`"));
+            } else {
+                append_rpath(&mut args.rpath, value);
+            }
+        };
 
         if let Some(rest) = arg.strip_prefix("-L") {
             let handle_sysroot = |path| {
@@ -595,13 +604,9 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             append_rpath(&mut args.rpath, rest);
         } else if arg == "-R" {
             let value = input.next().context("Missing argument to -R")?;
-            // For compatibility reasons, if the -R option is directory, it is as the -rpath option,
-            // otherwise it is --just-symbols.
-            if Path::new(value.as_ref()).is_dir() {
-                append_rpath(&mut args.rpath, value.as_ref());
-            } else {
-                unrecognised.push("`-R`");
-            }
+            handle_r_option(value.as_ref());
+        } else if let Some(rest) = arg.strip_prefix("-R") {
+            handle_r_option(rest);
         } else if long_arg_eq("no-string-merge") {
             args.merge_strings = false;
         } else if long_arg_eq("pie") {
