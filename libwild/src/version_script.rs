@@ -57,7 +57,12 @@ impl<'data> MatchRules<'data> {
         self.matches_all
             || self.exact.contains(name)
             || self.globs.iter().any(|glob| {
-                glob.matches(str::from_utf8(name.bytes()).expect("Valid utf-8 identifier expected"))
+                glob.matches(str::from_utf8(name.bytes()).unwrap_or_else(|_| {
+                    panic!(
+                        "Valid utf-8 identifier expected: {}",
+                        String::from_utf8_lossy(name.bytes())
+                    )
+                }))
             })
     }
 
