@@ -354,6 +354,7 @@ impl crate::arch::Relaxation for Relaxation {
                     }
                 }
             }
+            /*
             object::elf::R_X86_64_GOTPC32_TLSDESC
                 if !interposable && output_kind.is_executable() =>
             {
@@ -385,6 +386,7 @@ impl crate::arch::Relaxation for Relaxation {
                     mandatory: output_kind.is_static_executable(),
                 });
             }
+            */
             _ => return None,
         };
         None
