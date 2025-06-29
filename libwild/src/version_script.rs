@@ -116,7 +116,7 @@ impl<'data> MatchRules<'data> {
             symbolic_common::NameMangling::Mangled,
             symbolic_common::Language::Cpp,
         )
-        .demangle(DemangleOptions::complete());
+        .demangle(DemangleOptions::complete().return_type(false));
 
         demangled_name.is_some_and(|demangled_name| {
             self.cxx
@@ -559,7 +559,8 @@ mod tests {
                         extern "C++" {
                             ns::*;
                             "f(int**,double)";
-                            "void std::vector<Loc<1>, std::allocator<Loc<1> > >::_M_realloc_append<Loc<1> const&>(Loc<1> const&)::_Guard_elts::_Guard_elts(Loc<1>*, std::allocator<Loc<1> >&)";
+                            "std::vector<Loc<1>, std::allocator<Loc<1> > >::_M_realloc_append<Loc<1> const&>(Loc<1> const&)::_Guard_elts::_Guard_elts(Loc<1>*, std::allocator<Loc<1> >&)";
+                            "WebKit::WebProcessMain(int, char**)";
                         };
                 };"#,
         };
@@ -573,10 +574,12 @@ mod tests {
                 .cxx
                 .exact
                 .iter()
-                .map(|s| std::str::from_utf8(s.bytes()).unwrap()),
+                .map(|s| std::str::from_utf8(s.bytes()).unwrap())
+                .sorted(),
             [
+                "WebKit::WebProcessMain(int, char**)",
                 "f(int**,double)",
-                "void std::vector<Loc<1>, std::allocator<Loc<1> > >::_M_realloc_append<Loc<1> const&>(Loc<1> const&)::_Guard_elts::_Guard_elts(Loc<1>*, std::allocator<Loc<1> >&)",
+                "std::vector<Loc<1>, std::allocator<Loc<1> > >::_M_realloc_append<Loc<1> const&>(Loc<1> const&)::_Guard_elts::_Guard_elts(Loc<1>*, std::allocator<Loc<1> >&)",
             ],
         );
         assert_equal(
@@ -594,6 +597,9 @@ mod tests {
         // Test exact matches after C++ demangling.
         assert!(locals.matches(&UnversionedSymbolName::prehashed(
         b"_ZZNSt6vectorI3LocILi1EESaIS1_EE17_M_realloc_appendIJRKS1_EEEvDpOT_EN11_Guard_eltsC2EPS1_RS2_"
+        )));
+        assert!(locals.matches(&UnversionedSymbolName::prehashed(
+            b"_ZN6WebKit14WebProcessMainEiPPc"
         )));
         assert!(!locals.matches(&UnversionedSymbolName::prehashed(
             b"_ZTVN10__cxxabiv120__si_class_type_infoE"
