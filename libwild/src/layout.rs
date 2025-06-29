@@ -87,6 +87,7 @@ use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
 use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
 use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
 use linker_utils::elf::shf;
+use linker_utils::elf::sht;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::SectionIndex;
@@ -2004,7 +2005,10 @@ fn compute_segment_layout(
                 let merge_target = output_sections.primary_output_section(section_id);
 
                 // Skip all ignored sections that will not end up in the final file.
-                if output_sections.output_section_indexes[merge_target.as_usize()].is_none() {
+                if section_layout.file_size == 0
+                    && section_layout.mem_size == 0
+                    && output_sections.output_section_indexes[merge_target.as_usize()].is_none()
+                {
                     continue;
                 }
                 let section_flags = output_sections.section_flags(merge_target);
@@ -3334,12 +3338,24 @@ impl<'data> PreludeLayoutState<'data> {
                 }
             });
 
-        // If any secondary sections were marked to be kept, then unmark them and mark the primary instead.
         for i in 0..output_sections.num_sections() {
             let section_id = OutputSectionId::from_usize(i);
+
+            // If any secondary sections were marked to be kept, then unmark them and mark the
+            // primary instead.
             if let Some(primary_id) = output_sections.merge_target(section_id) {
                 let keep_secondary = replace(keep_sections.get_mut(section_id), false);
                 *keep_sections.get_mut(primary_id) |= keep_secondary;
+            }
+
+            // Remove any sections without a type except for section 0 (the file header). This
+            // should just be the .phdr and .shdr sections which contain the program headers and
+            // section headers. We need these sections in order to allocate space for those
+            // structures, but other linkers don't emit section headers for them, so neither should
+            // we.
+            let section_info = output_sections.section_infos.get(section_id);
+            if section_info.ty == sht::NULL && section_id != output_section_id::FILE_HEADER {
+                *keep_sections.get_mut(section_id) = false;
             }
         }
 
@@ -3364,7 +3380,10 @@ impl<'data> PreludeLayoutState<'data> {
         output_sections.output_section_indexes = output_section_indexes;
 
         // Determine which program segments contain sections that we're keeping.
-        let mut keep_segments = vec![false; program_segments.len()];
+        let mut keep_segments = program_segments
+            .iter()
+            .map(|details| details.always_keep())
+            .collect_vec();
         let mut active_segments = Vec::with_capacity(4);
         for event in output_order {
             match event {
@@ -3381,6 +3400,9 @@ impl<'data> PreludeLayoutState<'data> {
                 OrderEvent::SetLocation(_) => {}
             }
         }
+
+        // Always keep the program headers segment even though we don't emit any sections in it.
+        keep_segments[0] = true;
 
         // If relro is disabled, then discard the relro segment.
         if !symbol_db.args.relro {
