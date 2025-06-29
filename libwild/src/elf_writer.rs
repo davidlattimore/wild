@@ -1807,7 +1807,7 @@ fn apply_relocation<A: Arch>(
             // that is greater than the value of the addend field.
             let expected_alignment = addend.next_power_of_two();
             ensure!(
-                addend % expected_alignment == 0,
+                addend.is_multiple_of(expected_alignment),
                 "Unsatisfied alignment ({expected_alignment} bytes) at address: {}",
                 HexU64::new(address)
             );
