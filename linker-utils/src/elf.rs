@@ -514,6 +514,8 @@ pub mod secnames {
     pub const TDATA_SECTION_NAME: &[u8] = TDATA_SECTION_NAME_STR.as_bytes();
     pub const TBSS_SECTION_NAME_STR: &str = ".tbss";
     pub const TBSS_SECTION_NAME: &[u8] = TBSS_SECTION_NAME_STR.as_bytes();
+    pub const TCOMMON_SECTION_NAME_STR: &str = ".tcommon";
+    pub const TCOMMON_SECTION_NAME: &[u8] = TCOMMON_SECTION_NAME_STR.as_bytes();
     pub const BSS_SECTION_NAME_STR: &str = ".bss";
     pub const BSS_SECTION_NAME: &[u8] = BSS_SECTION_NAME_STR.as_bytes();
     pub const GOT_SECTION_NAME_STR: &str = ".got";
