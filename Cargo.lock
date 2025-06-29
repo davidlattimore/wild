@@ -742,6 +742,7 @@ dependencies = [
  "sharded-offset-map",
  "sharded-vec-writer",
  "smallvec",
+ "symbolic-common",
  "symbolic-demangle",
  "tracing",
  "tracing-subscriber",
