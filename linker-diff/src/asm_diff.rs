@@ -2832,7 +2832,7 @@ impl PltIndex<'_> {
 
         let offset = plt_address - self.plt_base;
 
-        if self.entry_length != 0 && offset % self.entry_length != 0 {
+        if self.entry_length != 0 && !offset.is_multiple_of(self.entry_length) {
             bail!(
                 "PLT address 0x{plt_address:x} is not aligned to 0x{:x}",
                 self.entry_length
@@ -3297,7 +3297,7 @@ impl<'data> GotIndex<'data> {
             .context("got_address outside index range")?;
 
         let entry_size = size_of::<u64>() as u64;
-        if offset % entry_size != 0 {
+        if !offset.is_multiple_of(entry_size) {
             bail!("Unaligned reference to GOT 0x{got_address:x}");
         }
 
