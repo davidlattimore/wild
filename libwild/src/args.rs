@@ -369,6 +369,16 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                 .next()
                 .context(format!("Missing argument to {arg_name}"))
         };
+        // This allows parsing both `--{option} {value}` and `--{option}={value}` patterns.
+        let mut get_option_value = |option: &str| -> Option<String> {
+            if let Some(value) = long_arg_split_prefix(&format!("{option}=")) {
+                Some(value.to_owned())
+            } else if long_arg_eq(option) {
+                Some(get_next_argument(arg).ok()?.as_ref().to_owned())
+            } else {
+                None
+            }
+        };
 
         let mut handle_z_option = |arg: &str| -> Result {
             match arg {
@@ -445,12 +455,9 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.b_symbolic = BSymbolicKind::None;
         } else if arg == "-o" {
             args.output = get_next_argument(arg).map(|a| Arc::from(Path::new(a.as_ref())))?;
-        } else if long_arg_eq("dynamic-linker") {
+        } else if let Some(value) = get_option_value("dynamic-linker") {
             args.is_dynamic_executable.store(true, Ordering::Relaxed);
-            args.dynamic_linker = input.next().map(|a| Box::from(Path::new(a.as_ref())));
-        } else if let Some(rest) = long_arg_split_prefix("dynamic-linker=") {
-            args.is_dynamic_executable.store(true, Ordering::Relaxed);
-            args.dynamic_linker = Some(Box::from(Path::new(rest)));
+            args.dynamic_linker = Some(Box::from(Path::new(&value)));
         } else if long_arg_eq("no-dynamic-linker") {
             args.dynamic_linker = None;
         } else if let Some(style) = long_arg_split_prefix("hash-style=") {
@@ -460,9 +467,9 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                 bail!("Unsupported hash-style `{style}`");
             }
             // Since we currently only support GNU hash, there's no state to update.
-        } else if let Some(rest) = long_arg_split_prefix("entry=") {
-            args.entry = Some(rest.to_owned());
-        } else if long_arg_eq("entry") || arg == "-e" {
+        } else if let Some(value) = get_option_value("entry") {
+            args.entry = Some(value);
+        } else if arg == "-e" {
             args.entry = Some(get_next_argument(arg)?.as_ref().to_owned());
         } else if long_arg_eq("build-id") {
             args.build_id = BuildIdOption::Fast;
@@ -495,13 +502,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.num_threads = None;
         } else if let Some(rest) = long_arg_split_prefix("thread-count=") {
             args.num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
-        } else if long_arg_eq("exclude-libs") {
-            let param = get_next_argument(arg)?;
-            if param.as_ref() != "ALL" {
-                warn_unsupported("--exclude-libs other than ALL")?;
-            }
-            args.exclude_libs = true;
-        } else if let Some(value) = long_arg_split_prefix("exclude-libs=") {
+        } else if let Some(value) = get_option_value("exclude-libs") {
             if value != "ALL" {
                 warn_unsupported("--exclude-libs other than ALL")?;
             }
@@ -560,28 +561,21 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             if modifier_stack.is_empty() {
                 bail!("Mismatched --pop-state");
             }
-        } else if long_arg_eq("version-script") {
-            let script = get_next_argument(arg)?.as_ref().to_owned();
+        } else if let Some(script) = get_option_value("version-script") {
             args.save_dir.handle_file(&script)?;
             args.version_script_path = Some(PathBuf::from(script));
-        } else if let Some(script) = long_arg_split_prefix("script=") {
-            args.save_dir.handle_file(script)?;
-            args.add_script(script);
-        } else if long_arg_eq("script") || arg == "-T" {
+        } else if let Some(script) = get_option_value("script") {
+            args.save_dir.handle_file(&script)?;
+            args.add_script(&script);
+        } else if arg == "-T" {
             let script = get_next_argument(arg)?;
             args.save_dir.handle_file(script.as_ref())?;
             args.add_script(script.as_ref());
         } else if let Some(rest) = arg.strip_prefix("-T") {
-            args.save_dir.handle_file(rest.as_ref())?;
-            args.add_script(rest.as_ref());
-        } else if let Some(script) = long_arg_split_prefix("version-script=") {
-            args.save_dir.handle_file(script)?;
-            args.version_script_path = Some(PathBuf::from(script));
-        } else if long_arg_eq("rpath") {
-            let value = get_next_argument(arg)?;
-            append_rpath(&mut args.rpath, value.as_ref());
-        } else if let Some(rest) = long_arg_split_prefix("rpath=") {
-            append_rpath(&mut args.rpath, rest);
+            args.save_dir.handle_file(rest)?;
+            args.add_script(rest);
+        } else if let Some(value) = get_option_value("rpath") {
+            append_rpath(&mut args.rpath, &value);
         } else if arg == "-R" {
             handle_r_option(get_next_argument(arg)?.as_ref());
         } else if let Some(rest) = arg.strip_prefix("-R") {
@@ -600,9 +594,9 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.explicitly_export_dynamic = true;
         } else if long_arg_eq("no-export-dynamic") {
             args.explicitly_export_dynamic = false;
-        } else if let Some(rest) = long_arg_split_prefix("soname=") {
-            args.soname = Some(rest.to_owned());
-        } else if long_arg_eq("soname") || arg == "-h" {
+        } else if let Some(value) = get_option_value("soname") {
+            args.soname = Some(value);
+        } else if arg == "-h" {
             args.soname = Some(get_next_argument(arg)?.as_ref().to_owned());
         } else if let Some(rest) = arg.strip_prefix("-h") {
             args.soname = Some(rest.to_owned());
