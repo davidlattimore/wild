@@ -13,6 +13,8 @@ use crate::linker_script::skip_comments_and_whitespace;
 use crate::symbol::UnversionedSymbolName;
 use glob::Pattern;
 use std::collections::HashSet;
+use symbolic_demangle::Demangle;
+use symbolic_demangle::DemangleOptions;
 use winnow::BStr;
 use winnow::Parser;
 use winnow::error::ContextError;
@@ -35,14 +37,20 @@ pub(crate) struct Version<'data> {
     symbols: MatchRules<'data>,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct MatchRules<'data> {
+    general: BasicMatchRules<'data>,
+    cxx: BasicMatchRules<'data>,
+}
+
+#[derive(Debug, Default)]
+struct BasicMatchRules<'data> {
     matches_all: bool,
     exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
     globs: Vec<Pattern>,
 }
 
-impl<'data> MatchRules<'data> {
+impl<'data> BasicMatchRules<'data> {
     fn push(&mut self, pattern: SymbolMatcher<'data>) {
         match pattern {
             SymbolMatcher::All => self.matches_all = true,
@@ -53,21 +61,7 @@ impl<'data> MatchRules<'data> {
         }
     }
 
-    fn matches(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
-        if self.matches_all || self.exact.contains(name) {
-            return true;
-        }
-
-        let symbol_name = str::from_utf8(name.bytes()).unwrap_or_else(|_| {
-            panic!(
-                "Valid utf-8 identifier expected: {}",
-                String::from_utf8_lossy(name.bytes())
-            )
-        });
-        self.globs.iter().any(|glob| glob.matches(symbol_name))
-    }
-
-    fn merge(&mut self, other: &MatchRules<'data>) {
+    fn merge(&mut self, other: &BasicMatchRules<'data>) {
         if other.matches_all {
             self.matches_all = true;
         }
@@ -83,11 +77,76 @@ impl<'data> MatchRules<'data> {
     }
 }
 
+impl<'data> MatchRules<'data> {
+    fn push(&mut self, pattern: ParsedSymbolMatcher<'data>) {
+        match pattern {
+            ParsedSymbolMatcher::Single(single) => {
+                self.general.push(single);
+            }
+            ParsedSymbolMatcher::CxxMatchers(matchers) => {
+                for matcher in matchers {
+                    self.cxx.push(matcher);
+                }
+            }
+        }
+    }
+
+    fn matches(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
+        if self.general.matches_all || self.general.exact.contains(name) {
+            return true;
+        }
+
+        let symbol_name = str::from_utf8(name.bytes()).unwrap_or_else(|_| {
+            panic!(
+                "Valid utf-8 identifier expected: {}",
+                String::from_utf8_lossy(name.bytes())
+            )
+        });
+        if self
+            .general
+            .globs
+            .iter()
+            .any(|glob| glob.matches(symbol_name))
+        {
+            return true;
+        }
+
+        let demangled_name = symbolic_common::Name::new(
+            symbol_name,
+            symbolic_common::NameMangling::Mangled,
+            symbolic_common::Language::Cpp,
+        )
+        .demangle(DemangleOptions::complete().return_type(false));
+
+        demangled_name.is_some_and(|demangled_name| {
+            self.cxx
+                .exact
+                .contains(&UnversionedSymbolName::prehashed(demangled_name.as_bytes()))
+                || self
+                    .cxx
+                    .globs
+                    .iter()
+                    .any(|glob| glob.matches(&demangled_name))
+        })
+    }
+
+    fn merge(&mut self, other: &MatchRules<'data>) {
+        self.general.merge(&other.general);
+        self.cxx.merge(&other.cxx);
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum SymbolMatcher<'data> {
     All,
     Glob(Pattern),
     Exact(&'data [u8]),
+}
+
+#[derive(Debug)]
+enum ParsedSymbolMatcher<'data> {
+    Single(SymbolMatcher<'data>),
+    CxxMatchers(Vec<SymbolMatcher<'data>>),
 }
 
 fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<VersionScript<'input>> {
@@ -258,7 +317,36 @@ impl Version<'_> {
     }
 }
 
-fn parse_matcher<'data>(input: &mut &'data BStr) -> winnow::Result<SymbolMatcher<'data>> {
+fn parse_matcher<'data>(input: &mut &'data BStr) -> winnow::Result<ParsedSymbolMatcher<'data>> {
+    if input.starts_with(b"extern \"C++\"") {
+        let mut matchers = Vec::new();
+        b"extern \"C++\"".parse_next(input)?;
+        skip_comments_and_whitespace(input)?;
+        '{'.parse_next(input)?;
+
+        loop {
+            skip_comments_and_whitespace(input)?;
+
+            if input.starts_with(b"};") {
+                b"};".parse_next(input)?;
+                skip_comments_and_whitespace(input)?;
+                break;
+            }
+
+            let matcher = parse_matcher(input)?;
+            let ParsedSymbolMatcher::Single(matcher) = matcher else {
+                return Err(ContextError::from_external_error(
+                    input,
+                    VersionScriptError::UnexpectedExternCxx,
+                ));
+            };
+
+            matchers.push(matcher);
+        }
+
+        return Ok(ParsedSymbolMatcher::CxxMatchers(matchers));
+    }
+
     let token = take_until(1.., b';').parse_next(input)?;
 
     skip_comments_and_whitespace(input)?;
@@ -268,20 +356,28 @@ fn parse_matcher<'data>(input: &mut &'data BStr) -> winnow::Result<SymbolMatcher
     }
 
     let token = token.trim_ascii_end();
-    Ok(if token == b"*" {
-        SymbolMatcher::All
-    } else if token.contains(&b'*') {
-        SymbolMatcher::Glob(
-            Pattern::new(str::from_utf8(token).map_err(|_| {
-                ContextError::from_external_error(input, VersionScriptError::InvalidUtf8String)
-            })?)
-            .map_err(|_: glob::PatternError| {
-                ContextError::from_external_error(input, VersionScriptError::InvalidGlobPattern)
-            })?,
-        )
-    } else {
-        SymbolMatcher::Exact(token)
-    })
+
+    Ok(
+        if let Some(unquoted) = token
+            .strip_prefix(b"\"")
+            .and_then(|t| t.strip_suffix(b"\""))
+        {
+            ParsedSymbolMatcher::Single(SymbolMatcher::Exact(unquoted))
+        } else if token == b"*" {
+            ParsedSymbolMatcher::Single(SymbolMatcher::All)
+        } else if token.contains(&b'*') {
+            ParsedSymbolMatcher::Single(SymbolMatcher::Glob(
+                Pattern::new(str::from_utf8(token).map_err(|_| {
+                    ContextError::from_external_error(input, VersionScriptError::InvalidUtf8String)
+                })?)
+                .map_err(|_: glob::PatternError| {
+                    ContextError::from_external_error(input, VersionScriptError::InvalidGlobPattern)
+                })?,
+            ))
+        } else {
+            ParsedSymbolMatcher::Single(SymbolMatcher::Exact(token))
+        },
+    )
 }
 
 fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]> {
@@ -293,6 +389,7 @@ enum VersionScriptError {
     UnknownParentVersion,
     InvalidUtf8String,
     InvalidGlobPattern,
+    UnexpectedExternCxx,
 }
 
 impl std::error::Error for VersionScriptError {}
@@ -303,6 +400,9 @@ impl std::fmt::Display for VersionScriptError {
             VersionScriptError::InvalidGlobPattern => write!(f, "Invalid glob pattern"),
             VersionScriptError::InvalidUtf8String => write!(f, "Invalid utf-8 string"),
             VersionScriptError::UnknownParentVersion => write!(f, "Unknown parent version"),
+            VersionScriptError::UnexpectedExternCxx => {
+                write!(f, "Unexpected extern \"C++\" in parsing")
+            }
         }
     }
 }
@@ -313,16 +413,6 @@ impl std::fmt::Debug for Version<'_> {
             .field("name", &String::from_utf8_lossy(self.name))
             .field("parent_index", &self.parent_index)
             .field("symbols", &self.symbols)
-            .finish()
-    }
-}
-
-impl std::fmt::Debug for MatchRules<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MatchRules")
-            .field("matches_all", &self.matches_all)
-            .field("exact", &self.exact)
-            .field("prefixes", &self.globs)
             .finish()
     }
 }
@@ -354,16 +444,22 @@ mod tests {
         assert_equal(
             script
                 .globals
+                .general
                 .exact
                 .iter()
                 .map(|s| std::str::from_utf8(s.bytes()).unwrap()),
             ["foo"],
         );
         assert_equal(
-            script.globals.globs.iter().map(|glob| glob.as_str()),
+            script
+                .globals
+                .general
+                .globs
+                .iter()
+                .map(|glob| glob.as_str()),
             ["bar*", "best_*_fn*", "*_wrapper"],
         );
-        assert!(script.locals.matches_all);
+        assert!(script.locals.general.matches_all);
 
         let globals = script.globals;
         assert!(globals.matches(&UnversionedSymbolName::prehashed(b"main_wrapper")));
@@ -393,6 +489,7 @@ mod tests {
         assert_equal(
             script
                 .globals
+                .general
                 .exact
                 .iter()
                 .map(|s| std::str::from_utf8(s.bytes()).unwrap())
@@ -400,7 +497,7 @@ mod tests {
             ["foo1", "foo2"],
         );
         assert_equal(
-            script.locals.globs.iter().map(|glob| glob.as_str()),
+            script.locals.general.globs.iter().map(|glob| glob.as_str()),
             ["old*"],
         );
 
@@ -410,13 +507,19 @@ mod tests {
         assert_equal(
             version
                 .symbols
+                .general
                 .exact
                 .iter()
                 .map(|s| std::str::from_utf8(s.bytes()).unwrap()),
             ["foo1"],
         );
         assert_equal(
-            version.symbols.globs.iter().map(|glob| glob.as_str()),
+            version
+                .symbols
+                .general
+                .globs
+                .iter()
+                .map(|glob| glob.as_str()),
             ["old*"],
         );
 
@@ -426,6 +529,7 @@ mod tests {
         assert_equal(
             version
                 .symbols
+                .general
                 .exact
                 .iter()
                 .map(|s| std::str::from_utf8(s.bytes()).unwrap()),
@@ -439,7 +543,67 @@ mod tests {
             raw: br#"VERSION42 { global: *; };"#,
         };
         let script = VersionScript::parse(data).unwrap();
-        assert!(script.globals.matches_all);
+        assert!(script.globals.general.matches_all);
+    }
+
+    #[test]
+    fn extern_cxx_version_script() {
+        let data = VersionScriptData {
+            raw: br#"
+                "VERSION42 {
+                    global:
+                        *;
+                    local:
+                        foo;
+                        bar;
+                        extern "C++" {
+                            ns::*;
+                            "f(int**,double)";
+                            "std::vector<Loc<1>, std::allocator<Loc<1> > >::_M_realloc_append<Loc<1> const&>(Loc<1> const&)::_Guard_elts::_Guard_elts(Loc<1>*, std::allocator<Loc<1> >&)";
+                            "WebKit::WebProcessMain(int, char**)";
+                        };
+                };"#,
+        };
+        let script = VersionScript::parse(data).unwrap();
+        assert!(script.globals.general.matches_all);
+        assert!(!script.globals.cxx.matches_all);
+
+        assert_equal(
+            script
+                .locals
+                .cxx
+                .exact
+                .iter()
+                .map(|s| std::str::from_utf8(s.bytes()).unwrap())
+                .sorted(),
+            [
+                "WebKit::WebProcessMain(int, char**)",
+                "f(int**,double)",
+                "std::vector<Loc<1>, std::allocator<Loc<1> > >::_M_realloc_append<Loc<1> const&>(Loc<1> const&)::_Guard_elts::_Guard_elts(Loc<1>*, std::allocator<Loc<1> >&)",
+            ],
+        );
+        assert_equal(
+            script.locals.cxx.globs.iter().map(|glob| glob.as_str()),
+            ["ns::*"],
+        );
+        assert!(!script.locals.cxx.matches_all);
+
+        let locals = script.locals;
+        assert!(locals.matches(&UnversionedSymbolName::prehashed(b"foo")));
+        // Test "ns::" c++ namespace glob pattern.
+        assert!(locals.matches(&UnversionedSymbolName::prehashed(
+            b"_ZN2ns8generateB5cxx11ENSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEb"
+        )));
+        // Test exact matches after C++ demangling.
+        assert!(locals.matches(&UnversionedSymbolName::prehashed(
+        b"_ZZNSt6vectorI3LocILi1EESaIS1_EE17_M_realloc_appendIJRKS1_EEEvDpOT_EN11_Guard_eltsC2EPS1_RS2_"
+        )));
+        assert!(locals.matches(&UnversionedSymbolName::prehashed(
+            b"_ZN6WebKit14WebProcessMainEiPPc"
+        )));
+        assert!(!locals.matches(&UnversionedSymbolName::prehashed(
+            b"_ZTVN10__cxxabiv120__si_class_type_infoE"
+        )));
     }
 
     #[test]

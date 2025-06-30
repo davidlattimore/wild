@@ -70,6 +70,7 @@ sharded-vec-writer = "0.3.0"
 smallvec = "1.6.1"
 strum = { version = "0.27.0", features = ["derive"] }
 strum_macros = "0.27.0"
+symbolic-common = "12.0.0"
 symbolic-demangle = "12.0.0"
 tempfile = "3.0.2"
 toml = "0.8.0"
