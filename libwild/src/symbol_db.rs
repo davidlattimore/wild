@@ -875,10 +875,10 @@ fn select_symbol(
                 }
             }
             SymbolStrength::Common(size) => {
-                if let Some((previous_size, _)) = max_common {
-                    if size <= previous_size {
-                        continue;
-                    }
+                if let Some((previous_size, _)) = max_common
+                    && size <= previous_size
+                {
+                    continue;
                 }
                 max_common = Some((size, id));
             }
