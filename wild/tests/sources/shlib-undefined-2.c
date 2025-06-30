@@ -1,3 +1,5 @@
+//#Shared:shlib-undefined-3.c
+
 int def1(void);
 int def2(void);
 

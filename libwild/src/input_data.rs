@@ -22,8 +22,10 @@ use foldhash::fast::RandomState;
 use memmap2::Mmap;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
+use std::ffi::OsStr;
 use std::fmt::Display;
 use std::ops::Deref;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -38,6 +40,10 @@ pub(crate) struct InputData<'data> {
 
     pub(crate) version_script_data: Option<VersionScriptData<'data>>,
     pub(crate) linker_scripts: Vec<InputLinkerScript<'data>>,
+
+    /// Which files we loaded. The keys aren't relevant anymore, but we keep them to avoid
+    /// regenerating the map.
+    path_to_load_index: HashMap<PathBuf, FileLoadIndex>,
 }
 
 pub(crate) struct InputBytes<'data> {
@@ -232,12 +238,12 @@ impl<'data> InputData<'data> {
             inputs: Vec::new(),
             linker_scripts: Vec::new(),
             version_script_data,
+            path_to_load_index: temporary_state.path_to_load_index,
         };
 
         inputs.extract_all(&mut temporary_state.files)?;
 
-        args.save_dir
-            .finish(temporary_state.path_to_load_index.keys())?;
+        args.save_dir.finish(inputs.path_to_load_index.keys())?;
 
         Ok(inputs)
     }
@@ -323,6 +329,11 @@ impl<'data> InputData<'data> {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn has_file(&self, name: &'data [u8]) -> bool {
+        self.path_to_load_index
+            .contains_key(Path::new(OsStr::from_bytes(name)))
     }
 }
 
