@@ -30,6 +30,7 @@ use crate::error::Error;
 use crate::error::Result;
 use crate::file_writer;
 use crate::input_data::FileId;
+use crate::input_data::InputData;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionKind;
@@ -128,6 +129,7 @@ pub fn compute<'data, A: Arch>(
     resolved: ResolutionOutputs<'data>,
     mut output_sections: OutputSections<'data>,
     output: &mut file_writer::Output,
+    input_data: &InputData<'data>,
 ) -> Result<Layout<'data>> {
     let ResolutionOutputs {
         groups,
@@ -146,6 +148,7 @@ pub fn compute<'data, A: Arch>(
         &output_sections,
         &symbol_resolution_flags,
         &merged_strings,
+        input_data,
     )?;
 
     let mut group_states = gc_outputs.group_states;
@@ -1631,6 +1634,8 @@ struct GraphResources<'data, 'scope> {
     /// section gets referenced. The sections here will only be those that are eligible for having
     /// __start_ / __stop_ symbols. i.e. sections that don't start their names with a ".".
     start_stop_sections: OutputSectionMap<SegQueue<SectionLoadRequest>>,
+
+    input_data: &'scope InputData<'data>,
 }
 
 struct FinaliseLayoutResources<'scope, 'data> {
@@ -2250,6 +2255,7 @@ fn find_required_sections<'data, A: Arch>(
     output_sections: &OutputSections<'data>,
     symbol_resolution_flags: &[AtomicResolutionFlags],
     merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
+    input_data: &InputData<'data>,
 ) -> Result<GcOutputs<'data>> {
     let num_workers = groups_in.len();
     let (worker_slots, groups) = create_worker_slots(groups_in, output_sections, symbol_db);
@@ -2272,6 +2278,7 @@ fn find_required_sections<'data, A: Arch>(
         has_static_tls: AtomicBool::new(false),
         uses_tlsld: AtomicBool::new(false),
         start_stop_sections: output_sections.new_section_map(),
+        input_data,
     };
     let resources_ref = &resources;
 
@@ -5254,6 +5261,8 @@ impl<'data> DynamicLayoutState<'data> {
         resources: &GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
+        let mut check_undefined_cache = None;
+
         for symbol_id in self.symbol_id_range() {
             let definition_symbol_id = resources.symbol_db.definition(symbol_id);
 
@@ -5263,9 +5272,22 @@ impl<'data> DynamicLayoutState<'data> {
 
             if value_flags.is_dynamic() && value_flags.is_absolute() {
                 // Our shared object references an undefined symbol. Whether that is an error or
-                // not, depends on flags and whether the symbol is weak.
-                let args = resources.symbol_db.args;
-                if !args.allow_shlib_undefined && args.output_kind().is_executable() {
+                // not, depends on flags, whether the symbol is weak and whether all of the shared
+                // object's dependencies are loaded.
+
+                let check_undefined = *check_undefined_cache.get_or_insert_with(|| {
+                    let args = resources.symbol_db.args;
+                    !args.allow_shlib_undefined
+                        && args.output_kind().is_executable()
+                        // Like lld, our behaviour for --no-allow-shlib-undefined is to only report
+                        // errors for shared objects that have all their dependencies in the link.
+                        // This is in contrast to GNU ld which recursively loads all transitive
+                        // dependencies of shared objects and checks our shared object against
+                        // those.
+                        && self.has_complete_deps(resources)
+                });
+
+                if check_undefined {
                     let symbol = self
                         .object
                         .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
@@ -5610,6 +5632,32 @@ impl<'data> DynamicLayoutState<'data> {
                 Ok((input_address, output_address))
             })
             .try_collect()
+    }
+
+    /// Return whether all DT_NEEDED entries for this shared object correspond to input files that
+    /// we have loaded.
+    fn has_complete_deps(&self, resources: &GraphResources) -> bool {
+        let Ok(dynamic_tags) = self.object.dynamic_tags() else {
+            return true;
+        };
+
+        let e = LittleEndian;
+        for entry in dynamic_tags {
+            let value = entry.d_val(e);
+            match entry.d_tag(e) as u32 {
+                object::elf::DT_NEEDED => {
+                    let Ok(name) = self.object.symbols.strings().get(value as u32) else {
+                        return false;
+                    };
+                    if !resources.input_data.has_file(name) {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        true
     }
 }
 
