@@ -44,6 +44,8 @@ use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
+use linker_utils::elf::secnames::TCOMMON_SECTION_NAME;
+use linker_utils::elf::secnames::TCOMMON_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
@@ -855,6 +857,8 @@ fn resolve_sections_for_object<'data>(
                 SectionSlot::UnloadedDebugInfo(part_id::CUSTOM_PLACEHOLDER)
             } else if must_load {
                 SectionSlot::MustLoad(unloaded_section)
+            } else if section_name == TCOMMON_SECTION_NAME {
+                bail!("{TCOMMON_SECTION_NAME_STR} section is not supported yet");
             } else {
                 SectionSlot::Unloaded(unloaded_section)
             };
