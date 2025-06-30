@@ -32,9 +32,12 @@
 // Similarly to Mold, Wild also sets STATIC_TLS flag.
 //#DiffIgnore:.dynamic.DT_FLAGS.STATIC_TLS
 
-int foo();
-int bar();
-int baz();
+int foo(void);
+int bar(void);
+int baz(void);
+int get_global_tls2(void);
+int get_global_tls3(void);
+void set_global_tls3(int v);
 
 int main()
 {
@@ -42,10 +45,20 @@ int main()
         return 1;
     }
     if (bar() != 1) {
-        return 1;
+        return 2;
     }
     if (baz() != 1) {
-        return 1;
+        return 3;
+    }
+    if (get_global_tls2() != 1000) {
+        return 4;
+    }
+    if (get_global_tls3() != 0) {
+        return 5;
+    }
+    set_global_tls3(19);
+    if (get_global_tls3() != 19) {
+        return 5;
     }
 
     return 42;

@@ -276,6 +276,8 @@ struct CustomSectionIds {
     data: Vec<OutputSectionId>,
     bss: Vec<OutputSectionId>,
     nonalloc: Vec<OutputSectionId>,
+    tdata: Vec<OutputSectionId>,
+    tbss: Vec<OutputSectionId>,
 }
 
 impl<'data> OutputSections<'data> {
@@ -862,7 +864,9 @@ impl CustomSectionIds {
         builder.add_sections(&self.exec);
 
         builder.add_section(TDATA);
+        builder.add_sections(&self.tdata);
         builder.add_section(TBSS);
+        builder.add_sections(&self.tbss);
         builder.add_section(INIT_ARRAY);
         builder.add_section(FINI_ARRAY);
         builder.add_section(PREINIT_ARRAY);
@@ -968,6 +972,12 @@ impl<'data> OutputSections<'data> {
 
             if info.section_flags.contains(shf::EXECINSTR) {
                 custom.exec.push(id);
+            } else if info.section_flags.contains(shf::TLS) {
+                if info.ty == sht::NOBITS {
+                    custom.tbss.push(id);
+                } else {
+                    custom.tdata.push(id);
+                }
             } else if !info.section_flags.contains(shf::WRITE) {
                 if info.section_flags.contains(shf::ALLOC) {
                     custom.ro.push(id);
