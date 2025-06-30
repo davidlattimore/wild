@@ -211,7 +211,13 @@ impl Linker {
             &layout_rules,
         )?;
 
-        let layout = layout::compute::<A>(symbol_db, resolved, output_sections, &mut output)?;
+        let layout = layout::compute::<A>(
+            symbol_db,
+            resolved,
+            output_sections,
+            &mut output,
+            input_data,
+        )?;
 
         output.write(&layout, elf_writer::write::<A>)?;
         diff::maybe_diff()?;

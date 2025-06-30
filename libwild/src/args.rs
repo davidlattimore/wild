@@ -288,8 +288,7 @@ impl Default for Args {
             files_per_group: None,
             exclude_libs: false,
             no_undefined: false,
-            // TODO: Change default to false once #897 is fixed.
-            allow_shlib_undefined: true,
+            allow_shlib_undefined: false,
             should_print_version: false,
             sysroot: None,
             save_dir: Default::default(),
