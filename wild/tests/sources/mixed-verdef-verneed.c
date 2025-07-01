@@ -2,7 +2,7 @@
 
 //#Mode:dynamic
 //#Object:runtime.c
-//#VersionScript:mixed-verdef-verneed.map
+//#LinkArgs:-z now --version-script ./mixed-verdef-verneed.map
 //#Shared:mixed-verdef-verneed-2.c
 //#DiffIgnore:version_d.verdef_1
 //#DiffIgnore:.dynamic.DT_NEEDED
