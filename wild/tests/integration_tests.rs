@@ -2522,6 +2522,7 @@ fn integration_test(
         "libc-integration.c",
         "rust-integration.rs",
         "rust-integration-dynamic.rs",
+        "tls-custom.c",
         "cpp-integration.cc",
         "rust-tls.rs",
         "basic-comdat.s",
