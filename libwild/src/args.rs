@@ -71,7 +71,9 @@ pub struct Args {
     pub(crate) undefined: Vec<String>,
     pub(crate) relro: bool,
     pub(crate) entry: Option<String>,
-    pub(crate) explicitly_export_dynamic: bool,
+    pub(crate) export_all_dynamic_symbols: bool,
+    pub(crate) export_list: Vec<String>,
+    pub(crate) export_list_path: Option<PathBuf>,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -299,7 +301,9 @@ impl Default for Args {
             relro: true,
             entry: None,
             b_symbolic: BSymbolicKind::None,
-            explicitly_export_dynamic: false,
+            export_all_dynamic_symbols: false,
+            export_list: Vec::new(),
+            export_list_path: None,
             got_plt_syms: false,
             relax: true,
             jobserver_client: None,
@@ -594,9 +598,16 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         } else if long_arg_eq("shared") || long_arg_eq("Bshareable") {
             args.output_kind = Some(OutputKind::SharedObject);
         } else if long_arg_eq("export-dynamic") || arg == "-E" {
-            args.explicitly_export_dynamic = true;
+            args.export_all_dynamic_symbols = true;
         } else if long_arg_eq("no-export-dynamic") {
-            args.explicitly_export_dynamic = false;
+            args.export_all_dynamic_symbols = false;
+        } else if let Some(value) = get_option_value("export-dynamic-symbol") {
+            args.export_list.push(value);
+        } else if let Some(value) = get_option_value("export-dynamic-symbol-list") {
+            args.export_list_path = Some(PathBuf::from(&value));
+        } else if let Some(value) = get_option_value("dynamic-list") {
+            args.b_symbolic = BSymbolicKind::All;
+            args.export_list_path = Some(PathBuf::from(&value));
         } else if let Some(value) = get_option_value("soname") {
             args.soname = Some(value);
         } else if arg == "-h" {
