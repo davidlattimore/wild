@@ -10,6 +10,7 @@ pub(crate) mod dwarf_address_info;
 pub(crate) mod elf;
 pub(crate) mod elf_writer;
 pub mod error;
+pub(crate) mod export_list;
 pub(crate) mod file_kind;
 pub(crate) mod file_writer;
 pub(crate) mod fs;
@@ -202,6 +203,7 @@ impl Linker {
             input_data.version_script_data,
             args,
             &input_data.linker_scripts,
+            input_data.export_list_data,
         )?;
 
         let resolved = resolution::resolve_symbols_and_sections(

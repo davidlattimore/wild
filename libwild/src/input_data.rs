@@ -38,8 +38,9 @@ pub(crate) struct InputData<'data> {
     /// This is like `files`, but archives have been split into their separate parts.
     pub(crate) inputs: Vec<InputBytes<'data>>,
 
-    pub(crate) version_script_data: Option<VersionScriptData<'data>>,
+    pub(crate) version_script_data: Option<ScriptData<'data>>,
     pub(crate) linker_scripts: Vec<InputLinkerScript<'data>>,
+    pub(crate) export_list_data: Option<ScriptData<'data>>,
 
     /// Which files we loaded. The keys aren't relevant anymore, but we keep them to avoid
     /// regenerating the map.
@@ -54,7 +55,7 @@ pub(crate) struct InputBytes<'data> {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct VersionScriptData<'data> {
+pub(crate) struct ScriptData<'data> {
     pub(crate) raw: &'data [u8],
 }
 
@@ -189,7 +190,12 @@ impl<'data> InputData<'data> {
         let version_script_data = args
             .version_script_path
             .as_ref()
-            .map(|path| read_version_script(path, inputs_arena))
+            .map(|path| read_script_data(path, inputs_arena))
+            .transpose()?;
+        let export_list_data = args
+            .export_list_path
+            .as_ref()
+            .map(|path| read_script_data(path, inputs_arena))
             .transpose()?;
 
         let (work_sender, work_recv) = crossbeam_channel::unbounded();
@@ -238,6 +244,7 @@ impl<'data> InputData<'data> {
             inputs: Vec::new(),
             linker_scripts: Vec::new(),
             version_script_data,
+            export_list_data,
             path_to_load_index: temporary_state.path_to_load_index,
         };
 
@@ -595,10 +602,10 @@ impl<'data, 'ch> TemporaryState<'data, 'ch> {
     }
 }
 
-fn read_version_script<'data>(
+fn read_script_data<'data>(
     path: &Path,
     inputs_arena: &'data Arena<InputFile>,
-) -> Result<VersionScriptData<'data>> {
+) -> Result<ScriptData<'data>> {
     let data = FileData::new(path, false)?;
 
     let file = inputs_arena.alloc(InputFile {
@@ -609,7 +616,7 @@ fn read_version_script<'data>(
         data: Some(data),
     });
 
-    Ok(VersionScriptData { raw: file.data() })
+    Ok(ScriptData { raw: file.data() })
 }
 
 impl Input {
