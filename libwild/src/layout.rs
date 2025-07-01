@@ -624,7 +624,7 @@ pub(crate) struct SegmentLayouts {
     /// The layout of each of our segments. Segments containing no active output sections will have
     /// been filtered, so don't try to index this by our internal segment IDs.
     pub(crate) segments: Vec<SegmentLayout>,
-    pub(crate) tls_start_address: Option<u64>,
+    pub(crate) tls_layout: Option<OutputRecordLayout>,
 }
 
 #[derive(Default, Clone)]
@@ -1774,25 +1774,26 @@ impl<'data> Layout<'data> {
 
     pub(crate) fn tls_start_address(&self) -> u64 {
         // If we don't have a TLS segment then the value we return won't really matter.
-        self.segment_layouts.tls_start_address.unwrap_or(0)
+        self.segment_layouts
+            .tls_layout
+            .as_ref()
+            .map_or(0, |seg| seg.mem_offset)
     }
 
     /// Returns the memory address of the end of the TLS segment including any padding required to
     /// make sure that the TCB will be usize-aligned.
     pub(crate) fn tls_end_address(&self) -> u64 {
-        let tbss = self.section_layouts.get(output_section_id::TBSS);
-        let tdata = self.section_layouts.get(output_section_id::TDATA);
-        let tls_end = tbss.mem_offset + tbss.mem_size;
-        let alignment = tbss.alignment.max(tdata.alignment);
-        alignment.align_up(tls_end)
+        self.segment_layouts.tls_layout.as_ref().map_or(0, |seg| {
+            seg.alignment.align_up(seg.mem_offset + seg.mem_size)
+        })
     }
 
     /// Returns the memory address of the start of the TLS segment used by the AArch64.
     pub(crate) fn tls_start_address_aarch64(&self) -> u64 {
-        let tdata = self.section_layouts.get(output_section_id::TDATA);
-        // Two words at TP are reserved by the arch.
-        let tls_start = tdata.mem_offset - 2 * 8;
-        tdata.alignment.align_down(tls_start)
+        self.segment_layouts.tls_layout.as_ref().map_or(0, |seg| {
+            // Two words at TP are reserved by the arch.
+            seg.alignment.align_down(seg.mem_offset - 2 * 8)
+        })
     }
 
     pub(crate) fn layout_data(&self) -> linker_layout::Layout {
@@ -2066,27 +2067,27 @@ fn compute_segment_layout(
     complete.sort_by_key(|r| r.segment_id);
 
     assert_eq!(complete.len(), program_segments.len());
-    let mut tls_start_address = None;
+    let mut tls_layout = None;
 
     let mut segments: Vec<SegmentLayout> = header_info
         .active_segment_ids
         .iter()
         .map(|&id| {
             let r = &complete[id.as_usize()];
+
+            let sizes = OutputRecordLayout {
+                file_size: r.file_end - r.file_start,
+                mem_size: r.mem_end - r.mem_start,
+                alignment: r.alignment,
+                file_offset: r.file_start,
+                mem_offset: r.mem_start,
+            };
+
             if program_segments.is_tls_segment(id) {
-                tls_start_address = Some(r.mem_start);
+                tls_layout = Some(sizes);
             }
 
-            SegmentLayout {
-                id,
-                sizes: OutputRecordLayout {
-                    file_size: r.file_end - r.file_start,
-                    mem_size: r.mem_end - r.mem_start,
-                    alignment: r.alignment,
-                    file_offset: r.file_start,
-                    mem_offset: r.mem_start,
-                },
-            }
+            SegmentLayout { id, sizes }
         })
         .collect();
 
@@ -2094,7 +2095,7 @@ fn compute_segment_layout(
 
     Ok(SegmentLayouts {
         segments,
-        tls_start_address,
+        tls_layout,
     })
 }
 
