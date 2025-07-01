@@ -102,16 +102,6 @@ tests = [
   "gdb-index-split-dwarf.sh",
 ]
 
-[skipped_groups.dynamic_list]
-reason = "dynamic list support"
-tracking_issue = "https://github.com/davidlattimore/wild/issues/955"
-tests = [
-  "dynamic-list.sh",
-  "dynamic-list2.sh",
-  "dynamic-list3.sh",
-  "dynamic-list4.sh",
-]
-
 [skipped_groups.version_script]
 reason = "version script support"
 tests = [
