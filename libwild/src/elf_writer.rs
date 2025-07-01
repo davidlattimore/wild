@@ -1273,11 +1273,7 @@ fn write_symbols(
             let mut symbol_value = res.value_for_symbol_table();
 
             if sym.st_type() == object::elf::STT_TLS {
-                let tls_start_address = layout
-                    .segment_layouts
-                    .tls_start_address
-                    .context("Writing TLS variable to symtab, but we don't have a TLS segment")?;
-                symbol_value -= tls_start_address;
+                symbol_value -= layout.tls_start_address();
             }
 
             symbol_writer
@@ -2945,11 +2941,7 @@ fn write_regular_object_dynamic_symbol_definition(
         })?;
         let mut symbol_value = resolution.raw_value;
         if sym.st_type() == object::elf::STT_TLS {
-            let tls_start_address = layout
-                .segment_layouts
-                .tls_start_address
-                .context("Writing TLS variable to symtab, but we don't have a TLS segment")?;
-            symbol_value -= tls_start_address;
+            symbol_value -= layout.tls_start_address();
         }
         dynamic_symbol_writer
             .copy_symbol(sym, name, output_section_id, symbol_value)
