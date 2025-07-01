@@ -108,9 +108,6 @@
 //!
 //! Shared:{source-filename}[:extra-compilation-args] Builds the specified filename as a shared
 //! object and adds it to the link.
-//!
-//! LinkerScript:{source-filename} Adds a linker script. It will be added as -T {source-filename},
-//! so will replace the built-in linker script.
 
 mod external_tests;
 
