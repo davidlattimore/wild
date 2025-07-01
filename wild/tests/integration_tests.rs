@@ -20,6 +20,7 @@
 //!
 //! LinkArgs:... Arguments to pass to the linker. If using a LinkerDriver, these arguments should be
 //! whatever the linker driver expects. e.g. `-Wl,--strip-all` rather than `--strip-all`.
+//! `./<filename>` will be replaced with the path to the input file.
 //!
 //! LinkSoArgs:... Arguments to pass when linking a shared object.
 //!
@@ -84,8 +85,6 @@
 //!
 //! RequiresClangWithTlsDesc:{bool} Defaults to false. Set to true to disable this test if we detect
 //! that the version of clang available to us doesn't support TLSDESC.
-//!
-//! VersionScript:{filename} Specifies a version script file that will be passed to the linker.
 //!
 //! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the
 //! musl Rust toolchain.
@@ -453,10 +452,10 @@ struct Config {
     requires_clang_with_tlsdesc: bool,
     requires_nightly_rustc: bool,
     auto_add_objects: bool,
-    version_script: Option<PathBuf>,
     rustc_channel: RustcChannel,
     requires_rust_musl: bool,
     test_config: TestConfig,
+    tracked_files: Vec<PathBuf>,
 }
 
 /// These configs are used by the config file specified in `$WILD_TEST_CONFIG`
@@ -697,10 +696,10 @@ impl Config {
             requires_clang_with_tlsdesc: false,
             requires_nightly_rustc: false,
             auto_add_objects: true,
-            version_script: None,
             rustc_channel: RustcChannel::Default,
             requires_rust_musl: false,
             test_config: test_config.clone(),
+            tracked_files: Default::default(),
         }
     }
 }
@@ -775,7 +774,16 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                     if is_rust {
                         bail!("LinkArgs is not used when building Rust code");
                     }
-                    config.linker_args = ArgumentSet::parse(arg)?
+                    if let Some((_, rest)) = arg.split_once("./") {
+                        let filename = rest.split_once(' ').map_or(rest, |(f, _)| f);
+                        let src_path = src_path(filename);
+                        config.tracked_files.push(src_path.clone());
+                        let with_replaced_path =
+                            arg.replace(&format!("./{filename}"), &src_path.display().to_string());
+                        config.linker_args = ArgumentSet::parse(&with_replaced_path)?
+                    } else {
+                        config.linker_args = ArgumentSet::parse(arg)?
+                    }
                 }
                 "LinkSoArgs" => {
                     if is_rust {
@@ -892,9 +900,6 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 }
                 "RequiresNightlyRustc" => {
                     config.requires_nightly_rustc = arg.to_lowercase().parse()?;
-                }
-                "VersionScript" => {
-                    config.version_script = Some(src_path(&arg.trim().to_lowercase()))
                 }
                 "RequiresRustMusl" => {
                     config.requires_rust_musl = arg.to_lowercase().parse()?;
@@ -1700,10 +1705,6 @@ impl LinkCommand {
                         command.arg("-mno-fix-cortex-a53-835769");
                     }
 
-                    if let Some(version_script) = &config.version_script {
-                        command.arg(format!("-Wl,--version-script={}", version_script.display()));
-                    }
-
                     command.args(&linker_args.args);
                 }
                 LinkerDriver::Direct(direct_config) => {
@@ -1723,10 +1724,6 @@ impl LinkCommand {
                             command.arg("-static");
                         }
                         Mode::Unspecified => {}
-                    }
-
-                    if let Some(version_script) = &config.version_script {
-                        command.arg(format!("--version-script={}", version_script.display()));
                     }
 
                     command.arg("--gc-sections").args(&linker_args.args);
@@ -1776,13 +1773,13 @@ impl LinkCommand {
             output_path: output_path.to_owned(),
         };
 
-        // We allow skipping linking if all the object files and the version script
+        // We allow skipping linking if all the object and otherwise tracked files
         // are unchanged and are older than our output file, but not if we're linking
         // with our linker, since we're always changing that. We also require that the
         // command we're going to run hasn't changed.
         let can_skip = !matches!(linker, Linker::Wild)
             && is_newer(output_path, inputs.iter().map(|i| i.path.as_path()))
-            && is_newer(output_path, config.version_script.iter())
+            && is_newer(output_path, config.tracked_files.iter())
             && cmd_file_is_current(output_path, &link_command.to_string());
         link_command.can_skip = can_skip;
 

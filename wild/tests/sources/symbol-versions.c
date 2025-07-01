@@ -5,7 +5,6 @@
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:file-header.entry
 //#Object:runtime.c
-//#VersionScript:symbol-versions-script.map
 
 //#Config:verneed
 //#Object:runtime.c
@@ -16,10 +15,10 @@
 
 //#Config:verdef-0:verdef
 //#DiffIgnore:version_d.verdef_1
-//#LinkArgs:--shared
+//#LinkArgs:--shared --version-script=./symbol-versions-script.map
 
 //#Config:verdef-1:verdef
-//#LinkArgs:--shared --soname=symbol-versions.so
+//#LinkArgs:--shared --soname=symbol-versions.so --version-script=./symbol-versions-script.map
 
 #include "runtime.h"
 
