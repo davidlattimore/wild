@@ -1,0 +1,4 @@
+[[profile.default.overrides]]
+# These tests are slow, run them first to improve parallelism.
+filter = 'test(_rust_) | test(_integration_)'
+priority = 1
