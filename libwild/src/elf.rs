@@ -16,6 +16,7 @@ use linker_utils::elf::extract_bits;
 use linker_utils::elf::sht;
 use object::LittleEndian;
 use object::read::elf::CompressionHeader;
+use object::read::elf::Crel;
 use object::read::elf::Dyn;
 use object::read::elf::FileHeader as _;
 use object::read::elf::RelocationSections;
@@ -238,15 +239,21 @@ impl<'data> File<'data> {
         &self,
         index: object::SectionIndex,
         relocations: &RelocationSections,
-    ) -> Result<&'data [Rela]> {
-        let Some(rela_index) = relocations.get(index) else {
-            return Ok(&[]);
+    ) -> Result<Vec<Crel>> {
+        let Some(section_index) = relocations.get(index) else {
+            return Ok(Vec::new());
         };
-        let rela_section = self.sections.section(rela_index)?;
-        let Some((rela, _)) = rela_section.rela(LittleEndian, self.data)? else {
-            return Ok(&[]);
-        };
-        Ok(rela)
+        let section = self.sections.section(section_index)?;
+        if let Some((rela, _)) = section.rela(LittleEndian, self.data)? {
+            Ok(rela
+                .iter()
+                .map(|rela| Crel::from_rela(rela, LittleEndian, false))
+                .collect())
+        } else if let Some((crel, _)) = section.crel(LittleEndian, self.data)? {
+            Ok(crel.collect::<Result<Vec<_>, _>>()?)
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     pub(crate) fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Symbol> {

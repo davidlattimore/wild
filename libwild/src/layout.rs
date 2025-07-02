@@ -92,10 +92,9 @@ use linker_utils::elf::sht;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::SectionIndex;
-use object::elf::Rela64;
 use object::elf::gnu_hash;
+use object::read::elf::Crel;
 use object::read::elf::Dyn as _;
-use object::read::elf::Rela as _;
 use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym;
@@ -1204,7 +1203,7 @@ struct CommonGroupState<'data> {
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
 
     /// Indexed by `FrameIndex`.
-    exception_frames: Vec<ExceptionFrame<'data>>,
+    exception_frames: Vec<ExceptionFrame>,
 }
 
 impl CommonGroupState<'_> {
@@ -1321,9 +1320,9 @@ struct ObjectLayoutState<'data> {
 }
 
 #[derive(Default)]
-struct ExceptionFrame<'data> {
+struct ExceptionFrame {
     /// The relocations that need to be processed if we load this frame.
-    relocations: &'data [Rela64<LittleEndian>],
+    relocations: Vec<Crel>,
 
     /// Number of bytes required to store this frame.
     frame_size: u32,
@@ -2931,7 +2930,7 @@ impl Section {
 fn process_relocation<A: Arch>(
     object: &mut ObjectLayoutState,
     common: &mut CommonGroupState,
-    rel: &Rela64<LittleEndian>,
+    rel: &Crel,
     section: &object::elf::SectionHeader64<LittleEndian>,
     resources: &GraphResources,
     queue: &mut LocalWorkQueue,
@@ -2939,12 +2938,12 @@ fn process_relocation<A: Arch>(
 ) -> Result<RelocationModifier> {
     let args = resources.symbol_db.args;
     let mut next_modifier = RelocationModifier::Normal;
-    if let Some(local_sym_index) = rel.symbol(LittleEndian, false) {
+    if let Some(local_sym_index) = rel.symbol() {
         let symbol_db = resources.symbol_db;
         let symbol_id = symbol_db.definition(object.symbol_id_range.input_to_id(local_sym_index));
         let symbol_value_flags = symbol_db.local_symbol_value_flags(symbol_id);
-        let rel_offset = rel.r_offset.get(LittleEndian);
-        let r_type = rel.r_type(LittleEndian, false);
+        let rel_offset = rel.r_offset;
+        let r_type = rel.r_type;
 
         let rel_info = if let Some(relaxation) = A::Relaxation::new(
             r_type,
@@ -4104,7 +4103,7 @@ impl<'data> ObjectLayoutState<'data> {
         let section = Section::create(header, self, section_index, part_id)?;
         let mut modifier = RelocationModifier::Normal;
 
-        for rel in self.relocations(section.index)? {
+        for rel in &self.relocations(section.index)? {
             if modifier == RelocationModifier::SkipNextRelocation {
                 modifier = RelocationModifier::Normal;
                 continue;
@@ -4167,7 +4166,7 @@ impl<'data> ObjectLayoutState<'data> {
 
             num_frames += 1;
 
-            let frame_data_relocations = frame_data.relocations;
+            let frame_data_relocations = frame_data.relocations.iter().copied().collect_vec();
 
             // Request loading of any sections/symbols referenced by the FDEs for our
             // section.
@@ -4176,7 +4175,7 @@ impl<'data> ObjectLayoutState<'data> {
                     process_relocation::<A>(
                         self,
                         common,
-                        rel,
+                        &rel,
                         eh_frame_section,
                         resources,
                         queue,
@@ -4208,7 +4207,7 @@ impl<'data> ObjectLayoutState<'data> {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
         if A::local_symbols_in_debug_info() {
-            for rel in self.relocations(section.index)? {
+            for rel in &self.relocations(section.index)? {
                 let modifier = process_relocation::<A>(
                     self,
                     common,
@@ -4550,7 +4549,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn relocations(&self, index: SectionIndex) -> Result<&'data [elf::Rela]> {
+    fn relocations(&self, index: SectionIndex) -> Result<Vec<Crel>> {
         self.object.relocations(index, &self.relocations)
     }
 }
@@ -4644,7 +4643,6 @@ fn process_eh_frame_data<'data, A: Arch>(
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
     let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
-    let e = LittleEndian;
     let relocations = object.relocations(eh_frame_section_index)?;
     let mut rel_iter = relocations.iter().enumerate().peekable();
     let mut offset = 0;
@@ -4671,7 +4669,7 @@ fn process_eh_frame_data<'data, A: Arch>(
             // because we're not taking that into consideration, we disallow deduplication.
             let mut eligible_for_deduplication = true;
             while let Some((_, rel)) = rel_iter.peek() {
-                let rel_offset = rel.r_offset.get(e);
+                let rel_offset = rel.r_offset;
                 if rel_offset >= next_offset as u64 {
                     // This relocation belongs to the next entry.
                     break;
@@ -4689,7 +4687,7 @@ fn process_eh_frame_data<'data, A: Arch>(
                     false,
                 )?;
 
-                if let Some(local_sym_index) = rel.symbol(e, false) {
+                if let Some(local_sym_index) = rel.symbol() {
                     let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);
                     let definition = resources.symbol_db.definition(local_symbol_id);
                     referenced_symbols.push(definition);
@@ -4714,12 +4712,12 @@ fn process_eh_frame_data<'data, A: Arch>(
             let mut rel_end_index = 0;
 
             while let Some((rel_index, rel)) = rel_iter.peek() {
-                let rel_offset = rel.r_offset.get(e);
+                let rel_offset = rel.r_offset;
                 if rel_offset < next_offset as u64 {
                     let is_pc_begin = (rel_offset as usize - offset) == elf::FDE_PC_BEGIN_OFFSET;
 
                     if is_pc_begin {
-                        if let Some(index) = rel.symbol(e, false) {
+                        if let Some(index) = rel.symbol() {
                             let elf_symbol = object.object.symbol(index)?;
                             section_index = object.object.symbol_section(elf_symbol, index)?;
                         }
@@ -4740,7 +4738,7 @@ fn process_eh_frame_data<'data, A: Arch>(
                     let previous_frame_for_section = unloaded.last_frame_index.replace(frame_index);
 
                     common.exception_frames.push(ExceptionFrame {
-                        relocations: &relocations[rel_start_index..rel_end_index],
+                        relocations: relocations[rel_start_index..rel_end_index].to_vec(),
                         frame_size: size as u32,
                         previous_frame_for_section,
                     });
@@ -5886,7 +5884,7 @@ fn needs_tlsld(relocation_kind: RelocationKind) -> bool {
 }
 
 impl<'data> ObjectLayout<'data> {
-    pub(crate) fn relocations(&self, index: SectionIndex) -> Result<&'data [elf::Rela]> {
+    pub(crate) fn relocations(&self, index: SectionIndex) -> Result<Vec<Crel>> {
         self.object.relocations(index, &self.relocations)
     }
 }

@@ -109,19 +109,19 @@ fn section_data_with_relocations<A: Arch>(
             let relocations = object.relocations(index, relocations)?;
 
             for rel in relocations {
-                let sym_index = rel.r_sym(LittleEndian, false);
+                let sym_index = rel.r_sym;
                 let symbol = object.symbol(SymbolIndex(sym_index as usize))?;
 
                 let mut value = symbol
                     .st_value
                     .get(LittleEndian)
-                    .wrapping_add(rel.r_addend.get(LittleEndian) as u64);
+                    .wrapping_add(rel.r_addend as u64);
 
                 let symbol_section = object.section(object::SectionIndex(
                     symbol.st_shndx.get(LittleEndian) as usize,
                 ))?;
 
-                let data_offset = rel.r_offset.get(LittleEndian) as usize;
+                let data_offset = rel.r_offset as usize;
 
                 if symbol_section.sh_offset.get(LittleEndian)
                     == section_of_interest.sh_offset.get(LittleEndian)
@@ -129,7 +129,7 @@ fn section_data_with_relocations<A: Arch>(
                     value += SECTION_LOAD_ADDRESS;
                 }
 
-                let r_type = A::relocation_from_raw(rel.r_type(LittleEndian, false))?;
+                let r_type = A::relocation_from_raw(rel.r_type)?;
 
                 let linker_utils::elf::RelocationSize::ByteSize(num_bytes) = r_type.size else {
                     continue;
