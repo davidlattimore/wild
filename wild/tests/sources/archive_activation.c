@@ -18,7 +18,6 @@
 //#Config:lib:default
 // GNU ld doesn't yet support --start-lib
 //#SkipLinker:ld
-//#Cross:false
 //#LinkArgs:--start-lib
 //#Object:archive_activation0.c
 //#Object:archive_activation1.c
