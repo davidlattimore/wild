@@ -10,7 +10,6 @@
 //#DiffIgnore:section.data.alignment
 //#CompArgs:-g -ftls-model=global-dynamic
 //#RequiresGlibc:true
-//#Cross: false
 // TODO: There are multiple variants of the test-case that fail with the BFD linker on RISC-V arch.
 //#Arch: x86_64, aarch64
 
@@ -26,6 +25,7 @@
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 //#EnableLinker:lld
+//#Cross: false
 
 //#Config:clang-static-pie:default
 //#CompArgs:-fPIE -fPIC
@@ -34,6 +34,7 @@
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 //#EnableLinker:lld
+//#Cross: false
 
 //#Config:gcc-static:default
 //#LinkerDriver:gcc
@@ -55,6 +56,7 @@
 //#LinkerDriver:clang
 //#LinkArgs:-fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#EnableLinker:lld
+//#Cross: false
 //#DiffIgnore:section.relro_padding
 
 //#Config:clang-global-dynamic:shared
@@ -63,6 +65,7 @@
 //#LinkerDriver:clang
 //#LinkArgs:-fPIC -dynamic -Wl,--strip-debug -Wl,--gc-sections -Wl,-rpath,$ORIGIN -Wl,-z,now
 //#EnableLinker:lld
+//#Cross: false
 //#DiffIgnore:section.relro_padding
 
 // In addition to testing gcc-dynamic-pie, this also checks -L with a path that does not exist. It's

@@ -13,8 +13,6 @@
 //#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
 //#RunEnabled:false
-// Cross doesn't currently support lld and this test doesn't use GNU ld.
-//#Cross:false
 
 // Allow linking against shared object with undefined symbols. We don't run this because the runtime
 // linker would error due to the undefined symbol.

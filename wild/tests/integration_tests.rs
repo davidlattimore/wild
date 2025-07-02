@@ -141,6 +141,7 @@ use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
 use std::str::FromStr;
+use std::sync::Mutex;
 use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -420,6 +421,45 @@ fn host_supports_clang_with_tls_desc() -> bool {
         drop(stdin);
         clang.wait().expect("Wait failed").success()
     })
+}
+
+fn gcc_cross_supports_lld(arch: &str) -> bool {
+    static GCC_CROSS_SUPPORT_CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+
+    let cache = GCC_CROSS_SUPPORT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().unwrap();
+
+    if let Some(&supported) = guard.get(arch) {
+        return supported;
+    }
+
+    let supported = {
+        let gcc = format!("{arch}-linux-gnu-gcc");
+        let output = Command::new(&gcc)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .unwrap_or_else(|_| panic!("Failed to run {gcc}"));
+
+        let output = str::from_utf8(&output.stdout).expect("Non UTF-8 output");
+        let first_line = output.lines().next().expect("Empty GCC output");
+
+        let version_string = first_line
+            .split_ascii_whitespace()
+            .find(|s| s.chars().all(|c| c.is_ascii_digit() || c == '.'))
+            .expect("No version string in output");
+
+        let major_version = version_string
+            .split_once('.')
+            .and_then(|(major, _)| major.parse::<u8>().ok())
+            .expect("Bad version string format");
+
+        major_version >= 15
+    };
+
+    guard.insert(arch.to_string(), supported);
+    supported
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -2326,12 +2366,12 @@ fn find_bin(names: &[&str]) -> Result<PathBuf> {
 fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
     [Architecture::AArch64, Architecture::RISCV64]
         .into_iter()
-        .filter_map(|arch| {
+        .map(|arch| {
             let path = PathBuf::from(format!("/usr/{arch}-linux-gnu/bin/{name}"));
             if path.exists() {
-                Some((arch, path))
+                (arch, path)
             } else {
-                None
+                (arch, PathBuf::from(name))
             }
         })
         .collect()
@@ -2405,12 +2445,15 @@ fn run_with_config(
 
     let cross_arch = (arch != get_host_architecture()).then_some(arch);
 
-    // GCC cross compilers, when passed `-fuse-ld=lld` won't look for `ld.lld` on the path.
-    // Instead it'll look for `aarch64-linux-gnu-ld.lld` on the path and look for `ld.lld`
-    // only in the sysroot (e.g. `aarch64-linux-gnu`). We could hack around this by creating
-    // a temporary directory containing a symlink with the appropriate name, but for now, we
-    // just skip running with lld when cross compiling.
-    if cross_arch.is_some() {
+    // GCC cross compilers before version 15, when passed `-fuse-ld=lld`, won't look for `ld.lld`
+    // on the path. Instead they'll look for `aarch64-linux-gnu-ld.lld` on the path and look for
+    // `ld.lld` only in the sysroot (e.g. `aarch64-linux-gnu`). We could hack around this by
+    // creating a temporary directory containing a symlink with the appropriate name, but for now,
+    // we just skip running with lld when cross compiling.
+    //
+    if let Some(cross_arch) = cross_arch
+        && !gcc_cross_supports_lld(&cross_arch.to_string())
+    {
         config.enabled_linkers.remove("lld");
     }
 
