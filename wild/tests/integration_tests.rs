@@ -2540,6 +2540,7 @@ fn integration_test(
         "shared-priority.c",
         "shared.c",
         "duplicate_strong_symbols.c",
+        "linker-plugin-lto.c",
         "preinit-array.c",
         "exception.cc",
         "z-defs.c",
