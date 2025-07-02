@@ -1,0 +1,324 @@
+[skipped_groups.unsupported_options]
+reason = "these tests use unsupported options"
+tests = [
+  "allow-multiple-definition.sh",
+  "audit.sh",
+  "color-diagnostics.sh",
+  "compress-debug-sections.sh",        # Compressed debug sections support #493
+  "default-symver-version-script.sh",
+  "default-symver.sh",
+  "defsym.sh",
+  "defsym2.sh",
+  "depaudit.sh",
+  "depaudit2.sh",
+  "dynamic-list-data.sh",
+  "emit-relocs-cpp.sh",
+  "emit-relocs-dead-sections.sh",
+  "emit-relocs.sh",
+  "execute-only.sh",
+  "exclude-libs.sh",
+  "filler.sh",
+  "filter.sh",
+  "global-offset-table.sh",            # `-defsym=foo=_GLOBAL_OFFSET_TABLE_`
+  "hash-style-sysv.sh",                # Currently we only supports `--hash-style=gnu`.
+  "hash-style.sh",                     # Currently we only supports `--hash-style=gnu`.
+  "image-base.sh",
+  "init-in-dso.sh",
+  "init.sh",
+  "library.sh",
+  "linker-script-relocatable.sh",      # `--relocatable`
+  "many-input-sections2.sh",           # `--relocatable`
+  "nmagic.sh",
+  "no-eh-frame-header.sh",
+  "no-quick-exit.sh",
+  "exception-multiple-ehframe.sh",     # `-r`
+  "oformat-binary.sh",
+  "omagic.sh",
+  "package-metadata.sh",
+  "physical-image-base.sh",
+  "print-dependencies.sh",
+  "range-extension-thunk.sh",          # `--section-start`
+  "repro.sh",                          # Note in this test's second half that it uses a custom environment variable called `MOLD_REPRO`. While Wild currently doesn't support `--repro`, it will eventually be moved to the "ignore" group once support is added.
+  "relocatable-archive.sh",
+  "relocatable-c++.sh",
+  "relocatable-debug-info.sh",
+  "relocatable-exception.sh",
+  "relocatable-many-sections.sh",      # `-r`
+  "relocatable-merge-sections.sh",
+  "relocatable-mergeable-sections.sh",
+  "relocatable.sh",
+  "retain-symbols-file.sh",
+  "require-defined.sh",
+  "reverse-sections.sh",
+  "rosegment.sh",
+  "run.sh",
+  "section-align.sh",                  # `--section-align`
+  "section-start.sh",
+  "section-order.sh",
+  "separate-debug-file-sort.sh",
+  "separate-debug-file.sh",
+  "shuffle-sections-seed.sh",
+  "shuffle-sections.sh",
+  "sort-debug-info-merged.sh",         # `-r`
+  "sort-debug-info-compressed.sh",     # `-Map`
+  "sort-debug-info.sh",                # `-Map`
+  "spare-program-headers.sh",
+  "start-stop.sh",
+  "static-archive.sh",                 # `--trace`
+  "synthetic-symbols.sh",              # `--image-base`
+  "thin-archive.sh",                   # `--trace`
+  "tls-irregular-start-addr.sh",       # `--section-start`
+  "trace-symbol-symver.sh",
+  "trace-symbol.sh",
+  "trace.sh",
+  "undefined-glob-gc-sections.sh",
+  "undefined-glob.sh",
+  "unresolved-symbols.sh",
+  "unresolved-symbols2.sh",
+  "warn-unresolved-symbols.sh",
+  "wrap.sh",
+]
+
+[skipped_groups.bug]
+reason = "maybe bug in wild"
+tests = [
+  "no-allow-shlib-undefined-circular.sh",
+  "no-allow-shlib-undefined.sh",
+  "no-allow-shlib-undefined2.sh",
+  "no-allow-shlib-undefined3.sh",
+  "no-allow-shlib-undefined4.sh",
+  "rpath.sh",
+  "undefined.sh",
+  "undefined2.sh",
+]
+
+[skipped_groups.gdb_index]
+reason = "GDB index support"
+tracking_issue = "https://github.com/davidlattimore/wild/issues/811"
+tests = [
+  "gdb-index-compress-output.sh",
+  "gdb-index-dwarf2.sh",
+  "gdb-index-dwarf3.sh",
+  "gdb-index-dwarf4.sh",
+  "gdb-index-dwarf5.sh",
+  "gdb-index-dwarf64.sh",
+  "gdb-index-split-dwarf.sh",
+]
+
+[skipped_groups.dynamic_list]
+reason = "dynamic list support"
+tracking_issue = "https://github.com/davidlattimore/wild/issues/955"
+tests = [
+  "dynamic-list.sh",
+  "dynamic-list2.sh",
+  "dynamic-list3.sh",
+  "dynamic-list4.sh",
+]
+
+[skipped_groups.version_script]
+reason = "version script support"
+tests = [
+  "version-script-search-paths.sh",
+  "version-script10.sh",
+  "version-script11.sh",
+  "version-script13.sh",
+  "version-script15.sh",
+  "version-script16.sh",
+  "version-script17.sh",
+  "version-script2.sh",
+  "version-script20.sh",
+  "version-script22.sh",
+  "version-script23.sh",
+  "version-script3.sh",
+  "version-script5.sh",
+  "version-script6.sh",
+  "version-script8.sh",
+]
+
+[skipped_groups.linker_script]
+reason = "linker script support"
+tests = [
+  "linker-script-defsym.sh",
+  "linker-script-error.sh",
+  "linker-script.sh",
+  "linker-script4.sh",
+]
+
+[skipped_groups.z_options]
+reason = "related to -z"
+tests = [
+  "z-cet-report.sh",
+  "z-defs.sh",
+  "z-dynamic-undefined-weak-exe.sh",
+  "z-dynamic-undefined-weak.sh",
+  "z-max-page-size.sh",
+  "z-nodefaultlib.sh",
+  "z-nodump.sh",
+  "z-pack-relative-relocs.sh",
+  "z-rodynamic.sh",
+  "z-sectionheader.sh",
+  "z-stack-size.sh",
+  "z-start-stop-visibility.sh",
+]
+
+[skipped_groups.arch_x86_64]
+reason = "x86_64 specific tests"
+tests = [
+  "arch-x86_64-address-equality.sh",
+  "arch-x86_64-empty-mergeable-section.sh",
+  "arch-x86_64-execstack-if-needed.sh",
+  "arch-x86_64-gnu-linkonce.sh",
+  "arch-x86_64-gotpcrelx.sh",
+  "arch-x86_64-init-array-readonly.sh",
+  "arch-x86_64-isa-level.sh",
+  "arch-x86_64-large-bss.sh",
+  "arch-x86_64-mergeable-strings-nonalloc.sh",
+  "arch-x86_64-mergeable-strings.sh",
+  "arch-x86_64-note-property2.sh",             # `--relocatable` is not supported yet.
+  "arch-x86_64-note.sh",
+  "arch-x86_64-note2.sh",
+  "arch-x86_64-plt.sh",
+  "arch-x86_64-relax.sh",
+  "arch-x86_64-reloc-overflow.sh",
+  "arch-x86_64-reloc.sh",
+  "arch-x86_64-section-name.sh",
+  "arch-x86_64-tbss-only.sh",
+  "arch-x86_64-tls-large-tbss.sh",
+  "arch-x86_64-tlsdesc.sh",
+  "arch-x86_64-unique.sh",
+  "arch-x86_64-warn-execstack.sh",
+  "arch-x86_64-warn-shared-textrel.sh",
+  "arch-x86_64-warn-textrel.sh",
+  "arch-x86_64-z-dynamic-undefined-weak.sh",
+  "arch-x86_64-z-ibt.sh",
+  "arch-x86_64-z-rewrite-endbr.sh",
+  "arch-x86_64-z-rewrite-endbr2.sh",
+  "arch-x86_64-z-shstk.sh",
+  "arch-x86_64-z-text.sh",
+]
+
+[skipped_groups.arch_aarch64]
+reason = "Aarch64 specific tests"
+tests = [
+  "arch-aarch64-long-thunk.sh",
+  "arch-aarch64-range-extension-thunk-disassembly.sh",
+]
+
+[skipped_groups.arch_riscv64]
+reason = "RISC-V specific tests"
+tests = [
+  "arch-riscv64-attributes.sh",
+  "arch-riscv64-global-pointer-dso.sh",
+  "arch-riscv64-global-pointer.sh",
+  "arch-riscv64-obj-compatible.sh",
+  "arch-riscv64-relax-got.sh",
+  "arch-riscv64-relax-hi20.sh",
+  "arch-riscv64-relax-j.sh",
+  "arch-riscv64-reloc-overflow.sh",
+  "arch-riscv64-symbol-size.sh",
+  "arch-riscv64-weak-undef.sh",
+]
+
+[skipped_groups.tls]
+reason = "related to TLS"
+tests = ["tls-common.sh", "tls-le-error.sh"]
+
+[skipped_groups.ignore]
+reason = "We ignore these tests for some reasons."
+tests = [
+  "cmdline.sh",                     # Different message formats for unknown options.
+  "comment.sh",                     # We store a different string in the comment section than mold.
+  "duplicate-error-archive.sh",     # Different message formats
+  "duplicate-error-gc-sections.sh", # Different message formats
+  "duplicate-error.sh",             # Different message formats
+  "verbose.sh",
+  "version.sh",                     # The message of `--version` is different from mold's one.
+  "help.sh",
+  "mold-wrapper.sh",
+  "mold-wrapper2.sh",
+]
+
+[skipped_groups.misc]
+reason = "not grouped yet"
+tests = [
+  "as-needed-weak.sh",
+  "auxiliary.sh",
+  "bno-symbolic.sh",
+  "build-id.sh",
+  "canonical-plt.sh",
+  "common-archive.sh",
+  "common-ref.sh",
+  "common-symbols.sh",
+  "copyrel-alignment.sh",
+  "copyrel-norelro.sh",
+  "copyrel-protected.sh",
+  "copyrel-relro.sh",
+  "copyrel-relro2.sh",
+  "copyrel.sh",
+  "ctors-in-init-array.sh",
+  "defsym-missing-symbol.sh",
+  "demangle-cpp.sh",
+  "demangle.sh",
+  "dependency-file-response-file.sh",
+  "dependency-file.sh",
+  "disable-new-dtags.sh",
+  "discard-section.sh",
+  "discard.sh",
+  "dynamic-linker.sh",
+  "empty-arg.sh",
+  "empty-input.sh",
+  "entry.sh",
+  "fatal-warnings.sh",
+  "gc-sections.sh",
+  "glibc-2.22-bug.sh",
+  "gnu-property.sh",
+  "hidden-undef.sh",
+  "icf.sh",
+  "ifunc-address-equality-exported.sh",
+  "ifunc-address-equality.sh",
+  "ifunc-alias.sh",
+  "init-array-priorities.sh",
+  "initfirst.sh",
+  "interpose.sh",
+  "invalid-version-script.sh",
+  "large-alignment-dso.sh",
+  "large-alignment.sh",
+  "many-output-sections.sh",
+  "mergeable-strings.sh",
+  "missing-error.sh",
+  "no-undefined-version.sh",
+  "nocopyreloc.sh",
+  "noinhibit-exec.sh",
+  "plt-symbols.sh",
+  "rodata-name.sh",
+  "run-clang.sh",
+  "section-attributes.sh",
+  "start-lib.sh",
+  "stdout.sh",
+  "strip.sh",
+  "stt-common.sh",
+  "symbol-version-as-needed.sh",
+  "symbol-version-multi.sh",
+  "symbol-version.sh",
+  "symbol-version2.sh",
+  "symbol-version5.sh",
+  "symtab-dso.sh",
+  "symtab-section-symbols.sh",
+  "symtab.sh",
+  "textrel2.sh",
+  "unkown-section-type.sh",
+  "versioned-undef.sh",
+  "warn-common.sh",
+  "warn-once.sh",
+  "warn-symbol-type.sh",
+  "weak-export-exe.sh",
+  "weak-undef.sh",
+  "weak-undef2.sh",
+  "weak-undef5.sh",
+  "whole-archive.sh",
+
+  "compress-debug-sections-zstd.sh",
+  "crel.sh",
+  "weak-export-dso2.sh",
+  "weak-undef4.sh"
+]
