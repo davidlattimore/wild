@@ -5,7 +5,6 @@
 //#Shared:empty.c
 //#Mode:unspecified
 //#EnableLinker:lld
-//#Cross:false
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.got
