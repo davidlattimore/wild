@@ -12,7 +12,6 @@ use crate::input_data::VersionScriptData;
 use crate::linker_script::skip_comments_and_whitespace;
 use crate::symbol::UnversionedSymbolName;
 use glob::Pattern;
-use std::cell::LazyCell;
 use std::collections::HashSet;
 use symbolic_demangle::Demangle;
 use symbolic_demangle::DemangleOptions;
@@ -75,6 +74,38 @@ impl<'data> BasicMatchRules<'data> {
             }
         }
     }
+
+    #[inline]
+    fn matches_exact(&self, lookup: &mut SymbolLookupNameWrapper, mangled: bool) -> bool {
+        if mangled {
+            let demangled_name = lookup.get_demangled_name();
+            // TODO: save also this UnversionedSymbolName
+            self.exact
+                .contains(&UnversionedSymbolName::prehashed(demangled_name.as_bytes()))
+        } else {
+            self.exact.contains(lookup.name)
+        }
+    }
+
+    #[inline]
+    fn matches_glob(
+        &self,
+        lookup: &mut SymbolLookupNameWrapper,
+        non_star: bool,
+        mangled: bool,
+    ) -> bool {
+        let name = if mangled {
+            lookup.get_demangled_name()
+        } else {
+            lookup.get_name_string()
+        };
+        let mut globs = if non_star {
+            self.nonstar_globs.iter()
+        } else {
+            self.star_globs.iter()
+        };
+        globs.any(|pattern| pattern.matches(name))
+    }
 }
 
 enum VersionRuleSection {
@@ -103,6 +134,48 @@ impl<'data> MatchRules<'data> {
     }
 }
 
+struct SymbolLookupNameWrapper<'data> {
+    name: &'data PreHashed<UnversionedSymbolName<'data>>,
+    name_string: Option<&'data str>,
+    demangled_name: Option<String>,
+}
+
+impl<'data> SymbolLookupNameWrapper<'data> {
+    fn from_name(name: &'data PreHashed<UnversionedSymbolName<'data>>) -> Self {
+        Self {
+            name,
+            name_string: None,
+            demangled_name: None,
+        }
+    }
+
+    fn get_name_string(&mut self) -> &'data str {
+        self.name_string.get_or_insert_with(|| {
+            str::from_utf8(self.name.bytes()).unwrap_or_else(|_| {
+                panic!(
+                    "Valid utf-8 identifier expected: {}",
+                    String::from_utf8_lossy(self.name.bytes())
+                )
+            })
+        })
+    }
+
+    fn get_demangled_name(&mut self) -> &String {
+        // Extract the name string before the closure to avoid double mutable borrow
+        let name_string = self.get_name_string();
+        self.demangled_name.get_or_insert_with(|| {
+            symbolic_common::Name::new(
+                name_string,
+                symbolic_common::NameMangling::Mangled,
+                symbolic_common::Language::Cpp,
+            )
+            .demangle(DemangleOptions::complete().return_type(false))
+            // Consider the original name if the demangler returns None.
+            .unwrap_or_else(|| name_string.to_string())
+        })
+    }
+}
+
 impl<'data> VersionScript<'data> {
     fn find_match(
         &self,
@@ -110,124 +183,50 @@ impl<'data> VersionScript<'data> {
     ) -> Option<(usize, VersionRuleSection)> {
         // Perform symbol lookup the same was as descried for the LLD linker:
         // https://maskray.me/blog/2020-11-26-all-about-symbol-versioning#version-script
-
-        let symbol_name = LazyCell::new(|| {
-            str::from_utf8(name.bytes()).unwrap_or_else(|_| {
-                panic!(
-                    "Valid utf-8 identifier expected: {}",
-                    String::from_utf8_lossy(name.bytes())
-                )
-            })
-        });
-
-        let demangled_name = LazyCell::new(|| {
-            symbolic_common::Name::new(
-                *symbol_name,
-                symbolic_common::NameMangling::Mangled,
-                symbolic_common::Language::Cpp,
-            )
-            .demangle(DemangleOptions::complete().return_type(false))
-        });
+        let mut lookup_name = SymbolLookupNameWrapper::from_name(name);
 
         // 1) The first version tag with an exact pattern wins.
         for (i, version) in self.versions.iter().enumerate() {
             let body = &version.version_body;
 
-            if body.globals.general.exact.contains(name)
-                || demangled_name.as_deref().is_some_and(|demangled| {
-                    body.globals
-                        .cxx
-                        .exact
-                        .contains(&UnversionedSymbolName::prehashed(demangled.as_bytes()))
-                })
-            {
+            if body.globals.general.matches_exact(&mut lookup_name, false) {
                 return Some((i, VersionRuleSection::Global));
-            }
-            if body.locals.general.exact.contains(name)
-                || demangled_name.as_deref().is_some_and(|demangled| {
-                    body.locals
-                        .cxx
-                        .exact
-                        .contains(&UnversionedSymbolName::prehashed(demangled.as_bytes()))
-                })
-            {
+            } else if body.locals.general.matches_exact(&mut lookup_name, false) {
+                return Some((i, VersionRuleSection::Local));
+            // Intentionally try first non-mangled names as it's much cheaper test.
+            } else if body.globals.cxx.matches_exact(&mut lookup_name, true) {
+                return Some((i, VersionRuleSection::Global));
+            } else if body.locals.cxx.matches_exact(&mut lookup_name, true) {
                 return Some((i, VersionRuleSection::Local));
             }
         }
 
         // 2) Otherwise, the last version tag with a non-* wildcard pattern wins ('global' should be checked first)
-        for (i, version) in self.versions.iter().enumerate().rev() {
-            let body = &version.version_body;
-
-            if body
-                .globals
-                .general
-                .nonstar_globs
-                .iter()
-                .any(|g| g.matches(*symbol_name))
-                || demangled_name.as_deref().is_some_and(|demangled| {
-                    body.globals
-                        .cxx
-                        .nonstar_globs
-                        .iter()
-                        .any(|g| g.matches(demangled))
-                })
-            {
-                return Some((i, VersionRuleSection::Global));
-            }
-            if body
-                .locals
-                .general
-                .nonstar_globs
-                .iter()
-                .any(|g| g.matches(*symbol_name))
-                || demangled_name.as_deref().is_some_and(|demangled| {
-                    body.locals
-                        .cxx
-                        .nonstar_globs
-                        .iter()
-                        .any(|g| g.matches(demangled))
-                })
-            {
-                return Some((i, VersionRuleSection::Local));
-            }
-        }
-
         // 3) Otherwise, the last version tag with a * pattern wins.
-        for (i, version) in self.versions.iter().enumerate().rev() {
-            let body = &version.version_body;
-
-            if body
-                .globals
-                .general
-                .star_globs
-                .iter()
-                .any(|g| g.matches(*symbol_name))
-                || demangled_name.as_deref().is_some_and(|demangled| {
-                    body.globals
+        for &non_star in &[true, false] {
+            for (i, version) in self.versions.iter().enumerate().rev() {
+                let body = &version.version_body;
+                if body
+                    .globals
+                    .general
+                    .matches_glob(&mut lookup_name, non_star, false)
+                    || body
+                        .globals
                         .cxx
-                        .star_globs
-                        .iter()
-                        .any(|g| g.matches(demangled))
-                })
-            {
-                return Some((i, VersionRuleSection::Global));
-            }
-            if body
-                .locals
-                .general
-                .star_globs
-                .iter()
-                .any(|g| g.matches(*symbol_name))
-                || demangled_name.as_deref().is_some_and(|demangled| {
-                    body.locals
+                        .matches_glob(&mut lookup_name, non_star, true)
+                {
+                    return Some((i, VersionRuleSection::Global));
+                } else if body
+                    .locals
+                    .general
+                    .matches_glob(&mut lookup_name, non_star, false)
+                    || body
+                        .locals
                         .cxx
-                        .star_globs
-                        .iter()
-                        .any(|g| g.matches(demangled))
-                })
-            {
-                return Some((i, VersionRuleSection::Local));
+                        .matches_glob(&mut lookup_name, non_star, true)
+                {
+                    return Some((i, VersionRuleSection::Local));
+                }
             }
         }
 
