@@ -44,6 +44,7 @@ use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
+use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
@@ -786,6 +787,11 @@ fn resolve_sections_for_object<'data>(
         .enumerate()
         .map(|(input_section_index, input_section)| {
             let section_name = obj.object.section_name(input_section).unwrap_or_default();
+
+            if section_name.starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes()) {
+                bail!("GCC IR (LTO mode) is not supported yet");
+            }
+
             let section_flags = SectionFlags::from_header(input_section);
             let raw_alignment = obj.object.section_alignment(input_section)?;
             let alignment = Alignment::new(raw_alignment.max(1))?;
