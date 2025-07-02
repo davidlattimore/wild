@@ -562,6 +562,10 @@ impl Report {
             })
             .collect::<Result<Vec<_>>>()?;
 
+        if objects.len() < 2 {
+            bail!("At least two files must be provided for comparison");
+        }
+
         let arch = ArchKind::from_objects(&objects)?;
 
         if config.wild_defaults {
