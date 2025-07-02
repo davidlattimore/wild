@@ -141,7 +141,7 @@ use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
 use std::str::FromStr;
-use std::sync::Mutex;
+// use std::sync::Mutex;
 use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -423,44 +423,44 @@ fn host_supports_clang_with_tls_desc() -> bool {
     })
 }
 
-fn gcc_cross_supports_lld(arch: &str) -> bool {
-    static GCC_CROSS_SUPPORT_CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+// fn gcc_cross_supports_lld(arch: &str) -> bool {
+//     static GCC_CROSS_SUPPORT_CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
 
-    let cache = GCC_CROSS_SUPPORT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = cache.lock().unwrap();
+//     let cache = GCC_CROSS_SUPPORT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+//     let mut guard = cache.lock().unwrap();
 
-    if let Some(&supported) = guard.get(arch) {
-        return supported;
-    }
+//     if let Some(&supported) = guard.get(arch) {
+//         return supported;
+//     }
 
-    let supported = {
-        let gcc = format!("{arch}-linux-gnu-gcc");
-        let output = Command::new(&gcc)
-            .arg("--version")
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .unwrap_or_else(|_| panic!("Failed to run {gcc}"));
+//     let supported = {
+//         let gcc = format!("{arch}-linux-gnu-gcc");
+//         let output = Command::new(&gcc)
+//             .arg("--version")
+//             .stdin(Stdio::null())
+//             .stderr(Stdio::null())
+//             .output()
+//             .unwrap_or_else(|_| panic!("Failed to run {gcc}"));
 
-        let output = str::from_utf8(&output.stdout).expect("Non UTF-8 output");
-        let first_line = output.lines().next().expect("Empty GCC output");
+//         let output = str::from_utf8(&output.stdout).expect("Non UTF-8 output");
+//         let first_line = output.lines().next().expect("Empty GCC output");
 
-        let version_string = first_line
-            .split_ascii_whitespace()
-            .find(|s| s.chars().all(|c| c.is_ascii_digit() || c == '.'))
-            .expect("No version string in output");
+//         let version_string = first_line
+//             .split_ascii_whitespace()
+//             .find(|s| s.chars().all(|c| c.is_ascii_digit() || c == '.'))
+//             .expect("No version string in output");
 
-        let major_version = version_string
-            .split_once('.')
-            .and_then(|(major, _)| major.parse::<u8>().ok())
-            .expect("Bad version string format");
+//         let major_version = version_string
+//             .split_once('.')
+//             .and_then(|(major, _)| major.parse::<u8>().ok())
+//             .expect("Bad version string format");
 
-        major_version >= 15
-    };
+//         major_version >= 15
+//     };
 
-    guard.insert(arch.to_string(), supported);
-    supported
-}
+//     guard.insert(arch.to_string(), supported);
+//     supported
+// }
 
 #[derive(Clone, PartialEq, Eq)]
 struct Config {
@@ -2441,7 +2441,7 @@ fn run_with_config(
     arch: Architecture,
     linkers: &[Linker],
 ) -> Result {
-    let mut config = config.clone();
+    let config = config.clone();
 
     let cross_arch = (arch != get_host_architecture()).then_some(arch);
 
@@ -2451,9 +2451,9 @@ fn run_with_config(
     // creating a temporary directory containing a symlink with the appropriate name, but for now,
     // we just skip running with lld when cross compiling.
     //
-    if cross_arch.is_some_and(|arch| !gcc_cross_supports_lld(&arch.to_string())) {
-        config.enabled_linkers.remove("lld");
-    }
+    // if cross_arch.is_some_and(|arch| !gcc_cross_supports_lld(&arch.to_string())) {
+    //     config.enabled_linkers.remove("lld");
+    // }
 
     let programs = linkers
         .iter()
