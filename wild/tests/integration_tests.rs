@@ -2451,9 +2451,7 @@ fn run_with_config(
     // creating a temporary directory containing a symlink with the appropriate name, but for now,
     // we just skip running with lld when cross compiling.
     //
-    if let Some(cross_arch) = cross_arch
-        && !gcc_cross_supports_lld(&cross_arch.to_string())
-    {
+    if cross_arch.is_some_and(|arch| !gcc_cross_supports_lld(&arch.to_string())) {
         config.enabled_linkers.remove("lld");
     }
 
