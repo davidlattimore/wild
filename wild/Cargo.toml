@@ -43,4 +43,6 @@ default = ["fork"]
 
 fork = ["libwild/fork"]
 
+# external tests
+external_tests = ["mold_tests"]
 mold_tests = []
