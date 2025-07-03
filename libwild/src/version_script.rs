@@ -55,6 +55,8 @@ enum SymbolMatcher<'data> {
     StarGlob(Pattern),
     // A glob pattern without any '*' token.
     NonstarGlob(Pattern),
+    /// Glob pattern equal to '*'
+    MatchesAll,
 }
 
 #[derive(Debug, Default)]
@@ -62,11 +64,13 @@ struct BasicMatchRules<'data> {
     exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
     star_globs: Vec<Pattern>,
     nonstar_globs: Vec<Pattern>,
+    matches_all: bool,
 }
 
 impl<'data> BasicMatchRules<'data> {
     fn push(&mut self, pattern: SymbolMatcher<'data>) {
         match pattern {
+            SymbolMatcher::MatchesAll => self.matches_all = true,
             SymbolMatcher::StarGlob(glob) => self.star_globs.push(glob),
             SymbolMatcher::NonstarGlob(glob) => self.nonstar_globs.push(glob),
             SymbolMatcher::Exact(exact) => {
@@ -79,7 +83,8 @@ impl<'data> BasicMatchRules<'data> {
     fn matches_exact(&self, lookup: &mut SymbolLookupNameWrapper, mangled: bool) -> bool {
         if mangled {
             let demangled_name = lookup.get_demangled_name();
-            // TODO: save also this UnversionedSymbolName
+            // The creation of UnversionedSymbolName should be relatively cheap as we construct
+            // it at most twice.
             self.exact
                 .contains(&UnversionedSymbolName::prehashed(demangled_name.as_bytes()))
         } else {
@@ -181,7 +186,7 @@ impl<'data> VersionScript<'data> {
         &self,
         name: &PreHashed<UnversionedSymbolName>,
     ) -> Option<(usize, VersionRuleSection)> {
-        // Perform symbol lookup the same was as descried for the LLD linker:
+        // Perform symbol lookup the same was as descried for the LLD (and partially Mold) linker:
         // https://maskray.me/blog/2020-11-26-all-about-symbol-versioning#version-script
         let mut lookup_name = SymbolLookupNameWrapper::from_name(name);
 
@@ -201,8 +206,8 @@ impl<'data> VersionScript<'data> {
             }
         }
 
-        // 2) Otherwise, the last version tag with a non-* wildcard pattern wins ('global' should be checked first)
-        // 3) Otherwise, the last version tag with a * pattern wins.
+        // 2) Otherwise, the last version tag with a non-* wildcard pattern wins ('global' should be checked first).
+        //    Otherwise, the last version tag with a * pattern wins.
         for &non_star in &[true, false] {
             for (i, version) in self.versions.iter().enumerate().rev() {
                 let body = &version.version_body;
@@ -227,6 +232,16 @@ impl<'data> VersionScript<'data> {
                 {
                     return Some((i, VersionRuleSection::Local));
                 }
+            }
+        }
+
+        // 3) Otherwise, the last version tag with match all (*).
+        for (i, version) in self.versions.iter().enumerate().rev() {
+            let body = &version.version_body;
+            if body.globals.general.matches_all || body.globals.cxx.matches_all {
+                return Some((i, VersionRuleSection::Global));
+            } else if body.locals.general.matches_all || body.locals.cxx.matches_all {
+                return Some((i, VersionRuleSection::Local));
             }
         }
 
@@ -427,17 +442,19 @@ fn parse_matcher<'data>(input: &mut &'data BStr) -> winnow::Result<ParsedSymbolM
 
     let token = token.trim_ascii_end();
 
-    Ok(
+    Ok(ParsedSymbolMatcher::Single(
         if let Some(unquoted) = token
             .strip_prefix(b"\"")
             .and_then(|t| t.strip_suffix(b"\""))
         {
-            ParsedSymbolMatcher::Single(SymbolMatcher::Exact(unquoted))
+            SymbolMatcher::Exact(unquoted)
         } else if token.contains(&b'\\') {
             return Err(ContextError::from_external_error(
                 input,
                 VersionScriptError::GlobWithQuote,
             ));
+        } else if token == b"*" {
+            SymbolMatcher::MatchesAll
         } else if b"[]?*".iter().any(|c| token.contains(c)) {
             let pattern = Pattern::new(str::from_utf8(token).map_err(|_| {
                 ContextError::from_external_error(input, VersionScriptError::InvalidUtf8String)
@@ -447,14 +464,14 @@ fn parse_matcher<'data>(input: &mut &'data BStr) -> winnow::Result<ParsedSymbolM
             })?;
 
             if token.contains(&b'*') {
-                ParsedSymbolMatcher::Single(SymbolMatcher::StarGlob(pattern))
+                SymbolMatcher::StarGlob(pattern)
             } else {
-                ParsedSymbolMatcher::Single(SymbolMatcher::NonstarGlob(pattern))
+                SymbolMatcher::NonstarGlob(pattern)
             }
         } else {
-            ParsedSymbolMatcher::Single(SymbolMatcher::Exact(token))
+            SymbolMatcher::Exact(token)
         },
-    )
+    ))
 }
 
 fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]> {
