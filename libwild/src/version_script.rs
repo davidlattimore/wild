@@ -344,8 +344,12 @@ impl<'data> VersionScript<'data> {
 
     /// Number of versions in the Version Script, including the base version.
     pub(crate) fn version_count(&self) -> u16 {
-        // Ignore the implicit version!
-        self.versions.len() as u16
+        if self.versions.len() == 1 {
+            // Ignore it if we have just the base version.
+            0
+        } else {
+            self.versions.len() as u16
+        }
     }
 
     pub(crate) fn parent_count(&self) -> u16 {
