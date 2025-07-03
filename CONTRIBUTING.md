@@ -102,6 +102,39 @@ file, specify its location using the `WILD_TEST_CONFIG` environment variable as 
 WILD_TEST_CONFIG=path_to_config cargo test
 ```
 
+## Running external tests
+
+Wild can run some external test suites. Currently only the test suite of mold is supported.
+
+You can run the mold tests as follows:
+
+```sh
+# Clone the mold repository (only needed once)
+git submodule update --init --recursive
+
+cargo test --features mold_tests
+```
+
+You can use this command instead of the second one to run all external tests together:
+
+```sh
+cargo test --features external_tests
+```
+
+Some tests are configured to be skipped by default. A list of these skipped tests can be found at:
+
+[wild/tests/external_tests/mold_skip_tests.toml](./wild/tests/external_tests/mold_skip_tests.toml): for the mold tests.
+
+However, you can also run the tests without skipping any of them:
+
+```sh
+# Run mold tests without skipping any test
+WILD_IGNORE_SKIP=mold cargo test --features mold_tests
+
+# Run all external tests without skipping any test
+WILD_IGNORE_SKIP=all cargo test --features external_tests
+```
+
 ## GitHub workflow
 
 TL;DR: We're pretty relaxed. Feel free to force push or not. Squash, rebase, merge, whatever you
