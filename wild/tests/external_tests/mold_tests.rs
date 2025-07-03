@@ -63,7 +63,7 @@ fn load_skip_tests_config() -> &'static Option<Vec<String>> {
         let skip_tests_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("external_tests")
-            .join("skip_tests.toml");
+            .join("mold_skip_tests.toml");
 
         fs::read_to_string(&skip_tests_path)
             .map(|content| {
