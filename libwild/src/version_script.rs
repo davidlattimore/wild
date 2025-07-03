@@ -81,6 +81,11 @@ impl<'data> BasicMatchRules<'data> {
 
     #[inline]
     fn matches_exact(&self, lookup: &mut SymbolLookupNameWrapper, mangled: bool) -> bool {
+        // Early exit before we actually demangle the name.
+        if self.exact.is_empty() {
+            return false;
+        }
+
         if mangled {
             let demangled_name = lookup.get_demangled_name();
             // The creation of UnversionedSymbolName should be relatively cheap as we construct
@@ -99,16 +104,22 @@ impl<'data> BasicMatchRules<'data> {
         non_star: bool,
         mangled: bool,
     ) -> bool {
+        let mut globs = if non_star {
+            self.nonstar_globs.iter().peekable()
+        } else {
+            self.star_globs.iter().peekable()
+        };
+        // Early exit before we actually demangle the name.
+        if globs.peek().is_none() {
+            return false;
+        }
+
         let name = if mangled {
             lookup.get_demangled_name()
         } else {
             lookup.get_name_string()
         };
-        let mut globs = if non_star {
-            self.nonstar_globs.iter()
-        } else {
-            self.star_globs.iter()
-        };
+
         globs.any(|pattern| pattern.matches(name))
     }
 }
