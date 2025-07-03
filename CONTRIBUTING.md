@@ -34,30 +34,48 @@ To run tests (and have them pass) there are a number of pre-requisites to have i
 
 then use `cargo test` as usual.
 
-## Running aarch64 tests on x86_64
+## Running tests for other architectures on x86_64
 
-Some, but currently not all, of the tests that run on aarch64 can be run on x86_64.
+Wild supports testing on non-native architectures using QEMU.
 
-Setup procedure:
+### Setup
 
-* `rustup target add --toolchain nightly aarch64-unknown-linux-gnu aarch64-unknown-linux-musl`
-* For apt-based systems:
-  * `sudo apt install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu build-essential`
+1. Add required Rust targets:
 
-Then when running tests:
+  ```sh
+  # For aarch64
+  rustup target add --toolchain nightly aarch64-unknown-linux-gnu aarch64-unknown-linux-musl
+
+  # For riscv64
+  rustup target add --toolchain nightly riscv64gc-unknown-linux-gnu riscv64gc-unknown-linux-musl
+  ```
+
+2. Install required packages (for apt-based systems):
+
+  ```sh
+  # For aarch64
+  sudo apt install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+  # For riscv64
+  sudo apt install qemu-user gcc-riscv64-linux-gnu g++-riscv64-linux-gnu binutils-riscv64-linux-gnu
+  ```
+
+### Running tests
+
+To run tests for a specific architecture:
 
 ```sh
+# For aarch64
 WILD_TEST_CROSS=aarch64 cargo test
+
+# For riscv64
+WILD_TEST_CROSS=riscv64 cargo test
+
+# All
+WILD_TEST_CROSS=aarch64,riscv64 cargo test
 ```
 
-This will run both the host-native tests (x86_64) as well as many of the same tests, but on aarch64.
-Qemu is used for running the binaries produced by the linker. All compilation, linking and diffing
-however is done natively on the host system, so should run at full speed.
-
-Cross compilation is currently only done with GCC and rustc, so clang-based tests currently all
-disable cross compilation.
-
-Cross compilation is set up in docker/debian.Dockerfile.
+This runs both native tests and architecture-specific tests. QEMU is used for executing binaries for non-native, while linking and diffing are performed natively. Note that cross-compilation only works with GCC and rustc tests; clang-based tests currently disable cross-compilation.
 
 ## Configuration file for tests
 
