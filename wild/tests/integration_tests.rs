@@ -403,12 +403,12 @@ fn is_musl_used() -> bool {
     os_info::get().os_type() == Type::Alpine
 }
 
-fn host_supports_clang_with_tls_desc() -> bool {
+fn host_supports_clang_with_option(option: &str) -> bool {
     static CLANG_SUPPORTS_TLS_DESC: OnceLock<bool> = OnceLock::new();
 
     *CLANG_SUPPORTS_TLS_DESC.get_or_init(|| {
         let mut clang = Command::new("clang")
-            .args(["-mtls-dialect=gnu2", "-x", "c", "-", "-o/dev/null"])
+            .args([option, "-x", "c", "-", "-o/dev/null"])
             .stdin(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -447,6 +447,7 @@ struct Config {
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_clang_with_tlsdesc: bool,
+    requires_clang_with_crel: bool,
     requires_nightly_rustc: bool,
     auto_add_objects: bool,
     rustc_channel: RustcChannel,
@@ -509,7 +510,10 @@ impl Config {
     fn should_skip(&self, arch: Architecture) -> bool {
         !self.support_architectures.contains(&arch)
             || self.requires_glibc && !cfg!(target_env = "gnu")
-            || (self.requires_clang_with_tlsdesc && !host_supports_clang_with_tls_desc())
+            || (self.requires_clang_with_tlsdesc
+                && !host_supports_clang_with_option("-mtls-dialect=gnu2"))
+            || (self.requires_clang_with_crel
+                && !host_supports_clang_with_option("-Wa,--crel,--allow-experimental-crel"))
             || (arch != get_host_architecture()
                 && (self.compiler == "clang" || !self.cross_enabled))
             || (self.test_config.rustc_channel != RustcChannel::Nightly
@@ -691,6 +695,7 @@ impl Config {
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
             requires_clang_with_tlsdesc: false,
+            requires_clang_with_crel: false,
             requires_nightly_rustc: false,
             auto_add_objects: true,
             rustc_channel: RustcChannel::Default,
@@ -894,6 +899,9 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
                 "RequiresClangWithTlsDesc" => {
                     config.requires_clang_with_tlsdesc = arg.to_lowercase().parse()?;
+                }
+                "RequiresClangWithCrel" => {
+                    config.requires_clang_with_crel = arg.to_lowercase().parse()?;
                 }
                 "RequiresNightlyRustc" => {
                     config.requires_nightly_rustc = arg.to_lowercase().parse()?;
