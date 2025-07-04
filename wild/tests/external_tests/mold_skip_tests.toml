@@ -119,20 +119,10 @@ tests = [
 reason = "version script support"
 tests = [
   "version-script-search-paths.sh",
-  "version-script10.sh",
-  "version-script11.sh",
-  "version-script13.sh",
   "version-script15.sh",
-  "version-script16.sh",
   "version-script17.sh",
-  "version-script2.sh",
-  "version-script20.sh",
-  "version-script22.sh",
   "version-script23.sh",
-  "version-script3.sh",
   "version-script5.sh",
-  "version-script6.sh",
-  "version-script8.sh",
 ]
 
 [skipped_groups.linker_script]
