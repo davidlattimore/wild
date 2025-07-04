@@ -4103,9 +4103,8 @@ impl<'data> ObjectLayoutState<'data> {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
         let mut modifier = RelocationModifier::Normal;
-        let relocations = self.relocations(section.index)?.into_iter().collect_vec();
 
-        for rel in relocations {
+        for rel in self.relocations(section.index)?.into_iter() {
             if modifier == RelocationModifier::SkipNextRelocation {
                 modifier = RelocationModifier::Normal;
                 continue;
