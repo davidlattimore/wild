@@ -17,6 +17,7 @@ use linker_utils::elf::sht;
 use object::LittleEndian;
 use object::read::elf::CompressionHeader;
 use object::read::elf::Crel;
+use object::read::elf::CrelIterator;
 use object::read::elf::Dyn;
 use object::read::elf::FileHeader as _;
 use object::read::elf::RelocationSections;
@@ -69,6 +70,45 @@ pub(crate) struct File<'data> {
 
     /// e_flags from the header.
     pub(crate) eflags: u32,
+}
+
+pub(crate) enum RelocationList<'data> {
+    Rela(&'data [Rela]),
+    Crel(CrelIterator<'data>),
+    Empty,
+}
+
+pub(crate) struct RelocationListIter<'data> {
+    list: RelocationList<'data>,
+    index: usize,
+}
+
+impl<'data> Iterator for RelocationListIter<'data> {
+    type Item = Crel;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = match &mut self.list {
+            RelocationList::Crel(crel) => crel.next().and_then(|r| r.ok()),
+            RelocationList::Rela(rela) => rela
+                .get(self.index)
+                .map(|r| Crel::from_rela(r, LittleEndian, false)),
+            RelocationList::Empty => None,
+        };
+        self.index += 1;
+        item
+    }
+}
+
+impl<'data> IntoIterator for RelocationList<'data> {
+    type Item = Crel;
+    type IntoIter = RelocationListIter<'data>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Self::IntoIter {
+            list: self,
+            index: 0,
+        }
+    }
 }
 
 // Not needing Drop opens the option of storing this type in an arena that doesn't support dropping
@@ -239,21 +279,20 @@ impl<'data> File<'data> {
         &self,
         index: object::SectionIndex,
         relocations: &RelocationSections,
-    ) -> Result<Vec<Crel>> {
+    ) -> Result<RelocationList<'data>> {
         let Some(section_index) = relocations.get(index) else {
-            return Ok(Vec::new());
+            return Ok(RelocationList::Empty);
         };
         let section = self.sections.section(section_index)?;
-        if let Some((rela, _)) = section.rela(LittleEndian, self.data)? {
-            Ok(rela
-                .iter()
-                .map(|rela| Crel::from_rela(rela, LittleEndian, false))
-                .collect())
-        } else if let Some((crel, _)) = section.crel(LittleEndian, self.data)? {
-            Ok(crel.collect::<Result<Vec<_>, _>>()?)
-        } else {
-            Ok(Vec::new())
-        }
+        Ok(
+            if let Some((rela, _)) = section.rela(LittleEndian, self.data)? {
+                RelocationList::Rela(rela)
+            } else if let Some((crel, _)) = section.crel(LittleEndian, self.data)? {
+                RelocationList::Crel(crel)
+            } else {
+                RelocationList::Empty
+            },
+        )
     }
 
     pub(crate) fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Symbol> {

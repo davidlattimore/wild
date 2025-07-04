@@ -21,6 +21,7 @@ use crate::elf;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
 use crate::elf::FileHeader;
+use crate::elf::RelocationList;
 use crate::elf::Versym;
 use crate::elf_writer;
 use crate::ensure;
@@ -4102,8 +4103,9 @@ impl<'data> ObjectLayoutState<'data> {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
         let mut modifier = RelocationModifier::Normal;
+        let relocations = self.relocations(section.index)?.into_iter().collect_vec();
 
-        for rel in &self.relocations(section.index)? {
+        for rel in relocations {
             if modifier == RelocationModifier::SkipNextRelocation {
                 modifier = RelocationModifier::Normal;
                 continue;
@@ -4111,7 +4113,7 @@ impl<'data> ObjectLayoutState<'data> {
             modifier = process_relocation::<A>(
                 self,
                 common,
-                rel,
+                &rel,
                 self.object.section(section.index)?,
                 resources,
                 queue,
@@ -4206,12 +4208,13 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
+        let relocations = self.relocations(section.index)?.into_iter();
         if A::local_symbols_in_debug_info() {
-            for rel in &self.relocations(section.index)? {
+            for rel in relocations {
                 let modifier = process_relocation::<A>(
                     self,
                     common,
-                    rel,
+                    &rel,
                     self.object.section(section.index)?,
                     resources,
                     queue,
@@ -4549,7 +4552,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn relocations(&self, index: SectionIndex) -> Result<Vec<Crel>> {
+    fn relocations(&self, index: SectionIndex) -> Result<RelocationList<'data>> {
         self.object.relocations(index, &self.relocations)
     }
 }
@@ -4643,7 +4646,10 @@ fn process_eh_frame_data<'data, A: Arch>(
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
     let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
-    let relocations = object.relocations(eh_frame_section_index)?;
+    let relocations = object
+        .relocations(eh_frame_section_index)?
+        .into_iter()
+        .collect_vec();
     let mut rel_iter = relocations.iter().enumerate().peekable();
     let mut offset = 0;
 
@@ -4738,7 +4744,10 @@ fn process_eh_frame_data<'data, A: Arch>(
                     let previous_frame_for_section = unloaded.last_frame_index.replace(frame_index);
 
                     common.exception_frames.push(ExceptionFrame {
-                        relocations: relocations[rel_start_index..rel_end_index].to_vec(),
+                        relocations: relocations[rel_start_index..rel_end_index]
+                            .iter()
+                            .copied()
+                            .collect_vec(),
                         frame_size: size as u32,
                         previous_frame_for_section,
                     });
@@ -5884,7 +5893,7 @@ fn needs_tlsld(relocation_kind: RelocationKind) -> bool {
 }
 
 impl<'data> ObjectLayout<'data> {
-    pub(crate) fn relocations(&self, index: SectionIndex) -> Result<Vec<Crel>> {
+    pub(crate) fn relocations(&self, index: SectionIndex) -> Result<RelocationList<'data>> {
         self.object.relocations(index, &self.relocations)
     }
 }

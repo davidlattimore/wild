@@ -78,6 +78,7 @@ use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use foldhash::HashMap as FoldHashMap;
 use foldhash::HashMapExt as _;
+use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
@@ -1299,7 +1300,7 @@ fn apply_relocations<A: Arch>(
     let object_section = object.object.section(section.index)?;
     let section_flags = SectionFlags::from_header(object_section);
     let mut modifier = RelocationModifier::Normal;
-    let relocations = object.relocations(section.index)?;
+    let relocations = object.relocations(section.index)?.into_iter().collect_vec();
     layout
         .relocation_statistics
         .get(section.part_id.output_section_id())
@@ -1358,7 +1359,7 @@ fn apply_debug_relocations<A: Arch>(
             0
         };
 
-    let relocations = object.relocations(section.index)?;
+    let relocations = object.relocations(section.index)?.into_iter().collect_vec();
     layout
         .relocation_statistics
         .get(section.part_id.output_section_id())
@@ -1398,7 +1399,7 @@ fn write_eh_frame_data<A: Arch>(
     let e = LittleEndian;
     let section_flags = SectionFlags::from_header(eh_frame_section);
     let relocations = object.relocations(eh_frame_section_index)?;
-    let mut relocations = relocations.iter().peekable();
+    let mut relocations = relocations.into_iter().peekable();
     let mut input_pos = 0;
     let mut output_pos = 0;
     let frame_info_ptr_base = table_writer.eh_frame_start_address;
