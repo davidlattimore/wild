@@ -389,10 +389,10 @@ impl<'data> SectionRules<'data> {
         section_flags: SectionFlags,
         sh_type: SectionType,
     ) -> SectionRuleOutcome {
-        if let Some(hash) = section_name_prefix_hash(section_name) {
-            if let Some(rule) = self.rules.find(hash, |rule| rule.matches(section_name)) {
-                return rule.outcome;
-            }
+        if let Some(hash) = section_name_prefix_hash(section_name)
+            && let Some(rule) = self.rules.find(hash, |rule| rule.matches(section_name))
+        {
+            return rule.outcome;
         }
 
         if section_name.is_empty() {

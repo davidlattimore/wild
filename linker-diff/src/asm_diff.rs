@@ -154,13 +154,12 @@ fn compare_sections<A: Arch>(
 ) -> Result {
     let original_section = section_versions.original_section(layout)?;
 
-    if let Some(coverage) = report.coverage.as_mut() {
-        if let Some(sec_cov) = coverage
+    if let Some(coverage) = report.coverage.as_mut()
+        && let Some(sec_cov) = coverage
             .sections
             .get_mut(&section_versions.input_section_id)
-        {
-            sec_cov.diffed = true;
-        }
+    {
+        sec_cov.diffed = true;
     }
 
     // We already filtered input sections based on their kind. Now we filter based on the output
@@ -371,24 +370,24 @@ impl<'data, A: Arch> RelaxationGroup<'data, A> {
 
     fn eliminate_alt_r_types(&mut self, reference: &Reference<A::RType>) {
         for result in &mut self.match_results {
-            if let RelaxationMatchResult::Matched(m) = result {
-                if let Some(alt_r_type) = m.relaxation.alt_r_type {
-                    // Some relaxations cannot be identified purely by the instruction bytes. For example
-                    // relaxing a PLT32 to a PC32, the instruction bytes are left the same. All that differs is
-                    // whether we now point to the PLT or not.
+            if let RelaxationMatchResult::Matched(m) = result
+                && let Some(alt_r_type) = m.relaxation.alt_r_type
+            {
+                // Some relaxations cannot be identified purely by the instruction bytes. For example
+                // relaxing a PLT32 to a PC32, the instruction bytes are left the same. All that differs is
+                // whether we now point to the PLT or not.
 
-                    match (
-                        reference.verify_consistent_with_r_type(m.relaxation.new_r_type),
-                        reference.verify_consistent_with_r_type(alt_r_type),
-                    ) {
-                        (Err(_), Ok(())) => {
-                            m.relaxation.new_r_type = alt_r_type;
-                        }
-                        (Ok(()), Err(_)) => {
-                            m.relaxation.alt_r_type = None;
-                        }
-                        _ => {}
+                match (
+                    reference.verify_consistent_with_r_type(m.relaxation.new_r_type),
+                    reference.verify_consistent_with_r_type(alt_r_type),
+                ) {
+                    (Err(_), Ok(())) => {
+                        m.relaxation.new_r_type = alt_r_type;
                     }
+                    (Ok(()), Err(_)) => {
+                        m.relaxation.alt_r_type = None;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1171,19 +1170,18 @@ impl<A: Arch> RelocationInstructionBlock<'_, A> {
 
             writeln!(f, "{:instruction_padding$}] {}", "", out.purple())?;
 
-            if let Some(annotation) = annotations.peek() {
-                if annotation.offset_in_section >= instruction_offset
-                    && annotation.offset_in_section < instruction_end
-                {
-                    let num_spaces = name_width
-                        + address_width
-                        + 7
-                        + (annotation.offset_in_section - instruction_offset) as usize * 3;
+            if let Some(annotation) = annotations.peek()
+                && annotation.offset_in_section >= instruction_offset
+                && annotation.offset_in_section < instruction_end
+            {
+                let num_spaces = name_width
+                    + address_width
+                    + 7
+                    + (annotation.offset_in_section - instruction_offset) as usize * 3;
 
-                    annotation.write(f, &format!("{:num_spaces$}", ""))?;
+                annotation.write(f, &format!("{:num_spaces$}", ""))?;
 
-                    annotations.next();
-                }
+                annotations.next();
             }
         }
 
@@ -2362,14 +2360,13 @@ impl<'data> RelaxationTester<'data> {
         let mut reference = None;
         let mut error = None;
 
-        if relaxation_group.is_complete {
-            if let Some(matches) = relaxation_group.matches_if_ok() {
-                if matches_are_compatible(&matches) {
-                    match self.read_reference(&matches) {
-                        Ok(r) => reference = Some(r),
-                        Err(e) => error = Some(e),
-                    }
-                }
+        if relaxation_group.is_complete
+            && let Some(matches) = relaxation_group.matches_if_ok()
+            && matches_are_compatible(&matches)
+        {
+            match self.read_reference(&matches) {
+                Ok(r) => reference = Some(r),
+                Err(e) => error = Some(e),
             }
         }
 

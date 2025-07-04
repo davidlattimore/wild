@@ -525,13 +525,13 @@ fn assign_section_ids<'data>(
 ) {
     for group in resolved {
         for file in &mut group.files {
-            if let ResolvedFile::Object(s) = file {
-                if let Some(non_dynamic) = s.non_dynamic.as_mut() {
-                    output_sections.add_sections(
-                        &non_dynamic.custom_sections,
-                        non_dynamic.sections.as_mut_slice(),
-                    );
-                }
+            if let ResolvedFile::Object(s) = file
+                && let Some(non_dynamic) = s.non_dynamic.as_mut()
+            {
+                output_sections.add_sections(
+                    &non_dynamic.custom_sections,
+                    non_dynamic.sections.as_mut_slice(),
+                );
             }
         }
     }
