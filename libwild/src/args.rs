@@ -15,7 +15,6 @@
 use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::bail;
-use crate::def_parser;
 use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -73,6 +72,7 @@ pub struct Args {
     pub(crate) entry: Option<String>,
     pub(crate) explicitly_export_all_dynamic: bool,
     pub(crate) explicitly_export_dynamic_symbols: Vec<String>,
+    pub(crate) explicitly_export_dynamic_symbols_list_path: Option<PathBuf>,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -301,6 +301,7 @@ impl Default for Args {
             b_symbolic: BSymbolicKind::None,
             explicitly_export_all_dynamic: false,
             explicitly_export_dynamic_symbols: Vec::new(),
+            explicitly_export_dynamic_symbols_list_path: None,
             got_plt_syms: false,
             relax: true,
             jobserver_client: None,
@@ -600,8 +601,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.explicitly_export_dynamic_symbols
                 .push(get_next_argument(arg)?.as_ref().to_owned());
         } else if let Some(value) = get_option_value("export-dynamic-symbol-list") {
-            args.explicitly_export_dynamic_symbols
-                .extend(def_parser::parse(Path::new(&value)));
+            args.explicitly_export_dynamic_symbols_list_path = Some(PathBuf::from(&value));
         } else if let Some(value) = get_option_value("soname") {
             args.soname = Some(value);
         } else if arg == "-h" {

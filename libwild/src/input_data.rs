@@ -40,6 +40,7 @@ pub(crate) struct InputData<'data> {
 
     pub(crate) version_script_data: Option<VersionScriptData<'data>>,
     pub(crate) linker_scripts: Vec<InputLinkerScript<'data>>,
+    pub(crate) explicitly_export_symbols_list_data: Option<VersionScriptData<'data>>,
 
     /// Which files we loaded. The keys aren't relevant anymore, but we keep them to avoid
     /// regenerating the map.
@@ -191,6 +192,11 @@ impl<'data> InputData<'data> {
             .as_ref()
             .map(|path| read_version_script(path, inputs_arena))
             .transpose()?;
+        let explicitly_export_symbols_list_data = args
+            .explicitly_export_dynamic_symbols_list_path
+            .as_ref()
+            .map(|path| read_version_script(path, inputs_arena))
+            .transpose()?;
 
         let (work_sender, work_recv) = crossbeam_channel::unbounded();
         let (response_sender, response_recv) = crossbeam_channel::unbounded();
@@ -238,6 +244,7 @@ impl<'data> InputData<'data> {
             inputs: Vec::new(),
             linker_scripts: Vec::new(),
             version_script_data,
+            explicitly_export_symbols_list_data,
             path_to_load_index: temporary_state.path_to_load_index,
         };
 

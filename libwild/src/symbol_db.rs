@@ -79,6 +79,7 @@ pub struct SymbolDb<'data> {
     start_stop_symbol_names: Vec<UnversionedSymbolName<'data>>,
 
     pub(crate) version_script: VersionScript<'data>,
+    pub(crate) explicitly_export_symbols_list: VersionScript<'data>,
 
     /// The name of the entry symbol if overridden by a linker script.
     entry: Option<&'data [u8]>,
@@ -279,11 +280,18 @@ impl<'data> SymbolDb<'data> {
         version_script_data: Option<VersionScriptData<'data>>,
         args: &'data Args,
         linker_scripts: &[InputLinkerScript<'data>],
+        explicitly_export_symbols_list_data: Option<VersionScriptData<'data>>,
     ) -> Result<Self> {
         let version_script = version_script_data
             .map(VersionScript::parse)
             .transpose()?
             .unwrap_or_default();
+        let explicitly_export_symbols_list = dbg!(
+            explicitly_export_symbols_list_data
+                .map(VersionScript::parse)
+                .transpose()?
+                .unwrap_or_default()
+        );
 
         let num_symbols_per_group = groups.iter().map(|g| g.num_symbols()).collect_vec();
 
@@ -346,6 +354,7 @@ impl<'data> SymbolDb<'data> {
             start_stop_symbol_names: Default::default(),
             symbol_value_flags,
             version_script,
+            explicitly_export_symbols_list,
             entry: None,
         };
 
