@@ -3,8 +3,7 @@
 //#LinkArgs:-pie -Wl,-z,now
 //#DiffIgnore:section.rodata
 // GNU ld emits an extra IRELATIVE relocation, while LLD and Wild instead point to the PLT entry. So
-// we need to diff against lld, which isn't currently enabled for cross compilation.
-//#Cross:false
+// we need to diff against lld.
 //#EnableLinker:lld
 //#RequiresGlibc:true
 
