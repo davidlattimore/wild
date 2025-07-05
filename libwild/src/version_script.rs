@@ -42,7 +42,7 @@ pub(crate) struct Version<'data> {
 }
 
 /// A version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct VersionScript<'data> {
     versions: Vec<Version<'data>>,
 }
@@ -375,6 +375,10 @@ impl<'data> VersionScript<'data> {
                 Some(number as u16 + object::elf::VER_NDX_GLOBAL)
             }
         })
+    }
+
+    pub(crate) fn contains(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
+        self.find_match(name).is_some()
     }
 }
 
