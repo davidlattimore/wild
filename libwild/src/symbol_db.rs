@@ -286,12 +286,10 @@ impl<'data> SymbolDb<'data> {
             .map(VersionScript::parse)
             .transpose()?
             .unwrap_or_default();
-        let explicitly_export_symbols_list = dbg!(
-            explicitly_export_symbols_list_data
-                .map(VersionScript::parse)
-                .transpose()?
-                .unwrap_or_default()
-        );
+        let explicitly_export_symbols_list = explicitly_export_symbols_list_data
+            .map(VersionScript::parse)
+            .transpose()?
+            .unwrap_or_default();
 
         let num_symbols_per_group = groups.iter().map(|g| g.num_symbols()).collect_vec();
 

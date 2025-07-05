@@ -602,6 +602,8 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                 .push(get_next_argument(arg)?.as_ref().to_owned());
         } else if let Some(value) = get_option_value("export-dynamic-symbol-list") {
             args.explicitly_export_dynamic_symbols_list_path = Some(PathBuf::from(&value));
+        } else if let Some(value) = get_option_value("dynamic-list") {
+            args.explicitly_export_dynamic_symbols_list_path = Some(PathBuf::from(&value));
         } else if let Some(value) = get_option_value("soname") {
             args.soname = Some(value);
         } else if arg == "-h" {
