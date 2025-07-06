@@ -72,6 +72,7 @@ pub(crate) struct File<'data> {
     pub(crate) eflags: u32,
 }
 
+#[derive(Clone)]
 pub(crate) enum RelocationList<'data> {
     Rela(&'data [Rela]),
     Crel(CrelIterator<'data>),

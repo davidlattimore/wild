@@ -914,7 +914,7 @@ dependencies = [
 [[package]]
 name = "object"
 version = "0.37.1"
-source = "git+https://github.com/marxin/object?rev=8c9b4a93acd3a92b6870f11d600c593b0104b801#8c9b4a93acd3a92b6870f11d600c593b0104b801"
+source = "git+https://github.com/marxin/object?rev=30049ae#30049aea2fe5e502d979bf88d56311818d14c4b1"
 dependencies = [
  "memchr",
 ]

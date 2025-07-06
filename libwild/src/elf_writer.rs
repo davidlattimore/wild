@@ -1300,9 +1300,9 @@ fn apply_relocations<A: Arch>(
     let object_section = object.object.section(section.index)?;
     let section_flags = SectionFlags::from_header(object_section);
     let mut modifier = RelocationModifier::Normal;
-    let mut relocation_cache =
-        RelocationCache::from_relocations(object.relocations(section.index)?);
-    let relocations = object.relocations(section.index)?.into_iter();
+    let relocations = object.relocations(section.index)?;
+    let mut relocation_cache = RelocationCache::from_relocations(relocations.clone());
+    let relocations = relocations.into_iter();
     layout
         .relocation_statistics
         .get(section.part_id.output_section_id())
@@ -1361,9 +1361,9 @@ fn apply_debug_relocations<A: Arch>(
             0
         };
 
-    let mut relocation_cache =
-        RelocationCache::from_relocations(object.relocations(section.index)?);
-    let relocations = object.relocations(section.index)?.into_iter();
+    let relocations = object.relocations(section.index)?;
+    let mut relocation_cache = RelocationCache::from_relocations(relocations.clone());
+    let relocations = relocations.into_iter();
     layout
         .relocation_statistics
         .get(section.part_id.output_section_id())

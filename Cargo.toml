@@ -53,7 +53,7 @@ libc = "0.2.152"
 memchr = "2.6.0"
 memmap2 = "0.9.0"
 mimalloc = { version = "0.1", default-features = false }
-object = { git = "https://github.com/marxin/object", rev = "8c9b4a93acd3a92b6870f11d600c593b0104b801", default-features = false, features = [
+object = { git = "https://github.com/marxin/object", rev = "30049ae", default-features = false, features = [
     "elf",
     "read_core",
     "std",
