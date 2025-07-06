@@ -63,6 +63,7 @@ use crate::string_merging::MergedStringStartAddresses;
 use crate::string_merging::MergedStringsSection;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol::UnversionedSymbolName;
+use crate::symbol_db::RawSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolDebug;
 use crate::symbol_db::SymbolId;
@@ -914,9 +915,10 @@ fn export_dynamic<'data>(
     symbol_db: &SymbolDb<'data>,
 ) -> Result {
     let name = symbol_db.symbol_name(symbol_id)?;
+    let RawSymbolName { name_bytes, .. } = RawSymbolName::parse(name.bytes());
     common
         .dynamic_symbol_definitions
-        .push(DynamicSymbolDefinition::new(symbol_id, name.bytes()));
+        .push(DynamicSymbolDefinition::new(symbol_id, name_bytes));
     Ok(())
 }
 
