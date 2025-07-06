@@ -914,7 +914,7 @@ dependencies = [
 [[package]]
 name = "object"
 version = "0.37.1"
-source = "git+https://github.com/gimli-rs/object?rev=refs%2Fpull%2F785%2Fhead#3aa64388923c516f8216896d0a7cc9b9b3767f0f"
+source = "git+https://github.com/marxin/object?rev=8c9b4a93acd3a92b6870f11d600c593b0104b801#8c9b4a93acd3a92b6870f11d600c593b0104b801"
 dependencies = [
  "memchr",
 ]

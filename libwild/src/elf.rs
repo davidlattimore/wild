@@ -83,6 +83,16 @@ pub(crate) struct RelocationListIter<'data> {
     index: usize,
 }
 
+impl<'data> RelocationListIter<'data> {
+    pub(crate) fn len(&self) -> usize {
+        match &self.list {
+            RelocationList::Rela(rela) => rela.len(),
+            RelocationList::Crel(crel) => crel.len(),
+            RelocationList::Empty => 0,
+        }
+    }
+}
+
 impl<'data> Iterator for RelocationListIter<'data> {
     type Item = Crel;
 
@@ -108,6 +118,30 @@ impl<'data> IntoIterator for RelocationList<'data> {
             list: self,
             index: 0,
         }
+    }
+}
+
+pub(crate) struct RelocationCache<'data> {
+    list: Option<RelocationList<'data>>,
+    cached_relocations: Option<Vec<Crel>>,
+}
+
+impl<'data> RelocationCache<'data> {
+    pub(crate) fn from_relocations(relocations: RelocationList<'data>) -> Self {
+        Self {
+            list: Some(relocations),
+            cached_relocations: None,
+        }
+    }
+
+    pub(crate) fn get_relocations(&mut self) -> &[Crel] {
+        self.cached_relocations.get_or_insert_with(|| {
+            self.list
+                .take()
+                .expect("List must be present")
+                .into_iter()
+                .collect()
+        })
     }
 }
 

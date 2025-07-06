@@ -19,6 +19,7 @@ use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::GNU_NOTE_NAME;
 use crate::elf::GnuHashHeader;
 use crate::elf::ProgramHeader;
+use crate::elf::RelocationCache;
 use crate::elf::SectionHeader;
 use crate::elf::SymtabEntry;
 use crate::elf::Verdaux;
@@ -78,7 +79,6 @@ use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use foldhash::HashMap as FoldHashMap;
 use foldhash::HashMapExt as _;
-use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
@@ -1300,12 +1300,14 @@ fn apply_relocations<A: Arch>(
     let object_section = object.object.section(section.index)?;
     let section_flags = SectionFlags::from_header(object_section);
     let mut modifier = RelocationModifier::Normal;
-    let relocations = object.relocations(section.index)?.into_iter().collect_vec();
+    let mut relocation_cache =
+        RelocationCache::from_relocations(object.relocations(section.index)?);
+    let relocations = object.relocations(section.index)?.into_iter();
     layout
         .relocation_statistics
         .get(section.part_id.output_section_id())
         .fetch_add(relocations.len() as u64, Relaxed);
-    for (i, rel) in relocations.iter().enumerate() {
+    for (i, rel) in relocations.enumerate() {
         if modifier == RelocationModifier::SkipNextRelocation {
             modifier = RelocationModifier::Normal;
             continue;
@@ -1314,7 +1316,7 @@ fn apply_relocations<A: Arch>(
         modifier = apply_relocation::<A>(
             object,
             offset_in_section,
-            rel,
+            &rel,
             SectionInfo {
                 section_address,
                 is_writable: section.is_writable,
@@ -1324,13 +1326,13 @@ fn apply_relocations<A: Arch>(
             out,
             table_writer,
             trace,
-            &relocations,
+            &mut relocation_cache,
             i,
         )
         .with_context(|| {
             format!(
                 "Failed to apply {} at offset 0x{offset_in_section:x}",
-                display_relocation::<A>(object, rel, layout)
+                display_relocation::<A>(object, &rel, layout)
             )
         })?;
     }
@@ -1359,27 +1361,29 @@ fn apply_debug_relocations<A: Arch>(
             0
         };
 
-    let relocations = object.relocations(section.index)?.into_iter().collect_vec();
+    let mut relocation_cache =
+        RelocationCache::from_relocations(object.relocations(section.index)?);
+    let relocations = object.relocations(section.index)?.into_iter();
     layout
         .relocation_statistics
         .get(section.part_id.output_section_id())
         .fetch_add(relocations.len() as u64, Relaxed);
-    for (i, rel) in relocations.iter().enumerate() {
+    for (i, rel) in relocations.enumerate() {
         let offset_in_section = rel.r_offset;
         apply_debug_relocation::<A>(
             object,
             offset_in_section,
-            rel,
+            &rel,
             layout,
             tombstone_value,
             out,
-            &relocations,
+            &mut relocation_cache,
             i,
         )
         .with_context(|| {
             format!(
                 "Failed to apply {} at offset 0x{offset_in_section:x}",
-                display_relocation::<A>(object, rel, layout)
+                display_relocation::<A>(object, &rel, layout)
             )
         })?;
     }
@@ -1493,6 +1497,8 @@ fn write_eh_frame_data<A: Arch>(
             if let Some(output_cie_offset) = output_cie_offset {
                 entry_out[4..8].copy_from_slice(&output_cie_offset.to_le_bytes());
             }
+            let mut relocation_cache =
+                RelocationCache::from_relocations(elf::RelocationList::Empty);
             while let Some(rel) = relocations.peek() {
                 let rel_offset = rel.r_offset;
                 if rel_offset >= next_input_pos as u64 {
@@ -1512,7 +1518,7 @@ fn write_eh_frame_data<A: Arch>(
                     entry_out,
                     table_writer,
                     trace,
-                    &[],
+                    &mut relocation_cache,
                     0,
                 )
                 .with_context(|| {
@@ -1767,7 +1773,7 @@ fn apply_relocation<A: Arch>(
     out: &mut [u8],
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
-    relocations: &[Crel],
+    relocation_cache: &mut RelocationCache,
     relocation_index: usize,
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
@@ -1888,6 +1894,7 @@ fn apply_relocation<A: Arch>(
                 addend == 0,
                 "Unexpected added for R_RISCV_PCREL_LO12 relocation"
             );
+            let relocations = relocation_cache.get_relocations();
             let mut relocations_to_search = relocations[..relocation_index]
                 .iter()
                 .rev()
@@ -1963,7 +1970,7 @@ fn apply_relocation<A: Arch>(
             symbol_index,
             addend,
             // It must be the previous relocation
-            iter::once(&relocations[relocation_index - 1]),
+            iter::once(&relocation_cache.get_relocations()[relocation_index - 1]),
         )?,
         RelocationKind::GotRelative => resolution
             .got_address()?
@@ -2145,7 +2152,7 @@ fn apply_debug_relocation<A: Arch>(
     layout: &Layout,
     section_tombstone_value: u64,
     out: &mut [u8],
-    relocations: &[Crel],
+    relocation_cache: &mut RelocationCache,
     relocation_index: usize,
 ) -> Result<()> {
     let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
@@ -2208,7 +2215,7 @@ fn apply_debug_relocation<A: Arch>(
                 symbol_index,
                 addend,
                 // Must be the previous relocation.
-                iter::once(&relocations[relocation_index - 1]),
+                iter::once(&relocation_cache.get_relocations()[relocation_index - 1]),
             )?,
             // Skip R_RISCV_SET_ULEB128
             RelocationKind::Relative if rel_info.size == RelocationSize::ByteSize(0) => 0,
