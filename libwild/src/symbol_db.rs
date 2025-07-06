@@ -1142,6 +1142,7 @@ trait SymbolLoader<'data> {
     ) -> Result<RawSymbolName<'data>>;
 }
 
+#[derive(Debug)]
 pub(crate) struct RawSymbolName<'data> {
     pub(crate) name_bytes: &'data [u8],
 

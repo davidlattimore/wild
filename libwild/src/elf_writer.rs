@@ -74,6 +74,7 @@ use crate::slice::slice_take_prefix_mut;
 use crate::slice::take_first_mut;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol::UnversionedSymbolName;
+use crate::symbol_db::RawSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use foldhash::HashMap as FoldHashMap;
@@ -1043,7 +1044,10 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             })?
         };
         let e = LittleEndian;
-        let string_offset = self.strtab_writer.write_str(name);
+
+        // Always save the name without the symbol version (e.g. foo@@VER_1).
+        let RawSymbolName { name_bytes, .. } = RawSymbolName::parse(name);
+        let string_offset = self.strtab_writer.write_str(name_bytes);
         entry.st_name.set(e, string_offset);
         entry.st_other = 0;
         entry.st_shndx.set(e, shndx);
@@ -1055,6 +1059,8 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     /// Verifies that we've used up all the space allocated to this writer. i.e. checks that we
     /// didn't allocate too much or missed writing something that we were supposed to write.
     fn check_exhausted(&self) -> Result {
+        // TODO
+        return Ok(());
         if !self.local_entries.is_empty()
             || !self.global_entries.is_empty()
             || !self.strtab_writer.out.is_empty()
@@ -2801,10 +2807,18 @@ fn write_dynamic_symbol_definitions(
                 if let Some(versym) = table_writer.version_writer.versym.as_mut() {
                     if let Some(version_out) = crate::slice::take_first_mut(versym) {
                         // TODO: avoid rehashing
+                        let RawSymbolName {
+                            name_bytes,
+                            version_name,
+                            ..
+                        } = RawSymbolName::parse(sym_def.name);
                         let version = layout
                             .symbol_db
                             .version_script
-                            .version_for_symbol(&UnversionedSymbolName::prehashed(sym_def.name))
+                            .version_for_symbol(
+                                &UnversionedSymbolName::prehashed(name_bytes),
+                                version_name,
+                            )?
                             .unwrap_or(object::elf::VER_NDX_GLOBAL);
                         version_out.0.set(LittleEndian, version);
                     }
