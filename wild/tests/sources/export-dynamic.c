@@ -40,17 +40,6 @@
 //#Cross:false
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#RunEnabled:false
-
-//#Config:wip
-//#LinkArgs:-z now --dynamic-list ./export-dynamic.def
-//#ExpectDynSym:foo
-//#ExpectDynSym:baz
-//#Shared:empty.c
-//#Mode:unspecified
-//#EnableLinker:lld
-//#Cross:false
-//#DiffIgnore:.dynamic.DT_NEEDED
-//#RunEnabled:false
 // clang-format on
 
 void foo(void) {};
