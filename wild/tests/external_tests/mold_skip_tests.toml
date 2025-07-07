@@ -73,8 +73,6 @@ tests = [
   "trace.sh",
   "undefined-glob-gc-sections.sh",
   "undefined-glob.sh",
-  "unresolved-symbols.sh",
-  "unresolved-symbols2.sh",
   "warn-unresolved-symbols.sh",
   "wrap.sh",
 ]
@@ -225,6 +223,7 @@ tests = [
   "help.sh",
   "mold-wrapper.sh",
   "mold-wrapper2.sh",
+  "unresolved-symbols.sh",          # Different message formats
 ]
 
 [skipped_groups.misc]

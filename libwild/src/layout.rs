@@ -3016,7 +3016,7 @@ fn process_relocation<A: Arch>(
 
         if previous_flags.is_empty() {
             queue.send_symbol_request(symbol_id, resources);
-            if is_symbol_undefined(
+            if should_emit_undefined_error(
                 object.object.symbol(local_sym_index)?,
                 object.file_id,
                 symbol_db.file_id_for_symbol(symbol_id),
@@ -3597,7 +3597,7 @@ fn create_start_end_symbol_resolution(
     ))
 }
 
-fn is_symbol_undefined(
+fn should_emit_undefined_error(
     symbol: &Symbol,
     sym_file_id: FileId,
     sym_def_file_id: FileId,
@@ -3608,9 +3608,15 @@ fn is_symbol_undefined(
         return false;
     }
 
-    sym_file_id == sym_def_file_id
+    let is_symbol_undefined = sym_file_id == sym_def_file_id
         && symbol.is_undefined(LittleEndian)
-        && symbol_value_flags.is_absolute()
+        && symbol_value_flags.is_absolute();
+
+    match args.unresolved_symbols {
+        crate::args::UnresolvedSymbols::IgnoreAll
+        | crate::args::UnresolvedSymbols::IgnoreInObjectFiles => false,
+        _ => is_symbol_undefined,
+    }
 }
 
 impl<'data> EpilogueLayoutState<'data> {
@@ -5274,8 +5280,8 @@ impl<'data> DynamicLayoutState<'data> {
                 // not, depends on flags, whether the symbol is weak and whether all of the shared
                 // object's dependencies are loaded.
 
+                let args = resources.symbol_db.args;
                 let check_undefined = *check_undefined_cache.get_or_insert_with(|| {
-                    let args = resources.symbol_db.args;
                     !args.allow_shlib_undefined
                         && args.output_kind().is_executable()
                         // Like lld, our behaviour for --no-allow-shlib-undefined is to only report
@@ -5291,10 +5297,18 @@ impl<'data> DynamicLayoutState<'data> {
                         .object
                         .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
                     if !symbol.is_weak() {
-                        bail!(
-                            "undefined reference to `{}` from {self}",
-                            resources.symbol_db.symbol_name_for_display(symbol_id)
+                        let should_report = !matches!(
+                            args.unresolved_symbols,
+                            crate::args::UnresolvedSymbols::IgnoreAll
+                                | crate::args::UnresolvedSymbols::IgnoreInSharedLibs
                         );
+
+                        if should_report {
+                            let symbol_name =
+                                resources.symbol_db.symbol_name_for_display(symbol_id);
+
+                            bail!("undefined reference to `{symbol_name}` from {self}");
+                        }
                     }
                 }
             } else if definition_symbol_id != symbol_id {
