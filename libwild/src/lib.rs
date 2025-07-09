@@ -202,6 +202,7 @@ impl Linker {
             input_data.version_script_data,
             args,
             &input_data.linker_scripts,
+            input_data.explicitly_export_symbols_list_data,
         )?;
 
         let resolved = resolution::resolve_symbols_and_sections(
