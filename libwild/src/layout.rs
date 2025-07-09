@@ -2499,11 +2499,11 @@ fn set_last_verneed(
             == gnu_version_r_layout.mem_offset + gnu_version_r_layout.mem_size);
     if is_last_verneed {
         for file in files.iter_mut().rev() {
-            if let FileLayout::Dynamic(d) = file {
-                if d.verneed_info.is_some() {
-                    d.is_last_verneed = true;
-                    break;
-                }
+            if let FileLayout::Dynamic(d) = file
+                && d.verneed_info.is_some()
+            {
+                d.is_last_verneed = true;
+                break;
             }
         }
     }
@@ -3339,10 +3339,10 @@ impl<'data> PreludeLayoutState<'data> {
             .iter()
             .zip(self.internal_symbols.symbol_definitions.iter())
             .for_each(|(symbol_state, definition)| {
-                if !symbol_state.is_empty() {
-                    if let Some(section_id) = definition.section_id() {
-                        *keep_sections.get_mut(section_id) = true;
-                    }
+                if !symbol_state.is_empty()
+                    && let Some(section_id) = definition.section_id()
+                {
+                    *keep_sections.get_mut(section_id) = true;
                 }
             });
 
@@ -3373,16 +3373,16 @@ impl<'data> PreludeLayoutState<'data> {
         let mut next_output_index = 0;
         let mut output_section_indexes = vec![None; output_sections.num_sections()];
         for event in output_order {
-            if let OrderEvent::Section(id) = event {
-                if *keep_sections.get(id) {
-                    debug_assert!(
-                        output_sections.merge_target(id).is_none(),
-                        "Tried to allocate section header for secondary section {}",
-                        output_sections.section_debug(id)
-                    );
-                    output_section_indexes[id.as_usize()] = Some(next_output_index);
-                    next_output_index += 1;
-                }
+            if let OrderEvent::Section(id) = event
+                && *keep_sections.get(id)
+            {
+                debug_assert!(
+                    output_sections.merge_target(id).is_none(),
+                    "Tried to allocate section header for secondary section {}",
+                    output_sections.section_debug(id)
+                );
+                output_section_indexes[id.as_usize()] = Some(next_output_index);
+                next_output_index += 1;
             };
         }
         output_sections.output_section_indexes = output_section_indexes;
@@ -4578,11 +4578,11 @@ impl<'data> SymbolCopyInfo<'data> {
             return None;
         }
 
-        if let Ok(Some(section)) = object.symbol_section(sym, sym_index) {
-            if !sections[section.0].is_loaded() {
-                // Symbol is in a discarded section.
-                return None;
-            }
+        if let Ok(Some(section)) = object.symbol_section(sym, sym_index)
+            && !sections[section.0].is_loaded()
+        {
+            // Symbol is in a discarded section.
+            return None;
         }
 
         if sym.is_common(e) && symbol_state.is_empty() {
@@ -4718,11 +4718,9 @@ fn process_eh_frame_data<'data, A: Arch>(
                 if rel_offset < next_offset as u64 {
                     let is_pc_begin = (rel_offset as usize - offset) == elf::FDE_PC_BEGIN_OFFSET;
 
-                    if is_pc_begin {
-                        if let Some(index) = rel.symbol(e, false) {
-                            let elf_symbol = object.object.symbol(index)?;
-                            section_index = object.object.symbol_section(elf_symbol, index)?;
-                        }
+                    if is_pc_begin && let Some(index) = rel.symbol(e, false) {
+                        let elf_symbol = object.object.symbol(index)?;
+                        section_index = object.object.symbol_section(elf_symbol, index)?;
                     }
                     rel_end_index = rel_index + 1;
                     rel_iter.next();
@@ -4731,20 +4729,20 @@ fn process_eh_frame_data<'data, A: Arch>(
                 }
             }
 
-            if let Some(section_index) = section_index {
-                if let Some(unloaded) = object.sections[section_index.0].unloaded_mut() {
-                    let frame_index = FrameIndex::from_usize(common.exception_frames.len());
+            if let Some(section_index) = section_index
+                && let Some(unloaded) = object.sections[section_index.0].unloaded_mut()
+            {
+                let frame_index = FrameIndex::from_usize(common.exception_frames.len());
 
-                    // Update our unloaded section to point to our new frame. Our frame will then in
-                    // turn point to whatever the section pointed to before.
-                    let previous_frame_for_section = unloaded.last_frame_index.replace(frame_index);
+                // Update our unloaded section to point to our new frame. Our frame will then in
+                // turn point to whatever the section pointed to before.
+                let previous_frame_for_section = unloaded.last_frame_index.replace(frame_index);
 
-                    common.exception_frames.push(ExceptionFrame {
-                        relocations: &relocations[rel_start_index..rel_end_index],
-                        frame_size: size as u32,
-                        previous_frame_for_section,
-                    });
-                }
+                common.exception_frames.push(ExceptionFrame {
+                    relocations: &relocations[rel_start_index..rel_end_index],
+                    frame_size: size as u32,
+                    previous_frame_for_section,
+                });
             }
         }
         offset = next_offset;
@@ -5109,8 +5107,8 @@ impl Resolution {
         // For most symbols, `raw_value` won't be zero, so we can save ourselves from looking up the
         // section to see if it's a string-merge section. For string-merge symbols with names,
         // `raw_value` will have already been computed, so we can avoid computing it again.
-        if self.raw_value == 0 {
-            if let Some(r) = get_merged_string_output_address(
+        if self.raw_value == 0
+            && let Some(r) = get_merged_string_output_address(
                 symbol_index,
                 addend,
                 object_layout.object,
@@ -5118,12 +5116,12 @@ impl Resolution {
                 merged_strings,
                 merged_string_start_addresses,
                 false,
-            )? {
-                if self.raw_value != 0 {
-                    bail!("Merged string resolution has value 0x{}", self.raw_value);
-                }
-                return Ok(r);
+            )?
+        {
+            if self.raw_value != 0 {
+                bail!("Merged string resolution has value 0x{}", self.raw_value);
             }
+            return Ok(r);
         }
         Ok(self.raw_value.wrapping_add(addend as u64))
     }
@@ -5473,14 +5471,14 @@ impl<'data> DynamicLayoutState<'data> {
         counts: &mut NonAddressableCounts,
     ) -> Result {
         self.non_addressable_indexes = *indexes;
-        if let Some(info) = self.verneed_info.as_ref() {
-            if info.version_count > 0 {
-                counts.verneed_count += 1;
-                indexes.gnu_version_r_index = indexes
-                    .gnu_version_r_index
-                    .checked_add(info.version_count)
-                    .context("Symbol versions overflowed 2**16")?;
-            }
+        if let Some(info) = self.verneed_info.as_ref()
+            && info.version_count > 0
+        {
+            counts.verneed_count += 1;
+            indexes.gnu_version_r_index = indexes
+                .gnu_version_r_index
+                .checked_add(info.version_count)
+                .context("Symbol versions overflowed 2**16")?;
         }
         Ok(())
     }
