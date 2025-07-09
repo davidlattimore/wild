@@ -73,7 +73,7 @@ strum_macros = "0.27.0"
 symbolic-common = "12.0.0"
 symbolic-demangle = "12.0.0"
 tempfile = "3.0.2"
-toml = "0.8.0"
+toml = "0.9.0"
 tracing = "0.1.35"
 tracing-subscriber = { version = "0.3.16", default-features = false, features = [
     "env-filter",
