@@ -97,7 +97,7 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
     /// want to start decoding from the start of the function. For fixed size instructions, it
     /// should be possible to start at or just prior to the start of `range`.
     fn decode_instructions_in_range(
-        section_bytes: &[u8],
+        section_bytes: &'_ [u8],
         section_address: u64,
         function_offset_in_section: u64,
         range: Range<u64>,
