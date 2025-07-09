@@ -634,6 +634,12 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.allow_shlib_undefined = true;
         } else if long_arg_eq("no-allow-shlib-undefined") {
             args.allow_shlib_undefined = false;
+        } else if let Some(rest) = get_option_value("unresolved-symbols") {
+            match rest.as_str() {
+                "report-all" | "ignore-in-shared-libs" => args.no_undefined = true,
+                "ignore-all" | "ignore-in-object-files" => args.no_undefined = false,
+                _ => bail!("Invalid unresolved-symbols value {rest}"),
+            }
         } else if long_arg_eq("no-undefined") {
             args.no_undefined = true;
         } else if let Some(rest) = long_arg_split_prefix("undefined=") {
