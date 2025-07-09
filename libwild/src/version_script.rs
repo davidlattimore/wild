@@ -4,6 +4,7 @@
 //! generally passed via the --version-script flag instead. They can also sometimes be quite large.
 //! For this reason, we have a separate parser for them.
 
+use crate::bail;
 use crate::error;
 use crate::error::Result;
 use crate::hash::PassThroughHasher;
@@ -12,6 +13,7 @@ use crate::input_data::VersionScriptData;
 use crate::linker_script::skip_comments_and_whitespace;
 use crate::symbol::UnversionedSymbolName;
 use glob::Pattern;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use symbolic_demangle::Demangle;
 use symbolic_demangle::DemangleOptions;
@@ -45,6 +47,7 @@ pub(crate) struct Version<'data> {
 #[derive(Default)]
 pub(crate) struct VersionScript<'data> {
     versions: Vec<Version<'data>>,
+    version_name_mapping: HashMap<&'data [u8], usize>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -124,6 +127,7 @@ impl<'data> BasicMatchRules<'data> {
     }
 }
 
+#[derive(Debug)]
 enum VersionRuleSection {
     Global,
     Local,
@@ -279,6 +283,7 @@ fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<Vers
                 version_body,
                 ..Default::default()
             }],
+            version_name_mapping: HashMap::new(),
         });
     }
 
@@ -324,6 +329,9 @@ fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<Vers
             parent_index,
             version_body,
         });
+        version_script
+            .version_name_mapping
+            .insert(name, version_script.versions.len() - 1);
     }
 
     Ok(version_script)
@@ -366,15 +374,28 @@ impl<'data> VersionScript<'data> {
     pub(crate) fn version_for_symbol(
         &self,
         name: &PreHashed<UnversionedSymbolName>,
-    ) -> Option<u16> {
-        self.find_match(name).and_then(|(number, _)| {
+        version_name: Option<&[u8]>,
+    ) -> Result<Option<u16>> {
+        let name_bytes = name.bytes();
+        if let Some(version_name) = version_name {
+            if let Some(&number) = self.version_name_mapping.get(version_name) {
+                return Ok(Some(number as u16 + object::elf::VER_NDX_GLOBAL));
+            }
+            bail!(
+                "Symbol {} has undefined version {}",
+                String::from_utf8_lossy(name_bytes),
+                String::from_utf8_lossy(version_name),
+            );
+        }
+
+        Ok(self.find_match(name).and_then(|(number, _)| {
             if number == 0 {
                 // Ignore the implicit version!
                 None
             } else {
                 Some(number as u16 + object::elf::VER_NDX_GLOBAL)
             }
-        })
+        }))
     }
 }
 
