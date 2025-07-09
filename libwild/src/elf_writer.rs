@@ -19,6 +19,7 @@ use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::GNU_NOTE_NAME;
 use crate::elf::GnuHashHeader;
 use crate::elf::ProgramHeader;
+use crate::elf::RelocationCache;
 use crate::elf::SectionHeader;
 use crate::elf::SymtabEntry;
 use crate::elf::Verdaux;
@@ -104,7 +105,7 @@ use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::from_bytes_mut;
-use object::read::elf::Rela;
+use object::read::elf::Crel;
 use object::read::elf::Sym as _;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelBridge;
@@ -1300,20 +1301,22 @@ fn apply_relocations<A: Arch>(
     let section_flags = SectionFlags::from_header(object_section);
     let mut modifier = RelocationModifier::Normal;
     let relocations = object.relocations(section.index)?;
+    let mut relocation_cache = RelocationCache::from_relocations(relocations.clone());
+    let relocations = relocations.into_iter();
     layout
         .relocation_statistics
         .get(section.part_id.output_section_id())
         .fetch_add(relocations.len() as u64, Relaxed);
-    for (i, rel) in relocations.iter().enumerate() {
+    for (i, rel) in relocations.enumerate() {
         if modifier == RelocationModifier::SkipNextRelocation {
             modifier = RelocationModifier::Normal;
             continue;
         }
-        let offset_in_section = rel.r_offset.get(LittleEndian);
+        let offset_in_section = rel.r_offset;
         modifier = apply_relocation::<A>(
             object,
             offset_in_section,
-            rel,
+            &rel,
             SectionInfo {
                 section_address,
                 is_writable: section.is_writable,
@@ -1323,13 +1326,13 @@ fn apply_relocations<A: Arch>(
             out,
             table_writer,
             trace,
-            relocations,
+            &mut relocation_cache,
             i,
         )
         .with_context(|| {
             format!(
                 "Failed to apply {} at offset 0x{offset_in_section:x}",
-                display_relocation::<A>(object, rel, layout)
+                display_relocation::<A>(object, &rel, layout)
             )
         })?;
     }
@@ -1359,26 +1362,28 @@ fn apply_debug_relocations<A: Arch>(
         };
 
     let relocations = object.relocations(section.index)?;
+    let mut relocation_cache = RelocationCache::from_relocations(relocations.clone());
+    let relocations = relocations.into_iter();
     layout
         .relocation_statistics
         .get(section.part_id.output_section_id())
         .fetch_add(relocations.len() as u64, Relaxed);
-    for (i, rel) in relocations.iter().enumerate() {
-        let offset_in_section = rel.r_offset.get(LittleEndian);
+    for (i, rel) in relocations.enumerate() {
+        let offset_in_section = rel.r_offset;
         apply_debug_relocation::<A>(
             object,
             offset_in_section,
-            rel,
+            &rel,
             layout,
             tombstone_value,
             out,
-            relocations,
+            &mut relocation_cache,
             i,
         )
         .with_context(|| {
             format!(
                 "Failed to apply {} at offset 0x{offset_in_section:x}",
-                display_relocation::<A>(object, rel, layout)
+                display_relocation::<A>(object, &rel, layout)
             )
         })?;
     }
@@ -1397,10 +1402,8 @@ fn write_eh_frame_data<A: Arch>(
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
     let e = LittleEndian;
     let section_flags = SectionFlags::from_header(eh_frame_section);
-    let mut relocations = object
-        .relocations(eh_frame_section_index)?
-        .iter()
-        .peekable();
+    let relocations = object.relocations(eh_frame_section_index)?;
+    let mut relocations = relocations.into_iter().peekable();
     let mut input_pos = 0;
     let mut output_pos = 0;
     let frame_info_ptr_base = table_writer.eh_frame_start_address;
@@ -1427,12 +1430,12 @@ fn write_eh_frame_data<A: Arch>(
         } else {
             // This is an FDE
             if let Some(rel) = relocations.peek() {
-                let rel_offset = rel.r_offset.get(e);
+                let rel_offset = rel.r_offset;
                 if rel_offset < next_input_pos as u64 {
                     let is_pc_begin = (rel_offset as usize - input_pos) == elf::FDE_PC_BEGIN_OFFSET;
 
                     if is_pc_begin {
-                        let Some(index) = rel.symbol(e, false) else {
+                        let Some(index) = rel.symbol() else {
                             bail!("Unexpected absolute relocation in .eh_frame pc-begin");
                         };
                         let elf_symbol = &object.object.symbol(index)?;
@@ -1442,7 +1445,7 @@ fn write_eh_frame_data<A: Arch>(
                             bail!(".eh_frame pc-begin refers to symbol that's not defined in file");
                         };
                         let offset_in_section =
-                            (elf_symbol.st_value(e) as i64 + rel.r_addend.get(e)) as u64;
+                            (elf_symbol.st_value(e) as i64 + rel.r_addend) as u64;
                         if let Some(section_address) =
                             object.section_resolutions[section_index.0].address()
                         {
@@ -1494,8 +1497,10 @@ fn write_eh_frame_data<A: Arch>(
             if let Some(output_cie_offset) = output_cie_offset {
                 entry_out[4..8].copy_from_slice(&output_cie_offset.to_le_bytes());
             }
+            let mut relocation_cache =
+                RelocationCache::from_relocations(elf::RelocationList::Empty);
             while let Some(rel) = relocations.peek() {
-                let rel_offset = rel.r_offset.get(e);
+                let rel_offset = rel.r_offset;
                 if rel_offset >= next_input_pos as u64 {
                     // This relocation belongs to the next entry.
                     break;
@@ -1513,7 +1518,7 @@ fn write_eh_frame_data<A: Arch>(
                     entry_out,
                     table_writer,
                     trace,
-                    &[],
+                    &mut relocation_cache,
                     0,
                 )
                 .with_context(|| {
@@ -1528,8 +1533,7 @@ fn write_eh_frame_data<A: Arch>(
         } else {
             // We're ignoring this entry, skip any relocations for it.
             while let Some(rel) = relocations.peek() {
-                let rel_offset = rel.r_offset.get(e);
-                if rel_offset < next_input_pos as u64 {
+                if rel.r_offset < next_input_pos as u64 {
                     relocations.next();
                 } else {
                     break;
@@ -1556,7 +1560,7 @@ fn write_eh_frame_data<A: Arch>(
 
 fn display_relocation<'a, A: Arch>(
     object: &'a ObjectLayout,
-    rel: &'a elf::Rela,
+    rel: &'a Crel,
     layout: &'a Layout,
 ) -> DisplayRelocation<'a, A> {
     DisplayRelocation::<'a, A> {
@@ -1568,7 +1572,7 @@ fn display_relocation<'a, A: Arch>(
 }
 
 struct DisplayRelocation<'a, A: Arch> {
-    rel: &'a elf::Rela,
+    rel: &'a Crel,
     symbol_db: &'a SymbolDb<'a>,
     object: &'a ObjectLayout<'a>,
     phantom: PhantomData<A>,
@@ -1576,13 +1580,12 @@ struct DisplayRelocation<'a, A: Arch> {
 
 impl<A: Arch> Display for DisplayRelocation<'_, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let e = LittleEndian;
         write!(
             f,
             "relocation of type {} to ",
-            A::rel_type_to_string(self.rel.r_type(e, false))
+            A::rel_type_to_string(self.rel.r_type)
         )?;
-        match self.rel.symbol(e, false) {
+        match self.rel.symbol() {
             None => write!(f, "absolute")?,
             Some(local_symbol_index) => {
                 let symbol_id = self.object.symbol_id_range.input_to_id(local_symbol_index);
@@ -1601,13 +1604,11 @@ struct SectionInfo {
 }
 
 fn get_resolution(
-    rel: &elf::Rela,
+    rel: &Crel,
     object_layout: &ObjectLayout,
     layout: &Layout,
 ) -> Result<(Resolution, SymbolIndex, SymbolId)> {
-    let symbol_index = rel
-        .symbol(LittleEndian, false)
-        .context("Unsupported absolute relocation")?;
+    let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
     let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
     let sym = object_layout.object.symbol(symbol_index)?;
     let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
@@ -1722,29 +1723,28 @@ fn adjust_relocation_based_on_value(
 #[inline(always)]
 fn get_pair_subtraction_relocation_value<'a, A: Arch>(
     object_layout: &ObjectLayout,
-    rel: &elf::Rela,
+    rel: &Crel,
     layout: &Layout,
     resolution: Resolution,
     symbol_index: SymbolIndex,
     addend: i64,
-    mut relocations_to_search: impl Iterator<Item = &'a elf::Rela>,
+    mut relocations_to_search: impl Iterator<Item = &'a Crel>,
 ) -> Result<u64> {
-    let e = LittleEndian;
     let set_rel = relocations_to_search
         .next()
         .with_context(|| "Missing previous relocation".to_string())?;
     ensure!(
-        set_rel.r_offset(e) == rel.r_offset(e),
+        set_rel.r_offset == rel.r_offset,
         "R_RISCV_SET_ULEB128 relocation must have equal offset"
     );
     ensure!(
-        set_rel.r_type(LittleEndian, false) == object::elf::R_RISCV_SET_ULEB128,
+        set_rel.r_type == object::elf::R_RISCV_SET_ULEB128,
         "R_RISCV_SET_ULEB128 must be the previous relocation"
     );
     let (set_resolution, set_symbol_index, _) = get_resolution(set_rel, object_layout, layout)?;
 
     let set_resolution_val = set_resolution.value_with_addend(
-        set_rel.r_addend.get(e),
+        set_rel.r_addend,
         set_symbol_index,
         object_layout,
         &layout.merged_strings,
@@ -1767,13 +1767,13 @@ fn get_pair_subtraction_relocation_value<'a, A: Arch>(
 fn apply_relocation<A: Arch>(
     object_layout: &ObjectLayout,
     mut offset_in_section: u64,
-    rel: &elf::Rela,
+    rel: &Crel,
     section_info: SectionInfo,
     layout: &Layout,
     out: &mut [u8],
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
-    relocations: &[elf::Rela],
+    relocation_cache: &mut RelocationCache,
     relocation_index: usize,
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
@@ -1785,15 +1785,14 @@ fn apply_relocation<A: Arch>(
     )
     .entered();
 
-    let e = LittleEndian;
-    let r_type = rel.r_type(e, false);
-    let mut addend = rel.r_addend.get(e);
+    let r_type = rel.r_type;
+    let mut addend = rel.r_addend;
 
     match A::relocation_from_raw(r_type)?.kind {
         RelocationKind::None => return Ok(RelocationModifier::Normal),
         RelocationKind::Alignment => {
             let addend = addend as u64;
-            let address = section_address + rel.r_offset(e);
+            let address = section_address + rel.r_offset;
             ensure!(
                 addend.is_power_of_two(),
                 "A power of 2 expected for Alignment relocation: {}",
@@ -1895,6 +1894,7 @@ fn apply_relocation<A: Arch>(
                 addend == 0,
                 "Unexpected added for R_RISCV_PCREL_LO12 relocation"
             );
+            let relocations = relocation_cache.get_relocations();
             let mut relocations_to_search = relocations[..relocation_index]
                 .iter()
                 .rev()
@@ -1911,15 +1911,15 @@ fn apply_relocation<A: Arch>(
             // The High-part relocation is typically just before us.
             let hi_rel = relocations_to_search
                 .find(|r| {
-                    r.r_offset(e) == hi_offset_in_section
+                    r.r_offset == hi_offset_in_section
                         // RELAX relocations have the same offset as the HIGH part relocation!
-                        && r.r_type(e, false) != object::elf::R_RISCV_RELAX
+                        && r.r_type != object::elf::R_RISCV_RELAX
                 })
                 .with_context(|| {
                     "Missing High relocation connected with R_RISCV_PCREL_LO12".to_string()
                 })?;
-            let hi_rel_info = A::relocation_from_raw(hi_rel.r_type(LittleEndian, false))?;
-            let addend = hi_rel.r_addend.get(e);
+            let hi_rel_info = A::relocation_from_raw(hi_rel.r_type)?;
+            let addend = hi_rel.r_addend;
             let (resolution, symbol_index, _) = get_resolution(hi_rel, object_layout, layout)
                 .with_context(|| {
                     "Missing High resolution connected to R_RISCV_PCREL_LO12".to_string()
@@ -1970,7 +1970,7 @@ fn apply_relocation<A: Arch>(
             symbol_index,
             addend,
             // It must be the previous relocation
-            iter::once(&relocations[relocation_index - 1]),
+            iter::once(&relocation_cache.get_relocations()[relocation_index - 1]),
         )?,
         RelocationKind::GotRelative => resolution
             .got_address()?
@@ -2148,22 +2148,19 @@ fn apply_relocation<A: Arch>(
 fn apply_debug_relocation<A: Arch>(
     object_layout: &ObjectLayout,
     offset_in_section: u64,
-    rel: &elf::Rela,
+    rel: &Crel,
     layout: &Layout,
     section_tombstone_value: u64,
     out: &mut [u8],
-    relocations: &[elf::Rela],
+    relocation_cache: &mut RelocationCache,
     relocation_index: usize,
 ) -> Result<()> {
-    let e = LittleEndian;
-    let symbol_index = rel
-        .symbol(e, false)
-        .context("Unsupported absolute relocation")?;
+    let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
     let sym = object_layout.object.symbol(symbol_index)?;
     let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
 
-    let addend = rel.r_addend.get(e);
-    let r_type = rel.r_type(e, false);
+    let addend = rel.r_addend;
+    let r_type = rel.r_type;
     let rel_info = A::relocation_from_raw(r_type)?;
 
     let resolution = layout
@@ -2218,7 +2215,7 @@ fn apply_debug_relocation<A: Arch>(
                 symbol_index,
                 addend,
                 // Must be the previous relocation.
-                iter::once(&relocations[relocation_index - 1]),
+                iter::once(&relocation_cache.get_relocations()[relocation_index - 1]),
             )?,
             // Skip R_RISCV_SET_ULEB128
             RelocationKind::Relative if rel_info.size == RelocationSize::ByteSize(0) => 0,
