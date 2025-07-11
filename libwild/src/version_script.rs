@@ -48,7 +48,7 @@ pub(crate) struct VersionScript<'data> {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-enum SymbolMatcher<'data> {
+pub(crate) enum SymbolMatcher<'data> {
     // Exact match.
     Exact(&'data [u8]),
     // A glob pattern with a '*' token.
@@ -60,15 +60,15 @@ enum SymbolMatcher<'data> {
 }
 
 #[derive(Debug, Default)]
-struct BasicMatchRules<'data> {
-    exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
-    star_globs: Vec<Pattern>,
-    nonstar_globs: Vec<Pattern>,
-    matches_all: bool,
+pub(crate) struct BasicMatchRules<'data> {
+    pub(crate) exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
+    pub(crate) star_globs: Vec<Pattern>,
+    pub(crate) nonstar_globs: Vec<Pattern>,
+    pub(crate) matches_all: bool,
 }
 
 impl<'data> BasicMatchRules<'data> {
-    fn push(&mut self, pattern: SymbolMatcher<'data>) {
+    pub(crate) fn push(&mut self, pattern: SymbolMatcher<'data>) {
         match pattern {
             SymbolMatcher::MatchesAll => self.matches_all = true,
             SymbolMatcher::StarGlob(glob) => self.star_globs.push(glob),
@@ -375,10 +375,6 @@ impl<'data> VersionScript<'data> {
                 Some(number as u16 + object::elf::VER_NDX_GLOBAL)
             }
         })
-    }
-
-    pub(crate) fn contains(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
-        self.find_match(name).is_some()
     }
 }
 

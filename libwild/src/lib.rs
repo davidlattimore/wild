@@ -4,6 +4,7 @@ pub(crate) mod arch;
 pub(crate) mod archive;
 pub mod args;
 pub(crate) mod debug_trace;
+pub(crate) mod def_parser;
 pub(crate) mod diagnostics;
 pub(crate) mod diff;
 pub(crate) mod dwarf_address_info;

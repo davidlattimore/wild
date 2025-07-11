@@ -5,6 +5,7 @@ use crate::InputLinkerScript;
 use crate::args;
 use crate::args::Args;
 use crate::bail;
+use crate::def_parser::ExportSymbolList;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
@@ -79,7 +80,7 @@ pub struct SymbolDb<'data> {
     start_stop_symbol_names: Vec<UnversionedSymbolName<'data>>,
 
     pub(crate) version_script: VersionScript<'data>,
-    pub(crate) explicitly_export_symbols_list: VersionScript<'data>,
+    pub(crate) explicitly_export_symbols_list: ExportSymbolList<'data>,
 
     /// The name of the entry symbol if overridden by a linker script.
     entry: Option<&'data [u8]>,
@@ -286,12 +287,13 @@ impl<'data> SymbolDb<'data> {
             .map(VersionScript::parse)
             .transpose()?
             .unwrap_or_default();
-        let explicitly_export_symbols_list = dbg!(
-            explicitly_export_symbols_list_data
-                .map(VersionScript::parse)
-                .transpose()?
-                .unwrap_or_default()
-        );
+        let mut explicitly_export_symbols_list = explicitly_export_symbols_list_data
+            .map(ExportSymbolList::parse)
+            .transpose()?
+            .unwrap_or_default();
+        for symbol in &args.explicitly_export_dynamic_symbols {
+            explicitly_export_symbols_list.add_symbol(symbol)?;
+        }
 
         let num_symbols_per_group = groups.iter().map(|g| g.num_symbols()).collect_vec();
 
