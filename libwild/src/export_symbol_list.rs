@@ -24,7 +24,7 @@ pub(crate) struct ExportSymbolList<'data> {
 
 impl<'data> ExportSymbolList<'data> {
     pub(crate) fn parse(data: ExportListData<'data>) -> Result<Self> {
-        parse_wip
+        parse_export_symbol_list
             .parse(BStr::new(data.raw))
             .map_err(|err| error!("Failed to parse symbol export list:\n{err}"))
     }
@@ -75,7 +75,9 @@ impl<'data> ExportSymbolList<'data> {
     }
 }
 
-fn parse_wip<'input>(input: &mut &'input BStr) -> winnow::Result<ExportSymbolList<'input>> {
+fn parse_export_symbol_list<'input>(
+    input: &mut &'input BStr,
+) -> winnow::Result<ExportSymbolList<'input>> {
     let mut out = ExportSymbolList::default();
 
     skip_comments_and_whitespace(input)?;
