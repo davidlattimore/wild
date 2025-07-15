@@ -4042,12 +4042,18 @@ impl<'data> ObjectLayoutState<'data> {
                 .context("Cannot parse .riscv.attributes section")?;
         }
 
-        if resources.symbol_db.args.output_kind() == OutputKind::SharedObject
+        let export_all_dynamic = resources.symbol_db.args.output_kind() == OutputKind::SharedObject
             && (!resources.symbol_db.args.exclude_libs || !self.input.has_archive_semantics())
             || resources.symbol_db.args.needs_dynsym()
-                && resources.symbol_db.args.explicitly_export_dynamic
+                && resources.symbol_db.args.explicitly_export_all_dynamic;
+        if export_all_dynamic
+            || resources.symbol_db.args.needs_dynsym()
+                && resources
+                    .symbol_db
+                    .explicitly_explicitly_export_symbol_list_data_list
+                    .enabled()
         {
-            self.load_non_hidden_symbols::<A>(common, resources, queue)?;
+            self.load_non_hidden_symbols::<A>(common, resources, queue, export_all_dynamic)?;
         }
 
         Ok(())
@@ -4494,11 +4500,12 @@ impl<'data> ObjectLayoutState<'data> {
         common: &mut CommonGroupState<'data>,
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
+        export_all_dynamic: bool,
     ) -> Result {
         for (sym_index, sym) in self.object.symbols.enumerate() {
             let symbol_id = self.symbol_id_range().input_to_id(sym_index);
 
-            if !can_export_symbol(sym, symbol_id, resources.symbol_db) {
+            if !can_export_symbol(sym, symbol_id, resources.symbol_db, export_all_dynamic) {
                 continue;
             }
 
@@ -4532,7 +4539,7 @@ impl<'data> ObjectLayoutState<'data> {
         // regular object, then the shared object might send us a request to export the definition
         // provided by the regular object. This isn't always possible, since the symbol might be
         // hidden.
-        if !can_export_symbol(sym, symbol_id, resources.symbol_db) {
+        if !can_export_symbol(sym, symbol_id, resources.symbol_db, true) {
             return Ok(());
         }
 
@@ -4609,6 +4616,7 @@ fn can_export_symbol(
     sym: &crate::elf::SymtabEntry,
     symbol_id: SymbolId,
     symbol_db: &SymbolDb,
+    export_all_dynamic: bool,
 ) -> bool {
     if sym.is_undefined(LittleEndian) || sym.is_local() {
         return false;
@@ -4627,6 +4635,16 @@ fn can_export_symbol(
     let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
 
     if value_flags.is_downgraded_to_local() {
+        return false;
+    }
+
+    if !export_all_dynamic
+        && !&symbol_db
+            .explicitly_explicitly_export_symbol_list_data_list
+            .contains(&UnversionedSymbolName::prehashed(
+                symbol_db.symbol_name(symbol_id).expect("TODO").bytes(),
+            ))
+    {
         return false;
     }
 

@@ -42,13 +42,13 @@ pub(crate) struct Version<'data> {
 }
 
 /// A version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct VersionScript<'data> {
     versions: Vec<Version<'data>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-enum SymbolMatcher<'data> {
+pub(crate) enum SymbolMatcher<'data> {
     // Exact match.
     Exact(&'data [u8]),
     // A glob pattern with a '*' token.
@@ -60,15 +60,15 @@ enum SymbolMatcher<'data> {
 }
 
 #[derive(Debug, Default)]
-struct BasicMatchRules<'data> {
+pub(crate) struct BasicMatchRules<'data> {
     exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
     star_globs: Vec<Pattern>,
     nonstar_globs: Vec<Pattern>,
-    matches_all: bool,
+    pub(crate) matches_all: bool,
 }
 
 impl<'data> BasicMatchRules<'data> {
-    fn push(&mut self, pattern: SymbolMatcher<'data>) {
+    pub(crate) fn push(&mut self, pattern: SymbolMatcher<'data>) {
         match pattern {
             SymbolMatcher::MatchesAll => self.matches_all = true,
             SymbolMatcher::StarGlob(glob) => self.star_globs.push(glob),
@@ -80,7 +80,11 @@ impl<'data> BasicMatchRules<'data> {
     }
 
     #[inline]
-    fn matches_exact(&self, lookup: &mut SymbolLookupNameWrapper, mangled: bool) -> bool {
+    pub(crate) fn matches_exact(
+        &self,
+        lookup: &mut SymbolLookupNameWrapper,
+        mangled: bool,
+    ) -> bool {
         // Early exit before we actually demangle the name.
         if self.exact.is_empty() {
             return false;
@@ -98,7 +102,7 @@ impl<'data> BasicMatchRules<'data> {
     }
 
     #[inline]
-    fn matches_glob(
+    pub(crate) fn matches_glob(
         &self,
         lookup: &mut SymbolLookupNameWrapper,
         non_star: bool,
@@ -130,7 +134,7 @@ enum VersionRuleSection {
 }
 
 #[derive(Debug)]
-enum ParsedSymbolMatcher<'data> {
+pub(crate) enum ParsedSymbolMatcher<'data> {
     Single(SymbolMatcher<'data>),
     CxxMatchers(Vec<SymbolMatcher<'data>>),
 }
@@ -150,14 +154,14 @@ impl<'data> MatchRules<'data> {
     }
 }
 
-struct SymbolLookupNameWrapper<'data> {
+pub(crate) struct SymbolLookupNameWrapper<'data> {
     name: &'data PreHashed<UnversionedSymbolName<'data>>,
     name_string: Option<&'data str>,
     demangled_name: Option<String>,
 }
 
 impl<'data> SymbolLookupNameWrapper<'data> {
-    fn from_name(name: &'data PreHashed<UnversionedSymbolName<'data>>) -> Self {
+    pub(crate) fn from_name(name: &'data PreHashed<UnversionedSymbolName<'data>>) -> Self {
         Self {
             name,
             name_string: None,
@@ -165,7 +169,7 @@ impl<'data> SymbolLookupNameWrapper<'data> {
         }
     }
 
-    fn get_name_string(&mut self) -> &'data str {
+    pub(crate) fn get_name_string(&mut self) -> &'data str {
         self.name_string.get_or_insert_with(|| {
             str::from_utf8(self.name.bytes()).unwrap_or_else(|_| {
                 panic!(
@@ -176,7 +180,7 @@ impl<'data> SymbolLookupNameWrapper<'data> {
         })
     }
 
-    fn get_demangled_name(&mut self) -> &String {
+    pub(crate) fn get_demangled_name(&mut self) -> &String {
         // Extract the name string before the closure to avoid double mutable borrow
         let name_string = self.get_name_string();
         self.demangled_name.get_or_insert_with(|| {
