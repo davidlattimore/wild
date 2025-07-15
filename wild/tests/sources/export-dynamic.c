@@ -53,6 +53,7 @@
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic.DT_RELA*
 //#DiffIgnore:file-header.entry
+//#EnableLinker:lld
 //#RunEnabled:false
 
 void foo(void) {};
