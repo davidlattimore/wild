@@ -13,6 +13,7 @@
 //#DiffIgnore:dynsym.__bss_start.section
 //#DiffIgnore:dynsym._edata.section
 //#DiffIgnore:dynsym._end.section
+//#DiffIgnore:section.got
 //#RunEnabled:false
 
 // Do not export symbols for static executables: #836

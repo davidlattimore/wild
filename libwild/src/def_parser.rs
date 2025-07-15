@@ -201,6 +201,8 @@ fn parse_matcher<'data>(
     // TODO: This is the only significant divergence between `parse_matcher` between this file and version_script.rs
     // Symbols passed to `--export-dynamic-symbol` don't end with `;`
     let token = if from_arg {
+        // TODO: Clippy bug
+        #[allow(clippy::needless_borrow)]
         &input
     } else {
         take_until(1.., b';').parse_next(input)?
