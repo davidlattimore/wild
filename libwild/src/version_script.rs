@@ -23,7 +23,7 @@ use winnow::token::take_until;
 use winnow::token::take_while;
 
 #[derive(Debug, Default)]
-struct MatchRules<'data> {
+pub(crate) struct MatchRules<'data> {
     general: BasicMatchRules<'data>,
     cxx: BasicMatchRules<'data>,
 }
@@ -80,7 +80,11 @@ impl<'data> BasicMatchRules<'data> {
     }
 
     #[inline]
-    fn matches_exact(&self, lookup: &mut SymbolLookupNameWrapper, mangled: bool) -> bool {
+    pub(crate) fn matches_exact(
+        &self,
+        lookup: &mut SymbolLookupNameWrapper,
+        mangled: bool,
+    ) -> bool {
         // Early exit before we actually demangle the name.
         if self.exact.is_empty() {
             return false;
@@ -98,7 +102,7 @@ impl<'data> BasicMatchRules<'data> {
     }
 
     #[inline]
-    fn matches_glob(
+    pub(crate) fn matches_glob(
         &self,
         lookup: &mut SymbolLookupNameWrapper,
         non_star: bool,
@@ -130,7 +134,7 @@ enum VersionRuleSection {
 }
 
 #[derive(Debug)]
-enum ParsedSymbolMatcher<'data> {
+pub(crate) enum ParsedSymbolMatcher<'data> {
     Single(SymbolMatcher<'data>),
     CxxMatchers(Vec<SymbolMatcher<'data>>),
 }
@@ -150,14 +154,14 @@ impl<'data> MatchRules<'data> {
     }
 }
 
-struct SymbolLookupNameWrapper<'data> {
+pub(crate) struct SymbolLookupNameWrapper<'data> {
     name: &'data PreHashed<UnversionedSymbolName<'data>>,
     name_string: Option<&'data str>,
     demangled_name: Option<String>,
 }
 
 impl<'data> SymbolLookupNameWrapper<'data> {
-    fn from_name(name: &'data PreHashed<UnversionedSymbolName<'data>>) -> Self {
+    pub(crate) fn from_name(name: &'data PreHashed<UnversionedSymbolName<'data>>) -> Self {
         Self {
             name,
             name_string: None,
@@ -165,7 +169,7 @@ impl<'data> SymbolLookupNameWrapper<'data> {
         }
     }
 
-    fn get_name_string(&mut self) -> &'data str {
+    pub(crate) fn get_name_string(&mut self) -> &'data str {
         self.name_string.get_or_insert_with(|| {
             str::from_utf8(self.name.bytes()).unwrap_or_else(|_| {
                 panic!(
@@ -176,7 +180,7 @@ impl<'data> SymbolLookupNameWrapper<'data> {
         })
     }
 
-    fn get_demangled_name(&mut self) -> &String {
+    pub(crate) fn get_demangled_name(&mut self) -> &String {
         // Extract the name string before the closure to avoid double mutable borrow
         let name_string = self.get_name_string();
         self.demangled_name.get_or_insert_with(|| {

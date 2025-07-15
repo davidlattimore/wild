@@ -5,11 +5,14 @@
 //#ExpectDynSym:foo
 //#Shared:empty.c
 //#Mode:unspecified
-//#EnableLinker:lld
 //#Cross:false
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
-//#DiffIgnore:section.got
+// TODO: Wild probably should set dynamic linker here
+//#DiffIgnore:section.interp
+//#DiffIgnore:dynsym.__bss_start.section
+//#DiffIgnore:dynsym._edata.section
+//#DiffIgnore:dynsym._end.section
 //#RunEnabled:false
 
 // Do not export symbols for static executables: #836
@@ -24,9 +27,9 @@
 //#ExpectDynSym:bar
 //#ExpectDynSym:baz
 //#Shared:empty.c
-//#Mode:unspecified
-//#EnableLinker:lld
+//#Mode:dynamic
 //#Cross:false
+// We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#RunEnabled:false
 
@@ -35,10 +38,23 @@
 //#ExpectDynSym:foo
 //#ExpectDynSym:baz
 //#Shared:empty.c
-//#Mode:unspecified
-//#EnableLinker:lld
+//#Mode:dynamic
 //#Cross:false
+// We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
+//#RunEnabled:false
+
+//#Config:dynamic-symbols-list
+//#LinkArgs:-z now -shared --dynamic-list ./export-dynamic.def
+//#ExpectDynSym:foo
+//#ExpectDynSym:baz
+//#Shared:empty.c
+//#Mode:dynamic
+//#Cross:false
+// We're linking different .so files, so this is expected.
+//#DiffIgnore:.dynamic.DT_NEEDED
+//#DiffIgnore:.dynamic.DT_RELA*
+//#DiffIgnore:file-header.entry
 //#RunEnabled:false
 // clang-format on
 
@@ -46,4 +62,4 @@ void foo(void) {};
 void bar(void) {};
 void baz(void) {};
 
-void _start() {}
+void _start() { foo(); }

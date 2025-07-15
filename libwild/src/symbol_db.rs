@@ -322,8 +322,13 @@ impl<'data> SymbolDb<'data> {
             })
             .collect_vec();
 
-        let per_group_outputs =
-            read_symbols(&groups, &version_script, &mut per_group_writers, args)?;
+        let per_group_outputs = read_symbols(
+            &groups,
+            &version_script,
+            &mut per_group_writers,
+            args,
+            &explicitly_export_symbols_list,
+        )?;
 
         for writer in per_group_writers {
             symbol_definitions_writer.return_shard(writer.resolutions);
@@ -953,6 +958,7 @@ fn read_symbols<'data>(
     version_script: &VersionScript,
     symbols_out_by_group: &mut [SymbolInfoWriter],
     args: &Args,
+    export_symbol_list: &ExportSymbolList<'data>,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
     let num_buckets = num_symbol_hash_buckets(args);
 
@@ -976,6 +982,7 @@ fn read_symbols<'data>(
                             symbols_out,
                             &mut outputs,
                             args,
+                            export_symbol_list,
                         )
                         .with_context(|| {
                             format!("Failed to load symbols from `{}`", obj.parsed.input)
@@ -1027,6 +1034,7 @@ fn load_symbols_from_file<'data>(
     symbols_out: &mut SymbolInfoWriter,
     outputs: &mut SymbolLoadOutputs<'data>,
     args: &Args,
+    export_symbol_list: &ExportSymbolList<'data>,
 ) -> Result {
     if s.is_dynamic() {
         DynamicObjectSymbolLoader::new(&s.parsed.object)?.load_symbols(
@@ -1040,6 +1048,7 @@ fn load_symbols_from_file<'data>(
             args,
             version_script,
             archive_semantics: s.parsed.input.has_archive_semantics(),
+            export_symbol_list,
         }
         .load_symbols(s.file_id, symbols_out, outputs)
     }
@@ -1167,6 +1176,7 @@ struct RegularObjectSymbolLoader<'a, 'data> {
     args: &'a Args,
     version_script: &'a VersionScript<'a>,
     archive_semantics: bool,
+    export_symbol_list: &'a ExportSymbolList<'a>,
 }
 
 struct DynamicObjectSymbolLoader<'a, 'data> {
@@ -1214,6 +1224,11 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
     fn compute_value_flags(&self, sym: &crate::elf::Symbol) -> ValueFlags {
         let is_undefined = sym.is_undefined(LittleEndian);
 
+        let is_exported = || {
+            let name_bytes = self.object.symbol_name(sym).expect("TODO");
+            let name = UnversionedSymbolName::prehashed(name_bytes);
+            self.export_symbol_list.contains(&name)
+        };
         let non_interposable = sym.st_visibility() != object::elf::STV_DEFAULT
             || sym.is_local()
             || self.args.output_kind().is_static_executable()
@@ -1222,23 +1237,27 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
             || (!is_undefined && (
                 self.args.output_kind().is_executable()
                 || (self.args.exclude_libs && self.archive_semantics)
-                || self.args.b_symbolic == args::BSymbolicKind::All
-                // `-Bsymbolic-functions`
                 || (
-                    self.args.b_symbolic == args::BSymbolicKind::Functions
-                    && sym.st_type() == object::elf::STT_FUNC
+                    self.args.b_symbolic == args::BSymbolicKind::All
+                    // `-Bsymbolic-functions`
+                    || (
+                        self.args.b_symbolic == args::BSymbolicKind::Functions
+                        && sym.st_type() == object::elf::STT_FUNC
+                    )
+                    // `-Bsymbolic-non-weak`
+                    || (
+                        self.args.b_symbolic == args::BSymbolicKind::NonWeak
+                        && sym.st_bind() != object::elf::STB_WEAK
+                    )
+                    // `-Bsymbolic-non-weak-functions`
+                    || (
+                        self.args.b_symbolic == args::BSymbolicKind::NonWeakFunctions
+                        && (sym.st_type() == object::elf::STT_FUNC
+                        && sym.st_bind() != object::elf::STB_WEAK)
+                    )
                 )
-                // `-Bsymbolic-non-weak`
-                || (
-                    self.args.b_symbolic == args::BSymbolicKind::NonWeak
-                    && sym.st_bind() != object::elf::STB_WEAK
-                )
-                // `-Bsymbolic-non-weak-functions`
-                || (
-                    self.args.b_symbolic == args::BSymbolicKind::NonWeakFunctions
-                    && (sym.st_type() == object::elf::STT_FUNC
-                    && sym.st_bind() != object::elf::STB_WEAK)
-                )
+                // Bsymbolic does not affect symbols that are exported
+                && !(self.export_symbol_list.enabled() && is_exported())
             ));
 
         let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {
