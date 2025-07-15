@@ -39,6 +39,7 @@
 //#Cross:false
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
+//#EnableLinker:lld
 //#RunEnabled:false
 
 //#Config:dynamic-symbols-list
