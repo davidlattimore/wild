@@ -1,4 +1,4 @@
-name: external tests
+name: Run external tests
 
 on:
   push:
@@ -16,7 +16,7 @@ env:
 
 jobs:
   external-tests:
-    name: External Tests
+    name: run mold tests
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -30,4 +30,23 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl,riscv64gc-unknown-linux-gnu,riscv64gc-unknown-linux-musl
           components: rustc-codegen-cranelift-preview
-      - run: WILD_TEST_CROSS=aarch64,riscv64 cargo test --features mold_tests
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-externaltests-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+      - run: pip3 install toml
+      - name: Run external tests
+        run: WILD_TEST_CROSS=aarch64,riscv64 WILD_IGNORE_SKIP=all cargo test --features mold_tests 2>&1 | tee "$(pwd)/all_tests_output.txt"
+      - name: Analyze test results
+        run: .github/scripts/analyze_test_results.sh
+      - name: Load skip list
+        run: .github/scripts/load_skip_list.sh
+      - name: Check for regressions
+        run: .github/scripts/check_regressions.sh
+      - name: Identify removable tests
+        run: .github/scripts/identify_removable_tests.sh
