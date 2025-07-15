@@ -1226,7 +1226,7 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
     fn compute_value_flags(&self, sym: &crate::elf::Symbol) -> ValueFlags {
         let is_undefined = sym.is_undefined(LittleEndian);
 
-        let is_exported = || {
+        let symbol_is_exported = || {
             let name_bytes = self.object.symbol_name(sym).expect("TODO");
             let name = UnversionedSymbolName::prehashed(name_bytes);
             self.export_symbol_list.contains(&name)
@@ -1259,7 +1259,7 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
                     )
                 )
                 // Bsymbolic does not affect symbols that are exported
-                && !(self.export_symbol_list.enabled() && is_exported())
+                && !(self.export_symbol_list.enabled() && symbol_is_exported())
             ));
 
         let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {

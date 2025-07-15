@@ -82,18 +82,13 @@ fn parse_export_symbol_list<'input>(
 
     skip_comments_and_whitespace(input)?;
 
-    if input.starts_with(b"{") {
-        '{'.parse_next(input)?;
-    }
+    '{'.parse_next(input)?;
 
     loop {
         skip_comments_and_whitespace(input)?;
 
-        if input.starts_with(b"}") {
-            '}'.parse_next(input)?;
-            if input.starts_with(b";") {
-                ';'.parse_next(input)?;
-            }
+        if input.starts_with(b"};") {
+            "};".parse_next(input)?;
             skip_comments_and_whitespace(input)?;
             break;
         }
@@ -221,3 +216,5 @@ impl std::fmt::Display for ExportSymbolListError {
         }
     }
 }
+
+// TODO: UTs
