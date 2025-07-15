@@ -4048,7 +4048,10 @@ impl<'data> ObjectLayoutState<'data> {
                 && resources.symbol_db.args.explicitly_export_all_dynamic;
         if export_all_dynamic
             || resources.symbol_db.args.needs_dynsym()
-                && resources.symbol_db.explicitly_export_symbols_list.enabled()
+                && resources
+                    .symbol_db
+                    .explicitly_explicitly_export_symbol_list_data_list
+                    .enabled()
         {
             self.load_non_hidden_symbols::<A>(common, resources, queue, export_all_dynamic)?;
         }
@@ -4637,7 +4640,7 @@ fn can_export_symbol(
 
     if !export_all_dynamic
         && !&symbol_db
-            .explicitly_export_symbols_list
+            .explicitly_explicitly_export_symbol_list_data_list
             .contains(&UnversionedSymbolName::prehashed(
                 symbol_db.symbol_name(symbol_id).expect("TODO").bytes(),
             ))

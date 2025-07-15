@@ -40,7 +40,8 @@ pub(crate) struct InputData<'data> {
 
     pub(crate) version_script_data: Option<VersionScriptData<'data>>,
     pub(crate) linker_scripts: Vec<InputLinkerScript<'data>>,
-    pub(crate) explicitly_export_symbols_list_data: Option<VersionScriptData<'data>>,
+    pub(crate) explicitly_explicitly_export_symbol_list_data_list_data:
+        Option<ExportListData<'data>>,
 
     /// Which files we loaded. The keys aren't relevant anymore, but we keep them to avoid
     /// regenerating the map.
@@ -56,6 +57,11 @@ pub(crate) struct InputBytes<'data> {
 
 #[derive(Clone, Copy)]
 pub(crate) struct VersionScriptData<'data> {
+    pub(crate) raw: &'data [u8],
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ExportListData<'data> {
     pub(crate) raw: &'data [u8],
 }
 
@@ -192,10 +198,10 @@ impl<'data> InputData<'data> {
             .as_ref()
             .map(|path| read_version_script(path, inputs_arena))
             .transpose()?;
-        let explicitly_export_symbols_list_data = args
+        let explicitly_explicitly_export_symbol_list_data_list_data = args
             .explicitly_export_dynamic_symbols_list_path
             .as_ref()
-            .map(|path| read_version_script(path, inputs_arena))
+            .map(|path| read_export_list(path, inputs_arena))
             .transpose()?;
 
         let (work_sender, work_recv) = crossbeam_channel::unbounded();
@@ -244,7 +250,7 @@ impl<'data> InputData<'data> {
             inputs: Vec::new(),
             linker_scripts: Vec::new(),
             version_script_data,
-            explicitly_export_symbols_list_data,
+            explicitly_explicitly_export_symbol_list_data_list_data,
             path_to_load_index: temporary_state.path_to_load_index,
         };
 
@@ -618,6 +624,23 @@ fn read_version_script<'data>(
     });
 
     Ok(VersionScriptData { raw: file.data() })
+}
+
+fn read_export_list<'data>(
+    path: &Path,
+    inputs_arena: &'data Arena<InputFile>,
+) -> Result<ExportListData<'data>> {
+    let data = FileData::new(path, false)?;
+
+    let file = inputs_arena.alloc(InputFile {
+        filename: path.to_owned(),
+        original_filename: path.to_owned(),
+        kind: FileKind::Text,
+        modifiers: Default::default(),
+        data: Some(data),
+    });
+
+    Ok(ExportListData { raw: file.data() })
 }
 
 impl Input {

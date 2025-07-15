@@ -4,13 +4,13 @@ pub(crate) mod arch;
 pub(crate) mod archive;
 pub mod args;
 pub(crate) mod debug_trace;
-pub(crate) mod def_parser;
 pub(crate) mod diagnostics;
 pub(crate) mod diff;
 pub(crate) mod dwarf_address_info;
 pub(crate) mod elf;
 pub(crate) mod elf_writer;
 pub mod error;
+pub(crate) mod export_symbol_list;
 pub(crate) mod file_kind;
 pub(crate) mod file_writer;
 pub(crate) mod fs;
@@ -203,7 +203,7 @@ impl Linker {
             input_data.version_script_data,
             args,
             &input_data.linker_scripts,
-            input_data.explicitly_export_symbols_list_data,
+            input_data.explicitly_explicitly_export_symbol_list_data_list_data,
         )?;
 
         let resolved = resolution::resolve_symbols_and_sections(

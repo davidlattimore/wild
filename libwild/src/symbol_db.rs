@@ -5,10 +5,10 @@ use crate::InputLinkerScript;
 use crate::args;
 use crate::args::Args;
 use crate::bail;
-use crate::def_parser::ExportSymbolList;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
+use crate::export_symbol_list::ExportSymbolList;
 use crate::grouping::Group;
 use crate::grouping::SequencedInput;
 use crate::grouping::SequencedInputObject;
@@ -16,6 +16,7 @@ use crate::grouping::SequencedLinkerScript;
 use crate::hash::PassThroughHashMap;
 use crate::hash::PreHashed;
 use crate::hash::hash_bytes;
+use crate::input_data::ExportListData;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::input_data::VersionScriptData;
@@ -80,7 +81,7 @@ pub struct SymbolDb<'data> {
     start_stop_symbol_names: Vec<UnversionedSymbolName<'data>>,
 
     pub(crate) version_script: VersionScript<'data>,
-    pub(crate) explicitly_export_symbols_list: ExportSymbolList<'data>,
+    pub(crate) explicitly_explicitly_export_symbol_list_data_list: ExportSymbolList<'data>,
 
     /// The name of the entry symbol if overridden by a linker script.
     entry: Option<&'data [u8]>,
@@ -281,18 +282,19 @@ impl<'data> SymbolDb<'data> {
         version_script_data: Option<VersionScriptData<'data>>,
         args: &'data Args,
         linker_scripts: &[InputLinkerScript<'data>],
-        explicitly_export_symbols_list_data: Option<VersionScriptData<'data>>,
+        explicitly_explicitly_export_symbol_list_data_list_data: Option<ExportListData<'data>>,
     ) -> Result<Self> {
         let version_script = version_script_data
             .map(VersionScript::parse)
             .transpose()?
             .unwrap_or_default();
-        let mut explicitly_export_symbols_list = explicitly_export_symbols_list_data
-            .map(ExportSymbolList::parse)
-            .transpose()?
-            .unwrap_or_default();
+        let mut explicitly_explicitly_export_symbol_list_data_list =
+            explicitly_explicitly_export_symbol_list_data_list_data
+                .map(ExportSymbolList::parse)
+                .transpose()?
+                .unwrap_or_default();
         for symbol in &args.explicitly_export_dynamic_symbols {
-            explicitly_export_symbols_list.add_symbol(symbol)?;
+            explicitly_explicitly_export_symbol_list_data_list.add_symbol(symbol)?;
         }
 
         let num_symbols_per_group = groups.iter().map(|g| g.num_symbols()).collect_vec();
@@ -327,7 +329,7 @@ impl<'data> SymbolDb<'data> {
             &version_script,
             &mut per_group_writers,
             args,
-            &explicitly_export_symbols_list,
+            &explicitly_explicitly_export_symbol_list_data_list,
         )?;
 
         for writer in per_group_writers {
@@ -361,7 +363,7 @@ impl<'data> SymbolDb<'data> {
             start_stop_symbol_names: Default::default(),
             symbol_value_flags,
             version_script,
-            explicitly_export_symbols_list,
+            explicitly_explicitly_export_symbol_list_data_list,
             entry: None,
         };
 

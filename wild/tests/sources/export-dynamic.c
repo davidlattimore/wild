@@ -1,5 +1,5 @@
 // clang-format off
-// Adding shared libraries should yield dynamic executables: #836
+// Adding shared libraries should result in dynamic executables when unspecified: #836
 //#Config:shared-input
 //#LinkArgs:-z now --export-dynamic
 //#ExpectDynSym:foo
@@ -9,11 +9,7 @@
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 // TODO: Wild probably should set dynamic linker here
-//#DiffIgnore:section.interp
-//#DiffIgnore:dynsym.__bss_start.section
-//#DiffIgnore:dynsym._edata.section
-//#DiffIgnore:dynsym._end.section
-//#DiffIgnore:section.got
+//#EnableLinker:lld
 //#RunEnabled:false
 
 // Do not export symbols for static executables: #836

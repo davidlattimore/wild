@@ -23,7 +23,7 @@ use winnow::token::take_until;
 use winnow::token::take_while;
 
 #[derive(Debug, Default)]
-pub(crate) struct MatchRules<'data> {
+struct MatchRules<'data> {
     general: BasicMatchRules<'data>,
     cxx: BasicMatchRules<'data>,
 }
@@ -61,9 +61,9 @@ pub(crate) enum SymbolMatcher<'data> {
 
 #[derive(Debug, Default)]
 pub(crate) struct BasicMatchRules<'data> {
-    pub(crate) exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
-    pub(crate) star_globs: Vec<Pattern>,
-    pub(crate) nonstar_globs: Vec<Pattern>,
+    exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
+    star_globs: Vec<Pattern>,
+    nonstar_globs: Vec<Pattern>,
     pub(crate) matches_all: bool,
 }
 
