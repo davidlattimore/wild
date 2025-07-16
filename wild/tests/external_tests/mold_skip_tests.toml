@@ -226,6 +226,25 @@ tests = [
   "help.sh",
   "mold-wrapper.sh",
   "mold-wrapper2.sh",
+
+  # Unsupported architectures
+  "arch-arm-abs-error.sh",
+  "arch-arm-exidx-sentinel.sh",
+  "arch-arm-range-extension-thunk-disassembly.sh",
+  "arch-arm-range-extension-thunk.sh",
+  "arch-arm-target1.sh",
+  "arch-arm-thm-jump8.sh",
+  "arch-arm-thm-jump19.sh",
+  "arch-armeb-be32.sh",
+  "arch-i686-tls-module-base.sh",
+  "arch-i686-tlsdesc.sh",
+  "arch-loongarch64-mcmodel-extreme.sh",
+  "arch-loongarch64-relax-call36.sh",
+  "arch-loongarch64-relax-got-load.sh",
+  "arch-loongarch64-relax-pcala-addi.sh",
+  "arch-loongarch64-relax-tlsdesc.sh",
+  "arch-ppc64le-save-restore-gprs.sh",
+  "arch-s390x-got.sh",
 ]
 
 [skipped_groups.misc]
