@@ -416,14 +416,14 @@ impl<'out> VersionWriter<'out> {
     }
 
     fn check_exhausted(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
-        if let Some(versym) = self.versym.as_ref() {
-            if !versym.is_empty() {
-                return Err(excessive_allocation(
-                    ".gnu.version",
-                    versym.len() as u64 * elf::GNU_VERSION_ENTRY_SIZE,
-                    *mem_sizes.get(part_id::GNU_VERSION),
-                ));
-            }
+        if let Some(versym) = self.versym.as_ref()
+            && !versym.is_empty()
+        {
+            return Err(excessive_allocation(
+                ".gnu.version",
+                versym.len() as u64 * elf::GNU_VERSION_ENTRY_SIZE,
+                *mem_sizes.get(part_id::GNU_VERSION),
+            ));
         }
         if !self.version_r.is_empty() {
             bail!(
@@ -1448,44 +1448,41 @@ fn write_eh_frame_data<A: Arch>(
                             (elf_symbol.st_value(e) as i64 + rel.r_addend) as u64;
                         if let Some(section_address) =
                             object.section_resolutions[section_index.0].address()
-                        {
-                            if object
+                            && object
                                 .object
                                 .section(section_index)?
                                 .sh_size
                                 .get(LittleEndian)
                                 != 0
-                            {
-                                should_keep = true;
-                                let cie_pointer_pos = input_pos as u32 + 4;
-                                let input_cie_pos = cie_pointer_pos
-                                    .checked_sub(prefix.cie_id)
-                                    .with_context(|| {
-                                        format!(
-                                            "CIE pointer is {}, but we're at offset {}",
-                                            prefix.cie_id, cie_pointer_pos
-                                        )
-                                    })?;
+                        {
+                            should_keep = true;
+                            let cie_pointer_pos = input_pos as u32 + 4;
+                            let input_cie_pos = cie_pointer_pos
+                                .checked_sub(prefix.cie_id)
+                                .with_context(|| {
+                                    format!(
+                                        "CIE pointer is {}, but we're at offset {}",
+                                        prefix.cie_id, cie_pointer_pos
+                                    )
+                                })?;
 
-                                if let Some(hdr_out) = table_writer.take_eh_frame_hdr_entry() {
-                                    let frame_ptr = (section_address + offset_in_section) as i64
-                                        - eh_frame_hdr_address as i64;
-                                    let frame_info_ptr = (frame_info_ptr_base + output_pos as u64)
-                                        as i64
-                                        - eh_frame_hdr_address as i64;
-                                    *hdr_out = EhFrameHdrEntry {
-                                        frame_ptr: i32::try_from(frame_ptr)
-                                            .context("32 bit overflow in frame_ptr")?,
-                                        frame_info_ptr: i32::try_from(frame_info_ptr).context(
-                                            "32 bit overflow when computing frame_info_ptr",
-                                        )?,
-                                    };
-                                }
-                                // TODO: Experiment with skipping this lookup if the `input_cie_pos`
-                                // is the same as the previous entry.
-                                let output_cie_pos = cies_offset_conversion.get(&input_cie_pos).with_context(|| format!("FDE referenced CIE at {input_cie_pos}, but no CIE at that position"))?;
-                                output_cie_offset = Some(output_pos as u32 + 4 - *output_cie_pos);
+                            if let Some(hdr_out) = table_writer.take_eh_frame_hdr_entry() {
+                                let frame_ptr = (section_address + offset_in_section) as i64
+                                    - eh_frame_hdr_address as i64;
+                                let frame_info_ptr = (frame_info_ptr_base + output_pos as u64)
+                                    as i64
+                                    - eh_frame_hdr_address as i64;
+                                *hdr_out = EhFrameHdrEntry {
+                                    frame_ptr: i32::try_from(frame_ptr)
+                                        .context("32 bit overflow in frame_ptr")?,
+                                    frame_info_ptr: i32::try_from(frame_info_ptr)
+                                        .context("32 bit overflow when computing frame_info_ptr")?,
+                                };
                             }
+                            // TODO: Experiment with skipping this lookup if the `input_cie_pos`
+                            // is the same as the previous entry.
+                            let output_cie_pos = cies_offset_conversion.get(&input_cie_pos).with_context(|| format!("FDE referenced CIE at {input_cie_pos}, but no CIE at that position"))?;
+                            output_cie_offset = Some(output_pos as u32 + 4 - *output_cie_pos);
                         }
                     }
                 }
@@ -2795,16 +2792,16 @@ fn write_dynamic_symbol_definitions(
                     &mut table_writer.dynsym_writer,
                 )?;
 
-                if let Some(versym) = table_writer.version_writer.versym.as_mut() {
-                    if let Some(version_out) = crate::slice::take_first_mut(versym) {
-                        // TODO: avoid rehashing
-                        let version = layout
-                            .symbol_db
-                            .version_script
-                            .version_for_symbol(&UnversionedSymbolName::prehashed(sym_def.name))
-                            .unwrap_or(object::elf::VER_NDX_GLOBAL);
-                        version_out.0.set(LittleEndian, version);
-                    }
+                if let Some(versym) = table_writer.version_writer.versym.as_mut()
+                    && let Some(version_out) = crate::slice::take_first_mut(versym)
+                {
+                    // TODO: avoid rehashing
+                    let version = layout
+                        .symbol_db
+                        .version_script
+                        .version_for_symbol(&UnversionedSymbolName::prehashed(sym_def.name))
+                        .unwrap_or(object::elf::VER_NDX_GLOBAL);
+                    version_out.0.set(LittleEndian, version);
                 }
             }
             FileLayout::Dynamic(object) => {
@@ -3447,14 +3444,13 @@ fn write_section_header_strings(
     output_order: &OutputOrder,
 ) {
     for event in output_order {
-        if let OrderEvent::Section(id) = event {
-            if sections.output_index_of_section(id).is_some() {
-                if let Some(name) = sections.name(id) {
-                    let name_out = crate::slice::slice_take_prefix_mut(&mut out, name.len() + 1);
-                    name_out[..name.len()].copy_from_slice(name.bytes());
-                    name_out[name.len()] = 0;
-                }
-            }
+        if let OrderEvent::Section(id) = event
+            && sections.output_index_of_section(id).is_some()
+            && let Some(name) = sections.name(id)
+        {
+            let name_out = crate::slice::slice_take_prefix_mut(&mut out, name.len() + 1);
+            name_out[..name.len()].copy_from_slice(name.bytes());
+            name_out[name.len()] = 0;
         }
     }
 }

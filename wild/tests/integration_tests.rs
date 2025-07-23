@@ -1152,10 +1152,10 @@ fn build_linker_input(
     linker: &Linker,
     cross_arch: Option<Architecture>,
 ) -> Result<LinkerInput> {
-    if let [single_file] = dep.files.as_slice() {
-        if single_file.filename.ends_with(".a") {
-            return Ok(LinkerInput::new(src_path(&single_file.filename)));
-        }
+    if let [single_file] = dep.files.as_slice()
+        && single_file.filename.ends_with(".a")
+    {
+        return Ok(LinkerInput::new(src_path(&single_file.filename)));
     }
 
     let config = config.config_for_deps();
@@ -1973,12 +1973,10 @@ impl Assertions {
         }
 
         for sym in symbols {
-            if let Ok(name) = sym.name() {
-                if self.no_sym.contains(name) {
-                    bail!(
-                        "Symbol `{name}` was supposed to be absent, but was found in {table_name}"
-                    );
-                }
+            if let Ok(name) = sym.name()
+                && self.no_sym.contains(name)
+            {
+                bail!("Symbol `{name}` was supposed to be absent, but was found in {table_name}");
             }
         }
 
@@ -1997,30 +1995,29 @@ fn verify_symbol_assertions(
         .collect::<HashMap<_, _>>();
 
     for sym in symbols {
-        if let Ok(name) = sym.name() {
-            if let Some(exp) = missing.remove(name) {
-                if let object::SymbolSection::Section(index) = sym.section() {
-                    let section = obj.section_by_index(index)?;
-                    let section_name = section.name()?;
+        if let Ok(name) = sym.name()
+            && let Some(exp) = missing.remove(name)
+            && let object::SymbolSection::Section(index) = sym.section()
+        {
+            let section = obj.section_by_index(index)?;
+            let section_name = section.name()?;
 
-                    if let Some(exp_name) = exp.section_name.as_ref() {
-                        if section_name != exp_name {
-                            bail!(
-                                "Expected symbol `{name}` to be in section `{exp_name}`, \
+            if let Some(exp_name) = exp.section_name.as_ref() {
+                if section_name != exp_name {
+                    bail!(
+                        "Expected symbol `{name}` to be in section `{exp_name}`, \
                                 but it was in `{section_name}`"
-                            );
-                        }
+                    );
+                }
 
-                        if let Some(expected_offset) = exp.section_offset {
-                            let actual_offset = sym.address().wrapping_sub(section.address());
-                            if expected_offset != actual_offset {
-                                bail!(
-                                    "Expected symbol `{name}` to be at offset {expected_offset} \
+                if let Some(expected_offset) = exp.section_offset {
+                    let actual_offset = sym.address().wrapping_sub(section.address());
+                    if expected_offset != actual_offset {
+                        bail!(
+                            "Expected symbol `{name}` to be at offset {expected_offset} \
                                     in section `{exp_name}`, but it was actually at offset {}",
-                                    actual_offset as i64
-                                );
-                            }
-                        }
+                            actual_offset as i64
+                        );
                     }
                 }
             }
@@ -2098,17 +2095,18 @@ impl Compiler {
 
 impl Display for LinkCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(save_dir) = self.opt_save_dir.as_ref() {
-            if save_dir.exists() && self.linker == Linker::Wild {
-                write!(
-                    f,
-                    "WILD_WRITE_LAYOUT=1 WILD_WRITE_TRACE=1 OUT={} {}/run-with cargo run \
+        if let Some(save_dir) = self.opt_save_dir.as_ref()
+            && save_dir.exists()
+            && self.linker == Linker::Wild
+        {
+            write!(
+                f,
+                "WILD_WRITE_LAYOUT=1 WILD_WRITE_TRACE=1 OUT={} {}/run-with cargo run \
                      --bin wild --",
-                    self.output_path.display(),
-                    save_dir.display()
-                )?;
-                return Ok(());
-            }
+                self.output_path.display(),
+                save_dir.display()
+            )?;
+            return Ok(());
         }
 
         for sub in &self.input_commands {
@@ -2305,16 +2303,16 @@ fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Re
 fn setup_wild_ld_symlink() -> Result {
     let wild = wild_path();
     let wild_ld_path = wild.with_file_name("ld");
-    if let Err(error) = std::os::unix::fs::symlink(wild, &wild_ld_path) {
-        if error.kind() != std::io::ErrorKind::AlreadyExists {
-            Err(error).with_context(|| {
-                format!(
-                    "Failed to symlink `{}` to `{}`",
-                    wild_ld_path.display(),
-                    wild.display()
-                )
-            })?
-        }
+    if let Err(error) = std::os::unix::fs::symlink(wild, &wild_ld_path)
+        && error.kind() != std::io::ErrorKind::AlreadyExists
+    {
+        Err(error).with_context(|| {
+            format!(
+                "Failed to symlink `{}` to `{}`",
+                wild_ld_path.display(),
+                wild.display()
+            )
+        })?
     }
     Ok(())
 }
