@@ -265,7 +265,16 @@ impl Display for Group<'_> {
         match self {
             Group::Prelude(_) => write!(f, "<prelude>"),
             Group::Objects(parsed_input_objects) => {
-                write!(f, "{} object(s)", parsed_input_objects.len())
+                let num_symbols: usize = parsed_input_objects
+                    .iter()
+                    .map(|o| o.symbol_id_range.len())
+                    .sum();
+
+                write!(
+                    f,
+                    "num_objects: {num_objects} num_symbols: {num_symbols}",
+                    num_objects = parsed_input_objects.len(),
+                )
             }
             Group::LinkerScripts(scripts) => write!(f, "{} linker script(s)", scripts.len()),
             Group::Epilogue(_) => write!(f, "<epilogue>"),
