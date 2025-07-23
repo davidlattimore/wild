@@ -132,6 +132,7 @@ enum VersionRuleSection {
 #[derive(Debug)]
 enum ParsedSymbolMatcher<'data> {
     Single(SymbolMatcher<'data>),
+    Multiple(Vec<SymbolMatcher<'data>>),
     CxxMatchers(Vec<SymbolMatcher<'data>>),
 }
 
@@ -140,6 +141,11 @@ impl<'data> MatchRules<'data> {
         match pattern {
             ParsedSymbolMatcher::Single(single) => {
                 self.general.push(single);
+            }
+            ParsedSymbolMatcher::Multiple(matchers) => {
+                for matcher in matchers {
+                    self.general.push(matcher);
+                }
             }
             ParsedSymbolMatcher::CxxMatchers(matchers) => {
                 for matcher in matchers {
@@ -418,9 +424,22 @@ fn parse_version_section<'data>(input: &mut &'data BStr) -> winnow::Result<Versi
 }
 
 fn parse_matcher<'data>(input: &mut &'data BStr) -> winnow::Result<ParsedSymbolMatcher<'data>> {
-    if input.starts_with(b"extern \"C++\"") {
+    if input.starts_with(b"extern ") {
         let mut matchers = Vec::new();
-        b"extern \"C++\"".parse_next(input)?;
+        b"extern ".parse_next(input)?;
+        let cxx = if input.starts_with(b"\"C++\"") {
+            b"\"C++\"".parse_next(input)?;
+            true
+        } else if input.starts_with(b"\"C\"") {
+            b"\"C\"".parse_next(input)?;
+            false
+        } else {
+            let unsupported_extern: String = "{".parse_to().parse_next(input)?;
+            return Err(ContextError::from_external_error(
+                input,
+                VersionScriptError::UnsupportedExtern(unsupported_extern),
+            ));
+        };
         skip_comments_and_whitespace(input)?;
         '{'.parse_next(input)?;
 
@@ -435,16 +454,24 @@ fn parse_matcher<'data>(input: &mut &'data BStr) -> winnow::Result<ParsedSymbolM
 
             let matcher = parse_matcher(input)?;
             let ParsedSymbolMatcher::Single(matcher) = matcher else {
+                let unexpected_extern = if matches!(matcher, ParsedSymbolMatcher::CxxMatchers(_)) {
+                    "C++"
+                } else {
+                    "C"
+                };
                 return Err(ContextError::from_external_error(
                     input,
-                    VersionScriptError::UnexpectedExternCxx,
+                    VersionScriptError::UnexpectedExtern(unexpected_extern.to_string()),
                 ));
             };
 
             matchers.push(matcher);
         }
 
-        return Ok(ParsedSymbolMatcher::CxxMatchers(matchers));
+        if cxx {
+            return Ok(ParsedSymbolMatcher::CxxMatchers(matchers));
+        }
+        return Ok(ParsedSymbolMatcher::Multiple(matchers));
     }
 
     let token = take_until(1.., b';').parse_next(input)?;
@@ -499,7 +526,8 @@ enum VersionScriptError {
     InvalidUtf8String,
     InvalidGlobPattern,
     GlobWithQuote,
-    UnexpectedExternCxx,
+    UnexpectedExtern(String),
+    UnsupportedExtern(String),
 }
 
 impl std::error::Error for VersionScriptError {}
@@ -511,9 +539,10 @@ impl std::fmt::Display for VersionScriptError {
             VersionScriptError::GlobWithQuote => write!(f, "Globs with quote are unsupported"),
             VersionScriptError::InvalidUtf8String => write!(f, "Invalid utf-8 string"),
             VersionScriptError::UnknownParentVersion => write!(f, "Unknown parent version"),
-            VersionScriptError::UnexpectedExternCxx => {
-                write!(f, "Unexpected extern \"C++\" in parsing")
+            VersionScriptError::UnexpectedExtern(s) => {
+                write!(f, "Unexpected extern \"{s}\" in parsing")
             }
+            VersionScriptError::UnsupportedExtern(s) => write!(f, "Unsupported extern \"{s}\""),
         }
     }
 }
@@ -703,6 +732,34 @@ mod tests {
             &script,
             "_ZTVN10__cxxabiv120__si_class_type_infoE"
         ));
+    }
+
+    #[test]
+    fn extern_c_version_script() {
+        let data = VersionScriptData {
+            raw: br#"
+                "VERSION42 {
+                    local:
+                        foo;
+                        bar;
+                        extern "C" {
+                            baz;
+                        };
+                };"#,
+        };
+        let script = VersionScript::parse(data).unwrap();
+        let version_body = &script.versions[1].version_body;
+
+        assert_equal(
+            version_body
+                .locals
+                .general
+                .exact
+                .iter()
+                .map(|s| std::str::from_utf8(s.bytes()).unwrap())
+                .sorted(),
+            ["bar", "baz", "foo"],
+        );
     }
 
     #[test]
