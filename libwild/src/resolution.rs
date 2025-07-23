@@ -49,6 +49,8 @@ use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
 use rayon::Scope;
+use rayon::iter::IndexedParallelIterator;
+use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use std::num::NonZeroU32;
@@ -862,15 +864,25 @@ fn resolve_symbols<'data, 'scope>(
     definitions_out: &mut [SymbolId],
     scope: &Scope<'scope>,
 ) -> Result {
+    // We're already processing separate object groups in parallel. However, sometimes a single
+    // object can have heaps more undefined symbols than others. e.g. symbols.o written by the rust
+    // compiler, which for the bevy dylib contains around 500k undefined symbols. In order to ensure
+    // that we utilise all our threads when processing such an object, we parallelise over symbols.
     obj.parsed
         .object
         .symbols
+        .symbols()
+        .par_iter()
         .enumerate()
-        .zip(definitions_out)
+        .zip_eq(definitions_out)
+        // A single symbol is too small a unit of work, so we set a somewhat higher minimum
+        // grouping. This is important to reduce stack usage by rayon. If we don't set this, or set
+        // it less than ~35, then linking of chromium fails with a stack overflow.
+        .with_min_len(1000)
         .try_for_each(
             |((local_symbol_index, local_symbol), definition)| -> Result {
                 resolve_symbol(
-                    local_symbol_index,
+                    object::SymbolIndex(local_symbol_index),
                     local_symbol,
                     definition,
                     resources,
