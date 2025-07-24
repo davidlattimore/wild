@@ -1,3 +1,1 @@
-int baz(void) {
-    return 10;
-}
+int baz(void) { return 10; }

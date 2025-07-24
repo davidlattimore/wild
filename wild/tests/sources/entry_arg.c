@@ -4,6 +4,6 @@
 #include "runtime.h"
 
 void custom_entry(void) {
-    runtime_init();
-    exit_syscall(42);
+  runtime_init();
+  exit_syscall(42);
 }

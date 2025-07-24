@@ -1,8 +1,3 @@
-__attribute__ ((weak))
-int foo(void) {
-	return 10;
-}
+__attribute__((weak)) int foo(void) { return 10; }
 
-int bar(void) {
-	return 20;
-}
+int bar(void) { return 20; }

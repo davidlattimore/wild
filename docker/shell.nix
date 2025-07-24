@@ -14,6 +14,7 @@ pkgs.mkShell {
     pkgs.binutils-unwrapped-all-targets
     pkgs.cargo-chef
     pkgs.llvmPackages_20.clang
+    pkgs.clang-tools
     pkgs.lld
     pkgs.glibc.out
     pkgs.glibc.static

@@ -12,6 +12,7 @@
   runCommandCC,
   hello,
   clang,
+  clang-tools,
   binutils-unwrapped-all-targets,
   gcc,
   glibc,
@@ -117,6 +118,7 @@ let
         lib.makeBinPath [
           binutils-unwrapped-all-targets
           clang
+          clang-format
           gccWrapper
           gppWrapper
           lld
