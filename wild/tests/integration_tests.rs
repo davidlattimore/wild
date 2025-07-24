@@ -2502,6 +2502,7 @@ fn integration_test(
         "mixed-verdef-verneed.c",
         "copy-relocations.c",
         "force-undefined.c",
+        "wrap.c",
         "shlib-archive-activation.c",
         "linker-script.c",
         "linker-script-executable.c",

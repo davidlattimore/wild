@@ -279,6 +279,7 @@ impl<'data> SymbolDb<'data> {
         version_script_data: Option<VersionScriptData<'data>>,
         args: &'data Args,
         linker_scripts: &[InputLinkerScript<'data>],
+        herd: &'data bumpalo_herd::Herd,
     ) -> Result<Self> {
         let version_script = version_script_data
             .map(VersionScript::parse)
@@ -351,6 +352,8 @@ impl<'data> SymbolDb<'data> {
 
         index.populate_symbol_db(&per_group_outputs)?;
 
+        index.apply_wrapped_symbol_overrides(args, herd);
+
         for script in linker_scripts {
             index.apply_linker_script(script);
         }
@@ -409,6 +412,49 @@ impl<'data> SymbolDb<'data> {
             .push(ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE);
 
         symbol_id
+    }
+
+    /// Applies overrides for symbols wrapped via the --wrap= argument. Note that like GNU ld, our
+    /// wrapping mechanism only affects resolution of undefined symbols. Defined symbols will be
+    /// unaffected. This means that references to a symbol from within the compilation unit that
+    /// defines it will not go via the wrapper. This is in contrast to LLD where wrapping also
+    /// affects references to symbols in compilation units where those symbols are defined. Our main
+    /// reason for this choice of behaviour is that it's much simpler to implement.
+    fn apply_wrapped_symbol_overrides(&mut self, args: &Args, herd: &'data bumpalo_herd::Herd) {
+        if args.wrap.is_empty() {
+            return;
+        }
+
+        let allocator = herd.get();
+
+        for name in &args.wrap {
+            let wrap_name = format!("__wrap_{name}");
+            let Some(wrap_id) =
+                self.get_unversioned(&UnversionedSymbolName::prehashed(wrap_name.as_bytes()))
+            else {
+                continue;
+            };
+
+            let name_bytes = allocator.alloc_slice_copy(name.as_bytes());
+            let orig_id = self.override_name(UnversionedSymbolName::prehashed(name_bytes), wrap_id);
+
+            if let Some(orig_id) = orig_id {
+                let real_name = allocator.alloc_slice_copy(format!("__real_{name}").as_bytes());
+                self.override_name(UnversionedSymbolName::prehashed(real_name), orig_id);
+            }
+        }
+    }
+
+    /// Overrides `name` to point to `symbol_id`. Returns the old symbol ID for `name`.
+    fn override_name(
+        &mut self,
+        name: PreHashed<UnversionedSymbolName<'data>>,
+        symbol_id: SymbolId,
+    ) -> Option<SymbolId> {
+        let num_buckets = self.buckets.len();
+        self.buckets[name.hash() as usize % num_buckets]
+            .name_to_id
+            .insert(name, symbol_id)
     }
 
     /// Reads the symbol visibility from the original object.
