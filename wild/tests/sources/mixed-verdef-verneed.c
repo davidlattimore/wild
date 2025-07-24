@@ -13,20 +13,18 @@
 
 int from_so(void);
 
-int bar_global(void) {
-    return 10;
-}
+int bar_global(void) { return 10; }
 
 void _start(void) {
-    runtime_init();
+  runtime_init();
 
-    if (bar_global() != 10) {
-        exit_syscall(bar_global());
-    }
+  if (bar_global() != 10) {
+    exit_syscall(bar_global());
+  }
 
-    if (from_so() != 30) {
-        exit_syscall(100);
-    }
+  if (from_so() != 30) {
+    exit_syscall(100);
+  }
 
-    exit_syscall(42);
+  exit_syscall(42);
 }

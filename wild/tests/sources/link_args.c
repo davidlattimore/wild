@@ -31,8 +31,8 @@
 #include "runtime.h"
 
 void _start(void) {
-    runtime_init();
-    exit_syscall(42);
+  runtime_init();
+  exit_syscall(42);
 }
 
 void this_function_is_not_used(void) {}

@@ -9,7 +9,7 @@
 int foo(void);
 
 int call_foo(void) {
-    // This reference to foo should be optimised by the linker, since the symbol is made hidden, so
-    // we know it cannot be overridden.
-    return foo() + 2;
+  // This reference to foo should be optimised by the linker, since the symbol
+  // is made hidden, so we know it cannot be overridden.
+  return foo() + 2;
 }

@@ -2,14 +2,12 @@
 //#LinkerDriver:gcc
 //#LinkArgs:-pie -Wl,-z,now
 //#DiffIgnore:section.rodata
-// GNU ld emits an extra IRELATIVE relocation, while LLD and Wild instead point to the PLT entry. So
-// we need to diff against lld.
+// GNU ld emits an extra IRELATIVE relocation, while LLD and Wild instead point
+// to the PLT entry. So we need to diff against lld.
 //#EnableLinker:lld
 //#RequiresGlibc:true
 
-int foo() {
-  return 42;
-}
+int foo() { return 42; }
 
 int bar() __attribute__((ifunc("resolve_bar")));
 

@@ -19,6 +19,6 @@ int undefined_strong();
 __attribute__((weak)) int undefined_weak();
 
 void _start(void) {
-    undefined_weak();
-    undefined_strong();
+  undefined_weak();
+  undefined_strong();
 }
