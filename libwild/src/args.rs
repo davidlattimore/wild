@@ -53,6 +53,7 @@ pub struct Args {
     pub(crate) write_layout: bool,
     pub(crate) should_write_eh_frame_hdr: bool,
     pub(crate) write_trace: bool,
+    pub(crate) wrap: Vec<String>,
     pub(crate) rpath: Option<String>,
     pub(crate) soname: Option<String>,
     pub(crate) files_per_group: Option<u32>,
@@ -275,6 +276,7 @@ impl Default for Args {
             debug_address: None,
             should_write_eh_frame_hdr: false,
             write_gc_stats: None,
+            wrap: Vec::new(),
             gc_stats_ignore: Vec::new(),
             verbose_gc_stats: false,
             rpath: None,
@@ -531,6 +533,8 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             bail!("Big-endian target is not supported");
         } else if arg == "-z" {
             handle_z_option(get_next_argument(arg)?.as_ref())?;
+        } else if let Some(value) = get_option_value("wrap") {
+            args.wrap.push(value);
         } else if let Some(arg) = arg.strip_prefix("-z") {
             handle_z_option(arg)?;
         } else if let Some(_rest) = arg.strip_prefix("-O") {
