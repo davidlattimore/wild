@@ -1,0 +1,44 @@
+name: Run external tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - '**'
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: '-D warnings'
+
+jobs:
+  external-tests:
+    name: Run mold tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - run: sudo apt-get update && sudo apt-get -y install gcc g++ clang-18 lld curl bubblewrap binutils-aarch64-linux-gnu binutils-riscv64-linux-gnu qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-riscv64-linux-gnu g++-riscv64-linux-gnu gdb
+      - uses: dtolnay/rust-toolchain@nightly
+        id: rust-toolchain
+        with:
+          targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl,riscv64gc-unknown-linux-gnu,riscv64gc-unknown-linux-musl
+          components: rustc-codegen-cranelift-preview
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-externaltests-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run external tests
+        continue-on-error: true
+        run: WILD_TEST_CROSS=aarch64,riscv64 cargo test --features mold_tests
