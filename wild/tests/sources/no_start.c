@@ -15,4 +15,8 @@
 
 // Provided this is the first function, it'll get used as the entry point - at
 // least by GNU ld. LLD doesn't set an entry point in this case.
-void this_is_the_entry_point(void) { exit_syscall(42); }
+void
+this_is_the_entry_point (void)
+{
+  exit_syscall (42);
+}

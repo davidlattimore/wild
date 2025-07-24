@@ -17,6 +17,9 @@
 //#RunEnabled:false
 //#DoesNotContain:.dynamic
 
-void foo(void) {};
+void foo (void) {};
 
-void _start() {}
+void
+_start ()
+{
+}

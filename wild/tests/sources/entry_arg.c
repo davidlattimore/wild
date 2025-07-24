@@ -3,7 +3,9 @@
 
 #include "runtime.h"
 
-void custom_entry(void) {
-  runtime_init();
-  exit_syscall(42);
+void
+custom_entry (void)
+{
+  runtime_init ();
+  exit_syscall (42);
 }

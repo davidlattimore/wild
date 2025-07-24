@@ -13,23 +13,29 @@
 extern __thread char tbss_a[1024];
 extern __thread char tcustom_a[1024];
 
-int main() {
-  if (tbss_a[0] != 0) {
-    return 100;
-  }
-  if (tcustom_a[1023] != 0) {
-    return 101;
-  }
+int
+main ()
+{
+  if (tbss_a[0] != 0)
+    {
+      return 100;
+    }
+  if (tcustom_a[1023] != 0)
+    {
+      return 101;
+    }
 
   tbss_a[0] = 70;
   tcustom_a[1023] = 71;
 
-  if (tbss_a[0] != 70) {
-    return 102;
-  }
-  if (tcustom_a[1023] != 71) {
-    return 103;
-  }
+  if (tbss_a[0] != 70)
+    {
+      return 102;
+    }
+  if (tcustom_a[1023] != 71)
+    {
+      return 103;
+    }
 
   return 42;
 }

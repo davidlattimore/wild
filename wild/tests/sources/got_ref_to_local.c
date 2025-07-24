@@ -9,19 +9,23 @@
 
 #include "runtime.h"
 
-typedef int (*fnptr)(void);
+typedef int (*fnptr) (void);
 
-fnptr get_foo1(void);
-fnptr get_foo2(void);
+fnptr get_foo1 (void);
+fnptr get_foo2 (void);
 
-void _start(void) {
-  runtime_init();
+void
+_start (void)
+{
+  runtime_init ();
 
-  if (get_foo1()() != 2) {
-    exit_syscall(100);
-  }
-  if (get_foo2()() != 22) {
-    exit_syscall(101);
-  }
-  exit_syscall(42);
+  if (get_foo1 () () != 2)
+    {
+      exit_syscall (100);
+    }
+  if (get_foo2 () () != 22)
+    {
+      exit_syscall (101);
+    }
+  exit_syscall (42);
 }

@@ -40,9 +40,17 @@
 //#DiffIgnore:section.got.plt.entsize
 //#DiffIgnore:dynsym.baz.section
 
-int bar1(void);
-int bar2(void);
+int bar1 (void);
+int bar2 (void);
 
-int foo(void) { return bar1() + bar2(); }
+int
+foo (void)
+{
+  return bar1 () + bar2 ();
+}
 
-int call_bar1(void) { return bar1(); }
+int
+call_bar1 (void)
+{
+  return bar1 ();
+}

@@ -1,1 +1,5 @@
-int test_func(void) { return 1; }
+int
+test_func (void)
+{
+  return 1;
+}

@@ -3,4 +3,8 @@
 // handle linking our executable against a mix of shared objects, some with
 // symbol versions and some without.
 
-int get_42(void) { return 42; }
+int
+get_42 (void)
+{
+  return 42;
+}

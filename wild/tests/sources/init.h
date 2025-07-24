@@ -1,1 +1,1 @@
-void call_init_functions(void);
+void call_init_functions (void);

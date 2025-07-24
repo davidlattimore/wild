@@ -58,6 +58,10 @@
 //#CompArgs:-mtls-dialect=desc -fPIC
 //#Arch: aarch64
 
-int get_value();
+int get_value ();
 
-int main() { return get_value(); }
+int
+main ()
+{
+  return get_value ();
+}

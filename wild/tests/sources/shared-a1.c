@@ -1,1 +1,5 @@
-int bar1(void) { return 40; }
+int
+bar1 (void)
+{
+  return 40;
+}

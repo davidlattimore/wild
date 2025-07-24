@@ -47,22 +47,25 @@
 #include <iostream>
 #include <string>
 
-const char *colon();
-const char *char_c();
-const char *char_d();
+const char *colon ();
+const char *char_c ();
+const char *char_d ();
 
-int main() {
+int
+main ()
+{
   std::string foo;
   foo += "aaa";
-  foo += colon();
+  foo += colon ();
   foo += "b";
   foo += ":";
-  foo += char_c();
+  foo += char_c ();
   foo += ":";
   foo += "d";
-  if (foo != "aaa:b:c:d") {
-    std::cout << foo << std::endl;
-    return 10;
-  }
+  if (foo != "aaa:b:c:d")
+    {
+      std::cout << foo << std::endl;
+      return 10;
+    }
   return 42;
 }

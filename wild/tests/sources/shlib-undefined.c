@@ -15,14 +15,14 @@
 //#DiffIgnore:.dynamic.DT_FLAGS_1.NOW
 //#RunEnabled:false
 
-// Allow linking against shared object with undefined symbols. We don't run this
-// because the runtime linker would error due to the undefined symbol.
+// Allow linking against shared object with undefined symbols. We don't run
+// this because the runtime linker would error due to the undefined symbol.
 //#Config:allow:default
 //#Shared:shlib-undefined-2.c
 //#LinkArgs:--allow-shlib-undefined -z now
 
-// This should also succeed to link because our shared object depends on another
-// shared object that we don't have loaded.
+// This should also succeed to link because our shared object depends on
+// another shared object that we don't have loaded.
 //#Config:disallow-incomplete:default
 //#Shared:shlib-undefined-2.c
 //#LinkArgs:--no-allow-shlib-undefined
@@ -46,11 +46,17 @@
 
 #include "runtime.h"
 
-int def1(void) { return 100; }
+int
+def1 (void)
+{
+  return 100;
+}
 
-int call_def1(void);
+int call_def1 (void);
 
-void _start(void) {
-  runtime_init();
-  exit_syscall(call_def1());
+void
+_start (void)
+{
+  runtime_init ();
+  exit_syscall (call_def1 ());
 }

@@ -47,26 +47,31 @@ __thread int tvar4 = 0;
 static __thread int tvar5 = 0;
 __thread char tvar6 = 0;
 
-void _start(void) {
-  runtime_init();
+void
+_start (void)
+{
+  runtime_init ();
 
-  int ret = init_tls(0);
-  if (ret != 0) {
-    exit_syscall(ret);
-  }
-  exit_syscall(tvar1 + tvar2 + tvar3 + tvar4 + tvar5 + tvar6);
+  int ret = init_tls (0);
+  if (ret != 0)
+    {
+      exit_syscall (ret);
+    }
+  exit_syscall (tvar1 + tvar2 + tvar3 + tvar4 + tvar5 + tvar6);
 }
 
-u8 ***get_tcb(void);
+u8 ***get_tcb (void);
 
 // When statically linking, glibc doesn't provide __tls_get_addr, however musl
 // does. So we need to make sure we work in either case.
 
 #if VARIANT == 1
-void *__tls_get_addr(size_t *mod_and_offset) {
+void *
+__tls_get_addr (size_t *mod_and_offset)
+{
   size_t mod = mod_and_offset[0];
   size_t offset = mod_and_offset[1];
-  u8 ***tcb = get_tcb();
+  u8 ***tcb = get_tcb ();
   u8 **modules = tcb[1];
   u8 *module_data = modules[mod];
   return &module_data[offset];

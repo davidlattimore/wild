@@ -1,1 +1,5 @@
-int from_so(void) { return 30; }
+int
+from_so (void)
+{
+  return 30;
+}

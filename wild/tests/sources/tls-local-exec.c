@@ -13,7 +13,9 @@ __thread long tvar = 1;
 __thread int tvar2 = 2;
 __thread char tvar3 = 3;
 
-int main() {
+int
+main ()
+{
   // __builtin_printf ("%ld, %d, %d\n", tvar, tvar2, tvar3);
   return tvar + tvar2 + tvar3 + 36;
 }

@@ -12,11 +12,21 @@
 
 int exit_code = 2;
 
-static void impl(void) { exit_code += 40; }
-static void *resolver(void) { return impl; }
-void *ifunc(void) __attribute__((ifunc("resolver")));
+static void
+impl (void)
+{
+  exit_code += 40;
+}
+static void *
+resolver (void)
+{
+  return impl;
+}
+void *ifunc (void) __attribute__ ((ifunc ("resolver")));
 
-int main() {
-  ifunc();
+int
+main ()
+{
+  ifunc ();
   return exit_code;
 }

@@ -3,7 +3,7 @@
 //#EnableLinker:lld
 
 int global_value = 38;
-int global_values[4] = {1, 2, 3, 4};
+int global_values[4] = { 1, 2, 3, 4 };
 
-asm(".globl abs1\n\
+asm (".globl abs1\n\
     .set abs1, 25\n");

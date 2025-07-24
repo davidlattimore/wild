@@ -7,20 +7,31 @@
 //#EnableLinker:lld
 //#RequiresGlibc:true
 
-int foo() { return 42; }
+int
+foo ()
+{
+  return 42;
+}
 
-int bar() __attribute__((ifunc("resolve_bar")));
+int bar () __attribute__ ((ifunc ("resolve_bar")));
 
-void *resolve_bar() { return foo; }
+void *
+resolve_bar ()
+{
+  return foo;
+}
 
-typedef int (*int_f_ptr_t)(void);
+typedef int (*int_f_ptr_t) (void);
 
 int_f_ptr_t bar2 = bar;
 
-int main() {
-  if (bar() != 42) {
-    return bar();
-  }
+int
+main ()
+{
+  if (bar () != 42)
+    {
+      return bar ();
+    }
 
-  return bar2();
+  return bar2 ();
 }

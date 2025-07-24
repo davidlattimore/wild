@@ -28,22 +28,26 @@
 
 #include "runtime.h"
 
-int foo(void);
+int foo (void);
 
-typedef int (*get_int_fn_t)(void);
+typedef int (*get_int_fn_t) (void);
 
 get_int_fn_t foo_ptr = foo;
 
-void _start(void) {
-  runtime_init();
+void
+_start (void)
+{
+  runtime_init ();
 
-  if (foo() != 10) {
-    exit_syscall(20);
-  }
+  if (foo () != 10)
+    {
+      exit_syscall (20);
+    }
 
-  if (foo_ptr() != 10) {
-    exit_syscall(21);
-  }
+  if (foo_ptr () != 10)
+    {
+      exit_syscall (21);
+    }
 
-  exit_syscall(42);
+  exit_syscall (42);
 }
