@@ -1,7 +1,7 @@
+#include <stddef.h>
+
 #include "global_definitions.h"
 #include "runtime.h"
-
-#include <stddef.h>
 
 // Returns the passed value, but don't let the compiler make any assumptions
 // about the returned value.

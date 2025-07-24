@@ -1,8 +1,9 @@
 //#Object:runtime.c
 //#EnableLinker:lld
 
-#include "runtime.h"
 #include <stddef.h>
+
+#include "runtime.h"
 
 static char data1[] = "QQQ";
 

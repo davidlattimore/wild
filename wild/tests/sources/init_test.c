@@ -4,6 +4,7 @@
 //#CompArgs:-static -pie
 
 #include "init.h"
+
 #include "runtime.h"
 
 static int value = 0;

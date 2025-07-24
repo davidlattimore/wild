@@ -7,14 +7,14 @@
 
 #if (VARIANT & 1) != 0
 int __attribute__((weak)) weak_fn1(void) {
-  return 2; // 64
+  return 2;  // 64
 }
 int __attribute__((weak)) weak_fn2(void) { return 8; }
 int __attribute__((weak)) weak_fn3(void) {
-  return 0; // 2
+  return 0;  // 2
 }
 int __attribute__((weak)) weak_fn4(void) {
-  return 1; // 4
+  return 1;  // 4
 }
 int __attribute__((weak)) weak_fn5(void) { return 16; }
 #else

@@ -28,11 +28,11 @@
 //#CompArgs:-ftls-model=local-dynamic -Wa,-mrelax-relocations=yes -fPIC -fno-plt
 //#Variant: 1
 
-#include "init_tls.h"
-#include "runtime.h"
-
 #include <stddef.h>
 #include <stdint.h>
+
+#include "init_tls.h"
+#include "runtime.h"
 
 typedef uint8_t u8;
 typedef uint64_t u64;

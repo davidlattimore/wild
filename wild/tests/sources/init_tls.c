@@ -42,8 +42,8 @@ struct ProgramHeader {
 extern const struct FileHeader __ehdr_start;
 
 static void set_fs_register(void *address) {
-  register int64_t rax __asm__("rax") = 158;    // arch_prctl
-  register int64_t rdi __asm__("rdi") = 0x1002; // ARCH_SET_FS
+  register int64_t rax __asm__("rax") = 158;     // arch_prctl
+  register int64_t rdi __asm__("rdi") = 0x1002;  // ARCH_SET_FS
   register int64_t rsi __asm__("rsi") = (int64_t)address;
   __asm__ __volatile__("syscall"
                        : "+r"(rax)

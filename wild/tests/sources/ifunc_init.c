@@ -1,7 +1,7 @@
+#include "ifunc_init.h"
+
 #include <stdint.h>
 #include <sys/types.h>
-
-#include "ifunc_init.h"
 
 struct Rela {
   size_t offset;

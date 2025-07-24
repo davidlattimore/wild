@@ -6,10 +6,10 @@
 #include "runtime.h"
 
 #if (VARIANT & 1) != 0
-int weak_var1 __attribute__((weak)) = 2; // 64
+int weak_var1 __attribute__((weak)) = 2;  // 64
 int weak_var2 __attribute__((weak)) = 8;
-int weak_var3 __attribute__((weak)) = 0;               // 2
-int weak_arr1[4] __attribute__((weak)) = {1, 1, 1, 1}; // 4
+int weak_var3 __attribute__((weak)) = 0;                // 2
+int weak_arr1[4] __attribute__((weak)) = {1, 1, 1, 1};  // 4
 int weak_arr2[4] __attribute__((weak)) = {16, 16, 16, 16};
 #else
 extern int weak_var1 __attribute__((weak));
@@ -19,7 +19,7 @@ extern int weak_arr1[4] __attribute__((weak));
 extern int weak_arr2[4] __attribute__((weak));
 #endif
 
-extern int strong_var1; // 128
+extern int strong_var1;  // 128
 extern int strong_var2;
 
 void _start() {
