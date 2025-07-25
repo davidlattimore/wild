@@ -2571,13 +2571,19 @@ fn integration_test(
     Ok(())
 }
 
-fn get_wild_test_cross() -> Option<Vec<Architecture>> {
-    std::env::var("WILD_TEST_CROSS").ok().map(|cross_arch| {
-        cross_arch
-            .split(',')
-            .filter_map(|s| Architecture::from_str(s).ok())
-            .collect()
-    })
+fn get_wild_test_cross() -> Result<Option<Vec<Architecture>>> {
+    std::env::var("WILD_TEST_CROSS")
+        .ok()
+        .map(|cross_arch| {
+            cross_arch
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    Architecture::from_str(s).with_context(|| format!("Unknown cross arch `{s}`"))
+                })
+                .collect()
+        })
+        .transpose()
 }
 
 fn read_test_config() -> Result<TestConfig> {
@@ -2607,7 +2613,7 @@ fn read_test_config() -> Result<TestConfig> {
     };
 
     // The environment variable `WILD_TEST_CROSS` can override the config file setting.
-    if let Some(qemu_arch_from_env) = get_wild_test_cross() {
+    if let Some(qemu_arch_from_env) = get_wild_test_cross()? {
         config.qemu_arch = qemu_arch_from_env;
     }
 
