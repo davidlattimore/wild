@@ -173,7 +173,6 @@ tests = [
   "arch-x86_64-reloc.sh",
   "arch-x86_64-section-name.sh",
   "arch-x86_64-tbss-only.sh",
-  "arch-x86_64-tls-large-tbss.sh",
   "arch-x86_64-tlsdesc.sh",
   "arch-x86_64-unique.sh",
   "arch-x86_64-warn-execstack.sh",
@@ -239,6 +238,7 @@ tests = [
   "common-archive.sh",
   "common-ref.sh",
   "common-symbols.sh",
+  "compress-debug-sections-zstd.sh",
   "copyrel-alignment.sh",
   "copyrel-norelro.sh",
   "copyrel-protected.sh",
@@ -306,9 +306,4 @@ tests = [
   "weak-undef2.sh",
   "weak-undef5.sh",
   "whole-archive.sh",
-
-  "compress-debug-sections-zstd.sh",
-  "crel.sh",
-  "weak-export-dso2.sh",
-  "weak-undef4.sh"
 ]
