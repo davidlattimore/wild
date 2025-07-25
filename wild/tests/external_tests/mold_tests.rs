@@ -127,7 +127,7 @@ fn should_skip_mold_test_by_arch(path: &Path) -> bool {
     };
 
     let current_arch = get_host_architecture();
-    let cross_archs = get_wild_test_cross().unwrap_or_default();
+    let cross_archs = get_wild_test_cross().unwrap().unwrap_or_default();
 
     let Some(arch) = name
         .split('-')
