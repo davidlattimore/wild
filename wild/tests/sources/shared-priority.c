@@ -1,5 +1,5 @@
-// Tests related to how we handle symbols that are defined in shared objects and also in other
-// places like archives.
+// Tests related to how we handle symbols that are defined in shared objects
+// and also in other places like archives.
 
 //#AbstractConfig:default
 //#CompArgs:-fPIC
@@ -23,18 +23,22 @@
 
 #include "runtime.h"
 
-int foo(void);
+int foo (void);
 
 extern int var1;
 
-void _start(void) {
-    runtime_init();
+void
+_start (void)
+{
+  runtime_init ();
 
-    if (var1 != 65) {
-        exit_syscall(101);
+  if (var1 != 65)
+    {
+      exit_syscall (101);
     }
-    if (foo() != 10) {
-        exit_syscall(100);
+  if (foo () != 10)
+    {
+      exit_syscall (100);
     }
-    exit_syscall(42);
+  exit_syscall (42);
 }

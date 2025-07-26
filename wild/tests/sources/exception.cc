@@ -15,27 +15,30 @@
 
 #include <iostream>
 
-void bar()
+void
+bar ()
 {
-    throw 42;
+  throw 42;
 }
 
-void foo()
+void
+foo ()
 {
-    bar();
+  bar ();
 }
 
-int main()
+int
+main ()
 {
-    try
+  try
     {
-        foo();
+      foo ();
     }
-    catch (int myNum)
+  catch (int myNum)
     {
-        std::cout << myNum << std::endl;
-        return myNum;
+      std::cout << myNum << std::endl;
+      return myNum;
     }
 
-    return 1;
+  return 1;
 }

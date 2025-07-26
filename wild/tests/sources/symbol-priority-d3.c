@@ -1,7 +1,11 @@
-int v1(void) {
-    return 12;
+int
+v1 (void)
+{
+  return 12;
 }
 
-int v2(void) {
-    return 22;
+int
+v2 (void)
+{
+  return 22;
 }

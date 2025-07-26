@@ -3,4 +3,7 @@
 //#SkipLinker:ld
 //#ExpectError:GCC IR (LTO mode) is not supported yet
 
-int main() {}
+int
+main ()
+{
+}

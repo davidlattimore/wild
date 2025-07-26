@@ -36,7 +36,8 @@
 //#Config:clang:default
 //#Compiler: clang
 
-int main()
+int
+main ()
 {
-    return 42;
+  return 42;
 }

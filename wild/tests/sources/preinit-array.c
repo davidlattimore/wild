@@ -14,11 +14,15 @@
 
 int exit_code;
 
-void preinit() {
-    exit_code = 42;
+void
+preinit ()
+{
+  exit_code = 42;
 }
 
-void _start(void) {
-    runtime_init();
-    exit_syscall(exit_code);
+void
+_start (void)
+{
+  runtime_init ();
+  exit_syscall (exit_code);
 }

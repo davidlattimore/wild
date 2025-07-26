@@ -15,10 +15,12 @@
 //#ExpectError:  undefined_strong
 //#ExpectError:undefined_symbols.c
 
-int undefined_strong();
-__attribute__((weak)) int undefined_weak();
+int undefined_strong ();
+__attribute__ ((weak)) int undefined_weak ();
 
-void _start(void) {
-    undefined_weak();
-    undefined_strong();
+void
+_start (void)
+{
+  undefined_weak ();
+  undefined_strong ();
 }

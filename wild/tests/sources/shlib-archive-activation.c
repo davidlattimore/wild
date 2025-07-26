@@ -14,16 +14,19 @@
 
 #include "runtime.h"
 
-int f1(void);
+int f1 (void);
 
-void _start(void) {
-    runtime_init();
+void
+_start (void)
+{
+  runtime_init ();
 
-    // The second file is an archive. It will take priority over the shared object even though the
-    // shared object is earlier.
-    if (f1() != 10) {
-        exit_syscall(101);
+  // The second file is an archive. It will take priority over the shared
+  // object even though the shared object is earlier.
+  if (f1 () != 10)
+    {
+      exit_syscall (101);
     }
 
-    exit_syscall(42);
+  exit_syscall (42);
 }

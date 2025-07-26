@@ -1,1 +1,1 @@
-int init_ifuncs(void);
+int init_ifuncs (void);

@@ -22,47 +22,62 @@
 
 #include "runtime.h"
 
-int foo(void);
-int bar_global(void);
-int bar_local(void);
-int bar_v2(void);
-int bar_v2_1(void);
+int foo (void);
+int bar_global (void);
+int bar_local (void);
+int bar_v2 (void);
+int bar_v2_1 (void);
 
-void _start(void) {
-    runtime_init();
+void
+_start (void)
+{
+  runtime_init ();
 
-    if (foo() != 2) {
-        exit_syscall(foo());
+  if (foo () != 2)
+    {
+      exit_syscall (foo ());
     }
-    if (bar_global() != 10) {
-        exit_syscall(bar_global());
+  if (bar_global () != 10)
+    {
+      exit_syscall (bar_global ());
     }
-    if (bar_local() != 11) {
-        exit_syscall(bar_local());
+  if (bar_local () != 11)
+    {
+      exit_syscall (bar_local ());
     }
-    if (bar_v2() != 12) {
-        exit_syscall(bar_v2());
+  if (bar_v2 () != 12)
+    {
+      exit_syscall (bar_v2 ());
     }
-    if (bar_v2_1() != 13) {
-        exit_syscall(bar_v2_1());
+  if (bar_v2_1 () != 13)
+    {
+      exit_syscall (bar_v2_1 ());
     }
 
-    exit_syscall(42);
+  exit_syscall (42);
 }
 
-int bar_global(void) {
-    return 10;
+int
+bar_global (void)
+{
+  return 10;
 }
 
 // TODO: doesn't work, the symbol is global
-int bar_local(void) {
-    return 11;
+int
+bar_local (void)
+{
+  return 11;
 }
 
-int bar_v2(void) {
-    return 12;
+int
+bar_v2 (void)
+{
+  return 12;
 }
 
-int bar_v2_1(void) {
-    return 13;
+int
+bar_v2_1 (void)
+{
+  return 13;
 }

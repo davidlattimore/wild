@@ -1,6 +1,6 @@
 // Adding shared libraries should yield dynamic executables: #836
 //#Config:shared-input
-//#LinkArgs:-z now --export-dynamic 
+//#LinkArgs:-z now --export-dynamic
 //#ExpectDynSym:foo
 //#Shared:empty.c
 //#Mode:unspecified
@@ -13,10 +13,13 @@
 // Do not export symbols for static executables: #836
 //#Config:static-exe
 //#Mode:static
-//#LinkArgs:-z now --export-dynamic 
+//#LinkArgs:-z now --export-dynamic
 //#RunEnabled:false
 //#DoesNotContain:.dynamic
 
-void foo(void) {};
+void foo (void) {};
 
-void _start() {}
+void
+_start ()
+{
+}

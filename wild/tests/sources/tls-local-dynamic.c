@@ -18,7 +18,8 @@
 
 _Thread_local long foo = 42;
 
-int main()
+int
+main ()
 {
-    return foo;
+  return foo;
 }
