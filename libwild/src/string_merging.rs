@@ -330,23 +330,19 @@ impl<'data> MergedStringsSection<'data> {
         let mut resources =
             create_split_resources(&mut self.string_offsets, input_sections, num_threads);
 
-        let (error_tx, error_rx) = std::sync::mpsc::channel();
-
         // Spawn a task for each thread.
         rayon::scope(|s| {
             for _ in 0..num_threads {
                 s.spawn(|_| {
                     if let Err(error) = do_splitting_work(&resources, reuse_pool) {
-                        let _ = error_tx.send(error);
+                        let _ = resources.errors.push(error);
                     }
                 });
             }
         });
 
-        // Check if we got any errors. We only look at the first error. First we need to drop our
-        // sender, otherwise the recv will block forever.
-        drop(error_tx);
-        if let Ok(error) = error_rx.recv() {
+        // Check if we got any errors. We only look at the first error.
+        if let Some(error) = resources.errors.pop() {
             return Err(error);
         }
 
@@ -430,6 +426,8 @@ struct SplitResources<'data, 'offsets, 'sections> {
 
     /// Any offsets that couldn't fit in the offset map due to too many strings within a block.
     overflowed_offsets: ArrayQueue<Vec<OverflowedOffset>>,
+
+    errors: ArrayQueue<crate::error::Error>,
 }
 
 fn create_split_resources<'data, 'offsets, 'sections>(
@@ -518,6 +516,7 @@ fn create_split_resources<'data, 'offsets, 'sections>(
         in_progress_buckets,
         overflowed_offsets,
         offset_writer,
+        errors: ArrayQueue::new(1),
     }
 }
 
@@ -590,7 +589,7 @@ fn total_input_size(input_sections: &[StringMergeInputSection<'_>]) -> LinearInp
 fn do_splitting_work(resources: &SplitResources, reuse_pool: &ReusePool) -> Result {
     let mut overflowed_offsets = Vec::new();
 
-    while !resources.in_progress_buckets.is_empty() {
+    while !resources.in_progress_buckets.is_empty() && resources.errors.is_empty() {
         // Phase 1: Split input sections into separate strings, hash them and allocate entries in
         // our offset map for each string.
         if let Some(input_section) = resources.unprocessed.pop() {

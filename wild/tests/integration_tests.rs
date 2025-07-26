@@ -2492,6 +2492,7 @@ fn integration_test(
         "exclude-libs.c",
         "common_section.c",
         "string_merging.c",
+        "string-merge-missing-null.c",
         "comments.c",
         "eh_frame.c",
         "symbol-priority.c",
