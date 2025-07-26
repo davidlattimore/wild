@@ -3608,9 +3608,11 @@ fn is_symbol_undefined(
         return false;
     }
 
-    sym_file_id == sym_def_file_id
+    let is_undefined = sym_file_id == sym_def_file_id
         && symbol.is_undefined(LittleEndian)
-        && symbol_value_flags.is_absolute()
+        && symbol_value_flags.is_absolute();
+
+    is_undefined && args.no_undefined
 }
 
 impl<'data> EpilogueLayoutState<'data> {
