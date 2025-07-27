@@ -3032,10 +3032,17 @@ fn process_relocation<A: Arch>(
                 )
                 .context("Failed to get source info")?;
 
-                resources.report_error(error!(
-                    "Undefined symbol {symbol_name}, referenced by {}\n    {}",
-                    source_info, object.input,
-                ));
+                if args.error_unresolved_symbols {
+                    resources.report_error(error!(
+                        "Undefined symbol {symbol_name}, referenced by {}\n    {}",
+                        source_info, object.input,
+                    ));
+                } else {
+                    crate::error::warning(&format!(
+                        "Undefined symbol {symbol_name}, referenced by {}\n    {}",
+                        source_info, object.input,
+                    ));
+                }
             }
         }
 
@@ -5307,7 +5314,12 @@ impl<'data> DynamicLayoutState<'data> {
                             let symbol_name =
                                 resources.symbol_db.symbol_name_for_display(symbol_id);
 
-                            bail!("undefined reference to `{symbol_name}` from {self}");
+                            if args.error_unresolved_symbols {
+                                bail!("undefined reference to `{symbol_name}` from {self}");
+                            }
+                            crate::error::warning(&format!(
+                                "undefined reference to `{symbol_name}` from {self}"
+                            ));
                         }
                     }
                 }

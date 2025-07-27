@@ -73,7 +73,6 @@ tests = [
   "trace.sh",
   "undefined-glob-gc-sections.sh",
   "undefined-glob.sh",
-  "warn-unresolved-symbols.sh",
   "wrap.sh",
 ]
 
@@ -218,6 +217,7 @@ tests = [
   "duplicate-error-archive.sh",     # Different message formats
   "duplicate-error-gc-sections.sh", # Different message formats
   "duplicate-error.sh",             # Different message formats
+  "warn-unresolved-symbols.sh",     # Different message formats
   "verbose.sh",
   "version.sh",                     # The message of `--version` is different from mold's one.
   "help.sh",

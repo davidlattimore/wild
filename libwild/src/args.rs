@@ -92,6 +92,7 @@ pub struct Args {
     pub(crate) b_symbolic: BSymbolicKind,
     pub(crate) relax: bool,
     pub(crate) unresolved_symbols: UnresolvedSymbols,
+    pub(crate) error_unresolved_symbols: bool,
 
     output_kind: Option<OutputKind>,
     pub(crate) is_dynamic_executable: AtomicBool,
@@ -321,6 +322,7 @@ impl Default for Args {
             jobserver_client: None,
             available_threads: NonZeroUsize::new(1).unwrap(),
             unresolved_symbols: UnresolvedSymbols::ReportAll,
+            error_unresolved_symbols: true,
         }
     }
 }
@@ -671,6 +673,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                 }
                 _ => bail!("Invalid unresolved-symbols value {rest}"),
             }
+        } else if long_arg_eq("error-unresolved-symbols") {
+            args.error_unresolved_symbols = true;
+        } else if long_arg_eq("warn-unresolved-symbols") {
+            args.error_unresolved_symbols = false;
         } else if long_arg_eq("no-undefined") {
             args.no_undefined = true;
         } else if let Some(rest) = long_arg_split_prefix("undefined=") {
