@@ -76,22 +76,11 @@ pub(crate) struct File<'data> {
 pub(crate) enum RelocationList<'data> {
     Rela(&'data [Rela]),
     Crel(CrelIterator<'data>),
-    Empty,
 }
 
 pub(crate) struct RelocationListIter<'data> {
     list: RelocationList<'data>,
     index: usize,
-}
-
-impl<'data> RelocationListIter<'data> {
-    pub(crate) fn len(&self) -> usize {
-        match &self.list {
-            RelocationList::Rela(rela) => rela.len(),
-            RelocationList::Crel(crel) => crel.len(),
-            RelocationList::Empty => 0,
-        }
-    }
 }
 
 impl<'data> Iterator for RelocationListIter<'data> {
@@ -103,7 +92,6 @@ impl<'data> Iterator for RelocationListIter<'data> {
             RelocationList::Rela(rela) => rela
                 .get(self.index)
                 .map(|r| Crel::from_rela(r, LittleEndian, false)),
-            RelocationList::Empty => None,
         };
         self.index += 1;
         item
@@ -122,27 +110,45 @@ impl<'data> IntoIterator for RelocationList<'data> {
     }
 }
 
-pub(crate) struct RelocationCache<'data> {
-    list: Option<RelocationList<'data>>,
-    cached_relocations: Option<Vec<Crel>>,
+pub(crate) trait RelocationSequence {
+    fn num_relocations(&self) -> usize;
+    fn get_crel(&self, index: usize) -> Crel;
+    fn crel_iter(&self) -> impl Iterator<Item = Crel>;
 }
 
-impl<'data> RelocationCache<'data> {
-    pub(crate) fn from_relocations(relocations: RelocationList<'data>) -> Self {
-        Self {
-            list: Some(relocations),
-            cached_relocations: None,
-        }
+impl RelocationSequence for &[Rela] {
+    fn num_relocations(&self) -> usize {
+        self.len()
     }
 
-    pub(crate) fn get_relocations(&mut self) -> &[Crel] {
-        self.cached_relocations.get_or_insert_with(|| {
-            self.list
-                .take()
-                .expect("List must be present")
-                .into_iter()
-                .collect()
-        })
+    fn get_crel(&self, index: usize) -> Crel {
+        Crel::from_rela(&self[index], LittleEndian, false)
+    }
+
+    fn crel_iter(&self) -> impl Iterator<Item = Crel> {
+        RelocationList::Rela(self).into_iter()
+    }
+}
+
+pub(crate) struct CrelRelocationCache(Vec<Crel>);
+
+impl CrelRelocationCache {
+    pub(crate) fn new(relocations: Vec<Crel>) -> Self {
+        Self(relocations)
+    }
+}
+
+impl RelocationSequence for CrelRelocationCache {
+    fn num_relocations(&self) -> usize {
+        self.0.len()
+    }
+
+    fn get_crel(&self, index: usize) -> Crel {
+        self.0[index]
+    }
+
+    fn crel_iter(&self) -> impl Iterator<Item = Crel> {
+        self.0.clone().into_iter()
     }
 }
 
@@ -316,7 +322,7 @@ impl<'data> File<'data> {
         relocations: &RelocationSections,
     ) -> Result<RelocationList<'data>> {
         let Some(section_index) = relocations.get(index) else {
-            return Ok(RelocationList::Empty);
+            return Ok(RelocationList::Rela(&[]));
         };
         let section = self.sections.section(section_index)?;
         Ok(
@@ -325,7 +331,7 @@ impl<'data> File<'data> {
             } else if let Some((crel, _)) = section.crel(LittleEndian, self.data)? {
                 RelocationList::Crel(crel)
             } else {
-                RelocationList::Empty
+                RelocationList::Rela(&[])
             },
         )
     }
