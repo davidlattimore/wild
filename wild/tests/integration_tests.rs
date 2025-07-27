@@ -2332,12 +2332,12 @@ fn find_bin(names: &[&str]) -> Result<PathBuf> {
 fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
     [Architecture::AArch64, Architecture::RISCV64]
         .into_iter()
-        .filter_map(|arch| {
+        .map(|arch| {
             let path = PathBuf::from(format!("/usr/{arch}-linux-gnu/bin/{name}"));
             if path.exists() {
-                Some((arch, path))
+                (arch, path)
             } else {
-                None
+                (arch, PathBuf::from(name))
             }
         })
         .collect()
@@ -2407,18 +2407,7 @@ fn run_with_config(
     arch: Architecture,
     linkers: &[Linker],
 ) -> Result {
-    let mut config = config.clone();
-
     let cross_arch = (arch != get_host_architecture()).then_some(arch);
-
-    // GCC cross compilers, when passed `-fuse-ld=lld` won't look for `ld.lld` on the path.
-    // Instead it'll look for `aarch64-linux-gnu-ld.lld` on the path and look for `ld.lld`
-    // only in the sysroot (e.g. `aarch64-linux-gnu`). We could hack around this by creating
-    // a temporary directory containing a symlink with the appropriate name, but for now, we
-    // just skip running with lld when cross compiling.
-    if cross_arch.is_some() {
-        config.enabled_linkers.remove("lld");
-    }
 
     let programs = linkers
         .iter()
@@ -2426,7 +2415,7 @@ fn run_with_config(
         .map(|linker| {
             let start = Instant::now();
             let result = program_inputs
-                .build(linker, &config, cross_arch)
+                .build(linker, config, cross_arch)
                 .with_context(|| {
                     format!(
                         "Failed to build program `{program_inputs}` \
@@ -2453,8 +2442,8 @@ fn run_with_config(
     }
 
     let start = Instant::now();
-    diff_shared_objects(&config, &programs)?;
-    diff_executables(&config, &programs)?;
+    diff_shared_objects(config, &programs)?;
+    diff_executables(config, &programs)?;
 
     if should_print_timing() {
         println!(
@@ -2511,6 +2500,7 @@ fn integration_test(
         "exclude-libs.c",
         "common_section.c",
         "string_merging.c",
+        "string-merge-missing-null.c",
         "comments.c",
         "eh_frame.c",
         "symbol-priority.c",
@@ -2521,6 +2511,7 @@ fn integration_test(
         "mixed-verdef-verneed.c",
         "copy-relocations.c",
         "force-undefined.c",
+        "wrap.c",
         "shlib-archive-activation.c",
         "linker-script.c",
         "linker-script-executable.c",
@@ -2588,13 +2579,19 @@ fn integration_test(
     Ok(())
 }
 
-fn get_wild_test_cross() -> Option<Vec<Architecture>> {
-    std::env::var("WILD_TEST_CROSS").ok().map(|cross_arch| {
-        cross_arch
-            .split(',')
-            .filter_map(|s| Architecture::from_str(s).ok())
-            .collect()
-    })
+fn get_wild_test_cross() -> Result<Option<Vec<Architecture>>> {
+    std::env::var("WILD_TEST_CROSS")
+        .ok()
+        .map(|cross_arch| {
+            cross_arch
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    Architecture::from_str(s).with_context(|| format!("Unknown cross arch `{s}`"))
+                })
+                .collect()
+        })
+        .transpose()
 }
 
 fn read_test_config() -> Result<TestConfig> {
@@ -2624,7 +2621,7 @@ fn read_test_config() -> Result<TestConfig> {
     };
 
     // The environment variable `WILD_TEST_CROSS` can override the config file setting.
-    if let Some(qemu_arch_from_env) = get_wild_test_cross() {
+    if let Some(qemu_arch_from_env) = get_wild_test_cross()? {
         config.qemu_arch = qemu_arch_from_env;
     }
 
