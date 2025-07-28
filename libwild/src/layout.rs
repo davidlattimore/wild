@@ -914,9 +914,26 @@ fn export_dynamic<'data>(
     symbol_db: &SymbolDb<'data>,
 ) -> Result {
     let name = symbol_db.symbol_name(symbol_id)?;
+
+    let version = (symbol_db.version_script.version_count() > 0)
+        .then(|| {
+            // TODO: We already hashed this symbol at some point previously. See if we can avoid
+            // rehashing it here and if that actually saves us time.
+            symbol_db
+                .version_script
+                .version_for_symbol(&UnversionedSymbolName::prehashed(name.bytes()))
+        })
+        .flatten()
+        .unwrap_or(object::elf::VER_NDX_GLOBAL);
+
     common
         .dynamic_symbol_definitions
-        .push(DynamicSymbolDefinition::new(symbol_id, name.bytes()));
+        .push(DynamicSymbolDefinition::new(
+            symbol_id,
+            name.bytes(),
+            version,
+        ));
+
     Ok(())
 }
 
@@ -1550,6 +1567,7 @@ pub(crate) struct DynamicSymbolDefinition<'data> {
     pub(crate) symbol_id: SymbolId,
     pub(crate) name: &'data [u8],
     pub(crate) hash: u32,
+    pub(crate) version: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -5854,11 +5872,12 @@ impl GnuHashLayout {
 }
 
 impl<'data> DynamicSymbolDefinition<'data> {
-    fn new(symbol_id: SymbolId, name: &'data [u8]) -> Self {
+    fn new(symbol_id: SymbolId, name: &'data [u8], version: u16) -> Self {
         Self {
             symbol_id,
             name,
             hash: gnu_hash(name),
+            version,
         }
     }
 }
