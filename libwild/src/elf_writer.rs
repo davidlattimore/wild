@@ -73,7 +73,6 @@ use crate::sharding::ShardKey;
 use crate::slice::slice_take_prefix_mut;
 use crate::slice::take_first_mut;
 use crate::string_merging::get_merged_string_output_address;
-use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use foldhash::HashMap as FoldHashMap;
@@ -2795,16 +2794,8 @@ fn write_dynamic_symbol_definitions(
                     &mut table_writer.dynsym_writer,
                 )?;
 
-                if let Some(versym) = table_writer.version_writer.versym.as_mut()
-                    && let Some(version_out) = crate::slice::take_first_mut(versym)
-                {
-                    // TODO: avoid rehashing
-                    let version = layout
-                        .symbol_db
-                        .version_script
-                        .version_for_symbol(&UnversionedSymbolName::prehashed(sym_def.name))
-                        .unwrap_or(object::elf::VER_NDX_GLOBAL);
-                    version_out.0.set(LittleEndian, version);
+                if let Some(versym) = table_writer.version_writer.versym.as_mut() {
+                    write_symbol_version(versym, sym_def.version)?;
                 }
             }
             FileLayout::Dynamic(object) => {
@@ -2816,7 +2807,7 @@ fn write_dynamic_symbol_definitions(
                 )?;
 
                 if let Some(versym) = table_writer.version_writer.versym.as_mut() {
-                    write_symbol_version(
+                    copy_symbol_version(
                         object.input_symbol_versions,
                         object.symbol_id_range.id_to_offset(sym_def.symbol_id),
                         &object.version_mapping,
@@ -3540,7 +3531,7 @@ fn write_dynamic_file<A: Arch>(
                 entry.st_info = symbol.st_info();
 
                 if let Some(versym) = table_writer.version_writer.versym.as_mut() {
-                    write_symbol_version(
+                    copy_symbol_version(
                         object.input_symbol_versions,
                         object.symbol_id_range.id_to_offset(symbol_id),
                         &object.version_mapping,
@@ -3692,14 +3683,12 @@ fn write_copy_relocation_for_symbol<A: Arch>(
     )
 }
 
-fn write_symbol_version(
+fn copy_symbol_version(
     versym_in: &[Versym],
     local_symbol_index: usize,
     version_mapping: &[u16],
     versym_out: &mut &mut [Versym],
 ) -> Result {
-    let version_out =
-        crate::slice::take_first_mut(versym_out).context("Insufficient .gnu.version allocation")?;
     let output_version =
         versym_in
             .get(local_symbol_index)
@@ -3711,7 +3700,16 @@ fn write_symbol_version(
                     version_mapping[usize::from(input_version) - 1]
                 }
             });
-    version_out.0.set(LittleEndian, output_version);
+
+    write_symbol_version(versym_out, output_version)
+}
+
+fn write_symbol_version(versym_out: &mut &mut [Versym], version: u16) -> Result {
+    crate::slice::take_first_mut(versym_out)
+        .context("Insufficient .gnu.version allocation")?
+        .0
+        .set(LittleEndian, version);
+
     Ok(())
 }
 
