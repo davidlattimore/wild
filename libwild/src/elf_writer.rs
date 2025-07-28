@@ -439,6 +439,10 @@ impl<'out> VersionWriter<'out> {
         }
         Ok(())
     }
+
+    fn take_prefix(&mut self, num_symbols: usize) -> Option<&'out mut [Versym]> {
+        Some(slice_take_prefix_mut(self.versym.as_mut()?, num_symbols))
+    }
 }
 
 struct TableWriter<'layout, 'out> {
@@ -909,6 +913,27 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             size,
         ))
     }
+
+    /// Takes a prefix of dynsym, dynstr and versym suitable for writing the supplied definitions.
+    fn take_dynsym_prefix(
+        &mut self,
+        defs: &[crate::layout::DynamicSymbolDefinition],
+    ) -> VersionedDynsymWriter<'layout, 'out> {
+        let num_symbols = defs.len();
+        let strtab_size = defs.iter().map(|d| d.name.len() + 1).sum();
+
+        VersionedDynsymWriter {
+            dynsym_writer: self
+                .dynsym_writer
+                .take_prefix_global(num_symbols, strtab_size),
+            versym: self.version_writer.take_prefix(num_symbols),
+        }
+    }
+}
+
+struct VersionedDynsymWriter<'layout, 'out> {
+    dynsym_writer: SymbolTableWriter<'layout, 'out>,
+    versym: Option<&'out mut [Versym]>,
 }
 
 struct SymbolTableWriter<'layout, 'out> {
@@ -1071,6 +1096,17 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             );
         }
         Ok(())
+    }
+
+    /// Returns a new writer that will take responsibility for the first `num_symbols`.
+    fn take_prefix_global(&mut self, num_symbols: usize, strtab_size: usize) -> Self {
+        SymbolTableWriter {
+            local_entries: &mut [],
+            global_entries: slice_take_prefix_mut(&mut self.global_entries, num_symbols),
+            output_sections: self.output_sections,
+            strtab_writer: self.strtab_writer.take_prefix(strtab_size),
+            is_dynamic: self.is_dynamic,
+        }
     }
 }
 
@@ -2782,56 +2818,71 @@ fn write_dynamic_symbol_definitions(
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
-    for sym_def in &epilogue.dynamic_symbol_definitions {
-        let file_id = layout.symbol_db.file_id_for_symbol(sym_def.symbol_id);
-        let file_layout = &layout.file_layout(file_id);
-        match file_layout {
-            FileLayout::Object(object) => {
-                write_regular_object_dynamic_symbol_definition(
-                    sym_def,
-                    object,
-                    layout,
-                    &mut table_writer.dynsym_writer,
-                )?;
+    let chunk_size =
+        10.max(epilogue.dynamic_symbol_definitions.len() / 10 / rayon::current_num_threads());
 
-                if let Some(versym) = table_writer.version_writer.versym.as_mut() {
-                    write_symbol_version(versym, sym_def.version)?;
+    epilogue
+        .dynamic_symbol_definitions
+        .chunks(chunk_size)
+        .map(|defs| (defs, table_writer.take_dynsym_prefix(defs)))
+        .par_bridge()
+        .try_for_each(|(defs, mut table_writer)| {
+            for sym_def in defs {
+                let file_id = layout.symbol_db.file_id_for_symbol(sym_def.symbol_id);
+                let file_layout = &layout.file_layout(file_id);
+                match file_layout {
+                    FileLayout::Object(object) => {
+                        write_regular_object_dynamic_symbol_definition(
+                            sym_def,
+                            object,
+                            layout,
+                            &mut table_writer.dynsym_writer,
+                        )?;
+
+                        if let Some(versym) = table_writer.versym.as_mut() {
+                            write_symbol_version(versym, sym_def.version)?;
+                        }
+                    }
+                    FileLayout::Dynamic(object) => {
+                        write_copy_relocation_dynamic_symbol_definition(
+                            sym_def,
+                            object,
+                            layout,
+                            &mut table_writer.dynsym_writer,
+                        )?;
+
+                        if let Some(versym) = table_writer.versym.as_mut() {
+                            copy_symbol_version(
+                                object.input_symbol_versions,
+                                object.symbol_id_range.id_to_offset(sym_def.symbol_id),
+                                &object.version_mapping,
+                                versym,
+                            )?;
+                        }
+                    }
+                    FileLayout::LinkerScript(script) => {
+                        write_linker_script_dynsym(
+                            &mut table_writer.dynsym_writer,
+                            layout,
+                            sym_def.symbol_id,
+                            script,
+                        )?;
+                    }
+                    _ => bail!(
+                        "Internal error: Unexpected dynamic symbol definition from {:?}. {}",
+                        file_layout,
+                        layout.symbol_debug(sym_def.symbol_id)
+                    ),
                 }
             }
-            FileLayout::Dynamic(object) => {
-                write_copy_relocation_dynamic_symbol_definition(
-                    sym_def,
-                    object,
-                    layout,
-                    &mut table_writer.dynsym_writer,
-                )?;
 
-                if let Some(versym) = table_writer.version_writer.versym.as_mut() {
-                    copy_symbol_version(
-                        object.input_symbol_versions,
-                        object.symbol_id_range.id_to_offset(sym_def.symbol_id),
-                        &object.version_mapping,
-                        versym,
-                    )?;
-                }
-            }
-            FileLayout::LinkerScript(script) => {
-                write_linker_script_dynsym(table_writer, layout, sym_def.symbol_id, script)?;
-            }
-            _ => bail!(
-                "Internal error: Unexpected dynamic symbol definition from {:?}. {}",
-                file_layout,
-                layout.symbol_debug(sym_def.symbol_id)
-            ),
-        }
-    }
-
-    Ok(())
+            Ok(())
+        })
 }
 
 /// Writes a symbol that was produced by a linker script.
 fn write_linker_script_dynsym(
-    table_writer: &mut TableWriter,
+    dynsym_writer: &mut SymbolTableWriter,
     layout: &Layout,
     symbol_id: SymbolId,
     script: &LinkerScriptLayoutState,
@@ -2864,9 +2915,7 @@ fn write_linker_script_dynsym(
     let address = resolution.address()?;
     let name = layout.symbol_db.symbol_name(symbol_id)?;
 
-    let entry = table_writer
-        .dynsym_writer
-        .define_symbol(false, shndx, address, 0, name.bytes())?;
+    let entry = dynsym_writer.define_symbol(false, shndx, address, 0, name.bytes())?;
 
     entry.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
 
@@ -3729,6 +3778,16 @@ impl StrTabWriter<'_> {
         let offset = self.next_offset;
         self.next_offset += len_with_terminator as u32;
         offset
+    }
+
+    fn take_prefix(&mut self, size: usize) -> Self {
+        let next_offset = self.next_offset;
+        self.next_offset += size as u32;
+
+        Self {
+            next_offset,
+            out: slice_take_prefix_mut(&mut self.out, size),
+        }
     }
 }
 
