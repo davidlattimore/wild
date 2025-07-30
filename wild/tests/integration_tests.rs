@@ -2535,6 +2535,8 @@ fn integration_test(
         "z-defs.c",
         "z-undefs.c"
         "export-dynamic.c"
+        "unresolved-symbols-object.c",
+        "unresolved-symbols-shared.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),

@@ -91,6 +91,8 @@ pub struct Args {
     pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
     pub(crate) relax: bool,
+    pub(crate) unresolved_symbols: UnresolvedSymbols,
+    pub(crate) error_unresolved_symbols: bool,
 
     output_kind: Option<OutputKind>,
     pub(crate) is_dynamic_executable: AtomicBool,
@@ -180,6 +182,21 @@ pub(crate) enum BSymbolicKind {
     Functions,
     NonWeakFunctions,
     NonWeak,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum UnresolvedSymbols {
+    /// Report all unresolved symbols.
+    ReportAll,
+
+    /// Ignore unresolved symbols in shared libraries.
+    IgnoreInSharedLibs,
+
+    /// Ignore unresolved symbols in object files.
+    IgnoreInObjectFiles,
+
+    /// Ignore all unresolved symbols.
+    IgnoreAll,
 }
 
 pub const WILD_UNSUPPORTED_ENV: &str = "WILD_UNSUPPORTED";
@@ -304,6 +321,8 @@ impl Default for Args {
             relax: true,
             jobserver_client: None,
             available_threads: NonZeroUsize::new(1).unwrap(),
+            unresolved_symbols: UnresolvedSymbols::ReportAll,
+            error_unresolved_symbols: true,
         }
     }
 }
@@ -639,6 +658,26 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.allow_shlib_undefined = true;
         } else if long_arg_eq("no-allow-shlib-undefined") {
             args.allow_shlib_undefined = false;
+        } else if let Some(rest) = get_option_value("unresolved-symbols") {
+            match rest.as_str() {
+                "report-all" => {
+                    args.unresolved_symbols = UnresolvedSymbols::ReportAll;
+                }
+                "ignore-in-shared-libs" => {
+                    args.unresolved_symbols = UnresolvedSymbols::IgnoreInSharedLibs;
+                }
+                "ignore-in-object-files" => {
+                    args.unresolved_symbols = UnresolvedSymbols::IgnoreInObjectFiles;
+                }
+                "ignore-all" => {
+                    args.unresolved_symbols = UnresolvedSymbols::IgnoreAll;
+                }
+                _ => bail!("Invalid unresolved-symbols value {rest}"),
+            }
+        } else if long_arg_eq("error-unresolved-symbols") {
+            args.error_unresolved_symbols = true;
+        } else if long_arg_eq("warn-unresolved-symbols") {
+            args.error_unresolved_symbols = false;
         } else if long_arg_eq("no-undefined") {
             args.no_undefined = true;
         } else if let Some(rest) = long_arg_split_prefix("undefined=") {
