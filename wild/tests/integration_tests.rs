@@ -2533,7 +2533,9 @@ fn integration_test(
         "preinit-array.c",
         "exception.cc",
         "z-defs.c",
-        "export-dynamic.c"
+        "export-dynamic.c",
+        "unresolved-symbols-object.c",
+        "unresolved-symbols-shared.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
