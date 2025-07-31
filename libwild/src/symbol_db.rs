@@ -916,8 +916,9 @@ fn select_symbol(
                     // We don't implement full COMDAT logic, however if we encounter duplicate
                     // strong definitions, then we don't emit errors if all the strong definitions
                     // are defined in COMDAT group sections.
-                    if !symbol_db.is_in_comdat_group(existing, resolved)
-                        || !symbol_db.is_in_comdat_group(id, resolved)
+                    if (!symbol_db.is_in_comdat_group(existing, resolved)
+                        || !symbol_db.is_in_comdat_group(id, resolved))
+                        && !symbol_db.db.args.allow_multiple_definitions
                     {
                         bail!(
                             "{}, defined in {} and {}",

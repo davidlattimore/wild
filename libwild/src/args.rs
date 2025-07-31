@@ -95,6 +95,7 @@ pub struct Args {
     pub(crate) relax: bool,
     pub(crate) unresolved_symbols: UnresolvedSymbols,
     pub(crate) error_unresolved_symbols: bool,
+    pub(crate) allow_multiple_definitions: bool,
 
     output_kind: Option<OutputKind>,
     pub(crate) is_dynamic_executable: AtomicBool,
@@ -327,6 +328,7 @@ impl Default for Args {
             available_threads: NonZeroUsize::new(1).unwrap(),
             unresolved_symbols: UnresolvedSymbols::ReportAll,
             error_unresolved_symbols: true,
+            allow_multiple_definitions: false,
         }
     }
 }
@@ -418,6 +420,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                 "nocopyreloc" => args.allow_copy_relocations = false,
                 "nodelete" => args.needs_nodelete_handling = true,
                 "defs" => args.no_undefined = true,
+                "muldefs" => args.allow_multiple_definitions = true,
                 _ => {
                     warn_unsupported(&format!("-z {arg}"))?;
                     // TODO: Handle these
@@ -477,6 +480,8 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.b_symbolic = BSymbolicKind::All;
         } else if long_arg_eq("Bno-symbolic") {
             args.b_symbolic = BSymbolicKind::None;
+        } else if long_arg_eq("allow-multiple-definition") {
+            args.allow_multiple_definitions = true;
         } else if arg == "-o" {
             args.output = get_next_argument(arg).map(|a| Arc::from(Path::new(a.as_ref())))?;
         } else if let Some(value) = get_option_value("dynamic-linker") {
