@@ -525,7 +525,7 @@ fn compute_target_group_size(input_size: LinearInputOffset, num_threads: usize) 
 }
 
 struct ReusePool {
-    string_vecs: ArrayQueue<Vec<StringToMergePlaceholder>>,
+    string_vecs: ArrayQueue<Vec<StringToMerge<'static, 'static>>>,
 
     /// The number of `Vec` instances that have been successfully reused.
     reused: AtomicU32,
@@ -562,17 +562,6 @@ impl ReusePool {
         }
     }
 }
-
-/// A type with the same size and alignment as `StringToMerge`, but without any lifetimes. This is
-/// for use with `reuse_vec`.
-struct StringToMergePlaceholder {
-    _v: [u64; 5],
-}
-
-const _: () = {
-    assert!(size_of::<StringToMerge>() == size_of::<StringToMergePlaceholder>());
-    assert!(align_of::<StringToMerge>() == align_of::<StringToMergePlaceholder>());
-};
 
 /// Returns the total size of our input sections. Each input section's size is rounded up to a block
 /// size.
