@@ -1,7 +1,6 @@
 [skipped_groups.unsupported_options]
 reason = "these tests use unsupported options"
 tests = [
-  "allow-multiple-definition.sh",
   "audit.sh",
   "color-diagnostics.sh",
   "compress-debug-sections.sh",        # Compressed debug sections support #493
