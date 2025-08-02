@@ -130,6 +130,7 @@ use std::collections::HashSet;
 use std::env;
 use std::fmt::Display;
 use std::fs::File;
+use std::fs::read_dir;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io::ErrorKind;
@@ -2621,4 +2622,62 @@ fn read_test_config() -> Result<TestConfig> {
     }
 
     Ok(config)
+}
+
+#[cfg(test)]
+mod tidy {
+    use super::*;
+
+    #[test]
+    fn check_sources_format() {
+        if std::env::var_os("WILD_TEST_IGNORE_FORMAT").is_some() {
+            return;
+        }
+
+        let extensions = ["c", "cc", "h"];
+        let sources_path = format!("{}/tests/sources", env!("CARGO_MANIFEST_DIR"));
+        let files_iter = read_dir(&sources_path).unwrap().filter_map(|entry| {
+            let path = entry.as_ref().unwrap().path();
+            if path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extensions.contains(&extension.to_str().unwrap()))
+            {
+                Some(path)
+            } else {
+                None
+            }
+        });
+
+        let clang_format_out = Command::new("clang-format")
+            .arg("--dry-run")
+            .arg("-Werror")
+            // Undocumented option that forces the colours: https://github.com/llvm/llvm-project/issues/119224
+            .arg("--color")
+            .args(files_iter)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("Failed to spawn `clang-format`, is it installed?");
+
+        if !clang_format_out.status.success() {
+            let stdout = String::from_utf8_lossy(&clang_format_out.stdout);
+            let stderr = String::from_utf8_lossy(&clang_format_out.stderr);
+            let mut out = String::with_capacity(stdout.len() + stderr.len() + 1);
+            if !stdout.is_empty() {
+                out.push_str(&stdout);
+                if !stderr.is_empty() {
+                    out.push('\n');
+                }
+            }
+            if !stderr.is_empty() {
+                out.push_str(&stderr);
+            }
+            panic!(
+                "clang-format check failed:\n{out}\nRun `clang-format -i {sources_path}/*.{{{extensions_str}}}` to fix it.",
+                extensions_str = extensions.join(",")
+            )
+        }
+    }
 }
