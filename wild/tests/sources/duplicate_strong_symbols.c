@@ -13,10 +13,6 @@
 //#Object:duplicate_strong_symbols2.c
 //#LinkArgs:-z muldefs
 
-int test_func(void) {
-    return 0;
-}
+int test_func(void) { return 0; }
 
-void _start(void) {
-    test_func();
-}
+void _start(void) { test_func(); }

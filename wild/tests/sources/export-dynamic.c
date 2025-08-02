@@ -1,4 +1,5 @@
-// Adding shared libraries should result in dynamic executables when unspecified: #836
+// Adding shared libraries should result in dynamic executables when
+// unspecified: #836
 //#Config:shared-input
 //#LinkArgs:-z now --export-dynamic
 //#ExpectDynSym:foo
@@ -10,7 +11,7 @@
 //#EnableLinker:lld
 //#RunEnabled:false
 
-//Do not export symbols for static executables: #836
+// Do not export symbols for static executables: #836
 //#Config:static-exe
 //#Mode:static
 //#LinkArgs:-z now --export-dynamic

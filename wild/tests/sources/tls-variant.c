@@ -9,7 +9,7 @@
 //#Config:gcc:default
 //#CompArgs:-fpic
 //#Object:tls-variant-1.c:-mtls-dialect=gnu2
-//#Object:tls-variant-2.c:-ftls-model=global-dynamic 
+//#Object:tls-variant-2.c:-ftls-model=global-dynamic
 //#Object:tls-variant-3.c:-ftls-model=initial-exec
 //#Arch: x86_64
 
@@ -39,27 +39,26 @@ int get_global_tls2(void);
 int get_global_tls3(void);
 void set_global_tls3(int v);
 
-int main()
-{
-    if (foo() != 1) {
-        return 1;
-    }
-    if (bar() != 1) {
-        return 2;
-    }
-    if (baz() != 1) {
-        return 3;
-    }
-    if (get_global_tls2() != 1000) {
-        return 4;
-    }
-    if (get_global_tls3() != 0) {
-        return 5;
-    }
-    set_global_tls3(19);
-    if (get_global_tls3() != 19) {
-        return 5;
-    }
+int main() {
+  if (foo() != 1) {
+    return 1;
+  }
+  if (bar() != 1) {
+    return 2;
+  }
+  if (baz() != 1) {
+    return 3;
+  }
+  if (get_global_tls2() != 1000) {
+    return 4;
+  }
+  if (get_global_tls3() != 0) {
+    return 5;
+  }
+  set_global_tls3(19);
+  if (get_global_tls3() != 19) {
+    return 5;
+  }
 
-    return 42;
+  return 42;
 }
