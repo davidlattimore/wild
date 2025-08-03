@@ -158,7 +158,8 @@ jobs:
       - name: Calculate check
         id: calc-matrix
         run: |
-          matrix=$(nix flake show --json | jq -c '.checks."x86_64-linux"|keys_unsorted') || exit 1
+          set -euo pipefail
+          matrix=$(nix flake show --json | jq -c '.checks."x86_64-linux"|keys_unsorted')
           echo "Matrix: $matrix"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
