@@ -118,7 +118,7 @@ let
         lib.makeBinPath [
           binutils-unwrapped-all-targets
           clang
-          clang-format
+          clang-tools
           gccWrapper
           gppWrapper
           lld
