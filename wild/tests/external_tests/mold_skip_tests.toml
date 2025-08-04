@@ -230,7 +230,6 @@ tests = [
   "copyrel-protected.sh",
   "copyrel-relro.sh",
   "copyrel-relro2.sh",
-  "copyrel.sh",
   "ctors-in-init-array.sh",
   "defsym-missing-symbol.sh",
   "demangle-cpp.sh",
