@@ -28,6 +28,7 @@ use crate::error;
 use crate::error::Context;
 use crate::error::Error;
 use crate::error::Result;
+use crate::error::warning;
 use crate::file_writer;
 use crate::input_data::FileId;
 use crate::input_data::InputData;
@@ -5662,7 +5663,7 @@ impl<'data> DynamicLayoutState<'data> {
                 is_weak: symbol.is_weak(),
             });
 
-        info.add_symbol(symbol_id, symbol.is_weak(), resources.symbol_db)?;
+        info.add_symbol(symbol_id, symbol.is_weak(), resources.symbol_db);
 
         Ok(())
     }
@@ -5778,23 +5779,21 @@ impl<'data> LinkerScriptLayoutState<'data> {
 }
 
 impl CopyRelocationInfo {
-    fn add_symbol(&mut self, symbol_id: SymbolId, is_weak: bool, symbol_db: &SymbolDb) -> Result {
+    fn add_symbol(&mut self, symbol_id: SymbolId, is_weak: bool, symbol_db: &SymbolDb) {
         if self.symbol_id == symbol_id || is_weak {
-            return Ok(());
+            return;
         }
 
         if !self.is_weak {
-            bail!(
+            warning(&format!(
                 "Multiple non-weak symbols at the same address have copy relocations: {}, {}",
                 symbol_db.symbol_debug(self.symbol_id),
                 symbol_db.symbol_debug(symbol_id)
-            );
+            ));
         }
 
         self.symbol_id = symbol_id;
         self.is_weak = false;
-
-        Ok(())
     }
 }
 
