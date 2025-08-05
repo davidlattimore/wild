@@ -246,8 +246,7 @@ impl Config {
                 "segment.PT_GNU_RELRO.*",
                 "segment.PT_GNU_STACK.*",
                 "segment.PT_GNU_PROPERTY.*",
-                // SFrame is not supported by `object` crate yet
-                "segment.UNKNOWN_P_TYPE_1685382484.*",
+                "segment.PT_GNU_SFRAME.*",
                 // TODO: RISC-v
                 "segment.SHT_RISCV_ATTRIBUTES.*",
                 "segment.LOAD.RW.alignment",
