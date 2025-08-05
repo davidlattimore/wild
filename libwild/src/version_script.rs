@@ -464,7 +464,17 @@ pub(crate) fn parse_matcher<'data>(
                 break;
             }
 
-            let matcher = parse_matcher(input, without_semicolon)?;
+            // Symbols at the end of `extern` blocks may omit semicolons
+            let expect_semicolon = {
+                let remaining = &**input;
+                if let Some(close_pos) = remaining.windows(2).position(|w| w == b"};") {
+                    remaining[..close_pos].contains(&b';')
+                } else {
+                    without_semicolon
+                }
+            };
+
+            let matcher = parse_matcher(input, !expect_semicolon)?;
             let ParsedSymbolMatcher::Single(matcher) = matcher else {
                 let unexpected_extern = if matches!(matcher, ParsedSymbolMatcher::CxxMatchers(_)) {
                     "C++"
@@ -487,9 +497,13 @@ pub(crate) fn parse_matcher<'data>(
     }
 
     let token = if without_semicolon {
-        // TODO: Clippy bug
-        #[allow(clippy::needless_borrow)]
-        &input
+        if input.contains(&b'}') {
+            take_until(1.., b'}').parse_next(input)?
+        } else {
+            // TODO: Clippy bug
+            #[allow(clippy::needless_borrow)]
+            &input
+        }
     } else {
         take_until(1.., b';').parse_next(input)?
     };
@@ -777,6 +791,53 @@ mod tests {
                 .map(|s| std::str::from_utf8(s.bytes()).unwrap())
                 .sorted(),
             ["bar", "baz", "foo"],
+        );
+    }
+
+    #[test]
+    fn extern_without_semicolon_version_script() {
+        let data = ScriptData {
+            raw: br#"
+                {
+                    extern "C" {
+                        foo
+                    };
+                };"#,
+        };
+        let script = VersionScript::parse(data).unwrap();
+        let version_body = &script.versions[0].version_body;
+
+        assert_equal(
+            version_body
+                .globals
+                .general
+                .exact
+                .iter()
+                .map(|s| std::str::from_utf8(s.bytes()).unwrap()),
+            ["foo"],
+        );
+
+        let data = ScriptData {
+            raw: br#"
+                {
+                    extern "C++" {
+                        bar;
+                        baz
+                    };
+                };"#,
+        };
+        let script = VersionScript::parse(data).unwrap();
+        let version_body = &script.versions[0].version_body;
+
+        assert_equal(
+            version_body
+                .globals
+                .cxx
+                .exact
+                .iter()
+                .map(|s| std::str::from_utf8(s.bytes()).unwrap())
+                .sorted(),
+            ["bar", "baz"],
         );
     }
 
