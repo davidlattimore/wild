@@ -136,7 +136,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Spell Check Repo
-        uses: crate-ci/typos@v1.34.0
+        uses: crate-ci/typos@v1.35.1
 
   calc-matrix:
     name: Find Nix checks
