@@ -46,7 +46,6 @@ pub struct Args {
     pub(crate) sym_info: Option<String>,
     pub(crate) merge_strings: bool,
     pub(crate) debug_fuel: Option<AtomicI64>,
-    pub(crate) time_phases: bool,
     pub(crate) validate_output: bool,
     pub(crate) version_script_path: Option<PathBuf>,
     pub(crate) debug_address: Option<u64>,
@@ -82,6 +81,10 @@ pub struct Args {
     /// specified substrings.
     pub(crate) gc_stats_ignore: Vec<String>,
 
+    /// If `Some`, then we'll time how long each phase takes. We'll also measure the specified
+    /// counters, if any.
+    pub(crate) time_phase_options: Option<Vec<CounterKind>>,
+
     pub(crate) verbose_gc_stats: bool,
 
     pub(crate) save_dir: SaveDir,
@@ -105,6 +108,19 @@ pub struct Args {
     pub(crate) available_threads: NonZeroUsize,
 
     jobserver_client: Option<Client>,
+}
+
+#[derive(Clone, Copy)]
+pub enum CounterKind {
+    Cycles,
+    Instructions,
+    CacheMisses,
+    BranchMisses,
+    PageFaults,
+    PageFaultsMinor,
+    PageFaultsMajor,
+    L1dRead,
+    L1dMiss,
 }
 
 /// Represents a command-line argument that specifies the number of threads to use,
@@ -267,7 +283,7 @@ impl Default for Args {
             is_dynamic_executable: AtomicBool::new(false),
             dynamic_linker: None,
             output_kind: None,
-            time_phases: false,
+            time_phase_options: None,
             num_threads: None,
             strip_all: false,
             strip_debug: false,
@@ -522,8 +538,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                 "none" => {}
                 other => warn_unsupported(&format!("--icf={other}"))?,
             }
+        } else if let Some(rest) = long_arg_split_prefix("time=") {
+            args.time_phase_options = Some(parse_time_phase_options(rest)?);
         } else if long_arg_eq("time") {
-            args.time_phases = true;
+            args.time_phase_options = Some(Vec::new());
         } else if let Some(rest) = long_arg_split_prefix("threads=") {
             args.num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
         } else if long_arg_eq("threads") {
@@ -1070,6 +1088,29 @@ fn warn_unsupported(opt: &str) -> Result {
         other => bail!("Unsupported value for {WILD_UNSUPPORTED_ENV}={other}"),
     }
     Ok(())
+}
+
+fn parse_time_phase_options(input: &str) -> Result<Vec<CounterKind>> {
+    input.split(',').map(|s| s.parse()).collect()
+}
+
+impl FromStr for CounterKind {
+    type Err = crate::error::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Ok(match s {
+            "cycles" => CounterKind::Cycles,
+            "instructions" => CounterKind::Instructions,
+            "cache-misses" => CounterKind::CacheMisses,
+            "branch-misses" => CounterKind::BranchMisses,
+            "page-faults" => CounterKind::PageFaults,
+            "page-faults-minor" => CounterKind::PageFaultsMinor,
+            "page-faults-major" => CounterKind::PageFaultsMajor,
+            "l1d-read" => CounterKind::L1dRead,
+            "l1d-miss" => CounterKind::L1dMiss,
+            other => bail!("Unsupported performance counter `{other}`"),
+        })
+    }
 }
 
 #[cfg(test)]
