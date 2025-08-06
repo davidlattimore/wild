@@ -8,6 +8,8 @@ on:
       - Cargo.lock
   workflow_dispatch:
 
+permissions: {}
+
 jobs:
   nix-cache:
     name: Refresh Nix Cache
@@ -16,6 +18,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Nix
         uses: nixbuild/nix-quick-install-action@v32
