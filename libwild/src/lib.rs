@@ -28,6 +28,11 @@ pub(crate) mod output_section_part_map;
 pub(crate) mod output_trace;
 pub(crate) mod parsing;
 pub(crate) mod part_id;
+#[cfg(target_os = "linux")]
+pub(crate) mod perf;
+#[cfg(not(target_os = "linux"))]
+#[path = "perf_unsupported.rs"]
+pub(crate) mod perf;
 pub(crate) mod program_segments;
 pub(crate) mod resolution;
 pub(crate) mod riscv64;
@@ -68,6 +73,9 @@ use tracing_subscriber::util::SubscriberInitExt;
 /// Runs the linker and cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
 pub fn run(args: Args) -> error::Result {
+    // Note, we need to setup tracing before we activate the thread pool. In particular, we need to
+    // initialise the timing module before the worker threads are started, otherwise the threads
+    // won't contribute to counters such as --time=cycles,instructions etc.
     setup_tracing(&args)?;
     let args = args.activate_thread_pool()?;
     let linker = Linker::new();
@@ -79,8 +87,8 @@ pub fn run(args: Args) -> error::Result {
 /// called once and only if nothing else has already set the global tracing dispatcher. Calling this
 /// is optional. If it isn't called, no tracing-based features will function. e.g. --time.
 pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
-    if args.time_phases {
-        timing::init_tracing()
+    if let Some(opts) = args.time_phase_options.as_ref() {
+        timing::init_tracing(opts)
     } else if args.print_allocations.is_some() {
         debug_trace::init()
     } else {

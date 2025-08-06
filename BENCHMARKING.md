@@ -314,6 +314,11 @@ recommended to combine this with `--no-fork`. For example:
 └─  481.09 Link
 ```
 
+If a benchmark has shown a significant increase in say CPU cycles or instructions, then it can be
+useful to check which phase or phases that increase has occurred in. You can get per-phase cycle and
+instruction counts by running with `--time=cycles,instructions`. To see the full list of counters,
+search `args.rs` for "branch-misses".
+
 ### Samply
 
 To look for hot functions and to check how the work distribution looks between threads, you can use
