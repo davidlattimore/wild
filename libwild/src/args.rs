@@ -736,10 +736,12 @@ struct PrefixOptionHandler {
 }
 
 /// Function type for option handlers
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone, Copy)]
 enum OptionHandlerFn {
     NoParam(fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>),
     WithParam(fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>),
+    OptionalParam(fn(&mut Args, &mut Vec<Modifiers>, Option<&str>) -> Result<()>),
 }
 
 /// Builder for declaring options without parameters
@@ -752,6 +754,14 @@ pub struct OptionDeclaration<'a> {
 
 /// Builder for declaring options with parameters
 pub struct OptionWithParamDeclaration<'a> {
+    parser: &'a mut ArgumentParser,
+    long_names: Vec<&'static str>,
+    short_names: Vec<char>,
+    help_text: &'static str,
+}
+
+/// Builder for declaring options with optional parameters
+pub struct OptionWithOptionalParamDeclaration<'a> {
     parser: &'a mut ArgumentParser,
     long_names: Vec<&'static str>,
     short_names: Vec<char>,
@@ -834,6 +844,16 @@ impl ArgumentParser {
         }
     }
 
+    /// Declare an option with an optional parameter
+    pub fn declare_with_optional_param(&mut self) -> OptionWithOptionalParamDeclaration<'_> {
+        OptionWithOptionalParamDeclaration {
+            parser: self,
+            long_names: Vec::new(),
+            short_names: Vec::new(),
+            help_text: "",
+        }
+    }
+
     /// Declare a prefix option (like -L, -l, etc.)
     pub fn declare_prefix(&mut self, prefix: &'static str) -> PrefixOptionDeclaration<'_> {
         PrefixOptionDeclaration {
@@ -897,6 +917,7 @@ impl ArgumentParser {
                 if let Some(handler) = self.options.get(option_name) {
                     match &handler.handler {
                         OptionHandlerFn::WithParam(f) => f(args, modifier_stack, value)?,
+                        OptionHandlerFn::OptionalParam(f) => f(args, modifier_stack, Some(value))?,
                         OptionHandlerFn::NoParam(_) => return Ok(false),
                     }
                     return Ok(true);
@@ -918,6 +939,9 @@ impl ArgumentParser {
                                 input.next().context(format!("Missing argument to {arg}"))?;
                             f(args, modifier_stack, next_arg.as_ref())?;
                         }
+                        OptionHandlerFn::OptionalParam(f) => {
+                            f(args, modifier_stack, None)?;
+                        }
                     }
                     return Ok(true);
                 }
@@ -934,6 +958,9 @@ impl ArgumentParser {
                         let next_arg =
                             input.next().context(format!("Missing argument to {arg}"))?;
                         f(args, modifier_stack, next_arg.as_ref())?;
+                    }
+                    OptionHandlerFn::OptionalParam(f) => {
+                        f(args, modifier_stack, None)?;
                     }
                 }
                 return Ok(true);
@@ -1103,6 +1130,42 @@ impl<'a> OptionWithParamDeclaration<'a> {
         let option_handler = OptionHandler {
             help_text: self.help_text,
             handler: OptionHandlerFn::WithParam(handler),
+            short_names: self.short_names.clone(),
+        };
+
+        for name in self.long_names {
+            self.parser.options.insert(name, option_handler.clone());
+        }
+
+        for ch in self.short_names {
+            self.parser.short_options.insert(ch, option_handler.clone());
+        }
+    }
+}
+
+impl<'a> OptionWithOptionalParamDeclaration<'a> {
+    #[must_use]
+    pub fn long(mut self, name: &'static str) -> Self {
+        self.long_names.push(name);
+        self
+    }
+
+    #[must_use]
+    pub fn short(mut self, ch: char) -> Self {
+        self.short_names.push(ch);
+        self
+    }
+
+    #[must_use]
+    pub fn help(mut self, text: &'static str) -> Self {
+        self.help_text = text;
+        self
+    }
+
+    pub fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>, Option<&str>) -> Result<()>) {
+        let option_handler = OptionHandler {
+            help_text: self.help_text,
+            handler: OptionHandlerFn::OptionalParam(handler),
             short_names: self.short_names.clone(),
         };
 
@@ -1390,11 +1453,14 @@ fn setup_argument_parser() -> ArgumentParser {
         });
 
     parser
-        .declare()
+        .declare_with_optional_param()
         .long("time")
         .help("Show timing information")
-        .execute(|args, _modifier_stack| {
-            args.time_phases = true;
+        .execute(|args, _modifier_stack, value| {
+            match value {
+                Some(v) => args.time_phase_options = Some(parse_time_phase_options(v)?),
+                None => args.time_phase_options = Some(Vec::new()),
+            }
             Ok(())
         });
 
@@ -1428,11 +1494,18 @@ fn setup_argument_parser() -> ArgumentParser {
         });
 
     parser
-        .declare_with_param()
+        .declare_with_optional_param()
         .long("threads")
         .help("Set number of threads")
         .execute(|args, _modifier_stack, value| {
-            args.num_threads = Some(NonZeroUsize::try_from(value.parse::<usize>()?)?);
+            match value {
+                Some(v) => {
+                    args.num_threads = Some(NonZeroUsize::try_from(v.parse::<usize>()?)?);
+                }
+                None => {
+                    args.num_threads = None; // Default behaviour
+                }
+            }
             Ok(())
         });
 
@@ -1672,15 +1745,6 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Do not bind global references locally")
         .execute(|args, _modifier_stack| {
             args.b_symbolic = BSymbolicKind::None;
-            Ok(())
-        });
-
-    parser
-        .declare_with_param()
-        .long("threads")
-        .help("Set number of threads")
-        .execute(|args, _modifier_stack, value| {
-            args.num_threads = Some(NonZeroUsize::try_from(value.parse::<usize>()?)?);
             Ok(())
         });
 
@@ -2055,6 +2119,29 @@ fn add_default_flags(parser: &mut ArgumentParser) {
         let mut declaration = parser.declare();
         declaration = declaration.long(flag);
         declaration.execute(|_args, _modifier_stack| Ok(()));
+    }
+}
+
+fn parse_time_phase_options(input: &str) -> Result<Vec<CounterKind>> {
+    input.split(',').map(|s| s.parse()).collect()
+}
+
+impl FromStr for CounterKind {
+    type Err = crate::error::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Ok(match s {
+            "cycles" => CounterKind::Cycles,
+            "instructions" => CounterKind::Instructions,
+            "cache-misses" => CounterKind::CacheMisses,
+            "branch-misses" => CounterKind::BranchMisses,
+            "page-faults" => CounterKind::PageFaults,
+            "page-faults-minor" => CounterKind::PageFaultsMinor,
+            "page-faults-major" => CounterKind::PageFaultsMajor,
+            "l1d-read" => CounterKind::L1dRead,
+            "l1d-miss" => CounterKind::L1dMiss,
+            other => bail!("Unsupported performance counter `{other}`"),
+        })
     }
 }
 
