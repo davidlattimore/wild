@@ -44,6 +44,14 @@
 //#EnableLinker:lld
 //#Arch: x86_64
 
+//#Config:clang-crel:default
+//#Compiler:clang
+//#CompArgs: -Wa,--crel,--allow-experimental-crel
+//#LinkerDriver:clang++
+//#RequiresClangWithCrel:true
+//#DiffEnabled:false
+//#SkipLinker:ld
+
 #include <iostream>
 #include <string>
 

@@ -16,6 +16,8 @@ use linker_utils::elf::extract_bits;
 use linker_utils::elf::sht;
 use object::LittleEndian;
 use object::read::elf::CompressionHeader;
+use object::read::elf::Crel;
+use object::read::elf::CrelIterator;
 use object::read::elf::Dyn;
 use object::read::elf::FileHeader as _;
 use object::read::elf::RelocationSections;
@@ -68,6 +70,86 @@ pub(crate) struct File<'data> {
 
     /// e_flags from the header.
     pub(crate) eflags: u32,
+}
+
+#[derive(Clone)]
+pub(crate) enum RelocationList<'data> {
+    Rela(&'data [Rela]),
+    Crel(CrelIterator<'data>),
+}
+
+pub(crate) struct RelocationListIter<'data> {
+    list: RelocationList<'data>,
+    index: usize,
+}
+
+impl<'data> Iterator for RelocationListIter<'data> {
+    type Item = Crel;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = match &mut self.list {
+            RelocationList::Crel(crel) => crel.next().and_then(|r| r.ok()),
+            RelocationList::Rela(rela) => rela
+                .get(self.index)
+                .map(|r| Crel::from_rela(r, LittleEndian, false)),
+        };
+        self.index += 1;
+        item
+    }
+}
+
+impl<'data> IntoIterator for RelocationList<'data> {
+    type Item = Crel;
+    type IntoIter = RelocationListIter<'data>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Self::IntoIter {
+            list: self,
+            index: 0,
+        }
+    }
+}
+
+pub(crate) trait RelocationSequence {
+    fn num_relocations(&self) -> usize;
+    fn get_crel(&self, index: usize) -> Crel;
+    fn crel_iter(&self) -> impl Iterator<Item = Crel>;
+}
+
+impl RelocationSequence for &[Rela] {
+    fn num_relocations(&self) -> usize {
+        self.len()
+    }
+
+    fn get_crel(&self, index: usize) -> Crel {
+        Crel::from_rela(&self[index], LittleEndian, false)
+    }
+
+    fn crel_iter(&self) -> impl Iterator<Item = Crel> {
+        RelocationList::Rela(self).into_iter()
+    }
+}
+
+pub(crate) struct CrelRelocationCache(Vec<Crel>);
+
+impl CrelRelocationCache {
+    pub(crate) fn new(relocations: Vec<Crel>) -> Self {
+        Self(relocations)
+    }
+}
+
+impl RelocationSequence for CrelRelocationCache {
+    fn num_relocations(&self) -> usize {
+        self.0.len()
+    }
+
+    fn get_crel(&self, index: usize) -> Crel {
+        self.0[index]
+    }
+
+    fn crel_iter(&self) -> impl Iterator<Item = Crel> {
+        self.0.clone().into_iter()
+    }
 }
 
 // Not needing Drop opens the option of storing this type in an arena that doesn't support dropping
@@ -238,15 +320,20 @@ impl<'data> File<'data> {
         &self,
         index: object::SectionIndex,
         relocations: &RelocationSections,
-    ) -> Result<&'data [Rela]> {
-        let Some(rela_index) = relocations.get(index) else {
-            return Ok(&[]);
+    ) -> Result<RelocationList<'data>> {
+        let Some(section_index) = relocations.get(index) else {
+            return Ok(RelocationList::Rela(&[]));
         };
-        let rela_section = self.sections.section(rela_index)?;
-        let Some((rela, _)) = rela_section.rela(LittleEndian, self.data)? else {
-            return Ok(&[]);
-        };
-        Ok(rela)
+        let section = self.sections.section(section_index)?;
+        Ok(
+            if let Some((rela, _)) = section.rela(LittleEndian, self.data)? {
+                RelocationList::Rela(rela)
+            } else if let Some((crel, _)) = section.crel(LittleEndian, self.data)? {
+                RelocationList::Crel(crel)
+            } else {
+                RelocationList::Rela(&[])
+            },
+        )
     }
 
     pub(crate) fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Symbol> {
