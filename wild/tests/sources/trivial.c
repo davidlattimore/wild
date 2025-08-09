@@ -6,6 +6,6 @@
 #include "runtime.h"
 
 void _start(void) {
-    runtime_init();
-    exit_syscall(42);
+  runtime_init();
+  exit_syscall(42);
 }

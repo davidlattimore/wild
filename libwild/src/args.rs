@@ -46,7 +46,6 @@ pub struct Args {
     pub(crate) sym_info: Option<String>,
     pub(crate) merge_strings: bool,
     pub(crate) debug_fuel: Option<AtomicI64>,
-    pub(crate) time_phases: bool,
     pub(crate) validate_output: bool,
     pub(crate) version_script_path: Option<PathBuf>,
     pub(crate) debug_address: Option<u64>,
@@ -71,7 +70,9 @@ pub struct Args {
     pub(crate) undefined: Vec<String>,
     pub(crate) relro: bool,
     pub(crate) entry: Option<String>,
-    pub(crate) explicitly_export_dynamic: bool,
+    pub(crate) export_all_dynamic_symbols: bool,
+    pub(crate) export_list: Vec<String>,
+    pub(crate) export_list_path: Option<PathBuf>,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -79,6 +80,10 @@ pub struct Args {
     /// If set, and we're writing GC stats, then ignore any input files that contain any of the
     /// specified substrings.
     pub(crate) gc_stats_ignore: Vec<String>,
+
+    /// If `Some`, then we'll time how long each phase takes. We'll also measure the specified
+    /// counters, if any.
+    pub(crate) time_phase_options: Option<Vec<CounterKind>>,
 
     pub(crate) verbose_gc_stats: bool,
 
@@ -91,6 +96,9 @@ pub struct Args {
     pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
     pub(crate) relax: bool,
+    pub(crate) unresolved_symbols: UnresolvedSymbols,
+    pub(crate) error_unresolved_symbols: bool,
+    pub(crate) allow_multiple_definitions: bool,
 
     output_kind: Option<OutputKind>,
     pub(crate) is_dynamic_executable: AtomicBool,
@@ -100,6 +108,19 @@ pub struct Args {
     pub(crate) available_threads: NonZeroUsize,
 
     jobserver_client: Option<Client>,
+}
+
+#[derive(Clone, Copy)]
+pub enum CounterKind {
+    Cycles,
+    Instructions,
+    CacheMisses,
+    BranchMisses,
+    PageFaults,
+    PageFaultsMinor,
+    PageFaultsMajor,
+    L1dRead,
+    L1dMiss,
 }
 
 /// Represents a command-line argument that specifies the number of threads to use,
@@ -182,6 +203,21 @@ pub(crate) enum BSymbolicKind {
     NonWeak,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum UnresolvedSymbols {
+    /// Report all unresolved symbols.
+    ReportAll,
+
+    /// Ignore unresolved symbols in shared libraries.
+    IgnoreInSharedLibs,
+
+    /// Ignore unresolved symbols in object files.
+    IgnoreInObjectFiles,
+
+    /// Ignore all unresolved symbols.
+    IgnoreAll,
+}
+
 pub const WILD_UNSUPPORTED_ENV: &str = "WILD_UNSUPPORTED";
 pub const VALIDATE_ENV: &str = "WILD_VALIDATE_OUTPUT";
 pub const WRITE_LAYOUT_ENV: &str = "WILD_WRITE_LAYOUT";
@@ -247,7 +283,7 @@ impl Default for Args {
             is_dynamic_executable: AtomicBool::new(false),
             dynamic_linker: None,
             output_kind: None,
-            time_phases: false,
+            time_phase_options: None,
             num_threads: None,
             strip_all: false,
             strip_debug: false,
@@ -299,11 +335,16 @@ impl Default for Args {
             relro: true,
             entry: None,
             b_symbolic: BSymbolicKind::None,
-            explicitly_export_dynamic: false,
+            export_all_dynamic_symbols: false,
+            export_list: Vec::new(),
+            export_list_path: None,
             got_plt_syms: false,
             relax: true,
             jobserver_client: None,
             available_threads: NonZeroUsize::new(1).unwrap(),
+            unresolved_symbols: UnresolvedSymbols::ReportAll,
+            error_unresolved_symbols: true,
+            allow_multiple_definitions: false,
         }
     }
 }
@@ -395,6 +436,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                 "nocopyreloc" => args.allow_copy_relocations = false,
                 "nodelete" => args.needs_nodelete_handling = true,
                 "defs" => args.no_undefined = true,
+                "muldefs" => args.allow_multiple_definitions = true,
                 _ => {
                     warn_unsupported(&format!("-z {arg}"))?;
                     // TODO: Handle these
@@ -454,6 +496,8 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.b_symbolic = BSymbolicKind::All;
         } else if long_arg_eq("Bno-symbolic") {
             args.b_symbolic = BSymbolicKind::None;
+        } else if long_arg_eq("allow-multiple-definition") {
+            args.allow_multiple_definitions = true;
         } else if arg == "-o" {
             args.output = get_next_argument(arg).map(|a| Arc::from(Path::new(a.as_ref())))?;
         } else if let Some(value) = get_option_value("dynamic-linker") {
@@ -494,8 +538,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
                 "none" => {}
                 other => warn_unsupported(&format!("--icf={other}"))?,
             }
+        } else if let Some(rest) = long_arg_split_prefix("time=") {
+            args.time_phase_options = Some(parse_time_phase_options(rest)?);
         } else if long_arg_eq("time") {
-            args.time_phases = true;
+            args.time_phase_options = Some(Vec::new());
         } else if let Some(rest) = long_arg_split_prefix("threads=") {
             args.num_threads = Some(NonZeroUsize::try_from(rest.parse::<usize>()?)?);
         } else if long_arg_eq("threads") {
@@ -594,9 +640,16 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         } else if long_arg_eq("shared") || long_arg_eq("Bshareable") {
             args.output_kind = Some(OutputKind::SharedObject);
         } else if long_arg_eq("export-dynamic") || arg == "-E" {
-            args.explicitly_export_dynamic = true;
+            args.export_all_dynamic_symbols = true;
         } else if long_arg_eq("no-export-dynamic") {
-            args.explicitly_export_dynamic = false;
+            args.export_all_dynamic_symbols = false;
+        } else if let Some(value) = get_option_value("export-dynamic-symbol") {
+            args.export_list.push(value);
+        } else if let Some(value) = get_option_value("export-dynamic-symbol-list") {
+            args.export_list_path = Some(PathBuf::from(&value));
+        } else if let Some(value) = get_option_value("dynamic-list") {
+            args.b_symbolic = BSymbolicKind::All;
+            args.export_list_path = Some(PathBuf::from(&value));
         } else if let Some(value) = get_option_value("soname") {
             args.soname = Some(value);
         } else if arg == "-h" {
@@ -638,6 +691,26 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             args.allow_shlib_undefined = true;
         } else if long_arg_eq("no-allow-shlib-undefined") {
             args.allow_shlib_undefined = false;
+        } else if let Some(rest) = get_option_value("unresolved-symbols") {
+            match rest.as_str() {
+                "report-all" => {
+                    args.unresolved_symbols = UnresolvedSymbols::ReportAll;
+                }
+                "ignore-in-shared-libs" => {
+                    args.unresolved_symbols = UnresolvedSymbols::IgnoreInSharedLibs;
+                }
+                "ignore-in-object-files" => {
+                    args.unresolved_symbols = UnresolvedSymbols::IgnoreInObjectFiles;
+                }
+                "ignore-all" => {
+                    args.unresolved_symbols = UnresolvedSymbols::IgnoreAll;
+                }
+                _ => bail!("Invalid unresolved-symbols value {rest}"),
+            }
+        } else if long_arg_eq("error-unresolved-symbols") {
+            args.error_unresolved_symbols = true;
+        } else if long_arg_eq("warn-unresolved-symbols") {
+            args.error_unresolved_symbols = false;
         } else if long_arg_eq("no-undefined") {
             args.no_undefined = true;
         } else if let Some(rest) = long_arg_split_prefix("undefined=") {
@@ -1015,6 +1088,29 @@ fn warn_unsupported(opt: &str) -> Result {
         other => bail!("Unsupported value for {WILD_UNSUPPORTED_ENV}={other}"),
     }
     Ok(())
+}
+
+fn parse_time_phase_options(input: &str) -> Result<Vec<CounterKind>> {
+    input.split(',').map(|s| s.parse()).collect()
+}
+
+impl FromStr for CounterKind {
+    type Err = crate::error::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        Ok(match s {
+            "cycles" => CounterKind::Cycles,
+            "instructions" => CounterKind::Instructions,
+            "cache-misses" => CounterKind::CacheMisses,
+            "branch-misses" => CounterKind::BranchMisses,
+            "page-faults" => CounterKind::PageFaults,
+            "page-faults-minor" => CounterKind::PageFaultsMinor,
+            "page-faults-major" => CounterKind::PageFaultsMajor,
+            "l1d-read" => CounterKind::L1dRead,
+            "l1d-miss" => CounterKind::L1dMiss,
+            other => bail!("Unsupported performance counter `{other}`"),
+        })
+    }
 }
 
 #[cfg(test)]

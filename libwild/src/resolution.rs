@@ -837,12 +837,16 @@ fn resolve_sections_for_object<'data>(
                     obj.object
                         .section_data(input_section, allocator, loaded_metrics)?;
 
-                string_merge_extras.push(StringMergeSectionExtra {
-                    index: input_section_index,
-                    section_data,
-                });
+                if section_data.is_empty() {
+                    SectionSlot::Discard
+                } else {
+                    string_merge_extras.push(StringMergeSectionExtra {
+                        index: input_section_index,
+                        section_data,
+                    });
 
-                SectionSlot::MergeStrings(StringMergeSectionSlot::new(unloaded_section.part_id))
+                    SectionSlot::MergeStrings(StringMergeSectionSlot::new(unloaded_section.part_id))
+                }
             } else if is_debug_info {
                 SectionSlot::UnloadedDebugInfo(part_id::CUSTOM_PLACEHOLDER)
             } else if must_load {
@@ -1029,7 +1033,6 @@ impl SectionSlot {
 
     pub(crate) fn set_part_id(&mut self, part_id: PartId) {
         match self {
-            SectionSlot::Discard => todo!(),
             SectionSlot::Unloaded(section) => section.part_id = part_id,
             SectionSlot::MustLoad(section) => section.part_id = part_id,
             SectionSlot::Loaded(section) => section.part_id = part_id,
@@ -1037,7 +1040,9 @@ impl SectionSlot {
             SectionSlot::MergeStrings(section) => section.part_id = part_id,
             SectionSlot::UnloadedDebugInfo(out) => *out = part_id,
             SectionSlot::LoadedDebugInfo(section) => section.part_id = part_id,
-            SectionSlot::NoteGnuProperty(_) | SectionSlot::RiscvVAttributes(_) => {}
+            SectionSlot::Discard
+            | SectionSlot::NoteGnuProperty(_)
+            | SectionSlot::RiscvVAttributes(_) => {}
         }
     }
 

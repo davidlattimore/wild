@@ -3,10 +3,16 @@
 //#Object:duplicate_strong_symbols2.c
 //#ExpectError:Duplicate symbols
 
-int test_func(void) {
-    return 0;
-}
+//#Config:allow-multiple-definition
+//#RunEnabled:false
+//#Object:duplicate_strong_symbols2.c
+//#LinkArgs:--allow-multiple-definition
 
-void _start(void) {
-    test_func();
-}
+//#Config:z-muldefs
+//#RunEnabled:false
+//#Object:duplicate_strong_symbols2.c
+//#LinkArgs:-z muldefs
+
+int test_func(void) { return 0; }
+
+void _start(void) { test_func(); }

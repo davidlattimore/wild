@@ -8,6 +8,7 @@ use crate::bail;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
+use crate::export_list::ExportList;
 use crate::grouping::Group;
 use crate::grouping::SequencedInput;
 use crate::grouping::SequencedInputObject;
@@ -17,7 +18,7 @@ use crate::hash::PreHashed;
 use crate::hash::hash_bytes;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
-use crate::input_data::VersionScriptData;
+use crate::input_data::ScriptData;
 use crate::output_section_id::OutputSectionId;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::Prelude;
@@ -79,6 +80,7 @@ pub struct SymbolDb<'data> {
     start_stop_symbol_names: Vec<UnversionedSymbolName<'data>>,
 
     pub(crate) version_script: VersionScript<'data>,
+    pub(crate) export_list: Option<ExportList<'data>>,
 
     /// The name of the entry symbol if overridden by a linker script.
     entry: Option<&'data [u8]>,
@@ -276,15 +278,22 @@ impl<'data> SymbolDb<'data> {
     #[tracing::instrument(skip_all, name = "Build symbol DB")]
     pub fn build(
         groups: Vec<Group<'data>>,
-        version_script_data: Option<VersionScriptData<'data>>,
+        version_script_data: Option<ScriptData<'data>>,
         args: &'data Args,
         linker_scripts: &[InputLinkerScript<'data>],
         herd: &'data bumpalo_herd::Herd,
+        export_list_data: Option<ScriptData<'data>>,
     ) -> Result<Self> {
         let version_script = version_script_data
             .map(VersionScript::parse)
             .transpose()?
             .unwrap_or_default();
+        let mut export_list = export_list_data.map(ExportList::parse).transpose()?;
+        for symbol in &args.export_list {
+            export_list
+                .get_or_insert_default()
+                .add_symbol(symbol, true)?;
+        }
 
         let num_symbols_per_group = groups.iter().map(|g| g.num_symbols()).collect_vec();
 
@@ -313,8 +322,13 @@ impl<'data> SymbolDb<'data> {
             })
             .collect_vec();
 
-        let per_group_outputs =
-            read_symbols(&groups, &version_script, &mut per_group_writers, args)?;
+        let per_group_outputs = read_symbols(
+            &groups,
+            &version_script,
+            &mut per_group_writers,
+            args,
+            &export_list,
+        )?;
 
         for writer in per_group_writers {
             symbol_definitions_writer.return_shard(writer.resolutions);
@@ -347,6 +361,7 @@ impl<'data> SymbolDb<'data> {
             start_stop_symbol_names: Default::default(),
             symbol_value_flags,
             version_script,
+            export_list,
             entry: None,
         };
 
@@ -901,8 +916,9 @@ fn select_symbol(
                     // We don't implement full COMDAT logic, however if we encounter duplicate
                     // strong definitions, then we don't emit errors if all the strong definitions
                     // are defined in COMDAT group sections.
-                    if !symbol_db.is_in_comdat_group(existing, resolved)
-                        || !symbol_db.is_in_comdat_group(id, resolved)
+                    if (!symbol_db.is_in_comdat_group(existing, resolved)
+                        || !symbol_db.is_in_comdat_group(id, resolved))
+                        && !symbol_db.db.args.allow_multiple_definitions
                     {
                         bail!(
                             "{}, defined in {} and {}",
@@ -988,6 +1004,7 @@ fn read_symbols<'data>(
     version_script: &VersionScript,
     symbols_out_by_group: &mut [SymbolInfoWriter],
     args: &Args,
+    export_list: &Option<ExportList<'data>>,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
     let num_buckets = num_symbol_hash_buckets(args);
 
@@ -1011,6 +1028,7 @@ fn read_symbols<'data>(
                             symbols_out,
                             &mut outputs,
                             args,
+                            export_list,
                         )
                         .with_context(|| {
                             format!("Failed to load symbols from `{}`", obj.parsed.input)
@@ -1062,6 +1080,7 @@ fn load_symbols_from_file<'data>(
     symbols_out: &mut SymbolInfoWriter,
     outputs: &mut SymbolLoadOutputs<'data>,
     args: &Args,
+    export_list: &Option<ExportList<'data>>,
 ) -> Result {
     if s.is_dynamic() {
         DynamicObjectSymbolLoader::new(&s.parsed.object)?.load_symbols(
@@ -1075,6 +1094,7 @@ fn load_symbols_from_file<'data>(
             args,
             version_script,
             archive_semantics: s.parsed.input.has_archive_semantics(),
+            export_list,
         }
         .load_symbols(s.file_id, symbols_out, outputs)
     }
@@ -1202,6 +1222,7 @@ struct RegularObjectSymbolLoader<'a, 'data> {
     args: &'a Args,
     version_script: &'a VersionScript<'a>,
     archive_semantics: bool,
+    export_list: &'a Option<ExportList<'a>>,
 }
 
 struct DynamicObjectSymbolLoader<'a, 'data> {
@@ -1249,6 +1270,15 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
     fn compute_value_flags(&self, sym: &crate::elf::Symbol) -> ValueFlags {
         let is_undefined = sym.is_undefined(LittleEndian);
 
+        let symbol_is_exported = || {
+            if let Some(export_list) = &self.export_list
+                && let Ok(symbol_name) = self.object.symbol_name(sym)
+                && !&export_list.contains(&UnversionedSymbolName::prehashed(symbol_name))
+            {
+                return false;
+            }
+            true
+        };
         let non_interposable = sym.st_visibility() != object::elf::STV_DEFAULT
             || sym.is_local()
             || self.args.output_kind().is_static_executable()
@@ -1257,23 +1287,27 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
             || (!is_undefined && (
                 self.args.output_kind().is_executable()
                 || (self.args.exclude_libs && self.archive_semantics)
-                || self.args.b_symbolic == args::BSymbolicKind::All
-                // `-Bsymbolic-functions`
                 || (
-                    self.args.b_symbolic == args::BSymbolicKind::Functions
-                    && sym.st_type() == object::elf::STT_FUNC
+                    self.args.b_symbolic == args::BSymbolicKind::All
+                    // `-Bsymbolic-functions`
+                    || (
+                        self.args.b_symbolic == args::BSymbolicKind::Functions
+                        && sym.st_type() == object::elf::STT_FUNC
+                    )
+                    // `-Bsymbolic-non-weak`
+                    || (
+                        self.args.b_symbolic == args::BSymbolicKind::NonWeak
+                        && sym.st_bind() != object::elf::STB_WEAK
+                    )
+                    // `-Bsymbolic-non-weak-functions`
+                    || (
+                        self.args.b_symbolic == args::BSymbolicKind::NonWeakFunctions
+                        && (sym.st_type() == object::elf::STT_FUNC
+                        && sym.st_bind() != object::elf::STB_WEAK)
+                    )
                 )
-                // `-Bsymbolic-non-weak`
-                || (
-                    self.args.b_symbolic == args::BSymbolicKind::NonWeak
-                    && sym.st_bind() != object::elf::STB_WEAK
-                )
-                // `-Bsymbolic-non-weak-functions`
-                || (
-                    self.args.b_symbolic == args::BSymbolicKind::NonWeakFunctions
-                    && (sym.st_type() == object::elf::STT_FUNC
-                    && sym.st_bind() != object::elf::STB_WEAK)
-                )
+                // Bsymbolic does not affect symbols that are exported
+                && !(self.export_list.is_some() && symbol_is_exported())
             ));
 
         let mut flags: ValueFlags = if sym.is_absolute(LittleEndian) {

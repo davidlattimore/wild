@@ -61,6 +61,7 @@ object = { git = "https://github.com/gimli-rs/object", rev = "f9d64bd3e779497b10
     "archive",
 ] }
 os_info = "3.0.0"
+perf-event = "0.4.8"
 postcard = { version = "1.1.1", features = ["use-std"] }
 rayon = "1.2.1"
 rstest = "0.25.0"

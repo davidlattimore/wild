@@ -29,6 +29,7 @@ use crate::error;
 use crate::error::Context;
 use crate::error::Error;
 use crate::error::Result;
+use crate::error::warning;
 use crate::file_writer;
 use crate::input_data::FileId;
 use crate::input_data::InputData;
@@ -914,9 +915,26 @@ fn export_dynamic<'data>(
     symbol_db: &SymbolDb<'data>,
 ) -> Result {
     let name = symbol_db.symbol_name(symbol_id)?;
+
+    let version = (symbol_db.version_script.version_count() > 0)
+        .then(|| {
+            // TODO: We already hashed this symbol at some point previously. See if we can avoid
+            // rehashing it here and if that actually saves us time.
+            symbol_db
+                .version_script
+                .version_for_symbol(&UnversionedSymbolName::prehashed(name.bytes()))
+        })
+        .flatten()
+        .unwrap_or(object::elf::VER_NDX_GLOBAL);
+
     common
         .dynamic_symbol_definitions
-        .push(DynamicSymbolDefinition::new(symbol_id, name.bytes()));
+        .push(DynamicSymbolDefinition::new(
+            symbol_id,
+            name.bytes(),
+            version,
+        ));
+
     Ok(())
 }
 
@@ -1550,6 +1568,7 @@ pub(crate) struct DynamicSymbolDefinition<'data> {
     pub(crate) symbol_id: SymbolId,
     pub(crate) name: &'data [u8],
     pub(crate) hash: u32,
+    pub(crate) version: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3016,7 +3035,7 @@ fn process_relocation<A: Arch>(
 
         if previous_flags.is_empty() {
             queue.send_symbol_request(symbol_id, resources);
-            if is_symbol_undefined(
+            if should_emit_undefined_error(
                 object.object.symbol(local_sym_index)?,
                 object.file_id,
                 symbol_db.file_id_for_symbol(symbol_id),
@@ -3032,10 +3051,17 @@ fn process_relocation<A: Arch>(
                 )
                 .context("Failed to get source info")?;
 
-                resources.report_error(error!(
-                    "Undefined symbol {symbol_name}, referenced by {}\n    {}",
-                    source_info, object.input,
-                ));
+                if args.error_unresolved_symbols {
+                    resources.report_error(error!(
+                        "Undefined symbol {symbol_name}, referenced by {}\n    {}",
+                        source_info, object.input,
+                    ));
+                } else {
+                    crate::error::warning(&format!(
+                        "Undefined symbol {symbol_name}, referenced by {}\n    {}",
+                        source_info, object.input,
+                    ));
+                }
             }
         }
 
@@ -3597,7 +3623,7 @@ fn create_start_end_symbol_resolution(
     ))
 }
 
-fn is_symbol_undefined(
+fn should_emit_undefined_error(
     symbol: &Symbol,
     sym_file_id: FileId,
     sym_def_file_id: FileId,
@@ -3608,9 +3634,15 @@ fn is_symbol_undefined(
         return false;
     }
 
-    sym_file_id == sym_def_file_id
+    let is_symbol_undefined = sym_file_id == sym_def_file_id
         && symbol.is_undefined(LittleEndian)
-        && symbol_value_flags.is_absolute()
+        && symbol_value_flags.is_absolute();
+
+    match args.unresolved_symbols {
+        crate::args::UnresolvedSymbols::IgnoreAll
+        | crate::args::UnresolvedSymbols::IgnoreInObjectFiles => false,
+        _ => is_symbol_undefined,
+    }
 }
 
 impl<'data> EpilogueLayoutState<'data> {
@@ -4042,12 +4074,14 @@ impl<'data> ObjectLayoutState<'data> {
                 .context("Cannot parse .riscv.attributes section")?;
         }
 
-        if resources.symbol_db.args.output_kind() == OutputKind::SharedObject
+        let export_all_dynamic = resources.symbol_db.args.output_kind() == OutputKind::SharedObject
             && (!resources.symbol_db.args.exclude_libs || !self.input.has_archive_semantics())
             || resources.symbol_db.args.needs_dynsym()
-                && resources.symbol_db.args.explicitly_export_dynamic
+                && resources.symbol_db.args.export_all_dynamic_symbols;
+        if export_all_dynamic
+            || resources.symbol_db.args.needs_dynsym() && resources.symbol_db.export_list.is_some()
         {
-            self.load_non_hidden_symbols::<A>(common, resources, queue)?;
+            self.load_non_hidden_symbols::<A>(common, resources, queue, export_all_dynamic)?;
         }
 
         Ok(())
@@ -4495,11 +4529,12 @@ impl<'data> ObjectLayoutState<'data> {
         common: &mut CommonGroupState<'data>,
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
+        export_all_dynamic: bool,
     ) -> Result {
         for (sym_index, sym) in self.object.symbols.enumerate() {
             let symbol_id = self.symbol_id_range().input_to_id(sym_index);
 
-            if !can_export_symbol(sym, symbol_id, resources.symbol_db) {
+            if !can_export_symbol(sym, symbol_id, resources.symbol_db, export_all_dynamic) {
                 continue;
             }
 
@@ -4533,7 +4568,7 @@ impl<'data> ObjectLayoutState<'data> {
         // regular object, then the shared object might send us a request to export the definition
         // provided by the regular object. This isn't always possible, since the symbol might be
         // hidden.
-        if !can_export_symbol(sym, symbol_id, resources.symbol_db) {
+        if !can_export_symbol(sym, symbol_id, resources.symbol_db, true) {
             return Ok(());
         }
 
@@ -4610,6 +4645,7 @@ fn can_export_symbol(
     sym: &crate::elf::SymtabEntry,
     symbol_id: SymbolId,
     symbol_db: &SymbolDb,
+    export_all_dynamic: bool,
 ) -> bool {
     if sym.is_undefined(LittleEndian) || sym.is_local() {
         return false;
@@ -4628,6 +4664,14 @@ fn can_export_symbol(
     let value_flags = symbol_db.local_symbol_value_flags(symbol_id);
 
     if value_flags.is_downgraded_to_local() {
+        return false;
+    }
+
+    if !export_all_dynamic
+        && let Some(export_list) = &symbol_db.export_list
+        && let Ok(symbol_name) = symbol_db.symbol_name(symbol_id)
+        && !&export_list.contains(&UnversionedSymbolName::prehashed(symbol_name.bytes()))
+    {
         return false;
     }
 
@@ -5277,8 +5321,8 @@ impl<'data> DynamicLayoutState<'data> {
                 // not, depends on flags, whether the symbol is weak and whether all of the shared
                 // object's dependencies are loaded.
 
+                let args = resources.symbol_db.args;
                 let check_undefined = *check_undefined_cache.get_or_insert_with(|| {
-                    let args = resources.symbol_db.args;
                     !args.allow_shlib_undefined
                         && args.output_kind().is_executable()
                         // Like lld, our behaviour for --no-allow-shlib-undefined is to only report
@@ -5294,10 +5338,23 @@ impl<'data> DynamicLayoutState<'data> {
                         .object
                         .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
                     if !symbol.is_weak() {
-                        bail!(
-                            "undefined reference to `{}` from {self}",
-                            resources.symbol_db.symbol_name_for_display(symbol_id)
+                        let should_report = !matches!(
+                            args.unresolved_symbols,
+                            crate::args::UnresolvedSymbols::IgnoreAll
+                                | crate::args::UnresolvedSymbols::IgnoreInSharedLibs
                         );
+
+                        if should_report {
+                            let symbol_name =
+                                resources.symbol_db.symbol_name_for_display(symbol_id);
+
+                            if args.error_unresolved_symbols {
+                                bail!("undefined reference to `{symbol_name}` from {self}");
+                            }
+                            crate::error::warning(&format!(
+                                "undefined reference to `{symbol_name}` from {self}"
+                            ));
+                        }
                     }
                 }
             } else if definition_symbol_id != symbol_id {
@@ -5609,7 +5666,7 @@ impl<'data> DynamicLayoutState<'data> {
                 is_weak: symbol.is_weak(),
             });
 
-        info.add_symbol(symbol_id, symbol.is_weak(), resources.symbol_db)?;
+        info.add_symbol(symbol_id, symbol.is_weak(), resources.symbol_db);
 
         Ok(())
     }
@@ -5725,23 +5782,21 @@ impl<'data> LinkerScriptLayoutState<'data> {
 }
 
 impl CopyRelocationInfo {
-    fn add_symbol(&mut self, symbol_id: SymbolId, is_weak: bool, symbol_db: &SymbolDb) -> Result {
+    fn add_symbol(&mut self, symbol_id: SymbolId, is_weak: bool, symbol_db: &SymbolDb) {
         if self.symbol_id == symbol_id || is_weak {
-            return Ok(());
+            return;
         }
 
         if !self.is_weak {
-            bail!(
+            warning(&format!(
                 "Multiple non-weak symbols at the same address have copy relocations: {}, {}",
                 symbol_db.symbol_debug(self.symbol_id),
                 symbol_db.symbol_debug(symbol_id)
-            );
+            ));
         }
 
         self.symbol_id = symbol_id;
         self.is_weak = false;
-
-        Ok(())
     }
 }
 
@@ -5857,11 +5912,12 @@ impl GnuHashLayout {
 }
 
 impl<'data> DynamicSymbolDefinition<'data> {
-    fn new(symbol_id: SymbolId, name: &'data [u8]) -> Self {
+    fn new(symbol_id: SymbolId, name: &'data [u8], version: u16) -> Self {
         Self {
             symbol_id,
             name,
             hash: gnu_hash(name),
+            version,
         }
     }
 }

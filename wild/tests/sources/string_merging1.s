@@ -30,3 +30,9 @@ s3h: .ascii "Hello\0"
 
 .globl noref
 noref: .ascii "No reference to this string\0"
+
+// Ensure that we can handle a string-merge section that's empty.
+
+.section .empty, "aMS", @progbits, 1
+.globl in_empty_string_merge
+in_empty_string_merge:
