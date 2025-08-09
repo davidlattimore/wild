@@ -915,8 +915,7 @@ dependencies = [
 [[package]]
 name = "object"
 version = "0.37.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3e3d0a7419f081f4a808147e845310313a39f322d7ae1f996b7f001d6cbed04"
+source = "git+https://github.com/gimli-rs/object?rev=3e9d3a47f6ebb2f8b6afe5a5a4d227309831ec74#3e9d3a47f6ebb2f8b6afe5a5a4d227309831ec74"
 dependencies = [
  "memchr",
 ]

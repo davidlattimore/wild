@@ -299,6 +299,7 @@ pub fn segment_type_to_string(p_type: u32) -> Cow<'static, str> {
         PT_GNU_STACK,
         PT_GNU_RELRO,
         PT_GNU_PROPERTY,
+        PT_GNU_SFRAME,
         // RISC-V specific program headers
         SHT_RISCV_ATTRIBUTES
     ] {
@@ -348,6 +349,7 @@ pub mod sht {
     pub const GROUP: SectionType = SectionType(object::elf::SHT_GROUP);
     pub const SYMTAB_SHNDX: SectionType = SectionType(object::elf::SHT_SYMTAB_SHNDX);
     pub const LOOS: SectionType = SectionType(object::elf::SHT_LOOS);
+    pub const GNU_SFRAME: SectionType = SectionType(object::elf::SHT_GNU_SFRAME);
     pub const GNU_ATTRIBUTES: SectionType = SectionType(object::elf::SHT_GNU_ATTRIBUTES);
     pub const GNU_HASH: SectionType = SectionType(object::elf::SHT_GNU_HASH);
     pub const GNU_LIBLIST: SectionType = SectionType(object::elf::SHT_GNU_LIBLIST);
