@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use hashbrown::HashMap;
 use std::hash::BuildHasher;
 use std::hash::Hasher;
 use std::ops::Deref;
