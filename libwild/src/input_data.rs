@@ -17,6 +17,7 @@ use crate::linker_script::LinkerScript;
 use colosseum::sync::Arena;
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
+use foldhash::fast::RandomState;
 use hashbrown::HashMap;
 use memmap2::Mmap;
 use rayon::iter::IntoParallelRefIterator;
@@ -202,7 +203,7 @@ impl<'data> InputData<'data> {
 
         let mut temporary_state = TemporaryState {
             args,
-            path_to_load_index: HashMap::new(),
+            path_to_load_index: HashMap::with_hasher(RandomState::default()),
             outstanding_work_items: 0,
             files: Vec::new(),
             work_recv: &work_recv,

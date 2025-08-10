@@ -33,6 +33,7 @@ use crate::symbol::UnversionedSymbolName;
 use crate::symbol::VersionedSymbolName;
 use crate::version_script::VersionScript;
 use crossbeam_queue::SegQueue;
+use foldhash::fast::RandomState;
 use hashbrown::HashMap;
 use hashbrown::hash_map;
 use itertools::Itertools;
@@ -345,8 +346,8 @@ impl<'data> SymbolDb<'data> {
         buckets.resize_with(num_buckets, || SymbolBucket {
             name_to_id: Default::default(),
             versioned_name_to_id: Default::default(),
-            alternative_definitions: HashMap::new(),
-            alternative_versioned_definitions: HashMap::new(),
+            alternative_definitions: HashMap::with_hasher(RandomState::default()),
+            alternative_versioned_definitions: HashMap::with_hasher(RandomState::default()),
         });
 
         let mut index = SymbolDb {
@@ -851,7 +852,10 @@ fn process_alternatives(
     symbol_db: &AtomicSymbolDb,
     resolved: &[ResolvedGroup],
 ) {
-    for (first, alternatives) in replace(alternative_definitions, HashMap::new()) {
+    for (first, alternatives) in replace(
+        alternative_definitions,
+        HashMap::with_hasher(RandomState::default()),
+    ) {
         // Compute the most restrictive visibility of any of the alternative definitions. This is
         // the visibility we'll use for our selected symbol. This seems like odd behaviour, but it
         // matches what GNU ld appears to do and some programs will fail to link if we don't do
