@@ -75,7 +75,7 @@ use crate::sharding::ShardKey;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
-use hashbrown::HashMap as HashBrownMap;
+use hashbrown::HashMap;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
@@ -1501,7 +1501,7 @@ fn write_eh_frame_relocations<A: Arch>(
     let eh_frame_hdr_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME_HDR);
 
     // Map from input offset to output offset of each CIE.
-    let mut cies_offset_conversion: HashBrownMap<u32, u32> = HashBrownMap::new();
+    let mut cies_offset_conversion: HashMap<u32, u32> = HashMap::new();
 
     while input_pos + PREFIX_LEN <= data.len() {
         let prefix: elf::EhFrameEntryPrefix =
