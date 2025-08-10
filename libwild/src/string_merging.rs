@@ -143,7 +143,7 @@ impl Default for MergedStringsSection<'_> {
             buckets: Default::default(),
             bucket_offsets: [0; MERGE_STRING_BUCKETS],
             string_offsets: Default::default(),
-            overflowed_string_offsets: HashMap::with_hasher(foldhash::fast::RandomState::default()),
+            overflowed_string_offsets: HashMap::new(),
         }
     }
 }
