@@ -27,7 +27,6 @@
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#EnableLinker:lld
-//#RunEnabled:false
 
 //#Config:select-symbols-list
 //#LinkArgs:-z now --export-dynamic-symbol-list ./export-dynamic.def
@@ -38,7 +37,6 @@
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#EnableLinker:lld
-//#RunEnabled:false
 
 //#Config:dynamic-symbols-list
 //#LinkArgs:-z now -shared --dynamic-list ./export-dynamic.def
@@ -51,7 +49,6 @@
 //#DiffIgnore:.dynamic.DT_RELA*
 //#DiffIgnore:file-header.entry
 //#EnableLinker:lld
-//#RunEnabled:false
 
 void foo(void) {};
 void bar(void) {};

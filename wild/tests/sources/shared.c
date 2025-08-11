@@ -6,7 +6,6 @@
 // archive entry that we don't load.
 
 //#Config:default
-//#RunEnabled:false
 //#LinkArgs:-shared -z now
 //#Mode:dynamic
 //#Shared:shared-s1.c

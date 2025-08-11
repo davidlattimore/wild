@@ -819,9 +819,13 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                     .contains_strings
                     .push(arg.trim().to_owned()),
                 "Mode" => {
-                    config.linker_driver.direct_mut()?.mode = arg
+                    let mode: Mode = arg
                         .parse()
-                        .with_context(|| format!("Invalid Mode `{arg}`"))?
+                        .with_context(|| format!("Invalid Mode `{arg}`"))?;
+                    if mode == Mode::Dynamic {
+                        config.should_run = false;
+                    }
+                    config.linker_driver.direct_mut()?.mode = mode;
                 }
                 "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
                 "DiffEnabled" => {
