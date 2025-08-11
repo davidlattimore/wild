@@ -71,7 +71,7 @@ jobs:
         if: ${{ contains(matrix.container, 'alpine') }}
       - run: echo "WILD_TEST_IGNORE_FORMAT=1" >> $GITHUB_ENV
         if: ${{ matrix.ignore-format }}
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
@@ -96,7 +96,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         persist-credentials: false
     # This is where we check that we're not using features from a more recent rust version. When
@@ -120,7 +120,7 @@ jobs:
     name: Check formatting
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         persist-credentials: false
     - uses: dtolnay/rust-toolchain@nightly
@@ -132,7 +132,7 @@ jobs:
     name: Spell Check with Typos
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
       - name: Spell Check Repo
@@ -146,7 +146,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -176,7 +176,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           persist-credentials: false
           fetch-depth: 0
