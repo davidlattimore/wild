@@ -1,7 +1,6 @@
 //#AbstractConfig:default
 //#SkipLinker:ld
 //#DiffEnabled:false
-//#RunEnabled:false
 //#Mode:dynamic
 //#LinkArgs:-shared -z now
 

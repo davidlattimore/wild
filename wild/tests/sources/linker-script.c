@@ -1,6 +1,5 @@
 //#Mode:dynamic
 //#LinkArgs:-shared -z now -T ./linker-script.ld
-//#RunEnabled:false
 //#DiffIgnore:section.got
 //#ExpectDynSym:start_bar bar 0
 //#ExpectDynSym:start_aaa bar 8
