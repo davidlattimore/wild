@@ -18,7 +18,6 @@ use object::LittleEndian;
 use object::read::elf::CompressionHeader;
 use object::read::elf::Crel;
 use object::read::elf::CrelIterator;
-use object::read::elf::Dyn;
 use object::read::elf::FileHeader as _;
 use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
@@ -66,8 +65,8 @@ pub(crate) struct File<'data> {
     /// An iterator over the version definitions and the corresponding linked string table index.
     pub(crate) verdef: Option<(VerdefIterator<'data>, object::SectionIndex)>,
 
-    /// Number of verdef versions according to the dynamic table.
-    pub(crate) verdefnum: u64,
+    /// Number of verdef versions according to `sh_info` of `.gnu._version_d` section.
+    pub(crate) verdefnum: u32,
 
     /// e_flags from the header.
     pub(crate) eflags: u32,
@@ -144,10 +143,9 @@ impl<'data> File<'data> {
         let mut symbols = SymbolTable::default();
         let mut versym: &[Versym] = &[];
         let mut verdef = None;
-        let mut dynamic = None;
         let mut verdefnum = 0;
 
-        // Find all the sections that we're interested in in a single scan of the section table so
+        // Find all the sections that we're interested in a single scan of the section table so
         // as to avoid multiple scans.
         for (section_index, section) in sections.enumerate() {
             match SectionType::from_header(section) {
@@ -162,19 +160,9 @@ impl<'data> File<'data> {
                 }
                 sht::GNU_VERDEF => {
                     verdef = section.gnu_verdef(endian, data)?;
-                }
-                sht::DYNAMIC => {
-                    dynamic = section.dynamic(endian, data)?;
+                    verdefnum = section.sh_info(endian);
                 }
                 _ => {}
-            }
-        }
-
-        if let Some((dynamic, _)) = dynamic {
-            for dy in dynamic {
-                if dy.d_tag(endian) == u64::from(object::elf::DT_VERDEFNUM) {
-                    verdefnum = dy.d_val(endian);
-                }
             }
         }
 

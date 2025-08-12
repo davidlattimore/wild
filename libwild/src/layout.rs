@@ -5392,9 +5392,9 @@ impl<'data> DynamicLayoutState<'data> {
         resources: &GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
-        let dt_info = DynamicTagValues::read(self.object)?;
-        self.symbol_versions_needed = vec![false; dt_info.verdefnum as usize];
+        self.symbol_versions_needed = vec![false; self.object.verdefnum as usize];
 
+        let dt_info = DynamicTagValues::read(self.object)?;
         if let Some(soname) = dt_info.soname {
             self.lib_name = soname;
         }
