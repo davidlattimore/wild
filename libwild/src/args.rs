@@ -1412,6 +1412,12 @@ fn setup_argument_parser() -> ArgumentParser {
         });
 
     parser
+        .declare_prefix("O")
+        .execute(|_args, _modifier_stack, _value|
+        // We don't use opt-level for now.
+        Ok(()));
+
+    parser
         .declare()
         .long("static")
         .long("Bstatic")
@@ -2346,6 +2352,9 @@ mod tests {
         "--discard-locals",
         "-X",
         "-EL",
+        "-O",
+        "1",
+        "-O3",
         "-v",
         "--sysroot=/usr/aarch64-linux-gnu",
         "--demangle",
