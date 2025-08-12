@@ -187,10 +187,9 @@ fn resolve_group<'data, 'definitions>(
 ) -> ResolvedGroup<'data> {
     match group {
         Group::Prelude(prelude) => {
-            let definitions_out = crate::slice::slice_take_prefix_mut(
-                symbol_definitions_slice,
-                prelude.symbol_definitions.len(),
-            );
+            let definitions_out = symbol_definitions_slice
+                .split_off_mut(..prelude.symbol_definitions.len())
+                .unwrap();
 
             initial_work.push(LoadObjectRequest {
                 file_id: PRELUDE_FILE_ID,
@@ -211,10 +210,9 @@ fn resolve_group<'data, 'definitions>(
             let files = parsed_input_objects
                 .iter()
                 .map(|s| {
-                    let definitions_out = crate::slice::slice_take_prefix_mut(
-                        symbol_definitions_slice,
-                        s.symbol_id_range.len(),
-                    );
+                    let definitions_out = symbol_definitions_slice
+                        .split_off_mut(..s.symbol_id_range.len())
+                        .unwrap();
 
                     if s.is_optional() {
                         definitions_out_per_file.push(AtomicTake::new(definitions_out));

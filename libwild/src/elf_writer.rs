@@ -70,8 +70,6 @@ use crate::part_id;
 use crate::resolution::SectionSlot;
 use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
-use crate::slice::slice_take_prefix_mut;
-use crate::slice::take_first_mut;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
@@ -167,7 +165,7 @@ fn write_gnu_build_id_note(
     note_header.n_descsz.set(e, build_id.len() as u32);
     note_header.n_type.set(e, NT_GNU_BUILD_ID);
 
-    let name_out = crate::slice::slice_take_prefix_mut(&mut rest, GNU_NOTE_NAME.len());
+    let name_out = rest.split_off_mut(..GNU_NOTE_NAME.len()).unwrap();
     name_out.copy_from_slice(GNU_NOTE_NAME);
 
     rest.copy_from_slice(build_id);
@@ -369,7 +367,8 @@ impl<'out> VersionWriter<'out> {
 
     fn set_next_symbol_version(&mut self, index: u16) -> Result {
         if let Some(versym_table) = self.versym.as_mut() {
-            let versym = crate::slice::take_first_mut(versym_table)
+            let versym = versym_table
+                .split_off_first_mut()
                 .ok_or_else(|| insufficient_allocation(".gnu.version"))?;
             versym.0.set(LittleEndian, index);
         }
@@ -377,7 +376,8 @@ impl<'out> VersionWriter<'out> {
     }
 
     fn take_bytes(&mut self, size: usize) -> Result<&'out mut [u8]> {
-        crate::slice::try_slice_take_prefix_mut(&mut self.version_r, size)
+        self.version_r
+            .split_off_mut(..size)
             .ok_or_else(|| insufficient_allocation(".gnu.version_r"))
     }
 
@@ -395,7 +395,8 @@ impl<'out> VersionWriter<'out> {
     }
 
     fn take_bytes_d(&mut self, size: usize) -> Result<&'out mut [u8]> {
-        crate::slice::try_slice_take_prefix_mut(&mut self.version_d, size)
+        self.version_d
+            .split_off_mut(..size)
             .ok_or_else(|| insufficient_allocation(".gnu.version_d"))
     }
 
@@ -441,7 +442,7 @@ impl<'out> VersionWriter<'out> {
     }
 
     fn take_prefix(&mut self, num_symbols: usize) -> Option<&'out mut [Versym]> {
-        Some(slice_take_prefix_mut(self.versym.as_mut()?, num_symbols))
+        Some(self.versym.as_mut()?.split_off_mut(..num_symbols).unwrap())
     }
 }
 
@@ -701,14 +702,16 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if self.plt_got.len() < elf::PLT_ENTRY_SIZE as usize {
             bail!("Didn't allocate enough space in .plt.got");
         }
-        Ok(slice_take_prefix_mut(
-            &mut self.plt_got,
-            elf::PLT_ENTRY_SIZE as usize,
-        ))
+        Ok(self
+            .plt_got
+            .split_off_mut(..elf::PLT_ENTRY_SIZE as usize)
+            .unwrap())
     }
 
     fn take_next_got_entry(&mut self) -> Result<&'out mut u64> {
-        crate::slice::take_first_mut(&mut self.got).ok_or_else(|| insufficient_allocation(".got"))
+        self.got
+            .split_off_first_mut()
+            .ok_or_else(|| insufficient_allocation(".got"))
     }
 
     /// Checks that we used all of the entries that we requested during layout.
@@ -748,8 +751,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     }
 
     fn write_ifunc_relocation<A: Arch>(&mut self, res: &Resolution) -> Result {
-        let out = slice_take_prefix_mut(&mut self.rela_plt, 1);
-        let out = &mut out[0];
+        let out = self.rela_plt.split_off_first_mut().unwrap();
         let e = LittleEndian;
         out.r_addend.set(e, res.raw_value as i64);
         let got_address = res
@@ -827,7 +829,9 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             "write_address_relocation called when output is not relocatable"
         );
         let e = LittleEndian;
-        let rela = crate::slice::take_first_mut(&mut self.rela_dyn_relative)
+        let rela = self
+            .rela_dyn_relative
+            .split_off_first_mut()
             .ok_or_else(|| insufficient_allocation(".rela.dyn (relative)"))?;
         rela.r_offset.set(e, place);
         rela.r_addend.set(e, relative_address);
@@ -883,13 +887,16 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
     fn take_rela_dyn(&mut self) -> Result<&mut object::elf::Rela64<LittleEndian>> {
         tracing::trace!("Consume .rela.dyn general");
-        crate::slice::take_first_mut(&mut self.rela_dyn_general)
+        self.rela_dyn_general
+            .split_off_first_mut()
             .ok_or_else(|| insufficient_allocation(".rela.dyn (non-relative)"))
     }
 
     fn take_eh_frame_hdr(&mut self) -> &'out mut EhFrameHdr {
-        let entry_bytes =
-            crate::slice::slice_take_prefix_mut(&mut self.eh_frame_hdr, size_of::<EhFrameHdr>());
+        let entry_bytes = self
+            .eh_frame_hdr
+            .split_off_mut(..size_of::<EhFrameHdr>())
+            .unwrap();
         bytemuck::from_bytes_mut(entry_bytes)
     }
 
@@ -897,10 +904,10 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if self.eh_frame_hdr.is_empty() {
             return None;
         }
-        let entry_bytes = crate::slice::slice_take_prefix_mut(
-            &mut self.eh_frame_hdr,
-            size_of::<EhFrameHdrEntry>(),
-        );
+        let entry_bytes = self
+            .eh_frame_hdr
+            .split_off_mut(..size_of::<EhFrameHdrEntry>())
+            .unwrap();
         Some(bytemuck::from_bytes_mut(entry_bytes))
     }
 
@@ -908,10 +915,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if size > self.eh_frame.len() {
             return Err(insufficient_allocation(".eh_frame"));
         }
-        Ok(crate::slice::slice_take_prefix_mut(
-            &mut self.eh_frame,
-            size,
-        ))
+        Ok(self.eh_frame.split_off_mut(..size).unwrap())
     }
 
     /// Takes a prefix of dynsym, dynstr and versym suitable for writing the supplied definitions.
@@ -1044,7 +1048,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         name: &[u8],
     ) -> Result<&mut SymtabEntry> {
         let entry = if is_local {
-            take_first_mut(&mut self.local_entries).with_context(|| {
+            self.local_entries.split_off_first_mut().with_context(|| {
                 format!(
                     "Insufficient .symtab local entries allocated for symbol `{}`",
                     String::from_utf8_lossy(name),
@@ -1054,7 +1058,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             if self.is_dynamic {
                 tracing::trace!(name = %String::from_utf8_lossy(name), "Write .dynsym");
             }
-            take_first_mut(&mut self.global_entries).with_context(|| {
+            self.global_entries.split_off_first_mut().with_context(|| {
                 format!(
                     "Insufficient {} entries allocated for symbol `{}`",
                     if self.is_dynamic {
@@ -1102,7 +1106,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     fn take_prefix_global(&mut self, num_symbols: usize, strtab_size: usize) -> Self {
         SymbolTableWriter {
             local_entries: &mut [],
-            global_entries: slice_take_prefix_mut(&mut self.global_entries, num_symbols),
+            global_entries: self.global_entries.split_off_mut(..num_symbols).unwrap(),
             output_sections: self.output_sections,
             strtab_writer: self.strtab_writer.take_prefix(strtab_size),
             is_dynamic: self.is_dynamic,
@@ -1232,7 +1236,7 @@ fn write_section_raw<'out>(
                 section_buffer.len()
             );
         }
-        let out = slice_take_prefix_mut(section_buffer, allocation_size);
+        let out = section_buffer.split_off_mut(..allocation_size).unwrap();
         // Cut off any padding so that our output buffer is the size of our input buffer.
         let object_section = object.object.section(sec.index)?;
         let section_size = object.object.section_size(object_section)?;
@@ -2400,11 +2404,11 @@ fn write_merged_strings(
             merged
                 .buckets
                 .iter()
-                .map(|b| (b, slice_take_prefix_mut(buffer, b.len())))
+                .map(|b| (b, buffer.split_off_mut(..b.len()).unwrap()))
                 .par_bridge()
                 .for_each(|(bucket, mut buffer)| {
                     for string in &bucket.strings {
-                        let dest = crate::slice::slice_take_prefix_mut(&mut buffer, string.len());
+                        let dest = buffer.split_off_mut(..string.len()).unwrap();
                         dest.copy_from_slice(string);
                     }
                 });
@@ -2414,7 +2418,9 @@ fn write_merged_strings(
     // Write linker identity into .comment section.
     let comment_buffer =
         buffers.get_mut(output_section_id::COMMENT.part_id_with_alignment(alignment::MIN));
-    crate::slice::slice_take_prefix_mut(comment_buffer, prelude.identity.len())
+    comment_buffer
+        .split_off_mut(..prelude.identity.len())
+        .unwrap()
         .copy_from_slice(prelude.identity.as_bytes());
 }
 
@@ -2682,11 +2688,11 @@ fn write_gnu_property_notes(
     );
     note_header.n_type.set(e, NT_GNU_PROPERTY_TYPE_0);
 
-    let name_out = crate::slice::slice_take_prefix_mut(&mut rest, GNU_NOTE_NAME.len());
+    let name_out = rest.split_off_mut(..GNU_NOTE_NAME.len()).unwrap();
     name_out.copy_from_slice(GNU_NOTE_NAME);
 
     for note in &epilogue.gnu_property_notes {
-        let entry_bytes = crate::slice::slice_take_prefix_mut(&mut rest, size_of::<NoteProperty>());
+        let entry_bytes = rest.split_off_mut(..size_of::<NoteProperty>()).unwrap();
         let property: &mut NoteProperty = bytemuck::from_bytes_mut(entry_bytes);
         property.pr_type = note.ptype;
         property.pr_datasz = size_of_val(&property.pr_data) as u32;
@@ -3381,7 +3387,9 @@ impl<'out> DynamicEntriesWriter<'out> {
     }
 
     fn write(&mut self, tag: u32, value: u64) -> Result {
-        let entry = crate::slice::take_first_mut(&mut self.out)
+        let entry = self
+            .out
+            .split_off_first_mut()
             .ok_or_else(|| insufficient_allocation(".dynamic"))?;
         let e = LittleEndian;
         entry.d_tag.set(e, u64::from(tag));
@@ -3491,7 +3499,7 @@ fn write_section_header_strings(
             && sections.output_index_of_section(id).is_some()
             && let Some(name) = sections.name(id)
         {
-            let name_out = crate::slice::slice_take_prefix_mut(&mut out, name.len() + 1);
+            let name_out = out.split_off_mut(..=name.len()).unwrap();
             name_out[..name.len()].copy_from_slice(name.bytes());
             name_out[name.len()] = 0;
         }
@@ -3510,7 +3518,8 @@ impl<'out> ProgramHeaderWriter<'out> {
     }
 
     fn take_header(&mut self) -> Result<&mut ProgramHeader> {
-        crate::slice::take_first_mut(&mut self.headers)
+        self.headers
+            .split_off_first_mut()
             .ok_or_else(|| error!("Insufficient header slots"))
     }
 }
@@ -3754,7 +3763,8 @@ fn copy_symbol_version(
 }
 
 fn write_symbol_version(versym_out: &mut &mut [Versym], version: u16) -> Result {
-    crate::slice::take_first_mut(versym_out)
+    versym_out
+        .split_off_first_mut()
         .context("Insufficient .gnu.version allocation")?
         .0
         .set(LittleEndian, version);
@@ -3772,7 +3782,7 @@ impl StrTabWriter<'_> {
     /// string was written.
     fn write_str(&mut self, str: &[u8]) -> u32 {
         let len_with_terminator = str.len() + 1;
-        let lib_name_out = slice_take_prefix_mut(&mut self.out, len_with_terminator);
+        let lib_name_out = self.out.split_off_mut(..len_with_terminator).unwrap();
         lib_name_out[..str.len()].copy_from_slice(str);
         lib_name_out[str.len()] = 0;
         let offset = self.next_offset;
@@ -3786,7 +3796,7 @@ impl StrTabWriter<'_> {
 
         Self {
             next_offset,
-            out: slice_take_prefix_mut(&mut self.out, size),
+            out: self.out.split_off_mut(..size).unwrap(),
         }
     }
 }
@@ -3816,9 +3826,11 @@ pub(crate) fn verify_resolution_allocation(
     let mut offset = 0;
     let mut buffers = mem_sizes.output_order_map(output_order, |_part_id, alignment, &size| {
         let aligned_offset = alignment.align_up(offset);
-        crate::slice::slice_take_prefix_mut(&mut all_mem, (aligned_offset - offset) as usize);
+        all_mem
+            .split_off_mut(..(aligned_offset - offset) as usize)
+            .unwrap();
         offset = aligned_offset + size;
-        crate::slice::slice_take_prefix_mut(&mut all_mem, size as usize)
+        all_mem.split_off_mut(..size as usize).unwrap()
     });
 
     let dynsym_writer = SymbolTableWriter::new_dynamic(0, &mut buffers, output_sections);

@@ -196,9 +196,7 @@ impl<'out> OutputSectionPartMap<&'out mut [u8]> {
         &mut self,
         sizes: &OutputSectionPartMap<usize>,
     ) -> OutputSectionPartMap<&'out mut [u8]> {
-        self.mut_with_map(sizes, |buffer, size| {
-            crate::slice::slice_take_prefix_mut(buffer, *size)
-        })
+        self.mut_with_map(sizes, |buffer, size| buffer.split_off_mut(..*size).unwrap())
     }
 }
 
