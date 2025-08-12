@@ -24,6 +24,7 @@ use crate::save_dir::SaveDir;
 use jobserver::Acquired;
 use jobserver::Client;
 use rayon::ThreadPoolBuilder;
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -726,10 +727,10 @@ fn warn_unsupported(opt: &str) -> Result {
     Ok(())
 }
 
-pub struct ArgumentParser {
-    options: std::collections::HashMap<&'static str, OptionHandler>,
-    short_options: std::collections::HashMap<&'static str, OptionHandler>, // Short option lookup
-    prefix_options: std::collections::HashMap<&'static str, PrefixOptionHandler>, // For options like -L, -l, etc.
+struct ArgumentParser {
+    options: HashMap<&'static str, OptionHandler>,
+    short_options: HashMap<&'static str, OptionHandler>, // Short option lookup
+    prefix_options: HashMap<&'static str, PrefixOptionHandler>, // For options like -L, -l, etc.
 }
 
 #[derive(Clone)]
@@ -739,12 +740,10 @@ struct OptionHandler {
     short_names: Vec<&'static str>,
 }
 
-type SubOptionHandler = Box<dyn Fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>>;
-
 struct PrefixOptionHandler {
     help_text: &'static str,
     handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>,
-    sub_options: std::collections::HashMap<&'static str, (&'static str, SubOptionHandler)>, // sub-option -> (help text, handler)
+    sub_options: HashMap<&'static str, SubOption>,
 }
 
 #[allow(clippy::enum_variant_names)]
@@ -755,7 +754,7 @@ enum OptionHandlerFn {
     OptionalParam(fn(&mut Args, &mut Vec<Modifiers>, Option<&str>) -> Result<()>),
 }
 
-pub struct OptionDeclaration<'a, T> {
+struct OptionDeclaration<'a, T> {
     parser: &'a mut ArgumentParser,
     long_names: Vec<&'static str>,
     short_names: Vec<&'static str>,
@@ -763,9 +762,14 @@ pub struct OptionDeclaration<'a, T> {
     _phantom: std::marker::PhantomData<T>,
 }
 
-pub struct NoParam;
-pub struct WithParam;
-pub struct WithOptionalParam;
+struct NoParam;
+struct WithParam;
+struct WithOptionalParam;
+
+struct SubOption {
+    help: &'static str,
+    handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>,
+}
 
 impl Default for ArgumentParser {
     fn default() -> Self {
@@ -774,24 +778,24 @@ impl Default for ArgumentParser {
 }
 
 /// For declaring prefix options (like -L, -l, etc.)
-pub struct PrefixOptionDeclaration<'a> {
+struct PrefixOptionDeclaration<'a> {
     parser: &'a mut ArgumentParser,
     prefix: &'static str,
     help_text: &'static str,
-    sub_options: std::collections::HashMap<&'static str, (&'static str, SubOptionHandler)>,
+    sub_options: HashMap<&'static str, SubOption>,
 }
 
 impl ArgumentParser {
     #[must_use]
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
-            options: std::collections::HashMap::new(),
-            short_options: std::collections::HashMap::new(),
-            prefix_options: std::collections::HashMap::new(),
+            options: HashMap::new(),
+            short_options: HashMap::new(),
+            prefix_options: HashMap::new(),
         }
     }
 
-    pub fn declare(&mut self) -> OptionDeclaration<'_, NoParam> {
+    fn declare(&mut self) -> OptionDeclaration<'_, NoParam> {
         OptionDeclaration {
             parser: self,
             long_names: Vec::new(),
@@ -801,7 +805,7 @@ impl ArgumentParser {
         }
     }
 
-    pub fn declare_with_param(&mut self) -> OptionDeclaration<'_, WithParam> {
+    fn declare_with_param(&mut self) -> OptionDeclaration<'_, WithParam> {
         OptionDeclaration {
             parser: self,
             long_names: Vec::new(),
@@ -811,7 +815,7 @@ impl ArgumentParser {
         }
     }
 
-    pub fn declare_with_optional_param(&mut self) -> OptionDeclaration<'_, WithOptionalParam> {
+    fn declare_with_optional_param(&mut self) -> OptionDeclaration<'_, WithOptionalParam> {
         OptionDeclaration {
             parser: self,
             long_names: Vec::new(),
@@ -822,28 +826,13 @@ impl ArgumentParser {
     }
 
     /// Declare a prefix option (like -L, -l, etc.)
-    pub fn declare_prefix(&mut self, prefix: &'static str) -> PrefixOptionDeclaration<'_> {
+    fn declare_prefix(&mut self, prefix: &'static str) -> PrefixOptionDeclaration<'_> {
         PrefixOptionDeclaration {
             parser: self,
             prefix,
             help_text: "",
-            sub_options: std::collections::HashMap::new(),
+            sub_options: HashMap::new(),
         }
-    }
-
-    pub fn parse<S: AsRef<str>, I: Iterator<Item = S>>(
-        &self,
-        mut args: Args,
-        mut modifier_stack: Vec<Modifiers>,
-        mut input: I,
-    ) -> Result<Args> {
-        while let Some(arg) = input.next() {
-            let arg = arg.as_ref();
-            if !self.handle_argument(&mut args, &mut modifier_stack, arg, &mut input)? {
-                ArgumentParser::handle_positional_argument(&mut args, &modifier_stack, arg);
-            }
-        }
-        Ok(args)
     }
 
     fn handle_argument<S: AsRef<str>, I: Iterator<Item = S>>(
@@ -925,8 +914,8 @@ impl ArgumentParser {
                 };
 
                 // Check if this value corresponds to a registered sub-option
-                if let Some((_help, sub_handler)) = handler.sub_options.get(value.as_str()) {
-                    sub_handler(args, modifier_stack, &value)?;
+                if let Some(sub) = handler.sub_options.get(value.as_str()) {
+                    (sub.handler)(args, modifier_stack, &value)?;
                 } else {
                     // Fall back to the main handler for unregistered sub-options
                     (handler.handler)(args, modifier_stack, &value)?;
@@ -966,7 +955,7 @@ impl ArgumentParser {
     }
 
     #[must_use]
-    pub fn generate_help(&self) -> String {
+    fn generate_help(&self) -> String {
         let mut help = String::new();
         help.push_str("USAGE:\n    wild [OPTIONS] [FILES...]\n\nOPTIONS:\n");
 
@@ -991,14 +980,16 @@ impl ArgumentParser {
                 let mut sub_options: Vec<_> = handler.sub_options.iter().collect();
                 sub_options.sort_by_key(|(name, _)| *name);
 
-                for (sub_name, (sub_help, _handler)) in sub_options {
-                    help.push_str(&format!("      -{prefix} {sub_name:<30} {sub_help}\n"));
+                for (sub_name, sub) in sub_options {
+                    help.push_str(&format!(
+                        "      -{prefix} {sub_name:<30} {sub_help}\n",
+                        sub_help = sub.help
+                    ));
                 }
             }
         }
 
-        let mut help_to_options: std::collections::HashMap<&str, Vec<String>> =
-            std::collections::HashMap::new();
+        let mut help_to_options: HashMap<&str, Vec<String>> = HashMap::new();
         let mut processed_short_options: std::collections::HashSet<&str> =
             std::collections::HashSet::new();
 
@@ -1061,26 +1052,26 @@ impl ArgumentParser {
 
 impl<'a, T> OptionDeclaration<'a, T> {
     #[must_use]
-    pub fn long(mut self, name: &'static str) -> Self {
+    fn long(mut self, name: &'static str) -> Self {
         self.long_names.push(name);
         self
     }
 
     #[must_use]
-    pub fn short(mut self, option: &'static str) -> Self {
+    fn short(mut self, option: &'static str) -> Self {
         self.short_names.push(option);
         self
     }
 
     #[must_use]
-    pub fn help(mut self, text: &'static str) -> Self {
+    fn help(mut self, text: &'static str) -> Self {
         self.help_text = text;
         self
     }
 }
 
 impl<'a> OptionDeclaration<'a, NoParam> {
-    pub fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>) {
+    fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>) -> Result<()>) {
         let option_handler = OptionHandler {
             help_text: self.help_text,
             handler: OptionHandlerFn::NoParam(handler),
@@ -1100,7 +1091,7 @@ impl<'a> OptionDeclaration<'a, NoParam> {
 }
 
 impl<'a> OptionDeclaration<'a, WithParam> {
-    pub fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>) {
+    fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>) {
         let option_handler = OptionHandler {
             help_text: self.help_text,
             handler: OptionHandlerFn::WithParam(handler),
@@ -1120,7 +1111,7 @@ impl<'a> OptionDeclaration<'a, WithParam> {
 }
 
 impl<'a> OptionDeclaration<'a, WithOptionalParam> {
-    pub fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>, Option<&str>) -> Result<()>) {
+    fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>, Option<&str>) -> Result<()>) {
         let option_handler = OptionHandler {
             help_text: self.help_text,
             handler: OptionHandlerFn::OptionalParam(handler),
@@ -1141,21 +1132,23 @@ impl<'a> OptionDeclaration<'a, WithOptionalParam> {
 
 impl<'a> PrefixOptionDeclaration<'a> {
     #[must_use]
-    pub fn help(mut self, text: &'static str) -> Self {
+    fn help(mut self, text: &'static str) -> Self {
         self.help_text = text;
         self
     }
 
     #[must_use]
-    pub fn sub_option<F>(mut self, name: &'static str, help: &'static str, handler: F) -> Self
-    where
-        F: Fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()> + 'static,
-    {
-        self.sub_options.insert(name, (help, Box::new(handler)));
+    fn sub_option(
+        mut self,
+        name: &'static str,
+        help: &'static str,
+        handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>,
+    ) -> Self {
+        self.sub_options.insert(name, SubOption { help, handler });
         self
     }
 
-    pub fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>) {
+    fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>) {
         let prefix_handler = PrefixOptionHandler {
             help_text: self.help_text,
             sub_options: self.sub_options,
