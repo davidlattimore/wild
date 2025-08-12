@@ -1412,6 +1412,12 @@ fn setup_argument_parser() -> ArgumentParser {
         });
 
     parser
+        .declare_prefix("O")
+        .execute(|_args, _modifier_stack, _value|
+        // We don't use opt-level for now.
+        Ok(()));
+
+    parser
         .declare()
         .long("static")
         .long("Bstatic")
@@ -1768,7 +1774,6 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare()
         .long("validate-output")
-        .help("Validate output")
         .execute(|args, _modifier_stack| {
             args.validate_output = true;
             Ok(())
@@ -1777,7 +1782,6 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare()
         .long("write-layout")
-        .help("Write layout information")
         .execute(|args, _modifier_stack| {
             args.write_layout = true;
             Ok(())
@@ -1786,7 +1790,6 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare()
         .long("write-trace")
-        .help("Write link-time trace information")
         .execute(|args, _modifier_stack| {
             args.write_trace = true;
             Ok(())
@@ -2346,6 +2349,9 @@ mod tests {
         "--discard-locals",
         "-X",
         "-EL",
+        "-O",
+        "1",
+        "-O3",
         "-v",
         "--sysroot=/usr/aarch64-linux-gnu",
         "--demangle",
