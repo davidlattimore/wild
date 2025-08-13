@@ -18,10 +18,12 @@ use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
+use crate::elf::DynamicRelocationSequence;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
 use crate::elf::FileHeader;
 use crate::elf::RelocationList;
+use crate::elf::RelocationSequence;
 use crate::elf::Versym;
 use crate::elf_writer;
 use crate::ensure;
@@ -1220,9 +1222,6 @@ struct CommonGroupState<'data> {
     /// is stored is non-deterministic and is whichever object first requested export of that
     /// symbol. That's OK though because the epilogue will sort all dynamic symbols.
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
-
-    /// Indexed by `FrameIndex`.
-    exception_frames: Vec<ExceptionFrame>,
 }
 
 impl CommonGroupState<'_> {
@@ -1231,7 +1230,6 @@ impl CommonGroupState<'_> {
             mem_sizes: output_sections.new_part_map(),
             section_attributes: output_sections.new_section_map(),
             dynamic_symbol_definitions: Default::default(),
-            exception_frames: Default::default(),
         }
     }
 
@@ -1336,12 +1334,15 @@ struct ObjectLayoutState<'data> {
 
     gnu_property_notes: Vec<GnuProperty>,
     riscv_attributes: Vec<RiscVAttribute>,
+
+    /// Indexed by `FrameIndex`.
+    exception_frames: Vec<ExceptionFrame<'data>>,
 }
 
 #[derive(Default)]
-struct ExceptionFrame {
+struct ExceptionFrame<'data> {
     /// The relocations that need to be processed if we load this frame.
-    relocations: Vec<Crel>,
+    relocations: DynamicRelocationSequence<'data>,
 
     /// Number of bytes required to store this frame.
     frame_size: u32,
@@ -2948,7 +2949,7 @@ impl Section {
 
 #[inline(always)]
 fn process_relocation<A: Arch>(
-    object: &mut ObjectLayoutState,
+    object: &ObjectLayoutState,
     common: &mut CommonGroupState,
     rel: &Crel,
     section: &object::elf::SectionHeader64<LittleEndian>,
@@ -3973,6 +3974,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             cies: Default::default(),
             gnu_property_notes: Default::default(),
             riscv_attributes: Default::default(),
+            exception_frames: Default::default(),
         })
     } else {
         FileLayoutState::Dynamic(DynamicLayoutState {
@@ -4136,28 +4138,26 @@ impl<'data> ObjectLayoutState<'data> {
         let part_id = unloaded.part_id;
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
-        let mut modifier = RelocationModifier::Normal;
 
-        for rel in self.relocations(section.index)?.into_iter() {
-            if modifier == RelocationModifier::SkipNextRelocation {
-                modifier = RelocationModifier::Normal;
-                continue;
+        match self.relocations(section.index)? {
+            RelocationList::Rela(relocations) => {
+                self.load_section_relocations::<A>(
+                    common,
+                    queue,
+                    resources,
+                    section,
+                    relocations.crel_iter(),
+                )?;
             }
-            modifier = process_relocation::<A>(
-                self,
-                common,
-                &rel,
-                self.object.section(section.index)?,
-                resources,
-                queue,
-                false,
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to copy section {} from file {self}",
-                    section_debug(self.object, section.index)
-                )
-            })?;
+            RelocationList::Crel(relocations) => {
+                self.load_section_relocations::<A>(
+                    common,
+                    queue,
+                    resources,
+                    section,
+                    relocations.flat_map(|r| r.ok()),
+                )?;
+            }
         }
 
         tracing::debug!(loaded_section = %self.object.section_display_name(section_index),);
@@ -4183,6 +4183,40 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
+    fn load_section_relocations<A: Arch>(
+        &self,
+        common: &mut CommonGroupState<'data>,
+        queue: &mut LocalWorkQueue,
+        resources: &GraphResources<'data, '_>,
+        section: Section,
+        relocations: impl Iterator<Item = Crel>,
+    ) -> Result {
+        let mut modifier = RelocationModifier::Normal;
+        for rel in relocations {
+            if modifier == RelocationModifier::SkipNextRelocation {
+                modifier = RelocationModifier::Normal;
+                continue;
+            }
+            modifier = process_relocation::<A>(
+                self,
+                common,
+                &rel,
+                self.object.section(section.index)?,
+                resources,
+                queue,
+                false,
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to copy section {} from file {self}",
+                    section_debug(self.object, section.index)
+                )
+            })?;
+        }
+
+        Ok(())
+    }
+
     /// Processes the exception frames for a section that we're loading.
     fn process_section_exception_frames<A: Arch>(
         &mut self,
@@ -4194,28 +4228,43 @@ impl<'data> ObjectLayoutState<'data> {
         let mut num_frames = 0;
         let mut next_frame_index = frame_index;
         while let Some(frame_index) = next_frame_index {
-            let frame_data = &common.exception_frames[frame_index.as_usize()];
+            let frame_data = &self.exception_frames[frame_index.as_usize()];
             next_frame_index = frame_data.previous_frame_for_section;
 
             self.eh_frame_size += u64::from(frame_data.frame_size);
 
             num_frames += 1;
 
-            let frame_data_relocations = frame_data.relocations.iter().copied().collect_vec();
-
             // Request loading of any sections/symbols referenced by the FDEs for our
             // section.
             if let Some(eh_frame_section) = self.eh_frame_section {
-                for rel in frame_data_relocations {
-                    process_relocation::<A>(
-                        self,
-                        common,
-                        &rel,
-                        eh_frame_section,
-                        resources,
-                        queue,
-                        false,
-                    )?;
+                match &frame_data.relocations {
+                    DynamicRelocationSequence::Rela(frame_data_relocations) => {
+                        for rel in *frame_data_relocations {
+                            process_relocation::<A>(
+                                self,
+                                common,
+                                &Crel::from_rela(rel, LittleEndian, false),
+                                eh_frame_section,
+                                resources,
+                                queue,
+                                false,
+                            )?;
+                        }
+                    }
+                    DynamicRelocationSequence::Crel(frame_data_relocations) => {
+                        for rel in frame_data_relocations.crel_iter() {
+                            process_relocation::<A>(
+                                self,
+                                common,
+                                &rel,
+                                eh_frame_section,
+                                resources,
+                                queue,
+                                false,
+                            )?;
+                        }
+                    }
                 }
             }
         }
@@ -4241,34 +4290,61 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
-        let relocations = self.relocations(section.index)?.into_iter();
         if A::local_symbols_in_debug_info() {
-            for rel in relocations {
-                let modifier = process_relocation::<A>(
-                    self,
+            match self.relocations(section.index)? {
+                RelocationList::Rela(relocations) => self.load_debug_relocations::<A>(
                     common,
-                    &rel,
-                    self.object.section(section.index)?,
-                    resources,
                     queue,
-                    true,
-                )
-                .with_context(|| {
-                    format!(
-                        "Failed to copy section {} from file {self}",
-                        section_debug(self.object, section.index)
-                    )
-                })?;
-                ensure!(
-                    modifier == RelocationModifier::Normal,
-                    "All debug relocations must be processed"
-                );
+                    resources,
+                    section,
+                    relocations.crel_iter(),
+                )?,
+                RelocationList::Crel(relocations) => self.load_debug_relocations::<A>(
+                    common,
+                    queue,
+                    resources,
+                    section,
+                    relocations.flat_map(|r| r.ok()),
+                )?,
             }
         }
 
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
         common.section_loaded(part_id, header, section);
         self.sections[section_index.0] = SectionSlot::LoadedDebugInfo(section);
+
+        Ok(())
+    }
+
+    fn load_debug_relocations<A: Arch>(
+        &self,
+        common: &mut CommonGroupState<'data>,
+        queue: &mut LocalWorkQueue,
+        resources: &GraphResources<'data, '_>,
+        section: Section,
+        relocations: impl Iterator<Item = Crel>,
+    ) -> Result<(), Error> {
+        for rel in relocations {
+            let modifier = process_relocation::<A>(
+                self,
+                common,
+                &rel,
+                self.object.section(section.index)?,
+                resources,
+                queue,
+                true,
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to copy section {} from file {self}",
+                    section_debug(self.object, section.index)
+                )
+            })?;
+            ensure!(
+                modifier == RelocationModifier::Normal,
+                "All debug relocations must be processed"
+            );
+        }
 
         Ok(())
     }
@@ -4688,12 +4764,43 @@ fn process_eh_frame_data<'data, A: Arch>(
 ) -> Result {
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
     let data = object.object.raw_section_data(eh_frame_section)?;
+    match object.relocations(eh_frame_section_index)? {
+        RelocationList::Rela(relocations) => process_eh_frame_relocations::<A>(
+            object,
+            common,
+            file_symbol_id_range,
+            resources,
+            queue,
+            eh_frame_section,
+            data,
+            &relocations,
+        ),
+        RelocationList::Crel(crel_iterator) => process_eh_frame_relocations::<A>(
+            object,
+            common,
+            file_symbol_id_range,
+            resources,
+            queue,
+            eh_frame_section,
+            data,
+            &crel_iterator.collect::<Result<Vec<Crel>, _>>()?,
+        ),
+    }
+}
+
+fn process_eh_frame_relocations<'data, 'rel: 'data, A: Arch>(
+    object: &mut ObjectLayoutState<'data>,
+    common: &mut CommonGroupState<'data>,
+    file_symbol_id_range: SymbolIdRange,
+    resources: &GraphResources<'_, '_>,
+    queue: &mut LocalWorkQueue,
+    eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
+    data: &'data [u8],
+    relocations: &impl RelocationSequence<'rel>,
+) -> Result {
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
-    let relocations = object
-        .relocations(eh_frame_section_index)?
-        .into_iter()
-        .collect_vec();
-    let mut rel_iter = relocations.iter().enumerate().peekable();
+
+    let mut rel_iter = relocations.crel_iter().enumerate().peekable();
     let mut offset = 0;
 
     while offset + PREFIX_LEN <= data.len() {
@@ -4779,14 +4886,14 @@ fn process_eh_frame_data<'data, A: Arch>(
             if let Some(section_index) = section_index
                 && let Some(unloaded) = object.sections[section_index.0].unloaded_mut()
             {
-                let frame_index = FrameIndex::from_usize(common.exception_frames.len());
+                let frame_index = FrameIndex::from_usize(object.exception_frames.len());
 
                 // Update our unloaded section to point to our new frame. Our frame will then in
                 // turn point to whatever the section pointed to before.
                 let previous_frame_for_section = unloaded.last_frame_index.replace(frame_index);
 
-                common.exception_frames.push(ExceptionFrame {
-                    relocations: relocations[rel_start_index..rel_end_index].to_vec(),
+                object.exception_frames.push(ExceptionFrame {
+                    relocations: relocations.subsequence(rel_start_index..rel_end_index),
                     frame_size: size as u32,
                     previous_frame_for_section,
                 });

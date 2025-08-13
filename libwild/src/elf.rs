@@ -25,6 +25,7 @@ use object::read::elf::SectionHeader as _;
 use std::borrow::Cow;
 use std::io::Read as _;
 use std::mem::offset_of;
+use std::ops::Range;
 use std::sync::atomic::Ordering;
 
 /// Our starting address in memory when linking non-relocatable executables. We can start memory
@@ -72,51 +73,27 @@ pub(crate) struct File<'data> {
     pub(crate) eflags: u32,
 }
 
+/// A list of relocations that supports iteration.
 #[derive(Clone)]
 pub(crate) enum RelocationList<'data> {
     Rela(&'data [Rela]),
     Crel(CrelIterator<'data>),
 }
 
-pub(crate) struct RelocationListIter<'data> {
-    list: RelocationList<'data>,
-    index: usize,
+/// A sequence of relocations that supports random access.
+pub(crate) enum DynamicRelocationSequence<'data> {
+    Rela(&'data [Rela]),
+    Crel(Vec<Crel>),
 }
 
-impl<'data> Iterator for RelocationListIter<'data> {
-    type Item = Crel;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let item = match &mut self.list {
-            RelocationList::Crel(crel) => crel.next().and_then(|r| r.ok()),
-            RelocationList::Rela(rela) => rela
-                .get(self.index)
-                .map(|r| Crel::from_rela(r, LittleEndian, false)),
-        };
-        self.index += 1;
-        item
-    }
-}
-
-impl<'data> IntoIterator for RelocationList<'data> {
-    type Item = Crel;
-    type IntoIter = RelocationListIter<'data>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        Self::IntoIter {
-            list: self,
-            index: 0,
-        }
-    }
-}
-
-pub(crate) trait RelocationSequence {
+pub(crate) trait RelocationSequence<'data> {
     fn num_relocations(&self) -> usize;
     fn get_crel(&self, index: usize) -> Crel;
     fn crel_iter(&self) -> impl Iterator<Item = Crel>;
+    fn subsequence(&self, range: Range<usize>) -> DynamicRelocationSequence<'data>;
 }
 
-impl RelocationSequence for &[Rela] {
+impl<'data> RelocationSequence<'data> for &'data [Rela] {
     fn num_relocations(&self) -> usize {
         self.len()
     }
@@ -126,29 +103,29 @@ impl RelocationSequence for &[Rela] {
     }
 
     fn crel_iter(&self) -> impl Iterator<Item = Crel> {
-        RelocationList::Rela(self).into_iter()
+        self.iter().map(|r| Crel::from_rela(r, LittleEndian, false))
+    }
+
+    fn subsequence(&self, range: Range<usize>) -> DynamicRelocationSequence<'data> {
+        DynamicRelocationSequence::Rela(&self[range])
     }
 }
 
-pub(crate) struct CrelRelocationCache(Vec<Crel>);
-
-impl CrelRelocationCache {
-    pub(crate) fn new(relocations: Vec<Crel>) -> Self {
-        Self(relocations)
-    }
-}
-
-impl RelocationSequence for CrelRelocationCache {
+impl RelocationSequence<'static> for Vec<Crel> {
     fn num_relocations(&self) -> usize {
-        self.0.len()
+        self.len()
     }
 
     fn get_crel(&self, index: usize) -> Crel {
-        self.0[index]
+        self[index]
     }
 
     fn crel_iter(&self) -> impl Iterator<Item = Crel> {
-        self.0.clone().into_iter()
+        self.clone().into_iter()
+    }
+
+    fn subsequence(&self, range: Range<usize>) -> DynamicRelocationSequence<'static> {
+        DynamicRelocationSequence::Crel(self[range].to_vec())
     }
 }
 
@@ -595,4 +572,10 @@ pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut 
 
 pub(crate) fn is_hidden_symbol(symbol: &crate::elf::Symbol) -> bool {
     symbol.st_visibility() == object::elf::STV_HIDDEN
+}
+
+impl Default for DynamicRelocationSequence<'_> {
+    fn default() -> Self {
+        Self::Rela(&[])
+    }
 }

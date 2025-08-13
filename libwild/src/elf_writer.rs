@@ -11,7 +11,6 @@ use crate::args::OutputKind;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf;
-use crate::elf::CrelRelocationCache;
 use crate::elf::DynamicEntry;
 use crate::elf::EhFrameHdr;
 use crate::elf::EhFrameHdrEntry;
@@ -1193,7 +1192,7 @@ fn write_object_section<A: Arch>(
             object,
             out,
             section,
-            &CrelRelocationCache::new(crel_iter.into_iter().collect::<Result<Vec<_>, _>>()?),
+            &crel_iter.into_iter().collect::<Result<Vec<_>, _>>()?,
             layout,
             table_writer,
             trace,
@@ -1228,7 +1227,7 @@ fn write_debug_section<A: Arch>(
             object,
             out,
             section,
-            &CrelRelocationCache::new(crel_iter.into_iter().collect::<Result<Vec<_>, _>>()?),
+            &crel_iter.into_iter().collect::<Result<Vec<_>, _>>()?,
             layout,
         ),
     };
@@ -1349,11 +1348,11 @@ fn write_symbols(
     Ok(())
 }
 
-fn apply_relocations<A: Arch>(
+fn apply_relocations<'data, A: Arch>(
     object: &ObjectLayout,
     out: &mut [u8],
     section: &Section,
-    relocation_sequence: &impl RelocationSequence,
+    relocation_sequence: &impl RelocationSequence<'data>,
     layout: &Layout,
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
@@ -1402,11 +1401,11 @@ fn apply_relocations<A: Arch>(
     Ok(())
 }
 
-fn apply_debug_relocations<A: Arch>(
+fn apply_debug_relocations<'data, A: Arch>(
     object: &ObjectLayout,
     out: &mut [u8],
     section: &Section,
-    relocation_sequence: &impl RelocationSequence,
+    relocation_sequence: &impl RelocationSequence<'data>,
     layout: &Layout,
 ) -> Result {
     let object_section = object.object.section(section.index)?;
@@ -1460,12 +1459,39 @@ fn write_eh_frame_data<A: Arch>(
     trace: &TraceOutput,
 ) -> Result {
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
+    match object.relocations(eh_frame_section_index)? {
+        elf::RelocationList::Rela(relocations) => write_eh_frame_relocations::<A>(
+            object,
+            layout,
+            table_writer,
+            trace,
+            eh_frame_section,
+            relocations.crel_iter(),
+        ),
+        elf::RelocationList::Crel(relocations) => write_eh_frame_relocations::<A>(
+            object,
+            layout,
+            table_writer,
+            trace,
+            eh_frame_section,
+            relocations.flat_map(|r| r.ok()),
+        ),
+    }
+}
+
+fn write_eh_frame_relocations<A: Arch>(
+    object: &ObjectLayout<'_>,
+    layout: &Layout<'_>,
+    table_writer: &mut TableWriter<'_, '_>,
+    trace: &TraceOutput,
+    eh_frame_section: &object::elf::SectionHeader64<LittleEndian>,
+    relocations: impl Iterator<Item = Crel>,
+) -> std::result::Result<(), error::Error> {
     let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
     let e = LittleEndian;
     let section_flags = SectionFlags::from_header(eh_frame_section);
-    let relocations = object.relocations(eh_frame_section_index)?;
-    let mut relocations = relocations.into_iter().peekable();
+    let mut relocations = relocations.peekable();
     let mut input_pos = 0;
     let mut output_pos = 0;
     let frame_info_ptr_base = table_writer.eh_frame_start_address;
@@ -1822,7 +1848,7 @@ fn get_pair_subtraction_relocation_value<'a, A: Arch>(
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
 #[inline(always)]
-fn apply_relocation<A: Arch>(
+fn apply_relocation<'data, A: Arch>(
     object_layout: &ObjectLayout,
     mut offset_in_section: u64,
     rel: &Crel,
@@ -1831,7 +1857,7 @@ fn apply_relocation<A: Arch>(
     out: &mut [u8],
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
-    relocation_sequence: &impl RelocationSequence,
+    relocation_sequence: &impl RelocationSequence<'data>,
     relocation_index: usize,
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
@@ -2204,14 +2230,14 @@ fn apply_relocation<A: Arch>(
     Ok(next_modifier)
 }
 
-fn apply_debug_relocation<A: Arch>(
+fn apply_debug_relocation<'data, A: Arch>(
     object_layout: &ObjectLayout,
     offset_in_section: u64,
     rel: &Crel,
     layout: &Layout,
     section_tombstone_value: u64,
     out: &mut [u8],
-    relocation_sequence: &impl RelocationSequence,
+    relocation_sequence: &impl RelocationSequence<'data>,
     relocation_index: usize,
 ) -> Result<()> {
     let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
