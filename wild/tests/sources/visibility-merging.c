@@ -1,7 +1,6 @@
 //#Mode:dynamic
 //#LinkArgs:-shared -z now
 //#Object:visibility-merging-1.c
-//#RunEnabled:false
 //#DiffIgnore:section.got
 // TODO: Prevent dynsym export of symbols like these.
 //#DiffIgnore:dynsym.data1.*

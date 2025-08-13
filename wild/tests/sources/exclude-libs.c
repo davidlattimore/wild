@@ -1,7 +1,6 @@
 //#LinkArgs:-z now -Bshareable --exclude-libs ALL
 //#Mode:dynamic
 //#Archive:exclude-libs-archive.c
-//#RunEnabled:false
 // We optimise away the GOT, but GNU ld doesn't.
 //#DiffIgnore:section.got
 
