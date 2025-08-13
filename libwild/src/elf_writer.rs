@@ -3371,8 +3371,14 @@ impl DynamicEntryInputs<'_> {
             flags |= object::elf::DF_1_ORIGIN;
         }
 
-        if self.args.output_kind().is_shared_object() && self.args.needs_nodelete_handling {
-            flags |= object::elf::DF_1_NODELETE;
+        if self.args.output_kind().is_shared_object() {
+            if self.args.needs_nodelete_handling {
+                flags |= object::elf::DF_1_NODELETE;
+            }
+
+            if self.args.z_interpose {
+                flags |= object::elf::DF_1_INTERPOSE;
+            }
         }
 
         u64::from(flags)
