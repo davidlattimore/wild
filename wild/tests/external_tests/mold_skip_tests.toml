@@ -112,7 +112,6 @@ tests  = ["linker-script-defsym.sh", "linker-script.sh", "linker-script4.sh"]
 [skipped_groups.z_options]
 reason = "Related to -z"
 tests = [
-  "interpose.sh",                    # `-z interpose`
   "z-cet-report.sh",
   "z-defs.sh",
   "z-dynamic-undefined-weak-exe.sh",

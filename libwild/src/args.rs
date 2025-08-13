@@ -102,6 +102,7 @@ pub struct Args {
     pub(crate) unresolved_symbols: UnresolvedSymbols,
     pub(crate) error_unresolved_symbols: bool,
     pub(crate) allow_multiple_definitions: bool,
+    pub(crate) z_interpose: bool,
 
     output_kind: Option<OutputKind>,
     pub(crate) is_dynamic_executable: AtomicBool,
@@ -350,6 +351,7 @@ impl Default for Args {
             unresolved_symbols: UnresolvedSymbols::ReportAll,
             error_unresolved_symbols: true,
             allow_multiple_definitions: false,
+            z_interpose: false,
         }
     }
 }
@@ -1371,6 +1373,14 @@ fn setup_argument_parser() -> ArgumentParser {
             "lazy",
             "Use lazy binding (default)",
             |_args, _modifier_stack, _value| Ok(()),
+        )
+        .sub_option(
+            "interpose",
+            "Mark object to interpose all DSOs but executable",
+            |args, _modifier_stack, _value| {
+                args.z_interpose = true;
+                Ok(())
+            },
         )
         .execute(|_args, _modifier_stack, _value| Ok(()));
 
