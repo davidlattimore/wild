@@ -758,6 +758,8 @@ struct OptionDeclaration<'a, T> {
     parser: &'a mut ArgumentParser,
     long_names: Vec<&'static str>,
     short_names: Vec<&'static str>,
+    prefixes: Vec<&'static str>,
+    sub_options: HashMap<&'static str, SubOption>,
     help_text: &'static str,
     _phantom: std::marker::PhantomData<T>,
 }
@@ -766,6 +768,7 @@ struct NoParam;
 struct WithParam;
 struct WithOptionalParam;
 
+#[derive(Clone, Copy)]
 struct SubOption {
     help: &'static str,
     handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>,
@@ -775,14 +778,6 @@ impl Default for ArgumentParser {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// For declaring prefix options (like -L, -l, etc.)
-struct PrefixOptionDeclaration<'a> {
-    parser: &'a mut ArgumentParser,
-    prefix: &'static str,
-    help_text: &'static str,
-    sub_options: HashMap<&'static str, SubOption>,
 }
 
 impl ArgumentParser {
@@ -800,6 +795,8 @@ impl ArgumentParser {
             parser: self,
             long_names: Vec::new(),
             short_names: Vec::new(),
+            prefixes: Vec::new(),
+            sub_options: HashMap::new(),
             help_text: "",
             _phantom: std::marker::PhantomData,
         }
@@ -810,6 +807,8 @@ impl ArgumentParser {
             parser: self,
             long_names: Vec::new(),
             short_names: Vec::new(),
+            prefixes: Vec::new(),
+            sub_options: HashMap::new(),
             help_text: "",
             _phantom: std::marker::PhantomData,
         }
@@ -820,18 +819,10 @@ impl ArgumentParser {
             parser: self,
             long_names: Vec::new(),
             short_names: Vec::new(),
+            prefixes: Vec::new(),
+            sub_options: HashMap::new(),
             help_text: "",
             _phantom: std::marker::PhantomData,
-        }
-    }
-
-    /// Declare a prefix option (like -L, -l, etc.)
-    fn declare_prefix(&mut self, prefix: &'static str) -> PrefixOptionDeclaration<'_> {
-        PrefixOptionDeclaration {
-            parser: self,
-            prefix,
-            help_text: "",
-            sub_options: HashMap::new(),
         }
     }
 
@@ -968,15 +959,41 @@ impl ArgumentParser {
             format!("@<VALUE>"),
         ));
 
-        for (prefix, handler) in prefix_options {
-            help.push_str(&format!(
-                "    -{:<30} {}\n",
-                format!("{prefix} <VALUE>"),
-                handler.help_text
-            ));
+        let mut help_to_options: HashMap<&str, Vec<String>> = HashMap::new();
+        let mut processed_short_options: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
 
-            // Add sub-options if they exist
-            if !handler.sub_options.is_empty() {
+        // Collect all long options and their associated short options
+        for (long_name, handler) in &self.options {
+            if !handler.help_text.is_empty() {
+                let mut option_names = vec![format!("--{long_name}")];
+
+                // Add associated short options
+                for short_char in &handler.short_names {
+                    option_names.push(format!("-{short_char}"));
+                }
+
+                help_to_options
+                    .entry(handler.help_text)
+                    .or_default()
+                    .extend(option_names);
+            }
+
+            // Mark short options of help-less handlers as processed
+            for short_name in &handler.short_names {
+                processed_short_options.insert(short_name);
+            }
+        }
+
+        for (prefix, handler) in prefix_options {
+            if !processed_short_options.contains(prefix) && !handler.help_text.is_empty() {
+                help.push_str(&format!(
+                    "    -{:<30} {}\n",
+                    format!("{prefix} <VALUE>"),
+                    handler.help_text
+                ));
+
+                // Add sub-options if they exist
                 let mut sub_options: Vec<_> = handler.sub_options.iter().collect();
                 sub_options.sort_by_key(|(name, _)| *name);
 
@@ -986,33 +1003,6 @@ impl ArgumentParser {
                         sub_help = sub.help
                     ));
                 }
-            }
-        }
-
-        let mut help_to_options: HashMap<&str, Vec<String>> = HashMap::new();
-        let mut processed_short_options: std::collections::HashSet<&str> =
-            std::collections::HashSet::new();
-
-        // Collect all long options and their associated short options
-        for (long_name, handler) in &self.options {
-            if handler.help_text.is_empty() {
-                // Mark short options of help-less handlers as processed
-                for short_char in &handler.short_names {
-                    processed_short_options.insert(short_char);
-                }
-            } else {
-                let mut option_names = vec![format!("--{long_name}")];
-
-                // Add associated short options
-                for short_char in &handler.short_names {
-                    option_names.push(format!("-{short_char}"));
-                    processed_short_options.insert(short_char);
-                }
-
-                help_to_options
-                    .entry(handler.help_text)
-                    .or_default()
-                    .extend(option_names);
             }
         }
 
@@ -1068,6 +1058,22 @@ impl<'a, T> OptionDeclaration<'a, T> {
         self.help_text = text;
         self
     }
+
+    fn prefix(mut self, prefix: &'static str) -> Self {
+        self.prefixes.push(prefix);
+        self
+    }
+
+    #[must_use]
+    fn sub_option(
+        mut self,
+        name: &'static str,
+        help: &'static str,
+        handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>,
+    ) -> Self {
+        self.sub_options.insert(name, SubOption { help, handler });
+        self
+    }
 }
 
 impl<'a> OptionDeclaration<'a, NoParam> {
@@ -1092,10 +1098,13 @@ impl<'a> OptionDeclaration<'a, NoParam> {
 
 impl<'a> OptionDeclaration<'a, WithParam> {
     fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>) {
+        let mut short_names = self.short_names.clone();
+        short_names.extend_from_slice(&self.prefixes);
+
         let option_handler = OptionHandler {
             help_text: self.help_text,
             handler: OptionHandlerFn::WithParam(handler),
-            short_names: self.short_names.clone(),
+            short_names,
         };
 
         for name in self.long_names {
@@ -1106,6 +1115,16 @@ impl<'a> OptionDeclaration<'a, WithParam> {
             self.parser
                 .short_options
                 .insert(option, option_handler.clone());
+        }
+
+        for prefix in self.prefixes {
+            let prefix_handler = PrefixOptionHandler {
+                help_text: self.help_text,
+                sub_options: self.sub_options.clone(),
+                handler,
+            };
+
+            self.parser.prefix_options.insert(prefix, prefix_handler);
         }
     }
 }
@@ -1130,37 +1149,6 @@ impl<'a> OptionDeclaration<'a, WithOptionalParam> {
     }
 }
 
-impl<'a> PrefixOptionDeclaration<'a> {
-    #[must_use]
-    fn help(mut self, text: &'static str) -> Self {
-        self.help_text = text;
-        self
-    }
-
-    #[must_use]
-    fn sub_option(
-        mut self,
-        name: &'static str,
-        help: &'static str,
-        handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>,
-    ) -> Self {
-        self.sub_options.insert(name, SubOption { help, handler });
-        self
-    }
-
-    fn execute(self, handler: fn(&mut Args, &mut Vec<Modifiers>, &str) -> Result<()>) {
-        let prefix_handler = PrefixOptionHandler {
-            help_text: self.help_text,
-            sub_options: self.sub_options,
-            handler,
-        };
-
-        self.parser
-            .prefix_options
-            .insert(self.prefix, prefix_handler);
-    }
-}
-
 fn strip_option(arg: &str) -> Option<&str> {
     arg.strip_prefix("--").or(arg.strip_prefix('-'))
 }
@@ -1169,7 +1157,8 @@ fn setup_argument_parser() -> ArgumentParser {
     let mut parser = ArgumentParser::new();
 
     parser
-        .declare_prefix("L")
+        .declare_with_param()
+        .prefix("L")
         .help("Add directory to library search path")
         .execute(|args, _modifier_stack, value| {
             let handle_sysroot = |path| {
@@ -1186,7 +1175,8 @@ fn setup_argument_parser() -> ArgumentParser {
         });
 
     parser
-        .declare_prefix("l")
+        .declare_with_param()
+        .prefix("l")
         .help("Link with library")
         .sub_option(
             ":filename",
@@ -1230,7 +1220,8 @@ fn setup_argument_parser() -> ArgumentParser {
         });
 
     parser
-        .declare_prefix("u")
+        .declare_with_param()
+        .prefix("u")
         .help("Force resolution of the symbol")
         .execute(|args, _modifier_stack, value| {
             args.undefined.push(value.to_owned());
@@ -1238,7 +1229,8 @@ fn setup_argument_parser() -> ArgumentParser {
         });
 
     parser
-        .declare_prefix("m")
+        .declare_with_param()
+        .prefix("m")
         .help("Set target architecture")
         .sub_option(
             "elf_x86_64",
@@ -1270,7 +1262,8 @@ fn setup_argument_parser() -> ArgumentParser {
         });
 
     parser
-        .declare_prefix("z")
+        .declare_with_param()
+        .prefix("z")
         .help("Linker option")
         .sub_option(
             "now",
@@ -1375,16 +1368,8 @@ fn setup_argument_parser() -> ArgumentParser {
         .execute(|_args, _modifier_stack, _value| Ok(()));
 
     parser
-        .declare_prefix("T")
-        .help("Use linker script")
-        .execute(|args, _modifier_stack, value| {
-            args.save_dir.handle_file(value)?;
-            args.add_script(value);
-            Ok(())
-        });
-
-    parser
-        .declare_prefix("R")
+        .declare_with_param()
+        .prefix("R")
         .help("Add runtime library search path")
         .execute(|args, _modifier_stack, value| {
             if Path::new(value).is_file() {
@@ -1397,15 +1382,8 @@ fn setup_argument_parser() -> ArgumentParser {
         });
 
     parser
-        .declare_prefix("h")
-        .help("Set shared object name")
-        .execute(|args, _modifier_stack, value| {
-            args.soname = Some(value.to_owned());
-            Ok(())
-        });
-
-    parser
-        .declare_prefix("O")
+        .declare_with_param()
+        .prefix("O")
         .execute(|_args, _modifier_stack, _value|
         // We don't use opt-level for now.
         Ok(()));
@@ -1703,7 +1681,7 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare_with_param()
         .long("soname")
-        .short("h")
+        .prefix("h")
         .help("Set shared object name")
         .execute(|args, _modifier_stack, value| {
             args.soname = Some(value.to_owned());
@@ -1876,6 +1854,7 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare_with_param()
         .long("script")
+        .prefix("T")
         .help("Use linker script")
         .execute(|args, _modifier_stack, value| {
             args.save_dir.handle_file(value)?;
