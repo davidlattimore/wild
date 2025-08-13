@@ -64,7 +64,7 @@ os_info = "3.0.0"
 perf-event = "0.4.8"
 postcard = { version = "1.1.1", features = ["use-std"] }
 rayon = "1.2.1"
-rstest = "0.25.0"
+rstest = "0.26.1"
 serde = { version = "1.0.219", features = ["derive"] }
 sharded-offset-map = "0.2.0"
 sharded-vec-writer = "0.3.0"
