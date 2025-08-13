@@ -66,7 +66,7 @@ fn decode_insn_with_objdump(insn: &[u8], address: u64) -> Result<String> {
         .skip(2)
         .join(" ")
         .replacen(" ", "\t", 1)
-        .to_string())
+        .clone())
 }
 
 #[test]
