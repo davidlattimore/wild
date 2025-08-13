@@ -16,6 +16,8 @@ use linker_utils::elf::extract_bits;
 use linker_utils::elf::sht;
 use object::LittleEndian;
 use object::read::elf::CompressionHeader;
+use object::read::elf::Crel;
+use object::read::elf::CrelIterator;
 use object::read::elf::Dyn;
 use object::read::elf::FileHeader as _;
 use object::read::elf::RelocationSections;
@@ -23,6 +25,7 @@ use object::read::elf::SectionHeader as _;
 use std::borrow::Cow;
 use std::io::Read as _;
 use std::mem::offset_of;
+use std::ops::Range;
 use std::sync::atomic::Ordering;
 
 /// Our starting address in memory when linking non-relocatable executables. We can start memory
@@ -68,6 +71,62 @@ pub(crate) struct File<'data> {
 
     /// e_flags from the header.
     pub(crate) eflags: u32,
+}
+
+/// A list of relocations that supports iteration.
+#[derive(Clone)]
+pub(crate) enum RelocationList<'data> {
+    Rela(&'data [Rela]),
+    Crel(CrelIterator<'data>),
+}
+
+/// A sequence of relocations that supports random access.
+pub(crate) enum DynamicRelocationSequence<'data> {
+    Rela(&'data [Rela]),
+    Crel(Vec<Crel>),
+}
+
+pub(crate) trait RelocationSequence<'data> {
+    fn num_relocations(&self) -> usize;
+    fn get_crel(&self, index: usize) -> Crel;
+    fn crel_iter(&self) -> impl Iterator<Item = Crel>;
+    fn subsequence(&self, range: Range<usize>) -> DynamicRelocationSequence<'data>;
+}
+
+impl<'data> RelocationSequence<'data> for &'data [Rela] {
+    fn num_relocations(&self) -> usize {
+        self.len()
+    }
+
+    fn get_crel(&self, index: usize) -> Crel {
+        Crel::from_rela(&self[index], LittleEndian, false)
+    }
+
+    fn crel_iter(&self) -> impl Iterator<Item = Crel> {
+        self.iter().map(|r| Crel::from_rela(r, LittleEndian, false))
+    }
+
+    fn subsequence(&self, range: Range<usize>) -> DynamicRelocationSequence<'data> {
+        DynamicRelocationSequence::Rela(&self[range])
+    }
+}
+
+impl RelocationSequence<'static> for Vec<Crel> {
+    fn num_relocations(&self) -> usize {
+        self.len()
+    }
+
+    fn get_crel(&self, index: usize) -> Crel {
+        self[index]
+    }
+
+    fn crel_iter(&self) -> impl Iterator<Item = Crel> {
+        self.clone().into_iter()
+    }
+
+    fn subsequence(&self, range: Range<usize>) -> DynamicRelocationSequence<'static> {
+        DynamicRelocationSequence::Crel(self[range].to_vec())
+    }
 }
 
 // Not needing Drop opens the option of storing this type in an arena that doesn't support dropping
@@ -238,15 +297,20 @@ impl<'data> File<'data> {
         &self,
         index: object::SectionIndex,
         relocations: &RelocationSections,
-    ) -> Result<&'data [Rela]> {
-        let Some(rela_index) = relocations.get(index) else {
-            return Ok(&[]);
+    ) -> Result<RelocationList<'data>> {
+        let Some(section_index) = relocations.get(index) else {
+            return Ok(RelocationList::Rela(&[]));
         };
-        let rela_section = self.sections.section(rela_index)?;
-        let Some((rela, _)) = rela_section.rela(LittleEndian, self.data)? else {
-            return Ok(&[]);
-        };
-        Ok(rela)
+        let section = self.sections.section(section_index)?;
+        Ok(
+            if let Some((rela, _)) = section.rela(LittleEndian, self.data)? {
+                RelocationList::Rela(rela)
+            } else if let Some((crel, _)) = section.crel(LittleEndian, self.data)? {
+                RelocationList::Crel(crel)
+            } else {
+                RelocationList::Rela(&[])
+            },
+        )
     }
 
     pub(crate) fn symbol(&self, index: object::SymbolIndex) -> Result<&'data Symbol> {
@@ -508,4 +572,10 @@ pub(crate) fn slice_from_all_bytes_mut<T: object::Pod>(data: &mut [u8]) -> &mut 
 
 pub(crate) fn is_hidden_symbol(symbol: &crate::elf::Symbol) -> bool {
     symbol.st_visibility() == object::elf::STV_HIDDEN
+}
+
+impl Default for DynamicRelocationSequence<'_> {
+    fn default() -> Self {
+        Self::Rela(&[])
+    }
 }
