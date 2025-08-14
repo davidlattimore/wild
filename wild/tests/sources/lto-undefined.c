@@ -2,7 +2,7 @@
 //#Object:runtime.c
 //#LinkerDriver:gcc
 //#SkipLinker:ld
-//#ExpectError:undefined reference to `addition` found in LTO section of archive_lto.default-host-54eef975a9df799a.a
+//#ExpectError:undefined reference to `addition` found in LTO section of archive_lto
 
 extern int addition(int, int);
 

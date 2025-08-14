@@ -3055,7 +3055,9 @@ fn process_relocation<A: Arch>(
                 )
                 .context("Failed to get source info")?;
 
-                let raw_symbol_name = symbol_db.symbol_name(symbol_id).unwrap();
+                let raw_symbol_name = symbol_db
+                    .symbol_name(symbol_id)
+                    .expect("Errored on symbol {symbol_name} so it exists");
                 let mut lto_file: Option<&PathBuf> = None;
                 let lto_unresolved = resources.symbol_db.groups.iter().any(|group| match group {
                     Group::Objects(data) => data.iter().any(|input| {
@@ -3070,7 +3072,7 @@ fn process_relocation<A: Arch>(
                             if has_lto {
                                 let lto_contains_undef = file
                                     .section_data_cow(section_header)
-                                    .unwrap()
+                                    .unwrap_or_default()
                                     .split(|datum| *datum == 0)
                                     .any(|symbol| symbol == raw_symbol_name.bytes());
                                 if lto_contains_undef {
@@ -3085,10 +3087,19 @@ fn process_relocation<A: Arch>(
                 });
 
                 if lto_unresolved {
-                    resources.report_error(error!(
-                        "undefined reference to `{symbol_name}` found in LTO section of {}",
-                        lto_file.unwrap().file_name().unwrap().display()
-                    ));
+                    if let Some(file) = lto_file {
+                        let file = file.canonicalize().unwrap_or(PathBuf::new());
+                        resources.report_error(error!(
+                            "undefined reference to `{symbol_name}` found in LTO section of {}",
+                            file.file_name()
+                                .expect("Canonicalized path can't have ../ at end")
+                                .to_str()
+                                .expect("File name should be valid UTF-8")
+                                .split(".")
+                                .next()
+                                .unwrap()
+                        ));
+                    }
                 } else if args.error_unresolved_symbols {
                     resources.report_error(error!(
                         "Undefined symbol {symbol_name}, referenced by {}\n    {}",
