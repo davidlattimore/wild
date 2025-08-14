@@ -641,7 +641,7 @@ fn canonicalise_undefined_symbols<'data>(
         match undefined.name {
             PreHashedSymbolName::Unversioned(pre_hashed) => {
                 match name_to_id.entry(pre_hashed) {
-                    std::collections::hash_map::Entry::Vacant(entry) => {
+                    hashbrown::hash_map::Entry::Vacant(entry) => {
                         let symbol_id = allocate_start_stop_symbol_id(
                             pre_hashed,
                             symbol_db,
@@ -656,17 +656,17 @@ fn canonicalise_undefined_symbols<'data>(
                         entry.insert(symbol_id);
                         symbol_db.replace_definition(undefined.symbol_id, symbol_id);
                     }
-                    std::collections::hash_map::Entry::Occupied(entry) => {
+                    hashbrown::hash_map::Entry::Occupied(entry) => {
                         symbol_db.replace_definition(undefined.symbol_id, *entry.get());
                     }
                 }
             }
             PreHashedSymbolName::Versioned(pre_hashed) => {
                 match versioned_name_to_id.entry(pre_hashed) {
-                    std::collections::hash_map::Entry::Vacant(entry) => {
+                    hashbrown::hash_map::Entry::Vacant(entry) => {
                         entry.insert(undefined.symbol_id);
                     }
-                    std::collections::hash_map::Entry::Occupied(entry) => {
+                    hashbrown::hash_map::Entry::Occupied(entry) => {
                         symbol_db.replace_definition(undefined.symbol_id, *entry.get());
                     }
                 }

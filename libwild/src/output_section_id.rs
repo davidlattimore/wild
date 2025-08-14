@@ -38,8 +38,7 @@ use crate::program_segments::ProgramSegments;
 use crate::program_segments::STACK_SEGMENT_DEF;
 use crate::resolution::SectionSlot;
 use core::slice;
-use foldhash::HashMap as FoldHashMap;
-use foldhash::HashMapExt as _;
+use hashbrown::HashMap;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use linker_utils::elf::SegmentType;
@@ -129,7 +128,7 @@ pub(crate) struct OutputSections<'data> {
     /// being output.
     pub(crate) output_section_indexes: Vec<Option<u16>>,
 
-    custom_by_name: FoldHashMap<SectionName<'data>, OutputSectionId>,
+    custom_by_name: HashMap<SectionName<'data>, OutputSectionId>,
 }
 
 /// Encodes the order of output sections and the start and end of each program segment. This struct
@@ -956,7 +955,7 @@ impl<'data> OutputSections<'data> {
         Self {
             section_infos: OutputSectionMap::from_values(section_infos),
             base_address,
-            custom_by_name: FoldHashMap::new(),
+            custom_by_name: HashMap::new(),
             output_section_indexes: Default::default(),
         }
     }

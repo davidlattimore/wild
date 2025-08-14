@@ -38,7 +38,7 @@ use crate::resolution::ResolvedGroup;
 use crate::resolution::SectionSlot;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
-use foldhash::HashMap;
+use hashbrown::HashMap;
 use itertools::Itertools as _;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
