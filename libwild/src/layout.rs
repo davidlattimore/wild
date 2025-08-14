@@ -33,6 +33,7 @@ use crate::error::Error;
 use crate::error::Result;
 use crate::error::warning;
 use crate::file_writer;
+use crate::grouping::Group;
 use crate::input_data::FileId;
 use crate::input_data::InputData;
 use crate::input_data::InputRef;
@@ -91,6 +92,7 @@ use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
 use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
 use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
 use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
+use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::relaxation::RelocationModifier;
@@ -120,6 +122,7 @@ use std::mem::swap;
 use std::mem::take;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
@@ -3052,7 +3055,41 @@ fn process_relocation<A: Arch>(
                 )
                 .context("Failed to get source info")?;
 
-                if args.error_unresolved_symbols {
+                let raw_symbol_name = symbol_db.symbol_name(symbol_id).unwrap();
+                let mut lto_file: Option<&PathBuf> = None;
+                let lto_unresolved = resources.symbol_db.groups.iter().any(|group| match group {
+                    Group::Objects(data) => data.iter().any(|input| {
+                        let tmp_file = &input.parsed.input.file.filename;
+                        let section_table = input.parsed.object.sections;
+                        let file = &input.parsed.object;
+                        section_table.iter().any(|section_header| {
+                            let has_lto = section_table
+                                .section_name(LittleEndian, section_header)
+                                .unwrap_or(&[])
+                                .starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes());
+                            if has_lto {
+                                let lto_contains_undef = file
+                                    .section_data_cow(section_header)
+                                    .unwrap()
+                                    .split(|datum| *datum == 0)
+                                    .any(|symbol| symbol == raw_symbol_name.bytes());
+                                if lto_contains_undef {
+                                    lto_file = Some(tmp_file);
+                                }
+                                return lto_contains_undef;
+                            }
+                            false
+                        })
+                    }),
+                    _ => false,
+                });
+
+                if lto_unresolved {
+                    resources.report_error(error!(
+                        "undefined reference to `{symbol_name}` found in LTO section of {}",
+                        lto_file.unwrap().file_name().unwrap().display()
+                    ));
+                } else if args.error_unresolved_symbols {
                     resources.report_error(error!(
                         "Undefined symbol {symbol_name}, referenced by {}\n    {}",
                         source_info, object.input,
