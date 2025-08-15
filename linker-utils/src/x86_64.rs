@@ -171,7 +171,7 @@ impl RelaxationKind {
 
                 let rex = if rex_r == 0 { 0x48 } else { 0x49 };
                 section_bytes[offset - 3..offset + 4].copy_from_slice(&[
-                    // mov {offset},%{dest}
+                    // mov {offset},%{reg}
                     rex,
                     0xc7,
                     0xc0 | reg,
@@ -192,7 +192,7 @@ impl RelaxationKind {
 
                 let rex = if rex_r == 0 { 0x48 } else { 0x4c };
                 section_bytes[offset - 3..offset + 4].copy_from_slice(&[
-                    // mov {GOT}(%rip),%{dest}
+                    // mov {GOT}(%rip),%{reg}
                     rex,
                     0x8b,
                     0x05 | reg << 3,
