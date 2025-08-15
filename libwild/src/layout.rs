@@ -3055,51 +3055,20 @@ fn process_relocation<A: Arch>(
                 )
                 .context("Failed to get source info")?;
 
-                let raw_symbol_name = symbol_db
-                    .symbol_name(symbol_id)
-                    .expect("Errored on symbol {symbol_name} so it exists");
-                let mut lto_file: Option<&PathBuf> = None;
-                let lto_unresolved = resources.symbol_db.groups.iter().any(|group| match group {
-                    Group::Objects(data) => data.iter().any(|input| {
-                        let tmp_file = &input.parsed.input.file.filename;
-                        let section_table = input.parsed.object.sections;
-                        let file = &input.parsed.object;
-                        section_table.iter().any(|section_header| {
-                            let has_lto = section_table
-                                .section_name(LittleEndian, section_header)
-                                .unwrap_or(&[])
-                                .starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes());
-                            if has_lto {
-                                let lto_contains_undef = file
-                                    .section_data_cow(section_header)
-                                    .unwrap_or_default()
-                                    .split(|datum| *datum == 0)
-                                    .any(|symbol| symbol == raw_symbol_name.bytes());
-                                if lto_contains_undef {
-                                    lto_file = Some(tmp_file);
-                                }
-                                return lto_contains_undef;
-                            }
-                            false
-                        })
-                    }),
-                    _ => false,
-                });
+                let lto_file = is_undefined_lto(resources, symbol_id);
 
-                if lto_unresolved {
-                    if let Some(file) = lto_file {
-                        let file = file.canonicalize().unwrap_or(PathBuf::new());
-                        resources.report_error(error!(
-                            "undefined reference to `{symbol_name}` found in LTO section of {}",
-                            file.file_name()
-                                .expect("Canonicalized path can't have ../ at end")
-                                .to_str()
-                                .expect("File name should be valid UTF-8")
-                                .split(".")
-                                .next()
-                                .unwrap()
-                        ));
-                    }
+                if let Some(file) = lto_file {
+                    let file = file.canonicalize().unwrap_or(PathBuf::new());
+                    resources.report_error(error!(
+                        "undefined reference to `{symbol_name}` found in LTO section of {}",
+                        file.file_name()
+                            .expect("Canonicalized path can't have ../ at end")
+                            .to_str()
+                            .expect("File name should be valid UTF-8")
+                            .split(".")
+                            .next()
+                            .unwrap()
+                    ));
                 } else if args.error_unresolved_symbols {
                     resources.report_error(error!(
                         "Undefined symbol {symbol_name}, referenced by {}\n    {}",
@@ -3119,6 +3088,43 @@ fn process_relocation<A: Arch>(
         }
     }
     Ok(next_modifier)
+}
+
+fn is_undefined_lto(resources: &GraphResources, symbol_id: SymbolId) -> Option<PathBuf> {
+    let raw_symbol_name = resources
+        .symbol_db
+        .symbol_name(symbol_id)
+        .unwrap_or_else(|_| panic!("Found symbol display so symbol with id {symbol_id} exists"));
+    resources
+        .symbol_db
+        .groups
+        .iter()
+        .find_map(|group| match group {
+            Group::Objects(data) => data.iter().find_map(|input| {
+                let section_table = input.parsed.object.sections;
+                let file = &input.parsed.object;
+                section_table
+                    .iter()
+                    .filter(|section_header| {
+                        section_table
+                            .section_name(LittleEndian, section_header)
+                            .unwrap_or(&[])
+                            .starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes())
+                    })
+                    .find_map(|section_header| {
+                        let lto_contains_undef = file
+                            .section_data_cow(section_header)
+                            .unwrap_or_default()
+                            .split(|datum| *datum == 0)
+                            .any(|symbol| symbol == raw_symbol_name.bytes());
+                        if lto_contains_undef {
+                            return Some(input.parsed.input.file.filename.clone());
+                        }
+                        None
+                    })
+            }),
+            _ => None,
+        })
 }
 
 /// Returns whether the supplied relocation type requires static TLS. If true and we're writing a
