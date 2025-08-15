@@ -3058,16 +3058,13 @@ fn process_relocation<A: Arch>(
                 let lto_file = is_undefined_lto(resources, symbol_id);
 
                 if let Some(file) = lto_file {
-                    let file = file.canonicalize().unwrap_or(PathBuf::new());
                     resources.report_error(error!(
                         "undefined reference to `{symbol_name}` found in LTO section of {}",
-                        file.file_name()
-                            .expect("Canonicalized path can't have ../ at end")
-                            .to_str()
-                            .expect("File name should be valid UTF-8")
-                            .split(".")
-                            .next()
-                            .unwrap()
+                        file.canonicalize()
+                            .unwrap_or(PathBuf::new())
+                            .file_name()
+                            .expect("Canonicalized path can't have /.. at end")
+                            .display()
                     ));
                 } else if args.error_unresolved_symbols {
                     resources.report_error(error!(
