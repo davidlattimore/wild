@@ -5,6 +5,7 @@ tests = [
   "auxiliary.sh",                      # `-auxiliary` and `-f`
   "color-diagnostics.sh",
   "compress-debug-sections.sh",        # Compressed debug sections support #493
+  "compress-debug-sections-zstd.sh",   # Compressed debug sections support #493
   "default-symver-version-script.sh",
   "default-symver.sh",
   "defsym.sh",
