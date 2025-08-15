@@ -357,24 +357,28 @@ impl crate::arch::Relaxation for Relaxation {
             object::elf::R_X86_64_GOTPC32_TLSDESC
                 if !interposable && output_kind.is_executable() =>
             {
-                // We assume that the instruction that this relocation applies to is a REX-prefixed
-                // LEA instruction.
-                return Some(Relaxation {
-                    kind: RelaxationKind::TlsDescToLocalExec,
-                    rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
-                    mandatory: output_kind.is_static_executable(),
-                });
+                // We require that the instruction that this relocation applies to is a LEA instruction.
+                let bytes = section_bytes.get(offset - 3..offset - 1);
+                if bytes == Some(&[0x48, 0x8d]) || bytes == Some(&[0x4c, 0x8d]) {
+                    return Some(Relaxation {
+                        kind: RelaxationKind::TlsDescToLocalExec,
+                        rel_info: rel_info_from_type!(object::elf::R_X86_64_TPOFF32),
+                        mandatory: output_kind.is_static_executable(),
+                    });
+                }
             }
             // Note, the conditions on this relaxation (is_executable) must match those on
             // TLSDESC_CALL below.
             object::elf::R_X86_64_GOTPC32_TLSDESC if output_kind.is_executable() => {
-                // We assume that the instruction that this relocation applies to is a REX-prefixed
-                // LEA instruction.
-                return Some(Relaxation {
-                    kind: RelaxationKind::TlsDescToInitialExec,
-                    rel_info: rel_info_from_type!(object::elf::R_X86_64_GOTTPOFF),
-                    mandatory: output_kind.is_static_executable(),
-                });
+                // We require that the instruction that this relocation applies to is a LEA instruction.
+                let bytes = section_bytes.get(offset - 3..offset - 1);
+                if bytes == Some(&[0x48, 0x8d]) || bytes == Some(&[0x4c, 0x8d]) {
+                    return Some(Relaxation {
+                        kind: RelaxationKind::TlsDescToInitialExec,
+                        rel_info: rel_info_from_type!(object::elf::R_X86_64_GOTTPOFF),
+                        mandatory: output_kind.is_static_executable(),
+                    });
+                }
             }
             // Note, the conditions on this relaxation (is_executable) must match those on
             // GOTPC32_TLSDESC above.
