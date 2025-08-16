@@ -15,6 +15,7 @@ use linker_utils::relaxation::RelocationModifier;
 use linker_utils::riscv64::RelaxationKind;
 use linker_utils::riscv64::relocation_type_from_raw;
 use object::elf::EF_RISCV_FLOAT_ABI;
+use object::elf::EF_RISCV_RV64ILP32;
 use object::elf::EF_RISCV_RVE;
 
 pub(crate) struct RiscV64;
@@ -109,11 +110,10 @@ impl crate::arch::Arch for RiscV64 {
                 .is_ok(),
             "RVE flag mismatch"
         );
-        // TODO: use object crate constant
         ensure!(
             eflags
                 .iter()
-                .map(|flag| flag & 0x0020)
+                .map(|flag| flag & EF_RISCV_RV64ILP32)
                 .unique()
                 .exactly_one()
                 .is_ok(),
