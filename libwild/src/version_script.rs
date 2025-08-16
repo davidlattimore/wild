@@ -522,28 +522,25 @@ pub(crate) fn parse_matcher<'data>(
             .and_then(|t| t.strip_suffix(b"\""))
         {
             SymbolMatcher::Exact(unquoted)
-        } else if token.contains(&b'\\') {
-            return Err(ContextError::from_external_error(
-                input,
-                VersionScriptError::GlobWithQuote,
-            ));
         } else if token == b"*" {
             SymbolMatcher::MatchesAll
-        } else if b"[]?*".iter().any(|c| token.contains(c)) {
-            let pattern = Pattern::new(str::from_utf8(token).map_err(|_| {
-                ContextError::from_external_error(input, VersionScriptError::InvalidUtf8String)
-            })?)
-            .map_err(|_: glob::PatternError| {
-                ContextError::from_external_error(input, VersionScriptError::InvalidGlobPattern)
-            })?;
-
-            if token.contains(&b'*') {
-                SymbolMatcher::StarGlob(pattern)
-            } else {
-                SymbolMatcher::NonstarGlob(pattern)
-            }
         } else {
-            SymbolMatcher::Exact(token)
+            let glob_type = analyze_glob_pattern(token);
+
+            let create_pattern = |token: &[u8]| -> winnow::Result<Pattern> {
+                Pattern::new(str::from_utf8(token).map_err(|_| {
+                    ContextError::from_external_error(input, VersionScriptError::InvalidUtf8String)
+                })?)
+                .map_err(|_| {
+                    ContextError::from_external_error(input, VersionScriptError::InvalidGlobPattern)
+                })
+            };
+
+            match glob_type {
+                GlobPatternType::Exact => SymbolMatcher::Exact(token),
+                GlobPatternType::Star => SymbolMatcher::StarGlob(create_pattern(token)?),
+                GlobPatternType::NonStar => SymbolMatcher::NonstarGlob(create_pattern(token)?),
+            }
         },
     ))
 }
@@ -552,12 +549,39 @@ fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]>
     take_while(1.., |b| !b" (){}\n\t".contains(&b)).parse_next(input)
 }
 
+enum GlobPatternType {
+    Exact,
+    Star,
+    NonStar,
+}
+
+fn analyze_glob_pattern(pattern: &[u8]) -> GlobPatternType {
+    let mut pattern_type = GlobPatternType::Exact;
+    let mut it = pattern.iter();
+
+    while let Some(&c) = it.next() {
+        match c {
+            b'\\' => {
+                it.next();
+            }
+            b'*' => {
+                return GlobPatternType::Star;
+            }
+            b'[' | b']' | b'?' => {
+                pattern_type = GlobPatternType::NonStar;
+            }
+            _ => {}
+        }
+    }
+
+    pattern_type
+}
+
 #[derive(Debug)]
 enum VersionScriptError {
     UnknownParentVersion,
     InvalidUtf8String,
     InvalidGlobPattern,
-    GlobWithQuote,
     UnexpectedExtern(String),
     UnsupportedExtern(String),
 }
@@ -568,7 +592,6 @@ impl std::fmt::Display for VersionScriptError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VersionScriptError::InvalidGlobPattern => write!(f, "Invalid glob pattern"),
-            VersionScriptError::GlobWithQuote => write!(f, "Globs with quote are unsupported"),
             VersionScriptError::InvalidUtf8String => write!(f, "Invalid utf-8 string"),
             VersionScriptError::UnknownParentVersion => write!(f, "Unknown parent version"),
             VersionScriptError::UnexpectedExtern(s) => {
@@ -893,5 +916,57 @@ mod tests {
 
         // Star match
         assert_eq!(script.find_match(&sym(b"foo_bar")).unwrap().0, 2);
+    }
+
+    #[test]
+    fn test_escape_sequences() {
+        let data = ScriptData {
+            raw: br#"
+                {
+                    global:
+                        foo\*bar;
+                        baz\?;
+                        foo1\\foo2;
+                        foo3?foo4*;
+                        b*;
+                        f?;
+                };
+            "#,
+        };
+        let script = VersionScript::parse(data).unwrap();
+        let version_body = &script.versions[0].version_body;
+
+        let exact_patterns: HashSet<&str> = version_body
+            .globals
+            .general
+            .exact
+            .iter()
+            .map(|s| std::str::from_utf8(s.bytes()).unwrap())
+            .collect();
+
+        assert!(exact_patterns.contains(r"foo\*bar"));
+        assert!(exact_patterns.contains(r"baz\?"));
+        assert!(exact_patterns.contains(r"foo1\\foo2"));
+
+        let star_patterns: Vec<&str> = version_body
+            .globals
+            .general
+            .star_globs
+            .iter()
+            .map(|glob| glob.as_str())
+            .collect();
+
+        assert!(star_patterns.contains(&"b*"));
+        assert!(star_patterns.contains(&"foo3?foo4*"));
+
+        let nonstar_patterns: Vec<&str> = version_body
+            .globals
+            .general
+            .nonstar_globs
+            .iter()
+            .map(|glob| glob.as_str())
+            .collect();
+
+        assert!(nonstar_patterns.contains(&"f?"));
     }
 }
