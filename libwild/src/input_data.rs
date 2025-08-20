@@ -623,7 +623,7 @@ impl Input {
     fn path(&self, args: &Args) -> Result<InputPath> {
         match &self.spec {
             InputSpec::File(p) => {
-                if (self.search_first.is_some() || p.parent() == Some(Path::new("")))
+                if self.search_first.is_some()
                     && let Some(path) = search_for_file(
                         &args.lib_search_path,
                         self.search_first.as_ref(),
@@ -640,9 +640,13 @@ impl Input {
                     original: p.as_ref().to_owned(),
                 })
             }
-            InputSpec::Lib(lib_name) => {
+            InputSpec::Lib(lib_name, literal_name) => {
                 if self.modifiers.allow_shared {
-                    let filename = format!("lib{lib_name}.so");
+                    let filename = if *literal_name {
+                        lib_name.to_string()
+                    } else {
+                        format!("lib{lib_name}.so")
+                    };
                     if let Some(path) = search_for_file(
                         &args.lib_search_path,
                         self.search_first.as_ref(),
@@ -654,7 +658,11 @@ impl Input {
                         });
                     }
                 }
-                let filename = format!("lib{lib_name}.a");
+                let filename = if *literal_name {
+                    lib_name.to_string()
+                } else {
+                    format!("lib{lib_name}.a")
+                };
                 if let Some(path) =
                     search_for_file(&args.lib_search_path, self.search_first.as_ref(), &filename)
                 {
