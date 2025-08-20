@@ -408,9 +408,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
         }
         arg_num += 1;
 
-        if !arg_parser.handle_argument(&mut args, &mut modifier_stack, arg, &mut input)? {
-            ArgumentParser::handle_positional_argument(&mut args, &modifier_stack, arg);
-        }
+        arg_parser.handle_argument(&mut args, &mut modifier_stack, arg, &mut input)?;
     }
 
     // Copy relocations are only permitted when building executables.
@@ -834,7 +832,7 @@ impl ArgumentParser {
         modifier_stack: &mut Vec<Modifiers>,
         arg: &str,
         input: &mut I,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         if let Some(stripped) = strip_option(arg) {
             // Check for option with '=' syntax
             if let Some(eq_pos) = stripped.find('=') {
@@ -845,9 +843,9 @@ impl ArgumentParser {
                     match &handler.handler {
                         OptionHandlerFn::WithParam(f) => f(args, modifier_stack, value)?,
                         OptionHandlerFn::OptionalParam(f) => f(args, modifier_stack, Some(value))?,
-                        OptionHandlerFn::NoParam(_) => return Ok(false),
+                        OptionHandlerFn::NoParam(_) => return Ok(()),
                     }
-                    return Ok(true);
+                    return Ok(());
                 }
             } else {
                 if stripped == "build-id"
@@ -855,7 +853,7 @@ impl ArgumentParser {
                     && let OptionHandlerFn::WithParam(f) = &handler.handler
                 {
                     f(args, modifier_stack, "fast")?;
-                    return Ok(true);
+                    return Ok(());
                 }
 
                 if let Some(handler) = self.options.get(stripped) {
@@ -870,7 +868,7 @@ impl ArgumentParser {
                             f(args, modifier_stack, None)?;
                         }
                     }
-                    return Ok(true);
+                    return Ok(());
                 }
             }
         }
@@ -889,7 +887,7 @@ impl ArgumentParser {
                         f(args, modifier_stack, None)?;
                     }
                 }
-                return Ok(true);
+                return Ok(());
             }
         }
 
@@ -913,7 +911,7 @@ impl ArgumentParser {
                     // Fall back to the main handler for unregistered sub-options
                     (handler.handler)(args, modifier_stack, &value)?;
                 }
-                return Ok(true);
+                return Ok(());
             }
         }
 
@@ -922,11 +920,11 @@ impl ArgumentParser {
                 && IGNORED_FLAGS.contains(&stripped)
             {
                 warn_unsupported(arg)?;
-                return Ok(true);
+                return Ok(());
             }
 
             args.unrecognized_options.push(arg.to_owned());
-            return Ok(true);
+            return Ok(());
         }
 
         args.save_dir.handle_file(arg)?;
@@ -936,15 +934,7 @@ impl ArgumentParser {
             modifiers: *modifier_stack.last().unwrap(),
         });
 
-        Ok(false)
-    }
-
-    fn handle_positional_argument(args: &mut Args, modifier_stack: &[Modifiers], arg: &str) {
-        args.inputs.push(Input {
-            spec: InputSpec::File(Box::from(Path::new(arg))),
-            search_first: None,
-            modifiers: *modifier_stack.last().unwrap(),
-        });
+        Ok(())
     }
 
     #[must_use]
