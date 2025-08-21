@@ -51,6 +51,8 @@ pub(crate) struct VersionScript<'data> {
 pub(crate) enum SymbolMatcher<'data> {
     // Exact match.
     Exact(&'data [u8]),
+    // Exact match with escape sequences that need unescaping.
+    EscapedExact(&'data [u8]),
     // A glob pattern with a '*' token.
     StarGlob(Pattern),
     // A glob pattern without any '*' token.
@@ -62,7 +64,7 @@ pub(crate) enum SymbolMatcher<'data> {
 #[derive(Debug, Default)]
 pub(crate) struct BasicMatchRules<'data> {
     exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
-    escaped_exact: Vec<&'data [u8]>,
+    escaped_exact: HashSet<Vec<u8>>,
     star_globs: Vec<Pattern>,
     nonstar_globs: Vec<Pattern>,
     matches_all: bool,
@@ -75,11 +77,11 @@ impl<'data> BasicMatchRules<'data> {
             SymbolMatcher::StarGlob(glob) => self.star_globs.push(glob),
             SymbolMatcher::NonstarGlob(glob) => self.nonstar_globs.push(glob),
             SymbolMatcher::Exact(exact) => {
-                if has_escape_chars(exact) {
-                    self.escaped_exact.push(exact);
-                } else {
-                    self.exact.insert(UnversionedSymbolName::prehashed(exact));
-                }
+                self.exact.insert(UnversionedSymbolName::prehashed(exact));
+            }
+            SymbolMatcher::EscapedExact(escaped) => {
+                let unescaped = unescape_pattern(escaped);
+                self.escaped_exact.insert(unescaped);
             }
         }
     }
@@ -90,11 +92,6 @@ impl<'data> BasicMatchRules<'data> {
         lookup: &mut SymbolLookupNameWrapper,
         mangled: bool,
     ) -> bool {
-        // Early exit before we actually demangle the name.
-        if self.exact.is_empty() && self.escaped_exact.is_empty() {
-            return false;
-        }
-
         // Check normal exact matches first
         if !self.exact.is_empty() {
             if mangled {
@@ -121,10 +118,8 @@ impl<'data> BasicMatchRules<'data> {
                 lookup.name.bytes()
             };
 
-            for &escaped_pattern in &self.escaped_exact {
-                if matches_escaped_pattern(symbol_bytes, escaped_pattern) {
-                    return true;
-                }
+            if self.escaped_exact.contains(symbol_bytes) {
+                return true;
             }
         }
 
@@ -568,6 +563,7 @@ pub(crate) fn parse_matcher<'data>(
 
             match glob_type {
                 GlobPatternType::Exact => SymbolMatcher::Exact(token),
+                GlobPatternType::EscapedExact => SymbolMatcher::EscapedExact(token),
                 GlobPatternType::Star => SymbolMatcher::StarGlob(create_pattern(token)?),
                 GlobPatternType::NonStar => SymbolMatcher::NonstarGlob(create_pattern(token)?),
             }
@@ -581,6 +577,7 @@ fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]>
 
 enum GlobPatternType {
     Exact,
+    EscapedExact,
     Star,
     NonStar,
 }
@@ -592,6 +589,10 @@ fn analyze_glob_pattern(pattern: &[u8]) -> GlobPatternType {
     while let Some(&c) = it.next() {
         match c {
             b'\\' => {
+                // Found an escape sequence, mark as EscapedExact if no globs found yet
+                if matches!(pattern_type, GlobPatternType::Exact) {
+                    pattern_type = GlobPatternType::EscapedExact;
+                }
                 it.next();
             }
             b'*' => {
@@ -627,19 +628,6 @@ fn unescape_pattern(pattern: &[u8]) -> Vec<u8> {
     }
 
     result
-}
-
-fn has_escape_chars(pattern: &[u8]) -> bool {
-    pattern.contains(&b'\\')
-}
-
-fn matches_escaped_pattern(symbol_name: &[u8], pattern: &[u8]) -> bool {
-    if !has_escape_chars(pattern) {
-        return symbol_name == pattern;
-    }
-
-    let unescaped = unescape_pattern(pattern);
-    symbol_name == unescaped.as_slice()
 }
 
 #[derive(Debug)]
@@ -1001,17 +989,17 @@ mod tests {
         let script = VersionScript::parse(data).unwrap();
         let version_body = &script.versions[0].version_body;
 
-        let escaped_exact_patterns: HashSet<&str> = version_body
+        let escaped_patterns: HashSet<&[u8]> = version_body
             .globals
             .general
             .escaped_exact
             .iter()
-            .map(|s| std::str::from_utf8(s).unwrap())
+            .map(|v| v.as_slice())
             .collect();
 
-        assert!(escaped_exact_patterns.contains(r"foo\*bar"));
-        assert!(escaped_exact_patterns.contains(r"baz\?"));
-        assert!(escaped_exact_patterns.contains(r"foo1\\foo2"));
+        assert!(escaped_patterns.contains(&b"foo*bar"[..]));
+        assert!(escaped_patterns.contains(&b"baz?"[..]));
+        assert!(escaped_patterns.contains(&b"foo1\\foo2"[..]));
 
         let star_patterns: Vec<&str> = version_body
             .globals
