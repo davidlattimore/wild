@@ -13,7 +13,7 @@ use crate::symbol_db::SymbolId;
 /// either after resolution flags have been computed, or, if layout gets an error, then before we
 /// unwind.
 pub(crate) struct SymbolInfoPrinter<'data> {
-    loaded_file_ids: std::collections::HashSet<FileId>,
+    loaded_file_ids: hashbrown::HashSet<FileId>,
     symbol_db: &'data SymbolDb<'data>,
     name: &'data str,
     resolution_flags: &'data [AtomicResolutionFlags],

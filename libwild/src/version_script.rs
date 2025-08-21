@@ -12,7 +12,7 @@ use crate::input_data::ScriptData;
 use crate::linker_script::skip_comments_and_whitespace;
 use crate::symbol::UnversionedSymbolName;
 use glob::Pattern;
-use std::collections::HashSet;
+use hashbrown::HashSet;
 use symbolic_demangle::Demangle;
 use symbolic_demangle::DemangleOptions;
 use winnow::BStr;
