@@ -196,8 +196,10 @@ pub(crate) struct Input {
 pub(crate) enum InputSpec {
     /// Path (possibly just a filename) to the file.
     File(Box<Path>),
-    /// Name of the library and whether it already has suffix and prefix.
-    Lib(Box<str>, bool),
+    /// Name of the library, without prefix and suffix.
+    Lib(Box<str>),
+    /// Name of the library, including prefix and suffix.
+    Search(Box<str>),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -1200,7 +1202,7 @@ fn setup_argument_parser() -> ArgumentParser {
             "libname",
             "Link with library libname.so or libname.a",
             |args, modifier_stack, value| {
-                let spec = InputSpec::Lib(Box::from(value), false);
+                let spec = InputSpec::Lib(Box::from(value));
                 args.inputs.push(Input {
                     spec,
                     search_first: None,
@@ -1211,9 +1213,9 @@ fn setup_argument_parser() -> ArgumentParser {
         )
         .execute(|args, modifier_stack, value| {
             let spec = if let Some(stripped) = value.strip_prefix(':') {
-                InputSpec::Lib(Box::from(stripped), true)
+                InputSpec::Search(Box::from(stripped))
             } else {
-                InputSpec::Lib(Box::from(value), false)
+                InputSpec::Lib(Box::from(value))
             };
             args.inputs.push(Input {
                 spec,
@@ -2362,8 +2364,8 @@ mod tests {
             args.inputs
                 .iter()
                 .filter_map(|i| match &i.spec {
-                    InputSpec::File(_) | InputSpec::Lib(_, true) => None,
-                    InputSpec::Lib(lib_name, false) => Some(lib_name.as_ref()),
+                    InputSpec::File(_) | InputSpec::Search(_) => None,
+                    InputSpec::Lib(lib_name) => Some(lib_name.as_ref()),
                 })
                 .collect_vec(),
             &["gcc_s", "util", "rt", "pthread", "m", "dl", "c"]
@@ -2372,7 +2374,7 @@ mod tests {
         assert_contains(&args.lib_search_path, "/usr/lib");
         assert!(!args.inputs.iter().any(|i| match &i.spec {
             InputSpec::File(f) => f.as_ref() == Path::new("/usr/bin/ld"),
-            InputSpec::Lib(_, _) => false,
+            InputSpec::Lib(_) | InputSpec::Search(_) => false,
         }));
         assert_eq!(
             args.version_script_path,
@@ -2386,8 +2388,8 @@ mod tests {
             Some(Box::from(Path::new("/usr/aarch64-linux-gnu")))
         );
         assert!(args.inputs.iter().any(|i| match &i.spec {
-            InputSpec::File(_) | InputSpec::Lib(_, false) => false,
-            InputSpec::Lib(lib, true) => lib.as_ref() == "lib85caec4suo0pxg06jm2ma7b0o.so",
+            InputSpec::File(_) | InputSpec::Lib(_) => false,
+            InputSpec::Search(lib) => lib.as_ref() == "lib85caec4suo0pxg06jm2ma7b0o.so",
         }));
         assert_eq!(args.rpath.as_deref(), Some("foo/:bar/:baz:somewhere"));
     }

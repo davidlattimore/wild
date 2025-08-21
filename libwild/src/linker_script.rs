@@ -346,7 +346,7 @@ fn foreach_input(
         match command {
             Command::Arg(arg) => {
                 let spec = if let Some(lib_name) = arg.strip_prefix("-l".as_bytes()) {
-                    InputSpec::Lib(Box::from(to_str(lib_name)?), false)
+                    InputSpec::Lib(Box::from(to_str(lib_name)?))
                 } else {
                     InputSpec::File(Box::from(Path::new(to_str(arg)?)))
                 };
@@ -423,7 +423,7 @@ mod tests {
             inputs.into_iter().map(|i| i.spec),
             [
                 InputSpec::File(Box::from(Path::new("libgcc_s.so.1"))),
-                InputSpec::Lib(Box::from("gcc"), false),
+                InputSpec::Lib(Box::from("gcc")),
             ],
         );
 

@@ -640,13 +640,9 @@ impl Input {
                     original: p.as_ref().to_owned(),
                 })
             }
-            InputSpec::Lib(lib_name, literal_name) => {
+            InputSpec::Lib(lib_name) => {
                 if self.modifiers.allow_shared {
-                    let filename = if *literal_name {
-                        lib_name.to_string()
-                    } else {
-                        format!("lib{lib_name}.so")
-                    };
+                    let filename = format!("lib{lib_name}.so");
                     if let Some(path) = search_for_file(
                         &args.lib_search_path,
                         self.search_first.as_ref(),
@@ -658,11 +654,7 @@ impl Input {
                         });
                     }
                 }
-                let filename = if *literal_name {
-                    lib_name.to_string()
-                } else {
-                    format!("lib{lib_name}.a")
-                };
+                let filename = format!("lib{lib_name}.a");
                 if let Some(path) =
                     search_for_file(&args.lib_search_path, self.search_first.as_ref(), &filename)
                 {
@@ -672,6 +664,19 @@ impl Input {
                     });
                 }
                 bail!("Couldn't find library `{lib_name}` on library search path");
+            }
+            InputSpec::Search(filename) => {
+                if let Some(path) = search_for_file(
+                    &args.lib_search_path,
+                    self.search_first.as_ref(),
+                    filename.as_ref(),
+                ) {
+                    return Ok(InputPath {
+                        absolute: std::path::absolute(&path)?,
+                        original: PathBuf::from(filename.as_ref()),
+                    });
+                }
+                bail!("Couldn't find library `{filename}` on library search path");
             }
         }
     }
