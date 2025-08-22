@@ -103,7 +103,6 @@ tests = [
   "version-script-search-paths.sh",
   "version-script15.sh",
   "version-script17.sh",
-  "version-script23.sh",
 ]
 
 [skipped_groups.linker_script]

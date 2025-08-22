@@ -20,6 +20,10 @@
 //#Config:verdef-1:verdef
 //#LinkArgs:--shared --soname=symbol-versions.so --version-script=./symbol-versions-script.map
 
+//#Config:with-escaping:verdef
+//#DiffIgnore:version_d.verdef_1
+//#LinkArgs:--shared --version-script=./symbol-versions-with-escaping.map
+
 #include "runtime.h"
 
 int foo(void);
