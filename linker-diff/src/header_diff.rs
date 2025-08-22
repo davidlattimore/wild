@@ -9,6 +9,8 @@ use anyhow::Context as _;
 use anyhow::anyhow;
 use anyhow::bail;
 use ascii_table::AsciiTable;
+use hashbrown::HashMap;
+use hashbrown::HashSet;
 use itertools::Itertools;
 use linker_utils::elf::SectionFlags;
 #[allow(clippy::wildcard_imports)]
@@ -24,8 +26,6 @@ use object::read::elf::Dyn;
 use object::read::elf::ElfSection64;
 use std::borrow::Cow;
 use std::collections::BTreeSet;
-use std::collections::HashMap;
-use std::collections::HashSet;
 
 #[derive(Clone, Copy)]
 pub(crate) enum Converter {

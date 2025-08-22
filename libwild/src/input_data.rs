@@ -17,8 +17,7 @@ use crate::linker_script::LinkerScript;
 use colosseum::sync::Arena;
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
-use foldhash::HashMap;
-use foldhash::fast::RandomState;
+use hashbrown::HashMap;
 use memmap2::Mmap;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
@@ -203,7 +202,7 @@ impl<'data> InputData<'data> {
 
         let mut temporary_state = TemporaryState {
             args,
-            path_to_load_index: HashMap::with_hasher(RandomState::default()),
+            path_to_load_index: HashMap::new(),
             outstanding_work_items: 0,
             files: Vec::new(),
             work_recv: &work_recv,
@@ -562,8 +561,8 @@ impl<'data, 'ch> TemporaryState<'data, 'ch> {
         let paths = input.path(self.args)?;
 
         let index = match self.path_to_load_index.entry(paths.absolute.clone()) {
-            std::collections::hash_map::Entry::Occupied(e) => *e.get(),
-            std::collections::hash_map::Entry::Vacant(e) => {
+            hashbrown::hash_map::Entry::Occupied(e) => *e.get(),
+            hashbrown::hash_map::Entry::Vacant(e) => {
                 let new_index = FileLoadIndex(self.files.len());
                 self.files.push(None);
 

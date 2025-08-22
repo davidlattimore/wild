@@ -6,6 +6,8 @@ use anyhow::Context;
 use anyhow::bail;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
+use hashbrown::HashMap;
+use hashbrown::HashSet;
 use linker_utils::elf::secnames::EH_FRAME_HDR_SECTION_NAME_STR;
 use linker_utils::elf::secnames::EH_FRAME_SECTION_NAME_STR;
 use linker_utils::utils::u32_from_slice;
@@ -16,8 +18,6 @@ use object::ObjectSymbol;
 use object::SymbolKind;
 use object::elf::ProgramHeader64;
 use object::read::elf::ProgramHeader;
-use std::collections::HashMap;
-use std::collections::HashSet;
 use std::mem::offset_of;
 
 pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]) {

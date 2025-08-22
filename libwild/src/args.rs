@@ -21,8 +21,8 @@ use crate::error::Result;
 use crate::input_data::FileId;
 use crate::linker_script::maybe_forced_sysroot;
 use crate::save_dir::SaveDir;
-use foldhash::HashMap;
-use foldhash::HashMapExt as _;
+use hashbrown::HashMap;
+use hashbrown::HashSet;
 use jobserver::Acquired;
 use jobserver::Client;
 use rayon::ThreadPoolBuilder;
@@ -953,8 +953,7 @@ impl ArgumentParser {
         ));
 
         let mut help_to_options: HashMap<&str, Vec<String>> = HashMap::new();
-        let mut processed_short_options: std::collections::HashSet<&str> =
-            std::collections::HashSet::new();
+        let mut processed_short_options: HashSet<&str> = HashSet::new();
 
         // Collect all long options and their associated short options
         for (long_name, handler) in &self.options {

@@ -33,8 +33,8 @@ use crate::symbol::UnversionedSymbolName;
 use crate::symbol::VersionedSymbolName;
 use crate::version_script::VersionScript;
 use crossbeam_queue::SegQueue;
-use foldhash::HashMap;
-use foldhash::fast::RandomState;
+use hashbrown::HashMap;
+use hashbrown::hash_map;
 use itertools::Itertools;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::shf;
@@ -44,7 +44,6 @@ use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
-use std::collections::hash_map;
 use std::fmt::Display;
 use std::mem::replace;
 use std::mem::take;
@@ -346,8 +345,8 @@ impl<'data> SymbolDb<'data> {
         buckets.resize_with(num_buckets, || SymbolBucket {
             name_to_id: Default::default(),
             versioned_name_to_id: Default::default(),
-            alternative_definitions: HashMap::with_hasher(RandomState::default()),
-            alternative_versioned_definitions: HashMap::with_hasher(RandomState::default()),
+            alternative_definitions: HashMap::new(),
+            alternative_versioned_definitions: HashMap::new(),
         });
 
         let mut index = SymbolDb {
@@ -852,10 +851,7 @@ fn process_alternatives(
     symbol_db: &AtomicSymbolDb,
     resolved: &[ResolvedGroup],
 ) {
-    for (first, alternatives) in replace(
-        alternative_definitions,
-        HashMap::with_hasher(RandomState::default()),
-    ) {
+    for (first, alternatives) in replace(alternative_definitions, HashMap::new()) {
         // Compute the most restrictive visibility of any of the alternative definitions. This is
         // the visibility we'll use for our selected symbol. This seems like odd behaviour, but it
         // matches what GNU ld appears to do and some programs will fail to link if we don't do

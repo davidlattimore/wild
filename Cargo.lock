@@ -775,6 +775,7 @@ dependencies = [
  "colored",
  "fallible-iterator",
  "gimli 0.32.0",
+ "hashbrown",
  "iced-x86",
  "itertools",
  "linker-layout",
