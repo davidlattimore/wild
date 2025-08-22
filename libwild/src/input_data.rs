@@ -622,7 +622,7 @@ impl Input {
     fn path(&self, args: &Args) -> Result<InputPath> {
         match &self.spec {
             InputSpec::File(p) => {
-                if (self.search_first.is_some() || p.parent() == Some(Path::new("")))
+                if self.search_first.is_some()
                     && let Some(path) = search_for_file(
                         &args.lib_search_path,
                         self.search_first.as_ref(),
@@ -663,6 +663,19 @@ impl Input {
                     });
                 }
                 bail!("Couldn't find library `{lib_name}` on library search path");
+            }
+            InputSpec::Search(filename) => {
+                if let Some(path) = search_for_file(
+                    &args.lib_search_path,
+                    self.search_first.as_ref(),
+                    filename.as_ref(),
+                ) {
+                    return Ok(InputPath {
+                        absolute: std::path::absolute(&path)?,
+                        original: PathBuf::from(filename.as_ref()),
+                    });
+                }
+                bail!("Couldn't find library `{filename}` on library search path");
             }
         }
     }

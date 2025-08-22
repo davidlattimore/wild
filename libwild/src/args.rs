@@ -195,8 +195,12 @@ pub(crate) struct Input {
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum InputSpec {
+    /// Path (possibly just a filename) to the file.
     File(Box<Path>),
+    /// Name of the library, without prefix and suffix.
     Lib(Box<str>),
+    /// Name of the library, including prefix and suffix.
+    Search(Box<str>),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -1199,7 +1203,7 @@ fn setup_argument_parser() -> ArgumentParser {
         )
         .execute(|args, modifier_stack, value| {
             let spec = if let Some(stripped) = value.strip_prefix(':') {
-                InputSpec::File(Box::from(Path::new(stripped)))
+                InputSpec::Search(Box::from(stripped))
             } else {
                 InputSpec::Lib(Box::from(value))
             };
@@ -2350,7 +2354,7 @@ mod tests {
             args.inputs
                 .iter()
                 .filter_map(|i| match &i.spec {
-                    InputSpec::File(_) => None,
+                    InputSpec::File(_) | InputSpec::Search(_) => None,
                     InputSpec::Lib(lib_name) => Some(lib_name.as_ref()),
                 })
                 .collect_vec(),
@@ -2360,7 +2364,7 @@ mod tests {
         assert_contains(&args.lib_search_path, "/usr/lib");
         assert!(!args.inputs.iter().any(|i| match &i.spec {
             InputSpec::File(f) => f.as_ref() == Path::new("/usr/bin/ld"),
-            InputSpec::Lib(_) => false,
+            InputSpec::Lib(_) | InputSpec::Search(_) => false,
         }));
         assert_eq!(
             args.version_script_path,
@@ -2374,8 +2378,8 @@ mod tests {
             Some(Box::from(Path::new("/usr/aarch64-linux-gnu")))
         );
         assert!(args.inputs.iter().any(|i| match &i.spec {
-            InputSpec::File(f) => f.as_ref() == Path::new("lib85caec4suo0pxg06jm2ma7b0o.so"),
-            InputSpec::Lib(_) => false,
+            InputSpec::File(_) | InputSpec::Lib(_) => false,
+            InputSpec::Search(lib) => lib.as_ref() == "lib85caec4suo0pxg06jm2ma7b0o.so",
         }));
         assert_eq!(args.rpath.as_deref(), Some("foo/:bar/:baz:somewhere"));
     }
