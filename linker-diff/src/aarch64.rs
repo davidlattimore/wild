@@ -1,11 +1,10 @@
+use crate::ArchKind;
 use crate::arch::Arch;
 use crate::arch::Instruction;
 use crate::arch::Relaxation;
 use crate::arch::RelaxationByteRange;
 use crate::asm_diff::BasicValueKind;
-use anyhow::Context;
-use anyhow::Result;
-use itertools::Itertools;
+use crate::utils::decode_insn_with_objdump;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_SIZE_BITS;
 use linker_utils::aarch64::RelaxationKind;
@@ -18,71 +17,9 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::aarch64_rel_type_to_string;
 use linker_utils::relaxation::RelocationModifier;
 use std::fmt::Display;
-use std::io::Write;
-use std::process::Command;
-use std::process::Stdio;
-use std::sync::OnceLock;
-use tempfile::NamedTempFile;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct AArch64;
-
-fn decode_insn_with_objdump(insn: &[u8], address: u64) -> Result<String> {
-    static OBJDUMP_BIN: OnceLock<&'static str> = OnceLock::new();
-
-    // TODO: seems objdump cannot read from stdin
-    let mut tmpfile = NamedTempFile::new()?;
-    tmpfile.write_all(insn)?;
-    tmpfile.flush()?;
-
-    let objdump = OBJDUMP_BIN.get_or_init(|| {
-        ["aarch64-linux-gnu-objdump", "objdump"]
-            .iter()
-            .find(|bin| which::which(bin).is_ok())
-            .unwrap()
-    });
-
-    let command = Command::new(objdump)
-        .arg("-b")
-        .arg("binary")
-        .arg(format!("--adjust-vma=0x{address:x}"))
-        .arg("-m")
-        .arg("aarch64")
-        .arg("-D")
-        .arg(tmpfile.path())
-        .stdout(Stdio::piped())
-        .spawn()
-        .context("Failed to spawn objdump")?;
-
-    let output = command.wait_with_output().expect("Failed to read stdout");
-    // Sample output: 0:	37000008 	tbnz	w8, #0, 0x0
-    let insn_line = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .last()
-        .context("No objdump output")?
-        .to_owned();
-    Ok(insn_line
-        .split_whitespace()
-        .skip(2)
-        .join(" ")
-        .replacen(" ", "\t", 1)
-        .clone())
-}
-
-#[test]
-fn test_align_up() {
-    // Some distributions don't enable the features in objdump required for disassembly of aarch64,
-    // so we only check that we can disassemble if we're running on aarch64 or if test
-    // cross-compilation is enabled.
-    if cfg!(target_arch = "aarch64")
-        || std::env::var("WILD_TEST_CROSS").is_ok_and(|v| v.split(',').any(|a| a == "aarch64"))
-    {
-        assert_eq!(
-            decode_insn_with_objdump(&[0xe3, 0x93, 0x44, 0xa9], 0x1000).unwrap(),
-            "ldp\tx3, x4, [sp, #72]"
-        );
-    }
-}
 
 impl Arch for AArch64 {
     type RType = RType;
@@ -221,7 +158,7 @@ impl Arch for AArch64 {
             let bytes = &section_bytes[offset as usize..offset as usize + 4];
             let address = section_address + offset;
 
-            let raw_instruction = decode_insn_with_objdump(bytes, address).ok();
+            let raw_instruction = decode_insn_with_objdump(bytes, address, ArchKind::Aarch64).ok();
 
             instructions.push(crate::arch::Instruction {
                 raw_instruction,
