@@ -36,7 +36,7 @@ dhat = { version = "0.3.3" }
 fallible-iterator = "0.3.0"
 fd-lock = "4.0.0"
 flate2 = { version = "1.1.0", features = ["zlib-rs"] }
-foldhash = "0.1.0"
+foldhash = "0.2.0"
 gimli = "0.32.0"
 hashbrown = "0.15.1"
 hex = "0.4.0"
@@ -67,7 +67,7 @@ rayon = "1.2.1"
 rstest = "0.26.1"
 serde = { version = "1.0.219", features = ["derive"] }
 sharded-offset-map = "0.2.0"
-sharded-vec-writer = "0.3.0"
+sharded-vec-writer = "0.4.0"
 smallvec = "1.6.1"
 strum = { version = "0.27.0", features = ["derive"] }
 strum_macros = "0.27.0"
