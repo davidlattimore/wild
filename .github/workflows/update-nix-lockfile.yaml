@@ -19,7 +19,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v32
+        uses: nixbuild/nix-quick-install-action@v33
 
       - name: Update lock file
         run: |
