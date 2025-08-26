@@ -4,8 +4,8 @@ tests = [
   "audit.sh",
   "auxiliary.sh",                      # `-auxiliary` and `-f`
   "color-diagnostics.sh",
-  "compress-debug-sections.sh",        # Compressed debug sections support #493
   "compress-debug-sections-zstd.sh",   # Compressed debug sections support #493
+  "compress-debug-sections.sh",        # Compressed debug sections support #493
   "default-symver-version-script.sh",
   "default-symver.sh",
   "defsym.sh",
@@ -113,7 +113,6 @@ tests  = ["linker-script-defsym.sh", "linker-script.sh", "linker-script4.sh"]
 reason = "Related to -z"
 tests = [
   "z-cet-report.sh",
-  "z-defs.sh",
   "z-dynamic-undefined-weak-exe.sh",
   "z-dynamic-undefined-weak.sh",
   "z-max-page-size.sh",
@@ -147,7 +146,6 @@ tests = [
   "arch-x86_64-reloc.sh",
   "arch-x86_64-section-name.sh",
   "arch-x86_64-tbss-only.sh",
-  "arch-x86_64-tlsdesc.sh",
   "arch-x86_64-unique.sh",
   "arch-x86_64-warn-execstack.sh",
   "arch-x86_64-warn-shared-textrel.sh",
@@ -210,6 +208,7 @@ tests = [
   "verbose.sh",
   "version.sh",                     # The message of `--version` is different from mold's one.
   "warn-unresolved-symbols.sh",     # Different message formats
+  "z-defs.sh",                      # Different message formats
 ]
 
 [skipped_groups.misc]
