@@ -18,7 +18,7 @@
   glibc,
   lld,
 }:
-assert lib.assertMsg (lib.versionAtLeast "1.89.0" pkgs.rustc.version)
+assert lib.assertMsg (lib.versionAtLeast pkgs.rustc.version "1.89.0")
   "Wild requires at least Rust 1.89.0, this instance of nixpkgs has Rust ${pkgs.rustc.version}";
 
 let
