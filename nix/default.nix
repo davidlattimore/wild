@@ -18,8 +18,8 @@
   glibc,
   lld,
 }:
-assert lib.assertMsg (lib.versionAtLeast "1.88.0" pkgs.rustc.version)
-  "Wild requires at least Rust 1.88.0, this instance of nixpkgs has Rust ${pkgs.rustc.version}";
+assert lib.assertMsg (lib.versionAtLeast pkgs.rustc.version "1.89.0")
+  "Wild requires at least Rust 1.89.0, this instance of nixpkgs has Rust ${pkgs.rustc.version}";
 
 let
   # Write a wrapper for GCC that passes -B to *unwrapped* binutils.
