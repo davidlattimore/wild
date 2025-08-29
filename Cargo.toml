@@ -38,7 +38,7 @@ fd-lock = "4.0.0"
 flate2 = { version = "1.1.0", features = ["zlib-rs"] }
 foldhash = "0.2.0"
 gimli = "0.32.0"
-hashbrown = "0.15.1"
+hashbrown = "0.16.0"
 hex = "0.4.0"
 iced-x86 = { version = "1.17.0", default-features = false, features = [
     "std",
