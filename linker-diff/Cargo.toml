@@ -16,7 +16,6 @@ iced-x86 = { workspace = true }
 symbolic-demangle = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
-rayon = { workspace = true }
 bytemuck = { workspace = true }
 itertools = { workspace = true }
 gimli = { workspace = true }

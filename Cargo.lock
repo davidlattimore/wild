@@ -790,7 +790,6 @@ dependencies = [
  "memchr",
  "memmap2",
  "object 0.37.3",
- "rayon",
  "symbolic-demangle",
  "tempfile",
  "tracing",
@@ -1714,12 +1713,9 @@ dependencies = [
 name = "wild-linker"
 version = "0.5.0"
 dependencies = [
- "anyhow",
  "dhat",
  "fd-lock",
  "itertools",
- "jobserver",
- "libc",
  "libwild",
  "linker-diff",
  "mimalloc",
@@ -1728,7 +1724,6 @@ dependencies = [
  "rstest",
  "serde",
  "strum",
- "strum_macros",
  "toml",
  "wait-timeout",
  "which",
