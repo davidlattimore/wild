@@ -42,11 +42,13 @@ mod eh_frame_diff;
 mod gnu_hash;
 mod header_diff;
 mod init_order;
+mod riscv64;
 pub(crate) mod section_map;
 mod segment;
 mod symbol_diff;
 mod symtab;
 mod trace;
+mod utils;
 mod version_diff;
 mod x86_64;
 
@@ -631,7 +633,7 @@ impl Report {
             }
 
             ArchKind::RISCV64 => {
-                // TODO
+                self.report_arch_specific_diffs::<crate::riscv64::Riscv64>(objects);
             }
         }
     }
