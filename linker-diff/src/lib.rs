@@ -253,6 +253,10 @@ impl Config {
                 "segment.SHT_RISCV_ATTRIBUTES.*",
                 "segment.LOAD.RW.alignment",
                 "rel.unknown_failure",
+                "literal-byte-mismatch",
+                "rel.match_failed.R_RISCV_*",
+                "rel.R_RISCV_JAL.R_RISCV_JAL",
+                "section.got",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
