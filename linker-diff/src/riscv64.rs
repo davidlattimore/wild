@@ -26,14 +26,14 @@ impl Arch for Riscv64 {
 
     type RawInstruction = Option<String>;
 
-    const MAX_RELAX_MODIFY_BEFORE: u64 = 0;
+    const MAX_RELAX_MODIFY_BEFORE: u64 = 16;
     const MAX_RELAX_MODIFY_AFTER: u64 = 8;
 
     fn relaxation_byte_range(relaxation: Relaxation<Self>) -> RelaxationByteRange {
         match relaxation.relaxation_kind {
             RelaxationKind::CallToJal => RelaxationByteRange {
                 offset_shift: 0,
-                num_bytes: 4,
+                num_bytes: 8,
             },
             _ => RelaxationByteRange {
                 offset_shift: 0,
@@ -51,53 +51,96 @@ impl Arch for Riscv64 {
         let byte_range = Self::relaxation_byte_range(relaxation);
 
         match relaxation.relaxation_kind {
-            RelaxationKind::GotToDirectAddressing | RelaxationKind::PcrelToDirectAddressing => {
-                RelaxationMask {
+            RelaxationKind::NoOp => match relaxation.new_r_type.0 {
+                object::elf::R_RISCV_PCREL_LO12_I => RelaxationMask {
                     offset_shift: byte_range.offset_shift,
-                    bitmask: vec![0x00, 0x00, 0x00, 0x00],
-                }
-            }
-            RelaxationKind::CallToJal => RelaxationMask {
-                offset_shift: byte_range.offset_shift,
-                bitmask: vec![0x7f, 0x00, 0x00, 0x00],
-            },
-            _ => {
-                let mut mask = RelaxationMask {
-                    offset_shift: byte_range.offset_shift,
-                    bitmask: Vec::new(),
-                };
-
-                if let Some(info) = relaxation.new_r_type.opt_relocation_info() {
-                    match info.size {
-                        linker_utils::elf::RelocationSize::ByteSize(num_bytes) => {
-                            let mask_len =
-                                (relocation_offset + num_bytes).max(byte_range.num_bytes);
-                            mask.bitmask.resize(mask_len, 0xff);
-                            for b in
-                                &mut mask.bitmask[relocation_offset..relocation_offset + num_bytes]
-                            {
-                                *b = 0;
+                    bitmask: vec![0x00; byte_range.num_bytes],
+                },
+                _ => {
+                    if let Some(info) = relaxation.new_r_type.opt_relocation_info() {
+                        match info.size {
+                            linker_utils::elf::RelocationSize::ByteSize(num_bytes) => {
+                                let mask_len =
+                                    (relocation_offset + num_bytes).max(byte_range.num_bytes);
+                                let mut bitmask = vec![0xff; mask_len];
+                                for b in
+                                    &mut bitmask[relocation_offset..relocation_offset + num_bytes]
+                                {
+                                    *b = 0;
+                                }
+                                RelaxationMask {
+                                    offset_shift: byte_range.offset_shift,
+                                    bitmask,
+                                }
+                            }
+                            linker_utils::elf::RelocationSize::BitMasking(
+                                linker_utils::elf::BitMask { range, instruction },
+                            ) => {
+                                if range.end - range.start >= 64 {
+                                    RelaxationMask {
+                                        offset_shift: byte_range.offset_shift,
+                                        bitmask: vec![0x00; byte_range.num_bytes],
+                                    }
+                                } else {
+                                    RelaxationMask {
+                                        offset_shift: byte_range.offset_shift,
+                                        bitmask: Vec::from(instruction.bit_mask(range)),
+                                    }
+                                }
                             }
                         }
-                        linker_utils::elf::RelocationSize::BitMasking(
-                            linker_utils::elf::BitMask { range, instruction },
-                        ) => {
-                            mask.bitmask = Vec::from(instruction.bit_mask(range));
+                    } else {
+                        RelaxationMask {
+                            offset_shift: byte_range.offset_shift,
+                            bitmask: vec![0x00; byte_range.num_bytes],
                         }
                     }
                 }
-                mask
-            }
+            },
+            RelaxationKind::CallToJal | RelaxationKind::GotToDirectAddressing => RelaxationMask {
+                offset_shift: byte_range.offset_shift,
+                bitmask: vec![0x00; byte_range.num_bytes],
+            },
+            _ => RelaxationMask {
+                offset_shift: byte_range.offset_shift,
+                bitmask: vec![0x00; byte_range.num_bytes],
+            },
         }
     }
 
     fn possible_relaxations_do(
         r_type: Self::RType,
-        section_kind: object::SectionKind,
-        cb: impl FnMut(Relaxation<Self>),
+        _section_kind: object::SectionKind,
+        mut cb: impl FnMut(crate::arch::Relaxation<Self>),
     ) {
-        // TODO: Support RISC-V relaxations
-        let _ = (r_type, section_kind, cb);
+        let mut relax = |relaxation_kind, new_r_type| {
+            cb(Relaxation {
+                relaxation_kind,
+                new_r_type: RType(new_r_type),
+                alt_r_type: None,
+            });
+        };
+
+        match r_type.0 {
+            object::elf::R_RISCV_CALL_PLT => {
+                relax(RelaxationKind::CallToJal, object::elf::R_RISCV_JAL);
+            }
+            object::elf::R_RISCV_CALL => {
+                relax(RelaxationKind::CallToJal, object::elf::R_RISCV_JAL);
+            }
+            object::elf::R_RISCV_GOT_HI20 => {
+                relax(
+                    RelaxationKind::GotToDirectAddressing,
+                    object::elf::R_RISCV_HI20,
+                );
+            }
+            object::elf::R_RISCV_RELAX => {
+                // Don't add any relaxations for RELAX markers
+            }
+            _ => {
+                relax(Self::RelaxationKind::NoOp, r_type.0);
+            }
+        }
     }
 
     fn apply_relaxation(
@@ -163,8 +206,14 @@ impl Arch for Riscv64 {
     fn is_complete_chain(chain: impl Iterator<Item = Self::RType>) -> bool {
         let chain = chain.collect::<Vec<_>>();
 
+        let filtered_chain: Vec<_> = chain
+            .iter()
+            .filter(|r_type| r_type.0 != object::elf::R_RISCV_RELAX)
+            .copied()
+            .collect();
+
         for candidate in CHAINS {
-            if candidate.starts_with(&chain) && *candidate != chain {
+            if candidate.starts_with(&filtered_chain) && *candidate != filtered_chain {
                 return false;
             }
         }
@@ -184,8 +233,9 @@ impl Arch for Riscv64 {
             RType(object::elf::R_RISCV_TPREL_LO12_S),
         ];
 
-        match chain.as_slice() {
+        match filtered_chain.as_slice() {
             [r_type] => !NOT_IN_ISOLATION.contains(r_type),
+            [] => true,
             _ => true,
         }
     }
@@ -279,8 +329,10 @@ impl crate::arch::RType for RType {
     }
 
     fn should_ignore_when_computing_referent(self) -> bool {
-        // R_RISCV_RELAX doesn't affect the referent calculation
-        self.0 == object::elf::R_RISCV_RELAX
+        matches!(
+            self.0,
+            object::elf::R_RISCV_RELAX | object::elf::R_RISCV_ALIGN
+        )
     }
 }
 
@@ -305,7 +357,7 @@ fn decode_plt_entry_riscv64(
     plt_base: u64,
     plt_offset: u64,
 ) -> Option<crate::arch::PltEntry> {
-    if plt_entry.len() < 12 {
+    if plt_entry.len() < 8 {
         return None;
     }
 

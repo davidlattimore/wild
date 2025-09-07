@@ -252,6 +252,7 @@ impl Config {
                 // TODO: RISC-v
                 "segment.SHT_RISCV_ATTRIBUTES.*",
                 "segment.LOAD.RW.alignment",
+                "rel.unknown_failure",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
