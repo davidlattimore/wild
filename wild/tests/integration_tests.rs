@@ -136,6 +136,7 @@ use std::hash::Hasher;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -1041,9 +1042,15 @@ impl Program<'_> {
 
         let output = String::from_utf8_lossy(&output);
 
-        let exit_code = status
-            .code()
-            .ok_or_else(|| error!("Binary exited with signal: {output}"))?;
+        let exit_code = status.code().ok_or_else(|| {
+            let signal = status.signal().unwrap();
+            let possible_core_dumped_msg = if status.core_dumped() {
+                " (core dumped) "
+            } else {
+                ""
+            };
+            error!("Binary exited{possible_core_dumped_msg} with signal {signal}: {output}")
+        })?;
 
         if exit_code != 42 {
             bail!("Binary exited with unexpected exit code {exit_code}: {output}");
