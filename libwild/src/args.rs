@@ -560,7 +560,7 @@ impl Args {
     /// Sets up the thread pool, using the explicit number of threads if specified,
     /// or falling back to the jobserver protocol if available.
     ///
-    /// https://www.gnu.org/software/make/manual/html_node/POSIX-Jobserver.html
+    /// <https://www.gnu.org/software/make/manual/html_node/POSIX-Jobserver.html>
     pub fn activate_thread_pool(mut self) -> Result<ActivatedArgs> {
         let mut tokens = Vec::new();
         self.available_threads = self.num_threads.unwrap_or_else(|| {

@@ -749,8 +749,8 @@ pub mod riscvattr {
 }
 
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -
-/// https://uclibc.org/docs/elf-64-gen.pdf. For information on the TLS related relocations, see "ELF
-/// Handling For Thread-Local Storage" - https://www.uclibc.org/docs/tls.pdf.
+/// <https://uclibc.org/docs/elf-64-gen.pdf>. For information on the TLS related relocations, see "ELF
+/// Handling For Thread-Local Storage" - <https://www.uclibc.org/docs/tls.pdf>.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RelocationKind {
     /// The absolute address of a symbol or section.
