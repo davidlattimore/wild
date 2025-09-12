@@ -389,6 +389,10 @@ impl<'data> SectionRules<'data> {
         section_flags: SectionFlags,
         sh_type: SectionType,
     ) -> SectionRuleOutcome {
+        if section_flags.should_exclude() {
+            return SectionRuleOutcome::Discard;
+        }
+
         if let Some(hash) = section_name_prefix_hash(section_name)
             && let Some(rule) = self.rules.find(hash, |rule| rule.matches(section_name))
         {

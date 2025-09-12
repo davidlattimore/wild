@@ -326,6 +326,7 @@ pub mod shf {
     pub const TLS: SectionFlags = SectionFlags::from_u32(object::elf::SHF_TLS);
     pub const COMPRESSED: SectionFlags = SectionFlags::from_u32(object::elf::SHF_COMPRESSED);
     pub const GNU_RETAIN: SectionFlags = SectionFlags::from_u32(object::elf::SHF_GNU_RETAIN);
+    pub const EXCLUDE: SectionFlags = SectionFlags::from_u32(object::elf::SHF_EXCLUDE);
 }
 
 pub mod sht {
@@ -414,6 +415,11 @@ impl SectionFlags {
     pub fn should_retain(&self) -> bool {
         self.contains(shf::GNU_RETAIN)
     }
+
+    #[must_use]
+    pub fn should_exclude(&self) -> bool {
+        self.contains(shf::EXCLUDE)
+    }
 }
 
 impl From<u64> for SectionFlags {
@@ -436,6 +442,7 @@ impl std::fmt::Display for SectionFlags {
             (shf::GROUP, "G"),
             (shf::TLS, "T"),
             (shf::COMPRESSED, "C"),
+            (shf::EXCLUDE, "E"),
             // TODO: ld linker sometimes propagates the flag
             // (shf::GNU_RETAIN, "R"),
         ] {
