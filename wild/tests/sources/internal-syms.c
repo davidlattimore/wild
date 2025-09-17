@@ -18,7 +18,7 @@ void _start(void) {
   int value = 42;
   // We shouldn't have any .rela.plt entries, so this loop should terminate
   // without dereferencing any RELA entries.
-  for (const struct Rela *e = &__rela_iplt_start; e < &__rela_iplt_end; ++e) {
+  for (const struct Rela* e = &__rela_iplt_start; e < &__rela_iplt_end; ++e) {
     value += 1 + e->a;
   }
   exit_syscall(value);

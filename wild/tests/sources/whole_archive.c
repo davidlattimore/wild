@@ -12,7 +12,7 @@ void _start(void) {
 
   int value = 0;
 
-  for (int *foo = __start_foo; foo < __stop_foo; ++foo) {
+  for (int* foo = __start_foo; foo < __stop_foo; ++foo) {
     value += *foo;
   }
 

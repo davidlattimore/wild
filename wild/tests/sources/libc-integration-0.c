@@ -39,7 +39,7 @@ static int return10() { return 10; }
 
 int compute_value10(void) __attribute__((ifunc("resolve_compute_value10")));
 
-static void *resolve_compute_value10(void) { return return10; }
+static void* resolve_compute_value10(void) { return return10; }
 
 int sometimes_weak_fn(void) { return 42; }
 
@@ -55,6 +55,6 @@ int black_box(int v) { return v; }
 // should be used.
 int __attribute__((weak)) weak_fn3(void) { return 15; }
 
-__attribute__((weak, visibility(("hidden")))) int atoi(const char *bytes) {
+__attribute__((weak, visibility(("hidden")))) int atoi(const char* bytes) {
   return 77;
 }

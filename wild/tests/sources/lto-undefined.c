@@ -6,7 +6,7 @@
 
 extern int addition(int, int);
 
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   int a = 1;
   int b = 1;
   int result = addition(a, b);
