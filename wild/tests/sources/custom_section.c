@@ -51,10 +51,10 @@ void _start(void) {
   runtime_init();
 
   int value = fn1();
-  for (int *foo = __start_foo; foo < __stop_foo; foo++) {
+  for (int* foo = __start_foo; foo < __stop_foo; foo++) {
     value += *foo;
   }
-  for (int *bar = __start_bar; bar < __stop_bar; bar++) {
+  for (int* bar = __start_bar; bar < __stop_bar; bar++) {
     value += *bar;
   }
   if (__start_w2 || __stop_w2) {

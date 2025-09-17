@@ -18,11 +18,11 @@ const uint64_t R_X86_64_IRELATIVE = 37;
 int init_ifuncs(void) {
   extern const struct Rela __rela_iplt_start[];
   extern const struct Rela __rela_iplt_end[];
-  for (const struct Rela *i = __rela_iplt_start; i < __rela_iplt_end; i++) {
+  for (const struct Rela* i = __rela_iplt_start; i < __rela_iplt_end; i++) {
     if ((i->info & 0xffffffff) != R_X86_64_IRELATIVE) {
       return 7;
     }
-    size_t *offset = (void *)i->offset;
+    size_t* offset = (void*)i->offset;
     ifunc_resolve_fn_t resolve_fn = (ifunc_resolve_fn_t)(i->addend);
     *offset = resolve_fn();
   }

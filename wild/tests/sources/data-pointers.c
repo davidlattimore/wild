@@ -18,9 +18,9 @@ extern int bar[8];
 // Since `foo` and `bar` come from a shared object, this should result in a
 // couple of runtime relocations in our data section. We have non-zero offsets
 // relative to these symbols in order to make sure addends work as expected.
-int *pointers[2] = {&foo[2], &bar[6]};
+int* pointers[2] = {&foo[2], &bar[6]};
 
-int check_pointers(int **p);
+int check_pointers(int** p);
 
 void _start(void) {
   runtime_init();
