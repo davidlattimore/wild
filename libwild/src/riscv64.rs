@@ -168,8 +168,8 @@ impl crate::arch::Relaxation for Relaxation {
                 return if non_zero_address {
                     relocation.kind = RelocationKind::Relative;
                     Some(Relaxation {
-                        kind: RelaxationKind::NoOp,
-                        rel_info: relocation,
+                        kind: RelaxationKind::CallToJal,
+                        rel_info: rel_info_from_type!(object::elf::R_RISCV_JAL),
                         mandatory: output_kind.is_static_executable(),
                     })
                 } else {
@@ -180,6 +180,46 @@ impl crate::arch::Relaxation for Relaxation {
                         mandatory: output_kind.is_static_executable(),
                     })
                 };
+            }
+
+            object::elf::R_RISCV_GOT_HI20 if !interposable => {
+                return Some(Relaxation {
+                    kind: RelaxationKind::GotToDirectAddressing,
+                    rel_info: rel_info_from_type!(object::elf::R_RISCV_HI20),
+                    mandatory: false,
+                });
+            }
+
+            object::elf::R_RISCV_PCREL_LO12_I => {
+                return Some(Relaxation {
+                    kind: RelaxationKind::NoOp,
+                    rel_info: rel_info_from_type!(object::elf::R_RISCV_LO12_I),
+                    mandatory: false,
+                });
+            }
+
+            object::elf::R_RISCV_PCREL_LO12_S => {
+                return Some(Relaxation {
+                    kind: RelaxationKind::NoOp,
+                    rel_info: rel_info_from_type!(object::elf::R_RISCV_LO12_S),
+                    mandatory: false,
+                });
+            }
+
+            object::elf::R_RISCV_PCREL_HI20 if !interposable => {
+                return Some(Relaxation {
+                    kind: RelaxationKind::PcrelToDirectAddressing,
+                    rel_info: rel_info_from_type!(object::elf::R_RISCV_HI20),
+                    mandatory: false,
+                });
+            }
+
+            object::elf::R_RISCV_TLS_GD_HI20 if !interposable && output_kind.is_executable() => {
+                return Some(Relaxation {
+                    kind: RelaxationKind::TlsGdToIe,
+                    rel_info: rel_info_from_type!(object::elf::R_RISCV_TPREL_HI20),
+                    mandatory: false,
+                });
             }
 
             _ => (),
