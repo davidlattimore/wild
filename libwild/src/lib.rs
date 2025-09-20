@@ -28,9 +28,15 @@ pub(crate) mod output_section_part_map;
 pub(crate) mod output_trace;
 pub(crate) mod parsing;
 pub(crate) mod part_id;
-#[cfg(target_os = "linux")]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 pub(crate) mod perf;
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(
+    not(target_os = "linux"),
+    all(target_os = "linux", target_arch = "riscv64")
+))]
 #[path = "perf_unsupported.rs"]
 pub(crate) mod perf;
 pub(crate) mod program_segments;
