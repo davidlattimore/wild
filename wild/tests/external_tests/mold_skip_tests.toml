@@ -184,6 +184,10 @@ tests = [
 reason = "Related to TLS"
 tests  = ["tls-common.sh", "tls-le-error.sh"]
 
+[skipped_groups.symver]
+reason = "unsupported inline assembly .symver directive"
+tests = ["empty-version.sh", "symbol-version3.sh", "symbol-version4.sh"]
+
 [skipped_groups.ignore]
 reason = "We ignore these tests for some reasons"
 tests = [
