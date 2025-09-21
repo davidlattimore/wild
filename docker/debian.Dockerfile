@@ -3,7 +3,7 @@
 # docker build --progress=plain -t wild-dev-debian . -f docker/debian.Dockerfile
 # docker run -it wild-dev-debian
 
-FROM rust:1.89 AS chef
+FROM rust:1.90 AS chef
 RUN apt-get update && \
     apt-get install -y \
         clang \
