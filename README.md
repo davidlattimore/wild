@@ -15,11 +15,13 @@ x86-64 Linux. If you hit any issues, please file a bug report.
 
 ### From GitHub releases
 
-To install a pre-built binary, you can copy and paste the command from the [releases
-page](https://github.com/davidlattimore/wild/releases). Alternatively, you can download the tarball
-and manually copy the `wild` binary somewhere on your path.
+Download a tarball from the [releases page](https://github.com/davidlattimore/wild/releases). Unpack
+it and copy the `wild` binary somewhere on your path.
 
 ### Cargo binstall
+
+If you have [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), you can install wild as
+follows:
 
 ```sh
 cargo binstall wild-linker
