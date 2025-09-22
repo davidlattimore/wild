@@ -50,6 +50,11 @@ linker = "clang"
 rustflags = ["-C", "link-arg=--ld-path=wild"]
 ```
 
+## Using wild in CI
+
+If you'd like to use Wild as your linker for Rust code in CI, see
+[wild-action](https://github.com/davidlattimore/wild-action).
+
 ## Q&A
 
 ### Why another linker?
