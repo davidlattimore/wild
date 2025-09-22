@@ -920,6 +920,11 @@ fn export_dynamic<'data>(
     symbol_db: &SymbolDb<'data>,
 ) -> Result {
     let name = symbol_db.symbol_name(symbol_id)?;
+    ensure!(
+        memchr::memchr(b'@', name.bytes()).is_none(),
+        "symbol version definition `{}` (using `.symver` directive) is not supported yet",
+        String::from_utf8_lossy(name.bytes())
+    );
 
     let version = (symbol_db.version_script.version_count() > 0)
         .then(|| {

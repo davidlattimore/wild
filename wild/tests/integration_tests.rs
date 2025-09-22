@@ -2561,7 +2561,8 @@ fn integration_test(
         "export-dynamic.c",
         "unresolved-symbols-object.c",
         "unresolved-symbols-shared.c",
-        "lto-undefined.c"
+        "lto-undefined.c",
+        "symbol-version-symver.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
