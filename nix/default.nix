@@ -81,7 +81,6 @@ let
       ../test-config-ci.toml
       ../.dockerignore
       ../cackle.toml
-      ../dist-workspace.toml
       ../rustfmt.toml
       ../LICENSE-MIT
       ../LICENSE-APACHE
