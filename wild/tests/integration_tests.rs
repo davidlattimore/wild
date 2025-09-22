@@ -2562,7 +2562,8 @@ fn integration_test(
         "unresolved-symbols-object.c",
         "unresolved-symbols-shared.c",
         "lto-undefined.c",
-        "symbol-version-symver.c"
+        "symbol-version-symver.c",
+        "args-precedence.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
