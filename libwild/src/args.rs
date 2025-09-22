@@ -1476,6 +1476,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Create a position-independent executable")
         .execute(|args, _modifier_stack| {
             args.relocation_model = RelocationModel::Relocatable;
+            args.output_kind = None;
             Ok(())
         });
 
@@ -1485,6 +1486,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Create a position-dependent executable (default)")
         .execute(|args, _modifier_stack| {
             args.relocation_model = RelocationModel::NonRelocatable;
+            args.output_kind = None;
             Ok(())
         });
 
