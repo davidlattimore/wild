@@ -128,6 +128,20 @@ jobs:
         components: rustfmt
     - run: cargo fmt --all -- --check
 
+  riscv-build:
+    name: RISC-V build
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: riscv64gc-unknown-linux-gnu
+    - run: sudo apt-get install gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
+    - run: cp .cargo/config.toml.cross-riscv .cargo/config.toml
+    - run: cargo build --target riscv64gc-unknown-linux-gnu
+
   spelling:
     name: Spell Check with Typos
     runs-on: ubuntu-24.04
