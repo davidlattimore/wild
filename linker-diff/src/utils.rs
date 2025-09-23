@@ -42,6 +42,7 @@ pub fn decode_insn_with_objdump(insn: &[u8], address: u64, arch: ArchKind) -> Re
         .last()
         .context("No objdump output")?
         .to_owned();
+
     Ok(insn_line
         .split_whitespace()
         .skip(2)

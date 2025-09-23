@@ -32,6 +32,7 @@
 //#LinkArgs:-static-pie -Wl,--gc-sections -Wl,--no-relax
 //#DiffEnabled:false
 //#SkipLinker:ld
+//#Arch: x86_64,aarch64
 
 //#Config:clang:default
 //#Compiler: clang

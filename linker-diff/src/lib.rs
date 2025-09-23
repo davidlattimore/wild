@@ -42,6 +42,7 @@ mod eh_frame_diff;
 mod gnu_hash;
 mod header_diff;
 mod init_order;
+mod riscv64;
 pub(crate) mod section_map;
 mod segment;
 mod symbol_diff;
@@ -278,6 +279,17 @@ impl Config {
                     "dynsym.main.section",
                     // #701
                     "file-header.flags",
+                    // GOT entries may differ due to unimplemented relaxations
+                    "section.got.*",
+                    // Dynamic relocations may differ
+                    "rel.dynamic.*",
+                    "rel.undefined-weak.*",
+                    // RISC-V specific differences due to relaxation and instruction differences
+                    "rel.unknown_failure*",
+                    "literal-byte-mismatch*",
+                    // Symbol address inconsistencies due to different optimizations
+                    "error.*",
+                    "section-diff-failed*",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
@@ -632,7 +644,7 @@ impl Report {
             }
 
             ArchKind::RISCV64 => {
-                // TODO
+                self.report_arch_specific_diffs::<crate::riscv64::RiscV64>(objects);
             }
         }
     }

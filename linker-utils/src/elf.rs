@@ -984,6 +984,23 @@ impl DynamicRelocationKind {
     }
 
     #[must_use]
+    pub fn from_riscv64_r_type(r_type: u32) -> Option<Self> {
+        let kind = match r_type {
+            object::elf::R_RISCV_COPY => DynamicRelocationKind::Copy,
+            object::elf::R_RISCV_IRELATIVE => DynamicRelocationKind::Irelative,
+            object::elf::R_RISCV_TLS_DTPMOD64 => DynamicRelocationKind::DtpMod,
+            object::elf::R_RISCV_TLS_DTPREL64 => DynamicRelocationKind::DtpOff,
+            object::elf::R_RISCV_TLS_TPREL64 => DynamicRelocationKind::TpOff,
+            object::elf::R_RISCV_RELATIVE => DynamicRelocationKind::Relative,
+            object::elf::R_RISCV_64 => DynamicRelocationKind::Absolute,
+            object::elf::R_RISCV_TLSDESC => DynamicRelocationKind::TlsDesc,
+            object::elf::R_RISCV_JUMP_SLOT => DynamicRelocationKind::JumpSlot,
+            _ => return None,
+        };
+        Some(kind)
+    }
+
+    #[must_use]
     pub fn riscv64_r_type(&self) -> u32 {
         match self {
             DynamicRelocationKind::Copy => object::elf::R_RISCV_COPY,
