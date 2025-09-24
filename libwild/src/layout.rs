@@ -851,15 +851,16 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
             // weak symbol.
             if value_flags.is_dynamic() && !current_res_flags.is_empty() {
                 let name = symbol_db.symbol_name(symbol_id)?;
+                let RawSymbolName { name_bytes, .. } = RawSymbolName::parse(name.bytes());
 
                 if current_res_flags.needs_copy_relocation() {
                     // The dynamic symbol is a definition, so is handled by the epilogue. We only
                     // need to deal with the symtab entry here.
                     let entry_size = size_of::<elf::SymtabEntry>() as u64;
                     common.allocate(part_id::SYMTAB_GLOBAL, entry_size);
-                    common.allocate(part_id::STRTAB, name.len() as u64 + 1);
+                    common.allocate(part_id::STRTAB, name_bytes.len() as u64 + 1);
                 } else {
-                    common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
+                    common.allocate(part_id::DYNSTR, name_bytes.len() as u64 + 1);
                     common.allocate(part_id::DYNSYM, crate::elf::SYMTAB_ENTRY_SIZE);
                 }
             }
@@ -939,7 +940,7 @@ fn export_dynamic<'data>(
         .dynamic_symbol_definitions
         .push(DynamicSymbolDefinition::new(
             symbol_id,
-            name.bytes(),
+            name_bytes,
             version,
         ));
 
@@ -4468,7 +4469,8 @@ impl<'data> ObjectLayoutState<'data> {
                 } else {
                     num_globals += 1;
                 }
-                strings_size += info.name.len() + 1;
+                let RawSymbolName { name_bytes, .. } = RawSymbolName::parse(info.name);
+                strings_size += name_bytes.len() + 1;
             }
         }
         let entry_size = size_of::<elf::SymtabEntry>() as u64;

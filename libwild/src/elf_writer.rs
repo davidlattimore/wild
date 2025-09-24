@@ -1088,8 +1088,6 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
     /// Verifies that we've used up all the space allocated to this writer. i.e. checks that we
     /// didn't allocate too much or missed writing something that we were supposed to write.
     fn check_exhausted(&self) -> Result {
-        // TODO
-        return Ok(());
         if !self.local_entries.is_empty()
             || !self.global_entries.is_empty()
             || !self.strtab_writer.out.is_empty()
