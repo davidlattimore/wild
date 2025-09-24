@@ -2,6 +2,8 @@ use crate::ElfFile64;
 use crate::Result;
 use anyhow::Context;
 use anyhow::bail;
+use hashbrown::HashMap;
+use hashbrown::HashSet;
 use itertools::Itertools;
 use linker_layout::ArchiveEntryInfo;
 use object::LittleEndian;
@@ -9,8 +11,6 @@ use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
 use object::read::elf::ElfSection64;
-use std::collections::HashMap;
-use std::collections::HashSet;
 use std::fmt::Display;
 use std::ops::Range;
 use std::path::Path;
@@ -131,12 +131,12 @@ impl<'data> IndexedLayout<'data> {
                 let name = symbol.name_bytes()?;
 
                 match symbol_info_by_name.entry(name) {
-                    std::collections::hash_map::Entry::Occupied(mut occupied_entry) => {
+                    hashbrown::hash_map::Entry::Occupied(mut occupied_entry) => {
                         // We've got multiple symbols with this name, change the entry to None to
                         // indicate this.
                         occupied_entry.insert(None);
                     }
-                    std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                    hashbrown::hash_map::Entry::Vacant(vacant_entry) => {
                         vacant_entry.insert(Some(SymbolInfo {
                             section_id: InputSectionId {
                                 file_index,
@@ -211,14 +211,14 @@ impl<'data> IndexedLayout<'data> {
 
         let mut last: Option<&SectionInfo> = None;
         for section in sections {
-            if let Some(last) = last {
-                if section.addresses.start < last.addresses.end {
-                    bail!(
-                        "{} overlaps with {}",
-                        DisplaySection::new(last, &self.files),
-                        DisplaySection::new(section, &self.files)
-                    );
-                }
+            if let Some(last) = last
+                && section.addresses.start < last.addresses.end
+            {
+                bail!(
+                    "{} overlaps with {}",
+                    DisplaySection::new(last, &self.files),
+                    DisplaySection::new(section, &self.files)
+                );
             }
             last = Some(section);
         }

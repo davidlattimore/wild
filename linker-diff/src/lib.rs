@@ -18,6 +18,7 @@ use anyhow::bail;
 use asm_diff::AddressIndex;
 use clap::Parser;
 use clap::ValueEnum;
+use hashbrown::HashMap;
 use itertools::Itertools as _;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
@@ -28,7 +29,6 @@ use object::ObjectSymbol as _;
 use object::read::elf::ElfSection64;
 use section_map::IndexedLayout;
 use section_map::LayoutAndFiles;
-use std::collections::HashMap;
 use std::fmt::Display;
 use std::path::Path;
 use std::path::PathBuf;
@@ -153,6 +153,7 @@ impl Config {
                 "section.note.gnu.property",
                 "section.note.stapsdt",
                 "section.hash",
+                "section.sframe",
                 // We set this to 8. GNU ld sometimes does too, but sometimes to 0.
                 "section.got.entsize",
                 "section.plt.got.entsize",
@@ -245,6 +246,7 @@ impl Config {
                 "segment.PT_GNU_RELRO.*",
                 "segment.PT_GNU_STACK.*",
                 "segment.PT_GNU_PROPERTY.*",
+                "segment.PT_GNU_SFRAME.*",
                 // TODO: RISC-v
                 "segment.SHT_RISCV_ATTRIBUTES.*",
                 "segment.LOAD.RW.alignment",
@@ -400,10 +402,10 @@ impl<'data> Binary<'data> {
 
         if indexes.len() >= 2 {
             for sym_index in indexes {
-                if let Ok(sym) = self.elf_file.symbol_by_index(*sym_index) {
-                    if sym.address() == hint_address {
-                        return NameLookupResult::Defined(sym);
-                    }
+                if let Ok(sym) = self.elf_file.symbol_by_index(*sym_index)
+                    && sym.address() == hint_address
+                {
+                    return NameLookupResult::Defined(sym);
                 }
             }
 

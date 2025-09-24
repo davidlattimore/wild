@@ -12,13 +12,14 @@
   runCommandCC,
   hello,
   clang,
+  clang-tools,
   binutils-unwrapped-all-targets,
   gcc,
   glibc,
   lld,
 }:
-assert lib.assertMsg (lib.versionAtLeast "1.87.0" pkgs.rustc.version)
-  "Wild requires at least Rust 1.87.0, this instance of nixpkgs has Rust ${pkgs.rustc.version}";
+assert lib.assertMsg (lib.versionAtLeast pkgs.rustc.version "1.89.0")
+  "Wild requires at least Rust 1.89.0, this instance of nixpkgs has Rust ${pkgs.rustc.version}";
 
 let
   # Write a wrapper for GCC that passes -B to *unwrapped* binutils.
@@ -80,7 +81,6 @@ let
       ../test-config-ci.toml
       ../.dockerignore
       ../cackle.toml
-      ../dist-workspace.toml
       ../rustfmt.toml
       ../LICENSE-MIT
       ../LICENSE-APACHE
@@ -117,6 +117,7 @@ let
         lib.makeBinPath [
           binutils-unwrapped-all-targets
           clang
+          clang-tools
           gccWrapper
           gppWrapper
           lld

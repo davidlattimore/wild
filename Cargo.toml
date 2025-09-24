@@ -12,9 +12,9 @@ resolver = "2"
 [workspace.package]
 repository = "https://github.com/davidlattimore/wild"
 license = "MIT OR Apache-2.0"
-version = "0.5.0"
+version = "0.6.0"
 readme = "README.md"
-rust-version = "1.87"
+rust-version = "1.89"
 edition = "2024"
 
 [workspace.dependencies]
@@ -36,9 +36,9 @@ dhat = { version = "0.3.3" }
 fallible-iterator = "0.3.0"
 fd-lock = "4.0.0"
 flate2 = { version = "1.1.0", features = ["zlib-rs"] }
-foldhash = "0.1.0"
+foldhash = "0.2.0"
 gimli = "0.32.0"
-hashbrown = "0.15.1"
+hashbrown = "0.16.0"
 hex = "0.4.0"
 iced-x86 = { version = "1.17.0", default-features = false, features = [
     "std",
@@ -53,7 +53,7 @@ libc = "0.2.152"
 memchr = "2.6.0"
 memmap2 = "0.9.0"
 mimalloc = { version = "0.1", default-features = false }
-object = { version = "0.37.0", default-features = false, features = [
+object = { version = "0.37.3", default-features = false, features = [
     "elf",
     "read_core",
     "std",
@@ -61,19 +61,19 @@ object = { version = "0.37.0", default-features = false, features = [
     "archive",
 ] }
 os_info = "3.0.0"
+perf-event = "0.4.8"
 postcard = { version = "1.1.1", features = ["use-std"] }
 rayon = "1.2.1"
-rstest = "0.25.0"
+rstest = "0.26.1"
 serde = { version = "1.0.219", features = ["derive"] }
 sharded-offset-map = "0.2.0"
-sharded-vec-writer = "0.3.0"
+sharded-vec-writer = "0.4.0"
 smallvec = "1.6.1"
 strum = { version = "0.27.0", features = ["derive"] }
-strum_macros = "0.27.0"
 symbolic-common = "12.0.0"
 symbolic-demangle = "12.0.0"
 tempfile = "3.0.2"
-toml = "0.8.0"
+toml = "0.9.0"
 tracing = "0.1.35"
 tracing-subscriber = { version = "0.3.16", default-features = false, features = [
     "env-filter",

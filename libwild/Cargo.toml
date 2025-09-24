@@ -29,9 +29,9 @@ indexmap = { workspace = true }
 itertools = { workspace = true }
 jobserver = { workspace = true }
 libc = { workspace = true }
-linker-layout = { path = "../linker-layout", version = "0.5.0" }
-linker-trace = { path = "../linker-trace", version = "0.5.0" }
-linker-utils = { path = "../linker-utils", version = "0.5.0" }
+linker-layout = { path = "../linker-layout", version = "0.6.0" }
+linker-trace = { path = "../linker-trace", version = "0.6.0" }
+linker-utils = { path = "../linker-utils", version = "0.6.0" }
 leb128 = {workspace = true}
 memchr = { workspace = true }
 memmap2 = { workspace = true }
@@ -48,6 +48,9 @@ uuid = { workspace = true }
 winnow = { workspace = true }
 zstd = { workspace = true }
 glob = "0.3.2"
+
+[target.'cfg(all(target_os = "linux", any(target_arch = "x86_64", target_arch = "aarch64")))'.dependencies]
+perf-event = { workspace = true }
 
 [dev-dependencies]
 ar = "0.9.0"

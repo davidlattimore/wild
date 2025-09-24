@@ -10,7 +10,6 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
-use crate::slice::slice_take_prefix_mut;
 use memmap2::MmapOptions;
 use std::io::Write;
 use std::ops::Deref;
@@ -377,8 +376,8 @@ pub(crate) fn split_output_into_sections<'out>(
                 a.offset
             );
         };
-        slice_take_prefix_mut(&mut data, padding);
-        *section_data.get_mut(a.id) = slice_take_prefix_mut(&mut data, a.size);
+        data.split_off_mut(..padding).unwrap();
+        *section_data.get_mut(a.id) = data.split_off_mut(..a.size).unwrap();
         offset = a.offset + a.size;
     }
     section_data
@@ -392,10 +391,10 @@ pub(crate) fn split_buffers_by_alignment<'out>(
     layout.section_part_layouts.output_order_map(
         &layout.output_order,
         |part_id, _alignment, rec| {
-            crate::slice::slice_take_prefix_mut(
-                section_buffers.get_mut(part_id.output_section_id()),
-                rec.file_size,
-            )
+            section_buffers
+                .get_mut(part_id.output_section_id())
+                .split_off_mut(..rec.file_size)
+                .unwrap()
         },
     )
 }

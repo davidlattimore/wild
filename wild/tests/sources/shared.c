@@ -1,15 +1,13 @@
-// We don't currently run this, we just make sure that we can produce a shared object and that it
-// passes the diff test.
+// We don't currently run this, we just make sure that we can produce a shared
+// object and that it passes the diff test.
 //
-// One notable scenario that this test tests is having a non-weak undefined symbol (baz) in a shared
-// object and having that symbol be defined by an archive entry that we don't load.
+// One notable scenario that this test tests is having a non-weak undefined
+// symbol (baz) in a shared object and having that symbol be defined by an
+// archive entry that we don't load.
 
 //#Config:default
-//#RunEnabled:false
 //#LinkArgs:-shared -z now
 //#Mode:dynamic
-// TODO: https://rust-lang.zulipchat.com/#narrow/channel/421156-gsoc/topic/Project.3A.20Improve.20Wild.20linker.20test.20suites/near/521482968
-//#Cross:false
 //#Shared:shared-s1.c
 //#Archive:shared-a1.c,shared-a2.c
 //#DiffIgnore:.dynamic.DT_RELA
@@ -30,8 +28,8 @@
 //#Config:nosymbolic:default
 //#LinkArgs:-shared -z now -Bno-symbolic
 
-//TODO: Add a test for `-Bsymbolic-non-weak`. The lld included in Ubuntu 22.04 is old and doesn't
-//implement the `-Bsymbolic-non-weak` option.
+// TODO: Add a test for `-Bsymbolic-non-weak`. The lld included in Ubuntu 22.04
+// is old and doesn't implement the `-Bsymbolic-non-weak` option.
 
 //#Config:symbolic-non-weak-functions:default
 //#LinkArgs:-shared -z now -Bsymbolic-non-weak-functions
@@ -44,10 +42,6 @@
 int bar1(void);
 int bar2(void);
 
-int foo(void) {
-    return bar1() + bar2();
-}
+int foo(void) { return bar1() + bar2(); }
 
-int call_bar1(void) {
-    return bar1();
-}
+int call_bar1(void) { return bar1(); }

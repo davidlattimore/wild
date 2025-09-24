@@ -19,6 +19,8 @@ use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::GNU_NOTE_NAME;
 use crate::elf::GnuHashHeader;
 use crate::elf::ProgramHeader;
+use crate::elf::Rela;
+use crate::elf::RelocationSequence;
 use crate::elf::SectionHeader;
 use crate::elf::SymtabEntry;
 use crate::elf::Verdaux;
@@ -70,15 +72,11 @@ use crate::part_id;
 use crate::resolution::SectionSlot;
 use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
-use crate::slice::slice_take_prefix_mut;
-use crate::slice::take_first_mut;
 use crate::string_merging::get_merged_string_output_address;
-use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::RawSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
-use foldhash::HashMap as FoldHashMap;
-use foldhash::HashMapExt as _;
+use hashbrown::HashMap;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
@@ -105,7 +103,7 @@ use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::from_bytes_mut;
-use object::read::elf::Rela;
+use object::read::elf::Crel;
 use object::read::elf::Sym as _;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelBridge;
@@ -169,7 +167,7 @@ fn write_gnu_build_id_note(
     note_header.n_descsz.set(e, build_id.len() as u32);
     note_header.n_type.set(e, NT_GNU_BUILD_ID);
 
-    let name_out = crate::slice::slice_take_prefix_mut(&mut rest, GNU_NOTE_NAME.len());
+    let name_out = rest.split_off_mut(..GNU_NOTE_NAME.len()).unwrap();
     name_out.copy_from_slice(GNU_NOTE_NAME);
 
     rest.copy_from_slice(build_id);
@@ -371,7 +369,8 @@ impl<'out> VersionWriter<'out> {
 
     fn set_next_symbol_version(&mut self, index: u16) -> Result {
         if let Some(versym_table) = self.versym.as_mut() {
-            let versym = crate::slice::take_first_mut(versym_table)
+            let versym = versym_table
+                .split_off_first_mut()
                 .ok_or_else(|| insufficient_allocation(".gnu.version"))?;
             versym.0.set(LittleEndian, index);
         }
@@ -379,7 +378,8 @@ impl<'out> VersionWriter<'out> {
     }
 
     fn take_bytes(&mut self, size: usize) -> Result<&'out mut [u8]> {
-        crate::slice::try_slice_take_prefix_mut(&mut self.version_r, size)
+        self.version_r
+            .split_off_mut(..size)
             .ok_or_else(|| insufficient_allocation(".gnu.version_r"))
     }
 
@@ -397,7 +397,8 @@ impl<'out> VersionWriter<'out> {
     }
 
     fn take_bytes_d(&mut self, size: usize) -> Result<&'out mut [u8]> {
-        crate::slice::try_slice_take_prefix_mut(&mut self.version_d, size)
+        self.version_d
+            .split_off_mut(..size)
             .ok_or_else(|| insufficient_allocation(".gnu.version_d"))
     }
 
@@ -416,14 +417,14 @@ impl<'out> VersionWriter<'out> {
     }
 
     fn check_exhausted(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
-        if let Some(versym) = self.versym.as_ref() {
-            if !versym.is_empty() {
-                return Err(excessive_allocation(
-                    ".gnu.version",
-                    versym.len() as u64 * elf::GNU_VERSION_ENTRY_SIZE,
-                    *mem_sizes.get(part_id::GNU_VERSION),
-                ));
-            }
+        if let Some(versym) = self.versym.as_ref()
+            && !versym.is_empty()
+        {
+            return Err(excessive_allocation(
+                ".gnu.version",
+                versym.len() as u64 * elf::GNU_VERSION_ENTRY_SIZE,
+                *mem_sizes.get(part_id::GNU_VERSION),
+            ));
         }
         if !self.version_r.is_empty() {
             bail!(
@@ -440,6 +441,10 @@ impl<'out> VersionWriter<'out> {
             );
         }
         Ok(())
+    }
+
+    fn take_prefix(&mut self, num_symbols: usize) -> Option<&'out mut [Versym]> {
+        Some(self.versym.as_mut()?.split_off_mut(..num_symbols).unwrap())
     }
 }
 
@@ -699,14 +704,16 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if self.plt_got.len() < elf::PLT_ENTRY_SIZE as usize {
             bail!("Didn't allocate enough space in .plt.got");
         }
-        Ok(slice_take_prefix_mut(
-            &mut self.plt_got,
-            elf::PLT_ENTRY_SIZE as usize,
-        ))
+        Ok(self
+            .plt_got
+            .split_off_mut(..elf::PLT_ENTRY_SIZE as usize)
+            .unwrap())
     }
 
     fn take_next_got_entry(&mut self) -> Result<&'out mut u64> {
-        crate::slice::take_first_mut(&mut self.got).ok_or_else(|| insufficient_allocation(".got"))
+        self.got
+            .split_off_first_mut()
+            .ok_or_else(|| insufficient_allocation(".got"))
     }
 
     /// Checks that we used all of the entries that we requested during layout.
@@ -746,8 +753,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
     }
 
     fn write_ifunc_relocation<A: Arch>(&mut self, res: &Resolution) -> Result {
-        let out = slice_take_prefix_mut(&mut self.rela_plt, 1);
-        let out = &mut out[0];
+        let out = self.rela_plt.split_off_first_mut().unwrap();
         let e = LittleEndian;
         out.r_addend.set(e, res.raw_value as i64);
         let got_address = res
@@ -825,7 +831,9 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             "write_address_relocation called when output is not relocatable"
         );
         let e = LittleEndian;
-        let rela = crate::slice::take_first_mut(&mut self.rela_dyn_relative)
+        let rela = self
+            .rela_dyn_relative
+            .split_off_first_mut()
             .ok_or_else(|| insufficient_allocation(".rela.dyn (relative)"))?;
         rela.r_offset.set(e, place);
         rela.r_addend.set(e, relative_address);
@@ -881,13 +889,16 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
     fn take_rela_dyn(&mut self) -> Result<&mut object::elf::Rela64<LittleEndian>> {
         tracing::trace!("Consume .rela.dyn general");
-        crate::slice::take_first_mut(&mut self.rela_dyn_general)
+        self.rela_dyn_general
+            .split_off_first_mut()
             .ok_or_else(|| insufficient_allocation(".rela.dyn (non-relative)"))
     }
 
     fn take_eh_frame_hdr(&mut self) -> &'out mut EhFrameHdr {
-        let entry_bytes =
-            crate::slice::slice_take_prefix_mut(&mut self.eh_frame_hdr, size_of::<EhFrameHdr>());
+        let entry_bytes = self
+            .eh_frame_hdr
+            .split_off_mut(..size_of::<EhFrameHdr>())
+            .unwrap();
         bytemuck::from_bytes_mut(entry_bytes)
     }
 
@@ -895,10 +906,10 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if self.eh_frame_hdr.is_empty() {
             return None;
         }
-        let entry_bytes = crate::slice::slice_take_prefix_mut(
-            &mut self.eh_frame_hdr,
-            size_of::<EhFrameHdrEntry>(),
-        );
+        let entry_bytes = self
+            .eh_frame_hdr
+            .split_off_mut(..size_of::<EhFrameHdrEntry>())
+            .unwrap();
         Some(bytemuck::from_bytes_mut(entry_bytes))
     }
 
@@ -906,11 +917,29 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if size > self.eh_frame.len() {
             return Err(insufficient_allocation(".eh_frame"));
         }
-        Ok(crate::slice::slice_take_prefix_mut(
-            &mut self.eh_frame,
-            size,
-        ))
+        Ok(self.eh_frame.split_off_mut(..size).unwrap())
     }
+
+    /// Takes a prefix of dynsym, dynstr and versym suitable for writing the supplied definitions.
+    fn take_dynsym_prefix(
+        &mut self,
+        defs: &[crate::layout::DynamicSymbolDefinition],
+    ) -> VersionedDynsymWriter<'layout, 'out> {
+        let num_symbols = defs.len();
+        let strtab_size = defs.iter().map(|d| d.name.len() + 1).sum();
+
+        VersionedDynsymWriter {
+            dynsym_writer: self
+                .dynsym_writer
+                .take_prefix_global(num_symbols, strtab_size),
+            versym: self.version_writer.take_prefix(num_symbols),
+        }
+    }
+}
+
+struct VersionedDynsymWriter<'layout, 'out> {
+    dynsym_writer: SymbolTableWriter<'layout, 'out>,
+    versym: Option<&'out mut [Versym]>,
 }
 
 struct SymbolTableWriter<'layout, 'out> {
@@ -1021,7 +1050,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         name: &[u8],
     ) -> Result<&mut SymtabEntry> {
         let entry = if is_local {
-            take_first_mut(&mut self.local_entries).with_context(|| {
+            self.local_entries.split_off_first_mut().with_context(|| {
                 format!(
                     "Insufficient .symtab local entries allocated for symbol `{}`",
                     String::from_utf8_lossy(name),
@@ -1031,7 +1060,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             if self.is_dynamic {
                 tracing::trace!(name = %String::from_utf8_lossy(name), "Write .dynsym");
             }
-            take_first_mut(&mut self.global_entries).with_context(|| {
+            self.global_entries.split_off_first_mut().with_context(|| {
                 format!(
                     "Insufficient {} entries allocated for symbol `{}`",
                     if self.is_dynamic {
@@ -1078,6 +1107,17 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             );
         }
         Ok(())
+    }
+
+    /// Returns a new writer that will take responsibility for the first `num_symbols`.
+    fn take_prefix_global(&mut self, num_symbols: usize, strtab_size: usize) -> Self {
+        SymbolTableWriter {
+            local_entries: &mut [],
+            global_entries: self.global_entries.split_off_mut(..num_symbols).unwrap(),
+            output_sections: self.output_sections,
+            strtab_writer: self.strtab_writer.take_prefix(strtab_size),
+            is_dynamic: self.is_dynamic,
+        }
     }
 }
 
@@ -1145,21 +1185,36 @@ fn write_object<A: Arch>(
 fn write_object_section<A: Arch>(
     object: &ObjectLayout,
     layout: &Layout,
-    sec: &Section,
+    section: &Section,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
 ) -> Result {
-    let out = write_section_raw(object, layout, sec, buffers)?;
+    let out = write_section_raw(object, layout, section, buffers)?;
+    let relocations = object.relocations(section.index)?;
 
-    apply_relocations::<A>(object, out, sec, layout, table_writer, trace).with_context(|| {
+    let result = match relocations {
+        elf::RelocationList::Rela(rela) => {
+            apply_relocations::<A>(object, out, section, &rela, layout, table_writer, trace)
+        }
+        elf::RelocationList::Crel(crel_iter) => apply_relocations::<A>(
+            object,
+            out,
+            section,
+            &crel_iter.into_iter().collect::<Result<Vec<_>, _>>()?,
+            layout,
+            table_writer,
+            trace,
+        ),
+    };
+    result.with_context(|| {
         format!(
             "Failed to apply relocations in section `{}` of {}",
-            object.object.section_display_name(sec.index),
+            object.object.section_display_name(section.index),
             object.input
         )
     })?;
-    if sec.resolution_flags.needs_got() || sec.resolution_flags.needs_plt() {
+    if section.resolution_flags.needs_got() || section.resolution_flags.needs_plt() {
         bail!("Section has GOT or PLT");
     };
     Ok(())
@@ -1168,15 +1223,27 @@ fn write_object_section<A: Arch>(
 fn write_debug_section<A: Arch>(
     object: &ObjectLayout,
     layout: &Layout,
-    sec: &Section,
+    section: &Section,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
 ) -> Result {
-    let out = write_section_raw(object, layout, sec, buffers)?;
-
-    apply_debug_relocations::<A>(object, out, sec, layout).with_context(|| {
+    let out = write_section_raw(object, layout, section, buffers)?;
+    let relocations = object.relocations(section.index)?;
+    let result = match relocations {
+        elf::RelocationList::Rela(rela) => {
+            apply_debug_relocations::<A>(object, out, section, &rela, layout)
+        }
+        elf::RelocationList::Crel(crel_iter) => apply_debug_relocations::<A>(
+            object,
+            out,
+            section,
+            &crel_iter.into_iter().collect::<Result<Vec<_>, _>>()?,
+            layout,
+        ),
+    };
+    result.with_context(|| {
         format!(
             "Failed to apply relocations in section `{}` of {}",
-            object.object.section_display_name(sec.index),
+            object.object.section_display_name(section.index),
             object.input
         )
     })?;
@@ -1203,7 +1270,7 @@ fn write_section_raw<'out>(
                 section_buffer.len()
             );
         }
-        let out = slice_take_prefix_mut(section_buffer, allocation_size);
+        let out = section_buffer.split_off_mut(..allocation_size).unwrap();
         // Cut off any padding so that our output buffer is the size of our input buffer.
         let object_section = object.object.section(sec.index)?;
         let section_size = object.object.section_size(object_section)?;
@@ -1290,10 +1357,11 @@ fn write_symbols(
     Ok(())
 }
 
-fn apply_relocations<A: Arch>(
+fn apply_relocations<'data, A: Arch>(
     object: &ObjectLayout,
     out: &mut [u8],
     section: &Section,
+    relocation_sequence: &impl RelocationSequence<'data>,
     layout: &Layout,
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
@@ -1301,25 +1369,25 @@ fn apply_relocations<A: Arch>(
     let section_address = object.section_resolutions[section.index.0]
         .address()
         .context("Attempted to apply relocations to a section that we didn't load")?;
-
     let object_section = object.object.section(section.index)?;
     let section_flags = SectionFlags::from_header(object_section);
     let mut modifier = RelocationModifier::Normal;
-    let relocations = object.relocations(section.index)?;
+
+    let relocation_iter = relocation_sequence.crel_iter();
     layout
         .relocation_statistics
         .get(section.part_id.output_section_id())
-        .fetch_add(relocations.len() as u64, Relaxed);
-    for (i, rel) in relocations.iter().enumerate() {
+        .fetch_add(relocation_sequence.num_relocations() as u64, Relaxed);
+    for (i, rel) in relocation_iter.enumerate() {
         if modifier == RelocationModifier::SkipNextRelocation {
             modifier = RelocationModifier::Normal;
             continue;
         }
-        let offset_in_section = rel.r_offset.get(LittleEndian);
+        let offset_in_section = rel.r_offset;
         modifier = apply_relocation::<A>(
             object,
             offset_in_section,
-            rel,
+            &rel,
             SectionInfo {
                 section_address,
                 is_writable: section.is_writable,
@@ -1329,23 +1397,24 @@ fn apply_relocations<A: Arch>(
             out,
             table_writer,
             trace,
-            relocations,
+            relocation_sequence,
             i,
         )
         .with_context(|| {
             format!(
                 "Failed to apply {} at offset 0x{offset_in_section:x}",
-                display_relocation::<A>(object, rel, layout)
+                display_relocation::<A>(object, &rel, layout)
             )
         })?;
     }
     Ok(())
 }
 
-fn apply_debug_relocations<A: Arch>(
+fn apply_debug_relocations<'data, A: Arch>(
     object: &ObjectLayout,
     out: &mut [u8],
     section: &Section,
+    relocation_sequence: &impl RelocationSequence<'data>,
     layout: &Layout,
 ) -> Result {
     let object_section = object.object.section(section.index)?;
@@ -1364,27 +1433,27 @@ fn apply_debug_relocations<A: Arch>(
             0
         };
 
-    let relocations = object.relocations(section.index)?;
+    let relocations = relocation_sequence.crel_iter();
     layout
         .relocation_statistics
         .get(section.part_id.output_section_id())
-        .fetch_add(relocations.len() as u64, Relaxed);
-    for (i, rel) in relocations.iter().enumerate() {
-        let offset_in_section = rel.r_offset.get(LittleEndian);
+        .fetch_add(relocation_sequence.num_relocations() as u64, Relaxed);
+    for (i, rel) in relocations.enumerate() {
+        let offset_in_section = rel.r_offset;
         apply_debug_relocation::<A>(
             object,
             offset_in_section,
-            rel,
+            &rel,
             layout,
             tombstone_value,
             out,
-            relocations,
+            relocation_sequence,
             i,
         )
         .with_context(|| {
             format!(
                 "Failed to apply {} at offset 0x{offset_in_section:x}",
-                display_relocation::<A>(object, rel, layout)
+                display_relocation::<A>(object, &rel, layout)
             )
         })?;
     }
@@ -1399,21 +1468,46 @@ fn write_eh_frame_data<A: Arch>(
     trace: &TraceOutput,
 ) -> Result {
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
+    match object.relocations(eh_frame_section_index)? {
+        elf::RelocationList::Rela(relocations) => write_eh_frame_relocations::<A>(
+            object,
+            layout,
+            table_writer,
+            trace,
+            eh_frame_section,
+            relocations.crel_iter(),
+        ),
+        elf::RelocationList::Crel(relocations) => write_eh_frame_relocations::<A>(
+            object,
+            layout,
+            table_writer,
+            trace,
+            eh_frame_section,
+            relocations.flat_map(|r| r.ok()),
+        ),
+    }
+}
+
+fn write_eh_frame_relocations<A: Arch>(
+    object: &ObjectLayout<'_>,
+    layout: &Layout<'_>,
+    table_writer: &mut TableWriter<'_, '_>,
+    trace: &TraceOutput,
+    eh_frame_section: &object::elf::SectionHeader64<LittleEndian>,
+    relocations: impl Iterator<Item = Crel>,
+) -> std::result::Result<(), error::Error> {
     let data = object.object.raw_section_data(eh_frame_section)?;
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
     let e = LittleEndian;
     let section_flags = SectionFlags::from_header(eh_frame_section);
-    let mut relocations = object
-        .relocations(eh_frame_section_index)?
-        .iter()
-        .peekable();
+    let mut relocations = relocations.peekable();
     let mut input_pos = 0;
     let mut output_pos = 0;
     let frame_info_ptr_base = table_writer.eh_frame_start_address;
     let eh_frame_hdr_address = layout.mem_address_of_built_in(output_section_id::EH_FRAME_HDR);
 
     // Map from input offset to output offset of each CIE.
-    let mut cies_offset_conversion: FoldHashMap<u32, u32> = FoldHashMap::new();
+    let mut cies_offset_conversion: HashMap<u32, u32> = HashMap::new();
 
     while input_pos + PREFIX_LEN <= data.len() {
         let prefix: elf::EhFrameEntryPrefix =
@@ -1433,12 +1527,12 @@ fn write_eh_frame_data<A: Arch>(
         } else {
             // This is an FDE
             if let Some(rel) = relocations.peek() {
-                let rel_offset = rel.r_offset.get(e);
+                let rel_offset = rel.r_offset;
                 if rel_offset < next_input_pos as u64 {
                     let is_pc_begin = (rel_offset as usize - input_pos) == elf::FDE_PC_BEGIN_OFFSET;
 
                     if is_pc_begin {
-                        let Some(index) = rel.symbol(e, false) else {
+                        let Some(index) = rel.symbol() else {
                             bail!("Unexpected absolute relocation in .eh_frame pc-begin");
                         };
                         let elf_symbol = &object.object.symbol(index)?;
@@ -1448,47 +1542,44 @@ fn write_eh_frame_data<A: Arch>(
                             bail!(".eh_frame pc-begin refers to symbol that's not defined in file");
                         };
                         let offset_in_section =
-                            (elf_symbol.st_value(e) as i64 + rel.r_addend.get(e)) as u64;
+                            (elf_symbol.st_value(e) as i64 + rel.r_addend) as u64;
                         if let Some(section_address) =
                             object.section_resolutions[section_index.0].address()
-                        {
-                            if object
+                            && object
                                 .object
                                 .section(section_index)?
                                 .sh_size
                                 .get(LittleEndian)
                                 != 0
-                            {
-                                should_keep = true;
-                                let cie_pointer_pos = input_pos as u32 + 4;
-                                let input_cie_pos = cie_pointer_pos
-                                    .checked_sub(prefix.cie_id)
-                                    .with_context(|| {
-                                        format!(
-                                            "CIE pointer is {}, but we're at offset {}",
-                                            prefix.cie_id, cie_pointer_pos
-                                        )
-                                    })?;
+                        {
+                            should_keep = true;
+                            let cie_pointer_pos = input_pos as u32 + 4;
+                            let input_cie_pos = cie_pointer_pos
+                                .checked_sub(prefix.cie_id)
+                                .with_context(|| {
+                                    format!(
+                                        "CIE pointer is {}, but we're at offset {}",
+                                        prefix.cie_id, cie_pointer_pos
+                                    )
+                                })?;
 
-                                if let Some(hdr_out) = table_writer.take_eh_frame_hdr_entry() {
-                                    let frame_ptr = (section_address + offset_in_section) as i64
-                                        - eh_frame_hdr_address as i64;
-                                    let frame_info_ptr = (frame_info_ptr_base + output_pos as u64)
-                                        as i64
-                                        - eh_frame_hdr_address as i64;
-                                    *hdr_out = EhFrameHdrEntry {
-                                        frame_ptr: i32::try_from(frame_ptr)
-                                            .context("32 bit overflow in frame_ptr")?,
-                                        frame_info_ptr: i32::try_from(frame_info_ptr).context(
-                                            "32 bit overflow when computing frame_info_ptr",
-                                        )?,
-                                    };
-                                }
-                                // TODO: Experiment with skipping this lookup if the `input_cie_pos`
-                                // is the same as the previous entry.
-                                let output_cie_pos = cies_offset_conversion.get(&input_cie_pos).with_context(|| format!("FDE referenced CIE at {input_cie_pos}, but no CIE at that position"))?;
-                                output_cie_offset = Some(output_pos as u32 + 4 - *output_cie_pos);
+                            if let Some(hdr_out) = table_writer.take_eh_frame_hdr_entry() {
+                                let frame_ptr = (section_address + offset_in_section) as i64
+                                    - eh_frame_hdr_address as i64;
+                                let frame_info_ptr = (frame_info_ptr_base + output_pos as u64)
+                                    as i64
+                                    - eh_frame_hdr_address as i64;
+                                *hdr_out = EhFrameHdrEntry {
+                                    frame_ptr: i32::try_from(frame_ptr)
+                                        .context("32 bit overflow in frame_ptr")?,
+                                    frame_info_ptr: i32::try_from(frame_info_ptr)
+                                        .context("32 bit overflow when computing frame_info_ptr")?,
+                                };
                             }
+                            // TODO: Experiment with skipping this lookup if the `input_cie_pos`
+                            // is the same as the previous entry.
+                            let output_cie_pos = cies_offset_conversion.get(&input_cie_pos).with_context(|| format!("FDE referenced CIE at {input_cie_pos}, but no CIE at that position"))?;
+                            output_cie_offset = Some(output_pos as u32 + 4 - *output_cie_pos);
                         }
                     }
                 }
@@ -1500,8 +1591,9 @@ fn write_eh_frame_data<A: Arch>(
             if let Some(output_cie_offset) = output_cie_offset {
                 entry_out[4..8].copy_from_slice(&output_cie_offset.to_le_bytes());
             }
+            let relocation_seq: &[Rela] = &[];
             while let Some(rel) = relocations.peek() {
-                let rel_offset = rel.r_offset.get(e);
+                let rel_offset = rel.r_offset;
                 if rel_offset >= next_input_pos as u64 {
                     // This relocation belongs to the next entry.
                     break;
@@ -1519,7 +1611,7 @@ fn write_eh_frame_data<A: Arch>(
                     entry_out,
                     table_writer,
                     trace,
-                    &[],
+                    &relocation_seq,
                     0,
                 )
                 .with_context(|| {
@@ -1534,8 +1626,7 @@ fn write_eh_frame_data<A: Arch>(
         } else {
             // We're ignoring this entry, skip any relocations for it.
             while let Some(rel) = relocations.peek() {
-                let rel_offset = rel.r_offset.get(e);
-                if rel_offset < next_input_pos as u64 {
+                if rel.r_offset < next_input_pos as u64 {
                     relocations.next();
                 } else {
                     break;
@@ -1562,7 +1653,7 @@ fn write_eh_frame_data<A: Arch>(
 
 fn display_relocation<'a, A: Arch>(
     object: &'a ObjectLayout,
-    rel: &'a elf::Rela,
+    rel: &'a Crel,
     layout: &'a Layout,
 ) -> DisplayRelocation<'a, A> {
     DisplayRelocation::<'a, A> {
@@ -1574,7 +1665,7 @@ fn display_relocation<'a, A: Arch>(
 }
 
 struct DisplayRelocation<'a, A: Arch> {
-    rel: &'a elf::Rela,
+    rel: &'a Crel,
     symbol_db: &'a SymbolDb<'a>,
     object: &'a ObjectLayout<'a>,
     phantom: PhantomData<A>,
@@ -1582,13 +1673,12 @@ struct DisplayRelocation<'a, A: Arch> {
 
 impl<A: Arch> Display for DisplayRelocation<'_, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let e = LittleEndian;
         write!(
             f,
             "relocation of type {} to ",
-            A::rel_type_to_string(self.rel.r_type(e, false))
+            A::rel_type_to_string(self.rel.r_type)
         )?;
-        match self.rel.symbol(e, false) {
+        match self.rel.symbol() {
             None => write!(f, "absolute")?,
             Some(local_symbol_index) => {
                 let symbol_id = self.object.symbol_id_range.input_to_id(local_symbol_index);
@@ -1607,13 +1697,11 @@ struct SectionInfo {
 }
 
 fn get_resolution(
-    rel: &elf::Rela,
+    rel: &Crel,
     object_layout: &ObjectLayout,
     layout: &Layout,
 ) -> Result<(Resolution, SymbolIndex, SymbolId)> {
-    let symbol_index = rel
-        .symbol(LittleEndian, false)
-        .context("Unsupported absolute relocation")?;
+    let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
     let local_symbol_id = object_layout.symbol_id_range.input_to_id(symbol_index);
     let sym = object_layout.object.symbol(symbol_index)?;
     let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
@@ -1728,29 +1816,28 @@ fn adjust_relocation_based_on_value(
 #[inline(always)]
 fn get_pair_subtraction_relocation_value<'a, A: Arch>(
     object_layout: &ObjectLayout,
-    rel: &elf::Rela,
+    rel: &Crel,
     layout: &Layout,
     resolution: Resolution,
     symbol_index: SymbolIndex,
     addend: i64,
-    mut relocations_to_search: impl Iterator<Item = &'a elf::Rela>,
+    mut relocations_to_search: impl Iterator<Item = &'a Crel>,
 ) -> Result<u64> {
-    let e = LittleEndian;
     let set_rel = relocations_to_search
         .next()
         .with_context(|| "Missing previous relocation".to_string())?;
     ensure!(
-        set_rel.r_offset(e) == rel.r_offset(e),
+        set_rel.r_offset == rel.r_offset,
         "R_RISCV_SET_ULEB128 relocation must have equal offset"
     );
     ensure!(
-        set_rel.r_type(LittleEndian, false) == object::elf::R_RISCV_SET_ULEB128,
+        set_rel.r_type == object::elf::R_RISCV_SET_ULEB128,
         "R_RISCV_SET_ULEB128 must be the previous relocation"
     );
     let (set_resolution, set_symbol_index, _) = get_resolution(set_rel, object_layout, layout)?;
 
     let set_resolution_val = set_resolution.value_with_addend(
-        set_rel.r_addend.get(e),
+        set_rel.r_addend,
         set_symbol_index,
         object_layout,
         &layout.merged_strings,
@@ -1770,16 +1857,16 @@ fn get_pair_subtraction_relocation_value<'a, A: Arch>(
 /// Handling For Thread-Local Storage" for details about some of the TLS-related relocations and
 /// transformations that are applied.
 #[inline(always)]
-fn apply_relocation<A: Arch>(
+fn apply_relocation<'data, A: Arch>(
     object_layout: &ObjectLayout,
     mut offset_in_section: u64,
-    rel: &elf::Rela,
+    rel: &Crel,
     section_info: SectionInfo,
     layout: &Layout,
     out: &mut [u8],
     table_writer: &mut TableWriter,
     trace: &TraceOutput,
-    relocations: &[elf::Rela],
+    relocation_sequence: &impl RelocationSequence<'data>,
     relocation_index: usize,
 ) -> Result<RelocationModifier> {
     let section_address = section_info.section_address;
@@ -1791,15 +1878,14 @@ fn apply_relocation<A: Arch>(
     )
     .entered();
 
-    let e = LittleEndian;
-    let r_type = rel.r_type(e, false);
-    let mut addend = rel.r_addend.get(e);
+    let r_type = rel.r_type;
+    let mut addend = rel.r_addend;
 
     match A::relocation_from_raw(r_type)?.kind {
         RelocationKind::None => return Ok(RelocationModifier::Normal),
         RelocationKind::Alignment => {
             let addend = addend as u64;
-            let address = section_address + rel.r_offset(e);
+            let address = section_address + rel.r_offset;
             ensure!(
                 addend.is_power_of_two(),
                 "A power of 2 expected for Alignment relocation: {}",
@@ -1901,10 +1987,12 @@ fn apply_relocation<A: Arch>(
                 addend == 0,
                 "Unexpected added for R_RISCV_PCREL_LO12 relocation"
             );
-            let mut relocations_to_search = relocations[..relocation_index]
-                .iter()
-                .rev()
-                .chain(relocations[relocation_index + 1..].iter());
+            let mut relocations_to_search = relocation_sequence
+                .crel_iter()
+                .take(relocation_index)
+                // TODO
+                //.rev()
+                .chain(relocation_sequence.crel_iter().take(relocation_index + 1));
             let hi_offset_in_section = resolution
                 .value_with_addend(
                     addend,
@@ -1917,16 +2005,16 @@ fn apply_relocation<A: Arch>(
             // The High-part relocation is typically just before us.
             let hi_rel = relocations_to_search
                 .find(|r| {
-                    r.r_offset(e) == hi_offset_in_section
+                    r.r_offset == hi_offset_in_section
                         // RELAX relocations have the same offset as the HIGH part relocation!
-                        && r.r_type(e, false) != object::elf::R_RISCV_RELAX
+                        && r.r_type != object::elf::R_RISCV_RELAX
                 })
                 .with_context(|| {
                     "Missing High relocation connected with R_RISCV_PCREL_LO12".to_string()
                 })?;
-            let hi_rel_info = A::relocation_from_raw(hi_rel.r_type(LittleEndian, false))?;
-            let addend = hi_rel.r_addend.get(e);
-            let (resolution, symbol_index, _) = get_resolution(hi_rel, object_layout, layout)
+            let hi_rel_info = A::relocation_from_raw(hi_rel.r_type)?;
+            let addend = hi_rel.r_addend;
+            let (resolution, symbol_index, _) = get_resolution(&hi_rel, object_layout, layout)
                 .with_context(|| {
                     "Missing High resolution connected to R_RISCV_PCREL_LO12".to_string()
                 })?;
@@ -1976,7 +2064,7 @@ fn apply_relocation<A: Arch>(
             symbol_index,
             addend,
             // It must be the previous relocation
-            iter::once(&relocations[relocation_index - 1]),
+            iter::once(&relocation_sequence.get_crel(relocation_index - 1)),
         )?,
         RelocationKind::GotRelative => resolution
             .got_address()?
@@ -2151,25 +2239,22 @@ fn apply_relocation<A: Arch>(
     Ok(next_modifier)
 }
 
-fn apply_debug_relocation<A: Arch>(
+fn apply_debug_relocation<'data, A: Arch>(
     object_layout: &ObjectLayout,
     offset_in_section: u64,
-    rel: &elf::Rela,
+    rel: &Crel,
     layout: &Layout,
     section_tombstone_value: u64,
     out: &mut [u8],
-    relocations: &[elf::Rela],
+    relocation_sequence: &impl RelocationSequence<'data>,
     relocation_index: usize,
 ) -> Result<()> {
-    let e = LittleEndian;
-    let symbol_index = rel
-        .symbol(e, false)
-        .context("Unsupported absolute relocation")?;
+    let symbol_index = rel.symbol().context("Unsupported absolute relocation")?;
     let sym = object_layout.object.symbol(symbol_index)?;
     let section_index = object_layout.object.symbol_section(sym, symbol_index)?;
 
-    let addend = rel.r_addend.get(e);
-    let r_type = rel.r_type(e, false);
+    let addend = rel.r_addend;
+    let r_type = rel.r_type;
     let rel_info = A::relocation_from_raw(r_type)?;
 
     let resolution = layout
@@ -2224,7 +2309,7 @@ fn apply_debug_relocation<A: Arch>(
                 symbol_index,
                 addend,
                 // Must be the previous relocation.
-                iter::once(&relocations[relocation_index - 1]),
+                iter::once(&relocation_sequence.get_crel(relocation_index - 1)),
             )?,
             // Skip R_RISCV_SET_ULEB128
             RelocationKind::Relative if rel_info.size == RelocationSize::ByteSize(0) => 0,
@@ -2374,11 +2459,11 @@ fn write_merged_strings(
             merged
                 .buckets
                 .iter()
-                .map(|b| (b, slice_take_prefix_mut(buffer, b.len())))
+                .map(|b| (b, buffer.split_off_mut(..b.len()).unwrap()))
                 .par_bridge()
                 .for_each(|(bucket, mut buffer)| {
                     for string in &bucket.strings {
-                        let dest = crate::slice::slice_take_prefix_mut(&mut buffer, string.len());
+                        let dest = buffer.split_off_mut(..string.len()).unwrap();
                         dest.copy_from_slice(string);
                     }
                 });
@@ -2388,7 +2473,9 @@ fn write_merged_strings(
     // Write linker identity into .comment section.
     let comment_buffer =
         buffers.get_mut(output_section_id::COMMENT.part_id_with_alignment(alignment::MIN));
-    crate::slice::slice_take_prefix_mut(comment_buffer, prelude.identity.len())
+    comment_buffer
+        .split_off_mut(..prelude.identity.len())
+        .unwrap()
         .copy_from_slice(prelude.identity.as_bytes());
 }
 
@@ -2656,11 +2743,11 @@ fn write_gnu_property_notes(
     );
     note_header.n_type.set(e, NT_GNU_PROPERTY_TYPE_0);
 
-    let name_out = crate::slice::slice_take_prefix_mut(&mut rest, GNU_NOTE_NAME.len());
+    let name_out = rest.split_off_mut(..GNU_NOTE_NAME.len()).unwrap();
     name_out.copy_from_slice(GNU_NOTE_NAME);
 
     for note in &epilogue.gnu_property_notes {
-        let entry_bytes = crate::slice::slice_take_prefix_mut(&mut rest, size_of::<NoteProperty>());
+        let entry_bytes = rest.split_off_mut(..size_of::<NoteProperty>()).unwrap();
         let property: &mut NoteProperty = bytemuck::from_bytes_mut(entry_bytes);
         property.pr_type = note.ptype;
         property.pr_datasz = size_of_val(&property.pr_data) as u32;
@@ -2792,72 +2879,71 @@ fn write_dynamic_symbol_definitions(
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
-    for sym_def in &epilogue.dynamic_symbol_definitions {
-        let file_id = layout.symbol_db.file_id_for_symbol(sym_def.symbol_id);
-        let file_layout = &layout.file_layout(file_id);
-        match file_layout {
-            FileLayout::Object(object) => {
-                write_regular_object_dynamic_symbol_definition(
-                    sym_def,
-                    object,
-                    layout,
-                    &mut table_writer.dynsym_writer,
-                )?;
+    let chunk_size =
+        10.max(epilogue.dynamic_symbol_definitions.len() / 10 / rayon::current_num_threads());
 
-                if let Some(versym) = table_writer.version_writer.versym.as_mut() {
-                    if let Some(version_out) = crate::slice::take_first_mut(versym) {
-                        // TODO: avoid rehashing
-                        let RawSymbolName {
-                            name_bytes,
-                            version_name,
-                            ..
-                        } = RawSymbolName::parse(sym_def.name);
-                        let version = layout
-                            .symbol_db
-                            .version_script
-                            .version_for_symbol(
-                                &UnversionedSymbolName::prehashed(name_bytes),
-                                version_name,
-                            )?
-                            .unwrap_or(object::elf::VER_NDX_GLOBAL);
-                        version_out.0.set(LittleEndian, version);
+    epilogue
+        .dynamic_symbol_definitions
+        .chunks(chunk_size)
+        .map(|defs| (defs, table_writer.take_dynsym_prefix(defs)))
+        .par_bridge()
+        .try_for_each(|(defs, mut table_writer)| {
+            for sym_def in defs {
+                let file_id = layout.symbol_db.file_id_for_symbol(sym_def.symbol_id);
+                let file_layout = &layout.file_layout(file_id);
+                match file_layout {
+                    FileLayout::Object(object) => {
+                        write_regular_object_dynamic_symbol_definition(
+                            sym_def,
+                            object,
+                            layout,
+                            &mut table_writer.dynsym_writer,
+                        )?;
+
+                        if let Some(versym) = table_writer.versym.as_mut() {
+                            write_symbol_version(versym, sym_def.version)?;
+                        }
                     }
+                    FileLayout::Dynamic(object) => {
+                        write_copy_relocation_dynamic_symbol_definition(
+                            sym_def,
+                            object,
+                            layout,
+                            &mut table_writer.dynsym_writer,
+                        )?;
+
+                        if let Some(versym) = table_writer.versym.as_mut() {
+                            copy_symbol_version(
+                                object.input_symbol_versions,
+                                object.symbol_id_range.id_to_offset(sym_def.symbol_id),
+                                &object.version_mapping,
+                                versym,
+                            )?;
+                        }
+                    }
+                    FileLayout::LinkerScript(script) => {
+                        write_linker_script_dynsym(
+                            &mut table_writer.dynsym_writer,
+                            layout,
+                            sym_def.symbol_id,
+                            script,
+                        )?;
+                    }
+                    _ => bail!(
+                        "Internal error: Unexpected dynamic symbol definition from {:?}. {}",
+                        file_layout,
+                        layout.symbol_debug(sym_def.symbol_id)
+                    ),
                 }
             }
-            FileLayout::Dynamic(object) => {
-                write_copy_relocation_dynamic_symbol_definition(
-                    sym_def,
-                    object,
-                    layout,
-                    &mut table_writer.dynsym_writer,
-                )?;
 
-                if let Some(versym) = table_writer.version_writer.versym.as_mut() {
-                    write_symbol_version(
-                        object.input_symbol_versions,
-                        object.symbol_id_range.id_to_offset(sym_def.symbol_id),
-                        &object.version_mapping,
-                        versym,
-                    )?;
-                }
-            }
-            FileLayout::LinkerScript(script) => {
-                write_linker_script_dynsym(table_writer, layout, sym_def.symbol_id, script)?;
-            }
-            _ => bail!(
-                "Internal error: Unexpected dynamic symbol definition from {:?}. {}",
-                file_layout,
-                layout.symbol_debug(sym_def.symbol_id)
-            ),
-        }
-    }
-
-    Ok(())
+            Ok(())
+        })
 }
 
 /// Writes a symbol that was produced by a linker script.
 fn write_linker_script_dynsym(
-    table_writer: &mut TableWriter,
+    dynsym_writer: &mut SymbolTableWriter,
     layout: &Layout,
     symbol_id: SymbolId,
     script: &LinkerScriptLayoutState,
@@ -2890,9 +2976,7 @@ fn write_linker_script_dynsym(
     let address = resolution.address()?;
     let name = layout.symbol_db.symbol_name(symbol_id)?;
 
-    let entry = table_writer
-        .dynsym_writer
-        .define_symbol(false, shndx, address, 0, name.bytes())?;
+    let entry = dynsym_writer.define_symbol(false, shndx, address, 0, name.bytes())?;
 
     entry.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
 
@@ -3292,8 +3376,14 @@ impl DynamicEntryInputs<'_> {
             flags |= object::elf::DF_1_ORIGIN;
         }
 
-        if self.args.output_kind().is_shared_object() && self.args.needs_nodelete_handling {
-            flags |= object::elf::DF_1_NODELETE;
+        if self.args.output_kind().is_shared_object() {
+            if self.args.needs_nodelete_handling {
+                flags |= object::elf::DF_1_NODELETE;
+            }
+
+            if self.args.z_interpose {
+                flags |= object::elf::DF_1_INTERPOSE;
+            }
         }
 
         u64::from(flags)
@@ -3358,7 +3448,9 @@ impl<'out> DynamicEntriesWriter<'out> {
     }
 
     fn write(&mut self, tag: u32, value: u64) -> Result {
-        let entry = crate::slice::take_first_mut(&mut self.out)
+        let entry = self
+            .out
+            .split_off_first_mut()
             .ok_or_else(|| insufficient_allocation(".dynamic"))?;
         let e = LittleEndian;
         entry.d_tag.set(e, u64::from(tag));
@@ -3464,14 +3556,13 @@ fn write_section_header_strings(
     output_order: &OutputOrder,
 ) {
     for event in output_order {
-        if let OrderEvent::Section(id) = event {
-            if sections.output_index_of_section(id).is_some() {
-                if let Some(name) = sections.name(id) {
-                    let name_out = crate::slice::slice_take_prefix_mut(&mut out, name.len() + 1);
-                    name_out[..name.len()].copy_from_slice(name.bytes());
-                    name_out[name.len()] = 0;
-                }
-            }
+        if let OrderEvent::Section(id) = event
+            && sections.output_index_of_section(id).is_some()
+            && let Some(name) = sections.name(id)
+        {
+            let name_out = out.split_off_mut(..=name.len()).unwrap();
+            name_out[..name.len()].copy_from_slice(name.bytes());
+            name_out[name.len()] = 0;
         }
     }
 }
@@ -3488,7 +3579,8 @@ impl<'out> ProgramHeaderWriter<'out> {
     }
 
     fn take_header(&mut self) -> Result<&mut ProgramHeader> {
-        crate::slice::take_first_mut(&mut self.headers)
+        self.headers
+            .split_off_first_mut()
             .ok_or_else(|| error!("Insufficient header slots"))
     }
 }
@@ -3558,7 +3650,7 @@ fn write_dynamic_file<A: Arch>(
                 entry.st_info = symbol.st_info();
 
                 if let Some(versym) = table_writer.version_writer.versym.as_mut() {
-                    write_symbol_version(
+                    copy_symbol_version(
                         object.input_symbol_versions,
                         object.symbol_id_range.id_to_offset(symbol_id),
                         &object.version_mapping,
@@ -3710,14 +3802,12 @@ fn write_copy_relocation_for_symbol<A: Arch>(
     )
 }
 
-fn write_symbol_version(
+fn copy_symbol_version(
     versym_in: &[Versym],
     local_symbol_index: usize,
     version_mapping: &[u16],
     versym_out: &mut &mut [Versym],
 ) -> Result {
-    let version_out =
-        crate::slice::take_first_mut(versym_out).context("Insufficient .gnu.version allocation")?;
     let output_version =
         versym_in
             .get(local_symbol_index)
@@ -3729,7 +3819,17 @@ fn write_symbol_version(
                     version_mapping[usize::from(input_version) - 1]
                 }
             });
-    version_out.0.set(LittleEndian, output_version);
+
+    write_symbol_version(versym_out, output_version)
+}
+
+fn write_symbol_version(versym_out: &mut &mut [Versym], version: u16) -> Result {
+    versym_out
+        .split_off_first_mut()
+        .context("Insufficient .gnu.version allocation")?
+        .0
+        .set(LittleEndian, version);
+
     Ok(())
 }
 
@@ -3743,12 +3843,22 @@ impl StrTabWriter<'_> {
     /// string was written.
     fn write_str(&mut self, str: &[u8]) -> u32 {
         let len_with_terminator = str.len() + 1;
-        let lib_name_out = slice_take_prefix_mut(&mut self.out, len_with_terminator);
+        let lib_name_out = self.out.split_off_mut(..len_with_terminator).unwrap();
         lib_name_out[..str.len()].copy_from_slice(str);
         lib_name_out[str.len()] = 0;
         let offset = self.next_offset;
         self.next_offset += len_with_terminator as u32;
         offset
+    }
+
+    fn take_prefix(&mut self, size: usize) -> Self {
+        let next_offset = self.next_offset;
+        self.next_offset += size as u32;
+
+        Self {
+            next_offset,
+            out: self.out.split_off_mut(..size).unwrap(),
+        }
     }
 }
 
@@ -3777,9 +3887,11 @@ pub(crate) fn verify_resolution_allocation(
     let mut offset = 0;
     let mut buffers = mem_sizes.output_order_map(output_order, |_part_id, alignment, &size| {
         let aligned_offset = alignment.align_up(offset);
-        crate::slice::slice_take_prefix_mut(&mut all_mem, (aligned_offset - offset) as usize);
+        all_mem
+            .split_off_mut(..(aligned_offset - offset) as usize)
+            .unwrap();
         offset = aligned_offset + size;
-        crate::slice::slice_take_prefix_mut(&mut all_mem, size as usize)
+        all_mem.split_off_mut(..size as usize).unwrap()
     });
 
     let dynsym_writer = SymbolTableWriter::new_dynamic(0, &mut buffers, output_sections);

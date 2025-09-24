@@ -17,8 +17,7 @@ use crate::linker_script::LinkerScript;
 use colosseum::sync::Arena;
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
-use foldhash::HashMap;
-use foldhash::fast::RandomState;
+use hashbrown::HashMap;
 use memmap2::Mmap;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
@@ -38,8 +37,9 @@ pub(crate) struct InputData<'data> {
     /// This is like `files`, but archives have been split into their separate parts.
     pub(crate) inputs: Vec<InputBytes<'data>>,
 
-    pub(crate) version_script_data: Option<VersionScriptData<'data>>,
+    pub(crate) version_script_data: Option<ScriptData<'data>>,
     pub(crate) linker_scripts: Vec<InputLinkerScript<'data>>,
+    pub(crate) export_list_data: Option<ScriptData<'data>>,
 
     /// Which files we loaded. The keys aren't relevant anymore, but we keep them to avoid
     /// regenerating the map.
@@ -54,7 +54,7 @@ pub(crate) struct InputBytes<'data> {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct VersionScriptData<'data> {
+pub(crate) struct ScriptData<'data> {
     pub(crate) raw: &'data [u8],
 }
 
@@ -189,7 +189,12 @@ impl<'data> InputData<'data> {
         let version_script_data = args
             .version_script_path
             .as_ref()
-            .map(|path| read_version_script(path, inputs_arena))
+            .map(|path| read_script_data(path, inputs_arena))
+            .transpose()?;
+        let export_list_data = args
+            .export_list_path
+            .as_ref()
+            .map(|path| read_script_data(path, inputs_arena))
             .transpose()?;
 
         let (work_sender, work_recv) = crossbeam_channel::unbounded();
@@ -197,7 +202,7 @@ impl<'data> InputData<'data> {
 
         let mut temporary_state = TemporaryState {
             args,
-            path_to_load_index: HashMap::with_hasher(RandomState::default()),
+            path_to_load_index: HashMap::new(),
             outstanding_work_items: 0,
             files: Vec::new(),
             work_recv: &work_recv,
@@ -238,6 +243,7 @@ impl<'data> InputData<'data> {
             inputs: Vec::new(),
             linker_scripts: Vec::new(),
             version_script_data,
+            export_list_data,
             path_to_load_index: temporary_state.path_to_load_index,
         };
 
@@ -352,12 +358,11 @@ fn process_linker_script<'data>(
     script.foreach_input(input_file.modifiers, |mut input| {
         input.search_first = Some(directory.to_owned());
 
-        if let (Some(sysroot), InputSpec::File(file)) = (args.sysroot.as_ref(), &mut input.spec) {
-            if let Some(new_file) =
+        if let (Some(sysroot), InputSpec::File(file)) = (args.sysroot.as_ref(), &mut input.spec)
+            && let Some(new_file) =
                 crate::linker_script::maybe_apply_sysroot(&script_path, file, sysroot)
-            {
-                *file = new_file;
-            }
+        {
+            *file = new_file;
         }
 
         extra_inputs.push(input);
@@ -556,8 +561,8 @@ impl<'data, 'ch> TemporaryState<'data, 'ch> {
         let paths = input.path(self.args)?;
 
         let index = match self.path_to_load_index.entry(paths.absolute.clone()) {
-            std::collections::hash_map::Entry::Occupied(e) => *e.get(),
-            std::collections::hash_map::Entry::Vacant(e) => {
+            hashbrown::hash_map::Entry::Occupied(e) => *e.get(),
+            hashbrown::hash_map::Entry::Vacant(e) => {
                 let new_index = FileLoadIndex(self.files.len());
                 self.files.push(None);
 
@@ -596,10 +601,10 @@ impl<'data, 'ch> TemporaryState<'data, 'ch> {
     }
 }
 
-fn read_version_script<'data>(
+fn read_script_data<'data>(
     path: &Path,
     inputs_arena: &'data Arena<InputFile>,
-) -> Result<VersionScriptData<'data>> {
+) -> Result<ScriptData<'data>> {
     let data = FileData::new(path, false)?;
 
     let file = inputs_arena.alloc(InputFile {
@@ -610,24 +615,24 @@ fn read_version_script<'data>(
         data: Some(data),
     });
 
-    Ok(VersionScriptData { raw: file.data() })
+    Ok(ScriptData { raw: file.data() })
 }
 
 impl Input {
     fn path(&self, args: &Args) -> Result<InputPath> {
         match &self.spec {
             InputSpec::File(p) => {
-                if self.search_first.is_some() || p.parent() == Some(Path::new("")) {
-                    if let Some(path) = search_for_file(
+                if self.search_first.is_some()
+                    && let Some(path) = search_for_file(
                         &args.lib_search_path,
                         self.search_first.as_ref(),
                         p.as_ref(),
-                    ) {
-                        return Ok(InputPath {
-                            absolute: std::path::absolute(path)?,
-                            original: p.as_ref().to_owned(),
-                        });
-                    }
+                    )
+                {
+                    return Ok(InputPath {
+                        absolute: std::path::absolute(path)?,
+                        original: p.as_ref().to_owned(),
+                    });
                 }
                 Ok(InputPath {
                     absolute: p.as_ref().to_owned(),
@@ -658,6 +663,19 @@ impl Input {
                     });
                 }
                 bail!("Couldn't find library `{lib_name}` on library search path");
+            }
+            InputSpec::Search(filename) => {
+                if let Some(path) = search_for_file(
+                    &args.lib_search_path,
+                    self.search_first.as_ref(),
+                    filename.as_ref(),
+                ) {
+                    return Ok(InputPath {
+                        absolute: std::path::absolute(&path)?,
+                        original: PathBuf::from(filename.as_ref()),
+                    });
+                }
+                bail!("Couldn't find library `{filename}` on library search path");
             }
         }
     }

@@ -1,17 +1,23 @@
 //! Code for reporting how long each phase of linking takes when the --time argument is supplied.
 
+use crate::args::CounterKind;
 use crate::error::AlreadyInitialised;
+use crate::perf::CounterList;
+use crossbeam_queue::ArrayQueue;
 use std::fmt::Display;
+use std::time::Duration;
 use std::time::Instant;
 use tracing::field::Visit;
 
-#[derive(Default)]
-struct TimingLayer {}
+struct TimingLayer {
+    counter_pool: Option<ArrayQueue<CounterList>>,
+}
 
 struct Data {
     start: Instant,
     child_count: u32,
     attributes_string: String,
+    counters: Option<CounterList>,
 }
 
 #[derive(Default)]
@@ -70,8 +76,11 @@ where
         let mut formatted = ValuesFormatter::default();
         attributes.values().record(&mut formatted);
 
+        let counters = self.counter_pool.as_ref().and_then(|l| l.pop());
+
         span.extensions_mut().insert(Data {
             start: Instant::now(),
+            counters,
             child_count: 0,
             attributes_string: formatted.finish(),
         });
@@ -81,6 +90,9 @@ where
         let span = ctx.span(id).expect("valid span ID");
         if let Some(data) = span.extensions_mut().get_mut::<Data>() {
             data.start = Instant::now();
+            if let Some(counters) = data.counters.as_mut() {
+                counters.start();
+            }
         }
     }
 
@@ -104,25 +116,69 @@ where
             })
             .unwrap_or(0);
 
-        if let Some(data) = span.extensions().get::<Data>() {
+        if let Some(data) = span.extensions_mut().get_mut::<Data>() {
             let scope_depth = span.scope().count() - 1;
             let name = metadata.name();
-            let ms = data.start.elapsed().as_secs_f64() * 1000.0;
+            let wall = data.start.elapsed();
+
+            let mut counters = data.counters.take();
+
+            let counter_values = counters
+                .as_mut()
+                .map(|c| c.disable_and_read())
+                .unwrap_or_default();
+
+            if let Some(counters) = counters
+                && let Some(pool) = self.counter_pool.as_ref()
+            {
+                let _ = pool.push(counters);
+            }
+
+            let reading = Reading {
+                wall,
+                counter_values,
+            };
+
             let indent = Indent {
                 scope_depth,
                 child_count: data.child_count,
                 parent_child_count,
             };
-            println!("{indent}{ms:>8.2} {name}{}", data.attributes_string);
+
+            println!("{indent}{reading} {name}{}", data.attributes_string);
         };
     }
 }
 
-pub(crate) fn init_tracing() -> Result<(), AlreadyInitialised> {
+pub(crate) fn init_tracing(opts: &[CounterKind]) -> Result<(), AlreadyInitialised> {
     use tracing_subscriber::prelude::*;
-    let layer = TimingLayer::default();
+
+    let mut counter_pool = None;
+
+    if !opts.is_empty() {
+        // Our pool size limits the depth of nested measurements. At the time of writing, we don't
+        // have more than 4 levels. Note, we need to create all counters now and can't create more
+        // on-demand, since once our worker threads are started, any newly created counters won't
+        // apply to them.
+        let pool_size = 5;
+
+        let pool = ArrayQueue::new(pool_size);
+        for _ in 0..pool_size {
+            let _ = pool.push(CounterList::from_kinds(opts));
+        }
+
+        counter_pool = Some(pool);
+    }
+
+    let layer = TimingLayer { counter_pool };
+
     let subscriber = tracing_subscriber::Registry::default().with(layer);
     tracing::subscriber::set_global_default(subscriber).map_err(|_| AlreadyInitialised)
+}
+
+struct Reading {
+    wall: Duration,
+    counter_values: Vec<u64>,
 }
 
 struct Indent {
@@ -150,6 +206,29 @@ impl Display for Indent {
         } else {
             write!(f, "──")?;
         }
+        Ok(())
+    }
+}
+
+impl Display for Reading {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ms = self.wall.as_secs_f64() * 1000.0;
+        write!(f, "{ms:>8.2}")?;
+
+        if !self.counter_values.is_empty() {
+            write!(f, " (")?;
+            let mut first = true;
+            for value in &self.counter_values {
+                if first {
+                    first = false;
+                } else {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{value}")?;
+            }
+            write!(f, ")")?;
+        }
+
         Ok(())
     }
 }

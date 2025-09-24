@@ -18,9 +18,12 @@ use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
 use crate::elf;
+use crate::elf::DynamicRelocationSequence;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::File;
 use crate::elf::FileHeader;
+use crate::elf::RelocationList;
+use crate::elf::RelocationSequence;
 use crate::elf::Versym;
 use crate::elf_writer;
 use crate::ensure;
@@ -28,7 +31,9 @@ use crate::error;
 use crate::error::Context;
 use crate::error::Error;
 use crate::error::Result;
+use crate::error::warning;
 use crate::file_writer;
+use crate::grouping::Group;
 use crate::input_data::FileId;
 use crate::input_data::InputData;
 use crate::input_data::InputRef;
@@ -72,6 +77,7 @@ use crate::symbol_db::is_mapping_symbol_name;
 use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
+use hashbrown::HashMap;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
@@ -88,15 +94,15 @@ use linker_utils::elf::riscvattr::TAG_RISCV_STACK_ALIGN;
 use linker_utils::elf::riscvattr::TAG_RISCV_UNALIGNED_ACCESS;
 use linker_utils::elf::riscvattr::TAG_RISCV_WHOLE_FILE;
 use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
+use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::SectionIndex;
-use object::elf::Rela64;
 use object::elf::gnu_hash;
+use object::read::elf::Crel;
 use object::read::elf::Dyn as _;
-use object::read::elf::Rela as _;
 use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym;
@@ -107,7 +113,6 @@ use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
 use smallvec::SmallVec;
-use std::collections::HashMap;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::fmt::Display;
@@ -118,6 +123,7 @@ use std::mem::swap;
 use std::mem::take;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
@@ -915,10 +921,28 @@ fn export_dynamic<'data>(
     symbol_db: &SymbolDb<'data>,
 ) -> Result {
     let name = symbol_db.symbol_name(symbol_id)?;
-    let RawSymbolName { name_bytes, .. } = RawSymbolName::parse(name.bytes());
+    let RawSymbolName { name_bytes, version_name, .. } = RawSymbolName::parse(name.bytes());
+
+    let version = (symbol_db.version_script.version_count() > 0)
+        .then(|| {
+            // TODO: We already hashed this symbol at some point previously. See if we can avoid
+            // rehashing it here and if that actually saves us time.
+            symbol_db
+                .version_script
+                // TODO
+                .version_for_symbol(&UnversionedSymbolName::prehashed(name_bytes), version_name).ok()?
+        })
+        .flatten()
+        .unwrap_or(object::elf::VER_NDX_GLOBAL);
+
     common
         .dynamic_symbol_definitions
-        .push(DynamicSymbolDefinition::new(symbol_id, name_bytes));
+        .push(DynamicSymbolDefinition::new(
+            symbol_id,
+            name.bytes(),
+            version,
+        ));
+
     Ok(())
 }
 
@@ -1204,9 +1228,6 @@ struct CommonGroupState<'data> {
     /// is stored is non-deterministic and is whichever object first requested export of that
     /// symbol. That's OK though because the epilogue will sort all dynamic symbols.
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
-
-    /// Indexed by `FrameIndex`.
-    exception_frames: Vec<ExceptionFrame<'data>>,
 }
 
 impl CommonGroupState<'_> {
@@ -1215,7 +1236,6 @@ impl CommonGroupState<'_> {
             mem_sizes: output_sections.new_part_map(),
             section_attributes: output_sections.new_section_map(),
             dynamic_symbol_definitions: Default::default(),
-            exception_frames: Default::default(),
         }
     }
 
@@ -1320,12 +1340,15 @@ struct ObjectLayoutState<'data> {
 
     gnu_property_notes: Vec<GnuProperty>,
     riscv_attributes: Vec<RiscVAttribute>,
+
+    /// Indexed by `FrameIndex`.
+    exception_frames: Vec<ExceptionFrame<'data>>,
 }
 
 #[derive(Default)]
 struct ExceptionFrame<'data> {
     /// The relocations that need to be processed if we load this frame.
-    relocations: &'data [Rela64<LittleEndian>],
+    relocations: DynamicRelocationSequence<'data>,
 
     /// Number of bytes required to store this frame.
     frame_size: u32,
@@ -1351,7 +1374,7 @@ impl RiscVArch {
             .iter()
             .map(|(arch, (major, minor))| format!("{arch}{major}p{minor}"))
             .join("_")
-            .to_string()
+            .clone()
     }
 }
 
@@ -1552,6 +1575,7 @@ pub(crate) struct DynamicSymbolDefinition<'data> {
     pub(crate) symbol_id: SymbolId,
     pub(crate) name: &'data [u8],
     pub(crate) hash: u32,
+    pub(crate) version: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2501,11 +2525,11 @@ fn set_last_verneed(
             == gnu_version_r_layout.mem_offset + gnu_version_r_layout.mem_size);
     if is_last_verneed {
         for file in files.iter_mut().rev() {
-            if let FileLayout::Dynamic(d) = file {
-                if d.verneed_info.is_some() {
-                    d.is_last_verneed = true;
-                    break;
-                }
+            if let FileLayout::Dynamic(d) = file
+                && d.verneed_info.is_some()
+            {
+                d.is_last_verneed = true;
+                break;
             }
         }
     }
@@ -2931,9 +2955,9 @@ impl Section {
 
 #[inline(always)]
 fn process_relocation<A: Arch>(
-    object: &mut ObjectLayoutState,
+    object: &ObjectLayoutState,
     common: &mut CommonGroupState,
-    rel: &Rela64<LittleEndian>,
+    rel: &Crel,
     section: &object::elf::SectionHeader64<LittleEndian>,
     resources: &GraphResources,
     queue: &mut LocalWorkQueue,
@@ -2941,12 +2965,12 @@ fn process_relocation<A: Arch>(
 ) -> Result<RelocationModifier> {
     let args = resources.symbol_db.args;
     let mut next_modifier = RelocationModifier::Normal;
-    if let Some(local_sym_index) = rel.symbol(LittleEndian, false) {
+    if let Some(local_sym_index) = rel.symbol() {
         let symbol_db = resources.symbol_db;
         let symbol_id = symbol_db.definition(object.symbol_id_range.input_to_id(local_sym_index));
         let symbol_value_flags = symbol_db.local_symbol_value_flags(symbol_id);
-        let rel_offset = rel.r_offset.get(LittleEndian);
-        let r_type = rel.r_type(LittleEndian, false);
+        let rel_offset = rel.r_offset;
+        let r_type = rel.r_type;
 
         let rel_info = if let Some(relaxation) = A::Relaxation::new(
             r_type,
@@ -3018,7 +3042,7 @@ fn process_relocation<A: Arch>(
 
         if previous_flags.is_empty() {
             queue.send_symbol_request(symbol_id, resources);
-            if is_symbol_undefined(
+            if should_emit_undefined_error(
                 object.object.symbol(local_sym_index)?,
                 object.file_id,
                 symbol_db.file_id_for_symbol(symbol_id),
@@ -3034,10 +3058,28 @@ fn process_relocation<A: Arch>(
                 )
                 .context("Failed to get source info")?;
 
-                resources.report_error(error!(
-                    "Undefined symbol {symbol_name}, referenced by {}\n    {}",
-                    source_info, object.input,
-                ));
+                let lto_file = is_undefined_lto(resources, symbol_id);
+
+                if let Some(file) = lto_file {
+                    resources.report_error(error!(
+                        "undefined reference to `{symbol_name}` found in LTO section of {}",
+                        file.canonicalize()
+                            .unwrap_or(PathBuf::new())
+                            .file_name()
+                            .expect("Canonicalized path can't have /.. at end")
+                            .display()
+                    ));
+                } else if args.error_unresolved_symbols {
+                    resources.report_error(error!(
+                        "Undefined symbol {symbol_name}, referenced by {}\n    {}",
+                        source_info, object.input,
+                    ));
+                } else {
+                    crate::error::warning(&format!(
+                        "Undefined symbol {symbol_name}, referenced by {}\n    {}",
+                        source_info, object.input,
+                    ));
+                }
             }
         }
 
@@ -3046,6 +3088,43 @@ fn process_relocation<A: Arch>(
         }
     }
     Ok(next_modifier)
+}
+
+fn is_undefined_lto(resources: &GraphResources, symbol_id: SymbolId) -> Option<PathBuf> {
+    let raw_symbol_name = resources
+        .symbol_db
+        .symbol_name(symbol_id)
+        .unwrap_or_else(|_| panic!("Found symbol display so symbol with id {symbol_id} exists"));
+    resources
+        .symbol_db
+        .groups
+        .iter()
+        .find_map(|group| match group {
+            Group::Objects(data) => data.iter().find_map(|input| {
+                let section_table = input.parsed.object.sections;
+                let file = &input.parsed.object;
+                section_table
+                    .iter()
+                    .filter(|section_header| {
+                        section_table
+                            .section_name(LittleEndian, section_header)
+                            .unwrap_or(&[])
+                            .starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes())
+                    })
+                    .find_map(|section_header| {
+                        let lto_contains_undef = file
+                            .section_data_cow(section_header)
+                            .unwrap_or_default()
+                            .split(|datum| *datum == 0)
+                            .any(|symbol| symbol == raw_symbol_name.bytes());
+                        if lto_contains_undef {
+                            return Some(input.parsed.input.file.filename.clone());
+                        }
+                        None
+                    })
+            }),
+            _ => None,
+        })
 }
 
 /// Returns whether the supplied relocation type requires static TLS. If true and we're writing a
@@ -3341,10 +3420,10 @@ impl<'data> PreludeLayoutState<'data> {
             .iter()
             .zip(self.internal_symbols.symbol_definitions.iter())
             .for_each(|(symbol_state, definition)| {
-                if !symbol_state.is_empty() {
-                    if let Some(section_id) = definition.section_id() {
-                        *keep_sections.get_mut(section_id) = true;
-                    }
+                if !symbol_state.is_empty()
+                    && let Some(section_id) = definition.section_id()
+                {
+                    *keep_sections.get_mut(section_id) = true;
                 }
             });
 
@@ -3375,16 +3454,16 @@ impl<'data> PreludeLayoutState<'data> {
         let mut next_output_index = 0;
         let mut output_section_indexes = vec![None; output_sections.num_sections()];
         for event in output_order {
-            if let OrderEvent::Section(id) = event {
-                if *keep_sections.get(id) {
-                    debug_assert!(
-                        output_sections.merge_target(id).is_none(),
-                        "Tried to allocate section header for secondary section {}",
-                        output_sections.section_debug(id)
-                    );
-                    output_section_indexes[id.as_usize()] = Some(next_output_index);
-                    next_output_index += 1;
-                }
+            if let OrderEvent::Section(id) = event
+                && *keep_sections.get(id)
+            {
+                debug_assert!(
+                    output_sections.merge_target(id).is_none(),
+                    "Tried to allocate section header for secondary section {}",
+                    output_sections.section_debug(id)
+                );
+                output_section_indexes[id.as_usize()] = Some(next_output_index);
+                next_output_index += 1;
             };
         }
         output_sections.output_section_indexes = output_section_indexes;
@@ -3599,7 +3678,7 @@ fn create_start_end_symbol_resolution(
     ))
 }
 
-fn is_symbol_undefined(
+fn should_emit_undefined_error(
     symbol: &Symbol,
     sym_file_id: FileId,
     sym_def_file_id: FileId,
@@ -3610,9 +3689,15 @@ fn is_symbol_undefined(
         return false;
     }
 
-    sym_file_id == sym_def_file_id
+    let is_symbol_undefined = sym_file_id == sym_def_file_id
         && symbol.is_undefined(LittleEndian)
-        && symbol_value_flags.is_absolute()
+        && symbol_value_flags.is_absolute();
+
+    match args.unresolved_symbols {
+        crate::args::UnresolvedSymbols::IgnoreAll
+        | crate::args::UnresolvedSymbols::IgnoreInObjectFiles => false,
+        _ => is_symbol_undefined,
+    }
 }
 
 impl<'data> EpilogueLayoutState<'data> {
@@ -3943,6 +4028,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             cies: Default::default(),
             gnu_property_notes: Default::default(),
             riscv_attributes: Default::default(),
+            exception_frames: Default::default(),
         })
     } else {
         FileLayoutState::Dynamic(DynamicLayoutState {
@@ -4044,12 +4130,14 @@ impl<'data> ObjectLayoutState<'data> {
                 .context("Cannot parse .riscv.attributes section")?;
         }
 
-        if resources.symbol_db.args.output_kind() == OutputKind::SharedObject
+        let export_all_dynamic = resources.symbol_db.args.output_kind() == OutputKind::SharedObject
             && (!resources.symbol_db.args.exclude_libs || !self.input.has_archive_semantics())
             || resources.symbol_db.args.needs_dynsym()
-                && resources.symbol_db.args.explicitly_export_dynamic
+                && resources.symbol_db.args.export_all_dynamic_symbols;
+        if export_all_dynamic
+            || resources.symbol_db.args.needs_dynsym() && resources.symbol_db.export_list.is_some()
         {
-            self.load_non_hidden_symbols::<A>(common, resources, queue)?;
+            self.load_non_hidden_symbols::<A>(common, resources, queue, export_all_dynamic)?;
         }
 
         Ok(())
@@ -4104,28 +4192,26 @@ impl<'data> ObjectLayoutState<'data> {
         let part_id = unloaded.part_id;
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
-        let mut modifier = RelocationModifier::Normal;
 
-        for rel in self.relocations(section.index)? {
-            if modifier == RelocationModifier::SkipNextRelocation {
-                modifier = RelocationModifier::Normal;
-                continue;
+        match self.relocations(section.index)? {
+            RelocationList::Rela(relocations) => {
+                self.load_section_relocations::<A>(
+                    common,
+                    queue,
+                    resources,
+                    section,
+                    relocations.crel_iter(),
+                )?;
             }
-            modifier = process_relocation::<A>(
-                self,
-                common,
-                rel,
-                self.object.section(section.index)?,
-                resources,
-                queue,
-                false,
-            )
-            .with_context(|| {
-                format!(
-                    "Failed to copy section {} from file {self}",
-                    section_debug(self.object, section.index)
-                )
-            })?;
+            RelocationList::Crel(relocations) => {
+                self.load_section_relocations::<A>(
+                    common,
+                    queue,
+                    resources,
+                    section,
+                    relocations.flat_map(|r| r.ok()),
+                )?;
+            }
         }
 
         tracing::debug!(loaded_section = %self.object.section_display_name(section_index),);
@@ -4151,6 +4237,40 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
+    fn load_section_relocations<A: Arch>(
+        &self,
+        common: &mut CommonGroupState<'data>,
+        queue: &mut LocalWorkQueue,
+        resources: &GraphResources<'data, '_>,
+        section: Section,
+        relocations: impl Iterator<Item = Crel>,
+    ) -> Result {
+        let mut modifier = RelocationModifier::Normal;
+        for rel in relocations {
+            if modifier == RelocationModifier::SkipNextRelocation {
+                modifier = RelocationModifier::Normal;
+                continue;
+            }
+            modifier = process_relocation::<A>(
+                self,
+                common,
+                &rel,
+                self.object.section(section.index)?,
+                resources,
+                queue,
+                false,
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to copy section {} from file {self}",
+                    section_debug(self.object, section.index)
+                )
+            })?;
+        }
+
+        Ok(())
+    }
+
     /// Processes the exception frames for a section that we're loading.
     fn process_section_exception_frames<A: Arch>(
         &mut self,
@@ -4162,28 +4282,43 @@ impl<'data> ObjectLayoutState<'data> {
         let mut num_frames = 0;
         let mut next_frame_index = frame_index;
         while let Some(frame_index) = next_frame_index {
-            let frame_data = &common.exception_frames[frame_index.as_usize()];
+            let frame_data = &self.exception_frames[frame_index.as_usize()];
             next_frame_index = frame_data.previous_frame_for_section;
 
             self.eh_frame_size += u64::from(frame_data.frame_size);
 
             num_frames += 1;
 
-            let frame_data_relocations = frame_data.relocations;
-
             // Request loading of any sections/symbols referenced by the FDEs for our
             // section.
             if let Some(eh_frame_section) = self.eh_frame_section {
-                for rel in frame_data_relocations {
-                    process_relocation::<A>(
-                        self,
-                        common,
-                        rel,
-                        eh_frame_section,
-                        resources,
-                        queue,
-                        false,
-                    )?;
+                match &frame_data.relocations {
+                    DynamicRelocationSequence::Rela(frame_data_relocations) => {
+                        for rel in *frame_data_relocations {
+                            process_relocation::<A>(
+                                self,
+                                common,
+                                &Crel::from_rela(rel, LittleEndian, false),
+                                eh_frame_section,
+                                resources,
+                                queue,
+                                false,
+                            )?;
+                        }
+                    }
+                    DynamicRelocationSequence::Crel(frame_data_relocations) => {
+                        for rel in frame_data_relocations.crel_iter() {
+                            process_relocation::<A>(
+                                self,
+                                common,
+                                &rel,
+                                eh_frame_section,
+                                resources,
+                                queue,
+                                false,
+                            )?;
+                        }
+                    }
                 }
             }
         }
@@ -4210,32 +4345,60 @@ impl<'data> ObjectLayoutState<'data> {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
         if A::local_symbols_in_debug_info() {
-            for rel in self.relocations(section.index)? {
-                let modifier = process_relocation::<A>(
-                    self,
+            match self.relocations(section.index)? {
+                RelocationList::Rela(relocations) => self.load_debug_relocations::<A>(
                     common,
-                    rel,
-                    self.object.section(section.index)?,
-                    resources,
                     queue,
-                    true,
-                )
-                .with_context(|| {
-                    format!(
-                        "Failed to copy section {} from file {self}",
-                        section_debug(self.object, section.index)
-                    )
-                })?;
-                ensure!(
-                    modifier == RelocationModifier::Normal,
-                    "All debug relocations must be processed"
-                );
+                    resources,
+                    section,
+                    relocations.crel_iter(),
+                )?,
+                RelocationList::Crel(relocations) => self.load_debug_relocations::<A>(
+                    common,
+                    queue,
+                    resources,
+                    section,
+                    relocations.flat_map(|r| r.ok()),
+                )?,
             }
         }
 
         tracing::debug!(loaded_debug_section = %self.object.section_display_name(section_index),);
         common.section_loaded(part_id, header, section);
         self.sections[section_index.0] = SectionSlot::LoadedDebugInfo(section);
+
+        Ok(())
+    }
+
+    fn load_debug_relocations<A: Arch>(
+        &self,
+        common: &mut CommonGroupState<'data>,
+        queue: &mut LocalWorkQueue,
+        resources: &GraphResources<'data, '_>,
+        section: Section,
+        relocations: impl Iterator<Item = Crel>,
+    ) -> Result<(), Error> {
+        for rel in relocations {
+            let modifier = process_relocation::<A>(
+                self,
+                common,
+                &rel,
+                self.object.section(section.index)?,
+                resources,
+                queue,
+                true,
+            )
+            .with_context(|| {
+                format!(
+                    "Failed to copy section {} from file {self}",
+                    section_debug(self.object, section.index)
+                )
+            })?;
+            ensure!(
+                modifier == RelocationModifier::Normal,
+                "All debug relocations must be processed"
+            );
+        }
 
         Ok(())
     }
@@ -4496,11 +4659,12 @@ impl<'data> ObjectLayoutState<'data> {
         common: &mut CommonGroupState<'data>,
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
+        export_all_dynamic: bool,
     ) -> Result {
         for (sym_index, sym) in self.object.symbols.enumerate() {
             let symbol_id = self.symbol_id_range().input_to_id(sym_index);
 
-            if !can_export_symbol(sym, symbol_id, resources.symbol_db) {
+            if !can_export_symbol(sym, symbol_id, resources.symbol_db, export_all_dynamic) {
                 continue;
             }
 
@@ -4534,7 +4698,7 @@ impl<'data> ObjectLayoutState<'data> {
         // regular object, then the shared object might send us a request to export the definition
         // provided by the regular object. This isn't always possible, since the symbol might be
         // hidden.
-        if !can_export_symbol(sym, symbol_id, resources.symbol_db) {
+        if !can_export_symbol(sym, symbol_id, resources.symbol_db, true) {
             return Ok(());
         }
 
@@ -4552,7 +4716,7 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn relocations(&self, index: SectionIndex) -> Result<&'data [elf::Rela]> {
+    fn relocations(&self, index: SectionIndex) -> Result<RelocationList<'data>> {
         self.object.relocations(index, &self.relocations)
     }
 }
@@ -4580,11 +4744,11 @@ impl<'data> SymbolCopyInfo<'data> {
             return None;
         }
 
-        if let Ok(Some(section)) = object.symbol_section(sym, sym_index) {
-            if !sections[section.0].is_loaded() {
-                // Symbol is in a discarded section.
-                return None;
-            }
+        if let Ok(Some(section)) = object.symbol_section(sym, sym_index)
+            && !sections[section.0].is_loaded()
+        {
+            // Symbol is in a discarded section.
+            return None;
         }
 
         if sym.is_common(e) && symbol_state.is_empty() {
@@ -4611,6 +4775,7 @@ fn can_export_symbol(
     sym: &crate::elf::SymtabEntry,
     symbol_id: SymbolId,
     symbol_db: &SymbolDb,
+    export_all_dynamic: bool,
 ) -> bool {
     if sym.is_undefined(LittleEndian) || sym.is_local() {
         return false;
@@ -4632,6 +4797,14 @@ fn can_export_symbol(
         return false;
     }
 
+    if !export_all_dynamic
+        && let Some(export_list) = &symbol_db.export_list
+        && let Ok(symbol_name) = symbol_db.symbol_name(symbol_id)
+        && !&export_list.contains(&UnversionedSymbolName::prehashed(symbol_name.bytes()))
+    {
+        return false;
+    }
+
     true
 }
 
@@ -4645,10 +4818,43 @@ fn process_eh_frame_data<'data, A: Arch>(
 ) -> Result {
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
     let data = object.object.raw_section_data(eh_frame_section)?;
+    match object.relocations(eh_frame_section_index)? {
+        RelocationList::Rela(relocations) => process_eh_frame_relocations::<A>(
+            object,
+            common,
+            file_symbol_id_range,
+            resources,
+            queue,
+            eh_frame_section,
+            data,
+            &relocations,
+        ),
+        RelocationList::Crel(crel_iterator) => process_eh_frame_relocations::<A>(
+            object,
+            common,
+            file_symbol_id_range,
+            resources,
+            queue,
+            eh_frame_section,
+            data,
+            &crel_iterator.collect::<Result<Vec<Crel>, _>>()?,
+        ),
+    }
+}
+
+fn process_eh_frame_relocations<'data, 'rel: 'data, A: Arch>(
+    object: &mut ObjectLayoutState<'data>,
+    common: &mut CommonGroupState<'data>,
+    file_symbol_id_range: SymbolIdRange,
+    resources: &GraphResources<'_, '_>,
+    queue: &mut LocalWorkQueue,
+    eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
+    data: &'data [u8],
+    relocations: &impl RelocationSequence<'rel>,
+) -> Result {
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
-    let e = LittleEndian;
-    let relocations = object.relocations(eh_frame_section_index)?;
-    let mut rel_iter = relocations.iter().enumerate().peekable();
+
+    let mut rel_iter = relocations.crel_iter().enumerate().peekable();
     let mut offset = 0;
 
     while offset + PREFIX_LEN <= data.len() {
@@ -4673,7 +4879,7 @@ fn process_eh_frame_data<'data, A: Arch>(
             // because we're not taking that into consideration, we disallow deduplication.
             let mut eligible_for_deduplication = true;
             while let Some((_, rel)) = rel_iter.peek() {
-                let rel_offset = rel.r_offset.get(e);
+                let rel_offset = rel.r_offset;
                 if rel_offset >= next_offset as u64 {
                     // This relocation belongs to the next entry.
                     break;
@@ -4691,7 +4897,7 @@ fn process_eh_frame_data<'data, A: Arch>(
                     false,
                 )?;
 
-                if let Some(local_sym_index) = rel.symbol(e, false) {
+                if let Some(local_sym_index) = rel.symbol() {
                     let local_symbol_id = file_symbol_id_range.input_to_id(local_sym_index);
                     let definition = resources.symbol_db.definition(local_symbol_id);
                     referenced_symbols.push(definition);
@@ -4716,15 +4922,13 @@ fn process_eh_frame_data<'data, A: Arch>(
             let mut rel_end_index = 0;
 
             while let Some((rel_index, rel)) = rel_iter.peek() {
-                let rel_offset = rel.r_offset.get(e);
+                let rel_offset = rel.r_offset;
                 if rel_offset < next_offset as u64 {
                     let is_pc_begin = (rel_offset as usize - offset) == elf::FDE_PC_BEGIN_OFFSET;
 
-                    if is_pc_begin {
-                        if let Some(index) = rel.symbol(e, false) {
-                            let elf_symbol = object.object.symbol(index)?;
-                            section_index = object.object.symbol_section(elf_symbol, index)?;
-                        }
+                    if is_pc_begin && let Some(index) = rel.symbol() {
+                        let elf_symbol = object.object.symbol(index)?;
+                        section_index = object.object.symbol_section(elf_symbol, index)?;
                     }
                     rel_end_index = rel_index + 1;
                     rel_iter.next();
@@ -4733,20 +4937,20 @@ fn process_eh_frame_data<'data, A: Arch>(
                 }
             }
 
-            if let Some(section_index) = section_index {
-                if let Some(unloaded) = object.sections[section_index.0].unloaded_mut() {
-                    let frame_index = FrameIndex::from_usize(common.exception_frames.len());
+            if let Some(section_index) = section_index
+                && let Some(unloaded) = object.sections[section_index.0].unloaded_mut()
+            {
+                let frame_index = FrameIndex::from_usize(object.exception_frames.len());
 
-                    // Update our unloaded section to point to our new frame. Our frame will then in
-                    // turn point to whatever the section pointed to before.
-                    let previous_frame_for_section = unloaded.last_frame_index.replace(frame_index);
+                // Update our unloaded section to point to our new frame. Our frame will then in
+                // turn point to whatever the section pointed to before.
+                let previous_frame_for_section = unloaded.last_frame_index.replace(frame_index);
 
-                    common.exception_frames.push(ExceptionFrame {
-                        relocations: &relocations[rel_start_index..rel_end_index],
-                        frame_size: size as u32,
-                        previous_frame_for_section,
-                    });
-                }
+                object.exception_frames.push(ExceptionFrame {
+                    relocations: relocations.subsequence(rel_start_index..rel_end_index),
+                    frame_size: size as u32,
+                    previous_frame_for_section,
+                });
             }
         }
         offset = next_offset;
@@ -5111,8 +5315,8 @@ impl Resolution {
         // For most symbols, `raw_value` won't be zero, so we can save ourselves from looking up the
         // section to see if it's a string-merge section. For string-merge symbols with names,
         // `raw_value` will have already been computed, so we can avoid computing it again.
-        if self.raw_value == 0 {
-            if let Some(r) = get_merged_string_output_address(
+        if self.raw_value == 0
+            && let Some(r) = get_merged_string_output_address(
                 symbol_index,
                 addend,
                 object_layout.object,
@@ -5120,12 +5324,12 @@ impl Resolution {
                 merged_strings,
                 merged_string_start_addresses,
                 false,
-            )? {
-                if self.raw_value != 0 {
-                    bail!("Merged string resolution has value 0x{}", self.raw_value);
-                }
-                return Ok(r);
+            )?
+        {
+            if self.raw_value != 0 {
+                bail!("Merged string resolution has value 0x{}", self.raw_value);
             }
+            return Ok(r);
         }
         Ok(self.raw_value.wrapping_add(addend as u64))
     }
@@ -5242,9 +5446,9 @@ impl<'data> DynamicLayoutState<'data> {
         resources: &GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
     ) -> Result {
-        let dt_info = DynamicTagValues::read(self.object)?;
-        self.symbol_versions_needed = vec![false; dt_info.verdefnum as usize];
+        self.symbol_versions_needed = vec![false; self.object.verdefnum as usize];
 
+        let dt_info = DynamicTagValues::read(self.object)?;
         if let Some(soname) = dt_info.soname {
             self.lib_name = soname;
         }
@@ -5278,8 +5482,8 @@ impl<'data> DynamicLayoutState<'data> {
                 // not, depends on flags, whether the symbol is weak and whether all of the shared
                 // object's dependencies are loaded.
 
+                let args = resources.symbol_db.args;
                 let check_undefined = *check_undefined_cache.get_or_insert_with(|| {
-                    let args = resources.symbol_db.args;
                     !args.allow_shlib_undefined
                         && args.output_kind().is_executable()
                         // Like lld, our behaviour for --no-allow-shlib-undefined is to only report
@@ -5295,10 +5499,23 @@ impl<'data> DynamicLayoutState<'data> {
                         .object
                         .symbol(self.symbol_id_range.id_to_input(symbol_id))?;
                     if !symbol.is_weak() {
-                        bail!(
-                            "undefined reference to `{}` from {self}",
-                            resources.symbol_db.symbol_name_for_display(symbol_id)
+                        let should_report = !matches!(
+                            args.unresolved_symbols,
+                            crate::args::UnresolvedSymbols::IgnoreAll
+                                | crate::args::UnresolvedSymbols::IgnoreInSharedLibs
                         );
+
+                        if should_report {
+                            let symbol_name =
+                                resources.symbol_db.symbol_name_for_display(symbol_id);
+
+                            if args.error_unresolved_symbols {
+                                bail!("undefined reference to `{symbol_name}` from {self}");
+                            }
+                            crate::error::warning(&format!(
+                                "undefined reference to `{symbol_name}` from {self}"
+                            ));
+                        }
                     }
                 }
             } else if definition_symbol_id != symbol_id {
@@ -5475,14 +5692,14 @@ impl<'data> DynamicLayoutState<'data> {
         counts: &mut NonAddressableCounts,
     ) -> Result {
         self.non_addressable_indexes = *indexes;
-        if let Some(info) = self.verneed_info.as_ref() {
-            if info.version_count > 0 {
-                counts.verneed_count += 1;
-                indexes.gnu_version_r_index = indexes
-                    .gnu_version_r_index
-                    .checked_add(info.version_count)
-                    .context("Symbol versions overflowed 2**16")?;
-            }
+        if let Some(info) = self.verneed_info.as_ref()
+            && info.version_count > 0
+        {
+            counts.verneed_count += 1;
+            indexes.gnu_version_r_index = indexes
+                .gnu_version_r_index
+                .checked_add(info.version_count)
+                .context("Symbol versions overflowed 2**16")?;
         }
         Ok(())
     }
@@ -5610,7 +5827,7 @@ impl<'data> DynamicLayoutState<'data> {
                 is_weak: symbol.is_weak(),
             });
 
-        info.add_symbol(symbol_id, symbol.is_weak(), resources.symbol_db)?;
+        info.add_symbol(symbol_id, symbol.is_weak(), resources.symbol_db);
 
         Ok(())
     }
@@ -5726,23 +5943,21 @@ impl<'data> LinkerScriptLayoutState<'data> {
 }
 
 impl CopyRelocationInfo {
-    fn add_symbol(&mut self, symbol_id: SymbolId, is_weak: bool, symbol_db: &SymbolDb) -> Result {
+    fn add_symbol(&mut self, symbol_id: SymbolId, is_weak: bool, symbol_db: &SymbolDb) {
         if self.symbol_id == symbol_id || is_weak {
-            return Ok(());
+            return;
         }
 
         if !self.is_weak {
-            bail!(
+            warning(&format!(
                 "Multiple non-weak symbols at the same address have copy relocations: {}, {}",
                 symbol_db.symbol_debug(self.symbol_id),
                 symbol_db.symbol_debug(symbol_id)
-            );
+            ));
         }
 
         self.symbol_id = symbol_id;
         self.is_weak = false;
-
-        Ok(())
     }
 }
 
@@ -5858,11 +6073,12 @@ impl GnuHashLayout {
 }
 
 impl<'data> DynamicSymbolDefinition<'data> {
-    fn new(symbol_id: SymbolId, name: &'data [u8]) -> Self {
+    fn new(symbol_id: SymbolId, name: &'data [u8], version: u16) -> Self {
         Self {
             symbol_id,
             name,
             hash: gnu_hash(name),
+            version,
         }
     }
 }
@@ -5888,7 +6104,7 @@ fn needs_tlsld(relocation_kind: RelocationKind) -> bool {
 }
 
 impl<'data> ObjectLayout<'data> {
-    pub(crate) fn relocations(&self, index: SectionIndex) -> Result<&'data [elf::Rela]> {
+    pub(crate) fn relocations(&self, index: SectionIndex) -> Result<RelocationList<'data>> {
         self.object.relocations(index, &self.relocations)
     }
 }

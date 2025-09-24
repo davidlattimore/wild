@@ -3,10 +3,12 @@
 
 use crate::arch::Arch;
 use crate::elf::File;
+use crate::elf::RelocationSequence;
 use crate::error::Result;
 use anyhow::Context;
 use object::LittleEndian;
 use object::SymbolIndex;
+use object::read::elf::Crel;
 use object::read::elf::RelocationSections;
 use std::borrow::Cow;
 use std::ffi::OsStr;
@@ -106,41 +108,19 @@ fn section_data_with_relocations<A: Arch>(
             let mut section_data = object.section_data_cow(section)?.into_owned();
 
             // Apply relocations.
-            let relocations = object.relocations(index, relocations)?;
-
-            for rel in relocations {
-                let sym_index = rel.r_sym(LittleEndian, false);
-                let symbol = object.symbol(SymbolIndex(sym_index as usize))?;
-
-                let mut value = symbol
-                    .st_value
-                    .get(LittleEndian)
-                    .wrapping_add(rel.r_addend.get(LittleEndian) as u64);
-
-                let symbol_section = object.section(object::SectionIndex(
-                    symbol.st_shndx.get(LittleEndian) as usize,
-                ))?;
-
-                let data_offset = rel.r_offset.get(LittleEndian) as usize;
-
-                if symbol_section.sh_offset.get(LittleEndian)
-                    == section_of_interest.sh_offset.get(LittleEndian)
-                {
-                    value += SECTION_LOAD_ADDRESS;
-                }
-
-                let r_type = A::relocation_from_raw(rel.r_type(LittleEndian, false))?;
-
-                let linker_utils::elf::RelocationSize::ByteSize(num_bytes) = r_type.size else {
-                    continue;
-                };
-
-                if r_type.kind == linker_utils::elf::RelocationKind::Absolute {
-                    section_data
-                        .get_mut(data_offset..data_offset + num_bytes)
-                        .context("Invalid relocation offset")?
-                        .copy_from_slice(&value.to_le_bytes()[..num_bytes]);
-                }
+            match object.relocations(index, relocations)? {
+                crate::elf::RelocationList::Rela(relocations) => apply_section_relocations::<A>(
+                    object,
+                    section_of_interest,
+                    &mut section_data,
+                    relocations.crel_iter(),
+                )?,
+                crate::elf::RelocationList::Crel(relocations) => apply_section_relocations::<A>(
+                    object,
+                    section_of_interest,
+                    &mut section_data,
+                    relocations.flat_map(|r| r.ok()),
+                )?,
             }
 
             Cow::Owned(section_data)
@@ -149,6 +129,49 @@ fn section_data_with_relocations<A: Arch>(
     };
 
     Ok(data)
+}
+
+fn apply_section_relocations<A: Arch>(
+    object: &File<'_>,
+    section_of_interest: &object::elf::SectionHeader64<LittleEndian>,
+    section_data: &mut [u8],
+    relocations: impl Iterator<Item = Crel>,
+) -> Result {
+    for rel in relocations {
+        let sym_index = rel.r_sym;
+        let symbol = object.symbol(SymbolIndex(sym_index as usize))?;
+
+        let mut value = symbol
+            .st_value
+            .get(LittleEndian)
+            .wrapping_add(rel.r_addend as u64);
+
+        let symbol_section = object.section(object::SectionIndex(
+            symbol.st_shndx.get(LittleEndian) as usize,
+        ))?;
+
+        let data_offset = rel.r_offset as usize;
+
+        if symbol_section.sh_offset.get(LittleEndian)
+            == section_of_interest.sh_offset.get(LittleEndian)
+        {
+            value += SECTION_LOAD_ADDRESS;
+        }
+
+        let r_type = A::relocation_from_raw(rel.r_type)?;
+
+        let linker_utils::elf::RelocationSize::ByteSize(num_bytes) = r_type.size else {
+            continue;
+        };
+
+        if r_type.kind == linker_utils::elf::RelocationKind::Absolute {
+            section_data
+                .get_mut(data_offset..data_offset + num_bytes)
+                .context("Invalid relocation offset")?
+                .copy_from_slice(&value.to_le_bytes()[..num_bytes]);
+        }
+    }
+    Ok(())
 }
 
 impl Display for SourceInfo {

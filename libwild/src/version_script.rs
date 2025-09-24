@@ -9,12 +9,12 @@ use crate::error;
 use crate::error::Result;
 use crate::hash::PassThroughHasher;
 use crate::hash::PreHashed;
-use crate::input_data::VersionScriptData;
+use crate::input_data::ScriptData;
 use crate::linker_script::skip_comments_and_whitespace;
 use crate::symbol::UnversionedSymbolName;
 use glob::Pattern;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use hashbrown::HashSet;
+use hashbrown::HashMap;
 use symbolic_demangle::Demangle;
 use symbolic_demangle::DemangleOptions;
 use winnow::BStr;
@@ -25,9 +25,9 @@ use winnow::token::take_until;
 use winnow::token::take_while;
 
 #[derive(Debug, Default)]
-struct MatchRules<'data> {
-    general: BasicMatchRules<'data>,
-    cxx: BasicMatchRules<'data>,
+pub(crate) struct MatchRules<'data> {
+    pub(crate) general: BasicMatchRules<'data>,
+    pub(crate) cxx: BasicMatchRules<'data>,
 }
 
 #[derive(Debug, Default)]
@@ -51,9 +51,11 @@ pub(crate) struct VersionScript<'data> {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-enum SymbolMatcher<'data> {
+pub(crate) enum SymbolMatcher<'data> {
     // Exact match.
     Exact(&'data [u8]),
+    // Exact match with escape sequences that need unescaping.
+    EscapedExact(&'data [u8]),
     // A glob pattern with a '*' token.
     StarGlob(Pattern),
     // A glob pattern without any '*' token.
@@ -63,8 +65,9 @@ enum SymbolMatcher<'data> {
 }
 
 #[derive(Debug, Default)]
-struct BasicMatchRules<'data> {
+pub(crate) struct BasicMatchRules<'data> {
     exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
+    escaped_exact: HashSet<Vec<u8>>,
     star_globs: Vec<Pattern>,
     nonstar_globs: Vec<Pattern>,
     matches_all: bool,
@@ -79,29 +82,55 @@ impl<'data> BasicMatchRules<'data> {
             SymbolMatcher::Exact(exact) => {
                 self.exact.insert(UnversionedSymbolName::prehashed(exact));
             }
+            SymbolMatcher::EscapedExact(escaped) => {
+                let unescaped = unescape_pattern(escaped);
+                self.escaped_exact.insert(unescaped);
+            }
         }
     }
 
     #[inline]
-    fn matches_exact(&self, lookup: &mut SymbolLookupNameWrapper, mangled: bool) -> bool {
-        // Early exit before we actually demangle the name.
-        if self.exact.is_empty() {
-            return false;
+    pub(crate) fn matches_exact(
+        &self,
+        lookup: &mut SymbolLookupNameWrapper,
+        mangled: bool,
+    ) -> bool {
+        // Check normal exact matches first
+        if !self.exact.is_empty() {
+            if mangled {
+                let demangled_name = lookup.get_demangled_name();
+                // The creation of UnversionedSymbolName should be relatively cheap as we construct
+                // it at most twice.
+                if self
+                    .exact
+                    .contains(&UnversionedSymbolName::prehashed(demangled_name.as_bytes()))
+                {
+                    return true;
+                }
+            } else if self.exact.contains(lookup.name) {
+                return true;
+            }
         }
 
-        if mangled {
-            let demangled_name = lookup.get_demangled_name();
-            // The creation of UnversionedSymbolName should be relatively cheap as we construct
-            // it at most twice.
-            self.exact
-                .contains(&UnversionedSymbolName::prehashed(demangled_name.as_bytes()))
-        } else {
-            self.exact.contains(lookup.name)
+        // Check escaped exact matches
+        if !self.escaped_exact.is_empty() {
+            let symbol_bytes = if mangled {
+                let demangled_name = lookup.get_demangled_name();
+                demangled_name.as_bytes()
+            } else {
+                lookup.name.bytes()
+            };
+
+            if self.escaped_exact.contains(symbol_bytes) {
+                return true;
+            }
         }
+
+        false
     }
 
     #[inline]
-    fn matches_glob(
+    pub(crate) fn matches_glob(
         &self,
         lookup: &mut SymbolLookupNameWrapper,
         non_star: bool,
@@ -125,6 +154,11 @@ impl<'data> BasicMatchRules<'data> {
 
         globs.any(|pattern| pattern.matches(name))
     }
+
+    #[inline]
+    pub(crate) fn matches_all(&self) -> bool {
+        self.matches_all
+    }
 }
 
 #[derive(Debug)]
@@ -134,16 +168,22 @@ enum VersionRuleSection {
 }
 
 #[derive(Debug)]
-enum ParsedSymbolMatcher<'data> {
+pub(crate) enum ParsedSymbolMatcher<'data> {
     Single(SymbolMatcher<'data>),
+    Multiple(Vec<SymbolMatcher<'data>>),
     CxxMatchers(Vec<SymbolMatcher<'data>>),
 }
 
 impl<'data> MatchRules<'data> {
-    fn push(&mut self, pattern: ParsedSymbolMatcher<'data>) {
+    pub(crate) fn push(&mut self, pattern: ParsedSymbolMatcher<'data>) {
         match pattern {
             ParsedSymbolMatcher::Single(single) => {
                 self.general.push(single);
+            }
+            ParsedSymbolMatcher::Multiple(matchers) => {
+                for matcher in matchers {
+                    self.general.push(matcher);
+                }
             }
             ParsedSymbolMatcher::CxxMatchers(matchers) => {
                 for matcher in matchers {
@@ -154,14 +194,14 @@ impl<'data> MatchRules<'data> {
     }
 }
 
-struct SymbolLookupNameWrapper<'data> {
+pub(crate) struct SymbolLookupNameWrapper<'data> {
     name: &'data PreHashed<UnversionedSymbolName<'data>>,
     name_string: Option<&'data str>,
     demangled_name: Option<String>,
 }
 
 impl<'data> SymbolLookupNameWrapper<'data> {
-    fn from_name(name: &'data PreHashed<UnversionedSymbolName<'data>>) -> Self {
+    pub(crate) fn from_name(name: &'data PreHashed<UnversionedSymbolName<'data>>) -> Self {
         Self {
             name,
             name_string: None,
@@ -169,7 +209,7 @@ impl<'data> SymbolLookupNameWrapper<'data> {
         }
     }
 
-    fn get_name_string(&mut self) -> &'data str {
+    pub(crate) fn get_name_string(&mut self) -> &'data str {
         self.name_string.get_or_insert_with(|| {
             str::from_utf8(self.name.bytes()).unwrap_or_else(|_| {
                 panic!(
@@ -180,7 +220,7 @@ impl<'data> SymbolLookupNameWrapper<'data> {
         })
     }
 
-    fn get_demangled_name(&mut self) -> &String {
+    pub(crate) fn get_demangled_name(&mut self) -> &String {
         // Extract the name string before the closure to avoid double mutable borrow
         let name_string = self.get_name_string();
         self.demangled_name.get_or_insert_with(|| {
@@ -339,7 +379,7 @@ fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<Vers
 
 impl<'data> VersionScript<'data> {
     #[tracing::instrument(skip_all, name = "Parse version script")]
-    pub(crate) fn parse(data: VersionScriptData<'data>) -> Result<VersionScript<'data>> {
+    pub(crate) fn parse(data: ScriptData<'data>) -> Result<VersionScript<'data>> {
         parse_version_script
             .parse(BStr::new(data.raw))
             .map_err(|err| error!("Failed to parse version script:\n{err}"))
@@ -422,7 +462,7 @@ fn parse_version_section<'data>(input: &mut &'data BStr) -> winnow::Result<Versi
             "local:".parse_next(input)?;
             section = Some(VersionRuleSection::Local);
         } else {
-            let matcher = parse_matcher(input)?;
+            let matcher = parse_matcher(input, false)?;
 
             match section {
                 Some(VersionRuleSection::Global) | None => {
@@ -438,10 +478,26 @@ fn parse_version_section<'data>(input: &mut &'data BStr) -> winnow::Result<Versi
     Ok(out)
 }
 
-fn parse_matcher<'data>(input: &mut &'data BStr) -> winnow::Result<ParsedSymbolMatcher<'data>> {
-    if input.starts_with(b"extern \"C++\"") {
+pub(crate) fn parse_matcher<'data>(
+    input: &mut &'data BStr,
+    without_semicolon: bool, // e.g. symbol to export passed via CLI arg
+) -> winnow::Result<ParsedSymbolMatcher<'data>> {
+    if input.starts_with(b"extern ") {
         let mut matchers = Vec::new();
-        b"extern \"C++\"".parse_next(input)?;
+        b"extern ".parse_next(input)?;
+        let cxx = if input.starts_with(b"\"C++\"") {
+            b"\"C++\"".parse_next(input)?;
+            true
+        } else if input.starts_with(b"\"C\"") {
+            b"\"C\"".parse_next(input)?;
+            false
+        } else {
+            let unsupported_extern: String = "{".parse_to().parse_next(input)?;
+            return Err(ContextError::from_external_error(
+                input,
+                VersionScriptError::UnsupportedExtern(unsupported_extern),
+            ));
+        };
         skip_comments_and_whitespace(input)?;
         '{'.parse_next(input)?;
 
@@ -454,21 +510,49 @@ fn parse_matcher<'data>(input: &mut &'data BStr) -> winnow::Result<ParsedSymbolM
                 break;
             }
 
-            let matcher = parse_matcher(input)?;
+            // Symbols at the end of `extern` blocks may omit semicolons
+            let expect_semicolon = {
+                let remaining = &**input;
+                if let Some(close_pos) = remaining.windows(2).position(|w| w == b"};") {
+                    remaining[..close_pos].contains(&b';')
+                } else {
+                    without_semicolon
+                }
+            };
+
+            let matcher = parse_matcher(input, !expect_semicolon)?;
             let ParsedSymbolMatcher::Single(matcher) = matcher else {
+                let unexpected_extern = if matches!(matcher, ParsedSymbolMatcher::CxxMatchers(_)) {
+                    "C++"
+                } else {
+                    "C"
+                };
                 return Err(ContextError::from_external_error(
                     input,
-                    VersionScriptError::UnexpectedExternCxx,
+                    VersionScriptError::UnexpectedExtern(unexpected_extern.to_string()),
                 ));
             };
 
             matchers.push(matcher);
         }
 
-        return Ok(ParsedSymbolMatcher::CxxMatchers(matchers));
+        if cxx {
+            return Ok(ParsedSymbolMatcher::CxxMatchers(matchers));
+        }
+        return Ok(ParsedSymbolMatcher::Multiple(matchers));
     }
 
-    let token = take_until(1.., b';').parse_next(input)?;
+    let token = if without_semicolon {
+        if input.contains(&b'}') {
+            take_until(1.., b'}').parse_next(input)?
+        } else {
+            // TODO: Clippy bug
+            #[allow(clippy::needless_borrow)]
+            &input
+        }
+    } else {
+        take_until(1.., b';').parse_next(input)?
+    };
 
     skip_comments_and_whitespace(input)?;
 
@@ -484,28 +568,26 @@ fn parse_matcher<'data>(input: &mut &'data BStr) -> winnow::Result<ParsedSymbolM
             .and_then(|t| t.strip_suffix(b"\""))
         {
             SymbolMatcher::Exact(unquoted)
-        } else if token.contains(&b'\\') {
-            return Err(ContextError::from_external_error(
-                input,
-                VersionScriptError::GlobWithQuote,
-            ));
         } else if token == b"*" {
             SymbolMatcher::MatchesAll
-        } else if b"[]?*".iter().any(|c| token.contains(c)) {
-            let pattern = Pattern::new(str::from_utf8(token).map_err(|_| {
-                ContextError::from_external_error(input, VersionScriptError::InvalidUtf8String)
-            })?)
-            .map_err(|_: glob::PatternError| {
-                ContextError::from_external_error(input, VersionScriptError::InvalidGlobPattern)
-            })?;
-
-            if token.contains(&b'*') {
-                SymbolMatcher::StarGlob(pattern)
-            } else {
-                SymbolMatcher::NonstarGlob(pattern)
-            }
         } else {
-            SymbolMatcher::Exact(token)
+            let glob_type = analyze_glob_pattern(token);
+
+            let create_pattern = |token: &[u8]| -> winnow::Result<Pattern> {
+                Pattern::new(str::from_utf8(token).map_err(|_| {
+                    ContextError::from_external_error(input, VersionScriptError::InvalidUtf8String)
+                })?)
+                .map_err(|_| {
+                    ContextError::from_external_error(input, VersionScriptError::InvalidGlobPattern)
+                })
+            };
+
+            match glob_type {
+                GlobPatternType::Exact => SymbolMatcher::Exact(token),
+                GlobPatternType::EscapedExact => SymbolMatcher::EscapedExact(token),
+                GlobPatternType::Star => SymbolMatcher::StarGlob(create_pattern(token)?),
+                GlobPatternType::NonStar => SymbolMatcher::NonstarGlob(create_pattern(token)?),
+            }
         },
     ))
 }
@@ -514,13 +596,68 @@ fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]>
     take_while(1.., |b| !b" (){}\n\t".contains(&b)).parse_next(input)
 }
 
+enum GlobPatternType {
+    Exact,
+    EscapedExact,
+    Star,
+    NonStar,
+}
+
+fn analyze_glob_pattern(pattern: &[u8]) -> GlobPatternType {
+    let mut pattern_type = GlobPatternType::Exact;
+    let mut it = pattern.iter();
+
+    while let Some(&c) = it.next() {
+        match c {
+            b'\\' => {
+                // Found an escape sequence, mark as EscapedExact if no globs found yet
+                if matches!(pattern_type, GlobPatternType::Exact) {
+                    pattern_type = GlobPatternType::EscapedExact;
+                }
+                it.next();
+            }
+            b'*' => {
+                return GlobPatternType::Star;
+            }
+            b'[' | b']' | b'?' => {
+                pattern_type = GlobPatternType::NonStar;
+            }
+            _ => {}
+        }
+    }
+
+    pattern_type
+}
+
+/// Unescapes a pattern by removing backslashes that escape special characters.
+/// For exact patterns, we need to normalize escaped characters to their literal form.
+fn unescape_pattern(pattern: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(pattern.len());
+    let mut it = pattern.iter();
+
+    while let Some(&c) = it.next() {
+        if c == b'\\' {
+            if let Some(&next_c) = it.next() {
+                result.push(next_c);
+            } else {
+                // If backslash is at the end, include it as-is
+                result.push(c);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+
+    result
+}
+
 #[derive(Debug)]
 enum VersionScriptError {
     UnknownParentVersion,
     InvalidUtf8String,
     InvalidGlobPattern,
-    GlobWithQuote,
-    UnexpectedExternCxx,
+    UnexpectedExtern(String),
+    UnsupportedExtern(String),
 }
 
 impl std::error::Error for VersionScriptError {}
@@ -529,12 +666,12 @@ impl std::fmt::Display for VersionScriptError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VersionScriptError::InvalidGlobPattern => write!(f, "Invalid glob pattern"),
-            VersionScriptError::GlobWithQuote => write!(f, "Globs with quote are unsupported"),
             VersionScriptError::InvalidUtf8String => write!(f, "Invalid utf-8 string"),
             VersionScriptError::UnknownParentVersion => write!(f, "Unknown parent version"),
-            VersionScriptError::UnexpectedExternCxx => {
-                write!(f, "Unexpected extern \"C++\" in parsing")
+            VersionScriptError::UnexpectedExtern(s) => {
+                write!(f, "Unexpected extern \"{s}\" in parsing")
             }
+            VersionScriptError::UnsupportedExtern(s) => write!(f, "Unsupported extern \"{s}\""),
         }
     }
 }
@@ -554,7 +691,7 @@ mod tests {
 
     #[test]
     fn test_parse_simple_version_script() {
-        let data = VersionScriptData {
+        let data = ScriptData {
             raw: br#"
                     # Comment starting with a hash
                     {global:
@@ -598,7 +735,7 @@ mod tests {
 
     #[test]
     fn test_parse_version_script() {
-        let data = VersionScriptData {
+        let data = ScriptData {
             raw: br#"
                 VERS_1.1 {
                     global:
@@ -656,7 +793,7 @@ mod tests {
 
     #[test]
     fn single_line_version_script() {
-        let data = VersionScriptData {
+        let data = ScriptData {
             raw: br#"VERSION42 { global: *; };"#,
         };
         VersionScript::parse(data).unwrap();
@@ -664,7 +801,7 @@ mod tests {
 
     #[test]
     fn extern_cxx_version_script() {
-        let data = VersionScriptData {
+        let data = ScriptData {
             raw: br#"
                 "VERSION42 {
                     local:
@@ -727,10 +864,85 @@ mod tests {
     }
 
     #[test]
+    fn extern_c_version_script() {
+        let data = ScriptData {
+            raw: br#"
+                "VERSION42 {
+                    local:
+                        foo;
+                        bar;
+                        extern "C" {
+                            baz;
+                        };
+                };"#,
+        };
+        let script = VersionScript::parse(data).unwrap();
+        let version_body = &script.versions[1].version_body;
+
+        assert_equal(
+            version_body
+                .locals
+                .general
+                .exact
+                .iter()
+                .map(|s| std::str::from_utf8(s.bytes()).unwrap())
+                .sorted(),
+            ["bar", "baz", "foo"],
+        );
+    }
+
+    #[test]
+    fn extern_without_semicolon_version_script() {
+        let data = ScriptData {
+            raw: br#"
+                {
+                    extern "C" {
+                        foo
+                    };
+                };"#,
+        };
+        let script = VersionScript::parse(data).unwrap();
+        let version_body = &script.versions[0].version_body;
+
+        assert_equal(
+            version_body
+                .globals
+                .general
+                .exact
+                .iter()
+                .map(|s| std::str::from_utf8(s.bytes()).unwrap()),
+            ["foo"],
+        );
+
+        let data = ScriptData {
+            raw: br#"
+                {
+                    extern "C++" {
+                        bar;
+                        baz
+                    };
+                };"#,
+        };
+        let script = VersionScript::parse(data).unwrap();
+        let version_body = &script.versions[0].version_body;
+
+        assert_equal(
+            version_body
+                .globals
+                .cxx
+                .exact
+                .iter()
+                .map(|s| std::str::from_utf8(s.bytes()).unwrap())
+                .sorted(),
+            ["bar", "baz"],
+        );
+    }
+
+    #[test]
     fn invalid_version_scripts() {
         #[track_caller]
         fn assert_invalid(src: &str) {
-            let data = VersionScriptData {
+            let data = ScriptData {
                 raw: src.as_bytes(),
             };
             assert!(VersionScript::parse(data).is_err());
@@ -751,7 +963,7 @@ mod tests {
 
     #[test]
     fn test_version_order() {
-        let data = VersionScriptData {
+        let data = ScriptData {
             raw: br#"
                 VERS_1.1 {
                     foo;
@@ -778,5 +990,57 @@ mod tests {
 
         // Star match
         assert_eq!(script.find_match(&sym(b"foo_bar")).unwrap().0, 2);
+    }
+
+    #[test]
+    fn test_escape_sequences() {
+        let data = ScriptData {
+            raw: br#"
+                {
+                    global:
+                        foo\*bar;
+                        baz\?;
+                        foo1\\foo2;
+                        foo3?foo4*;
+                        b*;
+                        f?;
+                };
+            "#,
+        };
+        let script = VersionScript::parse(data).unwrap();
+        let version_body = &script.versions[0].version_body;
+
+        let escaped_patterns: HashSet<&[u8]> = version_body
+            .globals
+            .general
+            .escaped_exact
+            .iter()
+            .map(|v| v.as_slice())
+            .collect();
+
+        assert!(escaped_patterns.contains(&b"foo*bar"[..]));
+        assert!(escaped_patterns.contains(&b"baz?"[..]));
+        assert!(escaped_patterns.contains(&b"foo1\\foo2"[..]));
+
+        let star_patterns: Vec<&str> = version_body
+            .globals
+            .general
+            .star_globs
+            .iter()
+            .map(|glob| glob.as_str())
+            .collect();
+
+        assert!(star_patterns.contains(&"b*"));
+        assert!(star_patterns.contains(&"foo3?foo4*"));
+
+        let nonstar_patterns: Vec<&str> = version_body
+            .globals
+            .general
+            .nonstar_globs
+            .iter()
+            .map(|glob| glob.as_str())
+            .collect();
+
+        assert!(nonstar_patterns.contains(&"f?"));
     }
 }

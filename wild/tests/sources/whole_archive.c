@@ -8,13 +8,13 @@ extern int __start_foo[];
 extern int __stop_foo[];
 
 void _start(void) {
-    runtime_init();
+  runtime_init();
 
-    int value = 0;
+  int value = 0;
 
-    for (int *foo = __start_foo; foo < __stop_foo; ++foo) {
-        value += *foo;
-    }
+  for (int* foo = __start_foo; foo < __stop_foo; ++foo) {
+    value += *foo;
+  }
 
-    exit_syscall(value);
+  exit_syscall(value);
 }

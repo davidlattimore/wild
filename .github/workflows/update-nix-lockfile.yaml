@@ -14,16 +14,20 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v32
+        uses: nixbuild/nix-quick-install-action@v33
 
       - name: Update lock file
         run: |
           nix flake update -L --show-trace
 
       - name: Commit changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git branch -D nix_update || true
           git checkout -b nix_update
@@ -31,4 +35,4 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git add flake.lock
           git commit -m "Update nix flake.lock"
-          git push -f origin nix_update
+          git push -f https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }} nix_update

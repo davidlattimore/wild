@@ -130,11 +130,13 @@ use std::collections::HashSet;
 use std::env;
 use std::fmt::Display;
 use std::fs::File;
+use std::fs::read_dir;
 use std::hash::Hash;
 use std::hash::Hasher;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -162,23 +164,25 @@ fn build_dir() -> PathBuf {
     std::env::var("WILD_TEST_BUILD_DIR").map_or(base_dir().join("tests/build"), PathBuf::from)
 }
 
+#[derive(Debug)]
 struct ProgramInputs {
     source_file: &'static str,
 }
 
+#[derive(Debug)]
 struct Program<'a> {
     link_output: LinkOutput,
     assertions: &'a Assertions,
     shared_objects: Vec<LinkerInput>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Linker {
     Wild,
     ThirdParty(ThirdPartyLinker),
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ThirdPartyLinker {
     name: &'static str,
     gcc_name: &'static str,
@@ -260,12 +264,14 @@ fn wild_path() -> &'static Path {
     Path::new(env!("CARGO_BIN_EXE_wild"))
 }
 
+#[derive(Debug)]
 struct LinkOutput {
     binary: PathBuf,
     command: LinkCommand,
     linker_used: Linker,
 }
 
+#[derive(Debug)]
 struct LinkCommand {
     command: Command,
     input_commands: Vec<LinkCommand>,
@@ -403,12 +409,12 @@ fn is_musl_used() -> bool {
     os_info::get().os_type() == Type::Alpine
 }
 
-fn host_supports_clang_with_tls_desc() -> bool {
+fn host_supports_clang_with_option(option: &str) -> bool {
     static CLANG_SUPPORTS_TLS_DESC: OnceLock<bool> = OnceLock::new();
 
     *CLANG_SUPPORTS_TLS_DESC.get_or_init(|| {
         let mut clang = Command::new("clang")
-            .args(["-mtls-dialect=gnu2", "-x", "c", "-", "-o/dev/null"])
+            .args([option, "-x", "c", "-", "-o/dev/null"])
             .stdin(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
@@ -422,7 +428,7 @@ fn host_supports_clang_with_tls_desc() -> bool {
     })
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Config {
     name: String,
     variant_num: Option<u32>,
@@ -447,6 +453,7 @@ struct Config {
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
     requires_clang_with_tlsdesc: bool,
+    requires_clang_with_crel: bool,
     requires_nightly_rustc: bool,
     auto_add_objects: bool,
     rustc_channel: RustcChannel,
@@ -456,7 +463,7 @@ struct Config {
 }
 
 /// These configs are used by the config file specified in `$WILD_TEST_CONFIG`
-#[derive(serde::Deserialize, Default, Clone, PartialEq, Eq)]
+#[derive(serde::Deserialize, Debug, Default, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct TestConfig {
     #[serde(default)]
@@ -500,7 +507,7 @@ enum Mode {
     Unspecified,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct DirectConfig {
     mode: Mode,
 }
@@ -509,7 +516,10 @@ impl Config {
     fn should_skip(&self, arch: Architecture) -> bool {
         !self.support_architectures.contains(&arch)
             || self.requires_glibc && !cfg!(target_env = "gnu")
-            || (self.requires_clang_with_tlsdesc && !host_supports_clang_with_tls_desc())
+            || (self.requires_clang_with_tlsdesc
+                && !host_supports_clang_with_option("-mtls-dialect=gnu2"))
+            || (self.requires_clang_with_crel
+                && !host_supports_clang_with_option("-Wa,--crel,--allow-experimental-crel"))
             || (arch != get_host_architecture()
                 && (self.compiler == "clang" || !self.cross_enabled))
             || (self.test_config.rustc_channel != RustcChannel::Nightly
@@ -535,7 +545,7 @@ impl Config {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LinkerDriver {
     /// Invoke the linker via a compiler.
     Compiler(Compiler),
@@ -545,7 +555,7 @@ enum LinkerDriver {
 }
 
 /// A compiler via which the linker is invoked.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Compiler {
     Gcc(CLanguage),
     Clang(CLanguage),
@@ -569,7 +579,7 @@ impl FilenameArgumentPair {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Dep {
     files: Vec<FilenameArgumentPair>,
     input_type: InputType,
@@ -579,7 +589,7 @@ struct Dep {
     template: Option<Vec<String>>,
 }
 
-#[derive(Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Assertions {
     expected_symtab_entries: Vec<ExpectedSymtabEntry>,
     expected_dynsym_entries: Vec<ExpectedSymtabEntry>,
@@ -589,7 +599,7 @@ struct Assertions {
     contains_strings: Vec<String>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ExpectedSymtabEntry {
     name: String,
     section_name: Option<String>,
@@ -691,6 +701,7 @@ impl Config {
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
             requires_clang_with_tlsdesc: false,
+            requires_clang_with_crel: false,
             requires_nightly_rustc: false,
             auto_add_objects: true,
             rustc_channel: RustcChannel::Default,
@@ -818,9 +829,13 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                     .contains_strings
                     .push(arg.trim().to_owned()),
                 "Mode" => {
-                    config.linker_driver.direct_mut()?.mode = arg
+                    let mode: Mode = arg
                         .parse()
-                        .with_context(|| format!("Invalid Mode `{arg}`"))?
+                        .with_context(|| format!("Invalid Mode `{arg}`"))?;
+                    if mode == Mode::Dynamic {
+                        config.should_run = false;
+                    }
+                    config.linker_driver.direct_mut()?.mode = mode;
                 }
                 "DiffIgnore" => config.diff_ignore.push(arg.trim().to_owned()),
                 "DiffEnabled" => {
@@ -894,6 +909,9 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
                 "RequiresClangWithTlsDesc" => {
                     config.requires_clang_with_tlsdesc = arg.to_lowercase().parse()?;
+                }
+                "RequiresClangWithCrel" => {
+                    config.requires_clang_with_crel = arg.to_lowercase().parse()?;
                 }
                 "RequiresNightlyRustc" => {
                     config.requires_nightly_rustc = arg.to_lowercase().parse()?;
@@ -1028,9 +1046,15 @@ impl Program<'_> {
 
         let output = String::from_utf8_lossy(&output);
 
-        let exit_code = status
-            .code()
-            .ok_or_else(|| error!("Binary exited with signal: {output}"))?;
+        let exit_code = status.code().ok_or_else(|| {
+            let signal = status.signal().unwrap();
+            let possible_core_dumped_msg = if status.core_dumped() {
+                " (core dumped) "
+            } else {
+                ""
+            };
+            error!("Binary exited{possible_core_dumped_msg} with signal {signal}: {output}")
+        })?;
 
         if exit_code != 42 {
             bail!("Binary exited with unexpected exit code {exit_code}: {output}");
@@ -1088,7 +1112,7 @@ impl Display for Config {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 struct LinkerInput {
     prefix_arg: Option<&'static str>,
     path: PathBuf,
@@ -1144,10 +1168,10 @@ fn build_linker_input(
     linker: &Linker,
     cross_arch: Option<Architecture>,
 ) -> Result<LinkerInput> {
-    if let [single_file] = dep.files.as_slice() {
-        if single_file.filename.ends_with(".a") {
-            return Ok(LinkerInput::new(src_path(&single_file.filename)));
-        }
+    if let [single_file] = dep.files.as_slice()
+        && single_file.filename.ends_with(".a")
+    {
+        return Ok(LinkerInput::new(src_path(&single_file.filename)));
     }
 
     let config = config.config_for_deps();
@@ -1965,12 +1989,10 @@ impl Assertions {
         }
 
         for sym in symbols {
-            if let Ok(name) = sym.name() {
-                if self.no_sym.contains(name) {
-                    bail!(
-                        "Symbol `{name}` was supposed to be absent, but was found in {table_name}"
-                    );
-                }
+            if let Ok(name) = sym.name()
+                && self.no_sym.contains(name)
+            {
+                bail!("Symbol `{name}` was supposed to be absent, but was found in {table_name}");
             }
         }
 
@@ -1989,30 +2011,29 @@ fn verify_symbol_assertions(
         .collect::<HashMap<_, _>>();
 
     for sym in symbols {
-        if let Ok(name) = sym.name() {
-            if let Some(exp) = missing.remove(name) {
-                if let object::SymbolSection::Section(index) = sym.section() {
-                    let section = obj.section_by_index(index)?;
-                    let section_name = section.name()?;
+        if let Ok(name) = sym.name()
+            && let Some(exp) = missing.remove(name)
+            && let object::SymbolSection::Section(index) = sym.section()
+        {
+            let section = obj.section_by_index(index)?;
+            let section_name = section.name()?;
 
-                    if let Some(exp_name) = exp.section_name.as_ref() {
-                        if section_name != exp_name {
-                            bail!(
-                                "Expected symbol `{name}` to be in section `{exp_name}`, \
+            if let Some(exp_name) = exp.section_name.as_ref() {
+                if section_name != exp_name {
+                    bail!(
+                        "Expected symbol `{name}` to be in section `{exp_name}`, \
                                 but it was in `{section_name}`"
-                            );
-                        }
+                    );
+                }
 
-                        if let Some(expected_offset) = exp.section_offset {
-                            let actual_offset = sym.address().wrapping_sub(section.address());
-                            if expected_offset != actual_offset {
-                                bail!(
-                                    "Expected symbol `{name}` to be at offset {expected_offset} \
+                if let Some(expected_offset) = exp.section_offset {
+                    let actual_offset = sym.address().wrapping_sub(section.address());
+                    if expected_offset != actual_offset {
+                        bail!(
+                            "Expected symbol `{name}` to be at offset {expected_offset} \
                                     in section `{exp_name}`, but it was actually at offset {}",
-                                    actual_offset as i64
-                                );
-                            }
-                        }
+                            actual_offset as i64
+                        );
                     }
                 }
             }
@@ -2090,17 +2111,18 @@ impl Compiler {
 
 impl Display for LinkCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(save_dir) = self.opt_save_dir.as_ref() {
-            if save_dir.exists() && self.linker == Linker::Wild {
-                write!(
-                    f,
-                    "WILD_WRITE_LAYOUT=1 WILD_WRITE_TRACE=1 OUT={} {}/run-with cargo run \
+        if let Some(save_dir) = self.opt_save_dir.as_ref()
+            && save_dir.exists()
+            && self.linker == Linker::Wild
+        {
+            write!(
+                f,
+                "WILD_WRITE_LAYOUT=1 WILD_WRITE_TRACE=1 OUT={} {}/run-with cargo run \
                      --bin wild --",
-                    self.output_path.display(),
-                    save_dir.display()
-                )?;
-                return Ok(());
-            }
+                self.output_path.display(),
+                save_dir.display()
+            )?;
+            return Ok(());
         }
 
         for sub in &self.input_commands {
@@ -2297,16 +2319,16 @@ fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Re
 fn setup_wild_ld_symlink() -> Result {
     let wild = wild_path();
     let wild_ld_path = wild.with_file_name("ld");
-    if let Err(error) = std::os::unix::fs::symlink(wild, &wild_ld_path) {
-        if error.kind() != std::io::ErrorKind::AlreadyExists {
-            Err(error).with_context(|| {
-                format!(
-                    "Failed to symlink `{}` to `{}`",
-                    wild_ld_path.display(),
-                    wild.display()
-                )
-            })?
-        }
+    if let Err(error) = std::os::unix::fs::symlink(wild, &wild_ld_path)
+        && error.kind() != std::io::ErrorKind::AlreadyExists
+    {
+        Err(error).with_context(|| {
+            format!(
+                "Failed to symlink `{}` to `{}`",
+                wild_ld_path.display(),
+                wild.display()
+            )
+        })?
     }
     Ok(())
 }
@@ -2326,12 +2348,12 @@ fn find_bin(names: &[&str]) -> Result<PathBuf> {
 fn find_cross_paths(name: &str) -> HashMap<Architecture, PathBuf> {
     [Architecture::AArch64, Architecture::RISCV64]
         .into_iter()
-        .filter_map(|arch| {
+        .map(|arch| {
             let path = PathBuf::from(format!("/usr/{arch}-linux-gnu/bin/{name}"));
             if path.exists() {
-                Some((arch, path))
+                (arch, path)
             } else {
-                None
+                (arch, PathBuf::from(name))
             }
         })
         .collect()
@@ -2401,18 +2423,7 @@ fn run_with_config(
     arch: Architecture,
     linkers: &[Linker],
 ) -> Result {
-    let mut config = config.clone();
-
     let cross_arch = (arch != get_host_architecture()).then_some(arch);
-
-    // GCC cross compilers, when passed `-fuse-ld=lld` won't look for `ld.lld` on the path.
-    // Instead it'll look for `aarch64-linux-gnu-ld.lld` on the path and look for `ld.lld`
-    // only in the sysroot (e.g. `aarch64-linux-gnu`). We could hack around this by creating
-    // a temporary directory containing a symlink with the appropriate name, but for now, we
-    // just skip running with lld when cross compiling.
-    if cross_arch.is_some() {
-        config.enabled_linkers.remove("lld");
-    }
 
     let programs = linkers
         .iter()
@@ -2420,7 +2431,7 @@ fn run_with_config(
         .map(|linker| {
             let start = Instant::now();
             let result = program_inputs
-                .build(linker, &config, cross_arch)
+                .build(linker, config, cross_arch)
                 .with_context(|| {
                     format!(
                         "Failed to build program `{program_inputs}` \
@@ -2447,8 +2458,8 @@ fn run_with_config(
     }
 
     let start = Instant::now();
-    diff_shared_objects(&config, &programs)?;
-    diff_executables(&config, &programs)?;
+    diff_shared_objects(config, &programs)?;
+    diff_executables(config, &programs)?;
 
     if should_print_timing() {
         println!(
@@ -2503,8 +2514,10 @@ fn integration_test(
         "local_symbol_refs.s",
         "archive_activation.c",
         "exclude-libs.c",
+        "exclude-section.s",
         "common_section.c",
         "string_merging.c",
+        "string-merge-missing-null.c",
         "comments.c",
         "eh_frame.c",
         "symbol-priority.c",
@@ -2515,6 +2528,7 @@ fn integration_test(
         "mixed-verdef-verneed.c",
         "copy-relocations.c",
         "force-undefined.c",
+        "wrap.c",
         "shlib-archive-activation.c",
         "linker-script.c",
         "linker-script-executable.c",
@@ -2544,7 +2558,12 @@ fn integration_test(
         "preinit-array.c",
         "exception.cc",
         "z-defs.c",
-        "export-dynamic.c"
+        "export-dynamic.c",
+        "unresolved-symbols-object.c",
+        "unresolved-symbols-shared.c",
+        "lto-undefined.c",
+        "symbol-version-symver.c",
+        "args-precedence.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
@@ -2582,13 +2601,19 @@ fn integration_test(
     Ok(())
 }
 
-fn get_wild_test_cross() -> Option<Vec<Architecture>> {
-    std::env::var("WILD_TEST_CROSS").ok().map(|cross_arch| {
-        cross_arch
-            .split(',')
-            .filter_map(|s| Architecture::from_str(s).ok())
-            .collect()
-    })
+fn get_wild_test_cross() -> Result<Option<Vec<Architecture>>> {
+    std::env::var("WILD_TEST_CROSS")
+        .ok()
+        .map(|cross_arch| {
+            cross_arch
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(|s| {
+                    Architecture::from_str(s).with_context(|| format!("Unknown cross arch `{s}`"))
+                })
+                .collect()
+        })
+        .transpose()
 }
 
 fn read_test_config() -> Result<TestConfig> {
@@ -2618,9 +2643,67 @@ fn read_test_config() -> Result<TestConfig> {
     };
 
     // The environment variable `WILD_TEST_CROSS` can override the config file setting.
-    if let Some(qemu_arch_from_env) = get_wild_test_cross() {
+    if let Some(qemu_arch_from_env) = get_wild_test_cross()? {
         config.qemu_arch = qemu_arch_from_env;
     }
 
     Ok(config)
+}
+
+#[cfg(test)]
+mod tidy {
+    use super::*;
+
+    #[test]
+    fn check_sources_format() {
+        if std::env::var_os("WILD_TEST_IGNORE_FORMAT").is_some() {
+            return;
+        }
+
+        let extensions = ["c", "cc", "h"];
+        let sources_path = format!("{}/tests/sources", env!("CARGO_MANIFEST_DIR"));
+        let files_iter = read_dir(&sources_path).unwrap().filter_map(|entry| {
+            let path = entry.as_ref().unwrap().path();
+            if path.is_file()
+                && path
+                    .extension()
+                    .is_some_and(|extension| extensions.contains(&extension.to_str().unwrap()))
+            {
+                Some(path)
+            } else {
+                None
+            }
+        });
+
+        let clang_format_out = Command::new("clang-format")
+            .arg("--dry-run")
+            .arg("-Werror")
+            // Undocumented option that forces the colours: https://github.com/llvm/llvm-project/issues/119224
+            .arg("--color")
+            .args(files_iter)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("Failed to spawn `clang-format`, is it installed?");
+
+        if !clang_format_out.status.success() {
+            let stdout = String::from_utf8_lossy(&clang_format_out.stdout);
+            let stderr = String::from_utf8_lossy(&clang_format_out.stderr);
+            let mut out = String::with_capacity(stdout.len() + stderr.len() + 1);
+            if !stdout.is_empty() {
+                out.push_str(&stdout);
+                if !stderr.is_empty() {
+                    out.push('\n');
+                }
+            }
+            if !stderr.is_empty() {
+                out.push_str(&stderr);
+            }
+            panic!(
+                "clang-format check failed:\n{out}\nRun `clang-format -i {sources_path}/*.{{{extensions_str}}}` to fix it.",
+                extensions_str = extensions.join(",")
+            )
+        }
+    }
 }

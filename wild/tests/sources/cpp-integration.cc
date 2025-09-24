@@ -4,7 +4,8 @@
 //#DiffIgnore:section.sdata
 //#DiffIgnore:section.rodata.alignment
 //#DiffIgnore:section.bss.alignment
-// On aarch64, GNU ld puts the copy relocation for this symbol in .data.rel.ro rather than .bss.
+// On aarch64, GNU ld puts the copy relocation for this symbol in .data.rel.ro
+// rather than .bss.
 //#DiffIgnore:dynsym.__stack_chk_guard.section
 //#Object:cpp-integration-2.cc
 
@@ -43,6 +44,14 @@
 //#EnableLinker:lld
 //#Arch: x86_64
 
+//#Config:clang-crel:default
+//#Compiler:clang
+//#CompArgs: -Wa,--crel,--allow-experimental-crel
+//#LinkerDriver:clang++
+//#RequiresClangWithCrel:true
+//#DiffEnabled:false
+//#SkipLinker:ld
+
 #include <iostream>
 #include <string>
 
@@ -51,17 +60,17 @@ const char* char_c();
 const char* char_d();
 
 int main() {
-    std::string foo;
-    foo += "aaa";
-    foo += colon();
-    foo += "b";
-    foo += ":";
-    foo += char_c();
-    foo += ":";
-    foo += "d";
-    if (foo != "aaa:b:c:d") {
-        std::cout << foo << std::endl;
-        return 10;
-    }
-    return 42;
+  std::string foo;
+  foo += "aaa";
+  foo += colon();
+  foo += "b";
+  foo += ":";
+  foo += char_c();
+  foo += ":";
+  foo += "d";
+  if (foo != "aaa:b:c:d") {
+    std::cout << foo << std::endl;
+    return 10;
+  }
+  return 42;
 }

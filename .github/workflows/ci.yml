@@ -25,7 +25,7 @@ jobs:
         container:
           - 'ubuntu:24.04'
           - 'opensuse/tumbleweed:latest'
-          - 'rust:1.87-alpine'
+          - 'rust:1.89-alpine'
         test-qemu:
           - false
         include:
@@ -44,9 +44,11 @@ jobs:
           # Ubuntu 22.04 contains an old lld linker which cannot do a relaxation on AArch64 (required by linker-diff)
           - runs-on: ubuntu-24.04
             container: 'ubuntu:22.04'
+            # clang-format in Ubuntu 22.04 is too old and tries to format differently.
+            ignore-format: true
         exclude: # TODO: https://github.com/actions/runner/issues/1637
           - runs-on: ubuntu-24.04-arm
-            container: 'rust:1.87-alpine'
+            container: 'rust:1.89-alpine'
       fail-fast: false
 
     runs-on: ${{ matrix.runs-on }}
@@ -59,18 +61,19 @@ jobs:
         if: ${{ env.CI == 'true' }}
       - run: echo "WILD_TEST_CROSS=aarch64,riscv64" >> $GITHUB_ENV
         if: ${{ matrix.test-qemu }}
-      - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap binutils-aarch64-linux-gnu binutils-riscv64-linux-gnu git
+      - run: apt-get update && apt-get -y install gcc g++ clang clang-format lld curl bubblewrap binutils-aarch64-linux-gnu binutils-riscv64-linux-gnu
         if: ${{ contains(matrix.container, 'ubuntu') }}
-      - run: apt-get update && apt-get -y install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-riscv64-linux-gnu g++-riscv64-linux-gnu git
+      - run: apt-get update && apt-get -y install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
         if: ${{ matrix.test-qemu }}
-      - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap git
+      - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
         if: ${{ contains(matrix.container, 'opensuse') }}
-      - run: apk add build-base lld clang bash curl git
+      - run: apk add build-base lld clang clang-extra-tools bash curl
         if: ${{ contains(matrix.container, 'alpine') }}
-      - uses: actions/checkout@v4
+      - run: echo "WILD_TEST_IGNORE_FORMAT=1" >> $GITHUB_ENV
+        if: ${{ matrix.ignore-format }}
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
-          submodules: recursive
       - uses: dtolnay/rust-toolchain@nightly
         id: rust-toolchain
         with:
@@ -93,12 +96,12 @@ jobs:
     name: Clippy
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         persist-credentials: false
     # This is where we check that we're not using features from a more recent rust version. When
     # updating this, please also update workspace.package.rust-version in `Cargo.toml`.
-    - uses: dtolnay/rust-toolchain@1.87.0
+    - uses: dtolnay/rust-toolchain@1.89.0
       id: rust-toolchain
       with:
         components: clippy
@@ -117,7 +120,7 @@ jobs:
     name: Check formatting
     runs-on: ubuntu-24.04
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         persist-credentials: false
     - uses: dtolnay/rust-toolchain@nightly
@@ -125,15 +128,29 @@ jobs:
         components: rustfmt
     - run: cargo fmt --all -- --check
 
+  riscv-build:
+    name: RISC-V build
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v5
+      with:
+        persist-credentials: false
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: riscv64gc-unknown-linux-gnu
+    - run: sudo apt-get install gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
+    - run: cp .cargo/config.toml.cross-riscv .cargo/config.toml
+    - run: cargo build --target riscv64gc-unknown-linux-gnu
+
   spelling:
     name: Spell Check with Typos
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
       - name: Spell Check Repo
-        uses: crate-ci/typos@v1.34.0
+        uses: crate-ci/typos@v1.36.2
 
   calc-matrix:
     name: Find Nix checks
@@ -143,21 +160,23 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v32
+        uses: nixbuild/nix-quick-install-action@v33
         with:
           nix_on_tmpfs: true
 
       - name: Calculate check
         id: calc-matrix
         run: |
+          set -euo pipefail
           matrix=$(nix flake show --json | jq -c '.checks."x86_64-linux"|keys_unsorted')
           echo "Matrix: $matrix"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"      
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   nix-checks:
     needs:
@@ -171,19 +190,19 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
+          persist-credentials: false
           fetch-depth: 0
-          submodules: recursive
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v32
+        uses: nixbuild/nix-quick-install-action@v33
 
       - name: Restore Nix store
         uses: nix-community/cache-nix-action/restore@v6
         id: cache
         with:
           primary-key: ${{ runner.os }}-${{ hashFiles( 'flake.lock', 'Cargo.lock') }}
-          
+
       - name: Run ${{ matrix.check }}
         run: nix build .#checks.x86_64-linux.${{ matrix.check }} -L --show-trace

@@ -31,6 +31,7 @@ To run tests (and have them pass) there are a number of pre-requisites to have i
 * `x86_64-unknown-linux-musl` target for the nightly toolchain (add
   with `rustup target add --toolchain nightly x86_64-unknown-linux-musl`)
 * cranelift backend (add with `rustup component add rustc-codegen-cranelift-preview --toolchain nightly`)
+* `clang-format` formatter
 
 then use `cargo test` as usual.
 
@@ -101,6 +102,16 @@ file, specify its location using the `WILD_TEST_CONFIG` environment variable as 
 ```sh
 WILD_TEST_CONFIG=path_to_config cargo test
 ```
+
+## Coding style for tests
+
+C and C++ files follow Google style from clang-format that is enforced by an unit test. You can use the following command to format them:
+
+```sh
+clang-format -i wild/tests/sources/*.{c,cc,h}
+```
+
+When working on tests, you can temporarily disable the formatting check by setting the `WILD_TEST_IGNORE_FORMAT` environment variable.
 
 ## Running external tests
 

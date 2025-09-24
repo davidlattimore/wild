@@ -5,21 +5,17 @@ Wild is a linker with the goal of being very fast for iterative development.
 The plan is to eventually make it incremental, however that isn't yet implemented. It is however
 already pretty fast even without incremental linking.
 
-For production builds, it's recommended to use a more mature linker like GNU ld or LLD.
-
-During development, if you'd like faster warm build times, then you could give Wild a try. It's at
-the point now where it should be usable for development purposes provided you're developing on
-x86-64 Linux. If you hit any issues, please file a bug report.
-
 ## Installation
 
 ### From GitHub releases
 
-To install a pre-built binary, you can copy and paste the command from the [releases
-page](https://github.com/davidlattimore/wild/releases). Alternatively, you can download the tarball
-and manually copy the `wild` binary somewhere on your path.
+Download a tarball from the [releases page](https://github.com/davidlattimore/wild/releases). Unpack
+it and copy the `wild` binary somewhere on your path.
 
 ### Cargo binstall
+
+If you have [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), you can install wild as
+follows:
 
 ```sh
 cargo binstall wild-linker
@@ -192,6 +188,9 @@ All benchmarks are run with output to a tmpfs.
 
 This benchmark was run on David Lattimore's laptop (2020 model System76 Lemur pro), which has 4
 cores (8 threads) and 42 GB of RAM.
+
+Wild currently doesn't perform great beyond 8 threads. This is something we've been investigating
+and hope to improve soon.
 
 First, without debug info:
 

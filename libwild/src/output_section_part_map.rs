@@ -196,9 +196,7 @@ impl<'out> OutputSectionPartMap<&'out mut [u8]> {
         &mut self,
         sizes: &OutputSectionPartMap<usize>,
     ) -> OutputSectionPartMap<&'out mut [u8]> {
-        self.mut_with_map(sizes, |buffer, size| {
-            crate::slice::slice_take_prefix_mut(buffer, *size)
-        })
+        self.mut_with_map(sizes, |buffer, size| buffer.split_off_mut(..*size).unwrap())
     }
 }
 
@@ -279,8 +277,7 @@ fn test_output_order_map_consistent() {
 
     // First, make sure that all our built-in part-ids are here. If they're not, we'd fail anyway,
     // but we can give a much better failure message if we check first.
-    let mut missing: std::collections::HashSet<PartId> =
-        crate::part_id::built_in_part_ids().collect();
+    let mut missing: hashbrown::HashSet<PartId> = crate::part_id::built_in_part_ids().collect();
     part_map.map(|part_id, _| {
         missing.remove(&part_id);
     });

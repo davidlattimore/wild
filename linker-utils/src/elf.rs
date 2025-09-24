@@ -299,6 +299,7 @@ pub fn segment_type_to_string(p_type: u32) -> Cow<'static, str> {
         PT_GNU_STACK,
         PT_GNU_RELRO,
         PT_GNU_PROPERTY,
+        PT_GNU_SFRAME,
         // RISC-V specific program headers
         SHT_RISCV_ATTRIBUTES
     ] {
@@ -325,6 +326,7 @@ pub mod shf {
     pub const TLS: SectionFlags = SectionFlags::from_u32(object::elf::SHF_TLS);
     pub const COMPRESSED: SectionFlags = SectionFlags::from_u32(object::elf::SHF_COMPRESSED);
     pub const GNU_RETAIN: SectionFlags = SectionFlags::from_u32(object::elf::SHF_GNU_RETAIN);
+    pub const EXCLUDE: SectionFlags = SectionFlags::from_u32(object::elf::SHF_EXCLUDE);
 }
 
 pub mod sht {
@@ -348,6 +350,7 @@ pub mod sht {
     pub const GROUP: SectionType = SectionType(object::elf::SHT_GROUP);
     pub const SYMTAB_SHNDX: SectionType = SectionType(object::elf::SHT_SYMTAB_SHNDX);
     pub const LOOS: SectionType = SectionType(object::elf::SHT_LOOS);
+    pub const GNU_SFRAME: SectionType = SectionType(object::elf::SHT_GNU_SFRAME);
     pub const GNU_ATTRIBUTES: SectionType = SectionType(object::elf::SHT_GNU_ATTRIBUTES);
     pub const GNU_HASH: SectionType = SectionType(object::elf::SHT_GNU_HASH);
     pub const GNU_LIBLIST: SectionType = SectionType(object::elf::SHT_GNU_LIBLIST);
@@ -412,6 +415,11 @@ impl SectionFlags {
     pub fn should_retain(&self) -> bool {
         self.contains(shf::GNU_RETAIN)
     }
+
+    #[must_use]
+    pub fn should_exclude(&self) -> bool {
+        self.contains(shf::EXCLUDE)
+    }
 }
 
 impl From<u64> for SectionFlags {
@@ -434,6 +442,7 @@ impl std::fmt::Display for SectionFlags {
             (shf::GROUP, "G"),
             (shf::TLS, "T"),
             (shf::COMPRESSED, "C"),
+            (shf::EXCLUDE, "E"),
             // TODO: ld linker sometimes propagates the flag
             // (shf::GNU_RETAIN, "R"),
         ] {
@@ -747,8 +756,8 @@ pub mod riscvattr {
 }
 
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -
-/// https://uclibc.org/docs/elf-64-gen.pdf. For information on the TLS related relocations, see "ELF
-/// Handling For Thread-Local Storage" - https://www.uclibc.org/docs/tls.pdf.
+/// <https://uclibc.org/docs/elf-64-gen.pdf>. For information on the TLS related relocations, see "ELF
+/// Handling For Thread-Local Storage" - <https://www.uclibc.org/docs/tls.pdf>.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RelocationKind {
     /// The absolute address of a symbol or section.

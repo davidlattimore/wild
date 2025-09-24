@@ -1,9 +1,10 @@
 [skipped_groups.unsupported_options]
-reason = "these tests use unsupported options"
+reason = "These tests use unsupported options"
 tests = [
-  "allow-multiple-definition.sh",
   "audit.sh",
+  "auxiliary.sh",                      # `-auxiliary` and `-f`
   "color-diagnostics.sh",
+  "compress-debug-sections-zstd.sh",   # Compressed debug sections support #493
   "compress-debug-sections.sh",        # Compressed debug sections support #493
   "default-symver-version-script.sh",
   "default-symver.sh",
@@ -11,17 +12,23 @@ tests = [
   "defsym2.sh",
   "depaudit.sh",
   "depaudit2.sh",
+  "dependency-file-response-file.sh",  # `-dependency-file={file}`
+  "dependency-file.sh",
   "dynamic-list-data.sh",
   "emit-relocs-cpp.sh",
   "emit-relocs-dead-sections.sh",
   "emit-relocs.sh",
-  "execute-only.sh",
+  "entry.sh",                          # `--entry={symbol_name}`
+  "exception-multiple-ehframe.sh",     # `-r`
   "exclude-libs.sh",
+  "execute-only.sh",
+  "fatal-warnings.sh",                 # `-warn-common` and `-fatal-warnings`
   "filler.sh",
   "filter.sh",
   "global-offset-table.sh",            # `-defsym=foo=_GLOBAL_OFFSET_TABLE_`
   "hash-style-sysv.sh",                # Currently we only supports `--hash-style=gnu`.
   "hash-style.sh",                     # Currently we only supports `--hash-style=gnu`.
+  "icf.sh",                            # `--icf`
   "image-base.sh",
   "init-in-dso.sh",
   "init.sh",
@@ -31,14 +38,12 @@ tests = [
   "nmagic.sh",
   "no-eh-frame-header.sh",
   "no-quick-exit.sh",
-  "exception-multiple-ehframe.sh",     # `-r`
   "oformat-binary.sh",
   "omagic.sh",
   "package-metadata.sh",
   "physical-image-base.sh",
   "print-dependencies.sh",
   "range-extension-thunk.sh",          # `--section-start`
-  "repro.sh",                          # Note in this test's second half that it uses a custom environment variable called `MOLD_REPRO`. While Wild currently doesn't support `--repro`, it will eventually be moved to the "ignore" group once support is added.
   "relocatable-archive.sh",
   "relocatable-c++.sh",
   "relocatable-debug-info.sh",
@@ -47,20 +52,21 @@ tests = [
   "relocatable-merge-sections.sh",
   "relocatable-mergeable-sections.sh",
   "relocatable.sh",
-  "retain-symbols-file.sh",
+  "repro.sh",                          # Note in this test's second half that it uses a custom environment variable called `MOLD_REPRO`. While Wild currently doesn't support `--repro`, it will eventually be moved to the "ignore" group once support is added.
   "require-defined.sh",
+  "retain-symbols-file.sh",
   "reverse-sections.sh",
   "rosegment.sh",
   "run.sh",
   "section-align.sh",                  # `--section-align`
-  "section-start.sh",
   "section-order.sh",
+  "section-start.sh",
   "separate-debug-file-sort.sh",
   "separate-debug-file.sh",
   "shuffle-sections-seed.sh",
   "shuffle-sections.sh",
-  "sort-debug-info-merged.sh",         # `-r`
   "sort-debug-info-compressed.sh",     # `-Map`
+  "sort-debug-info-merged.sh",         # `-r`
   "sort-debug-info.sh",                # `-Map`
   "spare-program-headers.sh",
   "start-stop.sh",
@@ -73,23 +79,9 @@ tests = [
   "trace.sh",
   "undefined-glob-gc-sections.sh",
   "undefined-glob.sh",
-  "unresolved-symbols.sh",
-  "unresolved-symbols2.sh",
-  "warn-unresolved-symbols.sh",
+  "warn-common.sh",
+  "warn-once.sh",
   "wrap.sh",
-]
-
-[skipped_groups.bug]
-reason = "maybe bug in wild"
-tests = [
-  "no-allow-shlib-undefined-circular.sh",
-  "no-allow-shlib-undefined.sh",
-  "no-allow-shlib-undefined2.sh",
-  "no-allow-shlib-undefined3.sh",
-  "no-allow-shlib-undefined4.sh",
-  "rpath.sh",
-  "undefined.sh",
-  "undefined2.sh",
 ]
 
 [skipped_groups.gdb_index]
@@ -105,40 +97,22 @@ tests = [
   "gdb-index-split-dwarf.sh",
 ]
 
-[skipped_groups.dynamic_list]
-reason = "dynamic list support"
-tracking_issue = "https://github.com/davidlattimore/wild/issues/955"
-tests = [
-  "dynamic-list.sh",
-  "dynamic-list2.sh",
-  "dynamic-list3.sh",
-  "dynamic-list4.sh",
-]
-
 [skipped_groups.version_script]
-reason = "version script support"
+reason = "Version script support"
 tests = [
   "version-script-search-paths.sh",
   "version-script15.sh",
   "version-script17.sh",
-  "version-script23.sh",
-  "version-script5.sh",
 ]
 
 [skipped_groups.linker_script]
-reason = "linker script support"
-tests = [
-  "linker-script-defsym.sh",
-  "linker-script-error.sh",
-  "linker-script.sh",
-  "linker-script4.sh",
-]
+reason = "Linker script support"
+tests  = ["linker-script-defsym.sh", "linker-script.sh", "linker-script4.sh"]
 
 [skipped_groups.z_options]
-reason = "related to -z"
+reason = "Related to -z"
 tests = [
   "z-cet-report.sh",
-  "z-defs.sh",
   "z-dynamic-undefined-weak-exe.sh",
   "z-dynamic-undefined-weak.sh",
   "z-max-page-size.sh",
@@ -161,7 +135,6 @@ tests = [
   "arch-x86_64-gotpcrelx.sh",
   "arch-x86_64-init-array-readonly.sh",
   "arch-x86_64-isa-level.sh",
-  "arch-x86_64-large-bss.sh",
   "arch-x86_64-mergeable-strings-nonalloc.sh",
   "arch-x86_64-mergeable-strings.sh",
   "arch-x86_64-note-property2.sh",             # `--relocatable` is not supported yet.
@@ -173,8 +146,6 @@ tests = [
   "arch-x86_64-reloc.sh",
   "arch-x86_64-section-name.sh",
   "arch-x86_64-tbss-only.sh",
-  "arch-x86_64-tls-large-tbss.sh",
-  "arch-x86_64-tlsdesc.sh",
   "arch-x86_64-unique.sh",
   "arch-x86_64-warn-execstack.sh",
   "arch-x86_64-warn-shared-textrel.sh",
@@ -210,31 +181,45 @@ tests = [
 ]
 
 [skipped_groups.tls]
-reason = "related to TLS"
-tests = ["tls-common.sh", "tls-le-error.sh"]
+reason = "Related to TLS"
+tests  = ["tls-common.sh", "tls-le-error.sh"]
+
+[skipped_groups.symver]
+reason = "unsupported inline assembly .symver directive"
+tests = ["empty-version.sh", "symbol-version3.sh", "symbol-version4.sh"]
 
 [skipped_groups.ignore]
-reason = "We ignore these tests for some reasons."
+reason = "We ignore these tests for some reasons"
 tests = [
+  "build-id.sh",                    # Different build ID data size
   "cmdline.sh",                     # Different message formats for unknown options.
   "comment.sh",                     # We store a different string in the comment section than mold.
+  "demangle.sh",                    # Different message formats
   "duplicate-error-archive.sh",     # Different message formats
   "duplicate-error-gc-sections.sh", # Different message formats
   "duplicate-error.sh",             # Different message formats
-  "verbose.sh",
-  "version.sh",                     # The message of `--version` is different from mold's one.
+  "empty-arg.sh",                   # Different message formats
+  "empty-input.sh",                 # Different message formats
   "help.sh",
+  "invalid-version-script.sh",      # Different message formats
+  "linker-script-error.sh",         # Different message formats
   "mold-wrapper.sh",
   "mold-wrapper2.sh",
+  "plt-symbols.sh",                 # Wild currently doesn't create entries in the symbol table with the `$plt` suffix unless `--got-plt-syms` is specified
+  "run-clang.sh",                   # This test checks the comment section to verify if it's linked with mold.
+  "stdout.sh",
+  "unresolved-symbols.sh",          # Different message formats
+  "verbose.sh",
+  "version.sh",                     # The message of `--version` is different from mold's one.
+  "warn-unresolved-symbols.sh",     # Different message formats
+  "z-defs.sh",                      # Different message formats
 ]
 
 [skipped_groups.misc]
-reason = "not grouped yet"
+reason = "Not grouped yet"
 tests = [
   "as-needed-weak.sh",
-  "auxiliary.sh",
   "bno-symbolic.sh",
-  "build-id.sh",
   "canonical-plt.sh",
   "common-archive.sh",
   "common-ref.sh",
@@ -244,47 +229,39 @@ tests = [
   "copyrel-protected.sh",
   "copyrel-relro.sh",
   "copyrel-relro2.sh",
-  "copyrel.sh",
   "ctors-in-init-array.sh",
   "defsym-missing-symbol.sh",
   "demangle-cpp.sh",
-  "demangle.sh",
-  "dependency-file-response-file.sh",
-  "dependency-file.sh",
   "disable-new-dtags.sh",
   "discard-section.sh",
   "discard.sh",
   "dynamic-linker.sh",
-  "empty-arg.sh",
-  "empty-input.sh",
-  "entry.sh",
-  "fatal-warnings.sh",
   "gc-sections.sh",
   "glibc-2.22-bug.sh",
   "gnu-property.sh",
   "hidden-undef.sh",
-  "icf.sh",
   "ifunc-address-equality-exported.sh",
   "ifunc-address-equality.sh",
   "ifunc-alias.sh",
   "init-array-priorities.sh",
   "initfirst.sh",
-  "interpose.sh",
-  "invalid-version-script.sh",
   "large-alignment-dso.sh",
   "large-alignment.sh",
   "many-output-sections.sh",
   "mergeable-strings.sh",
   "missing-error.sh",
+  "no-allow-shlib-undefined-circular.sh",
+  "no-allow-shlib-undefined.sh",
+  "no-allow-shlib-undefined2.sh",
+  "no-allow-shlib-undefined3.sh",
+  "no-allow-shlib-undefined4.sh",
   "no-undefined-version.sh",
   "nocopyreloc.sh",
   "noinhibit-exec.sh",
-  "plt-symbols.sh",
   "rodata-name.sh",
-  "run-clang.sh",
+  "rpath.sh",
   "section-attributes.sh",
   "start-lib.sh",
-  "stdout.sh",
   "strip.sh",
   "stt-common.sh",
   "symbol-version-as-needed.sh",
@@ -296,19 +273,14 @@ tests = [
   "symtab-section-symbols.sh",
   "symtab.sh",
   "textrel2.sh",
+  "undefined.sh",
+  "undefined2.sh",
   "unkown-section-type.sh",
   "versioned-undef.sh",
-  "warn-common.sh",
-  "warn-once.sh",
   "warn-symbol-type.sh",
   "weak-export-exe.sh",
   "weak-undef.sh",
   "weak-undef2.sh",
   "weak-undef5.sh",
   "whole-archive.sh",
-
-  "compress-debug-sections-zstd.sh",
-  "crel.sh",
-  "weak-export-dso2.sh",
-  "weak-undef4.sh"
 ]

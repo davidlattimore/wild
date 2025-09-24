@@ -1,0 +1,11 @@
+VER_1.0 {
+    global:
+        bar\_global;
+    local:
+        bar\*local;
+        bar\*local*foo;
+};
+
+VER_2.0 {
+        bar_v2*;
+} VER_1.0;

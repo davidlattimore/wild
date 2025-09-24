@@ -1,5 +1,6 @@
 use crate::Architecture;
 use crate::Result;
+use crate::external_tests::run_external_test;
 use crate::external_tests::should_not_ignore_tests;
 use crate::get_host_architecture;
 use crate::get_wild_test_cross;
@@ -10,7 +11,6 @@ use std::env;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::str::FromStr;
 use std::sync::OnceLock;
 
@@ -27,24 +27,14 @@ struct SkippedGroup {
 static SKIP_TESTS_NAME: OnceLock<Option<Vec<String>>> = OnceLock::new();
 
 #[rstest]
-fn exec_mold_tests(
+fn check_mold_tests_regression(
     #[files("../external_test_suites/mold/test/*.sh")] mold_test: PathBuf,
 ) -> Result {
-    let path = env::var("PATH")?;
-    let current_dir = env::current_dir()?;
-    let wild_dir = current_dir.parent().unwrap().join("fakes-debug");
-
     if should_skip_mold_test(&mold_test) {
         return Ok(());
     }
 
-    let output = Command::new("bash")
-        .current_dir("../fakes-debug")
-        .arg("-c")
-        .arg(format!("{} 2>&1", mold_test.display()))
-        .env("PATH", format!("{wild_dir:?}:{path}"))
-        .output()?;
-
+    let output = run_external_test(&mold_test)?;
     if !output.status.success() {
         let error_message = format!(
             "Mold test `{}` failed with status: {}\nOutput:\n{}",
@@ -53,6 +43,26 @@ fn exec_mold_tests(
             String::from_utf8_lossy(&output.stdout)
         );
         return Err(error_message.into());
+    }
+
+    Ok(())
+}
+
+#[rstest]
+fn verify_skipped_mold_tests_still_fail(
+    #[files("../external_test_suites/mold/test/*.sh")] mold_test: PathBuf,
+) -> Result {
+    if !should_skip_mold_test_by_toml(&mold_test) || should_skip_mold_test_by_arch(&mold_test) {
+        return Ok(());
+    }
+
+    let output = run_external_test(&mold_test)?;
+    if output.status.success() {
+        return Err(format!(
+            "Test `{}` is in skip list but now passes. Should be removed from skip list.",
+            mold_test.display()
+        )
+        .into());
     }
 
     Ok(())
@@ -81,6 +91,10 @@ fn load_skip_tests_config() -> &'static Option<Vec<String>> {
 }
 
 fn should_skip_mold_test(path: &Path) -> bool {
+    should_skip_mold_test_by_toml(path) || should_skip_mold_test_by_arch(path)
+}
+
+fn should_skip_mold_test_by_toml(path: &Path) -> bool {
     let file_name = path
         .file_name()
         .expect("Must be a valid filename")
@@ -91,18 +105,29 @@ fn should_skip_mold_test(path: &Path) -> bool {
         return false;
     }
 
-    if let Some(skip_list) = load_skip_tests_config() {
-        if skip_list.contains(&file_name.to_string()) {
-            return true;
-        }
+    if let Some(skip_list) = load_skip_tests_config()
+        && skip_list.contains(&file_name.to_string())
+    {
+        return true;
     }
+
+    false
+}
+
+// Some mold tests have names starting with `arch-`, indicating the target architecture they run on. Therefore, we have to implement a similar filter for the wild tests as well.
+fn should_skip_mold_test_by_arch(path: &Path) -> bool {
+    let file_name = path
+        .file_name()
+        .expect("Must be a valid filename")
+        .to_str()
+        .expect("Expected valid string name");
 
     let Some(name) = file_name.strip_prefix("arch-") else {
         return false;
     };
 
     let current_arch = get_host_architecture();
-    let cross_archs = get_wild_test_cross().unwrap_or_default();
+    let cross_archs = get_wild_test_cross().unwrap().unwrap_or_default();
 
     let Some(arch) = name
         .split('-')

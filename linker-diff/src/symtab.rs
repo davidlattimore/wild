@@ -30,10 +30,10 @@ fn validate(object: &Binary, dynamic: bool) -> Result {
         }
     }
     let first_non_local = symbols.find_map(|sym| sym.is_local().not().then(|| sym.index()));
-    if let Some(first_non_local) = first_non_local {
-        if first_non_local.0 != symtab_info as usize {
-            bail!("info={symtab_info}, but first non-local is {first_non_local}")
-        }
+    if let Some(first_non_local) = first_non_local
+        && first_non_local.0 != symtab_info as usize
+    {
+        bail!("info={symtab_info}, but first non-local is {first_non_local}")
     }
 
     Ok(())

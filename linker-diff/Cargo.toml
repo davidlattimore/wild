@@ -8,15 +8,14 @@ rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
-linker-layout = { path = "../linker-layout", version = "0.5.0" }
-linker-trace = { path = "../linker-trace", version = "0.5.0" }
-linker-utils = { path = "../linker-utils", version = "0.5.0" }
+linker-layout = { path = "../linker-layout", version = "0.6.0" }
+linker-trace = { path = "../linker-trace", version = "0.6.0" }
+linker-utils = { path = "../linker-utils", version = "0.6.0" }
 object = { workspace = true }
 iced-x86 = { workspace = true }
 symbolic-demangle = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
-rayon = { workspace = true }
 bytemuck = { workspace = true }
 itertools = { workspace = true }
 gimli = { workspace = true }
@@ -29,6 +28,7 @@ memchr = { workspace = true }
 tempfile = { workspace = true }
 which = { workspace = true }
 ascii_table = { workspace = true }
+hashbrown = { workspace = true }
 
 [lints]
 workspace = true

@@ -10,6 +10,7 @@ pub(crate) mod dwarf_address_info;
 pub(crate) mod elf;
 pub(crate) mod elf_writer;
 pub mod error;
+pub(crate) mod export_list;
 pub(crate) mod file_kind;
 pub(crate) mod file_writer;
 pub(crate) mod fs;
@@ -27,12 +28,22 @@ pub(crate) mod output_section_part_map;
 pub(crate) mod output_trace;
 pub(crate) mod parsing;
 pub(crate) mod part_id;
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+pub(crate) mod perf;
+#[cfg(any(
+    not(target_os = "linux"),
+    all(target_os = "linux", target_arch = "riscv64")
+))]
+#[path = "perf_unsupported.rs"]
+pub(crate) mod perf;
 pub(crate) mod program_segments;
 pub(crate) mod resolution;
 pub(crate) mod riscv64;
 pub(crate) mod save_dir;
 pub(crate) mod sharding;
-pub(crate) mod slice;
 pub(crate) mod string_merging;
 #[cfg(feature = "fork")]
 pub(crate) mod subprocess;
@@ -67,6 +78,9 @@ use tracing_subscriber::util::SubscriberInitExt;
 /// Runs the linker and cleans up associated resources. Only use this function if you've OK with
 /// waiting for cleanup.
 pub fn run(args: Args) -> error::Result {
+    // Note, we need to setup tracing before we activate the thread pool. In particular, we need to
+    // initialise the timing module before the worker threads are started, otherwise the threads
+    // won't contribute to counters such as --time=cycles,instructions etc.
     setup_tracing(&args)?;
     let args = args.activate_thread_pool()?;
     let linker = Linker::new();
@@ -78,8 +92,8 @@ pub fn run(args: Args) -> error::Result {
 /// called once and only if nothing else has already set the global tracing dispatcher. Calling this
 /// is optional. If it isn't called, no tracing-based features will function. e.g. --time.
 pub fn setup_tracing(args: &Args) -> Result<(), AlreadyInitialised> {
-    if args.time_phases {
-        timing::init_tracing()
+    if let Some(opts) = args.time_phase_options.as_ref() {
+        timing::init_tracing(opts)
     } else if args.print_allocations.is_some() {
         debug_trace::init()
     } else {
@@ -202,6 +216,8 @@ impl Linker {
             input_data.version_script_data,
             args,
             &input_data.linker_scripts,
+            &self.herd,
+            input_data.export_list_data,
         )?;
 
         let resolved = resolution::resolve_symbols_and_sections(
