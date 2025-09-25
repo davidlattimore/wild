@@ -237,7 +237,7 @@ impl<'data> VersionScript<'data> {
         &self,
         name: &PreHashed<UnversionedSymbolName>,
     ) -> Option<(usize, VersionRuleSection)> {
-        // Perform symbol lookup the same was as descried for the LLD (and partially Mold) linker:
+        // Perform symbol lookup the same was as described for the LLD (and partially Mold) linker:
         // https://maskray.me/blog/2020-11-26-all-about-symbol-versioning#version-script
         let mut lookup_name = SymbolLookupNameWrapper::from_name(name);
 
