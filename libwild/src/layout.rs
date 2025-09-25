@@ -923,9 +923,7 @@ fn export_dynamic<'data>(
 ) -> Result {
     let name = symbol_db.symbol_name(symbol_id)?;
     let RawSymbolName {
-        name,
-        version_name,
-        ..
+        name, version_name, ..
     } = RawSymbolName::parse(name.bytes());
 
     let version = (symbol_db.version_script.version_count() > 0)
