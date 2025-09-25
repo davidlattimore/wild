@@ -161,7 +161,6 @@ impl<'data> BasicMatchRules<'data> {
     }
 }
 
-#[derive(Debug)]
 enum VersionRuleSection {
     Global,
     Local,
