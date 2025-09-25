@@ -1075,8 +1075,8 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         let e = LittleEndian;
 
         // Always save the name without the symbol version (e.g. foo@@VER_1).
-        let RawSymbolName { name_bytes, .. } = RawSymbolName::parse(name);
-        let string_offset = self.strtab_writer.write_str(name_bytes);
+        let name = RawSymbolName::parse(name).name;
+        let string_offset = self.strtab_writer.write_str(name);
         entry.st_name.set(e, string_offset);
         entry.st_other = 0;
         entry.st_shndx.set(e, shndx);

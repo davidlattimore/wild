@@ -851,16 +851,16 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
             // weak symbol.
             if value_flags.is_dynamic() && !current_res_flags.is_empty() {
                 let name = symbol_db.symbol_name(symbol_id)?;
-                let RawSymbolName { name_bytes, .. } = RawSymbolName::parse(name.bytes());
+                let name = RawSymbolName::parse(name.bytes()).name;
 
                 if current_res_flags.needs_copy_relocation() {
                     // The dynamic symbol is a definition, so is handled by the epilogue. We only
                     // need to deal with the symtab entry here.
                     let entry_size = size_of::<elf::SymtabEntry>() as u64;
                     common.allocate(part_id::SYMTAB_GLOBAL, entry_size);
-                    common.allocate(part_id::STRTAB, name_bytes.len() as u64 + 1);
+                    common.allocate(part_id::STRTAB, name.len() as u64 + 1);
                 } else {
-                    common.allocate(part_id::DYNSTR, name_bytes.len() as u64 + 1);
+                    common.allocate(part_id::DYNSTR, name.len() as u64 + 1);
                     common.allocate(part_id::DYNSYM, crate::elf::SYMTAB_ENTRY_SIZE);
                 }
             }
@@ -923,7 +923,7 @@ fn export_dynamic<'data>(
 ) -> Result {
     let name = symbol_db.symbol_name(symbol_id)?;
     let RawSymbolName {
-        name_bytes,
+        name,
         version_name,
         ..
     } = RawSymbolName::parse(name.bytes());
@@ -935,7 +935,7 @@ fn export_dynamic<'data>(
             symbol_db
                 .version_script
                 // TODO
-                .version_for_symbol(&UnversionedSymbolName::prehashed(name_bytes), version_name)
+                .version_for_symbol(&UnversionedSymbolName::prehashed(name), version_name)
                 .ok()?
         })
         .flatten()
@@ -943,7 +943,7 @@ fn export_dynamic<'data>(
 
     common
         .dynamic_symbol_definitions
-        .push(DynamicSymbolDefinition::new(symbol_id, name_bytes, version));
+        .push(DynamicSymbolDefinition::new(symbol_id, name, version));
 
     Ok(())
 }
@@ -4470,8 +4470,8 @@ impl<'data> ObjectLayoutState<'data> {
                 } else {
                     num_globals += 1;
                 }
-                let RawSymbolName { name_bytes, .. } = RawSymbolName::parse(info.name);
-                strings_size += name_bytes.len() + 1;
+                let name = RawSymbolName::parse(info.name).name;
+                strings_size += name.len() + 1;
             }
         }
         let entry_size = size_of::<elf::SymtabEntry>() as u64;

@@ -1156,7 +1156,7 @@ trait SymbolLoader<'data> {
 
             let info = self.get_symbol_name_and_version(symbol, local_index)?;
 
-            let name = UnversionedSymbolName::prehashed(info.name_bytes);
+            let name = UnversionedSymbolName::prehashed(info.name);
 
             if self.should_downgrade_to_local(&name) {
                 value_flags |= ValueFlags::DOWNGRADE_TO_LOCAL;
@@ -1206,7 +1206,7 @@ trait SymbolLoader<'data> {
 
 #[derive(Debug)]
 pub(crate) struct RawSymbolName<'data> {
-    pub(crate) name_bytes: &'data [u8],
+    pub(crate) name: &'data [u8],
 
     pub(crate) version_name: Option<&'data [u8]>,
 
@@ -1365,7 +1365,7 @@ impl<'data> RawSymbolName<'data> {
         }
 
         RawSymbolName {
-            name_bytes,
+            name: name_bytes,
             version_name,
             is_default,
         }
@@ -1410,7 +1410,7 @@ impl<'data> SymbolLoader<'data> for DynamicObjectSymbolLoader<'_, 'data> {
         };
 
         Ok(RawSymbolName {
-            name_bytes,
+            name: name_bytes,
             version_name,
             is_default,
         })
@@ -1724,7 +1724,7 @@ impl ShardKey for SymbolId {
 
 impl Display for RawSymbolName<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", String::from_utf8_lossy(self.name_bytes))?;
+        write!(f, "{}", String::from_utf8_lossy(self.name))?;
         if let Some(version) = self.version_name {
             if self.is_default {
                 write!(f, "@@")?;

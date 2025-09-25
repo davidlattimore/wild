@@ -83,7 +83,7 @@ impl<'data> PreHashedSymbolName<'data> {
     pub(crate) fn from_raw(
         name_info: &crate::symbol_db::RawSymbolName<'data>,
     ) -> PreHashedSymbolName<'data> {
-        let name = UnversionedSymbolName::prehashed(name_info.name_bytes);
+        let name = UnversionedSymbolName::prehashed(name_info.name);
         if let Some(version) = name_info.version_name {
             PreHashedSymbolName::Versioned(VersionedSymbolName::prehashed(name, version))
         } else {
