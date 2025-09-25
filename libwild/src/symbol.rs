@@ -40,10 +40,6 @@ impl<'data> UnversionedSymbolName<'data> {
     pub(crate) fn bytes(&self) -> &'data [u8] {
         self.bytes
     }
-
-    pub(crate) fn len(&self) -> usize {
-        self.bytes.len()
-    }
 }
 
 impl<'data> VersionedSymbolName<'data> {

@@ -882,6 +882,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
 
             if symbol_db.args.got_plt_syms && resolution_flags.get().needs_got() {
                 let name = symbol_db.symbol_name(symbol_id)?;
+                let name = RawSymbolName::parse(name.bytes()).name;
                 let name_len = name.len() + 4; // "$got" or "$plt" suffix
 
                 let entry_size = size_of::<elf::SymtabEntry>() as u64;
@@ -926,18 +927,17 @@ fn export_dynamic<'data>(
         name, version_name, ..
     } = RawSymbolName::parse(name.bytes());
 
-    let version = (symbol_db.version_script.version_count() > 0)
-        .then(|| {
-            // TODO: We already hashed this symbol at some point previously. See if we can avoid
-            // rehashing it here and if that actually saves us time.
-            symbol_db
-                .version_script
-                // TODO
-                .version_for_symbol(&UnversionedSymbolName::prehashed(name), version_name)
-                .ok()?
-        })
-        .flatten()
-        .unwrap_or(object::elf::VER_NDX_GLOBAL);
+    let mut version = object::elf::VER_NDX_GLOBAL;
+    if symbol_db.version_script.version_count() > 0 {
+        // TODO: We already hashed this symbol at some point previously. See if we can avoid
+        // rehashing it here and if that actually saves us time.
+        if let Some(v) = symbol_db
+            .version_script
+            .version_for_symbol(&UnversionedSymbolName::prehashed(name), version_name)?
+        {
+            version = v;
+        }
+    }
 
     common
         .dynamic_symbol_definitions
@@ -3608,6 +3608,7 @@ impl<'data> InternalSymbols<'data> {
 
             sizes.increment(part_id::SYMTAB_GLOBAL, size_of::<elf::SymtabEntry>() as u64);
             let symbol_name = symbol_db.symbol_name(symbol_id)?;
+            let symbol_name = RawSymbolName::parse(symbol_name.bytes()).name;
             sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
         }
         Ok(())
