@@ -922,7 +922,11 @@ fn export_dynamic<'data>(
     symbol_db: &SymbolDb<'data>,
 ) -> Result {
     let name = symbol_db.symbol_name(symbol_id)?;
-    let RawSymbolName { name_bytes, version_name, .. } = RawSymbolName::parse(name.bytes());
+    let RawSymbolName {
+        name_bytes,
+        version_name,
+        ..
+    } = RawSymbolName::parse(name.bytes());
 
     let version = (symbol_db.version_script.version_count() > 0)
         .then(|| {
@@ -931,18 +935,15 @@ fn export_dynamic<'data>(
             symbol_db
                 .version_script
                 // TODO
-                .version_for_symbol(&UnversionedSymbolName::prehashed(name_bytes), version_name).ok()?
+                .version_for_symbol(&UnversionedSymbolName::prehashed(name_bytes), version_name)
+                .ok()?
         })
         .flatten()
         .unwrap_or(object::elf::VER_NDX_GLOBAL);
 
     common
         .dynamic_symbol_definitions
-        .push(DynamicSymbolDefinition::new(
-            symbol_id,
-            name_bytes,
-            version,
-        ));
+        .push(DynamicSymbolDefinition::new(symbol_id, name_bytes, version));
 
     Ok(())
 }
