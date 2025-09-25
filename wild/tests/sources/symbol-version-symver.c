@@ -1,6 +1,7 @@
 //#Config:default
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:.dynamic.DT_RELA
+//#CompArgs:-fPIC
 //#RunEnabled:false
 //#LinkArgs:--shared --version-script=./symbol-versions-script.map -z now
 
