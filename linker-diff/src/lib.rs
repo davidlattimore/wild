@@ -672,7 +672,8 @@ impl Report {
         !self.diffs.is_empty()
     }
 
-    fn should_ignore(&self, key: &str) -> bool {
+    #[must_use]
+    pub fn should_ignore(&self, key: &str) -> bool {
         if !self.config.only.is_empty() {
             return !self.config.only.iter().any(|i| {
                 if let Some(prefix) = i.strip_suffix('*') {

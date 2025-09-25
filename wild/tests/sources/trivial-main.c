@@ -11,6 +11,8 @@
 //#LinkArgs:-static -Wl,--gc-sections
 //#DiffIgnore:section.rela.plt.link
 //#DiffIgnore:section.sdata
+// TODO: RISC-V BFD linker keeps the symbol in .dynsym section
+//#DiffIgnore:section.rela.dyn
 
 //#Config:gcc-static-pie-no-relax:default
 //#CompArgs:-fPIE
@@ -32,7 +34,6 @@
 //#LinkArgs:-static-pie -Wl,--gc-sections -Wl,--no-relax
 //#DiffEnabled:false
 //#SkipLinker:ld
-//#Arch: x86_64,aarch64
 
 //#Config:clang:default
 //#Compiler: clang
