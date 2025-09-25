@@ -1209,6 +1209,10 @@ fn build_linker_input(
         }
         InputType::SharedObject => {
             let so_path = first_obj_path.with_extension(format!("{linker}.so"));
+            let so_lockfile = first_obj_path.with_extension(format!("{linker}.so.lock"));
+            let mut so_lock = fd_lock::RwLock::new(File::create(&so_lockfile)?);
+            let _write_lock = so_lock.write().unwrap();
+
             let out = linker.link_shared(&objects, &so_path, &config, cross_arch)?;
             let assertions = Assertions::default();
             assertions
