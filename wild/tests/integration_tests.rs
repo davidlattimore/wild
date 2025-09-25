@@ -2563,6 +2563,7 @@ fn integration_test(
         "unresolved-symbols-shared.c",
         "lto-undefined.c",
         "symbol-version-symver.c",
+        "symbol-version-symver-error.c",
         "args-precedence.c"
     )]
     program_name: &'static str,
