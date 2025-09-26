@@ -1785,9 +1785,9 @@ impl<'data> Layout<'data> {
             )
         })?;
 
-        if !resolution.value_flags().is_address() {
+        if !resolution.value_flags().is_address() && !resolution.value_flags().is_absolute() {
             bail!(
-                "Entry point must be an address. {}",
+                "Entry point must be an address or absolute value. {}",
                 self.symbol_debug(symbol_id)
             );
         }
