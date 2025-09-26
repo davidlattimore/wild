@@ -79,6 +79,7 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-gnu,aarch64-unknown-linux-musl,riscv64gc-unknown-linux-gnu,riscv64gc-unknown-linux-musl
           components: rustc-codegen-cranelift-preview
+      - uses: davidlattimore/wild-action@latest
       - uses: actions/cache@v4
         with:
           path: |
@@ -105,6 +106,7 @@ jobs:
       id: rust-toolchain
       with:
         components: clippy
+    - uses: davidlattimore/wild-action@latest
     - uses: actions/cache@v4
       with:
         path: |
