@@ -73,6 +73,7 @@ use crate::resolution::SectionSlot;
 use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
 use crate::string_merging::get_merged_string_output_address;
+use crate::symbol_db::RawSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use hashbrown::HashMap;
@@ -1072,6 +1073,9 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
             })?
         };
         let e = LittleEndian;
+
+        // Always save the name without the symbol version (e.g. foo@@VER_1).
+        let name = RawSymbolName::parse(name).name;
         let string_offset = self.strtab_writer.write_str(name);
         entry.st_name.set(e, string_offset);
         entry.st_other = 0;

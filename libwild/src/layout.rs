@@ -68,6 +68,7 @@ use crate::string_merging::MergedStringStartAddresses;
 use crate::string_merging::MergedStringsSection;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol::UnversionedSymbolName;
+use crate::symbol_db::RawSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolDebug;
 use crate::symbol_db::SymbolId;
@@ -850,6 +851,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
             // weak symbol.
             if value_flags.is_dynamic() && !current_res_flags.is_empty() {
                 let name = symbol_db.symbol_name(symbol_id)?;
+                let name = RawSymbolName::parse(name.bytes()).name;
 
                 if current_res_flags.needs_copy_relocation() {
                     // The dynamic symbol is a definition, so is handled by the epilogue. We only
@@ -880,6 +882,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
 
             if symbol_db.args.got_plt_syms && resolution_flags.get().needs_got() {
                 let name = symbol_db.symbol_name(symbol_id)?;
+                let name = RawSymbolName::parse(name.bytes()).name;
                 let name_len = name.len() + 4; // "$got" or "$plt" suffix
 
                 let entry_size = size_of::<elf::SymtabEntry>() as u64;
@@ -920,30 +923,25 @@ fn export_dynamic<'data>(
     symbol_db: &SymbolDb<'data>,
 ) -> Result {
     let name = symbol_db.symbol_name(symbol_id)?;
-    ensure!(
-        memchr::memchr(b'@', name.bytes()).is_none(),
-        "symbol version definition `{}` (using `.symver` directive) is not supported yet",
-        String::from_utf8_lossy(name.bytes())
-    );
+    let RawSymbolName {
+        name, version_name, ..
+    } = RawSymbolName::parse(name.bytes());
 
-    let version = (symbol_db.version_script.version_count() > 0)
-        .then(|| {
-            // TODO: We already hashed this symbol at some point previously. See if we can avoid
-            // rehashing it here and if that actually saves us time.
-            symbol_db
-                .version_script
-                .version_for_symbol(&UnversionedSymbolName::prehashed(name.bytes()))
-        })
-        .flatten()
-        .unwrap_or(object::elf::VER_NDX_GLOBAL);
+    let mut version = object::elf::VER_NDX_GLOBAL;
+    if symbol_db.version_script.version_count() > 0 {
+        // TODO: We already hashed this symbol at some point previously. See if we can avoid
+        // rehashing it here and if that actually saves us time.
+        if let Some(v) = symbol_db
+            .version_script
+            .version_for_symbol(&UnversionedSymbolName::prehashed(name), version_name)?
+        {
+            version = v;
+        }
+    }
 
     common
         .dynamic_symbol_definitions
-        .push(DynamicSymbolDefinition::new(
-            symbol_id,
-            name.bytes(),
-            version,
-        ));
+        .push(DynamicSymbolDefinition::new(symbol_id, name, version));
 
     Ok(())
 }
@@ -3610,6 +3608,7 @@ impl<'data> InternalSymbols<'data> {
 
             sizes.increment(part_id::SYMTAB_GLOBAL, size_of::<elf::SymtabEntry>() as u64);
             let symbol_name = symbol_db.symbol_name(symbol_id)?;
+            let symbol_name = RawSymbolName::parse(symbol_name.bytes()).name;
             sizes.increment(part_id::STRTAB, symbol_name.len() as u64 + 1);
         }
         Ok(())
@@ -4470,7 +4469,8 @@ impl<'data> ObjectLayoutState<'data> {
                 } else {
                     num_globals += 1;
                 }
-                strings_size += info.name.len() + 1;
+                let name = RawSymbolName::parse(info.name).name;
+                strings_size += name.len() + 1;
             }
         }
         let entry_size = size_of::<elf::SymtabEntry>() as u64;

@@ -4,7 +4,6 @@
 //#Object:runtime.c
 //#LinkArgs:-z now --version-script ./mixed-verdef-verneed.map
 //#Shared:mixed-verdef-verneed-2.c
-//#DiffIgnore:version_d.verdef_1
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic.DT_RELA*
 //#DiffIgnore:section.got

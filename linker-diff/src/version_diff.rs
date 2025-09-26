@@ -4,6 +4,7 @@ use anyhow::Result;
 use linker_utils::elf::secnames::GNU_VERSION_D_SECTION_NAME_STR;
 use object::LittleEndian;
 use object::Object;
+use object::elf::VER_FLG_BASE;
 use object::read::elf::SectionHeader;
 
 pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]) {
@@ -52,6 +53,15 @@ fn read_version_d_fields(object: &crate::Binary) -> Result<FieldValues> {
         if let Some(aux) = aux_iterator.next()? {
             let name = std::str::from_utf8(aux.name(e, strings)?)?;
             verdef_versions = format!("Version name: {name}");
+        }
+
+        // The base version point to the name of the binary, thus strip the linker suffix.
+        if verdef.vd_flags.get(e) & VER_FLG_BASE != 0 {
+            // First strip the .so suffix, if present.
+            verdef_versions = verdef_versions.trim_end_matches(".so").to_string();
+            if let Some(pos) = verdef_versions.rfind(".") {
+                verdef_versions.truncate(pos);
+            }
         }
 
         let mut version_parents = Vec::new();
