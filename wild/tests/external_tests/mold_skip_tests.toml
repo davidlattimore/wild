@@ -18,7 +18,6 @@ tests = [
   "emit-relocs-cpp.sh",
   "emit-relocs-dead-sections.sh",
   "emit-relocs.sh",
-  "entry.sh",                          # `--entry={symbol_name}`
   "exception-multiple-ehframe.sh",     # `-r`
   "exclude-libs.sh",
   "execute-only.sh",
