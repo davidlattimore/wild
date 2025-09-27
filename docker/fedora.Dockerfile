@@ -22,6 +22,8 @@ RUN dnf -y update && \
         binutils-riscv64-linux-gnu \
         @development-tools \
         elfutils \
+        clang-format \
+        glibc-static \
         rustup \
         vim \
     && dnf clean all

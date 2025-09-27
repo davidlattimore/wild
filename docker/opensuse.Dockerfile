@@ -17,7 +17,6 @@ RUN zypper install -y -t pattern devel_C_C++ && \
         lld \
         vim \
         less
-RUN cargo install --locked cargo-chef
 RUN rustup toolchain install nightly && \
     rustup target add --toolchain nightly \
         x86_64-unknown-linux-musl \
@@ -27,6 +26,7 @@ RUN rustup toolchain install nightly && \
         riscv64gc-unknown-linux-musl \
         && \
     rustup component add rustc-codegen-cranelift-preview --toolchain nightly
+RUN cargo install --locked cargo-chef
 WORKDIR /wild
 
 FROM chef AS planner

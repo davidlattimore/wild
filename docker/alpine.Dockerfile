@@ -9,7 +9,7 @@ RUN wget -qO- https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.
 RUN rustup toolchain install nightly && \
     rustup component add rustc-codegen-cranelift-preview --toolchain nightly
 
-RUN apk add build-base lld clang bash
+RUN apk add build-base lld clang clang-extra-tools bash
 
 WORKDIR /wild
 

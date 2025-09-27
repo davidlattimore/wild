@@ -7,6 +7,7 @@ FROM ubuntu:25.04 AS chef
 RUN apt-get update && \
     apt-get install -y \
         clang \
+        clang-format \
         llvm \
         lld \
         mold \
