@@ -135,7 +135,6 @@ tests = [
   "arch-x86_64-init-array-readonly.sh",
   "arch-x86_64-isa-level.sh",
   "arch-x86_64-mergeable-strings-nonalloc.sh",
-  "arch-x86_64-mergeable-strings.sh",
   "arch-x86_64-note-property2.sh",             # `--relocatable` is not supported yet.
   "arch-x86_64-note.sh",
   "arch-x86_64-note2.sh",
