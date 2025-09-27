@@ -7,7 +7,8 @@ FROM rust:1.89 AS chef
 RUN apt-get update && \
     apt-get install -y \
         clang \
-        lld-16 \
+        clang-format \
+        lld \
         less \
         qemu-user \
         gcc-aarch64-linux-gnu \
