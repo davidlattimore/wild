@@ -794,6 +794,21 @@ pub(crate) fn get_merged_string_output_address(
 
     let section_id = merge_slot.part_id.output_section_id();
     let strings_section = merged_strings.get(section_id);
+    let string_offset = find_string(merge_slot, input_offset, strings_section)?;
+    let bucket_base =
+        merged_string_start_addresses.addresses.get(section_id)[string_offset.bucket()];
+    let mut address = bucket_base + string_offset.offset_in_bucket();
+    if symbol_has_name {
+        address = address.wrapping_add(addend as u64);
+    }
+    Ok(Some(address))
+}
+
+fn find_string(
+    merge_slot: &StringMergeSectionSlot,
+    input_offset: u64,
+    strings_section: &MergedStringsSection<'_>,
+) -> Result<BucketOffset> {
     let linear_input_offset = merge_slot.start_input_offset + input_offset;
     let string_offset = strings_section
         .string_offsets
@@ -803,20 +818,36 @@ pub(crate) fn get_merged_string_output_address(
                 .overflowed_string_offsets
                 .get(&linear_input_offset)
                 .copied()
-        })
-        .with_context(|| {
-            format!(
-                "Failed to find merge-string at offset {}",
-                linear_input_offset.0
-            )
-        })?;
-    let bucket_base =
-        merged_string_start_addresses.addresses.get(section_id)[string_offset.bucket()];
-    let mut address = bucket_base + string_offset.offset_in_bucket();
-    if symbol_has_name {
-        address = address.wrapping_add(addend as u64);
+        });
+
+    if let Some(string_offset) = string_offset {
+        return Ok(string_offset);
     }
-    Ok(Some(address))
+
+    // Our input offset wasn't found, so it likely points part way into a string. Search backwards
+    // until we find it. It should be possible to do this more efficiently, but since we expect this
+    // to be very rare, we don't bother for now.
+    for i in 1..=input_offset {
+        let linear_input_offset = merge_slot.start_input_offset + (input_offset - i);
+        let string_offset = strings_section
+            .string_offsets
+            .get(linear_input_offset.0)
+            .or_else(|| {
+                strings_section
+                    .overflowed_string_offsets
+                    .get(&linear_input_offset)
+                    .copied()
+            });
+
+        if let Some(string_offset) = string_offset {
+            return Ok(BucketOffset(string_offset.0 + i as u32));
+        }
+    }
+
+    bail!(
+        "Failed to find merge-string at offset {}",
+        linear_input_offset.0
+    )
 }
 
 impl MergedStringStartAddresses {
