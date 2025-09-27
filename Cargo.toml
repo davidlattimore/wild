@@ -14,7 +14,7 @@ repository = "https://github.com/davidlattimore/wild"
 license = "MIT OR Apache-2.0"
 version = "0.6.0"
 readme = "README.md"
-rust-version = "1.89"
+rust-version = "1.90"
 edition = "2024"
 
 [workspace.dependencies]
