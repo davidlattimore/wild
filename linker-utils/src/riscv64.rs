@@ -446,8 +446,102 @@ impl RiscVInstruction {
     /// The inverse of `write_to_value`. Returns `(extracted_value, negative)`. Supplied `bytes`
     /// must be at least 4 bytes, otherwise we panic.
     #[must_use]
-    pub fn read_value(self, _bytes: &[u8]) -> (u64, bool) {
-        todo!()
+    pub fn read_value(self, bytes: &[u8]) -> (u64, bool) {
+        match self {
+            RiscVInstruction::UiType => {
+                let (hi, _) = RiscVInstruction::UType.read_value(&bytes[..4]);
+                let (lo, _) = RiscVInstruction::IType.read_value(&bytes[4..]);
+                (hi << 12 | lo, false)
+            }
+            RiscVInstruction::UType => {
+                let value =
+                    u32::from_le_bytes(*bytes.first_chunk::<4>().expect("Need at least 4 bytes"));
+                let imm = (value >> 12) & 0xfffff;
+                let adjusted = ((imm as i32) << 12) >> 12;
+                ((adjusted as u64).wrapping_sub(0x800), false)
+            }
+            RiscVInstruction::IType => {
+                let value =
+                    u32::from_le_bytes(*bytes.first_chunk::<4>().expect("Need at least 4 bytes"));
+                let imm = (value >> 20) & 0xfff;
+                let sign_extended = ((imm as i32) << 20) >> 20;
+                (sign_extended as u64, sign_extended < 0)
+            }
+            RiscVInstruction::SType => {
+                let value =
+                    u32::from_le_bytes(*bytes.first_chunk::<4>().expect("Need at least 4 bytes"));
+                let imm_low = (value >> 7) & 0x1f;
+                let imm_high = (value >> 25) & 0x7f;
+                let imm = (imm_high << 5) | imm_low;
+                let sign_extended = ((imm as i32) << 20) >> 20;
+                (sign_extended as u64, sign_extended < 0)
+            }
+            RiscVInstruction::BType => {
+                let value =
+                    u32::from_le_bytes(*bytes.first_chunk::<4>().expect("Need at least 4 bytes"));
+                let imm11 = (value >> 7) & 0x1;
+                let imm1_4 = (value >> 8) & 0xf;
+                let imm5_10 = (value >> 25) & 0x3f;
+                let imm12 = (value >> 31) & 0x1;
+
+                let imm = (imm12 << 12) | (imm11 << 11) | (imm5_10 << 5) | (imm1_4 << 1);
+                let sign_extended = ((imm as i32) << 19) >> 19;
+                (sign_extended as u64, sign_extended < 0)
+            }
+            RiscVInstruction::JType => {
+                let value =
+                    u32::from_le_bytes(*bytes.first_chunk::<4>().expect("Need at least 4 bytes"));
+                let imm12_19 = (value >> 12) & 0xff;
+                let imm11 = (value >> 20) & 0x1;
+                let imm1_10 = (value >> 21) & 0x3ff;
+                let imm20 = (value >> 31) & 0x1;
+
+                let imm = (imm20 << 20) | (imm12_19 << 12) | (imm11 << 11) | (imm1_10 << 1);
+                let sign_extended = ((imm as i32) << 11) >> 11;
+                (sign_extended as u64, sign_extended < 0)
+            }
+            RiscVInstruction::CbType => {
+                let value = u16::from_le_bytes([bytes[0], bytes[1]]);
+                let imm5 = (value >> 2) & 0x1;
+                let imm1_2 = (value >> 3) & 0x3;
+                let imm6_7 = (value >> 5) & 0x3;
+                let imm3_4 = (value >> 10) & 0x3;
+                let imm8 = (value >> 12) & 0x1;
+
+                let imm = (imm8 << 8) | (imm6_7 << 6) | (imm5 << 5) | (imm3_4 << 3) | (imm1_2 << 1);
+                let sign_extended = (i32::from(imm) << 23) >> 23;
+                (sign_extended as u64, sign_extended < 0)
+            }
+            RiscVInstruction::CjType => {
+                let value = u16::from_le_bytes([bytes[0], bytes[1]]);
+                let imm5 = (value >> 2) & 0x1;
+                let imm1_3 = (value >> 3) & 0x7;
+                let imm7 = (value >> 6) & 0x1;
+                let imm6 = (value >> 7) & 0x1;
+                let imm10 = (value >> 8) & 0x1;
+                let imm8_9 = (value >> 9) & 0x3;
+                let imm4 = (value >> 11) & 0x1;
+                let imm11 = (value >> 12) & 0x1;
+
+                let imm = (imm11 << 11)
+                    | (imm10 << 10)
+                    | (imm8_9 << 8)
+                    | (imm7 << 7)
+                    | (imm6 << 6)
+                    | (imm5 << 5)
+                    | (imm4 << 4)
+                    | (imm1_3 << 1);
+                let sign_extended = (i32::from(imm) << 20) >> 20;
+                (sign_extended as u64, sign_extended < 0)
+            }
+            RiscVInstruction::Uleb128 => {
+                let mut reader = Cursor::new(bytes);
+                match leb128::read::unsigned(&mut reader) {
+                    Ok(value) => (value, false),
+                    Err(_) => panic!("Failed to read ULEB128 value"),
+                }
+            }
+        }
     }
 }
 
