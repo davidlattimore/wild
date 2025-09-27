@@ -100,7 +100,6 @@ tests = [
 reason = "Version script support"
 tests = [
   "version-script-search-paths.sh",
-  "version-script15.sh",
   "version-script17.sh",
 ]
 

@@ -12,7 +12,6 @@ use crate::hash::PreHashed;
 use crate::input_data::ScriptData;
 use crate::linker_script::skip_comments_and_whitespace;
 use crate::symbol::UnversionedSymbolName;
-use glob::Pattern;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
 use symbolic_demangle::Demangle;
@@ -23,6 +22,189 @@ use winnow::error::ContextError;
 use winnow::error::FromExternalError;
 use winnow::token::take_until;
 use winnow::token::take_while;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GlobPattern {
+    pattern: String,
+}
+
+#[derive(Debug)]
+pub(crate) enum GlobPatternError {
+    NestedBrackets,
+    UnmatchedBracket,
+}
+
+impl GlobPattern {
+    pub(crate) fn new(pattern: &str) -> Result<Self, GlobPatternError> {
+        Self::validate_pattern(pattern)?;
+
+        Ok(GlobPattern {
+            pattern: pattern.to_string(),
+        })
+    }
+
+    pub(crate) fn matches(&self, text: &str) -> bool {
+        Self::match_pattern(&self.pattern, text)
+    }
+
+    fn validate_pattern(pattern: &str) -> Result<(), GlobPatternError> {
+        let mut bracket_depth = 0;
+        let mut chars = pattern.chars();
+
+        while let Some(ch) = chars.next() {
+            match ch {
+                '[' => {
+                    bracket_depth += 1;
+                    if bracket_depth > 1 {
+                        return Err(GlobPatternError::NestedBrackets);
+                    }
+                }
+                ']' => {
+                    if bracket_depth == 0 {
+                        return Err(GlobPatternError::UnmatchedBracket);
+                    }
+                    bracket_depth -= 1;
+                }
+                '\\' => {
+                    chars.next();
+                }
+                _ => {}
+            }
+        }
+
+        if bracket_depth > 0 {
+            return Err(GlobPatternError::UnmatchedBracket);
+        }
+
+        Ok(())
+    }
+
+    fn match_pattern(pattern: &str, text: &str) -> bool {
+        Self::match_recursive(pattern.chars().peekable(), text.chars().peekable())
+    }
+
+    fn match_recursive(
+        mut pattern: std::iter::Peekable<std::str::Chars>,
+        mut text: std::iter::Peekable<std::str::Chars>,
+    ) -> bool {
+        while let Some(p) = pattern.next() {
+            match p {
+                '*' => {
+                    while pattern.peek() == Some(&'*') {
+                        pattern.next();
+                    }
+
+                    // If '*' is at the end, match everything
+                    if pattern.peek().is_none() {
+                        return true;
+                    }
+
+                    while text.peek().is_some() {
+                        if Self::match_recursive(pattern.clone(), text.clone()) {
+                            return true;
+                        }
+                        text.next();
+                    }
+
+                    // Try matching '*' with 0 characters
+                    return Self::match_recursive(pattern, text);
+                }
+                '?' => {
+                    if text.next().is_none() {
+                        return false;
+                    }
+                }
+                '[' => {
+                    if !Self::match_bracket_expression(&mut pattern, &mut text) {
+                        return false;
+                    }
+                }
+                '\\' => {
+                    // Escaped character
+                    if let Some(escaped) = pattern.next() {
+                        if text.next() != Some(escaped) {
+                            return false;
+                        }
+                    } else if text.next() != Some('\\') {
+                        return false;
+                    }
+                }
+                c => {
+                    if text.next() != Some(c) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        text.peek().is_none()
+    }
+
+    fn match_bracket_expression(
+        pattern: &mut std::iter::Peekable<std::str::Chars>,
+        text: &mut std::iter::Peekable<std::str::Chars>,
+    ) -> bool {
+        let Some(text_char) = text.next() else {
+            return false;
+        };
+
+        let negated = pattern.peek() == Some(&'^');
+        if negated {
+            pattern.next(); // consume the '^'
+        }
+
+        let mut matched = false;
+        let mut expecting_range_end = None;
+
+        while let Some(&ch) = pattern.peek() {
+            if ch == ']' {
+                pattern.next(); // consume ']'
+                break;
+            }
+
+            let current_char = Self::consume_char(pattern);
+
+            if let Some(range_start) = expecting_range_end {
+                if text_char >= range_start && text_char <= current_char {
+                    matched = true;
+                }
+                expecting_range_end = None;
+            } else if pattern.peek() == Some(&'-') {
+                let mut peek_ahead = pattern.clone();
+
+                peek_ahead.next(); // consume '-'
+                if peek_ahead.peek().is_some() && peek_ahead.peek() != Some(&']') {
+                    // This is a range start
+                    pattern.next(); // consume '-'
+                    expecting_range_end = Some(current_char);
+                } else if text_char == current_char || text_char == '-' {
+                    matched = true;
+                }
+            } else if text_char == current_char {
+                matched = true;
+            }
+        }
+
+        // Handle case where pattern ends with incomplete range (e.g., "a-")
+        if let Some(range_start) = expecting_range_end
+            && (text_char == range_start || text_char == '-')
+        {
+            matched = true;
+        }
+
+        if negated { !matched } else { matched }
+    }
+
+    fn consume_char(pattern: &mut std::iter::Peekable<std::str::Chars>) -> char {
+        let ch = pattern.next().unwrap();
+        if ch == '\\' {
+            // escaped
+            pattern.next().unwrap_or('\\')
+        } else {
+            ch
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub(crate) struct MatchRules<'data> {
@@ -57,9 +239,9 @@ pub(crate) enum SymbolMatcher<'data> {
     // Exact match with escape sequences that need unescaping.
     EscapedExact(&'data [u8]),
     // A glob pattern with a '*' token.
-    StarGlob(Pattern),
+    StarGlob(GlobPattern),
     // A glob pattern without any '*' token.
-    NonstarGlob(Pattern),
+    NonstarGlob(GlobPattern),
     /// Glob pattern equal to '*'
     MatchesAll,
 }
@@ -68,8 +250,8 @@ pub(crate) enum SymbolMatcher<'data> {
 pub(crate) struct BasicMatchRules<'data> {
     exact: HashSet<PreHashed<UnversionedSymbolName<'data>>, PassThroughHasher>,
     escaped_exact: HashSet<Vec<u8>>,
-    star_globs: Vec<Pattern>,
-    nonstar_globs: Vec<Pattern>,
+    star_globs: Vec<GlobPattern>,
+    nonstar_globs: Vec<GlobPattern>,
     matches_all: bool,
 }
 
@@ -572,8 +754,8 @@ pub(crate) fn parse_matcher<'data>(
         } else {
             let glob_type = analyze_glob_pattern(token);
 
-            let create_pattern = |token: &[u8]| -> winnow::Result<Pattern> {
-                Pattern::new(str::from_utf8(token).map_err(|_| {
+            let create_pattern = |token: &[u8]| -> winnow::Result<GlobPattern> {
+                GlobPattern::new(str::from_utf8(token).map_err(|_| {
                     ContextError::from_external_error(input, VersionScriptError::InvalidUtf8String)
                 })?)
                 .map_err(|_| {
@@ -722,7 +904,7 @@ mod tests {
                 .general
                 .star_globs
                 .iter()
-                .map(|glob| glob.as_str()),
+                .map(|glob| glob.pattern.as_str()),
             ["bar*", "best_*_fn*", "*_wrapper"],
         );
 
@@ -771,7 +953,7 @@ mod tests {
                 .general
                 .star_globs
                 .iter()
-                .map(|glob| glob.as_str()),
+                .map(|glob| glob.pattern.as_str()),
             ["old*"],
         );
 
@@ -837,7 +1019,7 @@ mod tests {
                 .cxx
                 .star_globs
                 .iter()
-                .map(|glob| glob.as_str()),
+                .map(|glob| glob.pattern.as_str()),
             ["ns::*"],
         );
 
@@ -1026,7 +1208,7 @@ mod tests {
             .general
             .star_globs
             .iter()
-            .map(|glob| glob.as_str())
+            .map(|glob| glob.pattern.as_str())
             .collect();
 
         assert!(star_patterns.contains(&"b*"));
@@ -1037,9 +1219,40 @@ mod tests {
             .general
             .nonstar_globs
             .iter()
-            .map(|glob| glob.as_str())
+            .map(|glob| glob.pattern.as_str())
             .collect();
 
         assert!(nonstar_patterns.contains(&"f?"));
+    }
+
+    #[test]
+    fn test_caret_negation_in_character_sets() {
+        let pattern = GlobPattern::new("test[^abc]*").unwrap();
+        assert!(pattern.matches("testd123"));
+        assert!(pattern.matches("testx"));
+        assert!(!pattern.matches("testa123"));
+        assert!(!pattern.matches("testb"));
+        assert!(!pattern.matches("testc456"));
+
+        let data = ScriptData {
+            raw: br#"
+                {
+                    local:
+                        test[^abc]*;
+                        file[^0-9]*;
+                };
+            "#,
+        };
+        let script = VersionScript::parse(data).unwrap();
+
+        assert!(!is_matching_global(&script, "testd123"));
+        assert!(!is_matching_global(&script, "testx"));
+        assert!(is_matching_global(&script, "testa123"));
+        assert!(is_matching_global(&script, "testb"));
+        assert!(is_matching_global(&script, "testc456"));
+        assert!(!is_matching_global(&script, "fileX"));
+        assert!(!is_matching_global(&script, "file_test123a"));
+        assert!(is_matching_global(&script, "file1"));
+        assert!(is_matching_global(&script, "file123"));
     }
 }
