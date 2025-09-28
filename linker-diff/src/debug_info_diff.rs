@@ -6,10 +6,10 @@ use crate::header_diff::DiffMode;
 use anyhow::Result;
 use fallible_iterator::FallibleIterator;
 use gimli::LittleEndian;
-use hashbrown::HashMap;
 use itertools::Itertools;
 use object::ObjectSection;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fmt::Display;
 
 #[derive(Debug, Default, PartialEq, Eq, Hash, Ord, PartialOrd)]

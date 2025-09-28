@@ -23,8 +23,8 @@ use crate::layout::FileLayout;
 use crate::layout::GroupLayout;
 use crate::output_section_id;
 use crate::resolution::SectionSlot;
-use hashbrown::HashMap;
 use itertools::Itertools;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub(crate) fn maybe_write_gc_stats(group_layouts: &[GroupLayout], args: &Args) -> Result {

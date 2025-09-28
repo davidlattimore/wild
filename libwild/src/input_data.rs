@@ -17,10 +17,11 @@ use crate::linker_script::LinkerScript;
 use colosseum::sync::Arena;
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
-use hashbrown::HashMap;
 use memmap2::Mmap;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::ops::Deref;
@@ -561,8 +562,8 @@ impl<'data, 'ch> TemporaryState<'data, 'ch> {
         let paths = input.path(self.args)?;
 
         let index = match self.path_to_load_index.entry(paths.absolute.clone()) {
-            hashbrown::hash_map::Entry::Occupied(e) => *e.get(),
-            hashbrown::hash_map::Entry::Vacant(e) => {
+            Entry::Occupied(e) => *e.get(),
+            Entry::Vacant(e) => {
                 let new_index = FileLoadIndex(self.files.len());
                 self.files.push(None);
 

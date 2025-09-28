@@ -63,7 +63,6 @@ use anyhow::bail;
 use anyhow::ensure;
 use colored::ColoredString;
 use colored::Colorize as _;
-use hashbrown::HashMap;
 use itertools::Itertools as _;
 use linker_utils::elf::BitMask;
 use linker_utils::elf::DynamicRelocationKind;
@@ -84,6 +83,8 @@ use object::read::elf::ElfSection64;
 use object::read::elf::FileHeader as _;
 use object::read::elf::ProgramHeader as _;
 use object::read::elf::SectionHeader as _;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt::Display;
 use std::fmt::Write as _;
 use std::iter::Peekable;
@@ -2544,7 +2545,7 @@ fn symbol_versions_by_name<'data>(
         for sym in obj.elf_file.symbols() {
             let Ok(name) = sym.name_bytes() else { continue };
 
-            if let hashbrown::hash_map::Entry::Occupied(mut entry) = by_name.entry(name) {
+            if let Entry::Occupied(mut entry) = by_name.entry(name) {
                 if entry.get().addresses_by_binary.len() == object_index {
                     entry.get_mut().addresses_by_binary.push(sym.address());
                 } else {
@@ -2630,7 +2631,7 @@ fn unify_symbol_section<'data>(
     }
 
     match matched_sections.entry(symbol_versions.original.section_id) {
-        hashbrown::hash_map::Entry::Occupied(mut occupied_entry) => {
+        Entry::Occupied(mut occupied_entry) => {
             let existing = occupied_entry.get_mut();
 
             existing.verify_consistent(&addresses_by_object, symbol_name, binaries, layout)?;
@@ -2641,7 +2642,7 @@ fn unify_symbol_section<'data>(
                 existing.found_via_symbol = symbol_name;
             }
         }
-        hashbrown::hash_map::Entry::Vacant(vacant_entry) => {
+        Entry::Vacant(vacant_entry) => {
             vacant_entry.insert(SectionVersions {
                 addresses_by_binary: addresses_by_object,
                 found_via_symbol: symbol_name,

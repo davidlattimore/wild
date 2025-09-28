@@ -18,7 +18,6 @@ use anyhow::bail;
 use asm_diff::AddressIndex;
 use clap::Parser;
 use clap::ValueEnum;
-use hashbrown::HashMap;
 use itertools::Itertools as _;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
@@ -29,6 +28,7 @@ use object::ObjectSymbol as _;
 use object::read::elf::ElfSection64;
 use section_map::IndexedLayout;
 use section_map::LayoutAndFiles;
+use std::collections::HashMap;
 use std::fmt::Display;
 use std::path::Path;
 use std::path::PathBuf;

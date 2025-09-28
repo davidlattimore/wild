@@ -2,8 +2,6 @@ use crate::ElfFile64;
 use crate::Result;
 use anyhow::Context;
 use anyhow::bail;
-use hashbrown::HashMap;
-use hashbrown::HashSet;
 use itertools::Itertools;
 use linker_layout::ArchiveEntryInfo;
 use object::LittleEndian;
@@ -11,6 +9,9 @@ use object::Object;
 use object::ObjectSection;
 use object::ObjectSymbol;
 use object::read::elf::ElfSection64;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::hash_map::Entry;
 use std::fmt::Display;
 use std::ops::Range;
 use std::path::Path;
@@ -131,12 +132,12 @@ impl<'data> IndexedLayout<'data> {
                 let name = symbol.name_bytes()?;
 
                 match symbol_info_by_name.entry(name) {
-                    hashbrown::hash_map::Entry::Occupied(mut occupied_entry) => {
+                    Entry::Occupied(mut occupied_entry) => {
                         // We've got multiple symbols with this name, change the entry to None to
                         // indicate this.
                         occupied_entry.insert(None);
                     }
-                    hashbrown::hash_map::Entry::Vacant(vacant_entry) => {
+                    Entry::Vacant(vacant_entry) => {
                         vacant_entry.insert(Some(SymbolInfo {
                             section_id: InputSectionId {
                                 file_index,

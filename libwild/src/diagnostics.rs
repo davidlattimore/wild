@@ -8,12 +8,13 @@ use crate::sharding::ShardKey as _;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
+use std::collections::HashSet;
 
 /// Prints information about a symbol when dropped. We do this when dropped so that we can print
 /// either after resolution flags have been computed, or, if layout gets an error, then before we
 /// unwind.
 pub(crate) struct SymbolInfoPrinter<'data> {
-    loaded_file_ids: hashbrown::HashSet<FileId>,
+    loaded_file_ids: HashSet<FileId>,
     symbol_db: &'data SymbolDb<'data>,
     name: &'data str,
     resolution_flags: &'data [AtomicResolutionFlags],

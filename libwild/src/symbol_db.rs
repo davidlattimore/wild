@@ -33,8 +33,6 @@ use crate::symbol::UnversionedSymbolName;
 use crate::symbol::VersionedSymbolName;
 use crate::version_script::VersionScript;
 use crossbeam_queue::SegQueue;
-use hashbrown::HashMap;
-use hashbrown::hash_map;
 use itertools::Itertools;
 use linker_utils::elf::SectionFlags;
 use linker_utils::elf::shf;
@@ -44,8 +42,9 @@ use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
+use std::collections::HashMap;
+use std::collections::hash_map;
 use std::fmt::Display;
-use std::mem::replace;
 use std::mem::take;
 use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
@@ -851,7 +850,7 @@ fn process_alternatives(
     symbol_db: &AtomicSymbolDb,
     resolved: &[ResolvedGroup],
 ) {
-    for (first, alternatives) in replace(alternative_definitions, HashMap::new()) {
+    for (first, alternatives) in std::mem::take(alternative_definitions) {
         // Compute the most restrictive visibility of any of the alternative definitions. This is
         // the visibility we'll use for our selected symbol. This seems like odd behaviour, but it
         // matches what GNU ld appears to do and some programs will fail to link if we don't do
