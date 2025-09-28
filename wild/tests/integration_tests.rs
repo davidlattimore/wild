@@ -133,6 +133,8 @@ use std::fs::File;
 use std::fs::read_dir;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::io::BufRead;
+use std::io::BufReader;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
@@ -1583,6 +1585,53 @@ fn is_newer<P: AsRef<Path>>(output_path: &Path, mut src_paths: impl Iterator<Ite
     })
 }
 
+fn parse_ld_dependency_file(depfile: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let f = std::fs::File::open(depfile)?;
+    let mut r = BufReader::new(f);
+
+    let mut buf = String::new();
+    let mut started = false;
+    let mut deps = Vec::<PathBuf>::new();
+    let mut seen = HashSet::<String>::new();
+
+    loop {
+        buf.clear();
+        if r.read_line(&mut buf)? == 0 {
+            break;
+        }
+        let line = buf.trim_end_matches(['\r', '\n']);
+
+        let frag = if !started {
+            if let Some(i) = line.find(':') {
+                started = true;
+                &line[i + 1..]
+            } else {
+                continue;
+            }
+        } else {
+            line
+        };
+
+        let (frag, cont) = if frag.ends_with('\\') {
+            (frag.trim_end_matches('\\').trim_end(), true)
+        } else {
+            (frag, false)
+        };
+
+        for t in frag.split_whitespace() {
+            if !t.is_empty() && seen.insert(t.to_string()) {
+                deps.push(PathBuf::from(t));
+            }
+        }
+
+        if !cont {
+            break;
+        }
+    }
+
+    Ok(deps)
+}
+
 impl Linker {
     /// Links the supplied object files with this configuration and returns the path to the
     /// resulting binary.
@@ -1798,14 +1847,43 @@ impl LinkCommand {
             output_path: output_path.to_owned(),
         };
 
+        let depfile_path = output_path.with_extension("d");
+        if !linker.is_wild() {
+            match invocation_mode {
+                LinkerInvocationMode::Direct | LinkerInvocationMode::Script => {
+                    link_command
+                        .command
+                        .arg(format!("--dependency-file={}", depfile_path.display()));
+                }
+                LinkerInvocationMode::Cc => {
+                    link_command
+                        .command
+                        .arg(format!("-Wl,--dependency-file={}", depfile_path.display()));
+                }
+            }
+        }
+
+        let base_ok =
+            !linker.is_wild() && cmd_file_is_current(output_path, &link_command.to_string());
+
         // We allow skipping linking if all the object and otherwise tracked files
         // are unchanged and are older than our output file, but not if we're linking
         // with our linker, since we're always changing that. We also require that the
         // command we're going to run hasn't changed.
-        let can_skip = !matches!(linker, Linker::Wild)
-            && is_newer(output_path, inputs.iter().map(|i| i.path.as_path()))
-            && is_newer(output_path, config.tracked_files.iter())
-            && cmd_file_is_current(output_path, &link_command.to_string());
+        let can_skip = if !linker.is_wild() && depfile_path.is_file() {
+            match parse_ld_dependency_file(&depfile_path) {
+                Ok(deps) if !deps.is_empty() => {
+                    base_ok
+                        && is_newer(output_path, deps.iter())
+                        && is_newer(output_path, config.tracked_files.iter())
+                }
+                _ => false,
+            }
+        } else {
+            base_ok
+                && is_newer(output_path, inputs.iter().map(|i| i.path.as_path()))
+                && is_newer(output_path, config.tracked_files.iter())
+        };
         link_command.can_skip = can_skip;
 
         Ok(link_command)
