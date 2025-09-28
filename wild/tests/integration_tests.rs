@@ -1850,7 +1850,7 @@ impl LinkCommand {
         let depfile_path = output_path.with_extension("d");
         if !linker.is_wild() {
             match invocation_mode {
-                LinkerInvocationMode::Direct => {
+                LinkerInvocationMode::Direct | LinkerInvocationMode::Script => {
                     link_command
                         .command
                         .arg(format!("--dependency-file={}", depfile_path.display()));
@@ -1860,22 +1860,17 @@ impl LinkCommand {
                         .command
                         .arg(format!("-Wl,--dependency-file={}", depfile_path.display()));
                 }
-                LinkerInvocationMode::Script => {
-                    link_command
-                        .command
-                        .arg(format!("--dependency-file={}", depfile_path.display()));
-                }
             }
         }
 
-        let base_ok = !matches!(linker, Linker::Wild)
-            && cmd_file_is_current(output_path, &link_command.to_string());
+        let base_ok =
+            !linker.is_wild() && cmd_file_is_current(output_path, &link_command.to_string());
 
         // We allow skipping linking if all the object and otherwise tracked files
         // are unchanged and are older than our output file, but not if we're linking
         // with our linker, since we're always changing that. We also require that the
         // command we're going to run hasn't changed.
-        let can_skip = if matches!(linker, Linker::ThirdParty(_)) && depfile_path.is_file() {
+        let can_skip = if !linker.is_wild() && depfile_path.is_file() {
             match parse_ld_dependency_file(&depfile_path) {
                 Ok(deps) if !deps.is_empty() => {
                     base_ok
