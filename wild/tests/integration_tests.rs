@@ -133,11 +133,11 @@ use std::fs::File;
 use std::fs::read_dir;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::io::BufRead;
+use std::io::BufReader;
 use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
-use std::io::BufRead;
-use std::io::BufReader;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -1596,7 +1596,9 @@ fn parse_ld_dependency_file(depfile: &Path) -> std::io::Result<Vec<PathBuf>> {
 
     loop {
         buf.clear();
-        if r.read_line(&mut buf)? == 0 { break; }
+        if r.read_line(&mut buf)? == 0 {
+            break;
+        }
         let line = buf.trim_end_matches(['\r', '\n']);
 
         let frag = if !started {
@@ -1880,8 +1882,8 @@ impl LinkCommand {
                         && is_newer(output_path, deps.iter())
                         && is_newer(output_path, config.tracked_files.iter())
                 }
-                _ => false
-            }   
+                _ => false,
+            }
         } else {
             base_ok
                 && is_newer(output_path, inputs.iter().map(|i| i.path.as_path()))
