@@ -47,9 +47,9 @@ iced-x86 = { version = "1.17.0", default-features = false, features = [
 ] }
 indexmap = "2.9.0"
 itertools = "0.14.0"
-jobserver = "0.1.23"
+jobserver = "0.1.34"
 leb128 = "0.2.5"
-libc = "0.2"
+libc = "0.2.176"
 memchr = "2.7"
 memmap2 = "0.9.0"
 mimalloc = { version = "0.1", default-features = false }
@@ -65,7 +65,7 @@ perf-event = "0.4.8"
 postcard = { version = "1.1.1", features = ["use-std"] }
 rayon = "1.11"
 rstest = "0.26.1"
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
 sharded-offset-map = "0.2.0"
 sharded-vec-writer = "0.4.0"
 smallvec = "1.6.1"
