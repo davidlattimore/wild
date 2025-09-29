@@ -7,6 +7,7 @@ use crate::elf::RelocationSize;
 use crate::elf::extract_bits;
 use crate::relaxation::RelocationModifier;
 use crate::utils::or_from_slice;
+use crate::utils::u32_from_slice;
 
 pub const DEFAULT_AARCH64_PAGE_SIZE_BITS: u64 = 12;
 pub const DEFAULT_AARCH64_PAGE_SIZE: u64 = 1 << DEFAULT_AARCH64_PAGE_SIZE_BITS;
@@ -65,11 +66,7 @@ impl RelaxationKind {
             }
             RelaxationKind::MovzXnLsl16 => {
                 let reg = extract_bits(
-                    u64::from(u32::from_le_bytes(
-                        *section_bytes[offset..offset + 4]
-                            .first_chunk::<4>()
-                            .unwrap(),
-                    )),
+                    u64::from(u32_from_slice(&section_bytes[offset..offset + 4])),
                     0,
                     5,
                 ) as u8;
@@ -78,11 +75,7 @@ impl RelaxationKind {
                 ]);
             }
             RelaxationKind::MovkXn => {
-                let raw = u64::from(u32::from_le_bytes(
-                    *section_bytes[offset..offset + 4]
-                        .first_chunk::<4>()
-                        .unwrap(),
-                ));
+                let raw = u64::from(u32_from_slice(&section_bytes[offset..offset + 4]));
                 let dst_reg = extract_bits(raw, 0, 5) as u8;
                 let src_reg = extract_bits(raw, 5, 10) as u8;
                 debug_assert_eq!(
@@ -1020,7 +1013,7 @@ impl AArch64Instruction {
     #[must_use]
     pub fn read_value(self, bytes: &[u8]) -> (u64, bool) {
         let mut negative = false;
-        let value = u32::from_le_bytes(*bytes.first_chunk::<4>().expect("Need at least 4 bytes"));
+        let value = u32_from_slice(bytes);
         let extracted_value = match self {
             // C6.2.13
             AArch64Instruction::Adr => {
