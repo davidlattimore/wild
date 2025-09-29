@@ -131,15 +131,19 @@ pub(crate) fn report_section_diffs<A: Arch>(report: &mut Report, binaries: &[Bin
     while let Some(section_id) = section_ids_to_process.pop() {
         let section_versions = matched_sections.get(&section_id).unwrap();
 
-        if let Err(error) = compare_sections::<A>(report, section_versions, binaries, layout) {
+        let section_diff_key = format!(
+            "section-diff-failed.{}",
+            section_versions
+                .original_section(layout)
+                .and_then(|s| Ok(s.name()?))
+                .unwrap_or("unknown-section")
+        );
+
+        if !report.should_ignore(&section_diff_key)
+            && let Err(error) = compare_sections::<A>(report, section_versions, binaries, layout)
+        {
             report.add_diff(Diff {
-                key: format!(
-                    "section-diff-failed.{}",
-                    section_versions
-                        .original_section(layout)
-                        .and_then(|s| Ok(s.name()?))
-                        .unwrap_or("unknown-section")
-                ),
+                key: section_diff_key,
                 values: DiffValues::PreFormatted(error.to_string()),
             });
         }
@@ -240,15 +244,25 @@ fn compare_sections<A: Arch>(
             let first_has_match_failure = first.relaxations.is_none() || first.has_error();
 
             if !at_least_one_match || first_has_match_failure {
-                report.add_diff(resolution_diff_exec(
-                    group.start_offset(),
-                    group.into_original_annotations(),
-                    &resolutions,
-                    &testers,
-                    section_versions.input_section_id,
-                    layout,
-                    trace,
-                )?);
+                // Check if the diff key would be ignored
+                let start_offset = group.start_offset();
+                let original_annotations = group.into_original_annotations();
+                let bin_attributes = testers[1].bin.address_index.bin_attributes;
+                let diff_key =
+                    diff_key_for_res_mismatch(&resolutions, &original_annotations, bin_attributes);
+
+                if !report.should_ignore(&diff_key) {
+                    let diff = resolution_diff_exec(
+                        start_offset,
+                        original_annotations,
+                        &resolutions,
+                        &testers,
+                        section_versions.input_section_id,
+                        layout,
+                        trace,
+                    )?;
+                    report.add_diff(diff);
+                }
 
                 update_offsets_if_match_failed(
                     section_versions,
