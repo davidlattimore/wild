@@ -8,6 +8,7 @@ use crate::elf::extract_bits;
 use crate::relaxation::RelocationModifier;
 use crate::utils::and_from_slice;
 use crate::utils::or_from_slice;
+use crate::utils::u32_from_slice;
 use leb128;
 use std::io::Cursor;
 
@@ -454,22 +455,19 @@ impl RiscVInstruction {
                 (hi << 12 | lo, false)
             }
             RiscVInstruction::UType => {
-                let value =
-                    u32::from_le_bytes(*bytes.first_chunk::<4>().expect("Need at least 4 bytes"));
+                let value = u32_from_slice(bytes);
                 let imm = (value >> 12) & 0xfffff;
                 let adjusted = ((imm as i32) << 12) >> 12;
                 ((adjusted as u64).wrapping_sub(0x800), false)
             }
             RiscVInstruction::IType => {
-                let value =
-                    u32::from_le_bytes(*bytes.first_chunk::<4>().expect("Need at least 4 bytes"));
+                let value = u32_from_slice(bytes);
                 let imm = (value >> 20) & 0xfff;
                 let sign_extended = ((imm as i32) << 20) >> 20;
                 (sign_extended as u64, sign_extended < 0)
             }
             RiscVInstruction::SType => {
-                let value =
-                    u32::from_le_bytes(*bytes.first_chunk::<4>().expect("Need at least 4 bytes"));
+                let value = u32_from_slice(bytes);
                 let imm_low = (value >> 7) & 0x1f;
                 let imm_high = (value >> 25) & 0x7f;
                 let imm = (imm_high << 5) | imm_low;
@@ -477,8 +475,7 @@ impl RiscVInstruction {
                 (sign_extended as u64, sign_extended < 0)
             }
             RiscVInstruction::BType => {
-                let value =
-                    u32::from_le_bytes(*bytes.first_chunk::<4>().expect("Need at least 4 bytes"));
+                let value = u32_from_slice(bytes);
                 let imm11 = (value >> 7) & 0x1;
                 let imm1_4 = (value >> 8) & 0xf;
                 let imm5_10 = (value >> 25) & 0x3f;
@@ -489,8 +486,7 @@ impl RiscVInstruction {
                 (sign_extended as u64, sign_extended < 0)
             }
             RiscVInstruction::JType => {
-                let value =
-                    u32::from_le_bytes(*bytes.first_chunk::<4>().expect("Need at least 4 bytes"));
+                let value = u32_from_slice(bytes);
                 let imm12_19 = (value >> 12) & 0xff;
                 let imm11 = (value >> 20) & 0x1;
                 let imm1_10 = (value >> 21) & 0x3ff;

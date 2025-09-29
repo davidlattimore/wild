@@ -73,6 +73,7 @@ use linker_utils::elf::RelocationSize;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use linker_utils::relaxation::RelocationModifier;
+use linker_utils::utils::u32_from_slice;
 use object::LittleEndian;
 use object::Object as _;
 use object::ObjectKind;
@@ -3608,11 +3609,7 @@ fn read_value(size: RelocationSize, value_bytes: &[u8]) -> Result<u64> {
                 .first_chunk::<8>()
                 .context("Invalid relocation offset")?,
         )),
-        RelocationSize::ByteSize(4) => Ok(u64::from(u32::from_le_bytes(
-            *value_bytes
-                .first_chunk::<4>()
-                .context("Invalid relocation offset")?,
-        ))),
+        RelocationSize::ByteSize(4) => Ok(u64::from(u32_from_slice(value_bytes))),
         RelocationSize::ByteSize(0) => Ok(0),
         RelocationSize::ByteSize(other) => bail!("Unsupported relocation size {other}"),
         RelocationSize::BitMasking(BitMask {

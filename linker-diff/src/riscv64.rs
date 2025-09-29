@@ -10,6 +10,7 @@ use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::riscv64_rel_type_to_string;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::riscv64::RelaxationKind;
+use linker_utils::utils::u32_from_slice;
 use std::fmt::Display;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -197,10 +198,10 @@ fn decode_plt_entry_riscv(
         return None;
     }
 
-    let insn1 = u32::from_le_bytes([plt_entry[0], plt_entry[1], plt_entry[2], plt_entry[3]]);
-    let insn2 = u32::from_le_bytes([plt_entry[4], plt_entry[5], plt_entry[6], plt_entry[7]]);
-    let insn3 = u32::from_le_bytes([plt_entry[8], plt_entry[9], plt_entry[10], plt_entry[11]]);
-    let insn4 = u32::from_le_bytes([plt_entry[12], plt_entry[13], plt_entry[14], plt_entry[15]]);
+    let insn1 = u32_from_slice(&plt_entry[0..4]);
+    let insn2 = u32_from_slice(&plt_entry[4..8]);
+    let insn3 = u32_from_slice(&plt_entry[8..12]);
+    let insn4 = u32_from_slice(&plt_entry[12..16]);
 
     // auipc t3, imm - opcode: 0x17, rd: 28 (t3)
     if (insn1 & 0x7f) != 0x17 || ((insn1 >> 7) & 0x1f) != 28 {
