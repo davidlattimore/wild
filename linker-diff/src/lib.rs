@@ -277,8 +277,6 @@ impl Config {
                 [
                     // TODO: for some reason, main is put into .dynsym
                     "dynsym.main.section",
-                    // #701
-                    "file-header.flags",
                     // GOT entries may differ due to unimplemented relaxations
                     "section.got.*",
                     // Dynamic relocations may differ
