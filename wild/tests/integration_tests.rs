@@ -2646,7 +2646,8 @@ fn integration_test(
         "lto-undefined.c",
         "symbol-version-symver.c",
         "symbol-version-symver-error.c",
-        "args-precedence.c"
+        "args-precedence.c",
+        "entry-in-shared.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),

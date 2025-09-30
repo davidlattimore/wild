@@ -1757,12 +1757,12 @@ impl<'data> Layout<'data> {
     }
 
     pub(crate) fn entry_symbol_address(&self) -> Result<u64> {
-        if self.args().output_kind() == OutputKind::SharedObject {
-            // Shared objects don't have an entry point.
-            return Ok(0);
-        }
-
         let Some(symbol_id) = self.prelude().entry_symbol_id else {
+            if self.args().output_kind() == OutputKind::SharedObject {
+                // Shared objects don't have an implicit entry point.
+                return Ok(0);
+            }
+
             // There's no entry point specified, set it to the start of .text. This is pretty weird,
             // but it's what GNU ld does.
             let text_layout = self.section_layouts.get(output_section_id::TEXT);
@@ -3220,9 +3220,7 @@ impl<'data> PreludeLayoutState<'data> {
             common.allocate(part_id::STRTAB, 1);
         }
 
-        if resources.symbol_db.args.output_kind().is_executable() {
-            self.load_entry_point(resources, queue);
-        }
+        self.load_entry_point(resources, queue);
 
         if resources.symbol_db.args.needs_dynsym() {
             // Allocate space for the null symbol.
@@ -3255,7 +3253,7 @@ impl<'data> PreludeLayoutState<'data> {
                     resources.symbol_db.entry_symbol_name(),
                 ))
         else {
-            // We'll emit a warning when writing the file.
+            // We'll emit a warning when writing the file if it's an executable.
             return;
         };
 

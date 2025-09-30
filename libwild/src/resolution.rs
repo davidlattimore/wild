@@ -562,17 +562,15 @@ fn load_prelude<'scope>(
     resources: &'scope ResolutionResources,
     scope: &Scope<'scope>,
 ) {
-    if resources.symbol_db.args.output_kind().is_executable() {
-        // The start symbol could be defined within an archive entry. If it is, then we need to load
-        // it. We don't currently store the resulting SymbolId, but instead look it up again during
-        // layout.
-        load_symbol_named(
-            resources,
-            &mut SymbolId::undefined(),
-            resources.symbol_db.entry_symbol_name(),
-            scope,
-        );
-    }
+    // The start symbol could be defined within an archive entry. If it is, then we need to load
+    // it. We don't currently store the resulting SymbolId, but instead look it up again during
+    // layout.
+    load_symbol_named(
+        resources,
+        &mut SymbolId::undefined(),
+        resources.symbol_db.entry_symbol_name(),
+        scope,
+    );
 
     // Try to resolve any symbols that the user requested be undefined (e.g. via --undefined). If an
     // object defines such a symbol, request that the object be loaded. Also, point our undefined
