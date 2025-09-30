@@ -133,213 +133,50 @@ See [BENCHMARKING.md](BENCHMARKING.md) for more details on running benchmarks.
 
 All benchmarks are run with output to a tmpfs.
 
-### Linking clang on x86-64
-
-This benchmark was run on David Lattimore's laptop (2020 model System76 Lemur pro), which has 4
-cores (8 threads) and 42 GB of RAM.
-
 Wild currently doesn't perform great beyond 8 threads. This is something we've been investigating
 and hope to improve soon.
 
-First, without debug info:
+### X86_64
 
-```
-❯ OUT=/home/david/ttt throttle-count hyperfine --warmup 1 -N -n lld-18 './run-with ld.lld --strip-debug' -n mold-2.36-no-fork './run-with mold --no-fork --strip-debug' -n wild-0.4.0-no-fork './run-with wild --no-fork --strip-debug' -n mold-2.36 './run-with mold --strip-debug' -n wild-0.4.0 './run-with wild --strip-debug'
-temp: +40.0°C
-Benchmark 1: lld-18
-  Time (mean ± σ):     514.1 ms ±   5.1 ms    [User: 1000.1 ms, System: 451.9 ms]
-  Range (min … max):   507.1 ms … 523.4 ms    10 runs
- 
-Benchmark 2: mold-2.36-no-fork
-  Time (mean ± σ):     388.5 ms ±   5.3 ms    [User: 1986.9 ms, System: 436.2 ms]
-  Range (min … max):   379.0 ms … 396.8 ms    10 runs
- 
-Benchmark 3: wild-0.4.0-no-fork
-  Time (mean ± σ):     244.4 ms ±   3.2 ms    [User: 1087.5 ms, System: 313.0 ms]
-  Range (min … max):   240.3 ms … 251.7 ms    12 runs
- 
-Benchmark 4: mold-2.36
-  Time (mean ± σ):     365.7 ms ±   8.5 ms    [User: 9.4 ms, System: 3.1 ms]
-  Range (min … max):   358.1 ms … 384.9 ms    10 runs
- 
-Benchmark 5: wild-0.4.0
-  Time (mean ± σ):     220.5 ms ±   3.4 ms    [User: 2.6 ms, System: 2.0 ms]
-  Range (min … max):   214.1 ms … 226.1 ms    13 runs
- 
-Summary
-  'wild-0.4.0' ran
-    1.11 ± 0.02 times faster than 'wild-0.4.0-no-fork'
-    1.66 ± 0.05 times faster than 'mold-2.36'
-    1.76 ± 0.04 times faster than 'mold-2.36-no-fork'
-    2.33 ± 0.04 times faster than 'lld-18'
-Throttle pkg: 0 core: 0 ms: 0 temp: +59.0°C
-```
+X86_64 benchmarks were run on David Lattimore's laptop (2020 model System76 Lemur pro), which has 4 cores
+(8 threads) and 42 GB of RAM.
 
-Note, the user and system CPU times for mold and wild when run with default flags are meaningless,
-since these linkers fork by default and hyperfine doesn't see the CPU usage of the forked
-subprocess. For accurate CPU usage, see the no-fork variants. For later benchmarks, we always
-include `--no-fork` for these linkers. This makes each of these linkers slower by about 10%.
+Binaries used are official release builds from each project.
 
-GNU ld is excluded from the benchmarks because its speed is so totally different to the other
-linkers that it makes it hard to compare. But for reference, here is the time for GNU ld for this
-benchmark:
+First a benchmark is linking a smallish binary, the wild linker itself.
 
-```
-Benchmark 1: GNU-ld-2.38
-  Time (mean ± σ):      8.414 s ±  0.323 s    [User: 7.291 s, System: 1.121 s]
-  Range (min … max):    7.601 s …  8.668 s    10 runs
-```
+![Benchmark of lld, mold and wild linking wild](images/benchmarks/wild.svg)
 
-Now with debug info:
+Next, we link librustc-driver, which is a shared object and is where most of the code in the rust
+compiler ends up.
 
-```
-❯ OUT=/home/david/ttt throttle-count hyperfine --warmup 1 -N -n lld-18 './run-with ld.lld' -n mold-2.36 './run-with mold --no-fork' -n wild-0.4.0 './run-with wild --no-fork'
-temp: +42.0°C
-Benchmark 1: lld-18
-  Time (mean ± σ):     11.350 s ±  0.209 s    [User: 70.592 s, System: 6.677 s]
-  Range (min … max):   11.085 s … 11.621 s    10 runs
- 
-Benchmark 2: mold-2.36
-  Time (mean ± σ):     11.826 s ±  0.607 s    [User: 73.569 s, System: 5.435 s]
-  Range (min … max):   11.130 s … 12.721 s    10 runs
- 
-Benchmark 3: wild-0.4.0
-  Time (mean ± σ):      8.800 s ±  0.197 s    [User: 49.397 s, System: 8.273 s]
-  Range (min … max):    8.588 s …  9.136 s    10 runs
- 
-Summary
-  'wild-0.4.0' ran
-    1.29 ± 0.04 times faster than 'lld-18'
-    1.34 ± 0.08 times faster than 'mold-2.36'
-Throttle pkg: 18454 core: 5916 ms: 328 temp: +77.0°C
-```
+![Benchmark of lld, mold and wild linking librustc-driver](images/benchmarks/librustc-driver.svg)
 
-Note, despite setting my fans to maximum before the start of the benchmark, I did get some thermal
-throttling in this run. However, the standard deviations look pretty tight, so I don't think it
-really invalidated the results.
+Finally, for an especially large binary, we link the chromium web browser with debug info.
 
-The big takeaway from this benchmark is that debug info can make your link times really slow, so if
-you don't need it, turn it off. If you do need it, try to use split debug info or unpacked debug
-info. The situation with debug info is especially bad for C++ codebases like clang, probably due to
-header files causing lots of the same information to be repeated.
+![Benchmark of lld, mold and wild linking chromium](images/benchmarks/chromium.svg)
 
-### Linking rustc-driver.so on x86-64
+### Aarch64
 
-Without debug info:
+Aarch64 benchmarks were run on RaspberryPi5 with 8 GiB of RAM. Binaries used are official release
+binaries from each project.
 
-```
-❯ OUT=/home/david/ttt throttle-count hyperfine --warmup 1 -N -n lld-18 './run-with ld.lld --strip-debug' -n mold-2.36 './run-with mold --no-fork --strip-debug' -n wild-0.4.0 './run-with wild --no-fork --strip-debug'
-temp: +47.0°C
-Benchmark 1: lld-18
-  Time (mean ± σ):      1.485 s ±  0.009 s    [User: 2.247 s, System: 0.771 s]
-  Range (min … max):    1.471 s …  1.499 s    10 runs
- 
-Benchmark 2: mold-2.36
-  Time (mean ± σ):     819.9 ms ±   6.6 ms    [User: 3815.0 ms, System: 715.4 ms]
-  Range (min … max):   810.3 ms … 829.3 ms    10 runs
- 
-Benchmark 3: wild-0.4.0
-  Time (mean ± σ):     476.6 ms ±  46.6 ms    [User: 2080.9 ms, System: 514.6 ms]
-  Range (min … max):   436.7 ms … 553.7 ms    10 runs
- 
-Summary
-  'wild-0.4.0' ran
-    1.72 ± 0.17 times faster than 'mold-2.36'
-    3.12 ± 0.31 times faster than 'lld-18'
-Throttle pkg: 0 core: 0 ms: 0 temp: +62.0°C
-```
+![Benchmark of lld, mold and wild linking wild without debug info on a RaspberryPi5](images/benchmarks/rpi-wild-no-debug.svg)
 
-With debug info:
+![Benchmark of lld, mold and wild linking wild with debug info on a RaspberryPi5](images/benchmarks/rpi-wild-debug.svg)
 
-```
-❯ OUT=/home/david/ttt throttle-count hyperfine --warmup 1 -N -n lld-18 './run-with ld.lld' -n mold-2.36 './run-with mold --no-fork' -n wild-0.4.0 './run-with wild --no-fork'
-temp: +47.0°C
-Benchmark 1: lld-18
-  Time (mean ± σ):      1.663 s ±  0.022 s    [User: 3.244 s, System: 1.024 s]
-  Range (min … max):    1.633 s …  1.710 s    10 runs
- 
-Benchmark 2: mold-2.36
-  Time (mean ± σ):      1.120 s ±  0.016 s    [User: 5.126 s, System: 1.005 s]
-  Range (min … max):    1.101 s …  1.149 s    10 runs
- 
-Benchmark 3: wild-0.4.0
-  Time (mean ± σ):     646.3 ms ±  10.0 ms    [User: 3016.3 ms, System: 807.9 ms]
-  Range (min … max):   626.0 ms … 657.5 ms    10 runs
- 
-Summary
-  'wild-0.4.0' ran
-    1.73 ± 0.04 times faster than 'mold-2.36'
-    2.57 ± 0.05 times faster than 'lld-18'
-Throttle pkg: 0 core: 0 ms: 0 temp: +62.0°C
-```
 
-### Linking clang on aarch64 (Raspberry Pi 5)
+### RISC-V 64
 
-```
-OUT=/run/user/1000/ttt hyperfine --warmup 2 -n lld-19 './run-with ld.lld-19 --strip-debug' -n mold-2.36 './run-with mold --no-fork --strip-debug' -n wild-0.4.0 './run-with wild --no-fork --strip-debug'
-Benchmark 1: lld-19
-  Time (mean ± σ):      1.170 s ±  0.005 s    [User: 2.046 s, System: 0.233 s]
-  Range (min … max):    1.165 s …  1.177 s    10 runs
- 
-Benchmark 2: mold-2.36
-  Time (mean ± σ):     919.3 ms ±   2.7 ms    [User: 3120.7 ms, System: 304.4 ms]
-  Range (min … max):   915.5 ms … 923.7 ms    10 runs
- 
-Benchmark 3: wild-0.4.0
-  Time (mean ± σ):     423.1 ms ±   5.5 ms    [User: 1352.9 ms, System: 147.1 ms]
-  Range (min … max):   419.1 ms … 438.0 ms    10 runs
- 
-Summary
-  wild-0.4.0 ran
-    2.17 ± 0.03 times faster than mold-2.36
-    2.76 ± 0.04 times faster than lld-19
-```
+RISC-V benchmarks were run on a VisionFive2 with 8 GiB of RAM running Ubuntu 24.04.
 
-### Linking wild on aarch64 (Raspberry Pi 5)
+Neither wild nor lld have official release binaries for RISC-V. For wild, the binary was just a
+locally built release binary. For lld, the version that comes with Ubuntu was used. Mold does have
+an official release binary for RISC-V, so that was used.
 
-Without debug info:
+![Benchmark of lld, mold and wild linking wild with debug info on a VF2](images/benchmarks/risc-v-64-wild-debug.svg)
 
-```
-OUT=/run/user/1000/ttt hyperfine -N --warmup 2 -n lld-19 './run-with ld.lld-19 --strip-debug' -n mold-2.36 './run-with mold --no-fork --strip-debug' -n wild-0.4.0 './run-with wild --no-fork --strip-debug'
-Benchmark 1: lld-19
-  Time (mean ± σ):     225.7 ms ±   2.6 ms    [User: 321.5 ms, System: 52.5 ms]
-  Range (min … max):   222.8 ms … 232.7 ms    13 runs
- 
-Benchmark 2: mold-2.36
-  Time (mean ± σ):     152.2 ms ±   0.7 ms    [User: 496.0 ms, System: 46.8 ms]
-  Range (min … max):   150.5 ms … 153.5 ms    19 runs
- 
-Benchmark 3: wild-0.4.0
-  Time (mean ± σ):      78.3 ms ±   0.8 ms    [User: 227.9 ms, System: 30.6 ms]
-  Range (min … max):    76.9 ms …  80.3 ms    38 runs
- 
-Summary
-  wild-0.4.0 ran
-    1.94 ± 0.02 times faster than mold-2.36
-    2.88 ± 0.04 times faster than lld-19
-```
-
-With debug info:
-
-```
-OUT=/run/user/1000/ttt hyperfine --warmup 2 -n lld-19 './run-with ld.lld-19' -n mold-2.36 './run-with mold --no-fork' -n wild-0.4.0 './run-with wild --no-fork'
-Benchmark 1: lld-19
-  Time (mean ± σ):     325.0 ms ±   4.5 ms    [User: 664.0 ms, System: 66.3 ms]
-  Range (min … max):   319.2 ms … 333.7 ms    10 runs
- 
-Benchmark 2: mold-2.36
-  Time (mean ± σ):     262.3 ms ±   2.7 ms    [User: 890.9 ms, System: 75.3 ms]
-  Range (min … max):   259.1 ms … 269.6 ms    11 runs
- 
-Benchmark 3: wild-0.4.0
-  Time (mean ± σ):     183.2 ms ±   3.1 ms    [User: 588.5 ms, System: 64.5 ms]
-  Range (min … max):   179.8 ms … 192.3 ms    16 runs
- 
-Summary
-  wild-0.4.0 ran
-    1.43 ± 0.03 times faster than mold-2.36
-    1.77 ± 0.04 times faster than lld-19
-```
+![Benchmark of lld, mold and wild linking wild with --strip-debug info on a VF2](images/benchmarks/risc-v-64-wild-non-debug.svg)
 
 ## Linking Rust code
 
