@@ -22,7 +22,7 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v33
+        uses: nixbuild/nix-quick-install-action@v34
 
       - name: Build Wild
         run: |
