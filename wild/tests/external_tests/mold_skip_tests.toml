@@ -274,6 +274,7 @@ tests = [
   "versioned-undef.sh",
   "warn-symbol-type.sh",
   "weak-export-exe.sh",
+  "weak-export-dso2.sh",
   "weak-undef.sh",
   "weak-undef2.sh",
   "weak-undef5.sh",
