@@ -17,6 +17,12 @@ readme = "README.md"
 rust-version = "1.89"
 edition = "2024"
 
+# Note, the versions listed here are minimum supported versions and should only be increased when
+# (a) there's a new major version which we wouldn't get if we didn't increase our required version
+# or (b) we've determined that the minimum version listed here is no longer correct, since we're
+# using a feature of the crate that isn't in that version. In the case of (b) we should increase to
+# the lowest version that we can support.
+
 [workspace.dependencies]
 anyhow = "1.0.97"
 ascii_table = "4.0.0"
@@ -47,9 +53,9 @@ iced-x86 = { version = "1.17.0", default-features = false, features = [
 ] }
 indexmap = "2.9.0"
 itertools = "0.14.0"
-jobserver = "0.1.23"
+jobserver = "0.1.30"
 leb128 = "0.2.5"
-libc = "0.2.152"
+libc = "0.2.168"
 memchr = "2.6.0"
 memmap2 = "0.9.0"
 mimalloc = { version = "0.1", default-features = false }
@@ -63,7 +69,7 @@ object = { version = "0.37.3", default-features = false, features = [
 os_info = "3.0.0"
 perf-event = "0.4.8"
 postcard = { version = "1.1.1", features = ["use-std"] }
-rayon = "1.2.1"
+rayon = "1.5.1"
 rstest = "0.26.1"
 serde = { version = "1.0.219", features = ["derive"] }
 sharded-offset-map = "0.2.0"
