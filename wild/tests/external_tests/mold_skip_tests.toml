@@ -106,7 +106,7 @@ tests = [
 
 [skipped_groups.linker_script]
 reason = "Linker script support"
-tests  = ["linker-script-defsym.sh", "linker-script.sh", "linker-script4.sh"]
+tests = ["linker-script-defsym.sh", "linker-script.sh", "linker-script4.sh"]
 
 [skipped_groups.z_options]
 reason = "Related to -z"
@@ -133,7 +133,6 @@ tests = [
   "arch-x86_64-gnu-linkonce.sh",
   "arch-x86_64-gotpcrelx.sh",
   "arch-x86_64-init-array-readonly.sh",
-  "arch-x86_64-isa-level.sh",
   "arch-x86_64-mergeable-strings-nonalloc.sh",
   "arch-x86_64-note-property2.sh",             # `--relocatable` is not supported yet.
   "arch-x86_64-note.sh",
@@ -180,7 +179,7 @@ tests = [
 
 [skipped_groups.tls]
 reason = "Related to TLS"
-tests  = ["tls-common.sh", "tls-le-error.sh"]
+tests = ["tls-common.sh", "tls-le-error.sh"]
 
 [skipped_groups.symver]
 reason = "unsupported inline assembly .symver directive"
@@ -252,7 +251,6 @@ tests = [
   "no-allow-shlib-undefined.sh",
   "no-allow-shlib-undefined2.sh",
   "no-allow-shlib-undefined3.sh",
-  "no-allow-shlib-undefined4.sh",
   "no-undefined-version.sh",
   "nocopyreloc.sh",
   "noinhibit-exec.sh",
