@@ -2233,6 +2233,7 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use std::str::FromStr;
+    use crate::Args;
 
     const INPUT1: &[&str] = &[
         "-pie",
@@ -2348,9 +2349,7 @@ mod tests {
         assert!(c.iter().any(|p| p.as_ref() == Path::new(v)));
     }
 
-    #[test]
-    fn test_parse() {
-        let args = super::parse(|| INPUT1.iter()).unwrap();
+    fn input1_assertions(args: &Args) {
         assert!(args.is_relocatable());
         assert_eq!(
             args.inputs
@@ -2384,6 +2383,13 @@ mod tests {
             InputSpec::Search(lib) => lib.as_ref() == "lib85caec4suo0pxg06jm2ma7b0o.so",
         }));
         assert_eq!(args.rpath.as_deref(), Some("foo/:bar/:baz:somewhere"));
+
+    }
+
+    #[test]
+    fn test_parse() {
+        let args = super::parse(|| INPUT1.iter()).unwrap();
+        input1_assertions(&args);
     }
 
     #[test]
