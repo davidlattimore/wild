@@ -10,8 +10,7 @@ The linker runs several phases. Each phase borrows data immutably from the previ
 level phases are:
 
 * `args.rs`: Parse command-line arguments.
-* `input_data.rs`: Open input files with mmap.
-* `archive_splitter.rs`: Split archives into their separate objects.
+* `input_data.rs`: Open input files with mmap and split archives into their separate objects.
 * `string_merging.rs`: Strings in string-merge sections are deduplicated.
 * `symbol_db.rs`: Build a hashmap from symbol names to symbol IDs.
 * `resolution.rs`: Resolve all undefined symbols and in the process decide which archived objects
