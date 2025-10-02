@@ -924,7 +924,9 @@ fn export_dynamic<'data>(
 ) -> Result {
     let name = symbol_db.symbol_name(symbol_id)?;
     let RawSymbolName {
-        name, version_name, ..
+        name,
+        version_name,
+        is_default,
     } = RawSymbolName::parse(name.bytes());
 
     let mut version = object::elf::VER_NDX_GLOBAL;
@@ -936,6 +938,9 @@ fn export_dynamic<'data>(
             .version_for_symbol(&UnversionedSymbolName::prehashed(name), version_name)?
         {
             version = v;
+            if !is_default {
+                version |= object::elf::VERSYM_HIDDEN;
+            }
         }
     }
 
