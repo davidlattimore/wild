@@ -93,6 +93,29 @@ jobs:
       - run: cargo build --profile ci --workspace --no-default-features
       - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace
 
+  minimal-versions:
+    runs-on:
+      - ubuntu-24.04
+    steps:
+      - run: sudo apt-get update && sudo apt-get -y install gcc g++ clang clang-format lld curl
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack,cargo-minimal-versions
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+      - run: cargo minimal-versions --direct test --profile ci
+
   clippy:
     name: Clippy
     runs-on: ubuntu-24.04

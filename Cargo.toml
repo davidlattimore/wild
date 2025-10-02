@@ -89,7 +89,7 @@ tracing-subscriber = { version = "0.3.16", default-features = false, features = 
 uuid = { version = "1.0.0", features = ["v4"] }
 wait-timeout = "0.2.0"
 which = "8.0.0"
-winnow = { version = "0.7.0", features = ["simd"] }
+winnow = { version = "0.7.10", features = ["simd"] }
 zstd = "0.13.0"
 
 [profile.opt-debug]
