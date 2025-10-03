@@ -30,10 +30,10 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 pub struct Args {
     pub(crate) unrecognized_options: Vec<String>,
@@ -399,19 +399,22 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
     }
 
     let arg_parser = setup_argument_parser();
-    let mut arg_num = 0;
     while let Some(arg) = input.next() {
         let arg = arg.as_ref();
 
-        // Handle `@file`
-        // TODO: This is ad-hoc.
+        // Handle `@file`option - merging in the options contained in the file
         if let Some(path) = arg.strip_prefix('@') {
-            if input.next().is_some() || arg_num > 1 {
-                bail!("Mixing of @{{filename}} and regular arguments isn't supported");
+            let file_args = read_args_from_file(Path::new(path))?;
+            let mut file_arg_iter = file_args.iter();
+            while let Some(file_arg) = file_arg_iter.next() {
+                arg_parser.handle_argument(
+                    &mut args,
+                    &mut modifier_stack,
+                    file_arg,
+                    &mut file_arg_iter,
+                )?;
             }
-            return parse_from_argument_file(Path::new(path));
         }
-        arg_num += 1;
 
         arg_parser.handle_argument(&mut args, &mut modifier_stack, arg, &mut input)?;
     }
@@ -446,11 +449,10 @@ const fn default_target_arch() -> Architecture {
     }
 }
 
-fn parse_from_argument_file(path: &Path) -> Result<Args> {
+fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read arguments from file `{}`", path.display()))?;
-    let arguments = arguments_from_string(&contents)?;
-    parse(|| arguments.iter())
+    arguments_from_string(&contents)
 }
 
 impl Args {
@@ -2226,17 +2228,17 @@ impl FromStr for CounterKind {
 
 #[cfg(test)]
 mod tests {
-    use std::fs::File;
-    use std::io::{BufWriter, Write};
     use super::SILENTLY_IGNORED_FLAGS;
     use crate::args::InputSpec;
+    use crate::Args;
     use itertools::Itertools;
+    use std::fs::File;
+    use std::io::{BufWriter, Write};
     use std::num::NonZeroUsize;
     use std::path::Path;
     use std::path::PathBuf;
     use std::str::FromStr;
     use tempfile::NamedTempFile;
-    use crate::Args;
 
     const INPUT1: &[&str] = &[
         "-pie",
@@ -2393,7 +2395,6 @@ mod tests {
             InputSpec::Search(lib) => lib.as_ref() == "lib85caec4suo0pxg06jm2ma7b0o.so",
         }));
         assert_eq!(args.rpath.as_deref(), Some("foo/:bar/:baz:somewhere"));
-
     }
 
     #[test]
@@ -2405,13 +2406,72 @@ mod tests {
     #[test]
     fn test_parse_file_only_options() {
         // Create a temporary file containing the same options (one per line) as INPUT1
-        let file =  NamedTempFile::new().expect("Could not create temp file");
+        let file = NamedTempFile::new().expect("Could not create temp file");
         write_options_to_file(file.as_file(), INPUT1);
 
         // pass the name of the file where options are as the only inline option "@filename"
         let inline_options = vec![format!("@{}", file.path().to_str().unwrap())];
         let args = super::parse(|| inline_options.iter()).unwrap();
         input1_assertions(&args);
+    }
+
+    #[test]
+    fn test_parse_mixed_file_and_inline_options() {
+        // start with the usual INPUT1 set of command line options
+        let mut inline_options = INPUT1.to_vec();
+
+        // split the options set approximately in the middle
+        let file_options = inline_options.split_off(inline_options.len() / 2);
+
+        // Create a temporary file containing the same options (one per line) as INPUT1
+        let file = NamedTempFile::new().expect("Could not create temp file");
+        write_options_to_file(file.as_file(), &file_options);
+
+        // pass the name of the file where options are, as an inline option "@filename"
+        let file_option = format!("@{}", file.path().to_str().unwrap());
+        inline_options.push(&file_option);
+
+        // confirm that this works and the resulting set of options is correct
+        let args = super::parse(|| inline_options.iter()).unwrap();
+        input1_assertions(&args);
+    }
+
+    #[test]
+    fn test_parse_overlapping_file_and_inline_options() {
+        // start with the usual INPUT1 set of command line options
+        let mut inline_options = INPUT1.to_vec();
+
+        // split the options set approximately in the middle
+        let file_options = inline_options.split_off(inline_options.len() / 2);
+
+        // Take the last option from `file_options` and repeat it in `inline_options`
+        inline_options.push(file_options.last().unwrap());
+
+        // Create a temporary file containing the same options (one per line) as INPUT1
+        let file = NamedTempFile::new().expect("Could not create temp file");
+        write_options_to_file(file.as_file(), &file_options);
+
+        // pass the name of the file where options are, as an inline option "@filename"
+        let file_option = format!("@{}", file.path().to_str().unwrap());
+        inline_options.push(&file_option);
+
+        // confirm that this works and the resulting set of options is correct
+        let args = super::parse(|| inline_options.iter()).unwrap();
+        input1_assertions(&args);
+    }
+
+    #[test]
+    fn test_parse_recursive_file_option() {
+        // Create a temporary file containing a @file option
+        let file1 = NamedTempFile::new().expect("Could not create temp file");
+        write_options_to_file(file1.as_file(), &[&"@/foo/bar"]);
+
+        // pass the name of the file where options are, as an inline option "@filename"
+        let options = vec![format!("@{}", file1.path().to_str().unwrap())];
+
+        // confirm that this works and the resulting set of options is correct
+        super::parse(|| options.iter())
+            .expect("Recursive @file options should parse correctly but be ignored");
     }
 
     #[test]
