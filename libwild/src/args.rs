@@ -16,7 +16,7 @@ use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::bail;
 use crate::ensure;
-use crate::error::Context as _
+use crate::error::Context as _;
 use crate::error::Result;
 use crate::input_data::FileId;
 use crate::linker_script::maybe_forced_sysroot;
@@ -30,10 +30,10 @@ use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 pub struct Args {
     pub(crate) unrecognized_options: Vec<String>,
@@ -2229,8 +2229,8 @@ impl FromStr for CounterKind {
 #[cfg(test)]
 mod tests {
     use super::SILENTLY_IGNORED_FLAGS;
-    use crate::Args;
     use crate::args::InputSpec;
+    use crate::Args;
     use itertools::Itertools;
     use std::fs::File;
     use std::io::BufWriter;
