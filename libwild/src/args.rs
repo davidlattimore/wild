@@ -830,12 +830,7 @@ impl ArgumentParser {
             let file_args = read_args_from_file(Path::new(path))?;
             let mut file_arg_iter = file_args.iter();
             while let Some(file_arg) = file_arg_iter.next() {
-                self.handle_argument(
-                    args,
-                    modifier_stack,
-                    file_arg,
-                    &mut file_arg_iter,
-                )?;
+                self.handle_argument(args, modifier_stack, file_arg, &mut file_arg_iter)?;
             }
         }
 
