@@ -2226,6 +2226,8 @@ impl FromStr for CounterKind {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use std::io::{BufWriter, Write};
     use super::SILENTLY_IGNORED_FLAGS;
     use crate::args::InputSpec;
     use itertools::Itertools;
@@ -2233,6 +2235,7 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use std::str::FromStr;
+    use tempfile::NamedTempFile;
     use crate::Args;
 
     const INPUT1: &[&str] = &[
@@ -2344,6 +2347,13 @@ mod tests {
         "somewhere",
     ];
 
+    fn write_options_to_file(file: &File, options: &[&str]) {
+        let mut writer = BufWriter::new(file);
+        for option in options {
+            writeln!(writer, "{}", option).expect("Failed to write to temporary file");
+        }
+    }
+
     #[track_caller]
     fn assert_contains(c: &[Box<Path>], v: &str) {
         assert!(c.iter().any(|p| p.as_ref() == Path::new(v)));
@@ -2387,8 +2397,20 @@ mod tests {
     }
 
     #[test]
-    fn test_parse() {
+    fn test_parse_inline_only_options() {
         let args = super::parse(|| INPUT1.iter()).unwrap();
+        input1_assertions(&args);
+    }
+
+    #[test]
+    fn test_parse_file_only_options() {
+        // Create a temporary file containing the same options (one per line) as INPUT1
+        let file =  NamedTempFile::new().expect("Could not create temp file");
+        write_options_to_file(file.as_file(), INPUT1);
+
+        // pass the name of the file where options are as the only inline option "@filename"
+        let inline_options = vec![format!("@{}", file.path().to_str().unwrap())];
+        let args = super::parse(|| inline_options.iter()).unwrap();
         input1_assertions(&args);
     }
 

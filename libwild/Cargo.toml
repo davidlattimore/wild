@@ -54,6 +54,7 @@ perf-event = { workspace = true }
 
 [dev-dependencies]
 ar = "0.9.0"
+tempfile = "3.0.2"
 
 [features]
 # Support for running the linker as a subprocess.
