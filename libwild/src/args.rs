@@ -401,21 +401,6 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
     let arg_parser = setup_argument_parser();
     while let Some(arg) = input.next() {
         let arg = arg.as_ref();
-
-        // Handle `@file`option - merging in the options contained in the file
-        if let Some(path) = arg.strip_prefix('@') {
-            let file_args = read_args_from_file(Path::new(path))?;
-            let mut file_arg_iter = file_args.iter();
-            while let Some(file_arg) = file_arg_iter.next() {
-                arg_parser.handle_argument(
-                    &mut args,
-                    &mut modifier_stack,
-                    file_arg,
-                    &mut file_arg_iter,
-                )?;
-            }
-        }
-
         arg_parser.handle_argument(&mut args, &mut modifier_stack, arg, &mut input)?;
     }
 
@@ -840,6 +825,20 @@ impl ArgumentParser {
         arg: &str,
         input: &mut I,
     ) -> Result<()> {
+        // Handle `@file`option (recursively) - merging in the options contained in the file
+        if let Some(path) = arg.strip_prefix('@') {
+            let file_args = read_args_from_file(Path::new(path))?;
+            let mut file_arg_iter = file_args.iter();
+            while let Some(file_arg) = file_arg_iter.next() {
+                self.handle_argument(
+                    args,
+                    modifier_stack,
+                    file_arg,
+                    &mut file_arg_iter,
+                )?;
+            }
+        }
+
         if let Some(stripped) = strip_option(arg) {
             // Check for option with '=' syntax
             if let Some(eq_pos) = stripped.find('=') {
@@ -2465,14 +2464,18 @@ mod tests {
     fn test_parse_recursive_file_option() {
         // Create a temporary file containing a @file option
         let file1 = NamedTempFile::new().expect("Could not create temp file");
-        write_options_to_file(file1.as_file(), &[&"@/foo/bar"]);
+        let file2 = NamedTempFile::new().expect("Could not create temp file");
+        let file_option = format!("@{}", file2.path().to_str().unwrap());
+        write_options_to_file(file1.as_file(), &[&file_option]);
+        write_options_to_file(file2.as_file(), INPUT1);
 
         // pass the name of the file where options are, as an inline option "@filename"
-        let options = vec![format!("@{}", file1.path().to_str().unwrap())];
+        let inline_options = vec![format!("@{}", file1.path().to_str().unwrap())];
 
         // confirm that this works and the resulting set of options is correct
-        super::parse(|| options.iter())
+        let args = super::parse(|| inline_options.iter())
             .expect("Recursive @file options should parse correctly but be ignored");
+        input1_assertions(&args);
     }
 
     #[test]
