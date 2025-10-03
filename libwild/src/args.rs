@@ -16,7 +16,7 @@ use crate::alignment::Alignment;
 use crate::arch::Architecture;
 use crate::bail;
 use crate::ensure;
-use crate::error::Context as _;
+use crate::error::Context as _
 use crate::error::Result;
 use crate::input_data::FileId;
 use crate::linker_script::maybe_forced_sysroot;
@@ -2233,7 +2233,8 @@ mod tests {
     use crate::args::InputSpec;
     use itertools::Itertools;
     use std::fs::File;
-    use std::io::{BufWriter, Write};
+    use std::io::BufWriter;
+    use std::io::Write;
     use std::num::NonZeroUsize;
     use std::path::Path;
     use std::path::PathBuf;
