@@ -3024,10 +3024,13 @@ fn write_regular_object_dynamic_symbol_definition(
     let sym = object.object.symbol(sym_index)?;
     let name = sym_def.name;
     if let Some(section_index) = object.object.symbol_section(sym, sym_index)? {
-        let SectionSlot::Loaded(section) = &object.sections[section_index.0] else {
-            bail!("Internal error: Defined symbols should always be for a loaded section");
+        let output_section_id = match &object.sections[section_index.0] {
+            SectionSlot::Loaded(section) => section.output_section_id(),
+            SectionSlot::MergeStrings(merge_section) => merge_section.part_id.output_section_id(),
+            _ => bail!(
+                "Internal error: Defined symbols should always be for a loaded or merge-strings section"
+            ),
         };
-        let output_section_id = section.output_section_id();
         let symbol_id = sym_def.symbol_id;
         let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
             format!(

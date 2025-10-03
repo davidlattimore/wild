@@ -1,11 +1,22 @@
 // Defines identical string literals in two different C files and checks that
 // they end up pointing to the same memory.
 
+//#AbstractConfig:default
 //#LinkArgs:-z noexecstack
 //#Object:string_merging1.s
 //#Object:string_merging2.s
 //#Object:runtime.c
 //#Arch: x86_64
+
+//#Config:merge_strings:default
+
+//#Config:export_merged_str_dyn:default
+//#Mode:dynamic
+//#LinkArgs:--export-dynamic-symbol s1w
+//#DiffIgnore:.gnu.hash
+//#DiffIgnore:.dynamic
+//#DiffIgnore:dynsym.s1w.section
+//#DiffIgnore:segment.PT_DYNAMIC.*
 
 #include "runtime.h"
 
