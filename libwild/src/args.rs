@@ -2347,6 +2347,15 @@ mod tests {
         "somewhere",
     ];
 
+    const FILE_OPTIONS: &[&str] = &[
+        "-pie",
+    ];
+
+    const INLINE_OPTIONS: &[&str] = &[
+        "-L",
+        "/lib",
+    ];
+
     fn write_options_to_file(file: &File, options: &[&str]) {
         let mut writer = BufWriter::new(file);
         for option in options {
@@ -2395,6 +2404,11 @@ mod tests {
         assert_eq!(args.rpath.as_deref(), Some("foo/:bar/:baz:somewhere"));
     }
 
+    fn inline_and_file_options_assertions(args: &Args) {
+        assert!(args.is_relocatable());
+        assert_contains(&args.lib_search_path, "/lib");
+    }
+
     #[test]
     fn test_parse_inline_only_options() {
         let args = super::parse(|| INPUT1.iter()).unwrap();
@@ -2415,47 +2429,41 @@ mod tests {
 
     #[test]
     fn test_parse_mixed_file_and_inline_options() {
-        // start with the usual INPUT1 set of command line options
-        let mut inline_options = INPUT1.to_vec();
-
-        // split the options set approximately in the middle
-        let file_options = inline_options.split_off(inline_options.len() / 2);
-
-        // Create a temporary file containing the same options (one per line) as INPUT1
+        // Create a temporary file containing some options
         let file = NamedTempFile::new().expect("Could not create temp file");
-        write_options_to_file(file.as_file(), &file_options);
+        write_options_to_file(file.as_file(), FILE_OPTIONS);
 
-        // pass the name of the file where options are, as an inline option "@filename"
+        // create an inline option referring to "@filename"
         let file_option = format!("@{}", file.path().to_str().unwrap());
+        // start with the set of inline options
+        let mut inline_options = INLINE_OPTIONS.to_vec();
+        // and extend with the "@filename" option
         inline_options.push(&file_option);
 
         // confirm that this works and the resulting set of options is correct
         let args = super::parse(|| inline_options.iter()).unwrap();
-        input1_assertions(&args);
+        inline_and_file_options_assertions(&args);
     }
 
     #[test]
     fn test_parse_overlapping_file_and_inline_options() {
-        // start with the usual INPUT1 set of command line options
-        let mut inline_options = INPUT1.to_vec();
-
-        // split the options set approximately in the middle
-        let file_options = inline_options.split_off(inline_options.len() / 2);
-
-        // Take the last option from `file_options` and repeat it in `inline_options`
-        inline_options.push(file_options.last().unwrap());
-
-        // Create a temporary file containing the same options (one per line) as INPUT1
+        // Create a set of file options that has a duplicate of an inline option
+        let mut file_options = FILE_OPTIONS.to_vec();
+        file_options.append(&mut INLINE_OPTIONS.to_vec());
+        // and save them to a file
         let file = NamedTempFile::new().expect("Could not create temp file");
         write_options_to_file(file.as_file(), &file_options);
 
         // pass the name of the file where options are, as an inline option "@filename"
         let file_option = format!("@{}", file.path().to_str().unwrap());
+        // start with the set of inline options
+        let mut inline_options = INLINE_OPTIONS.to_vec();
+        // and extend with the "@filename" option
         inline_options.push(&file_option);
 
         // confirm that this works and the resulting set of options is correct
         let args = super::parse(|| inline_options.iter()).unwrap();
-        input1_assertions(&args);
+        inline_and_file_options_assertions(&args);
     }
 
     #[test]
