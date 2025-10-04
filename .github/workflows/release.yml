@@ -47,7 +47,7 @@ jobs:
         awk "/# ${GITHUB_REF_NAME}/{flag=1; next} /^$/{flag=0} flag" CHANGELOG.md >REL.md
 
     - name: Build stage1
-      run: cargo zigbuild --release --target ${{ matrix.target }}
+      run: cargo build --release
 
     - name: Switch to linking with wild
       run: |
