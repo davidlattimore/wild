@@ -749,6 +749,7 @@ dependencies = [
  "smallvec",
  "symbolic-common",
  "symbolic-demangle",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "uuid",

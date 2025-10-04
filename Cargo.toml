@@ -25,6 +25,7 @@ edition = "2024"
 
 [workspace.dependencies]
 anyhow = "1.0.97"
+ar = "0.9.0"
 ascii_table = "4.0.0"
 atomic-take = "1.0.0"
 bitflags = "2.4.0"
