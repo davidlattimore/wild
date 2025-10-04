@@ -19,8 +19,8 @@ jobs:
         include:
           - { target: x86_64-unknown-linux-gnu, runs-on: ubuntu-22.04 }
           - { target: aarch64-unknown-linux-gnu, runs-on: ubuntu-22.04-arm }
-          - { target: x86_64-unknown-linux-musl, runs-on: ubuntu-22.04, args: --features=mimalloc }
-          - { target: aarch64-unknown-linux-musl, runs-on: ubuntu-22.04-arm, args: --features=mimalloc }
+          - { target: x86_64-unknown-linux-musl, runs-on: ubuntu-22.04, build: zigbuild, args: --features=mimalloc }
+          - { target: aarch64-unknown-linux-musl, runs-on: ubuntu-22.04-arm, build: zigbuild, args: --features=mimalloc }
  
     steps:
     - name: Install dependencies
@@ -52,7 +52,7 @@ jobs:
         echo -e "[target.${{matrix.target}}]\nlinker = \"clang\"\nrustflags = [\"-Clink-arg=--ld-path=$WILD\"]\n" >>"$HOME/.cargo/config.toml"
 
     - name: Build release binary
-      run: cargo zigbuild ${{matrix.args}} --profile dist --target ${{ matrix.target }}
+      run: cargo ${{matrix.build || 'build' }} ${{matrix.args}} --profile dist --target ${{ matrix.target }}
 
     - name: Create tarballs
       run: |
