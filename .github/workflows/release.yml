@@ -22,6 +22,11 @@ jobs:
         - target: aarch64-unknown-linux-gnu
           runs-on: ubuntu-22.04-arm
 
+        - target: x86_64-unknown-linux-musl
+          runs-on: ubuntu-22.04
+        - target: aarch64-unknown-linux-musl
+          runs-on: ubuntu-22.04-arm
+
     steps:
     - name: Install dependencies
       run: sudo apt-get update && sudo apt-get install -y clang
@@ -30,6 +35,11 @@ jobs:
       uses: actions/checkout@v4
 
     - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - uses: taiki-e/install-action@cargo-zigbuild
+    - uses: mlugg/setup-zig@v2
 
     - name: Extract release notes
       shell: bash
@@ -37,15 +47,15 @@ jobs:
         awk "/# ${GITHUB_REF_NAME}/{flag=1; next} /^$/{flag=0} flag" CHANGELOG.md >REL.md
 
     - name: Build stage1
-      run: cargo build --release
+      run: cargo zigbuild --release --target ${{ matrix.target }}
 
     - name: Switch to linking with wild
       run: |
-        mkdir .cargo
-        echo -e "[target.${{matrix.target}}]\nlinker = \"clang\"\nrustflags = [\"-Clink-arg=--ld-path=${PWD}/target/release/wild\"]\n" >>"$HOME/.cargo/config.toml"
+        mkdir -p "$HOME/.cargo"
+        echo -e "[target.${{matrix.target}}]\nlinker = \"clang\"\nrustflags = [\"-Clink-arg=--ld-path=${PWD}/target/${{matrix.target}}/release/wild\"]\n" >>"$HOME/.cargo/config.toml"
 
     - name: Build release binary
-      run: cargo build --profile dist --target ${{ matrix.target }}
+      run: cargo zigbuild --profile dist --target ${{ matrix.target }}
 
     - name: Create tarballs
       run: |
