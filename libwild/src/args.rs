@@ -826,6 +826,7 @@ impl ArgumentParser {
         arg: &str,
         input: &mut I,
     ) -> Result<()> {
+        // TODO @lapla-cogito standardize the interface. @file doesn't use a leading hyphen.
         // Handle `@file`option (recursively) - merging in the options contained in the file
         if let Some(path) = arg.strip_prefix('@') {
             let file_args = read_args_from_file(Path::new(path))?;
