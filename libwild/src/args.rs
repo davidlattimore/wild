@@ -401,6 +401,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
     let arg_parser = setup_argument_parser();
     while let Some(arg) = input.next() {
         let arg = arg.as_ref();
+
         arg_parser.handle_argument(&mut args, &mut modifier_stack, arg, &mut input)?;
     }
 
@@ -832,6 +833,7 @@ impl ArgumentParser {
             while let Some(file_arg) = file_arg_iter.next() {
                 self.handle_argument(args, modifier_stack, file_arg, &mut file_arg_iter)?;
             }
+            return Ok(());
         }
 
         if let Some(stripped) = strip_option(arg) {
