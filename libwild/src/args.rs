@@ -2347,14 +2347,9 @@ mod tests {
         "somewhere",
     ];
 
-    const FILE_OPTIONS: &[&str] = &[
-        "-pie",
-    ];
+    const FILE_OPTIONS: &[&str] = &["-pie"];
 
-    const INLINE_OPTIONS: &[&str] = &[
-        "-L",
-        "/lib",
-    ];
+    const INLINE_OPTIONS: &[&str] = &["-L", "/lib"];
 
     fn write_options_to_file(file: &File, options: &[&str]) {
         let mut writer = BufWriter::new(file);
