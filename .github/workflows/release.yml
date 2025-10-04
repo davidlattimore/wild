@@ -47,7 +47,9 @@ jobs:
     - name: Switch to linking with wild
       run: |
         mkdir -p "$HOME/.cargo"
-        echo -e "[target.${{matrix.target}}]\nlinker = \"clang\"\nrustflags = [\"-Clink-arg=--ld-path=${PWD}/target/${{matrix.target}}/release/wild\"]\n" >>"$HOME/.cargo/config.toml"
+        WILD="${PWD}/target/release/wild"
+        $WILD --version
+        echo -e "[target.${{matrix.target}}]\nlinker = \"clang\"\nrustflags = [\"-Clink-arg=--ld-path=$WILD\"]\n" >>"$HOME/.cargo/config.toml"
 
     - name: Build release binary
       run: cargo zigbuild ${{matrix.args}} --profile dist --target ${{ matrix.target }}
@@ -58,6 +60,7 @@ jobs:
         mkdir "$n"
         cp "target/${{ matrix.target }}/dist/wild" "$n"
         cp README.md LICENSE* CHANGELOG.md "$n"
+        strings "$n/wild" | grep "Linker: Wild"
         strip "$n/wild"
         tar zcf $n.tar.gz $n
 
