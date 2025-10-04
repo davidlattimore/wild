@@ -17,16 +17,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        - target: x86_64-unknown-linux-gnu
-          runs-on: ubuntu-22.04
-        - target: aarch64-unknown-linux-gnu
-          runs-on: ubuntu-22.04-arm
-
-        - target: x86_64-unknown-linux-musl
-          runs-on: ubuntu-22.04
-        - target: aarch64-unknown-linux-musl
-          runs-on: ubuntu-22.04-arm
-
+          - { target: x86_64-unknown-linux-gnu, runs-on: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, runs-on: ubuntu-22.04-arm }
+          - { target: x86_64-unknown-linux-musl, runs-on: ubuntu-22.04, args: --features=mimalloc }
+          - { target: aarch64-unknown-linux-musl, runs-on: ubuntu-22.04-arm, args: --features=mimalloc }
+ 
     steps:
     - name: Install dependencies
       run: sudo apt-get update && sudo apt-get install -y clang
@@ -54,12 +49,8 @@ jobs:
         mkdir -p "$HOME/.cargo"
         echo -e "[target.${{matrix.target}}]\nlinker = \"clang\"\nrustflags = [\"-Clink-arg=--ld-path=${PWD}/target/${{matrix.target}}/release/wild\"]\n" >>"$HOME/.cargo/config.toml"
 
-    - name: Build release binary for gnu-libc
-      if: contains(matrix.target, 'gnu')
-      run: cargo zigbuild --profile dist --target ${{ matrix.target }}
-    - name: Build release binary for musl-libc
-      if: contains(matrix.target, 'musl')
-      run: cargo zigbuild --features mimalloc --profile dist --target ${{ matrix.target }}
+    - name: Build release binary
+      run: cargo zigbuild ${{matrix.args}} --profile dist --target ${{ matrix.target }}
 
     - name: Create tarballs
       run: |
