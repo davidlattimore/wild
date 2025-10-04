@@ -34,7 +34,9 @@ jobs:
         targets: ${{ matrix.target }}
 
     - uses: taiki-e/install-action@cargo-zigbuild
+      if: matrix.build == 'zigbuild'
     - uses: mlugg/setup-zig@v2
+      if: matrix.build == 'zigbuild'
 
     - name: Extract release notes
       shell: bash
