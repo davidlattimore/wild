@@ -2464,6 +2464,7 @@ fn available_linkers() -> Result<Vec<Linker>> {
             cross_paths: find_cross_paths("ld"),
             enabled_by_default: true,
         }),
+        #[cfg(not(target_os = "illumos"))]
         Linker::ThirdParty(ThirdPartyLinker {
             name: "lld",
             gcc_name: "lld",
