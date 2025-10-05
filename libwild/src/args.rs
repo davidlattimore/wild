@@ -260,7 +260,7 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "sort-common",
     "stats",
 ];
-const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &["(", ")"];
+const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &["(", ")", "C"];
 
 const IGNORED_FLAGS: &[&str] = &[
     "gdb-index",
