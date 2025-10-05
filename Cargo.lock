@@ -891,15 +891,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c505b3e17ed6b70a7ed2e67fbb2c560ee327353556120d6e72f5232b6880d536"
 
 [[package]]
-name = "msvc-demangler"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4c25a3bb7d880e8eceab4822f3141ad0700d20f025991c1f03bd3d00219a5fc"
-dependencies = [
- "bitflags",
-]
-
-[[package]]
 name = "num-conv"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1389,9 +1380,7 @@ version = "12.16.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13d359ef6192db1760a34321ec4f089245ede4342c27e59be99642f12a859de8"
 dependencies = [
- "cc",
  "cpp_demangle",
- "msvc-demangler",
  "rustc-demangle",
  "symbolic-common",
 ]
