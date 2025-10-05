@@ -1,10 +1,10 @@
+use crate::bit_misc::BitExtraction;
 use crate::elf::AArch64Instruction;
 use crate::elf::AllowedRange;
 use crate::elf::PageMask;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
-use crate::elf::extract_bits;
 use crate::relaxation::RelocationModifier;
 use crate::utils::or_from_slice;
 use crate::utils::u32_from_slice;
@@ -65,19 +65,16 @@ impl RelaxationKind {
                 ]);
             }
             RelaxationKind::MovzXnLsl16 => {
-                let reg = extract_bits(
-                    u64::from(u32_from_slice(&section_bytes[offset..offset + 4])),
-                    0,
-                    5,
-                ) as u8;
+                let reg = u64::from(u32_from_slice(&section_bytes[offset..offset + 4]))
+                    .extract_bits(0..5) as u8;
                 section_bytes[offset..offset + 4].copy_from_slice(&[
                     reg, 0x0, 0xa0, 0xd2, // movz x{reg}, ${offset}, lsl #16
                 ]);
             }
             RelaxationKind::MovkXn => {
                 let raw = u64::from(u32_from_slice(&section_bytes[offset..offset + 4]));
-                let dst_reg = extract_bits(raw, 0, 5) as u8;
-                let src_reg = extract_bits(raw, 5, 10) as u8;
+                let dst_reg = raw.extract_bits(0..5) as u8;
+                let src_reg = raw.extract_bits(5..10) as u8;
                 debug_assert_eq!(
                     src_reg, dst_reg,
                     "Source and destination registers must be equal"
@@ -957,8 +954,8 @@ impl AArch64Instruction {
         match self {
             // C6.2.13
             AArch64Instruction::Adr => {
-                mask = ((extract_bits(extracted_value, 0, 2) as u32) << 29)
-                    | ((extract_bits(extracted_value, 2, 32) as u32) << 5);
+                mask = ((extracted_value.extract_bits(0..2) as u32) << 29)
+                    | ((extracted_value.extract_bits(2..32) as u32) << 5);
             }
             // C6.2.252, C6.2.254
             AArch64Instruction::Movkz => {
@@ -974,7 +971,7 @@ impl AArch64Instruction {
                     // Set opcode for MOVZ instruction
                     mask |= 1 << 30;
                 }
-                mask |= (extract_bits(value as u64, 0, 16) as u32) << 5;
+                mask |= ((value as u64).extract_bits(0..16) as u32) << 5;
             }
             // C6.2.192
             AArch64Instruction::Ldr => {
@@ -1013,68 +1010,36 @@ impl AArch64Instruction {
     #[must_use]
     pub fn read_value(self, bytes: &[u8]) -> (u64, bool) {
         let mut negative = false;
-        let value = u32_from_slice(bytes);
+        let value = u64::from(u32_from_slice(bytes));
         let extracted_value = match self {
             // C6.2.13
             AArch64Instruction::Adr => {
-                low_bits(value >> 29, 2) | ((low_bits_signed(value >> 5, 19)) << 2)
+                (value >> 29).low_bits(2) | (((value >> 5).low_bits_signed(19)) << 2)
             }
             // C6.2.252, C6.2.254
-            AArch64Instruction::Movkz => low_bits_signed(value >> 5, 16),
+            AArch64Instruction::Movkz => (value >> 5).low_bits_signed(16),
             // C6.2.253, C6.2.254
             AArch64Instruction::Movnz => {
                 negative = (value & (1 << 30)) == 0;
-                let v = low_bits(value >> 5, 16);
+                let v = (value >> 5).low_bits(16);
                 if negative { !v } else { v }
             }
             // C6.2.192
-            AArch64Instruction::Ldr => low_bits_signed(value >> 5, 19),
+            AArch64Instruction::Ldr => (value >> 5).low_bits_signed(19),
             // C6.2.193
-            AArch64Instruction::LdrRegister => low_bits(value >> 10, 12),
+            AArch64Instruction::LdrRegister => (value >> 10).low_bits(12),
             // C6.2.5
-            AArch64Instruction::Add => low_bits(value >> 10, 12),
+            AArch64Instruction::Add => (value >> 10).low_bits(12),
             // C7.2.208, C6.2.383
-            AArch64Instruction::LdSt => low_bits_signed(value >> 10, 12),
+            AArch64Instruction::LdSt => (value >> 10).low_bits_signed(12),
             // C6.2.438
-            AArch64Instruction::TstBr => low_bits_signed(value >> 5, 14),
+            AArch64Instruction::TstBr => (value >> 5).low_bits_signed(14),
             // C6.2.34
-            AArch64Instruction::Bcond => low_bits_signed(value >> 5, 19),
+            AArch64Instruction::Bcond => (value >> 5).low_bits_signed(19),
             // C6.2.33
-            AArch64Instruction::JumpCall => low_bits_signed(value, 26),
+            AArch64Instruction::JumpCall => value.low_bits_signed(26),
         };
 
         (extracted_value, negative)
-    }
-}
-
-// Extract the low `num_bits` bits from `value`.
-fn low_bits(value: u32, num_bits: u32) -> u64 {
-    u64::from(value & ((1 << num_bits) - 1))
-}
-
-// Extract the low `num_bits` bits from `value`, sign extending from the most significant bit.
-fn low_bits_signed(value: u32, num_bits: u32) -> u64 {
-    sign_extend(num_bits - 1, low_bits(value, num_bits))
-}
-
-fn sign_extend(sign_bit: u32, value: u64) -> u64 {
-    if value & (1 << sign_bit) != 0 {
-        value | !((2 << sign_bit) - 1)
-    } else {
-        value
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_sign_extend() {
-        assert_eq!(sign_extend(5, 0), 0);
-        assert_eq!(sign_extend(5, 31), 31);
-        assert_eq!(sign_extend(5, 32) as i64, -32);
-        assert_eq!(sign_extend(5, 33) as i64, -31);
-        assert_eq!(sign_extend(5, 63) as i64, -1);
     }
 }

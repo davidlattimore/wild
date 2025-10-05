@@ -1,3 +1,4 @@
+use crate::bit_misc::BitRange;
 use anyhow::Result;
 use object::LittleEndian;
 use object::read::elf::ProgramHeader as _;
@@ -1017,13 +1018,6 @@ impl DynamicRelocationKind {
     }
 }
 
-// Half-opened range bounded inclusively below and exclusively above: [`start`, `end`)
-#[derive(Clone, Debug, Copy, PartialEq, Eq)]
-pub struct BitRange {
-    pub start: u32,
-    pub end: u32,
-}
-
 #[derive(Clone, Debug, Copy, PartialEq, Eq)]
 pub enum AArch64Instruction {
     Adr,
@@ -1244,22 +1238,6 @@ impl BitMask {
     }
 }
 
-/// Extract a single bit from the provided `value`.
-#[must_use]
-pub fn extract_bit(value: u64, position: u32) -> u64 {
-    extract_bits(value, position, position + 1)
-}
-
-/// Extract range-specified ([`start`..`end`]) bits from the provided `value`.
-#[must_use]
-pub fn extract_bits(value: u64, start: u32, end: u32) -> u64 {
-    if start == 0 && end == u64::BITS {
-        return value;
-    }
-    debug_assert!(start < end);
-    (value >> (start)) & ((1 << (end - start)) - 1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1284,26 +1262,5 @@ mod tests {
             &aarch64_rel_type_to_string(64),
             "Unknown aarch64 relocation type 0x40"
         );
-    }
-
-    #[test]
-    fn test_bit_operations() {
-        assert_eq!(0b11000, extract_bits(0b1100_0000, 3, 8));
-        assert_eq!(0b1010_1010_0000, extract_bits(0b10101010_00001111, 4, 16));
-        assert_eq!(u32::MAX, extract_bits(u64::MAX, 0, 32) as u32);
-    }
-
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic]
-    fn test_extract_bits_wrong_range() {
-        let _ = extract_bits(0, 2, 1);
-    }
-
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic]
-    fn test_extract_bits_too_large() {
-        let _ = extract_bits(0, 0, 100);
     }
 }
