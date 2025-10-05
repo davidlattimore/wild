@@ -284,11 +284,6 @@ allow_unsafe = true
 allow_unsafe = true
 
 [pkg.symbolic-demangle]
-build.allow_build_instructions = [
-    "cargo:rustc-link-lib=static=swiftdemangle",
-    "cargo:rustc-link-lib=stdc++",
-    "cargo:rustc-link-search=native=*",
-]
 allow_unsafe = true
 
 [pkg.futures-sink]
