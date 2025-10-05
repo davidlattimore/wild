@@ -51,6 +51,7 @@ jobs:
       run: cargo build --release
 
     - name: Switch to linking with wild
+      if: matrix.build != 'zigbuild' # zigbuild ignores this config
       run: |
         mkdir -p "$HOME/.cargo"
         WILD="${PWD}/target/release/wild"
