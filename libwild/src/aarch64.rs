@@ -188,6 +188,7 @@ impl crate::arch::Relaxation for Relaxation {
                 };
             }
 
+            // Relax TLSDESC to local exec
             object::elf::R_AARCH64_TLSDESC_ADR_PAGE21
                 if output_kind.is_executable() && !interposable =>
             {
@@ -271,6 +272,7 @@ impl crate::arch::Relaxation for Relaxation {
                 });
             }
 
+            // Relax local exec to init exec
             object::elf::R_AARCH64_TLSIE_ADR_GOTTPREL_PAGE21
                 if output_kind.is_executable() && !interposable =>
             {
