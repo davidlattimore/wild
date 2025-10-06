@@ -399,19 +399,8 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
     }
 
     let arg_parser = setup_argument_parser();
-    let mut arg_num = 0;
     while let Some(arg) = input.next() {
         let arg = arg.as_ref();
-
-        // Handle `@file`
-        // TODO: This is ad-hoc.
-        if let Some(path) = arg.strip_prefix('@') {
-            if input.next().is_some() || arg_num > 1 {
-                bail!("Mixing of @{{filename}} and regular arguments isn't supported");
-            }
-            return parse_from_argument_file(Path::new(path));
-        }
-        arg_num += 1;
 
         arg_parser.handle_argument(&mut args, &mut modifier_stack, arg, &mut input)?;
     }
@@ -446,11 +435,10 @@ const fn default_target_arch() -> Architecture {
     }
 }
 
-fn parse_from_argument_file(path: &Path) -> Result<Args> {
+fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
     let contents = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read arguments from file `{}`", path.display()))?;
-    let arguments = arguments_from_string(&contents)?;
-    parse(|| arguments.iter())
+    arguments_from_string(&contents)
 }
 
 impl Args {
@@ -838,6 +826,17 @@ impl ArgumentParser {
         arg: &str,
         input: &mut I,
     ) -> Result<()> {
+        // TODO @lapla-cogito standardize the interface. @file doesn't use a leading hyphen.
+        // Handle `@file`option (recursively) - merging in the options contained in the file
+        if let Some(path) = arg.strip_prefix('@') {
+            let file_args = read_args_from_file(Path::new(path))?;
+            let mut file_arg_iter = file_args.iter();
+            while let Some(file_arg) = file_arg_iter.next() {
+                self.handle_argument(args, modifier_stack, file_arg, &mut file_arg_iter)?;
+            }
+            return Ok(());
+        }
+
         if let Some(stripped) = strip_option(arg) {
             // Check for option with '=' syntax
             if let Some(eq_pos) = stripped.find('=') {
@@ -2227,12 +2226,17 @@ impl FromStr for CounterKind {
 #[cfg(test)]
 mod tests {
     use super::SILENTLY_IGNORED_FLAGS;
+    use crate::Args;
     use crate::args::InputSpec;
     use itertools::Itertools;
+    use std::fs::File;
+    use std::io::BufWriter;
+    use std::io::Write;
     use std::num::NonZeroUsize;
     use std::path::Path;
     use std::path::PathBuf;
     use std::str::FromStr;
+    use tempfile::NamedTempFile;
 
     const INPUT1: &[&str] = &[
         "-pie",
@@ -2343,14 +2347,23 @@ mod tests {
         "somewhere",
     ];
 
+    const FILE_OPTIONS: &[&str] = &["-pie"];
+
+    const INLINE_OPTIONS: &[&str] = &["-L", "/lib"];
+
+    fn write_options_to_file(file: &File, options: &[&str]) {
+        let mut writer = BufWriter::new(file);
+        for option in options {
+            writeln!(writer, "{}", option).expect("Failed to write to temporary file");
+        }
+    }
+
     #[track_caller]
     fn assert_contains(c: &[Box<Path>], v: &str) {
         assert!(c.iter().any(|p| p.as_ref() == Path::new(v)));
     }
 
-    #[test]
-    fn test_parse() {
-        let args = super::parse(|| INPUT1.iter()).unwrap();
+    fn input1_assertions(args: &Args) {
         assert!(args.is_relocatable());
         assert_eq!(
             args.inputs
@@ -2384,6 +2397,86 @@ mod tests {
             InputSpec::Search(lib) => lib.as_ref() == "lib85caec4suo0pxg06jm2ma7b0o.so",
         }));
         assert_eq!(args.rpath.as_deref(), Some("foo/:bar/:baz:somewhere"));
+    }
+
+    fn inline_and_file_options_assertions(args: &Args) {
+        assert!(args.is_relocatable());
+        assert_contains(&args.lib_search_path, "/lib");
+    }
+
+    #[test]
+    fn test_parse_inline_only_options() {
+        let args = super::parse(|| INPUT1.iter()).unwrap();
+        input1_assertions(&args);
+    }
+
+    #[test]
+    fn test_parse_file_only_options() {
+        // Create a temporary file containing the same options (one per line) as INPUT1
+        let file = NamedTempFile::new().expect("Could not create temp file");
+        write_options_to_file(file.as_file(), INPUT1);
+
+        // pass the name of the file where options are as the only inline option "@filename"
+        let inline_options = vec![format!("@{}", file.path().to_str().unwrap())];
+        let args = super::parse(|| inline_options.iter()).unwrap();
+        input1_assertions(&args);
+    }
+
+    #[test]
+    fn test_parse_mixed_file_and_inline_options() {
+        // Create a temporary file containing some options
+        let file = NamedTempFile::new().expect("Could not create temp file");
+        write_options_to_file(file.as_file(), FILE_OPTIONS);
+
+        // create an inline option referring to "@filename"
+        let file_option = format!("@{}", file.path().to_str().unwrap());
+        // start with the set of inline options
+        let mut inline_options = INLINE_OPTIONS.to_vec();
+        // and extend with the "@filename" option
+        inline_options.push(&file_option);
+
+        // confirm that this works and the resulting set of options is correct
+        let args = super::parse(|| inline_options.iter()).unwrap();
+        inline_and_file_options_assertions(&args);
+    }
+
+    #[test]
+    fn test_parse_overlapping_file_and_inline_options() {
+        // Create a set of file options that has a duplicate of an inline option
+        let mut file_options = FILE_OPTIONS.to_vec();
+        file_options.append(&mut INLINE_OPTIONS.to_vec());
+        // and save them to a file
+        let file = NamedTempFile::new().expect("Could not create temp file");
+        write_options_to_file(file.as_file(), &file_options);
+
+        // pass the name of the file where options are, as an inline option "@filename"
+        let file_option = format!("@{}", file.path().to_str().unwrap());
+        // start with the set of inline options
+        let mut inline_options = INLINE_OPTIONS.to_vec();
+        // and extend with the "@filename" option
+        inline_options.push(&file_option);
+
+        // confirm that this works and the resulting set of options is correct
+        let args = super::parse(|| inline_options.iter()).unwrap();
+        inline_and_file_options_assertions(&args);
+    }
+
+    #[test]
+    fn test_parse_recursive_file_option() {
+        // Create a temporary file containing a @file option
+        let file1 = NamedTempFile::new().expect("Could not create temp file");
+        let file2 = NamedTempFile::new().expect("Could not create temp file");
+        let file_option = format!("@{}", file2.path().to_str().unwrap());
+        write_options_to_file(file1.as_file(), &[&file_option]);
+        write_options_to_file(file2.as_file(), INPUT1);
+
+        // pass the name of the file where options are, as an inline option "@filename"
+        let inline_options = vec![format!("@{}", file1.path().to_str().unwrap())];
+
+        // confirm that this works and the resulting set of options is correct
+        let args = super::parse(|| inline_options.iter())
+            .expect("Recursive @file options should parse correctly but be ignored");
+        input1_assertions(&args);
     }
 
     #[test]
