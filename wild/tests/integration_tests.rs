@@ -353,10 +353,16 @@ fn dynamic_linker_path(cross_arch: Option<Architecture>) -> &'static str {
 fn host_dynamic_linker_cached() -> &'static str {
     static VALUE: OnceLock<String> = OnceLock::new();
     let value = VALUE.get_or_init(|| {
-        ["/bin/true", "/bin/ls", "/usr/bin/ls", "/proc/self/exe"]
-            .into_iter()
-            .find_map(get_dynamic_linker)
-            .expect("Failed to find a suitable host dynamically linked binary")
+        [
+            "/bin/true",
+            "/bin/ls",
+            "/usr/bin/ls",
+            "/proc/self/exe",
+            "/bin/less",
+        ]
+        .into_iter()
+        .find_map(get_dynamic_linker)
+        .expect("Failed to find a suitable host dynamically linked binary")
     });
     value.as_str()
 }
