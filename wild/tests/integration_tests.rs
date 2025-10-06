@@ -387,17 +387,16 @@ fn get_dynamic_linker(path: impl AsRef<Path>) -> Option<String> {
 fn get_host_architecture() -> Architecture {
     #[cfg(target_arch = "x86_64")]
     {
-        return Architecture::X86_64;
+        Architecture::X86_64
     }
     #[cfg(target_arch = "aarch64")]
     {
-        return Architecture::AArch64;
+        Architecture::AArch64
     }
     #[cfg(target_arch = "riscv64")]
     {
-        return Architecture::RISCV64;
+        Architecture::RISCV64
     }
-    todo!("Unsupported architecture")
 }
 
 fn is_host_debian_based() -> bool {
