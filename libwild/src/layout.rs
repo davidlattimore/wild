@@ -2062,18 +2062,22 @@ fn compute_segment_layout(
                         output_sections.section_debug(section_id)
                     );
                 } else {
-                    // All segments should only cover sections that are allocated and have a non-zero address.
-                    ensure!(
-                        section_layout.mem_offset != 0 || merge_target == FILE_HEADER,
-                        "Missing memory offset for section {} present in a program segment.",
-                        output_sections.section_debug(section_id),
-                    );
-                    ensure!(
-                        section_flags.contains(shf::ALLOC),
-                        "Missing SHF_ALLOC section flag for section {} present in a program \
+                    // RISCV_ATTRIBUTES segment is kind of special as it maps a section that is non-ALLOC.
+                    if section_id == output_section_id::RISCV_ATTRIBUTES {
+                    } else {
+                        // All segments should only cover sections that are allocated and have a non-zero address.
+                        ensure!(
+                            section_layout.mem_offset != 0 || merge_target == FILE_HEADER,
+                            "Missing memory offset for section {} present in a program segment.",
+                            output_sections.section_debug(section_id),
+                        );
+                        ensure!(
+                            section_flags.contains(shf::ALLOC),
+                            "Missing SHF_ALLOC section flag for section {} present in a program \
                          segment.",
-                        output_sections.section_debug(section_id)
-                    );
+                            output_sections.section_debug(section_id)
+                        );
+                    }
                     for opt_rec in &mut active_segments {
                         let Some(rec) = opt_rec.as_mut() else {
                             continue;

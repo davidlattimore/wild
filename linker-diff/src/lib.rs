@@ -249,8 +249,7 @@ impl Config {
                 "segment.PT_GNU_STACK.*",
                 "segment.PT_GNU_PROPERTY.*",
                 "segment.PT_GNU_SFRAME.*",
-                // TODO: RISC-v
-                "segment.SHT_RISCV_ATTRIBUTES.*",
+                // TODO: RISC-V
                 "segment.LOAD.RW.alignment",
             ]
             .into_iter()

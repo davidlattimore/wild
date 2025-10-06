@@ -62,6 +62,10 @@ pub(crate) const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
         segment_type: pt::GNU_RELRO,
         segment_flags: pf::READABLE,
     },
+    ProgramSegmentDef {
+        segment_type: pt::RISCV_ATTRIBUTES,
+        segment_flags: pf::READABLE,
+    },
 ];
 
 pub(crate) const STACK_SEGMENT_DEF: ProgramSegmentDef = ProgramSegmentDef {
