@@ -1,2 +1,3 @@
 rustc_channel = "nightly"
 allow_rust_musl_target = true
+run_all_diffs = true

@@ -95,6 +95,9 @@ Currently, the behavior for the following test options can be configured using t
 - `diff_ignore`: Adds extra rules to ignore certain diffs. This can be useful if you're developing
   on a system with an older version of GNU ld that doesn't perform certain optimisations.
 
+- `run_all_diffs`: Enables diffing the output of wild against that of the existing linkers.
+  By default, diffs are skipped. Set to `true` to enable.
+
 A sample configuration file is provided as `test-config.toml.sample`. By default, Wild uses
 `test-config.toml` as the configuration file. If you have written your configuration in a different
 file, specify its location using the `WILD_TEST_CONFIG` environment variable as follows:
