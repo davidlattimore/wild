@@ -282,9 +282,6 @@ impl Config {
                     // Dynamic relocations may differ
                     "rel.dynamic.*",
                     "rel.undefined-weak.*",
-                    // RISC-V specific differences due to relaxation and instruction differences
-                    "rel.unknown_failure*",
-                    "literal-byte-mismatch*",
                     // Symbol address inconsistencies due to different optimizations
                     "error.*",
                     "section-diff-failed*",
