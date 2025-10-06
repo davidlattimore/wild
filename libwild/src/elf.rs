@@ -7,12 +7,12 @@ use crate::resolution::LoadedMetrics;
 use bytemuck::Pod;
 use bytemuck::Zeroable;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
+use linker_utils::bit_misc::BitExtraction;
 use linker_utils::elf::BitMask;
 use linker_utils::elf::PageMask;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::RelocationSize;
 use linker_utils::elf::SectionType;
-use linker_utils::elf::extract_bits;
 use linker_utils::elf::sht;
 use object::LittleEndian;
 use object::read::elf::CompressionHeader;
@@ -536,7 +536,7 @@ pub(crate) fn write_relocation_to_buffer(
             range,
             instruction: insn,
         }) => {
-            let extracted_value = extract_bits(value, range.start, range.end);
+            let extracted_value = value.extract_bits(range.start..range.end);
             let negative = (value as i64).is_negative();
             let output_len = output.len();
             insn.write_to_value(
