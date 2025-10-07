@@ -18,12 +18,12 @@
 //#LinkArgs:--got-plt-syms
 //#SkipLinker:ld
 //#DiffEnabled:false
-//#ExpectSym:compute_value10$got .got
-//#ExpectSym:compute_value32$got .got
-//#ExpectSym:compute_unused$got .got
-//#ExpectSym:compute_value10$plt .plt.got
-//#ExpectSym:compute_value32$plt .plt.got
-//#ExpectSym:compute_unused$plt .plt.got
+//#ExpectSym:compute_value10$got section=".got"
+//#ExpectSym:compute_value32$got section=".got"
+//#ExpectSym:compute_unused$got section=".got"
+//#ExpectSym:compute_value10$plt section=".plt.got"
+//#ExpectSym:compute_value32$plt section=".plt.got"
+//#ExpectSym:compute_unused$plt section=".plt.got"
 
 #include "ifunc_init.h"
 #include "init.h"

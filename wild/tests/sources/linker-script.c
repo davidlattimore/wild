@@ -1,12 +1,12 @@
 //#Mode:dynamic
 //#LinkArgs:-shared -z now -T ./linker-script.ld
 //#DiffIgnore:section.got
-//#ExpectDynSym:start_bar bar 0
-//#ExpectDynSym:start_aaa bar 8
-//#ExpectDynSym:end_bar bar 12
-//#ExpectSym:start_bar bar 0
-//#ExpectSym:start_aaa bar 8
-//#ExpectSym:end_bar bar 12
+//#ExpectDynSym:start_bar section="bar",offset-in-section=0
+//#ExpectDynSym:start_aaa section="bar",offset-in-section=8
+//#ExpectDynSym:end_bar section="bar",offset-in-section=12
+//#ExpectSym:start_bar section="bar",offset-in-section=0
+//#ExpectSym:start_aaa section="bar",offset-in-section=8
+//#ExpectSym:end_bar section="bar",offset-in-section=12
 //#DiffIgnore:section.riscv.attributes
 //#DiffIgnore:segment.SHT_RISCV_ATTRIBUTES.*
 

@@ -9,8 +9,8 @@
 //#Config:verneed
 //#Object:runtime.c
 //#Object:symbol-versions-2.c
-//#ExpectSym: _start .text
-//#ExpectSym: exit_syscall .text
+//#ExpectSym: _start section=".text"
+//#ExpectSym: exit_syscall section=".text"
 //#EnableLinker:lld
 
 //#Config:verdef-0:verdef

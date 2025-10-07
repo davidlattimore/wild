@@ -30,9 +30,8 @@
 //!
 //! CompSoArgs:... Arguments to be passed to the compiler when building shared objects.
 //!
-//! ExpectSym:symbol-name [section] [offset-in-section] Checks that the specified symbol is defined
-//! in the output file and, if specified, that it's in the specified section. Can also optionally
-//! verify the offset within that section.
+//! ExpectSym:symbol-name [Symbol properties...] Checks that the specified symbol is defined in the
+//! output file. Can also assert some properties of that symbol. See Symbol properties below.
 //!
 //! ExpectDynSym:symbol-name [section] [offset-in-section] As for ExpectSym, but for dynamic
 //! symbols.
@@ -111,6 +110,21 @@
 //!
 //! Shared:{source-filename}[:extra-compilation-args] Builds the specified filename as a shared
 //! object and adds it to the link.
+//!
+//! ## Symbol properties
+//!
+//! This describes the format of symbol properties, which can be supplied to `ExpectSym` and
+//! `ExpectDynSym`.
+//!
+//! A comma-separated list of key value pairs. Note, commas should not have spaces after them.
+//!
+//! Example: `//#ExpectDynSym:start_aaa section="bar",offset-in-section=8`
+//!
+//! section="section-name": Type: string. Asserts the name of the section in which the symbol is
+//! located.
+//!
+//! offset-in-section=N: Type: Integer. Asserts the offset of the symbol within the section.
+//! Requires that section is also specified.
 
 mod external_tests;
 
@@ -617,34 +631,33 @@ struct Assertions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExpectedSymtabEntry {
     name: String,
+    assertions: SymtabAssertions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct SymtabAssertions {
+    #[serde(rename = "section")]
     section_name: Option<String>,
+
+    #[serde(rename = "offset-in-section")]
     section_offset: Option<u64>,
 }
 
 impl ExpectedSymtabEntry {
     fn parse(s: &str) -> Result<Self> {
-        let mut parts = s.split(' ').map(str::to_owned);
-        let name = parts.next().context("ExpectSym missing name")?;
-        let section_name = parts.next();
-        let section_offset = parts.next().map(|v| parse_u64(&v)).transpose()?;
+        let Some((name, config_str)) = s.split_once(' ') else {
+            return Ok(Self {
+                name: s.to_owned(),
+                assertions: Default::default(),
+            });
+        };
 
-        if let Some(extra) = parts.next() {
-            bail!("Unexpected argument to ExpectSym `{extra}`");
-        }
-
+        let assertions = serde_keyvalue::from_key_values(config_str)?;
         Ok(Self {
-            name,
-            section_name,
-            section_offset,
+            name: name.to_owned(),
+            assertions,
         })
-    }
-}
-
-fn parse_u64(s: &str) -> Result<u64> {
-    if let Some(rest) = s.strip_prefix("0x") {
-        u64::from_str_radix(rest, 16).with_context(|| format!("Failed to parse hex `{rest}`"))
-    } else {
-        u64::from_str(s).with_context(|| format!("Failed to parse decimal `{s}`"))
     }
 }
 
@@ -821,14 +834,14 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 "WildExtraLinkArgs" => config.wild_extra_linker_args = ArgumentSet::parse(arg)?,
                 "CompArgs" => config.compiler_args = ArgumentSet::parse(arg)?,
                 "CompSoArgs" => config.compiler_so_args = ArgumentSet::parse(arg)?,
-                "ExpectSym" => config
-                    .assertions
-                    .expected_symtab_entries
-                    .push(ExpectedSymtabEntry::parse(arg.trim())?),
-                "ExpectDynSym" => config
-                    .assertions
-                    .expected_dynsym_entries
-                    .push(ExpectedSymtabEntry::parse(arg.trim())?),
+                "ExpectSym" => config.assertions.expected_symtab_entries.push(
+                    ExpectedSymtabEntry::parse(arg.trim())
+                        .context("Failed to parse ExpectSym arguments")?,
+                ),
+                "ExpectDynSym" => config.assertions.expected_dynsym_entries.push(
+                    ExpectedSymtabEntry::parse(arg.trim())
+                        .context("Failed to parse ExpectDynSym arguments")?,
+                ),
                 "ExpectComment" => config
                     .assertions
                     .expected_comments
@@ -2146,7 +2159,7 @@ fn verify_symbol_assertions(
             let section = obj.section_by_index(index)?;
             let section_name = section.name()?;
 
-            if let Some(exp_name) = exp.section_name.as_ref() {
+            if let Some(exp_name) = exp.assertions.section_name.as_ref() {
                 if section_name != exp_name {
                     bail!(
                         "Expected symbol `{name}` to be in section `{exp_name}`, \
@@ -2154,7 +2167,7 @@ fn verify_symbol_assertions(
                     );
                 }
 
-                if let Some(expected_offset) = exp.section_offset {
+                if let Some(expected_offset) = exp.assertions.section_offset {
                     let actual_offset = sym.address().wrapping_sub(section.address());
                     if expected_offset != actual_offset {
                         bail!(

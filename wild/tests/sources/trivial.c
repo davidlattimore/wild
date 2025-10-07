@@ -1,6 +1,6 @@
 //#Object:runtime.c
-//#ExpectSym: _start .text
-//#ExpectSym: exit_syscall .text
+//#ExpectSym:_start section=".text"
+//#ExpectSym:exit_syscall section=".text"
 //#EnableLinker:lld
 
 #include "runtime.h"
