@@ -14,21 +14,33 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
 
     strategy:
+      fail-fast: false
       matrix:
         include:
-        - target: x86_64-unknown-linux-gnu
-          runs-on: ubuntu-22.04
-        - target: aarch64-unknown-linux-gnu
-          runs-on: ubuntu-22.04-arm
+          - { target: x86_64-unknown-linux-gnu, runs-on: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, runs-on: ubuntu-22.04-arm }
+          - { target: riscv64gc-unknown-linux-gnu, runs-on: ubuntu-22.04-arm, build: zigbuild }
 
+          - { target: x86_64-unknown-linux-musl, runs-on: ubuntu-22.04, build: zigbuild, args: --features=mimalloc }
+          - { target: aarch64-unknown-linux-musl, runs-on: ubuntu-22.04-arm, build: zigbuild, args: --features=mimalloc }
+          - { target: riscv64gc-unknown-linux-musl, runs-on: ubuntu-22.04-arm, build: zigbuild, args: --features=mimalloc }
+ 
     steps:
     - name: Install dependencies
       run: sudo apt-get update && sudo apt-get install -y clang
+      if: matrix.build != 'zigbuild'
 
     - name: Checkout code
       uses: actions/checkout@v4
 
     - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - uses: taiki-e/install-action@cargo-zigbuild
+      if: matrix.build == 'zigbuild'
+    - uses: mlugg/setup-zig@v2
+      if: matrix.build == 'zigbuild'
 
     - name: Extract release notes
       shell: bash
@@ -39,12 +51,16 @@ jobs:
       run: cargo build --release
 
     - name: Switch to linking with wild
+      if: matrix.build != 'zigbuild' # zigbuild ignores this config
       run: |
-        mkdir .cargo
-        echo -e "[target.${{matrix.target}}]\nlinker = \"clang\"\nrustflags = [\"-Clink-arg=--ld-path=${PWD}/target/release/wild\"]\n" >>"$HOME/.cargo/config.toml"
+        mkdir -p "$HOME/.cargo"
+        WILD="${PWD}/target/release/wild"
+        $WILD --version
+        echo -e "[target.${{matrix.target}}]\nlinker = \"clang\"\nrustflags = [\"-Clink-arg=--ld-path=$WILD\"]\n" >>"$HOME/.cargo/config.toml"
+        cat "$HOME/.cargo/config.toml"
 
     - name: Build release binary
-      run: cargo build --profile dist --target ${{ matrix.target }}
+      run: cargo ${{matrix.build || 'build' }} ${{matrix.args}} --profile dist --target ${{ matrix.target }}
 
     - name: Create tarballs
       run: |
@@ -52,7 +68,7 @@ jobs:
         mkdir "$n"
         cp "target/${{ matrix.target }}/dist/wild" "$n"
         cp README.md LICENSE* CHANGELOG.md "$n"
-        strip "$n/wild"
+        readelf -p .comment "$n/wild" | grep "Linker: Wild" || echo "::warning::'$n' wasn't linked with wild"
         tar zcf $n.tar.gz $n
 
     - name: Release

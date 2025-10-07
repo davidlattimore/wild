@@ -101,6 +101,7 @@ debug = true
 [profile.dist]
 inherits = "release"
 lto = "thin"
+strip = true
 
 # In CI, we disable debug info. This gives us faster builds. It also reduces the size of the target
 # directory, allowing us to fit more into cache. The only resulting loss is line numbers in
