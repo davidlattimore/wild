@@ -2354,7 +2354,7 @@ mod tests {
     fn write_options_to_file(file: &File, options: &[&str]) {
         let mut writer = BufWriter::new(file);
         for option in options {
-            writeln!(writer, "{}", option).expect("Failed to write to temporary file");
+            writeln!(writer, "{option}").expect("Failed to write to temporary file");
         }
     }
 
@@ -2417,7 +2417,7 @@ mod tests {
         write_options_to_file(file.as_file(), INPUT1);
 
         // pass the name of the file where options are as the only inline option "@filename"
-        let inline_options = vec![format!("@{}", file.path().to_str().unwrap())];
+        let inline_options = [format!("@{}", file.path().to_str().unwrap())];
         let args = super::parse(|| inline_options.iter()).unwrap();
         input1_assertions(&args);
     }
@@ -2471,7 +2471,7 @@ mod tests {
         write_options_to_file(file2.as_file(), INPUT1);
 
         // pass the name of the file where options are, as an inline option "@filename"
-        let inline_options = vec![format!("@{}", file1.path().to_str().unwrap())];
+        let inline_options = [format!("@{}", file1.path().to_str().unwrap())];
 
         // confirm that this works and the resulting set of options is correct
         let args = super::parse(|| inline_options.iter())
