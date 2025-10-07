@@ -489,6 +489,11 @@ struct TestConfig {
     /// version of GNU ld that doesn't perform certain optimisations.
     #[serde(default)]
     diff_ignore: Vec<String>,
+
+    /// Run the diffing component of each test. By default, diffs are skipped.
+    /// Enable this to verify that wild produces output matching other linkers.
+    #[serde(default)]
+    run_all_diffs: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, Debug, Default)]
@@ -2433,7 +2438,7 @@ fn diff_files(config: &Config, files: Vec<PathBuf>, display: &dyn Display) -> Re
         eprintln!("{report}");
         bail!(
             "Validation failed.\n{display}\n To revalidate:\ncargo run --bin linker-diff -- \
-             {}",
+             {}\nTo disable diff checking, set run_all_diffs=false in test config (see CONTRIBUTING.md)",
             diff_config.to_arg_string()
         );
     }
@@ -2582,8 +2587,11 @@ fn run_with_config(
     }
 
     let start = Instant::now();
-    diff_shared_objects(config, &programs)?;
-    diff_executables(config, &programs)?;
+
+    if config.test_config.run_all_diffs {
+        diff_shared_objects(config, &programs)?;
+        diff_executables(config, &programs)?;
+    }
 
     if should_print_timing() {
         println!(
