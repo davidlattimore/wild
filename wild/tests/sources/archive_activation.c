@@ -25,6 +25,13 @@
 //#Object:empty.a
 //#DiffIgnore:segment.GNU_STACK.alignment
 
+//#Config:bsd:default
+//#SkipLinker:ld
+//#BsdArchive:archive_activation0.c
+//#BsdArchive:archive_activation1.c
+//#BsdArchive:runtime.c
+//#BsdArchive:empty.a
+
 #include "runtime.h"
 
 int bar(void);
