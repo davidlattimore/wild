@@ -1697,6 +1697,7 @@ dependencies = [
 name = "wild-linker"
 version = "0.6.0"
 dependencies = [
+ "ar",
  "dhat",
  "fd-lock",
  "itertools",

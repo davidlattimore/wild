@@ -106,6 +106,9 @@
 //! ThinArchive:{source-filename}[:extra-compilation-args] Builds the specified filename as a thin
 //! archive and adds it to the link.
 //!
+//! BsdArchive:{source-filename}[:extra-compilation-args] Builds the specified filename as a bsd
+//! archive and adds it to the link.
+//!
 //! Shared:{source-filename}[:extra-compilation-args] Builds the specified filename as a shared
 //! object and adds it to the link.
 
@@ -645,6 +648,7 @@ enum InputType {
     Object,
     Archive,
     ThinArchive,
+    BsdArchive,
     #[strum(serialize = "Shared")]
     SharedObject,
     LinkerScript,
@@ -871,7 +875,8 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                         .map(|(a, b)| (a.to_owned(), b.to_owned()))?,
                 ),
                 "AutoAddObjects" => config.auto_add_objects = parse_bool(arg, "AutoAddObjects")?,
-                input_type @ ("Object" | "Archive" | "ThinArchive" | "Shared" | "LinkerScript") => {
+                input_type @ ("Object" | "Archive" | "ThinArchive" | "BsdArchive" | "Shared"
+                | "LinkerScript") => {
                     let input_type = InputType::from_str(input_type)?;
 
                     let mut arg = arg;
@@ -1202,6 +1207,13 @@ fn build_linker_input(
             let archive_path = first_obj_path.with_extension("a");
             if !is_newer(&archive_path, objects.iter().map(|o| &o.path)) {
                 make_archive(&archive_path, &objects, thin)?;
+            }
+            LinkerInput::new(archive_path)
+        }
+        InputType::BsdArchive => {
+            let archive_path = first_obj_path.with_extension("a");
+            if !is_newer(&archive_path, objects.iter().map(|o| &o.path)) {
+                make_bsd_archive(&archive_path, &objects)?;
             }
             LinkerInput::new(archive_path)
         }
@@ -1702,6 +1714,30 @@ fn make_archive(archive_path: &Path, objects: &[BuiltObject], thin: bool) -> Res
     if !status.success() {
         bail!("Failed to create archive");
     }
+    Ok(())
+}
+
+fn make_bsd_archive(archive_path: &Path, objects: &[BuiltObject]) -> Result {
+    let _ = std::fs::remove_file(archive_path);
+
+    let mut out_bytes = Vec::new();
+    let mut builder = ar::Builder::new(&mut out_bytes);
+
+    for obj in objects {
+        let obj_bytes = std::fs::read(&obj.path)?;
+        let obj_name = obj
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("Invalid object file name")?;
+
+        let header = ar::Header::new(obj_name.as_bytes().to_vec(), obj_bytes.len() as u64);
+
+        builder.append(&header, obj_bytes.as_slice())?;
+    }
+
+    std::fs::write(archive_path, out_bytes)?;
+
     Ok(())
 }
 
@@ -2287,6 +2323,7 @@ impl Display for InputType {
             InputType::Object => write!(f, "object"),
             InputType::Archive => write!(f, "archive"),
             InputType::ThinArchive => write!(f, "thin archive"),
+            InputType::BsdArchive => write!(f, "bsd archive"),
             InputType::SharedObject => write!(f, "shared"),
             InputType::LinkerScript => write!(f, "linker script"),
         }
