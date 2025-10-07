@@ -640,6 +640,8 @@ pub mod pt {
     pub const DYNAMIC: SegmentType = SegmentType::from_u32(object::elf::PT_DYNAMIC);
     pub const GNU_RELRO: SegmentType = SegmentType::from_u32(object::elf::PT_GNU_RELRO);
     pub const GNU_STACK: SegmentType = SegmentType::from_u32(object::elf::PT_GNU_STACK);
+    // TODO: add constant
+    pub const RISCV_ATTRIBUTES: SegmentType = SegmentType::from_u32(0x70000003);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -590,6 +590,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(RISCV_ATTRIBUTES_SECTION_NAME)),
         ty: sht::RISCV_ATTRIBUTES,
+        target_segment_type: Some(pt::RISCV_ATTRIBUTES),
         ..DEFAULT_DEFS
     },
     // Start of regular sections
