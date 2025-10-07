@@ -46,6 +46,9 @@ pub(crate) struct ArchiveContent<'data> {
 
     /// The offset in the archive at which the data is from.
     pub(crate) data_offset: usize,
+
+    /// For BSD-style extended filenames, contains the filename data
+    pub(crate) bsd_filename: Option<&'data [u8]>,
 }
 
 pub(crate) struct ThinEntry<'data> {
@@ -81,6 +84,7 @@ enum IdentifierKind {
     FileReference, // Files in thin archives
     Filenames,
     SymbolTable,
+    BsdExtended, // BSD-style extended filename (#1/len)
 }
 
 impl<'data> ArchiveIterator<'data> {
@@ -128,6 +132,7 @@ impl<'data> ArchiveIterator<'data> {
         let ident_kind = match ident {
             "/" => IdentifierKind::SymbolTable,
             "//" => IdentifierKind::Filenames,
+            _ if ident.starts_with("#1/") => IdentifierKind::BsdExtended,
             _ => match self.is_thin {
                 false => IdentifierKind::InlineContent,
                 true => IdentifierKind::FileReference,
@@ -159,10 +164,36 @@ impl<'data> ArchiveIterator<'data> {
             IdentifierKind::Filenames => ArchiveEntry::Filenames(ExtendedFilenames {
                 data: &self.data[..entry_size],
             }),
+            IdentifierKind::BsdExtended => {
+                // BSD-style extended filename: #1/len where len is the filename length
+                let name_len_str = &ident[3..]; // Skip "#1/"
+                let name_len: usize = name_len_str
+                    .trim()
+                    .parse()
+                    .with_context(|| format!("Invalid BSD filename length: {name_len_str}"))?;
+
+                if entry_size < name_len {
+                    bail!(
+                        "BSD filename length {} exceeds entry size {}",
+                        name_len,
+                        entry_size
+                    );
+                }
+
+                let bsd_filename = &self.data[..name_len];
+
+                ArchiveEntry::Regular(ArchiveContent {
+                    ident,
+                    entry_data: &self.data[name_len..entry_size],
+                    data_offset: self.offset + name_len,
+                    bsd_filename: Some(bsd_filename),
+                })
+            }
             IdentifierKind::InlineContent => ArchiveEntry::Regular(ArchiveContent {
                 ident,
                 entry_data: &self.data[..entry_size],
                 data_offset: self.offset,
+                bsd_filename: None,
             }),
             IdentifierKind::FileReference => ArchiveEntry::Thin(ThinEntry { ident }),
         };
@@ -229,6 +260,16 @@ fn evaluate_identifier<'data>(
             };
         }
     }
+
+    // BSD-style extended filename
+    if let Some(rest) = ident.strip_prefix("#1/")
+        && let Ok(_name_len) = rest.trim().parse::<usize>()
+    {
+        // For BSD format, we need to read the filename from the entry data
+        // This will be handled specially in the caller
+        return Identifier { data: &[] };
+    }
+
     Identifier {
         data: ident.as_bytes(),
     }
@@ -239,6 +280,11 @@ impl<'data> ArchiveContent<'data> {
         &self,
         extended_filenames: Option<ExtendedFilenames<'data>>,
     ) -> Identifier<'data> {
+        // For BSD-style extended filenames, use the extracted filename
+        if let Some(bsd_filename) = self.bsd_filename {
+            return Identifier { data: bsd_filename };
+        }
+
         evaluate_identifier(self.ident, extended_filenames)
     }
 
@@ -258,13 +304,22 @@ impl<'data> ThinEntry<'data> {
 
 impl<'data> Identifier<'data> {
     pub(crate) fn as_slice(&self) -> &'data [u8] {
+        // For BSD format placeholder, return as-is (this shouldn't normally be called for BSD format)
+        if self.data.is_empty() {
+            return self.data;
+        }
+
         // Each filename in the extended filenames field ends with '/\n'.
         // Scanning for '/' to determine the filename end will not work
         // with paths that contain '/', so we scan for '\n' instead.
         let end = memchr::memchr(b'\n', self.data).unwrap_or(self.data.len());
 
-        // The trailing '/' is at `end - 1` (just before '\n').
-        &self.data[..end - 1]
+        if end > 0 && self.data[end - 1] == b'/' {
+            // The trailing '/' is at `end - 1` (just before '\n').
+            &self.data[..end - 1]
+        } else {
+            &self.data[..end]
+        }
     }
 
     pub(crate) fn as_path(&self) -> &'data std::path::Path {
