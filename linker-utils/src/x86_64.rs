@@ -280,7 +280,7 @@ pub const fn relocation_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
         kind,
         size: RelocationSize::ByteSize(size),
         mask: None,
-        range: AllowedRange::no_check(),
+        range: AllowedRange::from_byte_number(size),
         alignment: 1,
     })
 }

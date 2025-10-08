@@ -1197,6 +1197,17 @@ impl AllowedRange {
     pub const fn no_check() -> Self {
         Self::new(i64::MIN, i64::MAX)
     }
+
+    #[must_use]
+    pub const fn from_byte_number(n_bytes: usize) -> Self {
+        if n_bytes == 0 || n_bytes > 8 {
+            return Self::no_check();
+        }
+        let bits = n_bytes * 8;
+        let max = 1i64 << (bits - 1) - 1;
+        let min = -max - 1;
+        Self::new(min, max)
+    }
 }
 
 #[derive(Clone, Debug, Copy)]
