@@ -44,10 +44,23 @@ See [nix/nix.md](nix/nix.md)
 If you'd like to use Wild as your default linker for building Rust code, you can put the following
 in `~/.cargo/config.toml`.
 
+On Linux:
 ```toml
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
 rustflags = ["-C", "link-arg=--ld-path=wild"]
+```
+
+On Illumos:
+```
+[target.x86_64-unknown-illumos]
+# Absolute path to clang - on OmniOS this is likely something like /opt/ooce/bin/clang.
+linker = "/usr/bin/clang"
+
+rustflags = [
+    # Will silently delegate to GNU ld or Sun ld unless the absolute path to Wild is provided.
+    "-C", "link-arg=-fuse-ld=/absolute/path/to/wild"
+]
 ```
 
 ## Using wild in CI
