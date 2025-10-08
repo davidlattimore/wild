@@ -97,5 +97,5 @@ void _start(void) {
   exit_syscall(value);
 }
 
-//#ExpectSym: dot1 .dot
-//#ExpectSym: dot2 .dot.2
+//#ExpectSym: dot1 section=".dot"
+//#ExpectSym: dot2 section=".dot.2"
