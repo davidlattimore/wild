@@ -3,4 +3,4 @@
 	url = https://github.com/rui314/mold
 [submodule "wild/tests/bins"]
 	path = wild/tests/bins
-	url = git@github.com:davidlattimore/wild-test-files.git
+	url = https://github.com/davidlattimore/wild-test-files
