@@ -3018,17 +3018,20 @@ fn process_relocation<A: Arch>(
                 resolution_flags.remove(ResolutionFlags::DIRECT);
                 resolution_flags |= ResolutionFlags::PLT | ResolutionFlags::GOT;
             } else if !symbol_value_flags.is_absolute() {
-                if args.allow_copy_relocations {
-                    resolution_flags |= ResolutionFlags::COPY_RELOCATION;
-                } else {
-                    // We don't at present support text relocations, so if we can't apply a copy
-                    // relocation, we error instead.
-                    bail!(
-                        "Direct relocation ({}) to dynamic symbol from non-writable section, \
-                        but copy relocations are disabled. {}",
-                        A::rel_type_to_string(r_type),
-                        symbol_db.symbol_debug(symbol_id),
-                    );
+                match args.copy_relocations {
+                    crate::args::CopyRelocations::Allowed => {
+                        resolution_flags |= ResolutionFlags::COPY_RELOCATION;
+                    }
+                    crate::args::CopyRelocations::Disallowed(reason) => {
+                        // We don't at present support text relocations, so if we can't apply a copy
+                        // relocation, we error instead.
+                        bail!(
+                            "Direct relocation ({}) to dynamic symbol from non-writable section, \
+                            but copy relocations are disabled because {reason}. {}",
+                            A::rel_type_to_string(r_type),
+                            symbol_db.symbol_debug(symbol_id),
+                        );
+                    }
                 }
             }
         } else if args.is_relocatable()
