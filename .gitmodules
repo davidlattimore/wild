@@ -1,3 +1,6 @@
 [submodule "external_test_suites/mold"]
 	path = external_test_suites/mold
 	url = https://github.com/rui314/mold
+[submodule "wild/tests/bins"]
+	path = wild/tests/bins
+	url = git@github.com:davidlattimore/wild-test-files.git
