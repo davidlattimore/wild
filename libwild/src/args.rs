@@ -26,6 +26,7 @@ use hashbrown::HashSet;
 use jobserver::Acquired;
 use jobserver::Client;
 use rayon::ThreadPoolBuilder;
+use std::fmt::Display;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -69,7 +70,7 @@ pub struct Args {
     pub(crate) allow_shlib_undefined: bool,
     pub(crate) needs_origin_handling: bool,
     pub(crate) needs_nodelete_handling: bool,
-    pub(crate) allow_copy_relocations: bool,
+    pub(crate) copy_relocations: CopyRelocations,
     pub(crate) sysroot: Option<Box<Path>>,
     pub(crate) undefined: Vec<String>,
     pub(crate) relro: bool,
@@ -126,6 +127,12 @@ pub enum CounterKind {
     PageFaultsMajor,
     L1dRead,
     L1dMiss,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CopyRelocations {
+    Allowed,
+    Disallowed(CopyRelocationsDisabledReason),
 }
 
 /// Represents a command-line argument that specifies the number of threads to use,
@@ -307,7 +314,7 @@ impl Default for Args {
             prepopulate_maps: false,
             sym_info: None,
             merge_strings: true,
-            allow_copy_relocations: true,
+            copy_relocations: CopyRelocations::Allowed,
             debug_fuel: None,
             validate_output: std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1"),
             write_layout: std::env::var(WRITE_LAYOUT_ENV).is_ok_and(|v| v == "1"),
@@ -407,7 +414,8 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
 
     // Copy relocations are only permitted when building executables.
     if args.output_kind() == OutputKind::SharedObject {
-        args.allow_copy_relocations = false;
+        args.copy_relocations =
+            CopyRelocations::Disallowed(CopyRelocationsDisabledReason::SharedObject);
     }
 
     if !args.unrecognized_options.is_empty() {
@@ -1319,7 +1327,8 @@ fn setup_argument_parser() -> ArgumentParser {
             "nocopyreloc",
             "Disable copy relocations",
             |args, _modifier_stack, _value| {
-                args.allow_copy_relocations = false;
+                args.copy_relocations =
+                    CopyRelocations::Disallowed(CopyRelocationsDisabledReason::Flag);
                 Ok(())
             },
         )
@@ -2220,6 +2229,24 @@ impl FromStr for CounterKind {
             "l1d-miss" => CounterKind::L1dMiss,
             other => bail!("Unsupported performance counter `{other}`"),
         })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum CopyRelocationsDisabledReason {
+    Flag,
+    SharedObject,
+}
+
+impl Display for CopyRelocationsDisabledReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Reason should make sense after the word "because".
+        let reason = match self {
+            CopyRelocationsDisabledReason::Flag => "the flag -z nocopyreloc was supplied",
+            CopyRelocationsDisabledReason::SharedObject => "output is a shared object",
+        };
+
+        Display::fmt(&reason, f)
     }
 }
 
