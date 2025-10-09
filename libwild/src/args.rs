@@ -267,7 +267,13 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
     "sort-common",
     "stats",
 ];
-const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &["(", ")"];
+const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &[
+    "(",
+    ")",
+    // On Illumos, the Clang driver inserts a meaningless -C flag before calling any non-GNU ld linker.
+    #[cfg(target_os = "illumos")]
+    "C",
+];
 
 const IGNORED_FLAGS: &[&str] = &[
     "gdb-index",
@@ -299,6 +305,9 @@ impl Default for Args {
             inputs: Vec::new(),
             output: Arc::from(Path::new("a.out")),
             is_dynamic_executable: AtomicBool::new(false),
+            #[cfg(target_os = "illumos")]
+            dynamic_linker: Some(Path::new("/lib/amd64/ld.so.1").into()),
+            #[cfg(not(target_os = "illumos"))]
             dynamic_linker: None,
             output_kind: None,
             time_phase_options: None,
