@@ -144,7 +144,7 @@ impl crate::arch::Relaxation for Relaxation {
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
-        value_flags: crate::resolution::ValueFlags,
+        flags: crate::resolution::ValueFlags,
         output_kind: crate::args::OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,
@@ -153,7 +153,7 @@ impl crate::arch::Relaxation for Relaxation {
         Self: std::marker::Sized,
     {
         let mut relocation = RiscV64::relocation_from_raw(relocation_kind).unwrap();
-        let interposable = value_flags.is_interposable();
+        let interposable = flags.is_interposable();
 
         // All relaxations below only apply to executable code, so we shouldn't attempt them if a
         // relocation is in a non-executable section.

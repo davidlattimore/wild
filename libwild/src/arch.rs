@@ -107,7 +107,7 @@ pub(crate) trait Relaxation {
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
-        value_flags: ValueFlags,
+        flags: ValueFlags,
         output_kind: OutputKind,
         section_flags: SectionFlags,
         non_zero_address: bool,

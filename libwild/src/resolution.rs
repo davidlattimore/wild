@@ -54,7 +54,8 @@ use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use std::num::NonZeroU32;
-use std::sync::atomic::AtomicU8;
+use std::sync::atomic;
+use std::sync::atomic::AtomicU16;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -1051,8 +1052,11 @@ impl SectionSlot {
 }
 
 bitflags! {
+    /// Information and state of a symbol or section. Some of this information comes from the object
+    /// that defined the symbol or section and some is computed based on what kinds of references we
+    /// encounter to it.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub(crate) struct ValueFlags: u8 {
+    pub(crate) struct ValueFlags: u16 {
         /// Something with an address. e.g. a regular symbol, a section etc.
         const ADDRESS = 1 << 0;
 
@@ -1082,10 +1086,45 @@ bitflags! {
         /// Set when the value is a function. Currently only set for dynamic symbols, since that's
         /// all we need it for.
         const FUNCTION = 1 << 6;
+
+        /// The direct value is needed. e.g. via a relative or absolute relocation that doesn't use the
+        /// PLT or GOT.
+        const DIRECT = 1 << 7;
+
+        /// An address in the global offset table is needed.
+        const GOT = 1 << 8;
+
+        /// A PLT entry is needed.
+        const PLT = 1 << 9;
+
+        /// A double GOT entry is needed in order to store the module number and offset within the
+        /// module. Only set for TLS variables.
+        const GOT_TLS_MODULE = 1 << 10;
+
+        /// A single GOT entry is needed to store the offset of the TLS variable within the initial
+        /// TLS block.
+        const GOT_TLS_OFFSET = 1 << 11;
+
+        /// A double GOT entry is needed in order to store the function pointer and a pointer that
+        /// points to a pair of words (module number and offset within the module).
+        /// Only set for TLS variables.
+        const GOT_TLS_DESCRIPTOR = 1 << 12;
+
+        /// The request originated from a dynamic object, so the symbol should be put into the dynamic
+        /// symbol table.
+        const EXPORT_DYNAMIC = 1 << 13;
+
+        /// We encountered a direct reference to a symbol from a non-writable section and so we're
+        /// going to need to do a copy relocation. Note that multiple symbols can have this flag
+        /// set, however if they all point at the same address in the shared object from which they
+        /// originate, only a single copy relocation will be emitted. This flag indicates that the
+        /// symbol requires a copy relocation, not necessarily that a copy relocation will be
+        /// emitted with the exact name of this symbol.
+        const COPY_RELOCATION = 1 << 14;
     }
 }
 
-pub(crate) struct AtomicValueFlags(AtomicU8);
+pub(crate) struct AtomicValueFlags(AtomicU16);
 
 impl ValueFlags {
     /// Returns self merged with `other` which should be the flags for the local (possibly
@@ -1097,6 +1136,25 @@ impl ValueFlags {
         if other.contains(ValueFlags::NON_INTERPOSABLE) {
             *self |= ValueFlags::NON_INTERPOSABLE;
         }
+    }
+
+    /// Returns the subset of the set flags that relate to resolutions.
+    pub(crate) fn resolution_flags(self) -> ValueFlags {
+        self.intersection(
+            ValueFlags::DIRECT
+                | ValueFlags::GOT
+                | ValueFlags::PLT
+                | ValueFlags::GOT_TLS_MODULE
+                | ValueFlags::GOT_TLS_OFFSET
+                | ValueFlags::GOT_TLS_DESCRIPTOR
+                | ValueFlags::EXPORT_DYNAMIC
+                | ValueFlags::COPY_RELOCATION,
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn has_resolution(self) -> bool {
+        !self.resolution_flags().is_empty()
     }
 
     #[must_use]
@@ -1134,21 +1192,77 @@ impl ValueFlags {
     }
 
     pub(crate) fn as_atomic(self) -> AtomicValueFlags {
-        AtomicValueFlags(AtomicU8::new(self.0.bits()))
+        AtomicValueFlags(AtomicU16::new(self.0.bits()))
+    }
+
+    #[must_use]
+    pub(crate) fn needs_direct(self) -> bool {
+        self.contains(ValueFlags::DIRECT)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_copy_relocation(self) -> bool {
+        self.contains(ValueFlags::COPY_RELOCATION)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_export_dynamic(self) -> bool {
+        self.contains(ValueFlags::EXPORT_DYNAMIC)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_got(self) -> bool {
+        self.contains(ValueFlags::GOT)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_plt(self) -> bool {
+        self.contains(ValueFlags::PLT)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_got_tls_offset(self) -> bool {
+        self.contains(ValueFlags::GOT_TLS_OFFSET)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_got_tls_module(self) -> bool {
+        self.contains(ValueFlags::GOT_TLS_MODULE)
+    }
+
+    #[must_use]
+    pub(crate) fn needs_got_tls_descriptor(self) -> bool {
+        self.contains(ValueFlags::GOT_TLS_DESCRIPTOR)
     }
 }
 
 impl AtomicValueFlags {
-    pub(crate) fn get(&self) -> ValueFlags {
-        ValueFlags::from_bits_retain(self.0.load(Ordering::Relaxed))
-    }
-
-    pub(crate) fn or_assign(&self, flags: ValueFlags) {
-        self.0.fetch_or(flags.bits(), Ordering::Relaxed);
+    pub(crate) fn new(flags: ValueFlags) -> Self {
+        Self(AtomicU16::new(flags.bits()))
     }
 
     pub(crate) fn into_non_atomic(self) -> ValueFlags {
         ValueFlags::from_bits_retain(self.0.into_inner())
+    }
+
+    pub(crate) fn fetch_or(&self, flags: ValueFlags) -> ValueFlags {
+        // Calling fetch_or on our atomic requires that we gain exclusive access to the cache line
+        // containing the atomic. If all the bits are already set, then that's wasteful, so we first
+        // check if the bits are set and if they are, we skip the fetch_or call.
+        let current_bits = self.0.load(atomic::Ordering::Relaxed);
+        if current_bits & flags.bits() == flags.bits() {
+            return ValueFlags::from_bits_retain(current_bits);
+        }
+        let previous_bits = self.0.fetch_or(flags.bits(), atomic::Ordering::Relaxed);
+        ValueFlags::from_bits_retain(previous_bits)
+    }
+
+    pub(crate) fn get(&self) -> ValueFlags {
+        ValueFlags::from_bits_retain(self.0.load(atomic::Ordering::Relaxed))
+    }
+
+    pub(crate) fn or_assign(&self, flags: ValueFlags) {
+        self.0.fetch_or(flags.bits(), Ordering::Relaxed);
     }
 }
 
