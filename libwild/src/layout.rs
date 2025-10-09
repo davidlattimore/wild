@@ -3237,13 +3237,20 @@ impl<'data> PreludeLayoutState<'data> {
             common.allocate(part_id::DYNSYM, size_of::<elf::SymtabEntry>() as u64);
         }
 
-        self.dynamic_linker = resources
+        if resources
             .symbol_db
             .args
-            .dynamic_linker
-            .as_ref()
-            .map(|p| CString::new(p.as_os_str().as_encoded_bytes()))
-            .transpose()?;
+            .output_kind()
+            .is_dynamic_executable()
+        {
+            self.dynamic_linker = resources
+                .symbol_db
+                .args
+                .dynamic_linker
+                .as_ref()
+                .map(|p| CString::new(p.as_os_str().as_encoded_bytes()))
+                .transpose()?;
+        }
         if let Some(dynamic_linker) = self.dynamic_linker.as_ref() {
             common.allocate(
                 part_id::INTERP,

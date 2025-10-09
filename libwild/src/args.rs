@@ -613,6 +613,10 @@ impl OutputKind {
         matches!(self, OutputKind::SharedObject)
     }
 
+    pub(crate) fn is_dynamic_executable(self) -> bool {
+        matches!(self, OutputKind::DynamicExecutable(_))
+    }
+
     pub(crate) fn is_static_executable(self) -> bool {
         matches!(self, OutputKind::StaticExecutable(_))
     }
@@ -1549,7 +1553,6 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("dynamic-linker")
         .help("Set dynamic linker path")
         .execute(|args, _modifier_stack, value| {
-            args.is_dynamic_executable.store(true, Ordering::Relaxed);
             args.dynamic_linker = Some(Box::from(Path::new(value)));
             Ok(())
         });
