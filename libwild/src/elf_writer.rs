@@ -2352,7 +2352,15 @@ fn write_absolute_relocation<A: Arch>(
     object_layout: &ObjectLayout,
     layout: &Layout,
 ) -> Result<u64> {
-    if resolution.flags.is_interposable() && section_info.is_writable {
+    if !section_info.section_flags.contains(shf::ALLOC) {
+        resolution.value_with_addend(
+            addend,
+            symbol_index,
+            object_layout,
+            &layout.merged_strings,
+            &layout.merged_string_start_addresses,
+        )
+    } else if resolution.flags.is_interposable() && section_info.is_writable {
         table_writer.write_dynamic_symbol_relocation::<A>(
             place,
             addend,

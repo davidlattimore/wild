@@ -2669,6 +2669,7 @@ fn integration_test(
         "got_ref_to_local.c",
         "local_symbol_refs.s",
         "archive_activation.c",
+        "relocation-in-non-alloc-section.s",
         "exclude-libs.c",
         "exclude-section.s",
         "common_section.c",

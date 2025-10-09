@@ -2824,6 +2824,7 @@ fn process_relocation<A: Arch>(
         let local_flags = resources.local_flags_for_symbol(symbol_id);
         let rel_offset = rel.r_offset;
         let r_type = rel.r_type;
+        let section_flags = SectionFlags::from_header(section);
 
         let rel_info = if let Some(relaxation) = A::Relaxation::new(
             r_type,
@@ -2831,7 +2832,7 @@ fn process_relocation<A: Arch>(
             rel_offset,
             local_flags,
             args.output_kind(),
-            SectionFlags::from_header(section),
+            section_flags,
             true,
         )
         .filter(|relaxation| args.relax || relaxation.is_mandatory())
@@ -2842,10 +2843,12 @@ fn process_relocation<A: Arch>(
             A::relocation_from_raw(r_type)?
         };
 
-        let section_is_writable = SectionFlags::from_header(section).contains(shf::WRITE);
+        let section_is_writable = section_flags.contains(shf::WRITE);
         let mut flags_to_add = resolution_flags(rel_info.kind);
 
-        if rel_info.kind.is_tls() {
+        if !section_flags.contains(shf::ALLOC) {
+            // Non-alloc sections never get dynamic relocations, so there's nothing to do here.
+        } else if rel_info.kind.is_tls() {
             if does_relocation_require_static_tls(rel_info.kind) {
                 resources
                     .has_static_tls
@@ -2859,6 +2862,7 @@ fn process_relocation<A: Arch>(
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
             } else if local_flags.is_function() {
+                // Create a PLT entry for the function and refer to that instead.
                 flags_to_add.remove(ValueFlags::DIRECT);
                 flags_to_add |= ValueFlags::PLT | ValueFlags::GOT;
             } else if !local_flags.is_absolute() {
