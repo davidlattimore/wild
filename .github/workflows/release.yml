@@ -21,14 +21,18 @@ jobs:
           - { target: aarch64-unknown-linux-gnu, runs-on: ubuntu-22.04-arm }
           - { target: riscv64gc-unknown-linux-gnu, runs-on: ubuntu-22.04-arm, build: zigbuild }
 
-          - { target: x86_64-unknown-linux-musl, runs-on: ubuntu-22.04, build: zigbuild, args: --features=mimalloc }
-          - { target: aarch64-unknown-linux-musl, runs-on: ubuntu-22.04-arm, build: zigbuild, args: --features=mimalloc }
+          - { target: x86_64-unknown-linux-musl, runs-on: ubuntu-22.04, musl: true, args: --features=mimalloc }
+          - { target: aarch64-unknown-linux-musl, runs-on: ubuntu-22.04-arm, musl: true, args: --features=mimalloc }
           - { target: riscv64gc-unknown-linux-musl, runs-on: ubuntu-22.04-arm, build: zigbuild, args: --features=mimalloc }
  
     steps:
     - name: Install dependencies
       run: sudo apt-get update && sudo apt-get install -y clang
       if: matrix.build != 'zigbuild'
+
+    - name: Install musl tools
+      run: sudo apt-get update && sudo apt-get install -y musl-tools
+      if: matrix.musl == true
 
     - name: Checkout code
       uses: actions/checkout@v4
