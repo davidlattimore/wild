@@ -8,7 +8,7 @@ use crate::elf::PLT_ENTRY_SIZE;
 use crate::error;
 use crate::error::Result;
 use crate::layout::PropertyClass;
-use crate::resolution::ValueFlags;
+use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
 use linker_utils::elf::SectionFlags;

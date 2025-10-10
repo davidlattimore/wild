@@ -54,6 +54,7 @@ pub(crate) mod symbol;
 pub(crate) mod symbol_db;
 pub(crate) mod timing;
 pub(crate) mod validation;
+pub(crate) mod value_flags;
 pub(crate) mod verification;
 pub(crate) mod version_script;
 pub(crate) mod x86_64;
@@ -211,7 +212,7 @@ impl Linker {
 
         let groups = grouping::group_files(parsed_inputs, args, &self.herd);
 
-        let mut symbol_db = symbol_db::SymbolDb::build(
+        let (mut symbol_db, mut per_symbol_flags) = symbol_db::SymbolDb::build(
             groups,
             input_data.version_script_data,
             args,
@@ -222,6 +223,7 @@ impl Linker {
 
         let resolved = resolution::resolve_symbols_and_sections(
             &mut symbol_db,
+            &mut per_symbol_flags,
             &self.herd,
             &mut output_sections,
             &layout_rules,
@@ -229,6 +231,7 @@ impl Linker {
 
         let layout = layout::compute::<A>(
             symbol_db,
+            per_symbol_flags,
             resolved,
             output_sections,
             &mut output,

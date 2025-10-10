@@ -68,12 +68,13 @@ use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
 use crate::resolution::SectionSlot;
-use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::RawSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
+use crate::value_flags::PerSymbolFlags;
+use crate::value_flags::ValueFlags;
 use hashbrown::HashMap;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
@@ -1284,11 +1285,11 @@ fn write_symbols(
     symbol_writer: &mut SymbolTableWriter,
     layout: &Layout,
 ) -> Result {
-    for ((sym_index, sym), sym_state) in object
+    for ((sym_index, sym), flags) in object
         .object
         .symbols
         .enumerate()
-        .zip(&layout.symbol_db.per_symbol_flags[object.symbol_id_range.as_usize()])
+        .zip(layout.per_symbol_flags.raw_range(object.symbol_id_range))
     {
         let symbol_id = object.symbol_id_range.input_to_id(sym_index);
 
@@ -1301,7 +1302,7 @@ fn write_symbols(
             sym,
             symbol_id,
             &layout.symbol_db,
-            *sym_state,
+            flags.get(),
             &object.sections,
         ) {
             let e = LittleEndian;
@@ -1314,7 +1315,7 @@ fn write_symbols(
                         SectionSlot::EhFrameData(..) => output_section_id::EH_FRAME,
                         _ => bail!(
                             "Tried to copy a symbol in a section we didn't load. {}",
-                            layout.symbol_db.symbol_debug(symbol_id)
+                            layout.symbol_debug(symbol_id)
                         ),
                     }
                 } else if sym.is_common(e) {
@@ -1323,10 +1324,7 @@ fn write_symbols(
                     symbol_writer
                         .copy_absolute_symbol(sym, info.name)
                         .with_context(|| {
-                            format!(
-                                "Failed to absolute {}",
-                                layout.symbol_db.symbol_debug(symbol_id)
-                            )
+                            format!("Failed to absolute {}", layout.symbol_debug(symbol_id))
                         })?;
                     continue;
                 } else {
@@ -1655,6 +1653,7 @@ fn display_relocation<'a, A: Arch>(
     DisplayRelocation::<'a, A> {
         rel,
         symbol_db: &layout.symbol_db,
+        per_symbol_flags: &layout.per_symbol_flags,
         object,
         phantom: PhantomData,
     }
@@ -1663,6 +1662,7 @@ fn display_relocation<'a, A: Arch>(
 struct DisplayRelocation<'a, A: Arch> {
     rel: &'a Crel,
     symbol_db: &'a SymbolDb<'a>,
+    per_symbol_flags: &'a PerSymbolFlags,
     object: &'a ObjectLayout<'a>,
     phantom: PhantomData<A>,
 }
@@ -1678,7 +1678,12 @@ impl<A: Arch> Display for DisplayRelocation<'_, A> {
             None => write!(f, "absolute")?,
             Some(local_symbol_index) => {
                 let symbol_id = self.object.symbol_id_range.input_to_id(local_symbol_index);
-                write!(f, "{}", self.symbol_db.symbol_debug(symbol_id))?;
+                write!(
+                    f,
+                    "{}",
+                    self.symbol_db
+                        .symbol_debug(self.per_symbol_flags, symbol_id)
+                )?;
             }
         }
         Ok(())
@@ -1712,7 +1717,7 @@ fn get_resolution(
         .with_context(|| {
             format!(
                 "Missing resolution for: {}",
-                layout.symbol_db.symbol_debug(local_symbol_id)
+                layout.symbol_debug(local_symbol_id)
             )
         })?;
     Ok((resolution, symbol_index, local_symbol_id))
@@ -2958,12 +2963,9 @@ fn write_linker_script_dynsym(
         .output_index_of_section(section_id)
         .context("Tried to write dynamic symbol in section that's not being output")?;
 
-    let resolution = layout.local_symbol_resolution(symbol_id).with_context(|| {
-        format!(
-            "Missing resolution for {}",
-            layout.symbol_db.symbol_debug(symbol_id)
-        )
-    })?;
+    let resolution = layout
+        .local_symbol_resolution(symbol_id)
+        .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
 
     let address = resolution.address()?;
     let name = layout.symbol_db.symbol_name(symbol_id)?;
@@ -3656,12 +3658,7 @@ fn write_dynamic_file<A: Arch>(
 
             table_writer
                 .process_resolution::<A>(Some(layout), res)
-                .with_context(|| {
-                    format!(
-                        "Failed to write {}",
-                        layout.symbol_db.symbol_debug(symbol_id)
-                    )
-                })?;
+                .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
         }
     }
 

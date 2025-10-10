@@ -135,7 +135,7 @@ impl crate::arch::Relaxation for Relaxation {
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
-        flags: crate::resolution::ValueFlags,
+        flags: crate::value_flags::ValueFlags,
         output_kind: crate::args::OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,

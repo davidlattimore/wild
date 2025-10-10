@@ -38,8 +38,8 @@ use crate::symbol_db::RawSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
+use crate::value_flags::PerSymbolFlags;
 use atomic_take::AtomicTake;
-use bitflags::bitflags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use linker_utils::elf::SectionFlags;
@@ -54,8 +54,6 @@ use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use std::num::NonZeroU32;
-use std::sync::atomic;
-use std::sync::atomic::AtomicU16;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
@@ -67,6 +65,7 @@ pub(crate) struct ResolutionOutputs<'data> {
 #[tracing::instrument(skip_all, name = "Symbol resolution")]
 pub fn resolve_symbols_and_sections<'data>(
     symbol_db: &mut SymbolDb<'data>,
+    per_symbol_flags: &mut PerSymbolFlags,
     herd: &'data bumpalo_herd::Herd,
     output_sections: &mut OutputSections<'data>,
     layout_rules: &LayoutRules<'data>,
@@ -90,6 +89,7 @@ pub fn resolve_symbols_and_sections<'data>(
         output_sections,
         &resolved_groups,
         symbol_db,
+        per_symbol_flags,
         &mut custom_start_stop_defs,
     )?;
 
@@ -105,7 +105,11 @@ pub fn resolve_symbols_and_sections<'data>(
 
     epilogue.custom_start_stop_defs = custom_start_stop_defs;
 
-    crate::symbol_db::resolve_alternative_symbol_definitions(symbol_db, &resolved_groups)?;
+    crate::symbol_db::resolve_alternative_symbol_definitions(
+        symbol_db,
+        per_symbol_flags,
+        &resolved_groups,
+    )?;
 
     Ok(ResolutionOutputs {
         groups: resolved_groups,
@@ -609,6 +613,7 @@ fn canonicalise_undefined_symbols<'data>(
     output_sections: &OutputSections,
     groups: &[ResolvedGroup],
     symbol_db: &mut SymbolDb<'data>,
+    per_symbol_flags: &mut PerSymbolFlags,
     custom_start_stop_defs: &mut Vec<InternalSymDefInfo<'data>>,
 ) -> Result {
     let mut name_to_id: PassThroughHashMap<UnversionedSymbolName<'data>, SymbolId> =
@@ -644,6 +649,7 @@ fn canonicalise_undefined_symbols<'data>(
                         let symbol_id = allocate_start_stop_symbol_id(
                             pre_hashed,
                             symbol_db,
+                            per_symbol_flags,
                             custom_start_stop_defs,
                             output_sections,
                         );
@@ -679,6 +685,7 @@ fn canonicalise_undefined_symbols<'data>(
 fn allocate_start_stop_symbol_id<'data>(
     name: PreHashed<UnversionedSymbolName<'data>>,
     symbol_db: &mut SymbolDb<'data>,
+    per_symbol_flags: &mut PerSymbolFlags,
     custom_start_stop_defs: &mut Vec<InternalSymDefInfo<'data>>,
     output_sections: &OutputSections,
 ) -> Option<SymbolId> {
@@ -694,7 +701,7 @@ fn allocate_start_stop_symbol_id<'data>(
 
     let section_id = output_sections.custom_name_to_id(SectionName(section_name))?;
 
-    let symbol_id = symbol_db.add_start_stop_symbol(name);
+    let symbol_id = symbol_db.add_start_stop_symbol(per_symbol_flags, name);
 
     let def_info = if is_start {
         InternalSymDefInfo::notype(SymbolPlacement::SectionStart(section_id), name.bytes())
@@ -1048,223 +1055,6 @@ impl SectionSlot {
             SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => Some(unloaded),
             _ => None,
         }
-    }
-}
-
-bitflags! {
-    /// Information and state of a symbol or section. Some of this information comes from the object
-    /// that defined the symbol or section and some is computed based on what kinds of references we
-    /// encounter to it.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub(crate) struct ValueFlags: u16 {
-        /// Something with an address. e.g. a regular symbol, a section etc.
-        const ADDRESS = 1 << 0;
-
-        /// An absolute value that won't change depending on load address. This could be a symbol
-        /// with an absolute value or an undefined symbol, which needs to always resolve to 0
-        /// regardless of load address.
-        const ABSOLUTE = 1 << 1;
-
-        /// The value is from a shared (dynamic) object, so although it may have an address, it
-        /// won't be known until runtime. If combined with `ABSOLUTE`, then the symbol isn't
-        /// actually defined by any shared object. We'll emit a dynamic relocation for it on a
-        /// best-effort basis only. e.g. if there are direct references to it from a read-only
-        /// section we'll fill them in as zero.
-        const DYNAMIC = 1 << 2;
-
-        /// The value refers to an ifunc. The actual address won't be known until runtime.
-        const IFUNC = 1 << 3;
-
-        /// Whether the definition of the symbol is final and cannot be overridden at runtime.
-        const NON_INTERPOSABLE = 1 << 4;
-
-        /// We have a version script and the version script says that the symbol should be downgraded to
-        /// a local. It's still treated as a global for name lookup purposes, but after that, it becomes
-        /// local.
-        const DOWNGRADE_TO_LOCAL = 1 << 5;
-
-        /// Set when the value is a function. Currently only set for dynamic symbols, since that's
-        /// all we need it for.
-        const FUNCTION = 1 << 6;
-
-        /// The direct value is needed. e.g. via a relative or absolute relocation that doesn't use the
-        /// PLT or GOT.
-        const DIRECT = 1 << 7;
-
-        /// An address in the global offset table is needed.
-        const GOT = 1 << 8;
-
-        /// A PLT entry is needed.
-        const PLT = 1 << 9;
-
-        /// A double GOT entry is needed in order to store the module number and offset within the
-        /// module. Only set for TLS variables.
-        const GOT_TLS_MODULE = 1 << 10;
-
-        /// A single GOT entry is needed to store the offset of the TLS variable within the initial
-        /// TLS block.
-        const GOT_TLS_OFFSET = 1 << 11;
-
-        /// A double GOT entry is needed in order to store the function pointer and a pointer that
-        /// points to a pair of words (module number and offset within the module).
-        /// Only set for TLS variables.
-        const GOT_TLS_DESCRIPTOR = 1 << 12;
-
-        /// The request originated from a dynamic object, so the symbol should be put into the dynamic
-        /// symbol table.
-        const EXPORT_DYNAMIC = 1 << 13;
-
-        /// We encountered a direct reference to a symbol from a non-writable section and so we're
-        /// going to need to do a copy relocation. Note that multiple symbols can have this flag
-        /// set, however if they all point at the same address in the shared object from which they
-        /// originate, only a single copy relocation will be emitted. This flag indicates that the
-        /// symbol requires a copy relocation, not necessarily that a copy relocation will be
-        /// emitted with the exact name of this symbol.
-        const COPY_RELOCATION = 1 << 14;
-    }
-}
-
-pub(crate) struct AtomicValueFlags(AtomicU16);
-
-impl ValueFlags {
-    /// Returns self merged with `other` which should be the flags for the local (possibly
-    /// non-canonical symbol definition). Sometimes an object will reference a symbol that it
-    /// doesn't define and will mark that symbol as hidden, however the object that defines the
-    /// symbol gives the symbol default visibility. In this case, we want references in the object
-    /// defining it as hidden to be allowed to bypass the GOT/PLT.
-    pub(crate) fn merge(&mut self, other: ValueFlags) {
-        if other.contains(ValueFlags::NON_INTERPOSABLE) {
-            *self |= ValueFlags::NON_INTERPOSABLE;
-        }
-    }
-
-    /// Returns the subset of the set flags that relate to resolutions.
-    pub(crate) fn resolution_flags(self) -> ValueFlags {
-        self.intersection(
-            ValueFlags::DIRECT
-                | ValueFlags::GOT
-                | ValueFlags::PLT
-                | ValueFlags::GOT_TLS_MODULE
-                | ValueFlags::GOT_TLS_OFFSET
-                | ValueFlags::GOT_TLS_DESCRIPTOR
-                | ValueFlags::EXPORT_DYNAMIC
-                | ValueFlags::COPY_RELOCATION,
-        )
-    }
-
-    #[must_use]
-    pub(crate) fn has_resolution(self) -> bool {
-        !self.resolution_flags().is_empty()
-    }
-
-    #[must_use]
-    pub(crate) fn is_dynamic(self) -> bool {
-        self.contains(ValueFlags::DYNAMIC)
-    }
-
-    #[must_use]
-    pub(crate) fn is_ifunc(self) -> bool {
-        self.contains(ValueFlags::IFUNC)
-    }
-
-    #[must_use]
-    pub(crate) fn is_address(self) -> bool {
-        self.contains(ValueFlags::ADDRESS)
-    }
-
-    #[must_use]
-    pub(crate) fn is_absolute(self) -> bool {
-        self.contains(ValueFlags::ABSOLUTE)
-    }
-
-    #[must_use]
-    pub(crate) fn is_function(self) -> bool {
-        self.contains(ValueFlags::FUNCTION)
-    }
-    #[must_use]
-    pub(crate) fn is_downgraded_to_local(self) -> bool {
-        self.contains(ValueFlags::DOWNGRADE_TO_LOCAL)
-    }
-
-    #[must_use]
-    pub(crate) fn is_interposable(self) -> bool {
-        !self.contains(ValueFlags::NON_INTERPOSABLE)
-    }
-
-    pub(crate) fn as_atomic(self) -> AtomicValueFlags {
-        AtomicValueFlags(AtomicU16::new(self.0.bits()))
-    }
-
-    #[must_use]
-    pub(crate) fn needs_direct(self) -> bool {
-        self.contains(ValueFlags::DIRECT)
-    }
-
-    #[must_use]
-    pub(crate) fn needs_copy_relocation(self) -> bool {
-        self.contains(ValueFlags::COPY_RELOCATION)
-    }
-
-    #[must_use]
-    pub(crate) fn needs_export_dynamic(self) -> bool {
-        self.contains(ValueFlags::EXPORT_DYNAMIC)
-    }
-
-    #[must_use]
-    pub(crate) fn needs_got(self) -> bool {
-        self.contains(ValueFlags::GOT)
-    }
-
-    #[must_use]
-    pub(crate) fn needs_plt(self) -> bool {
-        self.contains(ValueFlags::PLT)
-    }
-
-    #[must_use]
-    pub(crate) fn needs_got_tls_offset(self) -> bool {
-        self.contains(ValueFlags::GOT_TLS_OFFSET)
-    }
-
-    #[must_use]
-    pub(crate) fn needs_got_tls_module(self) -> bool {
-        self.contains(ValueFlags::GOT_TLS_MODULE)
-    }
-
-    #[must_use]
-    pub(crate) fn needs_got_tls_descriptor(self) -> bool {
-        self.contains(ValueFlags::GOT_TLS_DESCRIPTOR)
-    }
-}
-
-impl AtomicValueFlags {
-    pub(crate) fn into_non_atomic(self) -> ValueFlags {
-        ValueFlags::from_bits_retain(self.0.into_inner())
-    }
-
-    pub(crate) fn fetch_or(&self, flags: ValueFlags) -> ValueFlags {
-        // Calling fetch_or on our atomic requires that we gain exclusive access to the cache line
-        // containing the atomic. If all the bits are already set, then that's wasteful, so we first
-        // check if the bits are set and if they are, we skip the fetch_or call.
-        let current_bits = self.0.load(atomic::Ordering::Relaxed);
-        if current_bits & flags.bits() == flags.bits() {
-            return ValueFlags::from_bits_retain(current_bits);
-        }
-        let previous_bits = self.0.fetch_or(flags.bits(), atomic::Ordering::Relaxed);
-        ValueFlags::from_bits_retain(previous_bits)
-    }
-
-    pub(crate) fn get(&self) -> ValueFlags {
-        ValueFlags::from_bits_retain(self.0.load(atomic::Ordering::Relaxed))
-    }
-
-    pub(crate) fn or_assign(&self, flags: ValueFlags) {
-        self.0.fetch_or(flags.bits(), Ordering::Relaxed);
-    }
-}
-
-impl std::fmt::Display for ValueFlags {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        bitflags::parser::to_writer(self, f)
     }
 }
 
