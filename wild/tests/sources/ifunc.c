@@ -20,10 +20,10 @@
 //#DiffEnabled:false
 //#ExpectSym:compute_value10$got section=".got"
 //#ExpectSym:compute_value32$got section=".got"
-//#ExpectSym:compute_unused$got section=".got"
+//#NoSym:compute_unused$got
 //#ExpectSym:compute_value10$plt section=".plt.got"
 //#ExpectSym:compute_value32$plt section=".plt.got"
-//#ExpectSym:compute_unused$plt section=".plt.got"
+//#NoSym:compute_unused$plt
 
 #include "ifunc_init.h"
 #include "init.h"
