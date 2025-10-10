@@ -2852,8 +2852,14 @@ mod tidy {
             if !stderr.is_empty() {
                 out.push_str(&stderr);
             }
+            let clang_out = Command::new("clang-format")
+                .arg("--version")
+                .output()
+                .expect("Failed to spawn `clang-format --version`");
+            let clang_version = String::from_utf8_lossy(&clang_out.stdout);
+            let version_no_endline = clang_version.trim_end_matches('\n');
             panic!(
-                "clang-format check failed:\n{out}\nRun `clang-format -i {sources_path}/*.{{{extensions_str}}}` to fix it.",
+                "clang-format ({version_no_endline}) check failed:\n{out}\nRun `clang-format -i {sources_path}/*.{{{extensions_str}}}` to fix it.",
                 extensions_str = extensions.join(",")
             )
         }
