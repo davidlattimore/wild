@@ -77,6 +77,7 @@ const _ASSERTS: () = {
     assert!(size_of::<EntryHeader>() == 60);
 };
 
+const BSD_EXTENDED_PREFIX: &str = "#1/";
 const HEADER_SIZE: usize = size_of::<EntryHeader>();
 
 enum IdentifierKind {
@@ -132,7 +133,7 @@ impl<'data> ArchiveIterator<'data> {
         let ident_kind = match ident {
             "/" => IdentifierKind::SymbolTable,
             "//" => IdentifierKind::Filenames,
-            _ if ident.starts_with("#1/") => IdentifierKind::BsdExtended,
+            _ if ident.starts_with(BSD_EXTENDED_PREFIX) => IdentifierKind::BsdExtended,
             _ => match self.is_thin {
                 false => IdentifierKind::InlineContent,
                 true => IdentifierKind::FileReference,
@@ -166,7 +167,7 @@ impl<'data> ArchiveIterator<'data> {
             }),
             IdentifierKind::BsdExtended => {
                 // BSD-style extended filename: #1/len where len is the filename length
-                let name_len_str = &ident[3..]; // Skip "#1/"
+                let name_len_str = &ident[BSD_EXTENDED_PREFIX.len()..]; // Skip "#1/"
                 let name_len: usize = name_len_str
                     .trim()
                     .parse()
@@ -262,7 +263,7 @@ fn evaluate_identifier<'data>(
     }
 
     // BSD-style extended filename
-    if let Some(rest) = ident.strip_prefix("#1/")
+    if let Some(rest) = ident.strip_prefix(BSD_EXTENDED_PREFIX)
         && let Ok(_name_len) = rest.trim().parse::<usize>()
     {
         // For BSD format, we need to read the filename from the entry data
