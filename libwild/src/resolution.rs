@@ -1237,10 +1237,6 @@ impl ValueFlags {
 }
 
 impl AtomicValueFlags {
-    pub(crate) fn new(flags: ValueFlags) -> Self {
-        Self(AtomicU16::new(flags.bits()))
-    }
-
     pub(crate) fn into_non_atomic(self) -> ValueFlags {
         ValueFlags::from_bits_retain(self.0.into_inner())
     }

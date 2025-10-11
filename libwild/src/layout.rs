@@ -822,21 +822,23 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
         let _file_span = symbol_db.args.trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
 
-        for (local_index, flags) in symbol_flags[symbol_id_range.as_usize()].iter().enumerate() {
+        for (local_index, atomic_flags) in
+            symbol_flags[symbol_id_range.as_usize()].iter().enumerate()
+        {
             let symbol_id = symbol_id_range.offset_to_id(local_index);
             if !symbol_db.is_canonical(symbol_id) {
                 continue;
             }
-            let current_res_flags = flags.get();
+            let flags = atomic_flags.get();
 
             // It might be tempting to think that this code should only be run for dynamic objects,
             // however regular objects can own dynamic symbols too if the symbol is an undefined
             // weak symbol.
-            if current_res_flags.is_dynamic() && current_res_flags.has_resolution() {
+            if flags.is_dynamic() && flags.has_resolution() {
                 let name = symbol_db.symbol_name(symbol_id)?;
                 let name = RawSymbolName::parse(name.bytes()).name;
 
-                if current_res_flags.needs_copy_relocation() {
+                if flags.needs_copy_relocation() {
                     // The dynamic symbol is a definition, so is handled by the epilogue. We only
                     // need to deal with the symtab entry here.
                     let entry_size = size_of::<elf::SymtabEntry>() as u64;
@@ -849,27 +851,23 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
             }
 
             if symbol_db.args.verify_allocation_consistency {
-                verify_consistent_allocation_handling(flags.get(), symbol_db.args.output_kind())?;
+                verify_consistent_allocation_handling(flags, symbol_db.args.output_kind())?;
             }
 
             allocate_symbol_resolution(flags, &mut common.mem_sizes, symbol_db.args.output_kind());
 
-            if symbol_db.args.got_plt_syms {
-                let flags = flags.get();
+            if symbol_db.args.got_plt_syms && flags.needs_got() {
+                let name = symbol_db.symbol_name(symbol_id)?;
+                let name = RawSymbolName::parse(name.bytes()).name;
+                let name_len = name.len() + 4; // "$got" or "$plt" suffix
 
-                if flags.needs_got() {
-                    let name = symbol_db.symbol_name(symbol_id)?;
-                    let name = RawSymbolName::parse(name.bytes()).name;
-                    let name_len = name.len() + 4; // "$got" or "$plt" suffix
+                let entry_size = size_of::<elf::SymtabEntry>() as u64;
+                common.allocate(part_id::SYMTAB_LOCAL, entry_size);
+                common.allocate(part_id::STRTAB, name_len as u64 + 1);
 
-                    let entry_size = size_of::<elf::SymtabEntry>() as u64;
+                if flags.needs_plt() {
                     common.allocate(part_id::SYMTAB_LOCAL, entry_size);
                     common.allocate(part_id::STRTAB, name_len as u64 + 1);
-
-                    if flags.needs_plt() {
-                        common.allocate(part_id::SYMTAB_LOCAL, entry_size);
-                        common.allocate(part_id::STRTAB, name_len as u64 + 1);
-                    }
                 }
             }
         }
@@ -931,19 +929,11 @@ fn export_dynamic<'data>(
 }
 
 fn allocate_symbol_resolution(
-    flags: &AtomicValueFlags,
+    flags: ValueFlags,
     mem_sizes: &mut OutputSectionPartMap<u64>,
     output_kind: OutputKind,
 ) {
-    let mut r = flags.get();
-    // TODO: Can this be moved elsewhere. If it could, then the caller of this function could
-    // probably be simplified with regard to atomic loads of the flags.
-    if r.has_resolution() && r.is_ifunc() {
-        flags.fetch_or(ValueFlags::GOT | ValueFlags::PLT);
-        r |= ValueFlags::GOT | ValueFlags::PLT;
-    }
-
-    allocate_resolution(r, mem_sizes, output_kind);
+    allocate_resolution(flags, mem_sizes, output_kind);
 }
 
 /// Computes how much to allocate for a particular resolution. This is intended for debug assertions
@@ -2890,10 +2880,14 @@ fn process_relocation<A: Arch>(
             }
         }
 
-        let previous_flags =
-            resources.per_symbol_flags[symbol_id.as_usize()].fetch_or(flags_to_add);
+        let atomic_flags = &resources.per_symbol_flags[symbol_id.as_usize()];
+        let previous_flags = atomic_flags.fetch_or(flags_to_add);
 
         if !previous_flags.has_resolution() {
+            if previous_flags.is_ifunc() {
+                atomic_flags.fetch_or(ValueFlags::GOT | ValueFlags::PLT);
+            }
+
             queue.send_symbol_request(symbol_id, resources);
             if should_emit_undefined_error(
                 object.object.symbol(local_sym_index)?,
@@ -6052,9 +6046,7 @@ fn verify_consistent_allocation_handling(flags: ValueFlags, output_kind: OutputK
     let output_sections = OutputSections::with_base_address(0);
     let (output_order, _program_segments) = output_sections.output_order();
     let mut mem_sizes = output_sections.new_part_map();
-    let flags = AtomicValueFlags::new(flags);
-    allocate_symbol_resolution(&flags, &mut mem_sizes, output_kind);
-    let flags = flags.get();
+    allocate_symbol_resolution(flags, &mut mem_sizes, output_kind);
     let mut memory_offsets = output_sections.new_part_map();
     *memory_offsets.get_mut(part_id::GOT) = 0x10;
     *memory_offsets.get_mut(part_id::PLT_GOT) = 0x10;
