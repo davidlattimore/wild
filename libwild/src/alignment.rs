@@ -9,13 +9,18 @@ pub(crate) struct Alignment {
     pub(crate) exponent: u8,
 }
 
-pub(crate) const NUM_ALIGNMENTS: usize = 16;
+/// The maximum supported alignment exponent.
+const MAX_ALIGNMENT_EXPONENT: u8 = 16;
+
+pub(crate) const NUM_ALIGNMENTS: usize = MAX_ALIGNMENT_EXPONENT as usize + 1;
 
 /// The minimum alignment that we support.
 pub(crate) const MIN: Alignment = Alignment { exponent: 0 };
 
 /// The maximum alignment that we support.
-pub(crate) const MAX: Alignment = Alignment { exponent: 15 };
+pub(crate) const MAX: Alignment = Alignment {
+    exponent: MAX_ALIGNMENT_EXPONENT,
+};
 
 /// Alignment for entries in the symbol table.
 pub(crate) const SYMTAB_ENTRY: Alignment = Alignment { exponent: 3 };
