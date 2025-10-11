@@ -420,7 +420,7 @@ impl<'data> SymbolDb<'data> {
         self.start_stop_symbol_names.push(*symbol_name);
         self.num_symbols_per_group[self.epilogue_file_id.group()] += 1;
 
-        per_symbol_flags.push(ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE);
+        per_symbol_flags.push(ValueFlags::NON_INTERPOSABLE);
 
         symbol_id
     }
@@ -1074,11 +1074,7 @@ fn load_linker_script_symbols<'data>(
             ),
         ));
 
-        symbols_out.set_next(
-            ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE,
-            symbol_id,
-            script.file_id,
-        );
+        symbols_out.set_next(ValueFlags::NON_INTERPOSABLE, symbol_id, script.file_id);
     }
 }
 
@@ -1332,7 +1328,7 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
                 ValueFlags::DYNAMIC | ValueFlags::ABSOLUTE
             }
         } else {
-            ValueFlags::ADDRESS
+            ValueFlags::empty()
         };
 
         if non_interposable {
@@ -1590,11 +1586,11 @@ impl<'data> Prelude<'data> {
                 }
                 SymbolPlacement::SectionStart(_) => {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
-                    ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE
+                    ValueFlags::NON_INTERPOSABLE
                 }
                 SymbolPlacement::SectionEnd(_) => {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
-                    ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE
+                    ValueFlags::NON_INTERPOSABLE
                 }
             };
             symbols_out.set_next(flags, symbol_id, PRELUDE_FILE_ID);

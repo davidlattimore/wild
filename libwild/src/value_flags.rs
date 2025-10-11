@@ -29,62 +29,59 @@ bitflags! {
     /// encounter to it.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub(crate) struct ValueFlags: u16 {
-        /// Something with an address. e.g. a regular symbol, a section etc.
-        const ADDRESS = 1 << 0;
-
         /// An absolute value that won't change depending on load address. This could be a symbol
         /// with an absolute value or an undefined symbol, which needs to always resolve to 0
         /// regardless of load address.
-        const ABSOLUTE = 1 << 1;
+        const ABSOLUTE = 1 << 0;
 
         /// The value is from a shared (dynamic) object, so although it may have an address, it
         /// won't be known until runtime. If combined with `ABSOLUTE`, then the symbol isn't
         /// actually defined by any shared object. We'll emit a dynamic relocation for it on a
         /// best-effort basis only. e.g. if there are direct references to it from a read-only
         /// section we'll fill them in as zero.
-        const DYNAMIC = 1 << 2;
+        const DYNAMIC = 1 << 1;
 
         /// The value refers to an ifunc. The actual address won't be known until runtime.
-        const IFUNC = 1 << 3;
+        const IFUNC = 1 << 2;
 
         /// Whether the definition of the symbol is final and cannot be overridden at runtime.
-        const NON_INTERPOSABLE = 1 << 4;
+        const NON_INTERPOSABLE = 1 << 3;
 
         /// We have a version script and the version script says that the symbol should be downgraded to
         /// a local. It's still treated as a global for name lookup purposes, but after that, it becomes
         /// local.
-        const DOWNGRADE_TO_LOCAL = 1 << 5;
+        const DOWNGRADE_TO_LOCAL = 1 << 4;
 
         /// Set when the value is a function. Currently only set for dynamic symbols, since that's
         /// all we need it for.
-        const FUNCTION = 1 << 6;
+        const FUNCTION = 1 << 5;
 
         /// The direct value is needed. e.g. via a relative or absolute relocation that doesn't use the
         /// PLT or GOT.
-        const DIRECT = 1 << 7;
+        const DIRECT = 1 << 6;
 
         /// An address in the global offset table is needed.
-        const GOT = 1 << 8;
+        const GOT = 1 << 7;
 
         /// A PLT entry is needed.
-        const PLT = 1 << 9;
+        const PLT = 1 << 8;
 
         /// A double GOT entry is needed in order to store the module number and offset within the
         /// module. Only set for TLS variables.
-        const GOT_TLS_MODULE = 1 << 10;
+        const GOT_TLS_MODULE = 1 << 9;
 
         /// A single GOT entry is needed to store the offset of the TLS variable within the initial
         /// TLS block.
-        const GOT_TLS_OFFSET = 1 << 11;
+        const GOT_TLS_OFFSET = 1 << 10;
 
         /// A double GOT entry is needed in order to store the function pointer and a pointer that
         /// points to a pair of words (module number and offset within the module).
         /// Only set for TLS variables.
-        const GOT_TLS_DESCRIPTOR = 1 << 12;
+        const GOT_TLS_DESCRIPTOR = 1 << 11;
 
         /// The request originated from a dynamic object, so the symbol should be put into the dynamic
         /// symbol table.
-        const EXPORT_DYNAMIC = 1 << 13;
+        const EXPORT_DYNAMIC = 1 << 12;
 
         /// We encountered a direct reference to a symbol from a non-writable section and so we're
         /// going to need to do a copy relocation. Note that multiple symbols can have this flag
@@ -92,7 +89,7 @@ bitflags! {
         /// originate, only a single copy relocation will be emitted. This flag indicates that the
         /// symbol requires a copy relocation, not necessarily that a copy relocation will be
         /// emitted with the exact name of this symbol.
-        const COPY_RELOCATION = 1 << 14;
+        const COPY_RELOCATION = 1 << 13;
     }
 }
 
@@ -140,9 +137,14 @@ impl ValueFlags {
         self.contains(ValueFlags::IFUNC)
     }
 
+    /// Returns whether the value will have an address that is known at link time. This is as
+    /// opposed to things where the address cannot be known until runtime or absolute values, which
+    /// aren't addresses.
     #[must_use]
     pub(crate) fn is_address(self) -> bool {
-        self.contains(ValueFlags::ADDRESS)
+        !self.contains(ValueFlags::IFUNC)
+            && !self.contains(ValueFlags::DYNAMIC)
+            && !self.contains(ValueFlags::ABSOLUTE)
     }
 
     #[must_use]
