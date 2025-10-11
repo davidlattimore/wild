@@ -289,6 +289,7 @@ const DEFAULT_FLAGS: &[&str] = &[
     "no-add-needed",
     "discard-locals",
     "enable-new-dtags",
+    "no-fatal-warnings",
 ];
 const DEFAULT_SHORT_FLAGS: &[&str] = &[
     "X",  // alias for --discard-locals
