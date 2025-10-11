@@ -322,6 +322,17 @@ impl<'data> InputData<'data> {
                 self.files.append(&mut input_files);
             }
             Some(LoadedFileState::LinkerScript(loaded_linker_script_state)) => {
+                // Check if the linker script contains a VERSION command
+                if let Some(version_content) = loaded_linker_script_state
+                    .script
+                    .script
+                    .get_version_script_content()
+                {
+                    self.version_script_data = Some(ScriptData {
+                        raw: version_content,
+                    });
+                }
+
                 self.linker_scripts.push(loaded_linker_script_state.script);
 
                 for i in loaded_linker_script_state.file_indexes {
