@@ -137,7 +137,15 @@ impl<'data> LinkerScript<'data> {
 }
 
 fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]> {
-    take_while(1.., |b| !b" (){}\n\t".contains(&b)).parse_next(input)
+    if input.starts_with(b"\"") {
+        '"'.parse_next(input)?;
+        let content = take_until(0.., "\"").parse_next(input)?;
+        '"'.parse_next(input)?;
+
+        Ok(content)
+    } else {
+        take_while(1.., |b| !b" (){}\n\t".contains(&b)).parse_next(input)
+    }
 }
 
 pub(crate) fn skip_comments_and_whitespace(input: &mut &BStr) -> winnow::Result<()> {
@@ -465,6 +473,12 @@ mod tests {
                 InputSpec::File(Box::from(Path::new("libgcc_s.so.1"))),
                 InputSpec::Lib(Box::from("gcc")),
             ],
+        );
+
+        let inputs = inputs_from_script("INPUT(\"libbar.so\")").unwrap();
+        assert_equal(
+            inputs.into_iter().map(|i| i.spec),
+            [InputSpec::File(Box::from(Path::new("libbar.so")))],
         );
 
         let inputs = inputs_from_script("INPUT(libfoo.so)").unwrap();
