@@ -212,17 +212,17 @@ fn test_merge_parts() {
             1
         });
     let num_regular_sections = output_sections.num_regular_sections();
-    let mut num_sections_with_16 = 0;
+    let mut num_sections_with_17 = 0;
     let sum_of_1s: OutputSectionMap<u32> = all_1.merge_parts(|_, values| values.iter().sum());
     let mut sum_of_sums = 0;
     sum_of_1s.for_each(|section_id, sum| {
         sum_of_sums += *sum;
-        if *sum == 16 {
-            num_sections_with_16 += 1;
+        if *sum == 17 {
+            num_sections_with_17 += 1;
         }
         assert!(*sum > 0, "Expected non-zero sum for section {section_id:?}");
     });
-    assert_eq!(num_regular_sections, num_sections_with_16);
+    assert_eq!(num_regular_sections, num_sections_with_17);
     assert_eq!(sum_of_sums, expected_sum_of_sums);
 
     let mut headers_only = output_sections.new_part_map::<u32>();
