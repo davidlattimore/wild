@@ -458,7 +458,7 @@ fn test_relaxation() {
             relocation_kind,
             bytes_in,
             offset,
-            ValueFlags::ADDRESS,
+            ValueFlags::empty(),
             OutputKind::StaticExecutable(RelocationModel::Relocatable),
             shf::EXECINSTR,
             true,
