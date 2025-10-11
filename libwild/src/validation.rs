@@ -70,12 +70,11 @@ fn validate_resolution(
     got: &crate::elf::SectionHeader,
     got_data: &[u8],
 ) -> Result {
-    let res_flags = resolution.resolution_flags;
-    let value_flags = resolution.value_flags;
-    if value_flags.is_ifunc()
-        || res_flags.needs_got_tls_module()
-        || res_flags.needs_got_tls_offset()
-        || res_flags.needs_got_tls_descriptor()
+    let flags = resolution.flags;
+    if flags.is_ifunc()
+        || flags.needs_got_tls_module()
+        || flags.needs_got_tls_offset()
+        || flags.needs_got_tls_descriptor()
     {
         return Ok(());
     };
@@ -85,7 +84,7 @@ fn validate_resolution(
         if end_offset > got_data.len() {
             bail!("GOT offset beyond end of GOT 0x{end_offset}");
         }
-        if resolution.value_flags.is_dynamic() || resolution.value_flags.is_ifunc() {
+        if resolution.flags.is_dynamic() || resolution.flags.is_ifunc() {
             return Ok(());
         }
         let expected = resolution.raw_value;
@@ -93,7 +92,7 @@ fn validate_resolution(
         if expected != address {
             let name = String::from_utf8_lossy(name);
             bail!(
-                "res={res_flags:?} `{name}` has address 0x{expected:x}, but GOT \
+                "flags={flags:?} `{name}` has address 0x{expected:x}, but GOT \
                  (at 0x{got_address:x}) points to 0x{address:x}"
             );
         }

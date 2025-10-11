@@ -1,7 +1,7 @@
 use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
-use crate::layout::AtomicResolutionFlags;
+use crate::resolution::AtomicValueFlags;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::sharding::ShardKey as _;
@@ -16,7 +16,7 @@ pub(crate) struct SymbolInfoPrinter<'data> {
     loaded_file_ids: hashbrown::HashSet<FileId>,
     symbol_db: &'data SymbolDb<'data>,
     name: &'data str,
-    resolution_flags: &'data [AtomicResolutionFlags],
+    flags: &'data [AtomicValueFlags],
 }
 
 impl Drop for SymbolInfoPrinter<'_> {
@@ -29,7 +29,7 @@ impl<'data> SymbolInfoPrinter<'data> {
     pub(crate) fn new(
         symbol_db: &'data SymbolDb,
         name: &'data str,
-        resolution_flags: &'data [AtomicResolutionFlags],
+        flags: &'data [AtomicValueFlags],
         groups: &[ResolvedGroup],
     ) -> Self {
         let loaded_file_ids = groups
@@ -49,7 +49,7 @@ impl<'data> SymbolInfoPrinter<'data> {
             loaded_file_ids,
             symbol_db,
             name,
-            resolution_flags,
+            flags,
         }
     }
 
@@ -69,8 +69,7 @@ impl<'data> SymbolInfoPrinter<'data> {
             let symbol_id = SymbolId::from_usize(i);
             let canonical = self.symbol_db.definition(symbol_id);
             let file_id = self.symbol_db.file_id_for_symbol(symbol_id);
-            let value_flags = self.symbol_db.local_symbol_value_flags(symbol_id);
-            let res_flags = self.resolution_flags[symbol_id.as_usize()].get();
+            let flags = self.flags[symbol_id.as_usize()].get();
 
             let file_state = if self.loaded_file_ids.contains(&file_id) {
                 "LOADED"
@@ -119,8 +118,8 @@ impl<'data> SymbolInfoPrinter<'data> {
                 }
 
                 println!(
-                    "  {sym_debug}: symbol_id={symbol_id} -> {canonical} {value_flags} \
-                            res=[{res_flags}] \n    \
+                    "  {sym_debug}: symbol_id={symbol_id} -> {canonical} {flags} \
+                            \n    \
                             #{local_index} in File #{file_id} {input} ({file_state})"
                 );
             }

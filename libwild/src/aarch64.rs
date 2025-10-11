@@ -135,7 +135,7 @@ impl crate::arch::Relaxation for Relaxation {
         relocation_kind: u32,
         section_bytes: &[u8],
         offset_in_section: u64,
-        value_flags: crate::resolution::ValueFlags,
+        flags: crate::resolution::ValueFlags,
         output_kind: crate::args::OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,
@@ -144,10 +144,10 @@ impl crate::arch::Relaxation for Relaxation {
         Self: std::marker::Sized,
     {
         let mut relocation = AArch64::relocation_from_raw(relocation_kind).unwrap();
-        let interposable = value_flags.is_interposable();
+        let interposable = flags.is_interposable();
 
         // IFuncs cannot be referenced directly, they always need to go via the GOT.
-        if value_flags.is_ifunc() {
+        if flags.is_ifunc() {
             return match relocation_kind {
                 object::elf::R_AARCH64_CALL26 | object::elf::R_AARCH64_JUMP26 => {
                     relocation.kind = RelocationKind::PltRelative;

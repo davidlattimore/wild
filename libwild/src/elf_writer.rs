@@ -51,9 +51,7 @@ use crate::layout::NonAddressableCounts;
 use crate::layout::ObjectLayout;
 use crate::layout::OutputRecordLayout;
 use crate::layout::PreludeLayout;
-use crate::layout::ResFlagsDisplay;
 use crate::layout::Resolution;
-use crate::layout::ResolutionFlags;
 use crate::layout::RiscVAttribute;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
@@ -534,14 +532,14 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         };
 
         let mut got_address = got_address.get();
-        let resolution_flags = res.resolution_flags;
+        let flags = res.flags;
 
         // For TLS variables, we'll generally only have one of these, but we might have all 3 combinations.
-        if resolution_flags.needs_got_tls_offset()
-            || resolution_flags.needs_got_tls_module()
-            || resolution_flags.needs_got_tls_descriptor()
+        if flags.needs_got_tls_offset()
+            || flags.needs_got_tls_module()
+            || flags.needs_got_tls_descriptor()
         {
-            if resolution_flags.needs_got_tls_offset() {
+            if flags.needs_got_tls_offset() {
                 self.process_got_tls_offset::<A>(
                     res,
                     layout.context("Layout must be present")?,
@@ -549,11 +547,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 )?;
                 got_address += crate::elf::GOT_ENTRY_SIZE;
             }
-            if resolution_flags.needs_got_tls_module() {
+            if flags.needs_got_tls_module() {
                 self.process_got_tls_mod_and_offset::<A>(res, got_address)?;
                 got_address += 2 * crate::elf::GOT_ENTRY_SIZE;
             }
-            if resolution_flags.needs_got_tls_descriptor() {
+            if flags.needs_got_tls_descriptor() {
                 self.process_got_tls_descriptor::<A>(res, got_address)?;
             }
             return Ok(());
@@ -561,14 +559,14 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
         let got_entry = self.take_next_got_entry()?;
 
-        if res.value_flags.is_dynamic()
-            || (resolution_flags.needs_export_dynamic() && res.value_flags.is_interposable())
-                && !res.value_flags.is_ifunc()
+        if res.flags.is_dynamic()
+            || (flags.needs_export_dynamic() && res.flags.is_interposable())
+                && !res.flags.is_ifunc()
         {
             debug_assert_bail!(
                 *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
                 "Tried to write glob-dat with no allocation. {}",
-                ResFlagsDisplay(res)
+                res.flags
             );
             self.write_dynamic_symbol_relocation::<A>(
                 got_address,
@@ -576,11 +574,11 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 res.dynamic_symbol_index()?,
                 DynamicRelocationKind::GotEntry,
             )?;
-        } else if res.value_flags.is_ifunc() {
+        } else if res.flags.is_ifunc() {
             self.write_ifunc_relocation::<A>(res)?;
         } else {
             *got_entry = res.raw_value;
-            if res.value_flags.is_address() && self.output_kind.is_relocatable() {
+            if res.flags.is_address() && self.output_kind.is_relocatable() {
                 self.write_address_relocation::<A>(got_address, res.raw_value as i64)?;
             }
         }
@@ -597,8 +595,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         got_address: u64,
     ) -> Result {
         let got_entry = self.take_next_got_entry()?;
-        if res.value_flags.is_dynamic()
-            || (res.resolution_flags.needs_export_dynamic() && res.value_flags.is_interposable())
+        if res.flags.is_dynamic()
+            || (res.flags.needs_export_dynamic() && res.flags.is_interposable())
         {
             return self.write_tpoff_relocation::<A>(got_address, res.dynamic_symbol_index()?, 0);
         }
@@ -623,7 +621,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             debug_assert_bail!(
                 *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
                 "Tried to write tpoff with no allocation. {}",
-                ResFlagsDisplay(res)
+                res.flags
             );
             self.write_tpoff_relocation::<A>(got_address, 0, address.sub(self.tls.start) as i64)?;
         }
@@ -636,20 +634,20 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         got_address: u64,
     ) -> Result {
         let got_entry = self.take_next_got_entry()?;
-        if self.output_kind.is_executable() && !res.value_flags.is_dynamic() {
+        if self.output_kind.is_executable() && !res.flags.is_dynamic() {
             *got_entry = elf::CURRENT_EXE_TLS_MOD;
         } else {
             let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
             debug_assert_bail!(
                 *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
                 "Tried to write dtpmod with no allocation. {}",
-                ResFlagsDisplay(res)
+                res.flags
             );
             self.write_dtpmod_relocation::<A>(got_address, dynamic_symbol_index)?;
         }
         let offset_entry = self.take_next_got_entry()?;
         if let Some(dynamic_symbol_index) = res.dynamic_symbol_index {
-            if res.value_flags.is_interposable() {
+            if res.flags.is_interposable() {
                 self.write_dtpoff_relocation::<A>(
                     got_address + crate::elf::TLS_OFFSET_OFFSET,
                     dynamic_symbol_index.get(),
@@ -683,7 +681,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         debug_assert_bail!(
             *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
             "Tried to write TLS descriptor with no allocation. {}",
-            ResFlagsDisplay(res)
+            res.flags
         );
         let addend = if res.dynamic_symbol_index.is_none() {
             res.raw_value.sub(self.tls.start) as i64
@@ -1157,7 +1155,7 @@ fn write_object<A: Arch>(
             // Dynamic symbols that we define are handled by the epilogue so that they can be
             // written in the correct order. Here, we only need to handle weak symbols that we
             // reference that aren't defined by any shared objects we're linking against.
-            if res.value_flags.is_dynamic() {
+            if res.flags.is_dynamic() {
                 let symbol = object
                     .object
                     .symbol(object.symbol_id_range.id_to_input(symbol_id))?;
@@ -1212,7 +1210,7 @@ fn write_object_section<A: Arch>(
             object.input
         )
     })?;
-    if section.resolution_flags.needs_got() || section.resolution_flags.needs_plt() {
+    if section.flags.needs_got() || section.flags.needs_plt() {
         bail!("Section has GOT or PLT");
     };
     Ok(())
@@ -1290,7 +1288,7 @@ fn write_symbols(
         .object
         .symbols
         .enumerate()
-        .zip(&layout.symbol_resolution_flags[object.symbol_id_range.as_usize()])
+        .zip(&layout.symbol_db.per_symbol_flags[object.symbol_id_range.as_usize()])
     {
         let symbol_id = object.symbol_id_range.input_to_id(sym_index);
 
@@ -1733,11 +1731,11 @@ fn write_got_plt_syms(
         return Ok(());
     };
 
-    if !resolution.resolution_flags.needs_got() {
+    if !resolution.flags.needs_got() {
         return Ok(());
     }
 
-    let current_res_flags = resolution.resolution_flags;
+    let current_res_flags = resolution.flags;
 
     let mut write_sym = |suffix: &[u8],
                          section_id: OutputSectionId,
@@ -1903,8 +1901,7 @@ fn apply_relocation<'data, A: Arch>(
     }
 
     let (resolution, symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
-    let value_flags = resolution.value_flags;
-    let resolution_flags = resolution.resolution_flags;
+    let flags = resolution.flags;
     let mut next_modifier = RelocationModifier::Normal;
     let rel_info;
     let output_kind = layout.args().output_kind();
@@ -1913,7 +1910,7 @@ fn apply_relocation<'data, A: Arch>(
         r_type,
         out,
         offset_in_section,
-        value_flags,
+        flags,
         output_kind,
         section_info.section_flags,
         resolution.raw_value != 0,
@@ -2193,8 +2190,8 @@ fn apply_relocation<'data, A: Arch>(
     if let Some(relaxation) = relaxation {
         trace.emit(original_place, || {
             format!(
-                "relaxation applied relaxation={kind:?}, value_flags={value_flags},\n\
-                resolution_flags={resolution_flags}, rel_kind={rel_kind:?},\n\
+                "relaxation applied relaxation={kind:?}, flags={flags},\n\
+                rel_kind={rel_kind:?},\n\
                 value=0x{value:x}, symbol_name={symbol_name}",
                 kind = relaxation.debug_kind(),
                 rel_kind = rel_info.kind,
@@ -2202,8 +2199,8 @@ fn apply_relocation<'data, A: Arch>(
             )
         });
         tracing::trace!(
-            %value_flags,
-            %resolution_flags,
+            %flags,
+            %flags,
             relaxation_kind = ?relaxation.debug_kind(),
             ?rel_info.kind,
             %rel_info.size,
@@ -2214,16 +2211,15 @@ fn apply_relocation<'data, A: Arch>(
     } else {
         trace.emit(original_place, || {
             format!(
-                "relocation applied value_flags={value_flags},\n\
-                resolution_flags={resolution_flags}, rel_kind={rel_kind:?},\n\
+                "relocation applied flags={flags},\n\
+                rel_kind={rel_kind:?},\n\
                 value=0x{value:x}, symbol_name={symbol_name}",
                 rel_kind = rel_info.kind,
                 symbol_name = layout.symbol_db.symbol_name_for_display(local_symbol_id),
             )
         });
         tracing::trace!(
-            %value_flags,
-            %resolution_flags,
+            %flags,
             ?rel_info.kind,
             %rel_info.size,
             value,
@@ -2351,7 +2347,7 @@ fn write_absolute_relocation<A: Arch>(
     object_layout: &ObjectLayout,
     layout: &Layout,
 ) -> Result<u64> {
-    if resolution.value_flags.is_interposable() && section_info.is_writable {
+    if resolution.flags.is_interposable() && section_info.is_writable {
         table_writer.write_dynamic_symbol_relocation::<A>(
             place,
             addend,
@@ -2494,8 +2490,7 @@ fn write_plt_got_entries<A: Arch>(
                     dynamic_symbol_index: None,
                     got_address: Some(got_address),
                     plt_address: None,
-                    resolution_flags: ResolutionFlags::GOT,
-                    value_flags: ValueFlags::ABSOLUTE,
+                    flags: ValueFlags::GOT | ValueFlags::ABSOLUTE,
                 },
             )?;
 
@@ -2514,8 +2509,7 @@ fn write_plt_got_entries<A: Arch>(
                 dynamic_symbol_index: None,
                 got_address: Some(got_address.saturating_add(elf::GOT_ENTRY_SIZE)),
                 plt_address: None,
-                resolution_flags: ResolutionFlags::GOT,
-                value_flags: ValueFlags::ABSOLUTE,
+                flags: ValueFlags::GOT | ValueFlags::ABSOLUTE,
             },
         )?;
     }
@@ -2989,7 +2983,7 @@ fn write_copy_relocation_dynamic_symbol_definition(
 ) -> Result {
     debug_assert_bail!(
         layout
-            .resolution_flags_for_symbol(sym_def.symbol_id)
+            .flags_for_symbol(sym_def.symbol_id)
             .needs_copy_relocation(),
         "Tried to write copy relocation for symbol without COPY_RELOCATION flag"
     );
@@ -3630,7 +3624,7 @@ fn write_dynamic_file<A: Arch>(
         if let Some(res) = resolution {
             let name = object.object.symbol_name(symbol)?;
 
-            if res.resolution_flags.needs_copy_relocation() {
+            if res.flags.needs_copy_relocation() {
                 // Symbol needs a copy relocation, which means that the dynamic symbol will be
                 // written by the epilogue not by us. However, we do need to write a regular
                 // symtab entry.
