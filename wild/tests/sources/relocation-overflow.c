@@ -15,8 +15,8 @@ asm(".section .data\n"
     ".text\n");
 
 extern int reloc_a_to_b;
-void *keep_a_ref(void) { return &reloc_a_to_b; }
-extern void *keep_b_ref(void);
+void* keep_a_ref(void) { return &reloc_a_to_b; }
+extern void* keep_b_ref(void);
 
 void _start() {
   keep_a_ref();
