@@ -2683,6 +2683,7 @@ fn integration_test(
         "symbol-versions.c",
         "mixed-verdef-verneed.c",
         "copy-relocations.c",
+        "relocation-overflow.c",
         "force-undefined.c",
         "wrap.c",
         "shlib-archive-activation.c",

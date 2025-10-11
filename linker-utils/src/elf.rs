@@ -1181,7 +1181,7 @@ pub enum PageMask {
 }
 
 // Allow range (half-open) of a computed value of a relocation
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, PartialEq)]
 pub struct AllowedRange {
     pub min: i64,
     pub max: i64,
@@ -1196,6 +1196,20 @@ impl AllowedRange {
     #[must_use]
     pub const fn no_check() -> Self {
         Self::new(i64::MIN, i64::MAX)
+    }
+
+    #[must_use]
+    pub const fn from_byte_size(n_bytes: usize) -> Self {
+        match n_bytes {
+            0 | 8 => Self::no_check(),
+            1..=7 => {
+                let bits = n_bytes * 8;
+                let max = (1i64 << (bits - 1)) - 1;
+                let min = -max - 1;
+                Self::new(min, max)
+            }
+            _ => panic!("Only sizes up to 8 bytes are supported"),
+        }
     }
 }
 
@@ -1264,5 +1278,19 @@ mod tests {
             &aarch64_rel_type_to_string(64),
             "Unknown aarch64 relocation type 0x40"
         );
+    }
+
+    #[test]
+    fn test_range_from_byte_size() {
+        assert_eq!(AllowedRange::from_byte_size(0), AllowedRange::no_check());
+        assert_eq!(
+            AllowedRange::from_byte_size(1),
+            AllowedRange::new(-128, 127)
+        );
+        assert_eq!(
+            AllowedRange::from_byte_size(4),
+            AllowedRange::new(i32::MIN.into(), i32::MAX.into())
+        );
+        assert_eq!(AllowedRange::from_byte_size(8), AllowedRange::no_check());
     }
 }
