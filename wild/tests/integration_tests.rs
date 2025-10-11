@@ -1027,6 +1027,12 @@ impl ProgramInputs {
     }
 }
 
+/// How long test binaries are allowed to run for. Generally these should only take a few
+/// milliseconds, however when running lots of testing parallel there can be quite a bit of load on
+/// the system, which can mean that the test binaries take longer to start, so we need to be
+/// somewhat generous here to avoid flakes.
+const TEST_BINARY_TIMEOUT: Duration = std::time::Duration::from_millis(2000);
+
 impl Program<'_> {
     fn run(&self, cross_arch: Option<Architecture>) -> Result {
         let mut command = if let Some(arch) = cross_arch {
@@ -1065,7 +1071,7 @@ impl Program<'_> {
                 let _ = recv.read_to_end(&mut output);
             });
 
-            match child.wait_timeout(std::time::Duration::from_millis(500))? {
+            match child.wait_timeout(TEST_BINARY_TIMEOUT)? {
                 Some(s) => Ok(s),
                 None => {
                     child.kill()?;
