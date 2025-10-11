@@ -60,6 +60,7 @@ pub(crate) enum Command<'a> {
     Ignored,
     Sections(Sections<'a>),
     Entry(&'a [u8]),
+    Version(&'a [u8]),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -126,6 +127,13 @@ impl<'data> LinkerScript<'data> {
         foreach_input(&self.commands, starting_modifiers, &mut cb)?;
         Ok(())
     }
+
+    pub(crate) fn get_version_script_content(&self) -> Option<&'data [u8]> {
+        self.commands.iter().find_map(|cmd| match cmd {
+            Command::Version(content) => Some(*content),
+            _ => None,
+        })
+    }
 }
 
 fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]> {
@@ -168,6 +176,7 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
         b"AS_NEEDED" => Command::AsNeeded(parse_paren_group(input)?),
         b"SECTIONS" => Command::Sections(parse_sections(input)?),
         b"ENTRY" => Command::Entry(parse_entry(input)?),
+        b"VERSION" => Command::Version(parse_version(input)?),
         other => Command::Arg(other),
     };
 
@@ -198,6 +207,37 @@ fn parse_entry<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]>
     skip_comments_and_whitespace(input)?;
     ')'.parse_next(input)?;
     Ok(symbol_name)
+}
+
+fn parse_version<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]> {
+    skip_comments_and_whitespace(input)?;
+    '{'.parse_next(input)?;
+    skip_comments_and_whitespace(input)?;
+
+    let mut brace_count = 1;
+    let mut pos = 0;
+
+    while brace_count > 0 && pos < input.len() {
+        match input[pos] {
+            b'{' => brace_count += 1,
+            b'}' => brace_count -= 1,
+            _ => {}
+        }
+        pos += 1;
+    }
+
+    if brace_count != 0 {
+        return Err(ContextError::new());
+    }
+
+    let version_content = &input[..pos - 1];
+    *input = &input[pos..];
+
+    skip_comments_and_whitespace(input)?;
+
+    opt(';').parse_next(input)?;
+
+    Ok(version_content)
 }
 
 fn parse_sections<'input>(input: &mut &'input BStr) -> winnow::Result<Sections<'input>> {
@@ -593,5 +633,113 @@ mod tests {
                 ],
             },
         );
+    }
+
+    #[test]
+    fn test_version_command() {
+        let script = parse_script(
+            r#"
+            VERSION {
+                VERS_1.0 {
+                    global: foo; bar*;
+                    local: *;
+                };
+            }
+            "#,
+        )
+        .unwrap();
+
+        let version_content = script.get_version_script_content().unwrap();
+        let version_str = std::str::from_utf8(version_content).unwrap().trim();
+
+        assert!(version_str.contains("VERS_1.0"));
+        assert!(version_str.contains("global:"));
+        assert!(version_str.contains("foo"));
+        assert!(version_str.contains("bar*"));
+        assert!(version_str.contains("local:"));
+    }
+
+    #[test]
+    fn test_version_command_with_nested_braces() {
+        let script = parse_script(
+            r#"
+            VERSION {
+                VERS_1.0 {
+                    global: 
+                        extern "C++" {
+                            ns::*;
+                        };
+                };
+            }
+            "#,
+        )
+        .unwrap();
+
+        let version_content = script.get_version_script_content().unwrap();
+        let version_str = std::str::from_utf8(version_content).unwrap().trim();
+
+        assert!(version_str.contains("VERS_1.0"));
+        assert!(version_str.contains(r#"extern "C++""#));
+        assert!(version_str.contains("ns::*"));
+    }
+
+    #[test]
+    fn test_version_command_with_other_commands() {
+        let script = parse_script(
+            r#"
+            ENTRY(_start)
+            VERSION {
+                VERS_1.0 {
+                    global: foo;
+                };
+            }
+            SECTIONS {
+                .text : { *(.text) }
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert!(script.get_version_script_content().is_some());
+        assert!(
+            script
+                .commands
+                .iter()
+                .any(|cmd| matches!(cmd, Command::Entry(_)))
+        );
+        assert!(
+            script
+                .commands
+                .iter()
+                .any(|cmd| matches!(cmd, Command::Sections(_)))
+        );
+    }
+
+    #[test]
+    fn test_version_script_parsing_from_version_command() {
+        use crate::input_data::ScriptData;
+        use crate::version_script::VersionScript;
+
+        let script = parse_script(
+            r#"
+            VERSION {
+                VERS_1.0 {
+                    global: foo; bar*;
+                    local: *;
+                };
+            }
+            "#,
+        )
+        .unwrap();
+
+        let version_content = script.get_version_script_content().unwrap();
+
+        let script_data = ScriptData {
+            raw: version_content,
+        };
+
+        let version_script = VersionScript::parse(script_data).unwrap();
+
+        assert_eq!(version_script.version_count(), 2);
     }
 }
