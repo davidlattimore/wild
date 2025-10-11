@@ -23,14 +23,17 @@ use crate::output_section_id::OutputSectionId;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::Prelude;
 use crate::parsing::SymbolPlacement;
-use crate::resolution::AtomicValueFlags;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
-use crate::resolution::ValueFlags;
 use crate::sharding::ShardKey;
 use crate::symbol::PreHashedSymbolName;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol::VersionedSymbolName;
+use crate::value_flags::AtomicPerSymbolFlags;
+use crate::value_flags::FlagsForSymbol;
+use crate::value_flags::PerSymbolFlags;
+use crate::value_flags::RawFlags;
+use crate::value_flags::ValueFlags;
 use crate::version_script::VersionScript;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
@@ -66,8 +69,6 @@ pub struct SymbolDb<'data> {
     /// value at index 5 will be the symbol ID 5.
     symbol_definitions: Vec<SymbolId>,
 
-    pub(crate) per_symbol_flags: Vec<ValueFlags>,
-
     /// The number of symbols in each group, keyed by the index of the group.
     pub(crate) num_symbols_per_group: Vec<usize>,
 
@@ -91,7 +92,6 @@ pub struct SymbolDb<'data> {
 struct AtomicSymbolDb<'data, 'db> {
     db: &'db mut SymbolDb<'data>,
     definitions: Vec<AtomicSymbolId>,
-    per_symbol_flags: Vec<AtomicValueFlags>,
 }
 
 struct SymbolBucket<'data> {
@@ -281,7 +281,7 @@ impl<'data> SymbolDb<'data> {
         linker_scripts: &[InputLinkerScript<'data>],
         herd: &'data bumpalo_herd::Herd,
         export_list_data: Option<ScriptData<'data>>,
-    ) -> Result<Self> {
+    ) -> Result<(Self, PerSymbolFlags)> {
         let version_script = version_script_data
             .map(VersionScript::parse)
             .transpose()?
@@ -298,7 +298,7 @@ impl<'data> SymbolDb<'data> {
         let num_symbols = num_symbols_per_group.iter().sum();
 
         let mut symbol_definitions: Vec<SymbolId> = Vec::with_capacity(num_symbols);
-        let mut per_symbol_flags: Vec<ValueFlags> = Vec::with_capacity(num_symbols);
+        let mut per_symbol_flags: Vec<RawFlags> = Vec::with_capacity(num_symbols);
         let mut symbol_file_ids: Vec<FileId> = Vec::with_capacity(num_symbols);
 
         let mut symbol_definitions_writer =
@@ -329,7 +329,7 @@ impl<'data> SymbolDb<'data> {
 
         for writer in per_group_writers {
             symbol_definitions_writer.return_shard(writer.resolutions);
-            per_symbol_flags_writer.return_shard(writer.value_kinds);
+            per_symbol_flags_writer.return_shard(writer.flags);
             symbol_file_ids_writer.return_shard(writer.file_ids);
         }
 
@@ -356,7 +356,6 @@ impl<'data> SymbolDb<'data> {
             groups,
             num_symbols_per_group,
             start_stop_symbol_names: Default::default(),
-            per_symbol_flags,
             version_script,
             export_list,
             entry: None,
@@ -370,7 +369,7 @@ impl<'data> SymbolDb<'data> {
             index.apply_linker_script(script);
         }
 
-        Ok(index)
+        Ok((index, PerSymbolFlags::new(per_symbol_flags)))
     }
 
     #[tracing::instrument(skip_all, name = "Populate symbol map")]
@@ -406,6 +405,7 @@ impl<'data> SymbolDb<'data> {
 
     pub(crate) fn add_start_stop_symbol(
         &mut self,
+        per_symbol_flags: &mut PerSymbolFlags,
         symbol_name: PreHashed<UnversionedSymbolName<'data>>,
     ) -> SymbolId {
         let symbol_id = SymbolId::from_usize(self.symbol_definitions.len());
@@ -420,8 +420,7 @@ impl<'data> SymbolDb<'data> {
         self.start_stop_symbol_names.push(*symbol_name);
         self.num_symbols_per_group[self.epilogue_file_id.group()] += 1;
 
-        self.per_symbol_flags
-            .push(ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE);
+        per_symbol_flags.push(ValueFlags::ADDRESS | ValueFlags::NON_INTERPOSABLE);
 
         symbol_id
     }
@@ -494,10 +493,15 @@ impl<'data> SymbolDb<'data> {
     }
 
     /// Returns a struct that can be used to print debug information about the specified symbol.
-    pub(crate) fn symbol_debug(&self, symbol_id: SymbolId) -> SymbolDebug<'_, 'data> {
+    pub(crate) fn symbol_debug<'a>(
+        &'a self,
+        per_symbol_flags: &'a dyn FlagsForSymbol,
+        symbol_id: SymbolId,
+    ) -> SymbolDebug<'a> {
         SymbolDebug {
             db: self,
             symbol_id,
+            per_symbol_flags,
         }
     }
 
@@ -522,15 +526,13 @@ impl<'data> SymbolDb<'data> {
         }
     }
 
-    /// Returns the value flags for the specified symbol without taking into consideration what
-    /// symbol is the definition.
-    pub(crate) fn local_flags_for_symbol(&self, symbol_id: SymbolId) -> ValueFlags {
-        self.per_symbol_flags[symbol_id.as_usize()]
-    }
-
-    pub(crate) fn flags_for_symbol(&self, symbol_id: SymbolId) -> ValueFlags {
-        let mut flags = self.local_flags_for_symbol(self.definition(symbol_id));
-        flags.merge(self.local_flags_for_symbol(symbol_id));
+    pub(crate) fn flags_for_symbol(
+        &self,
+        per_symbol_flags: &PerSymbolFlags,
+        symbol_id: SymbolId,
+    ) -> ValueFlags {
+        let mut flags = per_symbol_flags.flags_for_symbol(self.definition(symbol_id));
+        flags.merge(per_symbol_flags.flags_for_symbol(symbol_id));
         flags
     }
 
@@ -590,23 +592,10 @@ impl<'data> SymbolDb<'data> {
             .map(|id| id.as_atomic())
             .collect();
 
-        let per_symbol_flags = self.take_flags_atomic();
-
         AtomicSymbolDb {
             db: self,
             definitions,
-            per_symbol_flags,
         }
-    }
-
-    // TODO: Investigate alternatives to this. While the flags are taken, calling methods that try
-    // to use the flags will generally panic. We now have two places where we do this. Probably we
-    // should move the flags out and store them separately from SymbolDb.
-    pub(crate) fn take_flags_atomic(&mut self) -> Vec<AtomicValueFlags> {
-        take(&mut self.per_symbol_flags)
-            .into_iter()
-            .map(|flags| flags.as_atomic())
-            .collect()
     }
 
     pub(crate) fn file_id_for_symbol(&self, symbol_id: SymbolId) -> FileId {
@@ -801,10 +790,12 @@ impl<'data> SymbolBucket<'data> {
 #[tracing::instrument(skip_all, name = "Resolve alternative symbol definitions")]
 pub(crate) fn resolve_alternative_symbol_definitions<'data>(
     symbol_db: &mut SymbolDb<'data>,
+    per_symbol_flags: &mut PerSymbolFlags,
     resolved: &[ResolvedGroup],
 ) -> Result {
     let mut buckets = take(&mut symbol_db.buckets);
     let atomic_symbol_db = symbol_db.borrow_atomic();
+    let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
     let error_queue = SegQueue::new();
 
     buckets.par_iter_mut().for_each(|bucket| {
@@ -812,6 +803,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
             &mut bucket.alternative_definitions,
             &error_queue,
             &atomic_symbol_db,
+            &atomic_per_symbol_flags,
             resolved,
         );
 
@@ -819,6 +811,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
             &mut bucket.alternative_versioned_definitions,
             &error_queue,
             &atomic_symbol_db,
+            &atomic_per_symbol_flags,
             resolved,
         );
     });
@@ -854,6 +847,7 @@ fn process_alternatives(
     alternative_definitions: &mut HashMap<SymbolId, Vec<SymbolId>>,
     error_queue: &SegQueue<Error>,
     symbol_db: &AtomicSymbolDb,
+    per_symbol_flags: &AtomicPerSymbolFlags,
     resolved: &[ResolvedGroup],
 ) {
     for (first, alternatives) in std::mem::take(alternative_definitions) {
@@ -867,7 +861,7 @@ fn process_alternatives(
                 vis.max(symbol_db.input_symbol_visibility(*id))
             });
 
-        match select_symbol(symbol_db, first, &alternatives, resolved) {
+        match select_symbol(symbol_db, per_symbol_flags, first, &alternatives, resolved) {
             Ok(selected) => {
                 symbol_db.update_definition(first, selected);
 
@@ -876,10 +870,10 @@ fn process_alternatives(
                 }
 
                 if visibility != Visibility::Default {
-                    symbol_db.handle_non_default_visibility(first);
+                    handle_non_default_visibility(per_symbol_flags, first);
 
                     for alt in alternatives {
-                        symbol_db.handle_non_default_visibility(alt);
+                        handle_non_default_visibility(per_symbol_flags, alt);
                     }
                 }
             }
@@ -890,11 +884,24 @@ fn process_alternatives(
     }
 }
 
+/// Update value flags for `symbol_id` given that we've now changed its visibility to something
+/// other than default.
+fn handle_non_default_visibility(per_symbol_flags: &AtomicPerSymbolFlags, symbol_id: SymbolId) {
+    // TODO: Currently we only make the symbol non-interposable, but we should also actually
+    // change its visibility too. We need somewhere to store this information. We also need
+    // linker-diff to report when we get exported dynamic symbols wrong.
+    let flags = per_symbol_flags.get_atomic(symbol_id);
+    if !flags.get().contains(ValueFlags::DYNAMIC) {
+        flags.or_assign(ValueFlags::NON_INTERPOSABLE);
+    }
+}
+
 /// Selects which version of the symbol to use. For more information on symbol priority, see
 /// https://maskray.me/blog/2021-06-20-linker-symbol-resolution
 #[inline(always)]
 fn select_symbol(
     symbol_db: &AtomicSymbolDb,
+    per_symbol_flags: &AtomicPerSymbolFlags,
     first_id: SymbolId,
     alternatives: &[SymbolId],
     resolved: &[ResolvedGroup],
@@ -906,7 +913,7 @@ fn select_symbol(
     for id in std::iter::once(first_id).chain(alternatives.iter().copied()) {
         // Dynamic symbols, even strong ones, don't override non-dynamic weak symbols, so in this
         // first pass, we ignore dynamic symbols.
-        if symbol_db.local_flags_for_symbol(id).is_dynamic() {
+        if per_symbol_flags.flags_for_symbol(id).is_dynamic() {
             continue;
         }
 
@@ -1103,7 +1110,7 @@ fn load_symbols_from_file<'data>(
 
 struct SymbolInfoWriter<'out> {
     resolutions: sharded_vec_writer::Shard<'out, SymbolId>,
-    value_kinds: sharded_vec_writer::Shard<'out, ValueFlags>,
+    flags: sharded_vec_writer::Shard<'out, RawFlags>,
     file_ids: sharded_vec_writer::Shard<'out, FileId>,
     next: SymbolId,
 }
@@ -1112,19 +1119,19 @@ impl<'out> SymbolInfoWriter<'out> {
     fn new(
         base: SymbolId,
         resolutions: sharded_vec_writer::Shard<'out, SymbolId>,
-        value_kinds: sharded_vec_writer::Shard<'out, ValueFlags>,
+        flags: sharded_vec_writer::Shard<'out, RawFlags>,
         file_ids: sharded_vec_writer::Shard<'out, FileId>,
     ) -> Self {
         Self {
             resolutions,
-            value_kinds,
+            flags,
             file_ids,
             next: base,
         }
     }
 
     fn set_next(&mut self, flags: ValueFlags, resolution: SymbolId, file_id: FileId) {
-        self.value_kinds.push(flags);
+        self.flags.push(flags.raw());
         self.resolutions.push(resolution);
         self.file_ids.push(file_id);
         self.next = SymbolId::from_usize(self.next.as_usize() + 1);
@@ -1432,12 +1439,13 @@ impl<'data> SymbolLoader<'data> for DynamicObjectSymbolLoader<'_, 'data> {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct SymbolDebug<'db, 'data> {
-    db: &'db SymbolDb<'data>,
+pub(crate) struct SymbolDebug<'a> {
+    db: &'a SymbolDb<'a>,
     symbol_id: SymbolId,
+    per_symbol_flags: &'a dyn FlagsForSymbol,
 }
 
-impl std::fmt::Display for SymbolDebug<'_, '_> {
+impl std::fmt::Display for SymbolDebug<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let symbol_id = self.symbol_id;
         let symbol_name = self
@@ -1501,11 +1509,8 @@ impl std::fmt::Display for SymbolDebug<'_, '_> {
             )?;
         }
 
-        if self.db.per_symbol_flags.is_empty() {
-            write!(f, " (value flags unavailable)")?;
-        } else {
-            write!(f, " ({})", self.db.local_flags_for_symbol(symbol_id))?;
-        }
+        let flags = self.per_symbol_flags.flags_for_symbol(symbol_id);
+        write!(f, " ({flags})")?;
 
         Ok(())
     }
@@ -1518,6 +1523,10 @@ impl SymbolId {
 
     pub(crate) fn from_usize(value: usize) -> SymbolId {
         Self::new(u32::try_from(value).expect("Symbols overflowed 32 bits"))
+    }
+
+    pub(crate) fn as_usize(self) -> usize {
+        self.0 as usize
     }
 
     const fn new(value: u32) -> SymbolId {
@@ -1667,22 +1676,6 @@ impl<'data, 'db> AtomicSymbolDb<'data, 'db> {
         self.definitions[to_update.as_usize()].store(new_definition);
     }
 
-    /// Update value flags for `symbol_id` given that we've now changed its visibility to something
-    /// other than default.
-    fn handle_non_default_visibility(&self, symbol_id: SymbolId) {
-        // TODO: Currently we only make the symbol non-interposable, but we should also actually
-        // change its visibility too. We need somewhere to store this information. We also need
-        // linker-diff to report when we get exported dynamic symbols wrong.
-        let flags = &self.per_symbol_flags[symbol_id.as_usize()];
-        if !flags.get().contains(ValueFlags::DYNAMIC) {
-            flags.or_assign(ValueFlags::NON_INTERPOSABLE);
-        }
-    }
-
-    fn local_flags_for_symbol(&self, symbol_id: SymbolId) -> ValueFlags {
-        self.per_symbol_flags[symbol_id.as_usize()].get()
-    }
-
     fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> SymbolStrength {
         self.db.symbol_strength(symbol_id, resolved)
     }
@@ -1714,11 +1707,6 @@ impl Drop for AtomicSymbolDb<'_, '_> {
                 .map(|id| id.into_non_atomic())
                 .collect(),
         );
-
-        self.db.per_symbol_flags = take(&mut self.per_symbol_flags)
-            .into_iter()
-            .map(|f| f.into_non_atomic())
-            .collect();
     }
 }
 
@@ -1733,10 +1721,6 @@ impl ShardKey for SymbolId {
                 .try_into()
                 .expect("Symbol ID overflowed 32 bits"),
         )
-    }
-
-    fn as_usize(self) -> usize {
-        self.0 as usize
     }
 }
 

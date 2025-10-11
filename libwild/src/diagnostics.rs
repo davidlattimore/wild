@@ -1,13 +1,13 @@
 use crate::grouping::SequencedInput;
 use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
-use crate::resolution::AtomicValueFlags;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
-use crate::sharding::ShardKey as _;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
+use crate::value_flags::AtomicPerSymbolFlags;
+use crate::value_flags::FlagsForSymbol as _;
 
 /// Prints information about a symbol when dropped. We do this when dropped so that we can print
 /// either after resolution flags have been computed, or, if layout gets an error, then before we
@@ -16,7 +16,7 @@ pub(crate) struct SymbolInfoPrinter<'data> {
     loaded_file_ids: hashbrown::HashSet<FileId>,
     symbol_db: &'data SymbolDb<'data>,
     name: &'data str,
-    flags: &'data [AtomicValueFlags],
+    per_symbol_flags: &'data AtomicPerSymbolFlags<'data>,
 }
 
 impl Drop for SymbolInfoPrinter<'_> {
@@ -29,7 +29,7 @@ impl<'data> SymbolInfoPrinter<'data> {
     pub(crate) fn new(
         symbol_db: &'data SymbolDb,
         name: &'data str,
-        flags: &'data [AtomicValueFlags],
+        flags: &'data AtomicPerSymbolFlags<'data>,
         groups: &[ResolvedGroup],
     ) -> Self {
         let loaded_file_ids = groups
@@ -49,7 +49,7 @@ impl<'data> SymbolInfoPrinter<'data> {
             loaded_file_ids,
             symbol_db,
             name,
-            flags,
+            per_symbol_flags: flags,
         }
     }
 
@@ -69,7 +69,7 @@ impl<'data> SymbolInfoPrinter<'data> {
             let symbol_id = SymbolId::from_usize(i);
             let canonical = self.symbol_db.definition(symbol_id);
             let file_id = self.symbol_db.file_id_for_symbol(symbol_id);
-            let flags = self.flags[symbol_id.as_usize()].get();
+            let flags = self.per_symbol_flags.flags_for_symbol(symbol_id);
 
             let file_state = if self.loaded_file_ids.contains(&file_id) {
                 "LOADED"

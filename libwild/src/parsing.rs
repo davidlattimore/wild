@@ -16,7 +16,6 @@ use crate::input_data::InputRef;
 use crate::layout_rules::LayoutRulesBuilder;
 use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
-use crate::sharding::ShardKey;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use rayon::iter::IntoParallelRefIterator;

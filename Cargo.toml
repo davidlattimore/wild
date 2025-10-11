@@ -45,6 +45,7 @@ fd-lock = "4.0.0"
 flate2 = { version = "1.1.0", features = ["zlib-rs"] }
 foldhash = "0.2.0"
 gimli = "0.32.0"
+glob = "0.3.2"
 hashbrown = "0.16.0"
 hex = "0.4.0"
 iced-x86 = { version = "1.17.0", default-features = false, features = [
@@ -92,6 +93,7 @@ uuid = { version = "1.0.0", features = ["v4"] }
 wait-timeout = "0.2.0"
 which = "8.0.0"
 winnow = { version = "0.7.10", features = ["simd"] }
+zerocopy = { version = "0.8.27", features = ["derive"] }
 zstd = "0.13.0"
 
 [profile.opt-debug]
