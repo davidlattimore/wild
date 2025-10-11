@@ -1,4 +1,6 @@
-//#LinkerDriver:gcc
+//#Object:runtime.c
+
+#include "runtime.h"
 
 #define ALIGNMENT 65536
 
@@ -7,11 +9,13 @@ struct __attribute__((aligned(ALIGNMENT))) S {
 };
 struct S object;
 
-int main() {
+void _start(void) {
+  runtime_init();
+
   void* ptr = &object;
   if ((unsigned long long)ptr & (ALIGNMENT - 1)) {
-    __builtin_abort();
+    exit_syscall(10);
   }
 
-  return 42;
+  exit_syscall(42);
 }
