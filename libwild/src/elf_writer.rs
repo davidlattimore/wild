@@ -1989,10 +1989,12 @@ fn apply_relocation<'data, A: Arch>(
             );
             let mut relocations_to_search = relocation_sequence
                 .crel_iter()
+                // In most cases, the high-part is just before the low-part.
                 .take(relocation_index)
-                // TODO
-                //.rev()
-                .chain(relocation_sequence.crel_iter().take(relocation_index + 1));
+                // TODO: iterate the relocations in reverse order for faster lookup!
+                // .rev()
+                // If not, then it's somewhere near after the low-part.
+                .chain(relocation_sequence.crel_iter().skip(relocation_index + 1));
             let hi_offset_in_section = resolution
                 .value_with_addend(
                     addend,
