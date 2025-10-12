@@ -15,7 +15,6 @@ use object::elf::EM_RISCV;
 use object::elf::EM_X86_64;
 use std::borrow::Cow;
 use std::fmt::Display;
-use std::str::FromStr;
 
 pub(crate) trait Arch {
     type Relaxation: Relaxation;
@@ -61,19 +60,6 @@ pub(crate) enum Architecture {
     X86_64,
     AArch64,
     RISCV64,
-}
-
-impl FromStr for Architecture {
-    type Err = crate::error::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "elf_x86_64" => Ok(Architecture::X86_64),
-            "aarch64elf" | "aarch64linux" => Ok(Architecture::AArch64),
-            "elf64lriscv" => Ok(Architecture::RISCV64),
-            _ => bail!("-m {s} is not yet supported"),
-        }
-    }
 }
 
 impl TryFrom<u16> for Architecture {

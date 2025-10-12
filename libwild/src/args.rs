@@ -306,9 +306,6 @@ impl Default for Args {
             inputs: Vec::new(),
             output: Arc::from(Path::new("a.out")),
             is_dynamic_executable: AtomicBool::new(false),
-            #[cfg(target_os = "illumos")]
-            dynamic_linker: Some(Path::new("/lib/amd64/ld.so.1").into()),
-            #[cfg(not(target_os = "illumos"))]
             dynamic_linker: None,
             output_kind: None,
             time_phase_options: None,
@@ -1253,7 +1250,18 @@ fn setup_argument_parser() -> ArgumentParser {
             "elf_x86_64",
             "x86-64 ELF target",
             |args, _modifier_stack, _value| {
-                args.arch = Architecture::from_str("elf_x86_64")?;
+                args.arch = Architecture::X86_64;
+                Ok(())
+            },
+        )
+        .sub_option(
+            "elf_x86_64_sol2",
+            "x86-64 ELF target (Solaris)",
+            |args, _modifier_stack, _value| {
+                if args.dynamic_linker.is_none() {
+                    args.dynamic_linker = Some(Path::new("/lib/amd64/ld.so.1").into());
+                }
+                args.arch = Architecture::X86_64;
                 Ok(())
             },
         )
@@ -1261,7 +1269,15 @@ fn setup_argument_parser() -> ArgumentParser {
             "aarch64elf",
             "AArch64 ELF target",
             |args, _modifier_stack, _value| {
-                args.arch = Architecture::from_str("aarch64elf")?;
+                args.arch = Architecture::AArch64;
+                Ok(())
+            },
+        )
+        .sub_option(
+            "aarch64linux",
+            "AArch64 ELF target (Linux)",
+            |args, _modifier_stack, _value| {
+                args.arch = Architecture::AArch64;
                 Ok(())
             },
         )
@@ -1269,13 +1285,12 @@ fn setup_argument_parser() -> ArgumentParser {
             "elf64lriscv",
             "RISC-V 64-bit ELF target",
             |args, _modifier_stack, _value| {
-                args.arch = Architecture::from_str("elf64lriscv")?;
+                args.arch = Architecture::RISCV64;
                 Ok(())
             },
         )
-        .execute(|args, _modifier_stack, value| {
-            args.arch = Architecture::from_str(value)?;
-            Ok(())
+        .execute(|_args, _modifier_stack, value| {
+            bail!("-m {value} is not yet supported");
         });
 
     parser
