@@ -60,6 +60,7 @@ pub(crate) mod version_script;
 pub(crate) mod x86_64;
 
 use crate::args::ActivatedArgs;
+use crate::identity::linker_identity;
 pub use args::Args;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
@@ -155,10 +156,7 @@ impl Linker {
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
         let args = &args.args;
         if args.should_print_version {
-            println!(
-                "Wild version {} (compatible with GNU linkers)",
-                env!("CARGO_PKG_VERSION")
-            );
+            println!("{}", linker_identity());
             if args.inputs.is_empty() {
                 return Ok(LinkerOutput { layout: None });
             }

@@ -3048,7 +3048,7 @@ impl<'data> PreludeLayoutState<'data> {
             },
             entry_symbol_id: None,
             needs_tlsld_got_entry: false,
-            identity: crate::identity::linker_identity(),
+            identity: format!("Linker: {}", crate::identity::linker_identity()),
             header_info: None,
             dynamic_linker: None,
             shstrtab_size: 0,
