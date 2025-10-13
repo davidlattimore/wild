@@ -150,10 +150,8 @@ impl Config {
                 "section.phdr",
                 // We don't yet support these sections.
                 "section.data.rel.ro",
-                "section.stapsdt.base",
                 "section.note.gnu.build-id",
                 "section.note.gnu.property",
-                "section.note.stapsdt",
                 "section.hash",
                 "section.sframe",
                 // We set this to 8. GNU ld sometimes does too, but sometimes to 0.

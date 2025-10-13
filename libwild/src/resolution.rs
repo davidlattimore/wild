@@ -46,6 +46,7 @@ use linker_utils::elf::SectionFlags;
 use linker_utils::elf::SectionType;
 use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
+use linker_utils::elf::sht::NOTE;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
 use rayon::Scope;
@@ -789,9 +790,9 @@ fn resolve_sections_for_object<'data>(
                 part_id::should_merge_strings(section_flags, raw_alignment, args);
 
             let mut unloaded_section;
-            let mut must_load = section_flags.should_retain();
             let mut is_debug_info = false;
             let section_type = SectionType::from_header(input_section);
+            let mut must_load = section_flags.should_retain() || section_type == NOTE;
 
             match rules.lookup(section_name, section_flags, section_type) {
                 SectionRuleOutcome::Section(output_info) => {
