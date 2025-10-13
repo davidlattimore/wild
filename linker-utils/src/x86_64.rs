@@ -2,6 +2,7 @@ use crate::elf::AllowedRange;
 use crate::elf::RelocationKind;
 use crate::elf::RelocationKindInfo;
 use crate::elf::RelocationSize;
+use crate::elf::Sign;
 use crate::relaxation::RelocationModifier;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,40 +240,41 @@ impl RelaxationKind {
 /// Returns the supplied x86-64 relocation as RelocationKindType. Returns `None` if the r_type isn't recognised.
 #[must_use]
 pub const fn relocation_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
-    let (kind, size) = match r_type {
-        object::elf::R_X86_64_64 => (RelocationKind::Absolute, 8),
-        object::elf::R_X86_64_PC32 => (RelocationKind::Relative, 4),
-        object::elf::R_X86_64_PC64 => (RelocationKind::Relative, 8),
-        object::elf::R_X86_64_GOT32 => (RelocationKind::GotRelGotBase, 4),
-        object::elf::R_X86_64_GOT64 => (RelocationKind::GotRelGotBase, 8),
-        object::elf::R_X86_64_GOTOFF64 => (RelocationKind::SymRelGotBase, 8),
-        object::elf::R_X86_64_PLT32 => (RelocationKind::PltRelative, 4),
-        object::elf::R_X86_64_PLTOFF64 => (RelocationKind::PltRelGotBase, 8),
-        object::elf::R_X86_64_GOTPCREL => (RelocationKind::GotRelative, 4),
+    let (kind, size, sign) = match r_type {
+        object::elf::R_X86_64_64 => (RelocationKind::Absolute, 8, Sign::Unsigned),
+        object::elf::R_X86_64_PC32 => (RelocationKind::Relative, 4, Sign::Signed),
+        object::elf::R_X86_64_PC64 => (RelocationKind::Relative, 8, Sign::Signed),
+        object::elf::R_X86_64_GOT32 => (RelocationKind::GotRelGotBase, 4, Sign::Unsigned),
+        object::elf::R_X86_64_GOT64 => (RelocationKind::GotRelGotBase, 8, Sign::Unsigned),
+        object::elf::R_X86_64_GOTOFF64 => (RelocationKind::SymRelGotBase, 8, Sign::Signed),
+        object::elf::R_X86_64_PLT32 => (RelocationKind::PltRelative, 4, Sign::Signed),
+        object::elf::R_X86_64_PLTOFF64 => (RelocationKind::PltRelGotBase, 8, Sign::Signed),
+        object::elf::R_X86_64_GOTPCREL => (RelocationKind::GotRelative, 4, Sign::Signed),
 
         // For now, we rely on GOTPC64 and GOTPC32 always referencing the symbol
         // _GLOBAL_OFFSET_TABLE_, which means that we can just treat these as normal relative
         // relocations and avoid any special processing when writing.
-        object::elf::R_X86_64_GOTPC64 => (RelocationKind::Relative, 8),
-        object::elf::R_X86_64_GOTPC32 => (RelocationKind::Relative, 4),
+        object::elf::R_X86_64_GOTPC64 => (RelocationKind::Relative, 8, Sign::Signed),
+        object::elf::R_X86_64_GOTPC32 => (RelocationKind::Relative, 4, Sign::Signed),
 
-        object::elf::R_X86_64_32 | object::elf::R_X86_64_32S => (RelocationKind::Absolute, 4),
-        object::elf::R_X86_64_16 => (RelocationKind::Absolute, 2),
-        object::elf::R_X86_64_PC16 => (RelocationKind::Relative, 2),
-        object::elf::R_X86_64_8 => (RelocationKind::Absolute, 1),
-        object::elf::R_X86_64_PC8 => (RelocationKind::Relative, 1),
-        object::elf::R_X86_64_TLSGD => (RelocationKind::TlsGd, 4),
-        object::elf::R_X86_64_TLSLD => (RelocationKind::TlsLd, 4),
-        object::elf::R_X86_64_DTPOFF32 => (RelocationKind::DtpOff, 4),
-        object::elf::R_X86_64_DTPOFF64 => (RelocationKind::DtpOff, 8),
-        object::elf::R_X86_64_GOTTPOFF => (RelocationKind::GotTpOff, 4),
+        object::elf::R_X86_64_32 => (RelocationKind::Absolute, 4, Sign::Unsigned),
+        object::elf::R_X86_64_32S => (RelocationKind::Absolute, 4, Sign::Signed),
+        object::elf::R_X86_64_16 => (RelocationKind::Absolute, 2, Sign::Signed),
+        object::elf::R_X86_64_PC16 => (RelocationKind::Relative, 2, Sign::Signed),
+        object::elf::R_X86_64_8 => (RelocationKind::Absolute, 1, Sign::Signed),
+        object::elf::R_X86_64_PC8 => (RelocationKind::Relative, 1, Sign::Signed),
+        object::elf::R_X86_64_TLSGD => (RelocationKind::TlsGd, 4, Sign::Signed),
+        object::elf::R_X86_64_TLSLD => (RelocationKind::TlsLd, 4, Sign::Signed),
+        object::elf::R_X86_64_DTPOFF32 => (RelocationKind::DtpOff, 4, Sign::Signed),
+        object::elf::R_X86_64_DTPOFF64 => (RelocationKind::DtpOff, 8, Sign::Signed),
+        object::elf::R_X86_64_GOTTPOFF => (RelocationKind::GotTpOff, 4, Sign::Signed),
         object::elf::R_X86_64_GOTPCRELX | object::elf::R_X86_64_REX_GOTPCRELX => {
-            (RelocationKind::GotRelative, 4)
+            (RelocationKind::GotRelative, 4, Sign::Signed)
         }
-        object::elf::R_X86_64_TPOFF32 => (RelocationKind::TpOff, 4),
-        object::elf::R_X86_64_GOTPC32_TLSDESC => (RelocationKind::TlsDesc, 4),
-        object::elf::R_X86_64_TLSDESC_CALL => (RelocationKind::TlsDescCall, 0),
-        object::elf::R_X86_64_NONE => (RelocationKind::None, 0),
+        object::elf::R_X86_64_TPOFF32 => (RelocationKind::TpOff, 4, Sign::Signed),
+        object::elf::R_X86_64_GOTPC32_TLSDESC => (RelocationKind::TlsDesc, 4, Sign::Signed),
+        object::elf::R_X86_64_TLSDESC_CALL => (RelocationKind::TlsDescCall, 0, Sign::Signed),
+        object::elf::R_X86_64_NONE => (RelocationKind::None, 0, Sign::Signed),
         _ => return None,
     };
 
@@ -280,7 +282,7 @@ pub const fn relocation_from_raw(r_type: u32) -> Option<RelocationKindInfo> {
         kind,
         size: RelocationSize::ByteSize(size),
         mask: None,
-        range: AllowedRange::from_byte_size(size),
+        range: AllowedRange::from_byte_size(size, sign),
         alignment: 1,
     })
 }
