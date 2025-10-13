@@ -100,6 +100,7 @@ use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::elf::sht::NOTE;
+use linker_utils::elf::sht::RISCV_ATTRIBUTES;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::SectionIndex;
@@ -1899,8 +1900,8 @@ fn compute_segment_layout(
                         output_sections.section_debug(section_id)
                     );
                 } else {
-                    // Some .note. sections do not have ALLOC flag set.
-                    if section_info.ty == NOTE {
+                    // The note and RISCV_ATTRIBUTES sections  do not have ALLOC flag set.
+                    if [NOTE, RISCV_ATTRIBUTES].contains(&section_info.ty) {
                     } else {
                         // All segments should only cover sections that are allocated and have a non-zero address.
                         ensure!(
