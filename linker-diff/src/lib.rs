@@ -241,6 +241,9 @@ impl Config {
                 "segment.PT_GNU_STACK.*",
                 "segment.PT_GNU_PROPERTY.*",
                 "segment.PT_GNU_SFRAME.*",
+                // Wild currently generates PT_NOTE even for non-alloc note sections, while the
+                // other linkers don't.
+                "segment.PT_NOTE.*",
                 // TODO: RISC-V
                 "segment.LOAD.RW.alignment",
             ]

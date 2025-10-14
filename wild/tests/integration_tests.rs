@@ -2676,6 +2676,7 @@ fn integration_test(
         "string_merging.c",
         "string-merge-missing-null.c",
         "comments.c",
+        "custom-note.s",
         "eh_frame.c",
         "symbol-priority.c",
         "trivial_asm.s",
