@@ -1205,7 +1205,8 @@ impl AllowedRange {
     }
 
     #[must_use]
-    /// Note: for the 8-byte size, we actually do signed checks regardless of the `sign` argument because the `min` and `max` are `i64` type
+    /// Note: for the 8-byte size, we actually do signed checks regardless of the `sign` argument
+    /// because the `min` and `max` are `i64` type
     pub const fn from_byte_size(n_bytes: usize, sign: Sign) -> Self {
         match n_bytes {
             0 | 8 => Self::no_check(),
