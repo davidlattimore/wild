@@ -132,6 +132,7 @@ use std::sync::Mutex;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
+use zerocopy::FromBytes;
 
 #[tracing::instrument(skip_all, name = "Layout")]
 pub fn compute<'data, A: Arch>(
@@ -4727,8 +4728,8 @@ fn process_eh_frame_relocations<'data, 'rel: 'data, A: Arch>(
         // no guarantee that the object is aligned within the archive to any more
         // than 2 bytes, so we can't rely on alignment here. Archives are annoying!
         // See https://www.airs.com/blog/archives/170
-        let prefix: elf::EhFrameEntryPrefix =
-            bytemuck::pod_read_unaligned(&data[offset..offset + PREFIX_LEN]);
+        let prefix =
+            elf::EhFrameEntryPrefix::read_from_bytes(&data[offset..offset + PREFIX_LEN]).unwrap();
         let size = size_of_val(&prefix.length) + prefix.length as usize;
         let next_offset = offset + size;
 

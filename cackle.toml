@@ -9,10 +9,6 @@ import_std = [
 [sandbox]
 kind = "Bubblewrap"
 
-[pkg.bytemuck_derive]
-allow_proc_macro = true
-allow_unsafe = true
-
 [pkg.unicode-ident]
 allow_unsafe = true
 
@@ -79,9 +75,6 @@ from.test.allow_apis = [
 allow_unsafe = true
 
 [pkg.rayon-core]
-allow_unsafe = true
-
-[pkg.bytemuck]
 allow_unsafe = true
 
 [pkg.object]

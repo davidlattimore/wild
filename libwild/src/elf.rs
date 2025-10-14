@@ -4,8 +4,6 @@ use crate::ensure;
 use crate::error::Context as _;
 use crate::error::Result;
 use crate::resolution::LoadedMetrics;
-use bytemuck::Pod;
-use bytemuck::Zeroable;
 use linker_utils::aarch64::DEFAULT_AARCH64_PAGE_IGNORED_MASK;
 use linker_utils::bit_misc::BitExtraction;
 use linker_utils::elf::BitMask;
@@ -26,6 +24,9 @@ use std::io::Read as _;
 use std::mem::offset_of;
 use std::ops::Range;
 use std::sync::atomic::Ordering;
+use zerocopy::FromBytes;
+use zerocopy::IntoBytes;
+use zerocopy::KnownLayout;
 
 /// Our starting address in memory when linking non-relocatable executables. We can start memory
 /// addresses wherever we like, even from 0. We pick 400k because it's the same as what ld does and
@@ -363,7 +364,7 @@ fn decompress_into(
 pub(crate) const CURRENT_EXE_TLS_MOD: u64 = 1;
 
 /// See https://refspecs.linuxfoundation.org/LSB_1.3.0/gLSB/gLSB/ehframehdr.html
-#[derive(Zeroable, Pod, Clone, Copy)]
+#[derive(FromBytes, IntoBytes, KnownLayout, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct EhFrameHdr {
     pub(crate) version: u8,
@@ -381,14 +382,14 @@ pub(crate) const FRAME_POINTER_FIELD_OFFSET: usize = offset_of!(EhFrameHdr, fram
 /// The offset of the offset within the structure passed to __tls_get_addr.
 pub(crate) const TLS_OFFSET_OFFSET: u64 = 8;
 
-#[derive(Zeroable, Pod, Clone, Copy)]
+#[derive(FromBytes, IntoBytes, KnownLayout, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct EhFrameHdrEntry {
     pub(crate) frame_ptr: i32,
     pub(crate) frame_info_ptr: i32,
 }
 
-#[derive(Zeroable, Pod, Clone, Copy)]
+#[derive(FromBytes, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct EhFrameEntryPrefix {
     pub(crate) length: u32,
@@ -465,7 +466,7 @@ pub(crate) const GNU_NOTE_PROPERTY_ENTRY_SIZE: usize = 16;
 /// unsigned char pr_padding[PR_PADDING];
 /// } Elf_Prop;
 
-#[derive(Zeroable, Pod, Clone, Copy)]
+#[derive(FromBytes, IntoBytes, KnownLayout, Clone, Copy)]
 #[repr(C)]
 pub(crate) struct NoteProperty {
     pub(crate) pr_type: u32,
