@@ -99,6 +99,8 @@ use linker_utils::elf::riscvattr::TAG_RISCV_X3_REG_USAGE;
 use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
+use linker_utils::elf::sht::NOTE;
+use linker_utils::elf::sht::RISCV_ATTRIBUTES;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::SectionIndex;
@@ -1884,6 +1886,7 @@ fn compute_segment_layout(
                     continue;
                 }
                 let section_flags = output_sections.section_flags(merge_target);
+                let section_info = output_sections.output_info(section_id);
 
                 if active_segments.iter().all(|s| s.is_none()) {
                     ensure!(
@@ -1897,8 +1900,8 @@ fn compute_segment_layout(
                         output_sections.section_debug(section_id)
                     );
                 } else {
-                    // RISCV_ATTRIBUTES segment is kind of special as it maps a section that is non-ALLOC.
-                    if section_id == output_section_id::RISCV_ATTRIBUTES {
+                    // The note and RISCV_ATTRIBUTES sections  do not have ALLOC flag set.
+                    if [NOTE, RISCV_ATTRIBUTES].contains(&section_info.ty) {
                     } else {
                         // All segments should only cover sections that are allocated and have a non-zero address.
                         ensure!(
@@ -4084,7 +4087,7 @@ impl<'data> ObjectLayoutState<'data> {
             }
         }
 
-        tracing::debug!(loaded_section = %self.object.section_display_name(section_index),);
+        tracing::debug!(loaded_section = %self.object.section_display_name(section_index), file = %self.input);
 
         common.section_loaded(part_id, header, section);
 

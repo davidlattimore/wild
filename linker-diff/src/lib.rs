@@ -150,10 +150,6 @@ impl Config {
                 "section.phdr",
                 // We don't yet support these sections.
                 "section.data.rel.ro",
-                "section.stapsdt.base",
-                "section.note.gnu.build-id",
-                "section.note.gnu.property",
-                "section.note.stapsdt",
                 "section.hash",
                 "section.sframe",
                 // We set this to 8. GNU ld sometimes does too, but sometimes to 0.
@@ -201,8 +197,6 @@ impl Config {
                 // GNU ld sometimes makes this writable sometimes not. Presumably this depends on
                 // whether there are relocations or some flags.
                 "section.eh_frame.flags",
-                // A package note section used by Ubuntu: https://systemd.io/ELF_PACKAGE_METADATA/
-                "section.note.package",
                 // TLSDESC relaxations aren't yet implemented.
                 "rel.match_failed.R_X86_64_GOTPC32_TLSDESC",
                 "rel.missing-opt.R_X86_64_TLSDESC_CALL.SkipTlsDescCall.*",
@@ -242,7 +236,6 @@ impl Config {
                 // GNU ld emits two segments, whereas wild emits only a single segment.
                 "segment.LOAD.R.*",
                 // We haven't provided an implementation that is compatible with existing linkers.
-                "segment.PT_NOTE.*",
                 "segment.PT_PHDR.*",
                 "segment.PT_GNU_RELRO.*",
                 "segment.PT_GNU_STACK.*",
