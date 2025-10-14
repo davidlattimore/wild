@@ -121,6 +121,8 @@ use std::sync::atomic::Ordering::Relaxed;
 use tracing::debug_span;
 use tracing::instrument;
 use uuid::Uuid;
+use zerocopy::FromBytes;
+use zerocopy::transmute_mut;
 
 pub(crate) fn write<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout) -> Result {
     write_file_contents::<A>(sized_output, layout)?;
@@ -233,7 +235,7 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
 #[tracing::instrument(skip_all, name = "Sort .eh_frame_hdr")]
 fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {
     let entry_bytes = &mut eh_frame_hdr[size_of::<elf::EhFrameHdr>()..];
-    let entries: &mut [elf::EhFrameHdrEntry] = bytemuck::cast_slice_mut(entry_bytes);
+    let entries = <[elf::EhFrameHdrEntry]>::mut_from_bytes(entry_bytes).unwrap();
     entries.par_sort_by_key(|e| e.frame_ptr);
 }
 
@@ -511,7 +513,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
         TableWriter {
             output_kind,
-            got: bytemuck::cast_slice_mut(buffers.take(part_id::GOT)),
+            got: <[u64]>::mut_from_bytes(buffers.take(part_id::GOT)).unwrap(),
             plt_got: buffers.take(part_id::PLT_GOT),
             rela_plt: slice_from_all_bytes_mut(buffers.take(part_id::RELA_PLT)),
             tls,
@@ -898,7 +900,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             .eh_frame_hdr
             .split_off_mut(..size_of::<EhFrameHdr>())
             .unwrap();
-        bytemuck::from_bytes_mut(entry_bytes)
+        EhFrameHdr::mut_from_bytes(entry_bytes).unwrap()
     }
 
     fn take_eh_frame_hdr_entry(&mut self) -> Option<&mut EhFrameHdrEntry> {
@@ -909,7 +911,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             .eh_frame_hdr
             .split_off_mut(..size_of::<EhFrameHdrEntry>())
             .unwrap();
-        Some(bytemuck::from_bytes_mut(entry_bytes))
+        Some(EhFrameHdrEntry::mut_from_bytes(entry_bytes).unwrap())
     }
 
     fn take_eh_frame_data(&mut self, size: usize) -> Result<&'out mut [u8]> {
@@ -1504,8 +1506,9 @@ fn write_eh_frame_relocations<A: Arch>(
     let mut cies_offset_conversion: HashMap<u32, u32> = HashMap::new();
 
     while input_pos + PREFIX_LEN <= data.len() {
-        let prefix: elf::EhFrameEntryPrefix =
-            bytemuck::pod_read_unaligned(&data[input_pos..input_pos + PREFIX_LEN]);
+        let prefix =
+            elf::EhFrameEntryPrefix::read_from_bytes(&data[input_pos..input_pos + PREFIX_LEN])
+                .unwrap();
         let size = size_of_val(&prefix.length) + prefix.length as usize;
         let next_input_pos = input_pos + size;
         let next_output_pos = output_pos + size;
@@ -2755,7 +2758,7 @@ fn write_gnu_property_notes(
 
     for note in &epilogue.gnu_property_notes {
         let entry_bytes = rest.split_off_mut(..size_of::<NoteProperty>()).unwrap();
-        let property: &mut NoteProperty = bytemuck::from_bytes_mut(entry_bytes);
+        let property = NoteProperty::mut_from_bytes(entry_bytes).unwrap();
         property.pr_type = note.ptype;
         property.pr_datasz = size_of_val(&property.pr_data) as u32;
         property.pr_data = note.data;
@@ -3885,7 +3888,7 @@ pub(crate) fn verify_resolution_allocation(
     });
     total_bytes_allocated = crate::alignment::USIZE.align_up(total_bytes_allocated);
     let mut all_mem = vec![0_u64; total_bytes_allocated as usize / size_of::<u64>()];
-    let mut all_mem: &mut [u8] = bytemuck::cast_slice_mut(all_mem.as_mut_slice());
+    let mut all_mem: &mut [u8] = transmute_mut!(all_mem.as_mut_slice());
     let mut offset = 0;
     let mut buffers = mem_sizes.output_order_map(output_order, |_part_id, alignment, &size| {
         let aligned_offset = alignment.align_up(offset);

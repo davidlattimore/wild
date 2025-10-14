@@ -16,7 +16,6 @@ iced-x86 = { workspace = true }
 symbolic-demangle = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
-bytemuck = { workspace = true }
 itertools = { workspace = true }
 gimli = { workspace = true }
 fallible-iterator = { workspace = true }
@@ -29,6 +28,7 @@ tempfile = { workspace = true }
 which = { workspace = true }
 ascii_table = { workspace = true }
 hashbrown = { workspace = true }
+zerocopy = { workspace = true }
 
 [lints]
 workspace = true

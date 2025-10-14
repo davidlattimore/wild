@@ -5,12 +5,13 @@
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
-use bytemuck::Pod;
-use bytemuck::Zeroable;
 use std::ffi::OsStr;
 use std::ops::Range;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::KnownLayout;
 
 pub(crate) enum ArchiveEntry<'data> {
     Ignored,
@@ -61,7 +62,7 @@ pub(crate) struct ArchiveIterator<'data> {
     is_thin: bool,
 }
 
-#[derive(Zeroable, Pod, Clone, Copy)]
+#[derive(FromBytes, KnownLayout, Immutable, Clone, Copy)]
 #[repr(C)]
 struct EntryHeader {
     ident: [u8; 16],
@@ -119,7 +120,7 @@ impl<'data> ArchiveIterator<'data> {
             bail!("Short entry header");
         }
         let (header, rest) = self.data.split_at(HEADER_SIZE);
-        let header: &EntryHeader = bytemuck::from_bytes(header);
+        let header = EntryHeader::ref_from_bytes(header).unwrap();
         let bytes = {
             let mut bytes = [0xFF; 16];
             bytes[..10].copy_from_slice(&header.size);

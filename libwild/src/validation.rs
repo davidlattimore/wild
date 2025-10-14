@@ -7,6 +7,7 @@ use crate::layout::Layout;
 use linker_utils::elf::secnames::GOT_SECTION_NAME_STR;
 use object::LittleEndian;
 use object::read::elf::SectionHeader as _;
+use zerocopy::FromBytes;
 
 pub(crate) fn validate_bytes(layout: &Layout, file_bytes: &[u8]) -> Result {
     let object =
@@ -88,7 +89,7 @@ fn validate_resolution(
             return Ok(());
         }
         let expected = resolution.raw_value;
-        let address = bytemuck::pod_read_unaligned(&got_data[start_offset..end_offset]);
+        let address = u64::read_from_bytes(&got_data[start_offset..end_offset]).unwrap();
         if expected != address {
             let name = String::from_utf8_lossy(name);
             bail!(

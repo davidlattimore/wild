@@ -4,8 +4,6 @@ use crate::header_diff::DiffMode;
 use crate::header_diff::FieldValues;
 use anyhow::Context;
 use anyhow::bail;
-use bytemuck::Pod;
-use bytemuck::Zeroable;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
 use linker_utils::elf::secnames::EH_FRAME_HDR_SECTION_NAME_STR;
@@ -19,6 +17,9 @@ use object::SymbolKind;
 use object::elf::ProgramHeader64;
 use object::read::elf::ProgramHeader;
 use std::mem::offset_of;
+use zerocopy::FromBytes;
+use zerocopy::Immutable;
+use zerocopy::KnownLayout;
 
 pub(crate) fn report_diffs(report: &mut crate::Report, objects: &[crate::Binary]) {
     report.add_diffs(crate::header_diff::diff_fields(
@@ -52,8 +53,11 @@ fn read_eh_frame_hdr_fields(object: &crate::Binary) -> Result<FieldValues> {
     }
 
     let data = section.data()?;
-    let header: &EhFrameHdr = bytemuck::from_bytes(&data[..size_of::<EhFrameHdr>()]);
-    let header_entries: &[EhFrameHdrEntry] = bytemuck::cast_slice(&data[size_of::<EhFrameHdr>()..]);
+    let header = EhFrameHdr::ref_from_bytes(&data[..size_of::<EhFrameHdr>()]).unwrap();
+    let Ok(header_entries) = <[EhFrameHdrEntry]>::ref_from_bytes(&data[size_of::<EhFrameHdr>()..])
+    else {
+        bail!("Size mismatch in .eh_frame_hdr entries");
+    };
 
     values.insert("version", header.version, Converter::None, object);
     values.insert(
@@ -125,8 +129,9 @@ fn verify_frames(
     let mut offset = 0;
     const PREFIX_LEN: usize = size_of::<EhFrameEntryPrefix>();
     while offset + PREFIX_LEN <= eh_frame_data.len() {
-        let prefix: EhFrameEntryPrefix =
-            bytemuck::pod_read_unaligned(&eh_frame_data[offset..offset + PREFIX_LEN]);
+        let prefix =
+            EhFrameEntryPrefix::read_from_bytes(&eh_frame_data[offset..offset + PREFIX_LEN])
+                .unwrap();
         if prefix.cie_id != 0 {
             // This is an FDE.
             let pc_begin_bytes = eh_frame_data[offset + EH_FRAME_PC_BEGIN_OFFSET..]
@@ -220,7 +225,7 @@ fn eh_frame_segment(object: &crate::Binary) -> Option<ProgramHeader64<LittleEndi
     None
 }
 
-#[derive(Zeroable, Pod, Clone, Copy)]
+#[derive(FromBytes, KnownLayout, Immutable, Clone, Copy)]
 #[repr(C)]
 struct EhFrameHdr {
     version: u8,
@@ -233,14 +238,14 @@ struct EhFrameHdr {
     entry_count: u32,
 }
 
-#[derive(Zeroable, Pod, Clone, Copy)]
+#[derive(FromBytes, KnownLayout, Immutable, Clone, Copy)]
 #[repr(C)]
 struct EhFrameHdrEntry {
     frame_ptr: i32,
     frame_info_ptr: i32,
 }
 
-#[derive(Zeroable, Pod, Clone, Copy)]
+#[derive(FromBytes, Clone, Copy)]
 #[repr(C)]
 struct EhFrameEntryPrefix {
     length: u32,
