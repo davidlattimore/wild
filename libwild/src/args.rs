@@ -27,6 +27,7 @@ use jobserver::Acquired;
 use jobserver::Client;
 use rayon::ThreadPoolBuilder;
 use std::fmt::Display;
+use std::num::NonZero;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -113,6 +114,7 @@ pub struct Args {
 
     /// The number of actually available threads (considering jobserver)
     pub(crate) available_threads: NonZeroUsize,
+    string_merging_threads: Option<NonZeroUsize>,
 
     jobserver_client: Option<Client>,
 }
@@ -373,6 +375,7 @@ impl Default for Args {
             error_unresolved_symbols: true,
             allow_multiple_definitions: false,
             z_interpose: false,
+            string_merging_threads: None,
         }
     }
 }
@@ -590,6 +593,14 @@ impl Args {
             args: self,
             _jobserver_tokens: tokens,
         })
+    }
+
+    pub fn string_merging_threads(&self) -> NonZeroUsize {
+        if let Some(threads) = self.string_merging_threads {
+            return threads;
+        }
+        const KNOWN_PERFORMANT_LIMIT: NonZero<usize> = NonZero::new(8).unwrap();
+        self.available_threads.min(KNOWN_PERFORMANT_LIMIT)
     }
 }
 
@@ -1652,6 +1663,26 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Use a single thread")
         .execute(|args, _modifier_stack| {
             args.num_threads = Some(NonZeroUsize::new(1).unwrap());
+            Ok(())
+        });
+
+    parser
+        .declare_with_optional_param()
+        .long("wild-string-merging-threads")
+        .help(
+            "Due to current poor scalability of string-merging, defaults to --threads \
+             (capped at 8). Using this argument disables the default limit",
+        )
+        .execute(|args, _modifier_stack, value| {
+            match value {
+                Some(v) => {
+                    args.string_merging_threads =
+                        Some(NonZeroUsize::try_from(v.parse::<usize>()?)?);
+                }
+                None => {
+                    args.string_merging_threads = None; // Default behaviour
+                }
+            }
             Ok(())
         });
 
