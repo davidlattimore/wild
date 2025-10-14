@@ -12,8 +12,10 @@
 
 //#Config:export_merged_str_dyn:default
 //#Mode:dynamic
-//#LinkArgs:--export-dynamic-symbol s1w
+//#Shared:force-dynamic-linking.c
+//#LinkArgs:--export-dynamic-symbol s1w -z now
 //#DiffIgnore:.gnu.hash
+//#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic
 //#DiffIgnore:dynsym.s1w.section
 //#DiffIgnore:segment.PT_DYNAMIC.*

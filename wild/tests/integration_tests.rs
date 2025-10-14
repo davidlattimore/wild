@@ -130,6 +130,7 @@ mod external_tests;
 
 use itertools::Itertools;
 use libwild::bail;
+use libwild::ensure;
 use libwild::error;
 use libwild::error::Context as _;
 use object::LittleEndian;
@@ -626,6 +627,7 @@ struct Assertions {
     no_sym: HashSet<String>,
     does_not_contain: Vec<String>,
     contains_strings: Vec<String>,
+    expect_dynamic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -863,6 +865,7 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                         .with_context(|| format!("Invalid Mode `{arg}`"))?;
                     if mode == Mode::Dynamic {
                         config.should_run = false;
+                        config.assertions.expect_dynamic = true;
                     }
                     config.linker_driver.direct_mut()?.mode = mode;
                 }
@@ -2067,6 +2070,7 @@ impl Assertions {
         let bytes = std::fs::read(path)?;
         let obj = ElfFile64::parse(bytes.as_slice())?;
 
+        self.verify_fild_kind(&obj)?;
         verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols())?;
         verify_symbol_assertions(&obj, &self.expected_dynsym_entries, obj.dynamic_symbols())?;
         self.verify_symbols_absent(obj.symbols(), ".symtab")?;
@@ -2141,6 +2145,19 @@ impl Assertions {
             {
                 bail!("Symbol `{name}` was supposed to be absent, but was found in {table_name}");
             }
+        }
+
+        Ok(())
+    }
+
+    fn verify_fild_kind(&self, obj: &ElfFile64) -> Result {
+        // For now, our file-kind identification is limited to just whether there's a dynamic symbol
+        // table.
+        if self.expect_dynamic {
+            ensure!(
+                obj.dynamic_symbol_table().is_some(),
+                "Expected a dynamic symbol table"
+            );
         }
 
         Ok(())
