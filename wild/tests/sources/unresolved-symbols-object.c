@@ -1,6 +1,14 @@
 //#AbstractConfig:default
-//#RunEnabled:false
+//#Object:runtime.c
 //#DiffIgnore:rel.extra-opt.R_AARCH64_CALL26.ReplaceWithNop.static-non-pie
+//#DiffIgnore:rel.extra-opt.R_AARCH64_CALL26.ReplaceWithNop.dynamic-non-pie
+
+//#Config:ignore-all-dynamic:default
+//#Mode:dynamic
+//#Shared:force-dynamic-linking.c
+//#LinkArgs:--unresolved-symbols=ignore-all -z now
+//#DiffIgnore:.dynamic.DT_NEEDED
+//#DiffIgnore:section.got
 
 //#Config:report-all:default
 //#LinkArgs:--unresolved-symbols=report-all
@@ -23,6 +31,33 @@
 //#LinkArgs:--error-unresolved-symbols
 //#ExpectError:foo
 
+#include "runtime.h"
+
 int foo();
 
-void _start(void) { foo(); }
+// This weak function is just here to give us a way to avoid calling foo without
+// the compiler knowing that we'll never call foo. It also helps us verify that
+// we do the right thing with weak symbols, since they should be interposable.
+int __attribute__((weak)) weak_fn1(void);
+
+int __attribute__((weak, visibility(("protected")))) weak_protected(void);
+
+int __attribute__((weak, visibility(("hidden")))) weak_hidden(void);
+
+void _start(void) {
+  runtime_init();
+
+  if (weak_fn1) {
+    foo();
+  }
+
+  if (weak_protected) {
+    weak_protected();
+  }
+
+  if (weak_hidden) {
+    weak_hidden();
+  }
+
+  exit_syscall(42);
+}
