@@ -22,8 +22,14 @@ use std::sync::mpsc::Sender;
 pub struct Output {
     path: Arc<Path>,
     creator: FileCreator,
+    config: OutputConfig,
+}
+
+#[derive(Clone, Copy)]
+struct OutputConfig {
     file_write_mode: FileWriteMode,
     should_write_trace: bool,
+    use_mmap: bool,
 }
 
 enum FileCreator {
@@ -49,9 +55,19 @@ pub(crate) enum OutputBuffer {
 }
 
 impl OutputBuffer {
-    fn new(file: &std::fs::File, file_size: u64) -> Self {
-        Self::new_mmapped(file, file_size)
-            .unwrap_or_else(|| Self::InMemory(vec![0; file_size as usize]))
+    fn new(file: &std::fs::File, file_size: u64, output_config: OutputConfig) -> Self {
+        if output_config.use_mmap {
+            // For some types of output file (e.g. character devices) we can't mmap, so we try to
+            // mmap the file and if it fails, fall back to non-mmapped output.
+            Self::new_mmapped(file, file_size)
+                .unwrap_or_else(|| Self::InMemory(vec![0; file_size as usize]))
+        } else {
+            // Try to set the length of the file. We ignore failures here because it's expected to
+            // fail for some types of files, e.g. /dev/null. If there's actually a problem writing
+            // to the file, we'll discover that when we go to write the content later on.
+            let _ = file.set_len(file_size);
+            Self::InMemory(vec![0; file_size as usize])
+        }
     }
 
     fn new_mmapped(file: &std::fs::File, file_size: u64) -> Option<Self> {
@@ -94,24 +110,24 @@ impl Output {
             .file_write_mode
             .unwrap_or_else(|| default_file_write_mode(&args.output));
 
-        if args.available_threads.get() > 1 {
+        let creator = if args.available_threads.get() > 1 {
             let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
-            Output {
-                path: args.output.clone(),
-                creator: FileCreator::Background {
-                    sized_output_sender: Some(sized_output_sender),
-                    sized_output_recv,
-                },
-                file_write_mode,
-                should_write_trace: args.write_trace,
+            FileCreator::Background {
+                sized_output_sender: Some(sized_output_sender),
+                sized_output_recv,
             }
         } else {
-            Output {
-                path: args.output.clone(),
-                creator: FileCreator::Regular { file_size: None },
+            FileCreator::Regular { file_size: None }
+        };
+
+        Output {
+            path: args.output.clone(),
+            creator,
+            config: OutputConfig {
                 file_write_mode,
                 should_write_trace: args.write_trace,
-            }
+                use_mmap: args.mmap_output_file,
+            },
         }
     }
 
@@ -126,11 +142,10 @@ impl Output {
                     .expect("set_size must only be called once");
                 let path = self.path.clone();
 
-                let write_mode = self.file_write_mode;
-                let should_write_trace = self.should_write_trace;
+                let output_config = self.config;
 
                 rayon::spawn(move || {
-                    if write_mode == FileWriteMode::UnlinkAndReplace {
+                    if output_config.file_write_mode == FileWriteMode::UnlinkAndReplace {
                         // Rename the old output file so that we can create a new file in its place.
                         // Reusing the existing file would also be an option, but that wouldn't
                         // error if the file is currently being executed.
@@ -153,7 +168,7 @@ impl Output {
                     }
 
                     // Create the output file.
-                    let sized_output = SizedOutput::new(path, size, write_mode, should_write_trace);
+                    let sized_output = SizedOutput::new(path, output_config, size);
 
                     // Pass it to the main thread, so that it can start writing it once layout finishes.
                     let _ = sender.send(sized_output);
@@ -202,12 +217,7 @@ impl Output {
 
     #[tracing::instrument(skip_all, name = "Create output file")]
     fn create_file_non_lazily(&self, file_size: u64) -> Result<SizedOutput> {
-        SizedOutput::new(
-            self.path.clone(),
-            file_size,
-            self.file_write_mode,
-            self.should_write_trace,
-        )
+        SizedOutput::new(self.path.clone(), self.config, file_size)
     }
 }
 
@@ -247,12 +257,7 @@ fn wait_for_sized_output(sized_output_recv: &Receiver<Result<SizedOutput>>) -> R
 }
 
 impl SizedOutput {
-    fn new(
-        path: Arc<Path>,
-        file_size: u64,
-        write_mode: FileWriteMode,
-        should_write_trace: bool,
-    ) -> Result<SizedOutput> {
+    fn new(path: Arc<Path>, output_config: OutputConfig, file_size: u64) -> Result<SizedOutput> {
         let mut open_options = std::fs::OpenOptions::new();
 
         // If another thread spawns a subprocess while we have this file open, we don't want the
@@ -262,7 +267,7 @@ impl SizedOutput {
         // descriptor for less time. i.e. this doesn't really fix anything, but makes problems less bad.
         std::os::unix::fs::OpenOptionsExt::custom_flags(&mut open_options, libc::O_CLOEXEC);
 
-        match write_mode {
+        match output_config.file_write_mode {
             FileWriteMode::UnlinkAndReplace => {
                 open_options.truncate(true);
             }
@@ -278,9 +283,9 @@ impl SizedOutput {
             .open(&path)
             .with_context(|| format!("Failed to open `{}`", path.display()))?;
 
-        let out = OutputBuffer::new(&file, file_size);
+        let out = OutputBuffer::new(&file, file_size, output_config);
 
-        let trace = TraceOutput::new(should_write_trace, &path);
+        let trace = TraceOutput::new(output_config.should_write_trace, &path);
 
         Ok(SizedOutput {
             file,
