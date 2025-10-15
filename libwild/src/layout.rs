@@ -1901,7 +1901,13 @@ fn compute_segment_layout(
                         output_sections.section_debug(section_id)
                     );
                 } else {
-                    // The note and RISCV_ATTRIBUTES sections  do not have ALLOC flag set.
+                    // TODO: Remove the NOTE exception. Non-alloc sections should be placed outside
+                    // of program segments. NOTE sections are sometimes alloc and sometimes not.
+                    // Alloc NOTE sections should be placed within a LOAD segment and within a NOTE
+                    // segment. Non-alloc NOTE sections shouldn't be in any segment.
+
+                    // The .riscv.attributes section is non-alloc but is expected to be put into a
+                    // RISCV_ATTRIBUTES segment.
                     if [NOTE, RISCV_ATTRIBUTES].contains(&section_info.ty) {
                     } else {
                         // All segments should only cover sections that are allocated and have a non-zero address.
