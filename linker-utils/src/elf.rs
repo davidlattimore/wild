@@ -758,6 +758,12 @@ pub mod riscvattr {
     pub const TAG_RISCV_X3_REG_USAGE: u64 = 16;
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sign {
+    Signed,
+    Unsigned,
+}
+
 /// For additional information on ELF relocation types, see "ELF-64 Object File Format" -
 /// <https://uclibc.org/docs/elf-64-gen.pdf>. For information on the TLS related relocations, see "ELF
 /// Handling For Thread-Local Storage" - <https://www.uclibc.org/docs/tls.pdf>.
@@ -1199,14 +1205,18 @@ impl AllowedRange {
     }
 
     #[must_use]
-    pub const fn from_byte_size(n_bytes: usize) -> Self {
+    /// Note: for the 8-byte size, we actually do signed checks regardless of the `sign` argument
+    /// because the `min` and `max` are `i64` type
+    pub const fn from_byte_size(n_bytes: usize, sign: Sign) -> Self {
         match n_bytes {
             0 | 8 => Self::no_check(),
             1..=7 => {
                 let bits = n_bytes * 8;
-                let max = (1i64 << (bits - 1)) - 1;
-                let min = -max - 1;
-                Self::new(min, max)
+                let half_range = 1i64 << (bits - 1);
+                match sign {
+                    Sign::Unsigned => Self::new(0, half_range * 2 - 1),
+                    Sign::Signed => Self::new(-half_range, half_range - 1),
+                }
             }
             _ => panic!("Only sizes up to 8 bytes are supported"),
         }
@@ -1282,15 +1292,38 @@ mod tests {
 
     #[test]
     fn test_range_from_byte_size() {
-        assert_eq!(AllowedRange::from_byte_size(0), AllowedRange::no_check());
         assert_eq!(
-            AllowedRange::from_byte_size(1),
+            AllowedRange::from_byte_size(0, Sign::Signed),
+            AllowedRange::no_check(),
+        );
+        assert_eq!(
+            AllowedRange::from_byte_size(0, Sign::Unsigned),
+            AllowedRange::no_check(),
+        );
+        assert_eq!(
+            AllowedRange::from_byte_size(1, Sign::Signed),
             AllowedRange::new(-128, 127)
         );
         assert_eq!(
-            AllowedRange::from_byte_size(4),
+            AllowedRange::from_byte_size(1, Sign::Unsigned),
+            AllowedRange::new(0, 255)
+        );
+        assert_eq!(
+            AllowedRange::from_byte_size(4, Sign::Signed),
             AllowedRange::new(i32::MIN.into(), i32::MAX.into())
         );
-        assert_eq!(AllowedRange::from_byte_size(8), AllowedRange::no_check());
+        assert_eq!(
+            AllowedRange::from_byte_size(4, Sign::Unsigned),
+            AllowedRange::new(u32::MIN.into(), u32::MAX.into())
+        );
+        assert_eq!(
+            AllowedRange::from_byte_size(8, Sign::Signed),
+            AllowedRange::no_check()
+        );
+        // 8-byte unsigned is also no check because the range cannot be represented in i64
+        assert_eq!(
+            AllowedRange::from_byte_size(8, Sign::Unsigned),
+            AllowedRange::no_check()
+        );
     }
 }
