@@ -289,6 +289,7 @@ pub fn compute<'data, A: Arch>(
         merged_strings,
         merged_string_start_addresses,
         has_static_tls: gc_outputs.has_static_tls,
+        has_variant_pcs: gc_outputs.has_variant_pcs,
         relocation_statistics,
         per_symbol_flags,
     })
@@ -620,6 +621,7 @@ pub struct Layout<'data> {
     pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
     pub(crate) relocation_statistics: OutputSectionMap<AtomicU64>,
     pub(crate) has_static_tls: bool,
+    pub(crate) has_variant_pcs: bool,
     pub(crate) per_symbol_flags: PerSymbolFlags,
 }
 
@@ -1062,7 +1064,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         &mut self,
         _common: &mut CommonGroupState,
         symbol_id: SymbolId,
-        _resources: &GraphResources<'data, 'scope>,
+        resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
     ) -> Result {
         let local_index = symbol_id.to_offset(self.symbol_id_range());
@@ -1077,6 +1079,17 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
                     true;
             }
         }
+
+        // Check for VARIANT_PCS flag in AArch64 symbols
+        if matches!(A::elf_header_arch_magic(), object::elf::EM_AARCH64)
+            && let Ok(sym) = self.object.symbols.symbol(object::SymbolIndex(local_index))
+            && (sym.st_other & crate::elf::STO_AARCH64_VARIANT_PCS) != 0
+        {
+            resources
+                .has_variant_pcs
+                .store(true, atomic::Ordering::Relaxed);
+        }
+
         Ok(())
     }
 }
@@ -1492,6 +1505,8 @@ struct GraphResources<'data, 'scope> {
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
 
     has_static_tls: AtomicBool,
+
+    has_variant_pcs: AtomicBool,
 
     uses_tlsld: AtomicBool,
 
@@ -2127,6 +2142,7 @@ struct GcOutputs<'data> {
     group_states: Vec<GroupState<'data>>,
     sections_with_content: OutputSectionMap<bool>,
     has_static_tls: bool,
+    has_variant_pcs: bool,
 }
 
 #[tracing::instrument(skip_all, name = "Find required sections")]
@@ -2157,6 +2173,7 @@ fn find_required_sections<'data, A: Arch>(
         sections_with_content: output_sections.new_section_map(),
         merged_strings,
         has_static_tls: AtomicBool::new(false),
+        has_variant_pcs: AtomicBool::new(false),
         uses_tlsld: AtomicBool::new(false),
         start_stop_sections: output_sections.new_section_map(),
         input_data,
@@ -2239,6 +2256,7 @@ fn find_required_sections<'data, A: Arch>(
         group_states,
         sections_with_content,
         has_static_tls: resources.has_static_tls.load(atomic::Ordering::Relaxed),
+        has_variant_pcs: resources.has_variant_pcs.load(atomic::Ordering::Relaxed),
     })
 }
 

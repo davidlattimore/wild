@@ -161,7 +161,6 @@ reason = "Aarch64 specific tests"
 tests = [
   "arch-aarch64-long-thunk.sh",
   "arch-aarch64-range-extension-thunk-disassembly.sh",
-  "arch-aarch64-variant-pcs.sh",
 ]
 
 [skipped_groups.arch_riscv64]
