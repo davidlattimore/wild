@@ -8,6 +8,7 @@ name: Update Nix lockfile
 jobs:
   bump-nix:
     name: Update Nix lockfile
+    if: github.repository_owner == 'davidlattimore'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
