@@ -28,6 +28,12 @@
 //#AutoAddObjects:false
 //#ExpectError:no input files
 
+//#Config:no-mmap-output
+//#Object:runtime.c
+//#SkipLinker:ld
+//#EnableLinker:lld
+//#LinkArgs:--no-mmap-output-file
+
 #include "runtime.h"
 
 void _start(void) {

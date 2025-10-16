@@ -64,6 +64,7 @@ pub struct Args {
     pub(crate) exclude_libs: bool,
     pub(crate) gc_sections: bool,
     pub(crate) should_fork: bool,
+    pub(crate) mmap_output_file: bool,
     pub(crate) build_id: BuildIdOption,
     pub(crate) file_write_mode: Option<FileWriteMode>,
     pub(crate) no_undefined: bool,
@@ -344,6 +345,7 @@ impl Default for Args {
             soname: None,
             execstack: false,
             should_fork: true,
+            mmap_output_file: true,
             needs_origin_handling: false,
             needs_nodelete_handling: false,
             file_write_mode: None,
@@ -1597,6 +1599,24 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Omit the load-time dynamic linker request")
         .execute(|args, _modifier_stack| {
             args.dynamic_linker = None;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("mmap-output-file")
+        .help("Write output file using mmap (default)")
+        .execute(|args, _modifier_stack| {
+            args.mmap_output_file = true;
+            Ok(())
+        });
+
+    parser
+        .declare()
+        .long("no-mmap-output-file")
+        .help("Write output file without mmap")
+        .execute(|args, _modifier_stack| {
+            args.mmap_output_file = false;
             Ok(())
         });
 
