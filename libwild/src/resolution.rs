@@ -38,7 +38,10 @@ use crate::symbol_db::RawSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
+use crate::symbol_db::SymbolStrength;
+use crate::symbol_db::Visibility;
 use crate::value_flags::PerSymbolFlags;
+use crate::value_flags::ValueFlags;
 use atomic_take::AtomicTake;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
@@ -654,6 +657,37 @@ fn canonicalise_undefined_symbols<'data>(
                             custom_start_stop_defs,
                             output_sections,
                         );
+
+                        // We either make our undefined symbol dynamic, allowing the possibility
+                        // that it might end up being defined at runtime, or we make it
+                        // non-interposable, which means it'll remain null and even if it ends up
+                        // defined at runtime, we won't use that definition. If the symbol doesn't
+                        // have default visibility, then we make it non-interposable. If we're
+                        // building a shared object, we always make the symbol dynamic. If we're
+                        // building a statically linked executable, then we always make it
+                        // non-interposable. If we're building a regular, dynamically linked
+                        // executable, then we make it dynamic if the symbol is weak and otherwise
+                        // make it non-interposable. That last case, a non-weak, default-visibility,
+                        // undefined symbol in an executable is generally a link error, however if
+                        // the flag --warn-unresolved-symbols is passed, then it won't be. Linker
+                        // behaviour differs in this case. GNU ld makes the symbol non-interposable,
+                        // while lld makes it dynamic. We match GNU ld in this case.
+                        if symbol_id.is_none() {
+                            let output_kind = symbol_db.args.output_kind();
+                            let visibility = symbol_db.input_symbol_visibility(undefined.symbol_id);
+
+                            if visibility == Visibility::Default
+                                && (output_kind.is_shared_object()
+                                    || (!output_kind.is_static_executable()
+                                        && symbol_db.symbol_strength(undefined.symbol_id, groups)
+                                            == SymbolStrength::Weak))
+                            {
+                                per_symbol_flags.set_flag(undefined.symbol_id, ValueFlags::DYNAMIC);
+                            } else {
+                                per_symbol_flags
+                                    .set_flag(undefined.symbol_id, ValueFlags::NON_INTERPOSABLE);
+                            }
+                        }
 
                         // If the symbol isn't a start/stop symbol, then assign responsibility for the
                         // symbol to the first object that referenced it. This lets us have PLT/GOT entries

@@ -469,7 +469,7 @@ impl<'data> SymbolDb<'data> {
     }
 
     /// Reads the symbol visibility from the original object.
-    fn input_symbol_visibility(&self, symbol_id: SymbolId) -> Visibility {
+    pub(crate) fn input_symbol_visibility(&self, symbol_id: SymbolId) -> Visibility {
         let file_id = self.file_id_for_symbol(symbol_id);
         match &self.groups[file_id.group()] {
             Group::Prelude(_) => Visibility::Default,
@@ -681,7 +681,11 @@ impl<'data> SymbolDb<'data> {
     }
 
     #[inline(always)]
-    fn symbol_strength(&self, symbol_id: SymbolId, resolved: &[ResolvedGroup]) -> SymbolStrength {
+    pub(crate) fn symbol_strength(
+        &self,
+        symbol_id: SymbolId,
+        resolved: &[ResolvedGroup],
+    ) -> SymbolStrength {
         let file_id = self.file_id_for_symbol(symbol_id);
         if let ResolvedFile::Object(obj) = &resolved[file_id.group()].files[file_id.file()] {
             let local_index = symbol_id.to_input(obj.symbol_id_range);
@@ -837,7 +841,7 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Visibility {
+pub(crate) enum Visibility {
     Default,
     Protected,
     Hidden,
@@ -982,7 +986,7 @@ fn select_symbol(
 }
 
 #[derive(PartialEq, Eq, Clone, Copy)]
-enum SymbolStrength {
+pub(crate) enum SymbolStrength {
     /// The object containing this symbol wasn't loaded, so the definition can be ignored.
     Undefined,
 
@@ -1320,13 +1324,10 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
         } else if sym.st_type() == object::elf::STT_GNU_IFUNC {
             ValueFlags::IFUNC
         } else if is_undefined {
-            if non_interposable {
-                ValueFlags::ABSOLUTE
-            } else {
-                // If we can't bypass the GOT, then an undefined symbol might be able to be defined at
-                // runtime by a dynamic library that gets loaded.
-                ValueFlags::DYNAMIC | ValueFlags::ABSOLUTE
-            }
+            // For undefined symbols, we tweak some of the flags later on in
+            // `canonicalise_undefined_symbols`. We can't make those decisions now because we don't
+            // know whether the symbol will remain undefined.
+            ValueFlags::ABSOLUTE
         } else {
             ValueFlags::empty()
         };
