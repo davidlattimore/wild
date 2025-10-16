@@ -24,16 +24,21 @@ fn should_not_ignore_tests(external_test: &str) -> bool {
 }
 
 #[allow(unused)]
-fn run_external_test(external_test: &Path) -> Result<Output> {
+fn run_external_test(external_test: &Path, extra_env: &[(&str, &str)]) -> Result<Output> {
     let path = env::var("PATH")?;
     let current_dir = env::current_dir()?;
     let wild_dir = current_dir.parent().unwrap().join("fakes-debug");
 
-    Command::new("bash")
+    let mut command = Command::new("bash");
+    command
         .current_dir("../fakes-debug")
         .arg("-c")
         .arg(format!("{} 2>&1", external_test.display()))
-        .env("PATH", format!("{wild_dir:?}:{path}"))
-        .output()
-        .map_err(Into::into)
+        .env("PATH", format!("{wild_dir:?}:{path}"));
+
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+
+    command.output().map_err(Into::into)
 }
