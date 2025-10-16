@@ -17,6 +17,10 @@ use linker_utils::elf::x86_64_rel_type_to_string;
 use linker_utils::relaxation::RelocationModifier;
 use linker_utils::x86_64::RelaxationKind;
 use linker_utils::x86_64::relocation_from_raw;
+use object::elf::GNU_PROPERTY_UINT32_AND_HI;
+use object::elf::GNU_PROPERTY_UINT32_AND_LO;
+use object::elf::GNU_PROPERTY_UINT32_OR_HI;
+use object::elf::GNU_PROPERTY_UINT32_OR_LO;
 use object::elf::GNU_PROPERTY_X86_UINT32_AND_HI;
 use object::elf::GNU_PROPERTY_X86_UINT32_AND_LO;
 use object::elf::GNU_PROPERTY_X86_UINT32_OR_AND_HI;
@@ -93,6 +97,8 @@ impl crate::arch::Arch for X86_64 {
             GNU_PROPERTY_X86_UINT32_OR_AND_LO..=GNU_PROPERTY_X86_UINT32_OR_AND_HI => {
                 Some(PropertyClass::AndOr)
             }
+            GNU_PROPERTY_UINT32_AND_LO..=GNU_PROPERTY_UINT32_AND_HI => Some(PropertyClass::And),
+            GNU_PROPERTY_UINT32_OR_LO..=GNU_PROPERTY_UINT32_OR_HI => Some(PropertyClass::Or),
             _ => None,
         }
     }
