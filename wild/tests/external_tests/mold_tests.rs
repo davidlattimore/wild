@@ -11,6 +11,7 @@ use std::env;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Output;
 use std::str::FromStr;
 use std::sync::OnceLock;
 
@@ -26,6 +27,30 @@ struct SkippedGroup {
 
 static SKIP_TESTS_NAME: OnceLock<Option<Vec<String>>> = OnceLock::new();
 
+/// Run a mold test with mold-specific environment setup.
+fn run_mold_test(mold_test: &Path) -> Result<Output> {
+    // Mold tests use the `arch-` prefix to indicate architecture-specific tests.
+    // If the test is architecture-specific (e.g., arch-riscv64-*.sh),
+    // set the TRIPLE environment variable for cross-compilation
+    let triple = if let Some(file_name) = mold_test.file_name().and_then(|n| n.to_str())
+        && let Some(arch_str) = file_name.strip_prefix("arch-")
+        && let Some(arch_name) = arch_str.split('-').next()
+        && let Ok(arch) = Architecture::from_str(arch_name)
+    {
+        Some(format!("{}-linux-gnu", arch))
+    } else {
+        None
+    };
+
+    let env_vars: Vec<(&str, &str)> = if let Some(ref triple_value) = triple {
+        vec![("TRIPLE", triple_value.as_str())]
+    } else {
+        vec![]
+    };
+
+    run_external_test(mold_test, &env_vars)
+}
+
 #[rstest]
 fn check_mold_tests_regression(
     #[files("../external_test_suites/mold/test/*.sh")] mold_test: PathBuf,
@@ -34,7 +59,7 @@ fn check_mold_tests_regression(
         return Ok(());
     }
 
-    let output = run_external_test(&mold_test)?;
+    let output = run_mold_test(&mold_test)?;
     if !output.status.success() {
         let error_message = format!(
             "Mold test `{}` failed with status: {}\nOutput:\n{}",
@@ -56,7 +81,7 @@ fn verify_skipped_mold_tests_still_fail(
         return Ok(());
     }
 
-    let output = run_external_test(&mold_test)?;
+    let output = run_mold_test(&mold_test)?;
     if output.status.success() {
         return Err(format!(
             "Test `{}` is in skip list but now passes. Should be removed from skip list.",

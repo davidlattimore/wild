@@ -161,21 +161,21 @@ reason = "Aarch64 specific tests"
 tests = [
   "arch-aarch64-long-thunk.sh",
   "arch-aarch64-range-extension-thunk-disassembly.sh",
+  "arch-aarch64-variant-pcs.sh",
 ]
 
 [skipped_groups.arch_riscv64]
 reason = "RISC-V specific tests"
 tests = [
-  "arch-riscv64-attributes.sh",
-  "arch-riscv64-global-pointer-dso.sh",
   "arch-riscv64-global-pointer.sh",
   "arch-riscv64-obj-compatible.sh",
+  "arch-riscv64-relax-align.sh",
   "arch-riscv64-relax-got.sh",
   "arch-riscv64-relax-hi20.sh",
   "arch-riscv64-relax-j.sh",
   "arch-riscv64-reloc-overflow.sh",
   "arch-riscv64-symbol-size.sh",
-  "arch-riscv64-weak-undef.sh",
+  "arch-riscv64-variant-cc.sh",
 ]
 
 [skipped_groups.tls]
