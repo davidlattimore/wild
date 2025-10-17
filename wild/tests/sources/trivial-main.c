@@ -40,6 +40,6 @@
 
 //#Config:gcc-indirect-external:default
 //#CompArgs:-fPIE -mno-direct-extern-access
-//#Arch:x86_64
+//#RequiresCompilerFlags:-mno-direct-extern-access
 
 int main() { return 42; }
