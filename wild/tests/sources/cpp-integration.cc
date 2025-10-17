@@ -48,7 +48,7 @@
 //#Compiler:clang
 //#CompArgs: -Wa,--crel,--allow-experimental-crel
 //#LinkerDriver:clang++
-//#RequiresClangWithCrel:true
+//#RequiresCompilerFlags:-Wa,--crel,--allow-experimental-crel
 //#DiffEnabled:false
 //#SkipLinker:ld
 
