@@ -38,4 +38,8 @@
 //#Config:clang:default
 //#Compiler: clang
 
+//#Config:gcc-indirect-external:default
+//#CompArgs:-fPIE -mno-direct-extern-access
+//#RequiresCompilerFlags:-mno-direct-extern-access
+
 int main() { return 42; }
