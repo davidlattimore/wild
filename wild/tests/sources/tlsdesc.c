@@ -42,7 +42,7 @@
 //#Config:clang-tls-desc:gcc-tls-desc
 //#CompArgs:-mtls-dialect=gnu2 -fPIC
 //#Compiler:clang
-//#RequiresClangWithTlsDesc:true
+//#RequiresCompilerFlags:-mtls-dialect=gnu2
 //#Arch: x86_64
 
 //#Config:clang-tls-desc-aarch64:clang-tls-desc

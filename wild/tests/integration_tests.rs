@@ -82,8 +82,9 @@
 //! RequiresNightlyRustc:{bool} Defaults to false. Set to true to disable this test if we detect
 //! that the version of rustc available to us is not nightly.
 //!
-//! RequiresClangWithTlsDesc:{bool} Defaults to false. Set to true to disable this test if we detect
-//! that the version of clang available to us doesn't support TLSDESC.
+//! RequiresCompilerFlags:{flag} Checks if the compiler supports the specified flag(s) and skips the
+//! test if it doesn't. Set WILD_VERIFY_PLATFORM_REQUIREMENTS=1 to verify that all requirements are
+//! met and no tests are skipped.
 //!
 //! RequiresRustMusl:{bool} Defaults to false. Set to true to clarify that this test requires the
 //! musl Rust toolchain.
@@ -155,7 +156,6 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::ErrorKind;
 use std::io::Read;
-use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -434,25 +434,6 @@ fn is_musl_used() -> bool {
     os_info::get().os_type() == Type::Alpine
 }
 
-fn host_supports_clang_with_option(option: &str) -> bool {
-    static CLANG_SUPPORTS_TLS_DESC: OnceLock<bool> = OnceLock::new();
-
-    *CLANG_SUPPORTS_TLS_DESC.get_or_init(|| {
-        let mut clang = Command::new("clang")
-            .args([option, "-x", "c", "-", "-o/dev/null"])
-            .stdin(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("Failed to run clang");
-        let mut stdin = clang.stdin.take().expect("Failed to open stdin");
-        stdin
-            .write_all("int main() { return 0; }".as_bytes())
-            .expect("Write of a source file failed");
-        drop(stdin);
-        clang.wait().expect("Wait failed").success()
-    })
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Config {
     name: String,
@@ -477,8 +458,7 @@ struct Config {
     expect_errors: Vec<String>,
     support_architectures: Vec<Architecture>,
     requires_glibc: bool,
-    requires_clang_with_tlsdesc: bool,
-    requires_clang_with_crel: bool,
+    requires_compiler_flags: Vec<String>,
     requires_nightly_rustc: bool,
     auto_add_objects: bool,
     rustc_channel: RustcChannel,
@@ -546,10 +526,6 @@ impl Config {
     fn should_skip(&self, arch: Architecture) -> bool {
         !self.support_architectures.contains(&arch)
             || self.requires_glibc && !cfg!(target_env = "gnu")
-            || (self.requires_clang_with_tlsdesc
-                && !host_supports_clang_with_option("-mtls-dialect=gnu2"))
-            || (self.requires_clang_with_crel
-                && !host_supports_clang_with_option("-Wa,--crel,--allow-experimental-crel"))
             || (arch != get_host_architecture()
                 && (self.compiler == "clang" || !self.cross_enabled))
             || (self.test_config.rustc_channel != RustcChannel::Nightly
@@ -731,8 +707,7 @@ impl Config {
             cross_enabled: true,
             support_architectures: ALL_ARCHITECTURES.to_owned(),
             requires_glibc: false,
-            requires_clang_with_tlsdesc: false,
-            requires_clang_with_crel: false,
+            requires_compiler_flags: Vec::new(),
             requires_nightly_rustc: false,
             auto_add_objects: true,
             rustc_channel: RustcChannel::Default,
@@ -940,11 +915,10 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                         .collect::<Result<Vec<_>, _>>()?;
                 }
                 "RequiresGlibc" => config.requires_glibc = arg.trim().to_lowercase().parse()?,
-                "RequiresClangWithTlsDesc" => {
-                    config.requires_clang_with_tlsdesc = arg.to_lowercase().parse()?;
-                }
-                "RequiresClangWithCrel" => {
-                    config.requires_clang_with_crel = arg.to_lowercase().parse()?;
+                "RequiresCompilerFlags" => {
+                    config
+                        .requires_compiler_flags
+                        .extend(arg.trim().split(' ').map(str::to_owned));
                 }
                 "RequiresNightlyRustc" => {
                     config.requires_nightly_rustc = arg.to_lowercase().parse()?;
@@ -1339,33 +1313,11 @@ fn build_obj(
         .map(|dep| build_linker_input(dep, &config, linker, cross_arch))
         .try_collect()?;
 
-    let extension = src_path
-        .extension()
-        .with_context(|| format!("Missing extension for {input_type:?}: {}", file.filename))?
-        .to_str()
-        .context("Extension isn't valid UTF-8")?;
-
-    let (compiler, compiler_kind) = match extension {
-        "cc" => (
-            get_c_compiler(&config.compiler, CLanguage::Cpp, cross_arch)?,
-            CompilerKind::C,
-        ),
-        "c" => (
-            get_c_compiler(&config.compiler, CLanguage::C, cross_arch)?,
-            CompilerKind::C,
-        ),
-        "s" => (
-            get_c_compiler(&config.compiler, CLanguage::C, cross_arch)?,
-            CompilerKind::C,
-        ),
-        "rs" => ("rustc".to_string(), CompilerKind::Rust),
-        "o" => {
-            return Ok(BuiltObject {
-                path: src_path,
-                inputs,
-            });
-        }
-        _ => bail!("Don't know how to compile {extension} files"),
+    let Some((compiler, compiler_kind)) = compiler_for_file(&src_path, cross_arch, &config)? else {
+        return Ok(BuiltObject {
+            path: src_path,
+            inputs,
+        });
     };
 
     // For Rust programs, we don't have an easy way to separate compilation from linking, so we
@@ -1520,6 +1472,42 @@ fn build_obj(
         path: output_path,
         inputs,
     })
+}
+
+/// Determines which compiler to use to for the supplied file. Returns None if the file is an object
+/// file and doesn't need compiling.
+fn compiler_for_file(
+    src_path: &Path,
+    cross_arch: Option<Architecture>,
+    config: &Config,
+) -> Result<Option<(String, CompilerKind)>> {
+    let extension = src_path
+        .extension()
+        .with_context(|| format!("Missing extension for `{}`", src_path.display()))?
+        .to_str()
+        .context("Extension isn't valid UTF-8")?;
+
+    let (compiler, compiler_kind) = match extension {
+        "cc" => (
+            get_c_compiler(&config.compiler, CLanguage::Cpp, cross_arch)?,
+            CompilerKind::C,
+        ),
+        "c" => (
+            get_c_compiler(&config.compiler, CLanguage::C, cross_arch)?,
+            CompilerKind::C,
+        ),
+        "s" => (
+            get_c_compiler(&config.compiler, CLanguage::C, cross_arch)?,
+            CompilerKind::C,
+        ),
+        "rs" => ("rustc".to_string(), CompilerKind::Rust),
+        "o" => {
+            return Ok(None);
+        }
+        _ => bail!("Don't know how to compile {extension} files"),
+    };
+
+    Ok(Some((compiler, compiler_kind)))
 }
 
 /// Returns the value of the --target flag.
@@ -2585,11 +2573,9 @@ fn available_linkers() -> Result<Vec<Linker>> {
 fn run_with_config(
     program_inputs: &ProgramInputs,
     config: &Config,
-    arch: Architecture,
+    cross_arch: Option<Architecture>,
     linkers: &[Linker],
 ) -> Result {
-    let cross_arch = (arch != get_host_architecture()).then_some(arch);
-
     let programs = linkers
         .iter()
         .filter(|linker| config.is_linker_enabled(linker))
@@ -2764,6 +2750,8 @@ fn integration_test(
             continue;
         }
 
+        let cross_arch = (arch != get_host_architecture()).then_some(arch);
+
         let config_it = configs.iter().filter(|config| !config.should_skip(arch));
 
         for config in config_it {
@@ -2771,13 +2759,52 @@ fn integration_test(
                 continue;
             }
 
+            if !platform_meets_requirements(config, cross_arch, Path::new(filename))? {
+                continue;
+            }
+
             let mut config = config.clone();
             config.rustc_channel = test_config.rustc_channel;
-            run_with_config(&program_inputs, &config, arch, &linkers)?
+            run_with_config(&program_inputs, &config, cross_arch, &linkers)?
         }
     }
 
     Ok(())
+}
+
+/// Returns whether the platform that we're running on meets the requirements for the supplied test
+/// config.
+fn platform_meets_requirements(
+    config: &Config,
+    cross_arch: Option<Architecture>,
+    src_path: &Path,
+) -> Result<bool> {
+    if config.requires_compiler_flags.is_empty() {
+        return Ok(true);
+    }
+
+    let Some((compiler, _)) = compiler_for_file(src_path, cross_arch, config)? else {
+        bail!("RequiresCompilerFlag isn't valid when a compiler isn't being used");
+    };
+
+    let output = Command::new(compiler)
+        .args(["-c", "-x", "c", "-", "-o", "/dev/null"])
+        .args(&config.requires_compiler_flags)
+        .stdin(Stdio::null())
+        .output()
+        .context("Failed to run gcc")?;
+
+    let is_ok = output.status.success();
+
+    // Provide a way to verify that our system meets the requirements for all tests.
+    if !is_ok && std::env::var("WILD_VERIFY_PLATFORM_REQUIREMENTS").is_ok_and(|v| !v.is_empty()) {
+        bail!(
+            "Failed platform test requirements: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(is_ok)
 }
 
 fn get_wild_test_cross() -> Result<Option<Vec<Architecture>>> {
