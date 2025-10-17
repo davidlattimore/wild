@@ -14,7 +14,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct SaveDir(Option<SaveDirState>);
 
 const SAVE_DIR_ENV: &str = "WILD_SAVE_DIR";
@@ -23,6 +23,7 @@ const SKIP_LINKING_ENV: &str = "WILD_SAVE_SKIP_LINKING";
 
 const PRELUDE: &str = include_str!("save-dir-prelude.sh");
 
+#[derive(Debug)]
 struct SaveDirState {
     dir: PathBuf,
     args: Vec<String>,

@@ -17,14 +17,16 @@ pub(crate) enum PreHashedSymbolName<'data> {
     Versioned(PreHashed<VersionedSymbolName<'data>>),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UnversionedSymbolName<'data> {
+    #[debug("{}", String::from_utf8_lossy(bytes))]
     bytes: &'data [u8],
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VersionedSymbolName<'data> {
     name: UnversionedSymbolName<'data>,
+    #[debug("{}", String::from_utf8_lossy(version))]
     version: &'data [u8],
 }
 
@@ -64,12 +66,6 @@ impl Display for UnversionedSymbolName<'_> {
         } else {
             write!(f, "INVALID UTF-8({:?})", self.bytes)
         }
-    }
-}
-
-impl std::fmt::Debug for UnversionedSymbolName<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(&String::from_utf8_lossy(self.bytes), f)
     }
 }
 

@@ -74,10 +74,12 @@ pub(crate) struct ParsedInputs<'data> {
     pub(crate) num_symbols: usize,
 }
 
+#[derive(Debug)]
 pub(crate) struct Prelude<'data> {
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
 }
 
+#[derive(Debug)]
 pub(crate) struct ParsedInputObject<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) object: File<'data>,
@@ -85,24 +87,27 @@ pub(crate) struct ParsedInputObject<'data> {
     pub(crate) modifiers: Modifiers,
 }
 
+#[derive(Debug)]
 pub(crate) struct ProcessedLinkerScript<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) symbol_defs: Vec<InternalSymDefInfo<'data>>,
 }
 
+#[derive(Debug)]
 pub(crate) struct Epilogue {
     pub(crate) file_id: FileId,
     pub(crate) start_symbol_id: SymbolId,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, derive_more::Debug)]
 pub(crate) struct InternalSymDefInfo<'data> {
     pub(crate) placement: SymbolPlacement,
+    #[debug("{:?}", String::from_utf8_lossy(name))]
     pub(crate) name: &'data [u8],
     pub(crate) elf_symbol_type: u8,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SymbolPlacement {
     /// Symbol 0 - the undefined symbol.
     Undefined,

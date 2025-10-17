@@ -8,11 +8,12 @@ use std::fmt::Display;
 #[derive(Default, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash, Debug)]
 pub(crate) struct ProgramSegmentId(u8);
 
+#[derive(Debug)]
 pub(crate) struct ProgramSegments {
     program_segment_details: Vec<ProgramSegmentDef>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct ProgramSegmentDef {
     pub(crate) segment_type: SegmentType,
     pub(crate) segment_flags: SegmentFlags,

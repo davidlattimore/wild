@@ -383,7 +383,7 @@ pub(crate) struct NotLoaded {
 }
 
 /// A section, but where we may or may not yet have decided to load it.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum SectionSlot {
     /// We've decided that this section won't be loaded.
     Discard,
@@ -416,7 +416,7 @@ pub(crate) enum SectionSlot {
     RiscvVAttributes(object::SectionIndex),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct UnloadedSection {
     pub(crate) part_id: PartId,
 
@@ -439,7 +439,7 @@ impl UnloadedSection {
 }
 
 /// An index into the exception frames for an object.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct FrameIndex(NonZeroU32);
 
 #[derive(Clone)]

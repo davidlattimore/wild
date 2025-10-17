@@ -38,6 +38,7 @@ colosseum = "0.2.2"
 crossbeam-queue = "0.3.10"
 crossbeam-utils = "0.8.18"
 crossbeam-channel = "0.5.15"
+derive_more = { version = "2.0.1", features = ["debug"] }
 dhat = { version = "0.3.3" }
 fallible-iterator = "0.3.0"
 fd-lock = "4.0.0"

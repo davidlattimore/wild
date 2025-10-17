@@ -10,10 +10,12 @@ use zerocopy::transmute_mut;
 
 /// A raw representation of `ValueFlags`. This is separate from `ValueFlags` so that we can derive
 /// `FromBytes` and `IntoBytes`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, FromBytes, IntoBytes)]
+#[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq, Hash, FromBytes, IntoBytes)]
+#[debug("{}", ValueFlags::from_bits_retain(*_0))]
 pub(crate) struct RawFlags(u16);
 
 /// Flags for each symbol.
+#[derive(Debug)]
 pub(crate) struct PerSymbolFlags {
     flags: Vec<RawFlags>,
 }

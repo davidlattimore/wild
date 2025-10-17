@@ -2,6 +2,7 @@ use crate::error::Result;
 use crate::output_section_id::OutputSectionId;
 
 /// A map from output section IDs to something.
+#[derive(Debug)]
 pub(crate) struct OutputSectionMap<T> {
     // TODO: Consider only storing frequently used segment IDs in an array and storing less
     // frequently used IDs in an on-demand sorted Vec or smallvec.

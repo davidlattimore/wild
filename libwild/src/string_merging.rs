@@ -64,7 +64,7 @@ const MERGE_STRING_BUCKETS: usize = 1 << MERGE_STRING_BUCKET_BITS;
 /// spilled to the hashmap.
 const MAP_BLOCK_SIZE: u64 = 256;
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct StringMergeSectionSlot {
     pub(crate) part_id: PartId,
 
@@ -92,7 +92,7 @@ pub(crate) struct StringMergeSectionExtra<'data> {
 
 /// An input offset. We pretend that we've placed all input sections for a given output section one
 /// after the other. This offset is then the offset into that space.
-#[derive(Copy, Clone, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
 struct LinearInputOffset(u64);
 
 impl std::ops::Add<u64> for LinearInputOffset {
@@ -118,11 +118,13 @@ pub(crate) struct MergeString<'data> {
 }
 
 /// The addresses of the start of the merged strings for each output section.
+#[derive(Debug)]
 pub(crate) struct MergedStringStartAddresses {
     addresses: OutputSectionMap<[u64; MERGE_STRING_BUCKETS]>,
 }
 
 /// A section containing null terminated strings post-merging.
+#[derive(derive_more::Debug)]
 pub(crate) struct MergedStringsSection<'data> {
     /// The buckets based on the hash value of the input string.
     pub(crate) buckets: Vec<MergeStringsSectionBucket<'data>>,
@@ -131,6 +133,7 @@ pub(crate) struct MergedStringsSection<'data> {
     bucket_offsets: [u64; MERGE_STRING_BUCKETS],
 
     /// Map from input offsets to output offsets.
+    #[debug(skip)]
     string_offsets: OffsetMap<BucketOffset, MAP_BLOCK_SIZE>,
 
     /// Offsets of strings that didn't fit in `string_offsets`.
@@ -148,7 +151,7 @@ impl Default for MergedStringsSection<'_> {
     }
 }
 
-#[derive(Default)]
+#[derive(derive_more::Debug, Default)]
 pub(crate) struct MergeStringsSectionBucket<'data> {
     index: usize,
 
@@ -157,6 +160,8 @@ pub(crate) struct MergeStringsSectionBucket<'data> {
     next_input_group_index: usize,
 
     /// The strings in this section, in order. Includes null terminators.
+    /// TODO: Debug
+    #[debug(skip)]
     pub(crate) strings: Vec<&'data [u8]>,
 
     /// The offset within the section of the next string to be added, or if we're done adding
@@ -660,7 +665,7 @@ fn work_with_bucket<'data>(
     Ok(did_work)
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 struct BucketOffset(u32);
 
 struct OverflowedOffset {

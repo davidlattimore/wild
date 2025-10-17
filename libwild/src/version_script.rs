@@ -44,7 +44,7 @@ pub(crate) struct Version<'data> {
 }
 
 /// A version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct VersionScript<'data> {
     versions: Vec<Version<'data>>,
     version_name_mapping: HashMap<&'data [u8], usize>,
