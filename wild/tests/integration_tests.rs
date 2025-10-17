@@ -155,6 +155,7 @@ use std::hash::Hasher;
 use std::io::BufRead;
 use std::io::BufReader;
 use std::io::ErrorKind;
+use std::io::IsTerminal;
 use std::io::Read;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
@@ -1343,10 +1344,21 @@ fn build_obj(
             if let Some(v) = config.variant_num {
                 command.arg(format!("-DVARIANT={v}"));
             }
+
             // If we're trying to run the tests with an old version of gcc, and it doesn't support
             // an attribute that we're using like `retain`, it's better to fail right then rather
             // than trying to continue and getting a harder-to-diagnose failure.
             command.arg("-Werror=attributes");
+
+            // Ask GCC to colourise its output even though we're capturing it, but only if we think
+            // our output is likely to support colours.
+            if std::io::stdout().is_terminal()
+                || std::env::var("CARGO_TERM_COLOR").as_deref() == Ok("always")
+                || std::env::var("NEXTEST").is_ok()
+            {
+                command.arg("-fdiagnostics-color=always");
+            }
+
             command.arg("-c");
         }
         CompilerKind::Rust => {
@@ -1453,7 +1465,7 @@ fn build_obj(
         });
     }
 
-    let status = command.status().with_context(|| {
+    let output = command.output().with_context(|| {
         format!(
             "Failed to run `{}`",
             command.get_program().to_string_lossy()
@@ -1464,8 +1476,13 @@ fn build_obj(
         post_process_run_script(&output_path)?;
     }
 
-    if !status.success() {
-        bail!("Compilation failed: {}", command_as_str(&command));
+    if !output.status.success() {
+        bail!(
+            "Compilation failed to run: {}\nOutput:\n{}{}",
+            command_as_str(&command),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     Ok(BuiltObject {
