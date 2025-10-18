@@ -61,6 +61,7 @@ use std::num::NonZeroU32;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+#[derive(Debug)]
 pub(crate) struct ResolutionOutputs<'data> {
     pub(crate) groups: Vec<ResolvedGroup<'data>>,
     pub(crate) merged_strings: OutputSectionMap<MergedStringsSection<'data>>,
@@ -366,10 +367,12 @@ impl<'scope> ResolutionResources<'_, '_, 'scope> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct ResolvedGroup<'data> {
     pub(crate) files: Vec<ResolvedFile<'data>>,
 }
 
+#[derive(Debug)]
 pub(crate) enum ResolvedFile<'data> {
     NotLoaded(NotLoaded),
     Prelude(ResolvedPrelude<'data>),
@@ -378,6 +381,7 @@ pub(crate) enum ResolvedFile<'data> {
     Epilogue(ResolvedEpilogue<'data>),
 }
 
+#[derive(Debug)]
 pub(crate) struct NotLoaded {
     pub(crate) symbol_id_range: SymbolIdRange,
 }
@@ -442,11 +446,12 @@ impl UnloadedSection {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FrameIndex(NonZeroU32);
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct ResolvedPrelude<'data> {
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
 }
 
+#[derive(Debug)]
 pub(crate) struct ResolvedObject<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) object: &'data File<'data>,
@@ -457,6 +462,7 @@ pub(crate) struct ResolvedObject<'data> {
 }
 
 /// Parts of a resolved object that are only applicable to non-dynamic objects.
+#[derive(Debug)]
 pub(crate) struct NonDynamicResolved<'data> {
     pub(crate) sections: Vec<SectionSlot>,
     pub(crate) relocations: object::read::elf::RelocationSections,
@@ -467,6 +473,7 @@ pub(crate) struct NonDynamicResolved<'data> {
     custom_sections: Vec<CustomSectionDetails<'data>>,
 }
 
+#[derive(Debug)]
 pub(crate) struct ResolvedLinkerScript<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) file_id: FileId,
@@ -474,7 +481,7 @@ pub(crate) struct ResolvedLinkerScript<'data> {
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub(crate) struct ResolvedEpilogue<'data> {
     pub(crate) file_id: FileId,
     pub(crate) start_symbol_id: SymbolId,

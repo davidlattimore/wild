@@ -96,6 +96,7 @@ use linker_utils::elf::secnames::DEBUG_RANGES_SECTION_NAME;
 use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
+use linker_utils::elf::stt;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::SymbolIndex;
@@ -3111,7 +3112,7 @@ fn write_internal_symbols(
 
         let mut address = resolution.value();
 
-        if def_info.elf_symbol_type == object::elf::STT_TLS {
+        if def_info.elf_symbol_type == stt::TLS {
             address -= layout.tls_start_address();
         }
 
@@ -3125,7 +3126,7 @@ fn write_internal_symbols(
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
 
-        entry.set_st_info(object::elf::STB_GLOBAL, def_info.elf_symbol_type);
+        entry.set_st_info(object::elf::STB_GLOBAL, def_info.elf_symbol_type.raw());
     }
     Ok(())
 }
