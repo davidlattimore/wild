@@ -58,7 +58,8 @@ pub(crate) const NUM_BUILT_IN_SECTIONS: usize =
 
 /// An ID for an output section. This is used for looking up section info. It's independent of
 /// section ordering.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, derive_more::Debug)]
+#[debug("osid-{_0}")]
 pub(crate) struct OutputSectionId(u32);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +118,7 @@ pub(crate) const DATA_REL_RO: OutputSectionId = OutputSectionId::regular(14);
 
 pub(crate) const NUM_BUILT_IN_REGULAR_SECTIONS: usize = 15;
 
+#[derive(Debug)]
 pub(crate) struct OutputSections<'data> {
     /// The base address for our output binary.
     pub(crate) base_address: u64,
@@ -133,6 +135,7 @@ pub(crate) struct OutputSections<'data> {
 
 /// Encodes the order of output sections and the start and end of each program segment. This struct
 /// is intended to be used by iterating over it.
+#[derive(Debug)]
 pub(crate) struct OutputOrder {
     events: Vec<OrderEvent>,
 }

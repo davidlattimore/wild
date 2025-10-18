@@ -52,14 +52,17 @@ pub(crate) struct LinkerScript<'a> {
     pub(crate) commands: Vec<Command<'a>>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(derive_more::Debug, PartialEq, Eq)]
 pub(crate) enum Command<'a> {
+    #[debug("{}", String::from_utf8_lossy(_0))]
     Arg(&'a [u8]),
     Group(Vec<Command<'a>>),
     AsNeeded(Vec<Command<'a>>),
     Ignored,
     Sections(Sections<'a>),
+    #[debug("{}", String::from_utf8_lossy(_0))]
     Entry(&'a [u8]),
+    #[debug("{}", String::from_utf8_lossy(_0))]
     Version(&'a [u8]),
 }
 

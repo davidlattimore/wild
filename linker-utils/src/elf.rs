@@ -590,7 +590,8 @@ pub mod secnames {
     pub const GNU_LTO_SYMTAB_PREFIX: &str = ".gnu.lto_.symtab";
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, derive_more::Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[debug("{}", segment_type_to_string(*_0))]
 pub struct SegmentType(u32);
 
 impl SegmentType {

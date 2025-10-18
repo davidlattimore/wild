@@ -53,6 +53,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use symbolic_demangle::demangle;
 
+#[derive(Debug)]
 pub struct SymbolDb<'data> {
     pub(crate) args: &'data Args,
 
@@ -94,6 +95,7 @@ struct AtomicSymbolDb<'data, 'db> {
     definitions: Vec<AtomicSymbolId>,
 }
 
+#[derive(Debug)]
 struct SymbolBucket<'data> {
     /// Mapping from global symbol names to a symbol ID with that name. If there are multiple
     /// globals with the same name, then this will point to the one we encountered first, which may
@@ -127,7 +129,8 @@ struct PendingVersionedSymbol<'data> {
 
 /// An ID for a symbol. All symbols from all input files are allocated a unique symbol ID. The
 /// symbol ID 0 is reserved for the undefined symbol.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, derive_more::Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[debug("sym-{_0}")]
 pub(crate) struct SymbolId(u32);
 
 struct AtomicSymbolId(AtomicU32);

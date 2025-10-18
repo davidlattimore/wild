@@ -13,6 +13,7 @@ use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use std::fmt::Display;
 
+#[derive(Debug)]
 pub(crate) enum Group<'data> {
     Prelude(Prelude<'data>),
     Objects(&'data [SequencedInputObject<'data>]),
@@ -20,18 +21,21 @@ pub(crate) enum Group<'data> {
     Epilogue(Epilogue),
 }
 
+#[derive(Debug)]
 pub(crate) struct SequencedInputObject<'data> {
     pub(crate) parsed: ParsedInputObject<'data>,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) file_id: FileId,
 }
 
+#[derive(Debug)]
 pub(crate) struct SequencedLinkerScript<'data> {
     pub(crate) parsed: ProcessedLinkerScript<'data>,
     pub(crate) symbol_id_range: SymbolIdRange,
     pub(crate) file_id: FileId,
 }
 
+#[derive(Debug)]
 pub(crate) enum SequencedInput<'data> {
     Prelude(&'data Prelude<'data>),
     Object(&'data SequencedInputObject<'data>),

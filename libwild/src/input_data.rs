@@ -59,11 +59,13 @@ pub(crate) struct ScriptData<'data> {
 }
 
 /// Identifies an input file. IDs start from 0 which is reserved for our prelude file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[debug("file-{_0}")]
 pub(crate) struct FileId(u32);
 
 pub(crate) const PRELUDE_FILE_ID: FileId = FileId::new(0, 0);
 
+#[derive(Debug)]
 pub(crate) struct InputFile {
     pub(crate) filename: PathBuf,
 
@@ -76,6 +78,7 @@ pub(crate) struct InputFile {
     data: Option<FileData>,
 }
 
+#[derive(Debug)]
 pub(crate) struct FileData {
     bytes: Mmap,
 
@@ -108,6 +111,7 @@ struct InputPath {
     original: PathBuf,
 }
 
+#[derive(Debug)]
 pub(crate) struct InputLinkerScript<'data> {
     pub(crate) script: LinkerScript<'data>,
     pub(crate) input_file: &'data InputFile,

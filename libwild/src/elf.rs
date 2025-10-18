@@ -55,12 +55,17 @@ pub(crate) type NoteHeader = object::elf::NoteHeader64<LittleEndian>;
 type SectionTable<'data> = object::read::elf::SectionTable<'data, FileHeader>;
 type SymbolTable<'data> = object::read::elf::SymbolTable<'data, FileHeader>;
 
+#[derive(derive_more::Debug)]
 pub(crate) struct File<'data> {
     pub(crate) arch: Architecture,
+    #[debug(skip)]
     pub(crate) data: &'data [u8],
+    #[debug(skip)]
     pub(crate) sections: SectionTable<'data>,
     /// This may be symtab or dynsym depending on the file type.
+    #[debug(skip)]
     pub(crate) symbols: SymbolTable<'data>,
+    #[debug(skip)]
     pub(crate) versym: &'data [Versym],
 
     /// An iterator over the version definitions and the corresponding linked string table index.

@@ -15,12 +15,13 @@ use std::ops::Range;
 /// parts in different ways. Sections that come from input files are split by alignment. Some
 /// sections have no splitting and some have splitting that is specific to that particular section.
 /// For example the symbol table is split into local then global symbols.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, derive_more::Debug)]
 pub(crate) struct OutputSectionPartMap<T> {
     // TODO: We used to store all the generated parts in separate instance variables. When we
     // switched to instead storing them in this Vec, we saw a small drop in performance (about 2%).
     // This may be due to an extra pointer indirection and/or bounds checking. Experiment with
     // storing all our built-in parts in an array.
+    #[debug(skip)]
     pub(crate) parts: Vec<T>,
 }
 

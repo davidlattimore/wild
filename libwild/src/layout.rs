@@ -605,6 +605,7 @@ fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout
 
 /// Information about what goes where. Also includes relocation data, since that's computed at the
 /// same time.
+#[derive(Debug)]
 pub struct Layout<'data> {
     pub(crate) symbol_db: SymbolDb<'data>,
     pub(crate) symbol_resolutions: SymbolResolutions,
@@ -623,6 +624,7 @@ pub struct Layout<'data> {
     pub(crate) per_symbol_flags: PerSymbolFlags,
 }
 
+#[derive(Debug)]
 pub(crate) struct SegmentLayouts {
     /// The layout of each of our segments. Segments containing no active output sections will have
     /// been filtered, so don't try to index this by our internal segment IDs.
@@ -630,12 +632,13 @@ pub(crate) struct SegmentLayouts {
     pub(crate) tls_layout: Option<OutputRecordLayout>,
 }
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct SegmentLayout {
     pub(crate) id: ProgramSegmentId,
     pub(crate) sizes: OutputRecordLayout,
 }
 
+#[derive(Debug)]
 pub(crate) struct SymbolResolutions {
     resolutions: Vec<Option<Resolution>>,
 }
@@ -668,8 +671,9 @@ pub(crate) struct Resolution {
 }
 
 /// Address information for a section.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(derive_more::Debug, Clone, Copy, Eq, PartialEq)]
 pub(crate) struct SectionResolution {
+    #[debug("0x{address:x}")]
     address: u64,
 }
 
@@ -753,6 +757,7 @@ pub(crate) struct GnuHashLayout {
     pub(crate) symbol_base: u32,
 }
 
+#[derive(Debug)]
 pub(crate) struct EpilogueLayout<'data> {
     pub(crate) internal_symbols: InternalSymbols<'data>,
     pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
@@ -764,6 +769,7 @@ pub(crate) struct EpilogueLayout<'data> {
     pub(crate) riscv_attributes_length: u32,
 }
 
+#[derive(Debug)]
 pub(crate) struct ObjectLayout<'data> {
     pub(crate) input: InputRef<'data>,
     pub(crate) file_id: FileId,
@@ -774,6 +780,7 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) symbol_id_range: SymbolIdRange,
 }
 
+#[derive(Debug)]
 pub(crate) struct PreludeLayout<'data> {
     pub(crate) entry_symbol_id: Option<SymbolId>,
     pub(crate) tlsld_got_entry: Option<NonZeroU64>,
@@ -783,6 +790,7 @@ pub(crate) struct PreludeLayout<'data> {
     pub(crate) dynamic_linker: Option<CString>,
 }
 
+#[derive(Debug)]
 pub(crate) struct InternalSymbols<'data> {
     pub(crate) symbol_definitions: Vec<InternalSymDefInfo<'data>>,
     pub(crate) start_symbol_id: SymbolId,
@@ -1161,7 +1169,7 @@ impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState<'data> {
 
 /// Attributes that we'll take from an input section and apply to the output section into which it's
 /// placed.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct SectionAttributes {
     flags: SectionFlags,
     ty: SectionType,
@@ -1192,6 +1200,7 @@ impl SectionAttributes {
     }
 }
 
+#[derive(Debug)]
 struct CommonGroupState<'data> {
     mem_sizes: OutputSectionPartMap<u64>,
 
@@ -1360,7 +1369,7 @@ pub(crate) enum RiscVAttribute {
     PrivilegedSpecRevision(u64),
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct LocalWorkQueue {
     /// The index of the worker that owns this queue.
     index: usize,
@@ -1409,9 +1418,10 @@ pub(crate) struct VerneedInfo<'data> {
     pub(crate) version_count: u16,
 }
 
-#[derive(Clone, Copy)]
+#[derive(derive_more::Debug, Clone, Copy)]
 pub(crate) struct DynamicSymbolDefinition<'data> {
     pub(crate) symbol_id: SymbolId,
+    #[debug("{:?}", String::from_utf8_lossy(name))]
     pub(crate) name: &'data [u8],
     pub(crate) hash: u32,
     pub(crate) version: u16,
@@ -1427,6 +1437,7 @@ pub(crate) struct Section {
     pub(crate) is_writable: bool,
 }
 
+#[derive(Debug)]
 pub(crate) struct GroupLayout<'data> {
     pub(crate) files: Vec<FileLayout<'data>>,
 
@@ -1442,6 +1453,7 @@ pub(crate) struct GroupLayout<'data> {
     pub(crate) file_sizes: OutputSectionPartMap<usize>,
 }
 
+#[derive(Debug)]
 struct GroupState<'data> {
     queue: LocalWorkQueue,
     files: Vec<FileLayoutState<'data>>,
@@ -2101,7 +2113,7 @@ struct NonAddressableIndexes {
     gnu_version_r_index: u16,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub(crate) struct NonAddressableCounts {
     /// The number of shared objects that want to emit a verneed record.
     pub(crate) verneed_count: u64,
@@ -2123,6 +2135,7 @@ struct WorkerSlot<'data> {
     worker: Option<GroupState<'data>>,
 }
 
+#[derive(Debug)]
 struct GcOutputs<'data> {
     group_states: Vec<GroupState<'data>>,
     sections_with_content: OutputSectionMap<bool>,
@@ -3872,6 +3885,7 @@ impl<'data> EpilogueLayoutState<'data> {
     }
 }
 
+#[derive(Debug)]
 pub(crate) struct HeaderInfo {
     pub(crate) num_output_sections_with_content: u16,
     pub(crate) active_segment_ids: Vec<ProgramSegmentId>,
@@ -6122,7 +6136,9 @@ fn verify_consistent_allocation_handling(flags: ValueFlags, output_kind: OutputK
     Ok(())
 }
 
+#[derive(derive_more::Debug)]
 pub(crate) struct VersionDef {
+    #[debug("{}", String::from_utf8_lossy(name))]
     pub(crate) name: Vec<u8>,
     pub(crate) parent_index: Option<u16>,
 }

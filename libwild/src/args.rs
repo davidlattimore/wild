@@ -36,6 +36,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 
+#[derive(Debug)]
 pub struct Args {
     pub(crate) unrecognized_options: Vec<String>,
 
@@ -117,7 +118,7 @@ pub struct Args {
     jobserver_client: Option<Client>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum CounterKind {
     Cycles,
     Instructions,
@@ -130,7 +131,7 @@ pub enum CounterKind {
     L1dMiss,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum CopyRelocations {
     Allowed,
     Disallowed(CopyRelocationsDisabledReason),
@@ -2280,7 +2281,7 @@ impl FromStr for CounterKind {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum CopyRelocationsDisabledReason {
     Flag,
     SharedObject,

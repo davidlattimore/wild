@@ -10,7 +10,7 @@ use crate::version_script::parse_matcher;
 use winnow::BStr;
 use winnow::Parser;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub(crate) struct ExportList<'data>(MatchRules<'data>);
 
 impl<'data> ExportList<'data> {
