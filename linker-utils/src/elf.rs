@@ -15,6 +15,159 @@ macro_rules! const_name_by_value {
     };
 }
 
+/// Generates newtypes for the non-flag, enum constants exposed by [object].
+/// Each type has automatically generated [Debug] and [Display] implementations.
+/// Constants not (yet) defined by [object] can be added by hand e.g.
+/// [pt::RISCV_ATTRIBUTES].
+macro_rules! elf_constant_newtype {
+    ($name:ident, $inner_type: ident, $constants_module:ident, $prefix:ident, $($const:ident),*) => {
+        #[derive(Clone, Copy, derive_more::Debug, PartialEq, Eq, PartialOrd, Ord)]
+        #[debug("{}", self.as_str())]
+        pub struct $name($inner_type);
+
+        impl $name {
+            #[must_use]
+            pub fn raw(&self) -> $inner_type {
+                self.0
+            }
+
+            #[allow(unreachable_patterns)] // rustc issues a spurious warning here
+            #[must_use]
+            pub fn as_str(&self) -> Cow<'static, str> {
+                ::paste::paste! {
+                    match self.0 {
+                        $(::object::elf::[<$prefix _ $const>] => stringify!($const).into(),)*
+                        r => Cow::Owned(format!("Unknown({r})")),
+                    }
+                }
+            }
+
+            ::paste::paste! {
+                #[must_use]
+                pub const fn [<from_ $inner_type>](value: $inner_type) -> Self {
+                    Self(value)
+                }
+            }
+        }
+
+        impl From < $inner_type > for $name {
+            fn from(value: $inner_type) -> Self {
+                Self(value)
+            }
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "{}", self.as_str())
+            }
+        }
+
+        mod $constants_module {
+            #![allow(non_upper_case_globals)]
+            use super::$name;
+
+            ::paste::paste! {
+                $(pub const $const: $name = $name(::object::elf:: [<$prefix _ $const>] );)*
+            }
+        }
+    };
+}
+
+elf_constant_newtype!(
+    SegmentType,
+    u32,
+    pt_generated,
+    PT,
+    NULL,
+    LOAD,
+    DYNAMIC,
+    INTERP,
+    NOTE,
+    SHLIB,
+    PHDR,
+    TLS,
+    GNU_EH_FRAME,
+    GNU_STACK,
+    GNU_RELRO,
+    GNU_PROPERTY,
+    GNU_SFRAME
+);
+
+impl SegmentType {
+    #[must_use]
+    pub fn from_header(header: &object::elf::ProgramHeader64<LittleEndian>) -> Self {
+        Self(header.p_type(LittleEndian))
+    }
+}
+
+pub mod pt {
+    use super::SegmentType;
+    pub use super::pt_generated::*;
+
+    /// TODO: add constant to [object].
+    pub const RISCV_ATTRIBUTES: SegmentType = SegmentType::from_u32(0x70000003);
+}
+
+elf_constant_newtype!(
+    SectionType,
+    u32,
+    sht_generated,
+    SHT,
+    NULL,
+    PROGBITS,
+    SYMTAB,
+    STRTAB,
+    RELA,
+    HASH,
+    DYNAMIC,
+    NOTE,
+    NOBITS,
+    REL,
+    SHLIB,
+    DYNSYM,
+    INIT_ARRAY,
+    FINI_ARRAY,
+    PREINIT_ARRAY,
+    GROUP,
+    SYMTAB_SHNDX,
+    LOOS,
+    GNU_SFRAME,
+    GNU_ATTRIBUTES,
+    GNU_HASH,
+    GNU_LIBLIST,
+    CHECKSUM,
+    LOSUNW,
+    SUNW_COMDAT,
+    SUNW_syminfo,
+    GNU_VERDEF,
+    GNU_VERNEED,
+    GNU_VERSYM,
+    HISUNW,
+    HIOS,
+    LOPROC,
+    HIPROC,
+    LOUSER,
+    HIUSER,
+    RISCV_ATTRIBUTES
+);
+
+impl SectionType {
+    #[must_use]
+    pub fn from_header(header: &object::elf::SectionHeader64<LittleEndian>) -> Self {
+        Self(header.sh_type(LittleEndian))
+    }
+}
+
+pub mod sht {
+    pub use super::sht_generated::*;
+}
+
+elf_constant_newtype!(SymbolType, u8, stt_generated, STT, NOTYPE, TLS);
+
+pub mod stt {
+    pub use super::stt_generated::*;
+}
+
 #[must_use]
 pub fn x86_64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
     if let Some(name) = const_name_by_value![
@@ -284,32 +437,6 @@ pub fn riscv64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
     }
 }
 
-#[must_use]
-pub fn segment_type_to_string(p_type: u32) -> Cow<'static, str> {
-    if let Some(name) = const_name_by_value![
-        p_type,
-        PT_NULL,
-        PT_LOAD,
-        PT_DYNAMIC,
-        PT_INTERP,
-        PT_NOTE,
-        PT_SHLIB,
-        PT_PHDR,
-        PT_TLS,
-        PT_GNU_EH_FRAME,
-        PT_GNU_STACK,
-        PT_GNU_RELRO,
-        PT_GNU_PROPERTY,
-        PT_GNU_SFRAME,
-        // RISC-V specific program headers
-        SHT_RISCV_ATTRIBUTES
-    ] {
-        Cow::Borrowed(name)
-    } else {
-        Cow::Owned(format!("UNKNOWN_P_TYPE_{p_type}"))
-    }
-}
-
 /// Section flag bit values.
 pub mod shf {
     use super::SectionFlags;
@@ -328,47 +455,6 @@ pub mod shf {
     pub const COMPRESSED: SectionFlags = SectionFlags::from_u32(object::elf::SHF_COMPRESSED);
     pub const GNU_RETAIN: SectionFlags = SectionFlags::from_u32(object::elf::SHF_GNU_RETAIN);
     pub const EXCLUDE: SectionFlags = SectionFlags::from_u32(object::elf::SHF_EXCLUDE);
-}
-
-pub mod sht {
-    use super::SectionType;
-
-    pub const NULL: SectionType = SectionType(object::elf::SHT_NULL);
-    pub const PROGBITS: SectionType = SectionType(object::elf::SHT_PROGBITS);
-    pub const SYMTAB: SectionType = SectionType(object::elf::SHT_SYMTAB);
-    pub const STRTAB: SectionType = SectionType(object::elf::SHT_STRTAB);
-    pub const RELA: SectionType = SectionType(object::elf::SHT_RELA);
-    pub const HASH: SectionType = SectionType(object::elf::SHT_HASH);
-    pub const DYNAMIC: SectionType = SectionType(object::elf::SHT_DYNAMIC);
-    pub const NOTE: SectionType = SectionType(object::elf::SHT_NOTE);
-    pub const NOBITS: SectionType = SectionType(object::elf::SHT_NOBITS);
-    pub const REL: SectionType = SectionType(object::elf::SHT_REL);
-    pub const SHLIB: SectionType = SectionType(object::elf::SHT_SHLIB);
-    pub const DYNSYM: SectionType = SectionType(object::elf::SHT_DYNSYM);
-    pub const INIT_ARRAY: SectionType = SectionType(object::elf::SHT_INIT_ARRAY);
-    pub const FINI_ARRAY: SectionType = SectionType(object::elf::SHT_FINI_ARRAY);
-    pub const PREINIT_ARRAY: SectionType = SectionType(object::elf::SHT_PREINIT_ARRAY);
-    pub const GROUP: SectionType = SectionType(object::elf::SHT_GROUP);
-    pub const SYMTAB_SHNDX: SectionType = SectionType(object::elf::SHT_SYMTAB_SHNDX);
-    pub const LOOS: SectionType = SectionType(object::elf::SHT_LOOS);
-    pub const GNU_SFRAME: SectionType = SectionType(object::elf::SHT_GNU_SFRAME);
-    pub const GNU_ATTRIBUTES: SectionType = SectionType(object::elf::SHT_GNU_ATTRIBUTES);
-    pub const GNU_HASH: SectionType = SectionType(object::elf::SHT_GNU_HASH);
-    pub const GNU_LIBLIST: SectionType = SectionType(object::elf::SHT_GNU_LIBLIST);
-    pub const CHECKSUM: SectionType = SectionType(object::elf::SHT_CHECKSUM);
-    pub const LOSUNW: SectionType = SectionType(object::elf::SHT_LOSUNW);
-    pub const SUNW_COMDAT: SectionType = SectionType(object::elf::SHT_SUNW_COMDAT);
-    pub const SUNW_SYMINFO: SectionType = SectionType(object::elf::SHT_SUNW_syminfo);
-    pub const GNU_VERDEF: SectionType = SectionType(object::elf::SHT_GNU_VERDEF);
-    pub const GNU_VERNEED: SectionType = SectionType(object::elf::SHT_GNU_VERNEED);
-    pub const GNU_VERSYM: SectionType = SectionType(object::elf::SHT_GNU_VERSYM);
-    pub const HISUNW: SectionType = SectionType(object::elf::SHT_HISUNW);
-    pub const HIOS: SectionType = SectionType(object::elf::SHT_HIOS);
-    pub const LOPROC: SectionType = SectionType(object::elf::SHT_LOPROC);
-    pub const HIPROC: SectionType = SectionType(object::elf::SHT_HIPROC);
-    pub const LOUSER: SectionType = SectionType(object::elf::SHT_LOUSER);
-    pub const HIUSER: SectionType = SectionType(object::elf::SHT_HIUSER);
-    pub const RISCV_ATTRIBUTES: SectionType = SectionType(object::elf::SHT_RISCV_ATTRIBUTES);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -475,26 +561,6 @@ impl std::ops::BitAnd for SectionFlags {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct SectionType(u32);
-
-impl SectionType {
-    #[must_use]
-    pub fn raw(self) -> u32 {
-        self.0
-    }
-
-    #[must_use]
-    pub fn from_header(header: &object::elf::SectionHeader64<LittleEndian>) -> Self {
-        Self(header.sh_type(LittleEndian))
-    }
-
-    #[must_use]
-    pub fn from_u32(raw: u32) -> Self {
-        Self(raw)
-    }
-}
-
 pub mod secnames {
     pub const FILEHEADER_SECTION_NAME_STR: &str = "";
     pub const FILEHEADER_SECTION_NAME: &[u8] = FILEHEADER_SECTION_NAME_STR.as_bytes();
@@ -588,61 +654,6 @@ pub mod secnames {
     pub const RISCV_ATTRIBUTES_SECTION_NAME: &[u8] = RISCV_ATTRIBUTES_SECTION_NAME_STR.as_bytes();
 
     pub const GNU_LTO_SYMTAB_PREFIX: &str = ".gnu.lto_.symtab";
-}
-
-#[derive(Clone, Copy, derive_more::Debug, PartialEq, Eq, PartialOrd, Ord)]
-#[debug("{}", segment_type_to_string(*_0))]
-pub struct SegmentType(u32);
-
-impl SegmentType {
-    #[must_use]
-    pub fn raw(self) -> u32 {
-        self.0
-    }
-
-    #[must_use]
-    pub fn from_header(header: &object::elf::ProgramHeader64<LittleEndian>) -> Self {
-        Self(header.p_type(LittleEndian))
-    }
-
-    #[must_use]
-    pub const fn from_u32(raw: u32) -> Self {
-        Self(raw)
-    }
-}
-
-impl std::fmt::Display for SegmentType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match *self {
-            pt::PHDR => write!(f, "PHDR")?,
-            pt::INTERP => write!(f, "INTERP")?,
-            pt::NOTE => write!(f, "NOTE")?,
-            pt::LOAD => write!(f, "LOAD")?,
-            pt::TLS => write!(f, "TLS")?,
-            pt::GNU_EH_FRAME => write!(f, "GNU_EH_FRAME")?,
-            pt::DYNAMIC => write!(f, "DYNAMIC")?,
-            pt::GNU_RELRO => write!(f, "GNU_RELRO")?,
-            pt::GNU_STACK => write!(f, "GNU_STACK")?,
-            other => write!(f, "UNKNOWN_SEG_TYPE({})", other.raw())?,
-        }
-        Ok(())
-    }
-}
-
-pub mod pt {
-    use super::SegmentType;
-
-    pub const PHDR: SegmentType = SegmentType::from_u32(object::elf::PT_PHDR);
-    pub const INTERP: SegmentType = SegmentType::from_u32(object::elf::PT_INTERP);
-    pub const NOTE: SegmentType = SegmentType::from_u32(object::elf::PT_NOTE);
-    pub const LOAD: SegmentType = SegmentType::from_u32(object::elf::PT_LOAD);
-    pub const TLS: SegmentType = SegmentType::from_u32(object::elf::PT_TLS);
-    pub const GNU_EH_FRAME: SegmentType = SegmentType::from_u32(object::elf::PT_GNU_EH_FRAME);
-    pub const DYNAMIC: SegmentType = SegmentType::from_u32(object::elf::PT_DYNAMIC);
-    pub const GNU_RELRO: SegmentType = SegmentType::from_u32(object::elf::PT_GNU_RELRO);
-    pub const GNU_STACK: SegmentType = SegmentType::from_u32(object::elf::PT_GNU_STACK);
-    // TODO: add constant
-    pub const RISCV_ATTRIBUTES: SegmentType = SegmentType::from_u32(0x70000003);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

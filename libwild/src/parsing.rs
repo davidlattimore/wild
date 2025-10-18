@@ -18,6 +18,8 @@ use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
+use linker_utils::elf::SymbolType;
+use linker_utils::elf::stt;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 
@@ -104,7 +106,7 @@ pub(crate) struct InternalSymDefInfo<'data> {
     pub(crate) placement: SymbolPlacement,
     #[debug("{:?}", String::from_utf8_lossy(name))]
     pub(crate) name: &'data [u8],
-    pub(crate) elf_symbol_type: u8,
+    pub(crate) elf_symbol_type: SymbolType,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -128,7 +130,7 @@ impl<'data> InternalSymDefInfo<'data> {
         Self {
             placement,
             name,
-            elf_symbol_type: object::elf::STT_NOTYPE,
+            elf_symbol_type: stt::NOTYPE,
         }
     }
 }
@@ -213,7 +215,7 @@ impl<'data> Prelude<'data> {
                 SymbolPlacement::SectionEnd(output_section_id::TBSS)
             },
             name: b"_TLS_MODULE_BASE_",
-            elf_symbol_type: object::elf::STT_TLS,
+            elf_symbol_type: stt::TLS,
         });
 
         symbol_definitions.extend(args.undefined.iter().map(|name| {
