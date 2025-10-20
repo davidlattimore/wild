@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use std::fmt;
 
 macro_rules! const_name_by_value {
-    ($needle: expr, $( $const:ident ),*) => {
+    ($needle: expr, $( $const:ident ),* $(,)?) => {
         match $needle {
             $(object::elf::$const => Some(stringify!($const)),)*
             _ => None
@@ -15,12 +15,30 @@ macro_rules! const_name_by_value {
     };
 }
 
+macro_rules! const_or_literal {
+    ($prefix:ident $const:ident = $value:expr) => {
+        $value
+    };
+    ($prefix:ident $const:ident) => {
+        ::paste::paste! {
+            ::object::elf::[<$prefix _ $const>]
+        }
+    };
+}
+
 /// Generates newtypes for the non-flag, enum constants exposed by [object].
 /// Each type has automatically generated [Debug] and [Display] implementations.
-/// Constants not (yet) defined by [object] can be added by hand e.g.
-/// [pt::RISCV_ATTRIBUTES].
+/// Constants not (yet) defined by [object] can be given literal values.
 macro_rules! elf_constant_newtype {
-    ($name:ident, $inner_type: ident, $constants_module:ident, $prefix:ident, $($const:ident),*) => {
+    (
+        $name:ident,
+        $inner_type:ident,
+        $constants_module:ident,
+        $prefix:ident,
+        $(
+            $const:ident $(= $value:expr)?
+        ),* $(,)?
+    ) => {
         #[derive(Clone, Copy, derive_more::Debug, PartialEq, Eq, PartialOrd, Ord)]
         #[debug("{}", self.as_str())]
         pub struct $name($inner_type);
@@ -34,12 +52,13 @@ macro_rules! elf_constant_newtype {
             #[allow(unreachable_patterns)] // rustc issues a spurious warning here
             #[must_use]
             pub fn as_str(&self) -> Cow<'static, str> {
-                ::paste::paste! {
                     match self.0 {
-                        $(::object::elf::[<$prefix _ $const>] => stringify!($const).into(),)*
+                        $(
+                            const_or_literal!($prefix $const $(= $value )?)
+                                => ::std::borrow::Cow::Borrowed(stringify!($const)),
+                        )*
                         r => Cow::Owned(format!("Unknown({r})")),
                     }
-                }
             }
 
             ::paste::paste! {
@@ -62,13 +81,11 @@ macro_rules! elf_constant_newtype {
             }
         }
 
-        mod $constants_module {
+        pub mod $constants_module {
             #![allow(non_upper_case_globals)]
             use super::$name;
 
-            ::paste::paste! {
-                $(pub const $const: $name = $name(::object::elf:: [<$prefix _ $const>] );)*
-            }
+            $(pub const $const: $name = $name(const_or_literal!($prefix $const $(= $value)?));)*
         }
     };
 }
@@ -76,7 +93,7 @@ macro_rules! elf_constant_newtype {
 elf_constant_newtype!(
     SegmentType,
     u32,
-    pt_generated,
+    pt,
     PT,
     NULL,
     LOAD,
@@ -90,7 +107,8 @@ elf_constant_newtype!(
     GNU_STACK,
     GNU_RELRO,
     GNU_PROPERTY,
-    GNU_SFRAME
+    GNU_SFRAME,
+    RISCV_ATTRIBUTES = 0x70000003,
 );
 
 impl SegmentType {
@@ -100,18 +118,10 @@ impl SegmentType {
     }
 }
 
-pub mod pt {
-    use super::SegmentType;
-    pub use super::pt_generated::*;
-
-    /// TODO: add constant to [object].
-    pub const RISCV_ATTRIBUTES: SegmentType = SegmentType::from_u32(0x70000003);
-}
-
 elf_constant_newtype!(
     SectionType,
     u32,
-    sht_generated,
+    sht,
     SHT,
     NULL,
     PROGBITS,
@@ -148,7 +158,7 @@ elf_constant_newtype!(
     HIPROC,
     LOUSER,
     HIUSER,
-    RISCV_ATTRIBUTES
+    RISCV_ATTRIBUTES,
 );
 
 impl SectionType {
@@ -158,15 +168,7 @@ impl SectionType {
     }
 }
 
-pub mod sht {
-    pub use super::sht_generated::*;
-}
-
-elf_constant_newtype!(SymbolType, u8, stt_generated, STT, NOTYPE, TLS);
-
-pub mod stt {
-    pub use super::stt_generated::*;
-}
+elf_constant_newtype!(SymbolType, u8, stt, STT, NOTYPE, TLS);
 
 #[must_use]
 pub fn x86_64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
@@ -212,7 +214,7 @@ pub fn x86_64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
         R_X86_64_IRELATIVE,
         R_X86_64_RELATIVE64,
         R_X86_64_GOTPCRELX,
-        R_X86_64_REX_GOTPCRELX
+        R_X86_64_REX_GOTPCRELX,
     ] {
         Cow::Borrowed(name)
     } else {
@@ -356,7 +358,7 @@ pub fn aarch64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
         R_AARCH64_TLS_DTPREL,
         R_AARCH64_TLS_TPREL,
         R_AARCH64_TLSDESC,
-        R_AARCH64_IRELATIVE
+        R_AARCH64_IRELATIVE,
     ] {
         Cow::Borrowed(name)
     } else {
@@ -429,7 +431,7 @@ pub fn riscv64_rel_type_to_string(r_type: u32) -> Cow<'static, str> {
         R_RISCV_TLSDESC_HI20,
         R_RISCV_TLSDESC_LOAD_LO12,
         R_RISCV_TLSDESC_ADD_LO12,
-        R_RISCV_TLSDESC_CALL
+        R_RISCV_TLSDESC_CALL,
     ] {
         Cow::Borrowed(name)
     } else {
