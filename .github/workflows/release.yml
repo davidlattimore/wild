@@ -68,7 +68,7 @@ jobs:
 
     - name: Create tarballs
       run: |
-        n="wild-linker-${{ github.ref_name }}-${{ matrix.target }}"
+        n="wild-linker-${GITHUB_REF_NAME}-${{ matrix.target }}"
         mkdir "$n"
         cp "target/${{ matrix.target }}/dist/wild" "$n"
         cp README.md LICENSE* CHANGELOG.md "$n"
