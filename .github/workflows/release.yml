@@ -36,6 +36,8 @@ jobs:
 
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - uses: dtolnay/rust-toolchain@stable
       with:
@@ -45,6 +47,8 @@ jobs:
       if: matrix.build == 'zigbuild'
     - uses: mlugg/setup-zig@v2
       if: matrix.build == 'zigbuild'
+      with:
+        use-cache: false
 
     - name: Extract release notes
       shell: bash
