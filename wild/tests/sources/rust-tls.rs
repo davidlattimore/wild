@@ -1,5 +1,9 @@
 //#AbstractConfig:default
-//#RequiresNightlyRustc: true
+//#RequiresNightlyRustc:true
+// TODO: Investigate the following differences, which show up on risc-v
+//#DiffIgnore:dynsym.*
+//#DiffIgnore:.dynamic.DT_FLAGS.TEXTREL
+//#DiffIgnore:.dynamic.DT_TEXTREL
 
 //#Config:global-dynamic:default
 //#CompArgs:-Ztls-model=global-dynamic

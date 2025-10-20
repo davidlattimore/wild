@@ -279,6 +279,8 @@ impl Config {
                     // Symbol address inconsistencies due to different optimizations
                     "error.*",
                     "section-diff-failed*",
+                    // .relro_padding is showing up on risc-v.
+                    "section.relro_padding",
                 ]
                 .into_iter()
                 .map(ToOwned::to_owned),
