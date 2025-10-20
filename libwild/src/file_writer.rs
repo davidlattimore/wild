@@ -375,13 +375,14 @@ pub(crate) fn split_output_into_sections<'out>(
     let mut section_data = OutputSectionMap::with_size(section_allocations.len());
     let mut offset = 0;
     for a in section_allocations {
-        let Some(padding) = a.offset.checked_sub(offset) else {
+        let Some(padding_size) = a.offset.checked_sub(offset) else {
             panic!(
                 "Offsets went backward when splitting output file {offset} to {}",
                 a.offset
             );
         };
-        data.split_off_mut(..padding).unwrap();
+        let padding = data.split_off_mut(..padding_size).unwrap();
+        padding.fill(0);
         *section_data.get_mut(a.id) = data.split_off_mut(..a.size).unwrap();
         offset = a.offset + a.size;
     }
