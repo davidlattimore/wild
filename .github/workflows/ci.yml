@@ -229,4 +229,6 @@ jobs:
           primary-key: ${{ runner.os }}-${{ hashFiles( 'flake.lock', 'Cargo.lock') }}
 
       - name: Run ${{ matrix.check }}
-        run: nix build .#checks.x86_64-linux.${{ matrix.check }} -L --show-trace
+        run: nix build .#checks.x86_64-linux.${MATRIX_CHECK} -L --show-trace
+        env:
+          MATRIX_CHECK: ${{ matrix.check }}
