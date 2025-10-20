@@ -31,6 +31,7 @@
 //#BsdArchive:archive_activation1.c
 //#BsdArchive:runtime.c
 //#BsdArchive:empty.a
+//#TestUpdateInPlace:true
 
 #include "runtime.h"
 

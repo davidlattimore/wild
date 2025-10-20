@@ -464,6 +464,7 @@ struct Config {
     auto_add_objects: bool,
     rustc_channel: RustcChannel,
     requires_rust_musl: bool,
+    test_update_in_place: bool,
     test_config: TestConfig,
     tracked_files: Vec<PathBuf>,
 }
@@ -713,6 +714,7 @@ impl Config {
             auto_add_objects: true,
             rustc_channel: RustcChannel::Default,
             requires_rust_musl: false,
+            test_update_in_place: false,
             test_config: test_config.clone(),
             tracked_files: Default::default(),
         }
@@ -927,6 +929,9 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                 "RequiresRustMusl" => {
                     config.requires_rust_musl = arg.to_lowercase().parse()?;
                 }
+                "TestUpdateInPlace" => {
+                    config.test_update_in_place = arg.to_lowercase().parse()?;
+                }
                 other => bail!("{}: Unknown directive '{other}'", src_filename.display()),
             }
         }
@@ -988,6 +993,10 @@ impl ProgramInputs {
 
         let link_output = linker.link(self.name(), &inputs, config, cross_arch)?;
 
+        if config.test_update_in_place && matches!(linker, Linker::Wild) {
+            self.run_update_in_place_test(&inputs, config, cross_arch)?;
+        }
+
         let shared_objects = inputs
             .into_iter()
             .filter(|input| input.path.extension().is_some_and(|ext| ext == "so"))
@@ -1002,6 +1011,111 @@ impl ProgramInputs {
 
     fn name(&self) -> &str {
         self.source_file
+    }
+
+    fn run_update_in_place_test(
+        &self,
+        inputs: &[LinkerInput],
+        config: &Config,
+        cross_arch: Option<Architecture>,
+    ) -> Result<()> {
+        // Link normally, using unlink-and-replace
+        let link_output_1 = Linker::Wild.link(self.name(), inputs, &config, cross_arch)?;
+        let original_content = std::fs::read(&link_output_1.binary).with_context(|| {
+            format!(
+                "Failed to read first build output: {}",
+                link_output_1.binary.display()
+            )
+        })?;
+
+        // Overwrite the file with random data with a different length
+        let random_data = (0..original_content.len() + 1024)
+            .map(|i| (i % 256) as u8)
+            .collect::<Vec<u8>>();
+        std::fs::write(&link_output_1.binary, &random_data).with_context(|| {
+            format!(
+                "Failed to overwrite file with random data: {}",
+                link_output_1.binary.display()
+            )
+        })?;
+
+        // Link again with --update-in-place
+        let mut config_update_in_place = config.clone();
+        config_update_in_place
+            .wild_extra_linker_args
+            .args
+            .push("--update-in-place".to_string());
+
+        let link_output_2 =
+            Linker::Wild.link(self.name(), inputs, &config_update_in_place, cross_arch)?;
+
+        // Verify the content matches the first build
+        let final_content = std::fs::read(&link_output_2.binary).with_context(|| {
+            format!(
+                "Failed to read second build output: {}",
+                link_output_2.binary.display()
+            )
+        })?;
+
+        if original_content != final_content {
+            let diff_info = if let Some((i, (&a, &b))) = original_content
+                .iter()
+                .zip(final_content.iter())
+                .enumerate()
+                .find(|(_, (a, b))| **a != **b)
+            {
+                format!(
+                    " (first difference at offset 0x{:x}: original=0x{:02x}, final=0x{:02x})",
+                    i, a, b
+                )
+            } else if original_content.len() != final_content.len() {
+                "(length difference)".to_string()
+            } else {
+                "(unknown difference)".to_string()
+            };
+
+            let mut original = link_output_1.binary.clone();
+            let mut updated = link_output_2.binary.clone();
+
+            fn make_variant(path: &mut std::path::PathBuf, suffix: &str) {
+                let stem = path.file_stem().unwrap_or_default();
+                let ext = path.extension();
+                let mut filename = std::ffi::OsString::from(stem);
+                filename.push(suffix);
+                if let Some(ext) = ext {
+                    filename.push(".");
+                    filename.push(ext);
+                }
+                path.set_file_name(filename);
+            }
+
+            make_variant(&mut original, "-original");
+            make_variant(&mut updated, "-updated");
+
+            std::fs::write(&original, &original_content).with_context(|| {
+                format!("Failed to write original file: {}", original.display())
+            })?;
+            std::fs::rename(&link_output_2.binary, &updated).with_context(|| {
+                format!(
+                    "Failed to rename {} to {}",
+                    link_output_2.binary.display(),
+                    updated.display()
+                )
+            })?;
+
+            bail!(
+                "Update-in-place test failed for {}: content of {} differs from {} after update-in-place linking. \
+                Original size: {}, Final size: {}{}",
+                self.source_file,
+                original.display(),
+                updated.display(),
+                original_content.len(),
+                final_content.len(),
+                diff_info
+            );
+        }
+
+        Ok(())
     }
 }
 
