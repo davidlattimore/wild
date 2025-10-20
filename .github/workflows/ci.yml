@@ -58,7 +58,6 @@ jobs:
 
     steps:
       - run: echo "WILD_TEST_CONFIG=test-config-ci.toml" >> $GITHUB_ENV
-        if: ${{ env.CI == 'true' }}
       - run: echo "WILD_TEST_CROSS=aarch64,riscv64" >> $GITHUB_ENV
         if: ${{ matrix.test-qemu }}
       - run: apt-get update && apt-get -y install gcc g++ clang clang-format lld curl bubblewrap binutils-aarch64-linux-gnu binutils-riscv64-linux-gnu
