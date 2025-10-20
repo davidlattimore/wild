@@ -236,14 +236,14 @@ impl Config {
                 // GNU ld emits two segments, whereas wild emits only a single segment.
                 "segment.LOAD.R.*",
                 // We haven't provided an implementation that is compatible with existing linkers.
-                "segment.PT_PHDR.*",
-                "segment.PT_GNU_RELRO.*",
-                "segment.PT_GNU_STACK.*",
-                "segment.PT_GNU_PROPERTY.*",
-                "segment.PT_GNU_SFRAME.*",
+                "segment.PHDR.*",
+                "segment.GNU_RELRO.*",
+                "segment.GNU_STACK.*",
+                "segment.GNU_PROPERTY.*",
+                "segment.GNU_SFRAME.*",
                 // Wild currently generates PT_NOTE even for non-alloc note sections, while the
                 // other linkers don't.
-                "segment.PT_NOTE.*",
+                "segment.NOTE.*",
                 // TODO: RISC-V
                 "segment.LOAD.RW.alignment",
             ]

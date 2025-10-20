@@ -8,7 +8,7 @@
 //#ExpectSym:start_aaa section="bar",offset-in-section=8
 //#ExpectSym:end_bar section="bar",offset-in-section=12
 //#DiffIgnore:section.riscv.attributes
-//#DiffIgnore:segment.SHT_RISCV_ATTRIBUTES.*
+//#DiffIgnore:segment.RISCV_ATTRIBUTES.*
 
 static int foo1 __attribute__((used, section(".data.foo"))) = 0x01;
 

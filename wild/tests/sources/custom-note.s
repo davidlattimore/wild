@@ -4,6 +4,7 @@
 //#Contains:FOOBAR
 //#Contains:HELLO_WORLD
 //#DiffIgnore:section.got
+//#DiffIgnore:segment.RISCV_ATTRIBUTES.*
 */
 
 .section .note.foo,"a",@note
