@@ -998,7 +998,11 @@ impl ProgramInputs {
 
         let link_output = linker.link(self.name(), &inputs, config, cross_arch)?;
 
-        if config.test_update_in_place && matches!(linker, Linker::Wild) {
+        if config.test_update_in_place
+            && matches!(linker, Linker::Wild)
+            && config.expect_errors.is_empty()
+            && (config.should_diff || config.should_run)
+        {
             self.run_update_in_place_test(&inputs, config, cross_arch)?;
         }
 
