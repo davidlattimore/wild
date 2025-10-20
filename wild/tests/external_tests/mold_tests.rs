@@ -36,6 +36,7 @@ fn run_mold_test(mold_test: &Path) -> Result<Output> {
         && let Some(arch_str) = file_name.strip_prefix("arch-")
         && let Some(arch_name) = arch_str.split('-').next()
         && let Ok(arch) = Architecture::from_str(arch_name)
+        && arch != get_host_architecture()
     {
         Some(format!("{}-linux-gnu", arch))
     } else {
