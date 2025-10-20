@@ -1274,8 +1274,10 @@ fn write_section_raw<'out>(
         // Cut off any padding so that our output buffer is the size of our input buffer.
         let object_section = object.object.section(sec.index)?;
         let section_size = object.object.section_size(object_section)?;
-        let out: &'out mut [u8] = &mut out[..section_size as usize];
+        let (out, padding) = out.split_at_mut(section_size as usize);
         object.object.copy_section_data(object_section, out)?;
+        // Fill padding. This is especially important if we're writing the file in place.
+        padding.fill(0);
         Ok(out)
     } else {
         Ok(&mut [])
@@ -2543,7 +2545,9 @@ fn write_symbol_table_entries(
     layout: &Layout,
 ) -> Result {
     // Define symbol 0. This needs to be a null placeholder.
-    symbol_writer.define_symbol(true, 0, 0, 0, &[])?;
+    let entry = symbol_writer.define_symbol(true, 0, 0, 0, &[])?;
+    entry.st_info = 0;
+    entry.st_other = 0;
 
     let internal_symbols = &prelude.internal_symbols;
 
