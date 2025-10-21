@@ -92,6 +92,11 @@
 //! AutoAddObjects:{bool} Whether to automatically add input objects for the test to the command
 //! line. Defaults to true.
 //!
+//! TestUpdateInPlace:{bool} Whether to perform additional testing of the --update-in-place flag.
+//! This testing runs wild twice with the second run having the --update-in-place and the file
+//! having been pre-filled with random data. It then compares the output of the two runs to verify
+//! that they're the same.
+//!
 //! ## Inputs
 //!
 //! The following input types support an optional template parameter. This should look something
@@ -147,6 +152,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::env;
+use std::fmt::Debug;
 use std::fmt::Display;
 use std::fs::File;
 use std::fs::read_dir;
@@ -1020,7 +1026,7 @@ impl ProgramInputs {
         cross_arch: Option<Architecture>,
     ) -> Result<()> {
         // Link normally, using unlink-and-replace
-        let link_output_1 = Linker::Wild.link(self.name(), inputs, &config, cross_arch)?;
+        let link_output_1 = Linker::Wild.link(self.name(), inputs, config, cross_arch)?;
         let original_content = std::fs::read(&link_output_1.binary).with_context(|| {
             format!(
                 "Failed to read first build output: {}",
@@ -1041,10 +1047,14 @@ impl ProgramInputs {
 
         // Link again with --update-in-place
         let mut config_update_in_place = config.clone();
+        let arg = match config.linker_driver {
+            LinkerDriver::Compiler(_) => "-Wl,--update-in-place",
+            LinkerDriver::Direct(_) => "--update-in-place",
+        };
         config_update_in_place
             .wild_extra_linker_args
             .args
-            .push("--update-in-place".to_string());
+            .push(arg.to_string());
 
         let link_output_2 =
             Linker::Wild.link(self.name(), inputs, &config_update_in_place, cross_arch)?;
@@ -1058,21 +1068,7 @@ impl ProgramInputs {
         })?;
 
         if original_content != final_content {
-            let diff_info = if let Some((i, (&a, &b))) = original_content
-                .iter()
-                .zip(final_content.iter())
-                .enumerate()
-                .find(|(_, (a, b))| **a != **b)
-            {
-                format!(
-                    " (first difference at offset 0x{:x}: original=0x{:02x}, final=0x{:02x})",
-                    i, a, b
-                )
-            } else if original_content.len() != final_content.len() {
-                "(length difference)".to_string()
-            } else {
-                "(unknown difference)".to_string()
-            };
+            let diffs = sections_with_diffs(&original_content, &final_content)?;
 
             let mut original = link_output_1.binary.clone();
             let mut updated = link_output_2.binary.clone();
@@ -1104,17 +1100,88 @@ impl ProgramInputs {
             })?;
 
             bail!(
-                "Update-in-place test failed for {}: content of {} differs from {} after update-in-place linking. \
-                Original size: {}, Final size: {}{}",
-                self.source_file,
-                original.display(),
-                updated.display(),
-                original_content.len(),
-                final_content.len(),
-                diff_info
+                "Update-in-place test failed for {file}: content of {original} differs \
+                from {updated} after update-in-place linking. Original size: {original_len}, \
+                Final size: {final_len}. Diffs:\n{diffs:#?}\n\
+                Rerun with:\n{cmd}",
+                file = self.source_file,
+                original = original.display(),
+                updated = updated.display(),
+                original_len = original_content.len(),
+                final_len = final_content.len(),
+                cmd = link_output_2.command,
             );
         }
 
+        Ok(())
+    }
+}
+
+/// Returns the unique section names in which `bytes_a` differs from `bytes_b`.
+fn sections_with_diffs(bytes_a: &[u8], bytes_b: &[u8]) -> Result<Vec<SectionDiff>> {
+    let file =
+        ElfFile64::parse(bytes_a).context("Failed to parse output with --update-in-place")?;
+
+    let mut sections = HashMap::new();
+
+    for (offset, (a, b)) in bytes_a.iter().zip(bytes_b).enumerate() {
+        if a == b {
+            continue;
+        }
+
+        let offset = offset as u64;
+
+        for section in file.sections() {
+            let Some(start_and_len) = section.file_range() else {
+                continue;
+            };
+
+            if (start_and_len.0..start_and_len.0 + start_and_len.1).contains(&offset) {
+                let name_bytes = section.name_bytes()?;
+                let info = sections.entry(name_bytes).or_insert_with(|| SectionDiff {
+                    name: String::from_utf8_lossy(name_bytes).into_owned(),
+                    section_start: start_and_len.0,
+                    section_size: start_and_len.1,
+                    offsets_with_diff: Vec::new(),
+                });
+                info.offsets_with_diff.push(offset);
+            }
+        }
+    }
+
+    let mut sections = sections.into_values().collect_vec();
+    sections.sort_by_key(|s| s.section_start);
+
+    Ok(sections)
+}
+
+struct SectionDiff {
+    name: String,
+    section_start: u64,
+    section_size: u64,
+    offsets_with_diff: Vec<u64>,
+}
+
+impl Debug for SectionDiff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{name} (0x{start:x}..0x{end:x}) ",
+            name = self.name,
+            start = self.section_start,
+            end = self.section_start + self.section_size
+        )?;
+        if self.offsets_with_diff.len() <= 8 {
+            write!(f, "{:x?}", self.offsets_with_diff)?;
+        } else {
+            write!(
+                f,
+                "{} bytes differ between 0x{:x} and 0x{:x}",
+                self.offsets_with_diff.len(),
+                self.offsets_with_diff[0],
+                self.offsets_with_diff[self.offsets_with_diff.len() - 1]
+            )?;
+        }
         Ok(())
     }
 }
@@ -1236,7 +1303,7 @@ impl Display for Program<'_> {
 
 impl Display for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.name.fmt(f)
+        Display::fmt(&self.name, f)
     }
 }
 
