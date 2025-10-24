@@ -27,7 +27,6 @@ use jobserver::Acquired;
 use jobserver::Client;
 use rayon::ThreadPoolBuilder;
 use std::fmt::Display;
-use std::num::NonZero;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -115,7 +114,8 @@ pub struct Args {
 
     /// The number of actually available threads (considering jobserver)
     pub(crate) available_threads: NonZeroUsize,
-    string_merging_threads: Option<NonZeroUsize>,
+
+    pub(crate) numeric_experiments: Vec<Option<u64>>,
 
     jobserver_client: Option<Client>,
 }
@@ -165,6 +165,16 @@ pub(crate) enum OutputKind {
 pub(crate) enum RelocationModel {
     NonRelocatable,
     Relocatable,
+}
+
+#[allow(clippy::enum_variant_names)]
+#[derive(Debug, Copy, Clone)]
+pub(crate) enum Experiment {
+    /// How much parallelism to allow when splitting string-merge sections.
+    MergeStringSplitParallelism = 0,
+
+    /// Number of bytes of string-merge sections before we'll break to a new group.
+    MergeStringMinGroupBytes = 2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,7 +386,7 @@ impl Default for Args {
             error_unresolved_symbols: true,
             allow_multiple_definitions: false,
             z_interpose: false,
-            string_merging_threads: None,
+            numeric_experiments: Vec::new(),
         }
     }
 }
@@ -596,12 +606,12 @@ impl Args {
         })
     }
 
-    pub fn string_merging_threads(&self) -> NonZeroUsize {
-        if let Some(threads) = self.string_merging_threads {
-            return threads;
-        }
-        const KNOWN_PERFORMANT_LIMIT: NonZero<usize> = NonZero::new(8).unwrap();
-        self.available_threads.min(KNOWN_PERFORMANT_LIMIT)
+    pub(crate) fn numeric_experiment(&self, exp: Experiment, default: u64) -> u64 {
+        self.numeric_experiments
+            .get(exp as usize)
+            .copied()
+            .flatten()
+            .unwrap_or(default)
     }
 }
 
@@ -1668,22 +1678,20 @@ fn setup_argument_parser() -> ArgumentParser {
         });
 
     parser
-        .declare_with_optional_param()
-        .long("wild-string-merging-threads")
-        .help(
-            "Due to current poor scalability of string-merging, defaults to --threads \
-             (capped at 8). Using this argument disables the default limit",
-        )
+        .declare_with_param()
+        .long("wild-experiments")
+        .help("List of numbers. Used to tweak internal parameters. '_' keeps default value.")
         .execute(|args, _modifier_stack, value| {
-            match value {
-                Some(v) => {
-                    args.string_merging_threads =
-                        Some(NonZeroUsize::try_from(v.parse::<usize>()?)?);
-                }
-                None => {
-                    args.string_merging_threads = None; // Default behaviour
-                }
-            }
+            args.numeric_experiments = value
+                .split(',')
+                .map(|p| {
+                    if p == "_" {
+                        Ok(None)
+                    } else {
+                        Ok(Some(p.parse()?))
+                    }
+                })
+                .collect::<Result<Vec<Option<u64>>>>()?;
             Ok(())
         });
 

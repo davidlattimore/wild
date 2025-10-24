@@ -44,6 +44,7 @@ sharded-vec-writer = { workspace = true }
 smallvec = { workspace = true }
 symbolic-common = { workspace = true }
 symbolic-demangle = { workspace = true }
+thread_local = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
