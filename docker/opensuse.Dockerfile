@@ -3,7 +3,7 @@
 # docker build --progress=plain -t wild-dev-opensuse . -f docker/opensuse.Dockerfile
 # docker run -it wild-dev-opensuse
 
-FROM opensuse/tumbleweed@sha256:56df080fe1129ac6f15a59dd7c9a3ae27bd1f4719e2cfc0e8890afd090c677c9 AS chef
+FROM opensuse/tumbleweed@sha256:983eecae40d0a9f3db1d13fbad4d4ee3d32b102ec4474b4a67650b69dcece89b AS chef
 RUN zypper install -y -t pattern devel_C_C++ && \
     zypper install -y \
         rustup \
