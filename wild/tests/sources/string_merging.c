@@ -19,6 +19,7 @@
 //#DiffIgnore:.dynamic
 //#DiffIgnore:dynsym.s1w.section
 //#DiffIgnore:segment.PT_DYNAMIC.*
+//#DiffIgnore:section.got
 
 #include "runtime.h"
 

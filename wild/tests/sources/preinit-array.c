@@ -6,6 +6,7 @@
 //#DiffIgnore:.dynamic.DT_PREINIT_ARRAY
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
+//#DiffIgnore:section.got
 //#Arch: x86_64
 //#RequiresGlibc:true
 //#Mode:dynamic
