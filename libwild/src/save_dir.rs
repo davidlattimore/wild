@@ -116,7 +116,7 @@ impl SaveDirState {
     /// linking, then exit.
     fn finish<'a, I: Iterator<Item = &'a PathBuf>>(&self, filenames: I) -> Result {
         for filename in filenames {
-            self.copy_file(filename)?;
+            self.copy_file(&std::path::absolute(filename)?)?;
         }
 
         let run_with_file = self.dir.join("run-with");
