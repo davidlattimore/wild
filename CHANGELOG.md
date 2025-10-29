@@ -6,19 +6,12 @@
 
 ### 💼 Other
 
-- *(deps)* Bump crate-ci/typos from 1.36.2 to 1.36.3 (#1130)
-- *(deps)* Bump nixbuild/nix-quick-install-action from 33 to 34
 - Distinguish default version (@@) from non-default (@). (#1129)
-- *(deps)* Bump crate-ci/typos from 1.36.3 to 1.37.2
-- *(deps)* Bump the weekly-updates group with 2 updates
 - Remove ignore linker-diff differences (#1163)
 - Document implemented relaxations (#1162)
 - Add RISCV_ATTRIBUTE program segment (#1166)
 - Fix lookup of the riscv-fix-hi-part (#1198)
-- *(deps)* Bump crate-ci/typos from 1.37.2 to 1.38.1 (#1204)
-- *(deps)* Bump the weekly-updates group with 3 updates (#1205)
 - Limit the conditions for executing `update-nix-lockfile`
-- *(deps)* Bump the weekly-updates group with 3 updates
 
 ### 🚜 Refactor
 
@@ -48,8 +41,6 @@
 - Verify minimal versions (#1142)
 - *(release)* Build for `(aarch|x86_|riscv)64(|gc)-unknown-linux-(musl|gnu)` (#1151)
 - Use test-config-ci.toml in CI (#1234)
-- Fix potential template-injection
-- *(release)* Disable cache and cleanup credentials 
 
 # 0.6.0
 
