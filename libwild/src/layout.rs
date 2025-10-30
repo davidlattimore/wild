@@ -5555,7 +5555,7 @@ impl<'data> DynamicLayoutState<'data> {
             let st_size = symbol.st_size(LittleEndian);
             common.allocate(
                 output_section_id::BSS.part_id_with_alignment(alignment),
-                st_size,
+                alignment.align_up(st_size),
             );
 
             // Allocate space required for the copy relocation itself.
@@ -5850,7 +5850,7 @@ fn assign_copy_relocation_address(
     let alignment = Alignment::new(file.section_alignment(section)?)?;
     let bss = memory_offsets.get_mut(output_section_id::BSS.part_id_with_alignment(alignment));
     let a = *bss;
-    *bss += local_symbol.st_size(LittleEndian);
+    *bss += alignment.align_up(local_symbol.st_size(LittleEndian));
     Ok(a)
 }
 
