@@ -24,6 +24,7 @@
 
 use crate::alignment;
 use crate::args::Args;
+use crate::args::Experiment;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
@@ -42,20 +43,27 @@ use hashbrown::HashMap;
 use itertools::Itertools as _;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
+use rayon::Scope;
 use sharded_offset_map::OffsetMap;
+use std::cell::RefCell;
+use std::mem::replace;
 use std::mem::take;
-use std::sync::atomic::AtomicU32;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
+use thread_local::ThreadLocal;
 
-/// Approximate number of groups each thread will process. Smaller numbers will result in larger
-/// groups, which tends to improve cache performance but makes it harder to balance work between
-/// threads.
-const APPROXIMATE_GROUPS_PER_THREAD: usize = 16;
+/// Maximum number of threads that can split and hash input sections at once. We default to allowing
+/// splitting parallelism up to the number of threads, but beyond about 24 it doesn't really help.
+const MAX_SPLIT_PARALLELISM: u64 = 24;
+
+/// How large a group of input sections should get before we break to the next group.
+const MIN_GROUP_BYTES: u64 = 140_000;
 
 /// Setting this to a higher value increases the potential for parallelism of hash table population
-/// and possibly gives better cache performance. However, it also increases heap allocations.
-/// Changing this value will result in a different ordering of strings within the output file.
-const MERGE_STRING_BUCKET_BITS: usize = 6;
+/// and gives better cache performance. However, it also increases heap allocations. Changing this
+/// value will result in a different ordering of strings within the output file.
+const MERGE_STRING_BUCKET_BITS: usize = 4;
 const MERGE_STRING_BUCKETS: usize = 1 << MERGE_STRING_BUCKET_BITS;
 
 /// Number of input offsets to represent by a single block. A block can store up to 12 offsets. If
@@ -192,11 +200,24 @@ pub(crate) fn merge_strings<'data>(
 
     let mut output_string_sections = output_sections.new_section_map::<MergedStringsSection>();
 
-    let reuse_pool = ReusePool::new(args.string_merging_threads().get());
+    let num_threads = rayon::current_num_threads();
+    let split_parallelism = args.numeric_experiment(
+        Experiment::MergeStringSplitParallelism,
+        (num_threads as u64).min(MAX_SPLIT_PARALLELISM),
+    ) as usize;
+
+    let reuse_pool = ReusePool::new(MERGE_STRING_BUCKETS * split_parallelism);
 
     input_sections_by_output.try_for_each(|section_id, input_sections| {
         let output_section = output_string_sections.get_mut(section_id);
-        output_section.add_input_sections(input_sections, args, &reuse_pool)
+        output_section.add_input_sections(input_sections, &reuse_pool, args)?;
+
+        assert_eq!(
+            reuse_pool.available.load(Ordering::Relaxed),
+            reuse_pool.capacity,
+        );
+
+        Ok(())
     })?;
 
     output_string_sections.for_each(|section_id, sec| {
@@ -211,13 +232,6 @@ pub(crate) fn merge_strings<'data>(
                 "merge_strings");
         }
     });
-
-    tracing::debug!(target: "metrics",
-        reused = reuse_pool.reused.load(Ordering::Relaxed),
-        reuse_drop = reuse_pool.dropped.load(Ordering::Relaxed),
-        created = reuse_pool.string_vecs.len()
-            + reuse_pool.dropped.load(Ordering::Relaxed) as usize,
-        "merge_strings");
 
     // Dropping our ReusePool can take a little while, do it in the background while we continue
     // with other work.
@@ -321,8 +335,8 @@ impl<'data> MergedStringsSection<'data> {
     fn add_input_sections(
         &mut self,
         input_sections: &[StringMergeInputSection<'data>],
-        args: &Args,
         reuse_pool: &ReusePool,
+        args: &Args,
     ) -> Result {
         // We later create ArrayQueues with capacity for all input sections and ArrayQueue panics if
         // asked for zero capacity. Also, spawning tasks and all the other work we do here would be
@@ -331,20 +345,15 @@ impl<'data> MergedStringsSection<'data> {
             return Ok(());
         }
 
-        let num_threads = args.string_merging_threads().get();
-
         let mut resources =
-            create_split_resources(&mut self.string_offsets, input_sections, num_threads);
+            create_split_resources(&mut self.string_offsets, input_sections, reuse_pool, args);
 
-        // Spawn a task for each thread.
-        rayon::scope(|s| {
-            for _ in 0..num_threads {
-                s.spawn(|_| {
-                    if let Err(error) = do_splitting_work(&resources, reuse_pool) {
-                        let _ = resources.errors.push(error);
-                    }
-                });
-            }
+        rayon::in_place_scope(|s| {
+            // Spawn some number of tasks to process input section groups. As these tasks complete,
+            // they'll spawn bucket processing tasks to take those inputs. As the bucket processing
+            // tasks complete, they will, as capacity permits, spawn additional input processing
+            // tasks. This continues until the last inputs and the last buckets have been processed.
+            try_spawn_input_processing(&resources, s);
         });
 
         // Check if we got any errors. We only look at the first error.
@@ -353,10 +362,13 @@ impl<'data> MergedStringsSection<'data> {
         }
 
         // Handle any offsets that didn't fit in their respective blocks in the offset map.
-        let overflow = core::mem::replace(&mut resources.overflowed_offsets, ArrayQueue::new(1));
-        overflow.into_iter().flatten().for_each(|o| {
-            self.overflowed_string_offsets.insert(o.input, o.output);
-        });
+        let overflow = core::mem::take(&mut resources.overflowed_offsets);
+        overflow
+            .into_iter()
+            .flat_map(|cell| cell.into_inner())
+            .for_each(|o| {
+                self.overflowed_string_offsets.insert(o.input, o.output);
+            });
 
         // Move our buckets out of `resources` and convert it to a regular Vec.
         let mut buckets = resources
@@ -405,13 +417,13 @@ impl<'data> MergedStringsSection<'data> {
     }
 }
 
-struct SplitResources<'data, 'offsets, 'sections> {
+struct SplitResources<'data, 'offsets, 'scope> {
     /// The number of input groups that we're processing. This is used so that we can know when
     /// we've processed all input groups for a particular hash bucket.
     num_input_groups: usize,
 
     /// Groups that we haven't yet processed in phase 1.
-    unprocessed: ArrayQueue<SectionGroup<'data, 'offsets, 'sections>>,
+    unprocessed: ArrayQueue<SectionGroup<'data, 'offsets, 'scope>>,
 
     // The shards that we've finished processing in their correct order. Note, this `AtomicCell`
     // isn't lock-free, since the shard is larger than a usize. This doesn't seem to make any
@@ -419,11 +431,8 @@ struct SplitResources<'data, 'offsets, 'sections> {
     finished_shards:
         Vec<AtomicCell<Option<sharded_offset_map::Shard<'offsets, BucketOffset, MAP_BLOCK_SIZE>>>>,
 
-    /// Indexed by `group * MERGE_STRING_BUCKETS + bucket`.
-    strings_by_bucket_and_group: Vec<AtomicCell<Option<Vec<StringToMerge<'data, 'offsets>>>>>,
-
-    /// Hash buckets that still need more processing. All hash buckets start out here.
-    in_progress_buckets: ArrayQueue<Box<MergeStringsSectionBucket<'data>>>,
+    /// Indexed by group and bucket. See `string_bucket_offset` for computation.
+    strings_by_bucket_and_group: Vec<Mutex<StringsSlot<'data, 'offsets>>>,
 
     /// Hash buckets that we've finished with. These have had all input groups applied.
     finished_buckets: ArrayQueue<Box<MergeStringsSectionBucket<'data>>>,
@@ -431,22 +440,73 @@ struct SplitResources<'data, 'offsets, 'sections> {
     offset_writer: sharded_offset_map::ShardedWriter<'offsets, BucketOffset, MAP_BLOCK_SIZE>,
 
     /// Any offsets that couldn't fit in the offset map due to too many strings within a block.
-    overflowed_offsets: ArrayQueue<Vec<OverflowedOffset>>,
+    overflowed_offsets: ThreadLocal<RefCell<Vec<OverflowedOffset>>>,
 
     errors: ArrayQueue<crate::error::Error>,
+
+    reuse_pool: &'scope ReusePool,
 }
 
-fn create_split_resources<'data, 'offsets, 'sections>(
+fn string_bucket_offset(input: usize, bucket: usize) -> usize {
+    input * MERGE_STRING_BUCKETS + bucket
+}
+
+impl<'scope, 'data: 'scope, 'offsets> SplitResources<'data, 'offsets, 'scope> {
+    fn swap_strings_slot(
+        &self,
+        input: usize,
+        bucket: usize,
+        slot: StringsSlot<'data, 'offsets>,
+    ) -> StringsSlot<'data, 'offsets> {
+        let mut lock = self.strings_by_bucket_and_group[string_bucket_offset(input, bucket)]
+            .lock()
+            .unwrap();
+        replace(&mut lock, slot)
+    }
+}
+
+// Spawn as many input-processing tasks as allowed.
+fn try_spawn_input_processing<'scope>(
+    resources: &'scope SplitResources<'_, '_, '_>,
+    scope: &Scope<'scope>,
+) {
+    loop {
+        let Ok(mut reservation) = resources.reuse_pool.try_reserve(MERGE_STRING_BUCKETS) else {
+            return;
+        };
+
+        scope.spawn(|scope| {
+            if let Some(input_section) = resources.unprocessed.pop()
+                && let Err(error) =
+                    process_input_section_group(resources, input_section, scope, &mut reservation)
+            {
+                let _ = resources.errors.push(error);
+            }
+
+            resources.reuse_pool.unreserve(reservation);
+        });
+    }
+}
+
+enum StringsSlot<'data, 'offsets> {
+    Empty,
+    WaitingForStrings(Box<MergeStringsSectionBucket<'data>>),
+    Strings(Vec<StringToMerge<'data, 'offsets>>),
+}
+
+fn create_split_resources<'data, 'offsets, 'scope>(
     string_offsets: &'offsets mut OffsetMap<BucketOffset, MAP_BLOCK_SIZE>,
-    input_sections: &'sections [StringMergeInputSection<'data>],
-    num_threads: usize,
-) -> SplitResources<'data, 'offsets, 'sections> {
+    input_sections: &'scope [StringMergeInputSection<'data>],
+    reuse_pool: &'scope ReusePool,
+    args: &Args,
+) -> SplitResources<'data, 'offsets, 'scope> {
     let input_size = total_input_size(input_sections);
     let mut offset_writer = string_offsets.start_sharded_write(input_size.0);
 
-    let target_group_size = compute_target_group_size(input_size, num_threads) as u64;
-    let unprocessed: ArrayQueue<SectionGroup> =
-        ArrayQueue::new(APPROXIMATE_GROUPS_PER_THREAD * num_threads);
+    let min_group_bytes =
+        args.numeric_experiment(Experiment::MergeStringMinGroupBytes, MIN_GROUP_BYTES);
+
+    let unprocessed: ArrayQueue<SectionGroup> = ArrayQueue::new(input_sections.len());
 
     let mut group_start_index = 0;
     let mut group_size = 0;
@@ -457,15 +517,13 @@ fn create_split_resources<'data, 'offsets, 'sections>(
         .for_each(|(index, section)| {
             let size = (section.section_data.len() as u64).next_multiple_of(MAP_BLOCK_SIZE);
             let is_last_section = index == input_sections.len() - 1;
-            let space_remaining = unprocessed.capacity() - unprocessed.len();
 
             let mut group_end_index = index;
 
             let new_size = group_size + size;
-            let mut should_end_group = new_size > target_group_size
-                && new_size.abs_diff(target_group_size) > size.abs_diff(target_group_size)
-                && group_size > 0
-                && space_remaining >= 2;
+            let mut should_end_group = new_size > min_group_bytes
+                && new_size.abs_diff(min_group_bytes) > size.abs_diff(min_group_bytes)
+                && group_size > 0;
 
             if is_last_section {
                 group_size += size;
@@ -486,8 +544,7 @@ fn create_split_resources<'data, 'offsets, 'sections>(
                     sections: &input_sections[group_start_index..group_end_index],
                     offsets_shard,
                 });
-                // We shouldn't have ended the previous group if that would have resulted in there
-                // being no more space.
+                // We allocated enough space for each section to be in its own group.
                 assert!(r.is_ok());
 
                 group_size = 0;
@@ -499,74 +556,111 @@ fn create_split_resources<'data, 'offsets, 'sections>(
 
     let num_groups = unprocessed.len();
     let mut strings_by_bucket_and_group = Vec::new();
-    strings_by_bucket_and_group
-        .resize_with(num_groups * MERGE_STRING_BUCKETS, || AtomicCell::new(None));
-
-    let in_progress_buckets: ArrayQueue<Box<MergeStringsSectionBucket>> =
-        ArrayQueue::new(MERGE_STRING_BUCKETS);
-    (0..MERGE_STRING_BUCKETS).for_each(|i| {
-        let _ = in_progress_buckets.push(Box::new(MergeStringsSectionBucket::new(i)));
+    strings_by_bucket_and_group.resize_with(num_groups * MERGE_STRING_BUCKETS, || {
+        Mutex::new(StringsSlot::Empty)
     });
-
-    let overflowed_offsets = ArrayQueue::new(num_threads);
 
     let mut finished_shards = Vec::new();
     finished_shards.resize_with(num_groups, || AtomicCell::new(None));
 
-    SplitResources {
+    let resources = SplitResources {
         num_input_groups: unprocessed.len(),
         unprocessed,
         strings_by_bucket_and_group,
         finished_buckets: ArrayQueue::new(MERGE_STRING_BUCKETS),
         finished_shards,
-        in_progress_buckets,
-        overflowed_offsets,
+        overflowed_offsets: ThreadLocal::new(),
         offset_writer,
         errors: ArrayQueue::new(1),
-    }
-}
+        reuse_pool,
+    };
 
-fn compute_target_group_size(input_size: LinearInputOffset, num_threads: usize) -> usize {
-    1.max(input_size.0 as usize / num_threads / APPROXIMATE_GROUPS_PER_THREAD)
+    (0..MERGE_STRING_BUCKETS).for_each(|i| {
+        resources.swap_strings_slot(
+            0,
+            i,
+            StringsSlot::WaitingForStrings(Box::new(MergeStringsSectionBucket::new(i))),
+        );
+    });
+
+    resources
 }
 
 struct ReusePool {
     string_vecs: ArrayQueue<Vec<StringToMerge<'static, 'static>>>,
 
-    /// The number of `Vec` instances that have been successfully reused.
-    reused: AtomicU32,
+    capacity: usize,
 
-    /// The number of `Vec` instances that were dropped because our array queue wasn't big enough.
-    dropped: AtomicU32,
+    /// Number of Vecs that haven't yet been reserved.
+    available: AtomicUsize,
 }
 
 /// Holds instances of data structures that we reuse where possible. This allows us to reduce the
 /// number of separate heap allocations we make.
 impl ReusePool {
-    fn new(num_threads: usize) -> Self {
+    fn new(capacity: usize) -> Self {
         Self {
-            string_vecs: ArrayQueue::new(MERGE_STRING_BUCKETS * num_threads * 4),
-            reused: AtomicU32::new(0),
-            dropped: AtomicU32::new(0),
+            string_vecs: ArrayQueue::new(capacity),
+            capacity,
+            available: AtomicUsize::new(capacity),
         }
     }
 
-    fn new_string_merge_vec<'data, 'offsets>(&self) -> Vec<StringToMerge<'data, 'offsets>> {
-        let v = self.string_vecs.pop();
-        if v.is_some() {
-            self.reused
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        v.map_or_else(|| Vec::with_capacity(1024), reuse_vec)
+    fn take_string_merge_vec<'data, 'offsets>(
+        &self,
+        reservation: &mut PoolReservation,
+    ) -> Vec<StringToMerge<'data, 'offsets>> {
+        reservation.remaining = reservation.remaining.checked_sub(1).unwrap();
+        self.string_vecs
+            .pop()
+            .map_or_else(|| Vec::with_capacity(1024), reuse_vec)
     }
 
     fn return_strings_to_merge(&self, strings_to_merge: Vec<StringToMerge<'_, '_>>) {
         let r = self.string_vecs.push(reuse_vec(strings_to_merge));
-        if r.is_err() {
-            self.dropped
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
+        assert!(r.is_ok());
+
+        self.available.fetch_add(1, Ordering::Relaxed);
     }
+
+    /// Attempt to reserve the specified number of Vecs. Fails if there isn't at least that many
+    /// already available.
+    fn try_reserve(&self, num_vecs: usize) -> Result<PoolReservation, ()> {
+        let available = self.available.load(Ordering::Relaxed);
+        if available < num_vecs {
+            return Err(());
+        }
+
+        if self
+            .available
+            .compare_exchange(
+                available,
+                available - num_vecs,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            return Err(());
+        }
+
+        Ok(PoolReservation {
+            remaining: num_vecs,
+        })
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn unreserve(&self, reservation: PoolReservation) {
+        if reservation.remaining == 0 {
+            return;
+        }
+        self.available
+            .fetch_add(reservation.remaining, Ordering::Relaxed);
+    }
+}
+
+struct PoolReservation {
+    remaining: usize,
 }
 
 /// Returns the total size of our input sections. Each input section's size is rounded up to a block
@@ -581,39 +675,16 @@ fn total_input_size(input_sections: &[StringMergeInputSection<'_>]) -> LinearInp
         .unwrap_or_default()
 }
 
-fn do_splitting_work(resources: &SplitResources, reuse_pool: &ReusePool) -> Result {
-    let mut overflowed_offsets = Vec::new();
-
-    while !resources.in_progress_buckets.is_empty() && resources.errors.is_empty() {
-        // Phase 1: Split input sections into separate strings, hash them and allocate entries in
-        // our offset map for each string.
-        if let Some(input_section) = resources.unprocessed.pop() {
-            process_input_section_group(resources, input_section, reuse_pool)?;
-        }
-
-        // Phase 2: Put input strings into hashmaps, deduplicating them and recording
-        // input-to-output offsets mappings.
-        while let Some(bucket) = resources.in_progress_buckets.pop() {
-            if !work_with_bucket(resources, bucket, &mut overflowed_offsets, reuse_pool)? {
-                break;
-            }
-        }
-    }
-
-    let r = resources.overflowed_offsets.push(overflowed_offsets);
-    // We allocated exactly enough space for each thread to push one value.
-    assert!(r.is_ok());
-    Ok(())
-}
-
 /// Perform initial processing of the input sections in a group.
-fn process_input_section_group<'data, 'offsets>(
-    resources: &SplitResources<'data, 'offsets, '_>,
-    mut group_in: SectionGroup<'data, 'offsets, '_>,
-    reuse_pool: &ReusePool,
+fn process_input_section_group<'data, 'offsets, 'scope>(
+    resources: &'scope SplitResources<'data, 'offsets, '_>,
+    mut group_in: SectionGroup<'data, 'offsets, 'scope>,
+    scope: &Scope<'scope>,
+    reservation: &mut PoolReservation,
 ) -> Result {
-    let mut buckets: [Vec<StringToMerge<'data, 'offsets>>; MERGE_STRING_BUCKETS] =
-        [(); MERGE_STRING_BUCKETS].map(|()| reuse_pool.new_string_merge_vec());
+    let mut buckets: [Vec<StringToMerge<'data, 'offsets>>; MERGE_STRING_BUCKETS] = [();
+        MERGE_STRING_BUCKETS]
+        .map(|()| resources.reuse_pool.take_string_merge_vec(reservation));
 
     for section in group_in.sections {
         process_input_section(section, &mut buckets, &mut group_in.offsets_shard)?;
@@ -623,47 +694,64 @@ fn process_input_section_group<'data, 'offsets>(
     resources.finished_shards[group_in.index].store(Some(group_in.offsets_shard));
 
     for (i, bucket_out) in buckets.iter_mut().enumerate() {
-        resources.strings_by_bucket_and_group[group_in.index * MERGE_STRING_BUCKETS + i]
-            .store(Some(take(bucket_out)));
+        let prev_slot =
+            resources.swap_strings_slot(group_in.index, i, StringsSlot::Strings(take(bucket_out)));
+        if let StringsSlot::WaitingForStrings(bucket) = prev_slot {
+            scope.spawn(|scope| {
+                if let Err(error) = work_with_bucket(resources, bucket, scope) {
+                    let _ = resources.errors.push(error);
+                }
+            });
+        }
     }
 
     Ok(())
 }
 
 /// Do all work possible with the supplied bucket then return it to an appropriate location.
-fn work_with_bucket<'data>(
-    resources: &SplitResources<'data, '_, '_>,
+fn work_with_bucket<'data, 'scope>(
+    resources: &'scope SplitResources<'data, '_, '_>,
     mut bucket: Box<MergeStringsSectionBucket<'data>>,
-    overflowed_offsets: &mut Vec<OverflowedOffset>,
-    reuse_pool: &ReusePool,
-) -> Result<bool> {
-    let mut did_work = false;
+    scope: &Scope<'scope>,
+) -> Result
+where
+    'scope: 'scope,
+{
+    let mut overflowed_offsets = resources.overflowed_offsets.get_or_default().borrow_mut();
+
     while bucket.next_input_group_index < resources.num_input_groups {
-        let group_index = bucket.next_input_group_index;
-        let Some(mut strings_to_merge) = resources.strings_by_bucket_and_group
-            [group_index * MERGE_STRING_BUCKETS + bucket.index]
-            .take()
-        else {
-            // The input isn't available, put the bucket to the back of the queue.
-            let r = resources.in_progress_buckets.push(bucket);
-            // We should have allocated enough space for all the buckets to be ready.
-            assert!(r.is_ok());
-            return Ok(did_work);
+        let mut strings_to_merge = {
+            let group_index = bucket.next_input_group_index;
+
+            let mut lock = resources.strings_by_bucket_and_group
+                [string_bucket_offset(group_index, bucket.index)]
+            .lock()
+            .unwrap();
+
+            let slot = replace(&mut *lock, StringsSlot::Empty);
+            let StringsSlot::Strings(strings) = slot else {
+                *lock = StringsSlot::WaitingForStrings(bucket);
+                return Ok(());
+            };
+
+            strings
         };
 
-        did_work = true;
+        bucket.process_split_output(&mut strings_to_merge, &mut overflowed_offsets)?;
 
-        bucket.process_split_output(&mut strings_to_merge, overflowed_offsets)?;
+        resources
+            .reuse_pool
+            .return_strings_to_merge(strings_to_merge);
+
+        try_spawn_input_processing(resources, scope);
 
         // Advance to the next input for this bucket.
         bucket.next_input_group_index += 1;
-
-        reuse_pool.return_strings_to_merge(strings_to_merge);
     }
 
     // This bucket has now processed all input sections, so it's done.
     let _ = resources.finished_buckets.push(bucket);
-    Ok(did_work)
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, Default)]

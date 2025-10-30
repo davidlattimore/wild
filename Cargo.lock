@@ -772,6 +772,7 @@ dependencies = [
  "symbolic-common",
  "symbolic-demangle",
  "tempfile",
+ "thread_local",
  "tracing",
  "tracing-subscriber",
  "uuid",
