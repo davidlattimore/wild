@@ -1,3 +1,56 @@
+## [0.7.0] - 2025-11-01
+
+### 🐛 Bug Fixes
+
+- Fill some bytes with zeros (affects --update-in-place) (#1237)
+
+### 💼 Other
+
+- *(deps)* Bump crate-ci/typos from 1.36.2 to 1.36.3 (#1130)
+- *(deps)* Bump nixbuild/nix-quick-install-action from 33 to 34
+- Distinguish default version (@@) from non-default (@). (#1129)
+- *(deps)* Bump crate-ci/typos from 1.36.3 to 1.37.2
+- *(deps)* Bump the weekly-updates group with 2 updates
+- Remove ignore linker-diff differences (#1163)
+- Document implemented relaxations (#1162)
+- Add RISCV_ATTRIBUTE program segment (#1166)
+- Fix lookup of the riscv-fix-hi-part (#1198)
+- *(deps)* Bump crate-ci/typos from 1.37.2 to 1.38.1 (#1204)
+- *(deps)* Bump the weekly-updates group with 3 updates (#1205)
+- Limit the conditions for executing `update-nix-lockfile`
+- *(deps)* Bump the weekly-updates group with 3 updates
+
+### 🚜 Refactor
+
+- Use u32_from_slice (#1128)
+- Introduce BitExtraction trait for u64 (#1157)
+
+### 📚 Documentation
+
+- Move nix docs to a separate file and update supported features list (#1113)
+- Remove `archive_splitter.rs` reference from DESIGN.md (#1145)
+
+### ⚡ Performance
+
+- Limit default parallelism in string merging
+
+### 🧪 Testing
+
+- Fix some tests after PR #1228 (#1235)
+- Ignore some diffs in risc-v tests (#1236)
+- Report sections where --update-in-place misses writes (#1239)
+- Only set `TRIPLE` when cross-compiling
+- Fix a couple of tests that were failing on recent opensuse (#1241)
+
+### ⚙️ Miscellaneous Tasks
+
+- Verify build on riscv (#1101)
+- Verify minimal versions (#1142)
+- *(release)* Build for `(aarch|x86_|riscv)64(|gc)-unknown-linux-(musl|gnu)` (#1151)
+- Use test-config-ci.toml in CI (#1234)
+- Fix potential template-injection
+- *(release)* Disable cache and cleanup credentials 
+
 # 0.6.0
 
 274 commits since the last release.
