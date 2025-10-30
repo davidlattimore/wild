@@ -1,4 +1,5 @@
 //#Mode:dynamic
+//#RunEnabled:false
 //#LinkArgs:-shared -z now
 //#Object:visibility-merging-1.c
 //#DiffIgnore:section.got

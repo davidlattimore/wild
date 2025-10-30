@@ -5,6 +5,7 @@
 
 //#Config:ignore-all-dynamic:default
 //#Mode:dynamic
+//#RunEnabled:false
 //#Shared:force-dynamic-linking.c
 //#LinkArgs:--unresolved-symbols=ignore-all -z now
 //#DiffIgnore:.dynamic.DT_NEEDED

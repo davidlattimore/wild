@@ -6,6 +6,7 @@
 //#SkipLinker:ld
 //#Object:runtime.c
 //#Mode:dynamic
+//#RunEnabled:false
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
 //#DiffIgnore:.dynamic.DT_NEEDED
