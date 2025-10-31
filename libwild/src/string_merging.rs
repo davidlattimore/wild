@@ -37,17 +37,20 @@ use crate::part_id::PartId;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::SectionSlot;
+use crossbeam_channel::Sender;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
-use rayon::Scope;
+use rayon::iter::ParallelBridge as _;
+use rayon::iter::ParallelIterator as _;
 use sharded_offset_map::OffsetMap;
 use std::cell::RefCell;
 use std::mem::replace;
 use std::mem::take;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -331,6 +334,14 @@ fn process_input_section<'data, 'offsets>(
     Ok(())
 }
 
+enum WorkItem<'data> {
+    SplitInput(PoolReservation, Arc<Sender<WorkItem<'data>>>),
+    Bucket(
+        Box<MergeStringsSectionBucket<'data>>,
+        Arc<Sender<WorkItem<'data>>>,
+    ),
+}
+
 impl<'data> MergedStringsSection<'data> {
     fn add_input_sections(
         &mut self,
@@ -348,13 +359,47 @@ impl<'data> MergedStringsSection<'data> {
         let mut resources =
             create_split_resources(&mut self.string_offsets, input_sections, reuse_pool, args);
 
-        rayon::in_place_scope(|s| {
-            // Spawn some number of tasks to process input section groups. As these tasks complete,
-            // they'll spawn bucket processing tasks to take those inputs. As the bucket processing
-            // tasks complete, they will, as capacity permits, spawn additional input processing
-            // tasks. This continues until the last inputs and the last buckets have been processed.
-            try_spawn_input_processing(&resources, s);
-        });
+        let (work_send, work_recv) = crossbeam_channel::bounded(reuse_pool.capacity);
+        let work_send = Arc::new(work_send);
+
+        // Queue some number of tasks to process input section groups. As these tasks complete,
+        // they'll queue bucket processing tasks to take those inputs. As the bucket processing
+        // tasks complete, they will, as capacity permits, queue additional input processing tasks.
+        // This continues until the last inputs and the last buckets have been processed.
+        while let Ok(reservation) = reuse_pool.try_reserve(MERGE_STRING_BUCKETS) {
+            work_send
+                .send(WorkItem::SplitInput(reservation, work_send.clone()))
+                .unwrap();
+        }
+
+        // The loop below will only terminate once all references to the sender have been dropped.
+        // Each work item holds a reference to the sender, so this is the only other reference.
+        drop(work_send);
+
+        work_recv
+            .into_iter()
+            .par_bridge()
+            .for_each(|work_item| match work_item {
+                WorkItem::SplitInput(mut reservation, work_send) => {
+                    if let Some(input_section) = resources.unprocessed.pop()
+                        && let Err(error) = process_input_section_group(
+                            &resources,
+                            input_section,
+                            &work_send,
+                            &mut reservation,
+                        )
+                    {
+                        let _ = resources.errors.push(error);
+                    }
+
+                    resources.reuse_pool.unreserve(reservation);
+                }
+                WorkItem::Bucket(bucket, work_send) => {
+                    if let Err(error) = work_with_bucket(&resources, bucket, &work_send) {
+                        let _ = resources.errors.push(error);
+                    }
+                }
+            });
 
         // Check if we got any errors. We only look at the first error.
         if let Some(error) = resources.errors.pop() {
@@ -462,29 +507,6 @@ impl<'scope, 'data: 'scope, 'offsets> SplitResources<'data, 'offsets, 'scope> {
             .lock()
             .unwrap();
         replace(&mut lock, slot)
-    }
-}
-
-// Spawn as many input-processing tasks as allowed.
-fn try_spawn_input_processing<'scope>(
-    resources: &'scope SplitResources<'_, '_, '_>,
-    scope: &Scope<'scope>,
-) {
-    loop {
-        let Ok(mut reservation) = resources.reuse_pool.try_reserve(MERGE_STRING_BUCKETS) else {
-            return;
-        };
-
-        scope.spawn(|scope| {
-            if let Some(input_section) = resources.unprocessed.pop()
-                && let Err(error) =
-                    process_input_section_group(resources, input_section, scope, &mut reservation)
-            {
-                let _ = resources.errors.push(error);
-            }
-
-            resources.reuse_pool.unreserve(reservation);
-        });
     }
 }
 
@@ -679,7 +701,7 @@ fn total_input_size(input_sections: &[StringMergeInputSection<'_>]) -> LinearInp
 fn process_input_section_group<'data, 'offsets, 'scope>(
     resources: &'scope SplitResources<'data, 'offsets, '_>,
     mut group_in: SectionGroup<'data, 'offsets, 'scope>,
-    scope: &Scope<'scope>,
+    work_send: &Arc<Sender<WorkItem<'data>>>,
     reservation: &mut PoolReservation,
 ) -> Result {
     let mut buckets: [Vec<StringToMerge<'data, 'offsets>>; MERGE_STRING_BUCKETS] = [();
@@ -697,11 +719,9 @@ fn process_input_section_group<'data, 'offsets, 'scope>(
         let prev_slot =
             resources.swap_strings_slot(group_in.index, i, StringsSlot::Strings(take(bucket_out)));
         if let StringsSlot::WaitingForStrings(bucket) = prev_slot {
-            scope.spawn(|scope| {
-                if let Err(error) = work_with_bucket(resources, bucket, scope) {
-                    let _ = resources.errors.push(error);
-                }
-            });
+            work_send
+                .send(WorkItem::Bucket(bucket, work_send.clone()))
+                .unwrap();
         }
     }
 
@@ -709,14 +729,11 @@ fn process_input_section_group<'data, 'offsets, 'scope>(
 }
 
 /// Do all work possible with the supplied bucket then return it to an appropriate location.
-fn work_with_bucket<'data, 'scope>(
-    resources: &'scope SplitResources<'data, '_, '_>,
+fn work_with_bucket<'data>(
+    resources: &SplitResources<'data, '_, '_>,
     mut bucket: Box<MergeStringsSectionBucket<'data>>,
-    scope: &Scope<'scope>,
-) -> Result
-where
-    'scope: 'scope,
-{
+    work_send: &Arc<Sender<WorkItem<'data>>>,
+) -> Result {
     let mut overflowed_offsets = resources.overflowed_offsets.get_or_default().borrow_mut();
 
     while bucket.next_input_group_index < resources.num_input_groups {
@@ -743,7 +760,11 @@ where
             .reuse_pool
             .return_strings_to_merge(strings_to_merge);
 
-        try_spawn_input_processing(resources, scope);
+        while let Ok(reservation) = resources.reuse_pool.try_reserve(MERGE_STRING_BUCKETS) {
+            work_send
+                .send(WorkItem::SplitInput(reservation, work_send.clone()))
+                .unwrap();
+        }
 
         // Advance to the next input for this bucket.
         bucket.next_input_group_index += 1;
