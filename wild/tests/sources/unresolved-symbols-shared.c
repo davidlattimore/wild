@@ -2,6 +2,7 @@
 //#SkipLinker:ld
 //#DiffEnabled:false
 //#Mode:dynamic
+//#RunEnabled:false
 //#LinkArgs:-shared -z now
 
 //#Config:ignore-in-object-files:default

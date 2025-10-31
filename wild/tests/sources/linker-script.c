@@ -1,4 +1,5 @@
 //#Mode:dynamic
+//#RunEnabled:false
 //#LinkArgs:-shared -z now -T ./linker-script.ld
 //#DiffIgnore:section.got
 //#ExpectDynSym:start_bar section="bar",offset-in-section=0

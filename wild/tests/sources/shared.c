@@ -8,6 +8,7 @@
 //#Config:default
 //#LinkArgs:-shared -z now
 //#Mode:dynamic
+//#RunEnabled:false
 //#Shared:shared-s1.c
 //#Archive:shared-a1.c,shared-a2.c
 //#DiffIgnore:.dynamic.DT_RELA

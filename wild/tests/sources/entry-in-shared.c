@@ -1,6 +1,7 @@
 // https://github.com/davidlattimore/wild/issues/1137
 //#Config:entry-in-shared
 //#LinkArgs:-shared -z now
+//#RunEnabled:false
 //#Object:runtime.c
 //#DiffIgnore:.dynamic.DT_RELA*
 //#Mode:dynamic

@@ -5,6 +5,7 @@
 //#ExpectDynSym:foo
 //#Shared:empty.c
 //#Mode:unspecified
+//#RunEnabled:false
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 // TODO: Wild probably should set dynamic linker here
@@ -24,6 +25,7 @@
 //#ExpectDynSym:baz
 //#Shared:empty.c
 //#Mode:dynamic
+//#RunEnabled:false
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#EnableLinker:lld
@@ -34,6 +36,7 @@
 //#ExpectDynSym:baz
 //#Shared:empty.c
 //#Mode:dynamic
+//#RunEnabled:false
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#EnableLinker:lld
@@ -44,6 +47,7 @@
 //#ExpectDynSym:baz
 //#Shared:empty.c
 //#Mode:dynamic
+//#RunEnabled:false
 // We're linking different .so files, so this is expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:.dynamic.DT_RELA*
