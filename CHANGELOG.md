@@ -1,46 +1,116 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
 ## [0.7.0] - 2025-11-01
 
-### 🐛 Bug Fixes
+### Added
 
-- Fill some bytes with zeros (affects --update-in-place) (#1237)
-
-### 💼 Other
-
-- Distinguish default version (@@) from non-default (@). (#1129)
-- Remove ignore linker-diff differences (#1163)
-- Document implemented relaxations (#1162)
+- Add handling of the .symver asm directives (#994)
+- Add fedora dockerfile (#1116)
+- Support for handling BSD-style archives (#1165)
 - Add RISCV_ATTRIBUTE program segment (#1166)
-- Fix lookup of the riscv-fix-hi-part (#1198)
-- Limit the conditions for executing `update-nix-lockfile`
+- Add instructions for using Wild with Rust on Illumos. (#1171)
+- Add wild-test-files as a submodule.
+- Add Illumos-specific defaults. (#1173)
+- Support `VERSION` command in linker script
+- Add support for .note.stapsdt sections (#1202)
+- Add a test for handling of note sections (#1211)
+- Support flag --no-mmap-output-file (#1215)
+- Add readable Debug implementations for internal data structures (#1227)
+- Add basic testing for update-in-place flag (#1230)
 
-### 🚜 Refactor
+### Changed
 
-- Use u32_from_slice (#1128)
-- Introduce BitExtraction trait for u64 (#1157)
-
-### 📚 Documentation
-
+- Fix compilation on riscv (#1100)
+- Verify build on riscv (#1101)
+- Fix typo: described (#1109)
+- Prevent race between test cases re-creating the same .so file (#1107)
+- Allow absolute-value symbol to be used as an entry point
 - Move nix docs to a separate file and update supported features list (#1113)
-- Remove `archive_splitter.rs` reference from DESIGN.md (#1145)
-
-### ⚡ Performance
-
+- Use wild for build in CI (#1091)
+- Reintroduce handling of tail-merged strings (#1117)
+- Make the necessary changes for the dev Docker images
+- Use depfile in integrationtests (#1123)
+- Apply clippy lint not detected due to use of hashbrown (#1125)
+- Linker-diff for RISC-V (#920)
+- Cargo update crates (#1131)
+- Use u32_from_slice (#1128)
+- Use correct exit syscall number on Illumos (#1138)
+- Update benchmarks, this time with bar charts
+- Allow setting entry point for shared objects
+- Fix a couple of crate minimum versions and document version policy
+- Verify minimal versions (#1142)
+- Distinguish default version (@@) from non-default (@). (#1129)
+- Unignore `symbol-versions3.sh` Mold test
+- Allow string-merge sections with `write_regular_object_dynamic_symbol_definition`
+- Introduce BitExtraction trait for u64 (#1157)
+- Look for dynamic linker in /bin/less in integ test (#1159)
+- Build only C++ and Rust demanglers
+- Simplify get_host_architecture (#1164)
+- Document implemented relaxations (#1162)
+- Wild 1143 - combined inline and @file options parsing and tests (#1148)
+- Make integ test diffing an opt-in feature (#1158)
+- Build for `(aarch|x86_|riscv)64(|gc)-unknown-linux-(musl|gnu)` (#1151)
+- Update arch docker files (#1168)
+- Integration tests: Make symbol assertions more extensible (#1169)
+- Use https rather than git protocol for submodule. (#1174)
+- Better error message when test unexpectedly pasess (#1176)
+- Only emit `PT_INTERP` for shared executables
+- Improve error when copy relocations are disallowed (#1179)
+- Print clang version when clang-format fails (#1183)
+- Link musl releases with Wild
+- Create constant for BsdExtended
+- Merge ResolutionFlags and ValueFlags (#1180)
+- Don't create GOT/PLT entries for ifuncs that aren't referenced (#1185)
+- Move per-symbol-flags out of SymbolDb (#1186)
+- Increase test binary execution timeout (#1188)
+- Ignore '-no-fatal-warnings' option (#1192)
+- Check for overflow on 32bit relocations (#1175)
+- Clarify clang-format version mismatch instructions (#1193)
+- Delete ValueFlags::ADDRESS (#1189)
+- Increase maximal supported alignment to 2^16 (#1190)
+- Change a test to not use the C runtime (#1195)
+- Allow parsing tokens enclosed in double quotes in linker scripts
+- Improve handling of relocations in non-alloc sections (#1196)
+- Properly indent macro invocation (#1199)
+- Run cargo update (#1206)
+- Include git commit in linker version (#1203)
+- Replace all uses of bytemuck with zerocopy (#1210)
+- Handle signedness and optimize x86_64 relocation bounds checks (#1209)
+- Fix a test that was expecting dynamic linking, but wasn't (#1216)
+- Set the `TRIPLE` environment variable if needed when running mold tests
+- Limit the conditions for executing `update-nix-lockfile`
+- Make --warn-unresolved-symbols match GNU ld's behaviour (#1217)
+- Integration tests: Make skipping tests on unsupported flags more generic (#1225)
+- Integration tests: Make compilation errors easier to find (#1224)
+- Handle missing GNU_PROPERTY .note.gnu.property values (#1222)
+- Macro to generate ELF newtypes and new SymbolType (#1228)
 - Limit default parallelism in string merging
+- Use test-config-ci.toml in CI (#1234)
+- Default config
+- Tweaked defaults
 
-### 🧪 Testing
+### Fixed
 
+- Fix latest cargo clippy (#1167)
+- Fix lookup of the riscv-fix-hi-part (#1198)
 - Fix some tests after PR #1228 (#1235)
 - Ignore some diffs in risc-v tests (#1236)
+- Fill some bytes with zeros (affects --update-in-place) (#1237)
 - Report sections where --update-in-place misses writes (#1239)
 - Only set `TRIPLE` when cross-compiling
 - Fix a couple of tests that were failing on recent opensuse (#1241)
 
-### ⚙️ Miscellaneous Tasks
+### Removed
 
-- Verify build on riscv (#1101)
-- Verify minimal versions (#1142)
-- *(release)* Build for `(aarch|x86_|riscv)64(|gc)-unknown-linux-(musl|gnu)` (#1151)
-- Use test-config-ci.toml in CI (#1234)
+- Remove obsolete test settings
+- Remove `archive_splitter.rs` reference from DESIGN.md (#1145)
+- Remove ignore linker-diff differences (#1163)
+- Remove FromStr impl for Architecture and support -m elf_x86_64_sol2 (#1197)
 
 # 0.6.0
 
