@@ -43,9 +43,8 @@ use linker_utils::elf::SectionFlags;
 use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
-use rayon::iter::IndexedParallelIterator;
-use rayon::iter::IntoParallelRefIterator;
-use rayon::iter::IntoParallelRefMutIterator;
+use rayon::iter::IndexedParallelIterator as _;
+use rayon::iter::IntoParallelRefMutIterator as _;
 use rayon::iter::ParallelIterator;
 use std::fmt::Display;
 use std::mem::take;
@@ -296,50 +295,23 @@ impl<'data> SymbolDb<'data> {
                 .add_symbol(symbol, true)?;
         }
 
-        let num_symbols_per_group = groups.iter().map(|g| g.num_symbols()).collect_vec();
+        let Some(Group::Epilogue(epilogue)) = groups.last() else {
+            bail!("Epilogue should always be last");
+        };
+        let epilogue_file_id = epilogue.file_id;
 
+        let num_symbols_per_group = groups.iter().map(|g| g.num_symbols()).collect_vec();
         let num_symbols = num_symbols_per_group.iter().sum();
 
         let mut symbol_definitions: Vec<SymbolId> = Vec::with_capacity(num_symbols);
         let mut per_symbol_flags: Vec<RawFlags> = Vec::with_capacity(num_symbols);
         let mut symbol_file_ids: Vec<FileId> = Vec::with_capacity(num_symbols);
 
-        let mut symbol_definitions_writer =
-            sharded_vec_writer::VecWriter::new(&mut symbol_definitions);
-        let mut per_symbol_flags_writer = sharded_vec_writer::VecWriter::new(&mut per_symbol_flags);
-        let mut symbol_file_ids_writer = sharded_vec_writer::VecWriter::new(&mut symbol_file_ids);
-
-        let mut per_group_writers = groups
-            .iter()
-            .zip(&num_symbols_per_group)
-            .map(|(g, &num_symbols)| {
-                SymbolInfoWriter::new(
-                    g.start_symbol_id(),
-                    symbol_definitions_writer.take_shard(num_symbols),
-                    per_symbol_flags_writer.take_shard(num_symbols),
-                    symbol_file_ids_writer.take_shard(num_symbols),
-                )
-            })
-            .collect_vec();
-
-        let per_group_outputs = read_symbols(
-            &groups,
-            &version_script,
-            &mut per_group_writers,
-            args,
-            &export_list,
-        )?;
-
-        for writer in per_group_writers {
-            symbol_definitions_writer.return_shard(writer.resolutions);
-            per_symbol_flags_writer.return_shard(writer.flags);
-            symbol_file_ids_writer.return_shard(writer.file_ids);
-        }
-
-        let Some(Group::Epilogue(epilogue)) = groups.last() else {
-            bail!("Epilogue should always be last");
-        };
-        let epilogue_file_id = epilogue.file_id;
+        let mut writers = SymbolVecWriters::new(
+            &mut symbol_definitions,
+            &mut per_symbol_flags,
+            &mut symbol_file_ids,
+        );
 
         let num_buckets = num_symbol_hash_buckets(args);
         let mut buckets = Vec::new();
@@ -349,6 +321,22 @@ impl<'data> SymbolDb<'data> {
             alternative_definitions: HashMap::new(),
             alternative_versioned_definitions: HashMap::new(),
         });
+
+        {
+            let mut per_group_shards = groups
+                .iter()
+                .map(|group| writers.new_shard(group))
+                .collect_vec();
+
+            let per_group_outputs =
+                read_symbols(&version_script, &mut per_group_shards, args, &export_list)?;
+
+            populate_symbol_db(&mut buckets, &per_group_outputs)?;
+
+            for shard in per_group_shards {
+                writers.return_shard(shard);
+            }
+        }
 
         let mut index = SymbolDb {
             args,
@@ -364,8 +352,6 @@ impl<'data> SymbolDb<'data> {
             entry: None,
         };
 
-        index.populate_symbol_db(&per_group_outputs)?;
-
         index.apply_wrapped_symbol_overrides(args, herd);
 
         for script in linker_scripts {
@@ -373,37 +359,6 @@ impl<'data> SymbolDb<'data> {
         }
 
         Ok((index, PerSymbolFlags::new(per_symbol_flags)))
-    }
-
-    #[tracing::instrument(skip_all, name = "Populate symbol map")]
-    fn populate_symbol_db(&mut self, per_group_outputs: &[SymbolLoadOutputs<'data>]) -> Result {
-        self.buckets
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(b, bucket)| {
-                // The following approximation should be an upper bound on the number of global
-                // names we'll have. There will likely be at least a few global symbols with the
-                // same name, in which case the actual number will be slightly smaller.
-                let approx_num_symbols = per_group_outputs
-                    .iter()
-                    .map(|s| s.pending_symbols_by_bucket[b].symbols.len())
-                    .sum();
-                bucket.name_to_id.reserve(approx_num_symbols);
-
-                for outputs in per_group_outputs {
-                    let pending = &outputs.pending_symbols_by_bucket[b];
-
-                    for symbol in &pending.symbols {
-                        bucket.add_symbol(symbol);
-                    }
-
-                    for symbol in &pending.versioned_symbols {
-                        bucket.add_versioned_symbol(symbol);
-                    }
-                }
-            });
-
-        Ok(())
     }
 
     pub(crate) fn add_start_stop_symbol(
@@ -753,6 +708,47 @@ impl<'data> SymbolDb<'data> {
     }
 }
 
+struct SymbolVecWriters<'out> {
+    symbol_definitions_writer: sharded_vec_writer::VecWriter<'out, SymbolId>,
+    per_symbol_flags_writer: sharded_vec_writer::VecWriter<'out, RawFlags>,
+    symbol_file_ids_writer: sharded_vec_writer::VecWriter<'out, FileId>,
+}
+
+impl<'out> SymbolVecWriters<'out> {
+    fn new(
+        symbol_definitions: &'out mut Vec<SymbolId>,
+        per_symbol_flags: &'out mut Vec<RawFlags>,
+        symbol_file_ids: &'out mut Vec<FileId>,
+    ) -> Self {
+        Self {
+            symbol_definitions_writer: sharded_vec_writer::VecWriter::new(symbol_definitions),
+            per_symbol_flags_writer: sharded_vec_writer::VecWriter::new(per_symbol_flags),
+            symbol_file_ids_writer: sharded_vec_writer::VecWriter::new(symbol_file_ids),
+        }
+    }
+
+    fn new_shard<'group, 'data>(
+        &mut self,
+        group: &'group Group<'data>,
+    ) -> SymbolWriterShard<'out, 'group, 'data> {
+        let num_symbols = group.num_symbols();
+        SymbolWriterShard {
+            group,
+            next: group.start_symbol_id(),
+            resolutions: self.symbol_definitions_writer.take_shard(num_symbols),
+            flags: self.per_symbol_flags_writer.take_shard(num_symbols),
+            file_ids: self.symbol_file_ids_writer.take_shard(num_symbols),
+        }
+    }
+
+    fn return_shard(&mut self, shard: SymbolWriterShard) {
+        self.symbol_definitions_writer
+            .return_shard(shard.resolutions);
+        self.per_symbol_flags_writer.return_shard(shard.flags);
+        self.symbol_file_ids_writer.return_shard(shard.file_ids);
+    }
+}
+
 impl<'data> SymbolBucket<'data> {
     fn add_symbol(&mut self, pending: &PendingSymbol<'data>) {
         match self.name_to_id.entry(pending.name) {
@@ -1015,59 +1011,89 @@ pub(crate) fn is_mapping_symbol_name(name: &[u8]) -> bool {
 
 #[tracing::instrument(skip_all, name = "Read symbols")]
 fn read_symbols<'data>(
-    groups: &[Group<'data>],
     version_script: &VersionScript,
-    symbols_out_by_group: &mut [SymbolInfoWriter],
+    shards: &mut [SymbolWriterShard<'_, '_, 'data>],
     args: &Args,
     export_list: &Option<ExportList<'data>>,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
     let num_buckets = num_symbol_hash_buckets(args);
 
-    groups
-        .par_iter()
-        .zip(symbols_out_by_group)
-        .map(|(group, symbols_out)| {
-            let mut outputs = SymbolLoadOutputs {
-                pending_symbols_by_bucket: vec![PendingSymbolHashBucket::default(); num_buckets],
-            };
+    shards
+        .par_iter_mut()
+        .map(|shard| read_symbols_for_group(shard, version_script, export_list, num_buckets, args))
+        .collect::<Result<Vec<SymbolLoadOutputs>>>()
+}
 
-            match group {
-                Group::Prelude(prelude) => {
-                    prelude.load_symbols(symbols_out, &mut outputs);
-                }
-                Group::Objects(parsed_input_objects) => {
-                    for obj in *parsed_input_objects {
-                        load_symbols_from_file(
-                            obj,
-                            version_script,
-                            symbols_out,
-                            &mut outputs,
-                            args,
-                            export_list,
-                        )
-                        .with_context(|| {
-                            format!("Failed to load symbols from `{}`", obj.parsed.input)
-                        })?;
-                    }
-                }
-                Group::LinkerScripts(scripts) => {
-                    for script in scripts {
-                        load_linker_script_symbols(script, symbols_out, &mut outputs);
-                    }
-                }
-                Group::Epilogue(_) => {
-                    // Custom section start/stop symbols are generated after archive handling.
-                }
+fn read_symbols_for_group<'data>(
+    shard: &mut SymbolWriterShard<'_, '_, 'data>,
+    version_script: &VersionScript,
+    export_list: &Option<ExportList<'data>>,
+    num_buckets: usize,
+    args: &Args,
+) -> Result<SymbolLoadOutputs<'data>> {
+    let mut outputs = SymbolLoadOutputs {
+        pending_symbols_by_bucket: vec![PendingSymbolHashBucket::default(); num_buckets],
+    };
+
+    match shard.group {
+        Group::Prelude(prelude) => {
+            prelude.load_symbols(shard, &mut outputs);
+        }
+        Group::Objects(parsed_input_objects) => {
+            for obj in *parsed_input_objects {
+                load_symbols_from_file(obj, version_script, shard, &mut outputs, args, export_list)
+                    .with_context(|| {
+                        format!("Failed to load symbols from `{}`", obj.parsed.input)
+                    })?;
+            }
+        }
+        Group::LinkerScripts(scripts) => {
+            for script in scripts {
+                load_linker_script_symbols(script, shard, &mut outputs);
+            }
+        }
+        Group::Epilogue(_) => {
+            // Custom section start/stop symbols are generated after archive handling.
+        }
+    }
+
+    Ok(outputs)
+}
+
+#[tracing::instrument(skip_all, name = "Populate symbol map")]
+fn populate_symbol_db<'data>(
+    buckets: &mut [SymbolBucket<'data>],
+    per_group_outputs: &[SymbolLoadOutputs<'data>],
+) -> Result {
+    buckets.par_iter_mut().enumerate().for_each(|(b, bucket)| {
+        // The following approximation should be an upper bound on the number of global
+        // names we'll have. There will likely be at least a few global symbols with the
+        // same name, in which case the actual number will be slightly smaller.
+        let approx_num_symbols = per_group_outputs
+            .iter()
+            .map(|s| s.pending_symbols_by_bucket[b].symbols.len())
+            .sum();
+        bucket.name_to_id.reserve(approx_num_symbols);
+
+        for outputs in per_group_outputs {
+            let pending = &outputs.pending_symbols_by_bucket[b];
+
+            for symbol in &pending.symbols {
+                bucket.add_symbol(symbol);
             }
 
-            Ok(outputs)
-        })
-        .collect::<Result<Vec<SymbolLoadOutputs>>>()
+            for symbol in &pending.versioned_symbols {
+                bucket.add_versioned_symbol(symbol);
+            }
+        }
+    });
+
+    Ok(())
 }
 
 fn load_linker_script_symbols<'data>(
     script: &SequencedLinkerScript<'data>,
-    symbols_out: &mut SymbolInfoWriter,
+    symbols_out: &mut SymbolWriterShard,
     outputs: &mut SymbolLoadOutputs<'data>,
 ) {
     for (offset, definition) in script.parsed.symbol_defs.iter().enumerate() {
@@ -1088,7 +1114,7 @@ fn load_linker_script_symbols<'data>(
 fn load_symbols_from_file<'data>(
     s: &SequencedInputObject<'data>,
     version_script: &VersionScript,
-    symbols_out: &mut SymbolInfoWriter,
+    symbols_out: &mut SymbolWriterShard,
     outputs: &mut SymbolLoadOutputs<'data>,
     args: &Args,
     export_list: &Option<ExportList<'data>>,
@@ -1111,28 +1137,15 @@ fn load_symbols_from_file<'data>(
     }
 }
 
-struct SymbolInfoWriter<'out> {
+struct SymbolWriterShard<'out, 'group, 'data> {
+    group: &'group Group<'data>,
     resolutions: sharded_vec_writer::Shard<'out, SymbolId>,
     flags: sharded_vec_writer::Shard<'out, RawFlags>,
     file_ids: sharded_vec_writer::Shard<'out, FileId>,
     next: SymbolId,
 }
 
-impl<'out> SymbolInfoWriter<'out> {
-    fn new(
-        base: SymbolId,
-        resolutions: sharded_vec_writer::Shard<'out, SymbolId>,
-        flags: sharded_vec_writer::Shard<'out, RawFlags>,
-        file_ids: sharded_vec_writer::Shard<'out, FileId>,
-    ) -> Self {
-        Self {
-            resolutions,
-            flags,
-            file_ids,
-            next: base,
-        }
-    }
-
+impl<'out, 'group, 'data> SymbolWriterShard<'out, 'group, 'data> {
     fn set_next(&mut self, flags: ValueFlags, resolution: SymbolId, file_id: FileId) {
         self.flags.push(flags.raw());
         self.resolutions.push(resolution);
@@ -1145,7 +1158,7 @@ trait SymbolLoader<'data> {
     fn load_symbols(
         &self,
         file_id: FileId,
-        symbols_out: &mut SymbolInfoWriter,
+        symbols_out: &mut SymbolWriterShard,
         outputs: &mut SymbolLoadOutputs<'data>,
     ) -> Result {
         let e = LittleEndian;
@@ -1579,7 +1592,7 @@ impl TryFrom<usize> for SymbolId {
 impl<'data> Prelude<'data> {
     fn load_symbols(
         &self,
-        symbols_out: &mut SymbolInfoWriter,
+        symbols_out: &mut SymbolWriterShard,
         outputs: &mut SymbolLoadOutputs<'data>,
     ) {
         for definition in &self.symbol_definitions {
