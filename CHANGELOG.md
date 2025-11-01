@@ -25,9 +25,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Fix compilation on riscv (#1100)
-- Verify build on riscv (#1101)
-- Fix typo: described (#1109)
 - Prevent race between test cases re-creating the same .so file (#1107)
 - Allow absolute-value symbol to be used as an entry point
 - Move nix docs to a separate file and update supported features list (#1113)
@@ -42,8 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use correct exit syscall number on Illumos (#1138)
 - Update benchmarks, this time with bar charts
 - Allow setting entry point for shared objects
-- Fix a couple of crate minimum versions and document version policy
-- Verify minimal versions (#1142)
 - Distinguish default version (@@) from non-default (@). (#1129)
 - Unignore `symbol-versions3.sh` Mold test
 - Allow string-merge sections with `write_regular_object_dynamic_symbol_definition`
@@ -54,7 +49,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Document implemented relaxations (#1162)
 - Wild 1143 - combined inline and @file options parsing and tests (#1148)
 - Make integ test diffing an opt-in feature (#1158)
-- Build for `(aarch|x86_|riscv)64(|gc)-unknown-linux-(musl|gnu)` (#1151)
 - Update arch docker files (#1168)
 - Integration tests: Make symbol assertions more extensible (#1169)
 - Use https rather than git protocol for submodule. (#1174)
@@ -81,7 +75,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Include git commit in linker version (#1203)
 - Replace all uses of bytemuck with zerocopy (#1210)
 - Handle signedness and optimize x86_64 relocation bounds checks (#1209)
-- Fix a test that was expecting dynamic linking, but wasn't (#1216)
 - Set the `TRIPLE` environment variable if needed when running mold tests
 - Limit the conditions for executing `update-nix-lockfile`
 - Make --warn-unresolved-symbols match GNU ld's behaviour (#1217)
@@ -90,14 +83,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Handle missing GNU_PROPERTY .note.gnu.property values (#1222)
 - Macro to generate ELF newtypes and new SymbolType (#1228)
 - Limit default parallelism in string merging
-- Use test-config-ci.toml in CI (#1234)
 - Default config
 - Tweaked defaults
+- Keep a changelog
 
 ### Fixed
 
+- Fix compilation on riscv (#1100)
+- Fix typo: described (#1109)
+- Fix a couple of crate minimum versions and document version policy
 - Fix latest cargo clippy (#1167)
 - Fix lookup of the riscv-fix-hi-part (#1198)
+- Fix a test that was expecting dynamic linking, but wasn't (#1216)
 - Fix some tests after PR #1228 (#1235)
 - Ignore some diffs in risc-v tests (#1236)
 - Fill some bytes with zeros (affects --update-in-place) (#1237)
