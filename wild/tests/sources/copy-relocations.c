@@ -32,6 +32,11 @@ int get_w3(void);
 // This is defined in a separate object file that is compiled with -fPIC.
 int get_s1_pic(void);
 
+extern int aligned_int;
+extern int aligned_int2;
+
+unsigned long long ptr_to_int(void* ptr);
+
 void _start(void) {
   runtime_init();
 
@@ -71,6 +76,19 @@ void _start(void) {
   }
   if (get_s3() != 13) {
     exit_syscall(51);
+  }
+
+  if (aligned_int != 700) {
+    exit_syscall(52);
+  }
+  if (aligned_int2 != 0) {
+    exit_syscall(53);
+  }
+  if (ptr_to_int(&aligned_int) & 0xff) {
+    exit_syscall(54);
+  }
+  if (ptr_to_int(&aligned_int2) & 0xff) {
+    exit_syscall(54);
   }
 
   exit_syscall(42);
