@@ -162,7 +162,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         targets: riscv64gc-unknown-linux-gnu
-    - run: sudo apt-get install gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
+    - run: sudo apt-get update && sudo apt-get install gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
     - run: cp .cargo/config.toml.cross-riscv .cargo/config.toml
     - run: cargo build --target riscv64gc-unknown-linux-gnu
 
