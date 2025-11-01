@@ -1912,7 +1912,7 @@ fn apply_relocation<'data, A: Arch>(
     }
 
     let (resolution, symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
-    let flags = resolution.flags;
+    let flags = layout.flags_for_symbol(local_symbol_id);
     let mut next_modifier = RelocationModifier::Normal;
     let rel_info;
     let output_kind = layout.args().output_kind();
