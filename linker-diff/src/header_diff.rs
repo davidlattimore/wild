@@ -378,8 +378,13 @@ pub(crate) fn diff_array(
     let mut table = AsciiTable::default();
     let mut rows = Vec::new();
 
+    // Ensure all columns have the same width.
+    let column_width = (table.max_width() - 3) / binaries.len() - 3;
+
     for ((i, bin), values) in binaries.iter().enumerate().zip(arrays) {
-        table.column(i).set_header(&bin.name);
+        let column = table.column(i);
+        column.set_header(&bin.name);
+        column.set_max_width(column_width);
         if rows.len() < values.len() {
             rows.resize_with(values.len(), || vec![String::new(); i]);
         }
