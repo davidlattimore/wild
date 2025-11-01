@@ -399,6 +399,7 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     target_segment_type: None,
 };
 
+pub(crate) const EXECUTABLE_START: &str = "__executable_start";
 const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     // A section into which we write headers.
     BuiltInSectionDetails {
@@ -636,6 +637,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(TEXT_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
+        start_symbol_name: Some(EXECUTABLE_START),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
