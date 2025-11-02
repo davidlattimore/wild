@@ -851,7 +851,7 @@ fn resolve_sections_for_object<'data>(
                     return Ok(SectionSlot::NoteGnuProperty(input_section_index));
                 }
                 SectionRuleOutcome::Debug => {
-                    if args.strip_debug && !section_flags.contains(shf::ALLOC) {
+                    if args.strip_debug() && !section_flags.contains(shf::ALLOC) {
                         return Ok(SectionSlot::Discard);
                     }
 

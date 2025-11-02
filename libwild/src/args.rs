@@ -46,8 +46,7 @@ pub struct Args {
     pub(crate) output: Arc<Path>,
     pub(crate) dynamic_linker: Option<Box<Path>>,
     pub num_threads: Option<NonZeroUsize>,
-    pub(crate) strip_all: bool,
-    pub(crate) strip_debug: bool,
+    pub(crate) strip: Strip,
     pub(crate) prepopulate_maps: bool,
     pub(crate) sym_info: Option<String>,
     pub(crate) merge_strings: bool,
@@ -118,6 +117,13 @@ pub struct Args {
     pub(crate) numeric_experiments: Vec<Option<u64>>,
 
     jobserver_client: Option<Client>,
+}
+
+#[derive(Debug)]
+pub(crate) enum Strip {
+    Nothing,
+    Debug,
+    All,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -324,8 +330,7 @@ impl Default for Args {
             output_kind: None,
             time_phase_options: None,
             num_threads: None,
-            strip_all: false,
-            strip_debug: false,
+            strip: Strip::Nothing,
             // For now, we default to --gc-sections. This is different to other linkers, but other than
             // being different, there doesn't seem to be any downside to doing this. We don't currently do
             // any less work if we're not GCing sections, but do end up writing more, so --no-gc-sections
@@ -612,6 +617,14 @@ impl Args {
             .copied()
             .flatten()
             .unwrap_or(default)
+    }
+
+    pub(crate) fn strip_all(&self) -> bool {
+        matches!(self.strip, Strip::All)
+    }
+
+    pub(crate) fn strip_debug(&self) -> bool {
+        matches!(self.strip, Strip::All | Strip::Debug)
     }
 }
 
@@ -1488,8 +1501,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .short("s")
         .help("Strip all symbols")
         .execute(|args, _modifier_stack| {
-            args.strip_all = true;
-            args.strip_debug = true;
+            args.strip = Strip::All;
             Ok(())
         });
 
@@ -1499,7 +1511,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .short("S")
         .help("Strip debug symbols")
         .execute(|args, _modifier_stack| {
-            args.strip_debug = true;
+            args.strip = Strip::Debug;
             Ok(())
         });
 
