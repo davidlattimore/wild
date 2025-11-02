@@ -2879,6 +2879,7 @@ fn integration_test(
         "custom-note.s",
         "eh_frame.c",
         "symbol-priority.c",
+        "hidden-ref.c",
         "trivial_asm.s",
         "non-alloc.s",
         "gnu-unique.c",

@@ -616,19 +616,30 @@ impl<'data> SymbolDb<'data> {
     }
 
     #[inline(always)]
-    pub(crate) fn get(&self, key: &PreHashedSymbolName) -> Option<SymbolId> {
+    pub(crate) fn get(&self, key: &PreHashedSymbolName, allow_dynamic: bool) -> Option<SymbolId> {
         let num_buckets = self.buckets.len();
 
         match key {
-            PreHashedSymbolName::Unversioned(key) => self.buckets
-                [key.hash() as usize % num_buckets]
-                .name_to_id
-                .get(key)
-                .copied(),
-            PreHashedSymbolName::Versioned(key) => self.buckets[key.hash() as usize % num_buckets]
-                .versioned_name_to_id
-                .get(key)
-                .copied(),
+            PreHashedSymbolName::Unversioned(key) => {
+                let bucket = &self.buckets[key.hash() as usize % num_buckets];
+                let symbol_id = bucket.name_to_id.get(key).copied()?;
+
+                if !allow_dynamic && self.file(self.file_id_for_symbol(symbol_id)).is_dynamic() {
+                    return bucket.get_non_dynamic(symbol_id, self);
+                }
+
+                Some(symbol_id)
+            }
+            PreHashedSymbolName::Versioned(key) => {
+                let bucket = &self.buckets[key.hash() as usize % num_buckets];
+                let symbol_id = bucket.versioned_name_to_id.get(key).copied()?;
+
+                if !allow_dynamic && self.file(self.file_id_for_symbol(symbol_id)).is_dynamic() {
+                    return bucket.get_non_dynamic(symbol_id, self);
+                }
+
+                Some(symbol_id)
+            }
         }
     }
 
@@ -782,6 +793,20 @@ impl<'data> SymbolBucket<'data> {
             .entry(first_symbol_id)
             .or_default()
             .push(new_symbol_id);
+    }
+
+    /// Returns the selected non-dynamic alternative to the supplied symbol, if any.
+    fn get_non_dynamic(&self, symbol_id: SymbolId, symbol_db: &SymbolDb) -> Option<SymbolId> {
+        self.alternative_definitions
+            .get(&symbol_id)?
+            .iter()
+            .find(|alt| {
+                // For now, we just get the first definition that isn't from a shared object. We should
+                // actually take symbol binding into account, but don't yet. TODO: Fix this.
+                let file_id = symbol_db.file_id_for_symbol(**alt);
+                !symbol_db.file(file_id).is_dynamic()
+            })
+            .copied()
     }
 }
 
