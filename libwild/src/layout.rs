@@ -2843,8 +2843,10 @@ fn process_relocation<A: Arch>(
     let mut next_modifier = RelocationModifier::Normal;
     if let Some(local_sym_index) = rel.symbol() {
         let symbol_db = resources.symbol_db;
-        let symbol_id = symbol_db.definition(object.symbol_id_range.input_to_id(local_sym_index));
-        let local_flags = resources.local_flags_for_symbol(symbol_id);
+        let local_symbol_id = object.symbol_id_range.input_to_id(local_sym_index);
+        let symbol_id = symbol_db.definition(local_symbol_id);
+        let mut flags = resources.local_flags_for_symbol(symbol_id);
+        flags.merge(resources.local_flags_for_symbol(local_symbol_id));
         let rel_offset = rel.r_offset;
         let r_type = rel.r_type;
         let section_flags = SectionFlags::from_header(section);
@@ -2853,7 +2855,7 @@ fn process_relocation<A: Arch>(
             r_type,
             object.object.raw_section_data(section)?,
             rel_offset,
-            local_flags,
+            flags,
             args.output_kind(),
             section_flags,
             true,
@@ -2881,14 +2883,14 @@ fn process_relocation<A: Arch>(
             if needs_tlsld(rel_info.kind) && !resources.uses_tlsld.load(atomic::Ordering::Relaxed) {
                 resources.uses_tlsld.store(true, atomic::Ordering::Relaxed);
             }
-        } else if flags_to_add.needs_direct() && local_flags.is_interposable() {
+        } else if flags_to_add.needs_direct() && flags.is_interposable() {
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-            } else if local_flags.is_function() {
+            } else if flags.is_function() {
                 // Create a PLT entry for the function and refer to that instead.
                 flags_to_add.remove(ValueFlags::DIRECT);
                 flags_to_add |= ValueFlags::PLT | ValueFlags::GOT;
-            } else if !local_flags.is_absolute() {
+            } else if !flags.is_absolute() {
                 match args.copy_relocations {
                     crate::args::CopyRelocations::Allowed => {
                         flags_to_add |= ValueFlags::COPY_RELOCATION;
@@ -2907,7 +2909,7 @@ fn process_relocation<A: Arch>(
             }
         } else if args.is_relocatable()
             && rel_info.kind == RelocationKind::Absolute
-            && (local_flags.is_address() | local_flags.is_ifunc())
+            && (flags.is_address() | flags.is_ifunc())
         {
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
@@ -2933,7 +2935,7 @@ fn process_relocation<A: Arch>(
                 object.object.symbol(local_sym_index)?,
                 object.file_id,
                 symbol_db.file_id_for_symbol(symbol_id),
-                local_flags,
+                flags,
                 args,
             ) {
                 let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
