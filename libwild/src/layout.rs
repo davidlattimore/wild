@@ -14,6 +14,7 @@ use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::BuildIdOption;
 use crate::args::OutputKind;
+use crate::args::Strip;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
@@ -4650,6 +4651,12 @@ impl<'data> SymbolCopyInfo<'data> {
         if name.is_empty()
             || (sym.is_local() && name.starts_with(b".L"))
             || is_mapping_symbol_name(name)
+        {
+            return None;
+        }
+
+        if let Strip::Retain(retain) = &symbol_db.args.strip
+            && !retain.contains(name)
         {
             return None;
         }
