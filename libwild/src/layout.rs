@@ -3104,7 +3104,7 @@ impl<'data> PreludeLayoutState<'data> {
 
         // The first entry in the symbol table must be null. Similarly, the first string in the
         // strings table must be empty.
-        if !resources.symbol_db.args.strip_all {
+        if !resources.symbol_db.args.strip_all() {
             common.allocate(part_id::SYMTAB_LOCAL, size_of::<elf::SymtabEntry>() as u64);
             common.allocate(part_id::STRTAB, 1);
         }
@@ -3242,7 +3242,7 @@ impl<'data> PreludeLayoutState<'data> {
         symbol_db: &SymbolDb<'_>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
     ) -> Result<(), Error> {
-        if symbol_db.args.strip_all {
+        if symbol_db.args.strip_all() {
             return Ok(());
         }
 
@@ -3689,7 +3689,7 @@ impl<'data> EpilogueLayoutState<'data> {
         symbol_db: &SymbolDb<'data>,
         per_symbol_flags: &AtomicPerSymbolFlags,
     ) -> Result {
-        if !symbol_db.args.strip_all {
+        if !symbol_db.args.strip_all() {
             self.internal_symbols.allocate_symbol_table_sizes(
                 &mut common.mem_sizes,
                 symbol_db,
@@ -4307,7 +4307,7 @@ impl<'data> ObjectLayoutState<'data> {
         per_symbol_flags: &AtomicPerSymbolFlags,
     ) {
         common.mem_sizes.resize(output_sections.num_parts());
-        if !symbol_db.args.strip_all {
+        if !symbol_db.args.strip_all() {
             self.allocate_symtab_space(common, symbol_db, per_symbol_flags);
         }
         let output_kind = symbol_db.args.output_kind();
