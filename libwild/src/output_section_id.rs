@@ -521,6 +521,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC,
         target_segment_type: Some(pt::INTERP),
+        start_symbol_name: Some(EXECUTABLE_START),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -637,7 +638,6 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         kind: SectionKind::Primary(SectionName(TEXT_SECTION_NAME)),
         ty: sht::PROGBITS,
         section_flags: shf::ALLOC.with(shf::EXECINSTR),
-        start_symbol_name: Some(EXECUTABLE_START),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
