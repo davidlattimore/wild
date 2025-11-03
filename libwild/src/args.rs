@@ -124,6 +124,7 @@ pub(crate) enum Strip {
     Nothing,
     Debug,
     All,
+    Retain(HashSet<Vec<u8>>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2081,6 +2082,35 @@ fn setup_argument_parser() -> ArgumentParser {
             if value != "gnu" && value != "both" {
                 bail!("Unsupported hash-style `{value}`");
             }
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("retain-symbols-file")
+        .help(
+            "Filter symtab to contain only symbols listed in the supplied file. \
+            One symbol per line.",
+        )
+        .execute(|args, _modifier_stack, value| {
+            // The performance this flag is not especially optimised. For one, we copy each string
+            // to the heap. We also do two lookups in the hashset for each symbol. This is a pretty
+            // obscure flag that we don't expect to be used much, so at this stage, it doesn't seem
+            // worthwhile to optimise it.
+            let contents = std::fs::read_to_string(value)
+                .with_context(|| format!("Failed to read `{value}`"))?;
+            args.strip = Strip::Retain(
+                contents
+                    .lines()
+                    .filter_map(|l| {
+                        if l.is_empty() {
+                            None
+                        } else {
+                            Some(l.as_bytes().to_owned())
+                        }
+                    })
+                    .collect(),
+            );
             Ok(())
         });
 

@@ -47,6 +47,13 @@
 //#LinkArgs:--strip-all --strip-debug
 //#ExpectSym:_start
 
+//#Config:retain-symbols-file
+//#Object:runtime.c
+//#LinkArgs:--retain-symbols-file ./link_args.retain
+//#ExpectSym:_start
+//#ExpectSym:exit_syscall
+//#NoSym:runtime_init
+
 #include "runtime.h"
 
 void _start(void) {
