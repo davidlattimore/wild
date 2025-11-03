@@ -58,7 +58,6 @@ use crate::layout::SymbolCopyInfo;
 use crate::layout::VersionDef;
 use crate::layout::compute_allocations;
 use crate::output_section_id;
-use crate::output_section_id::EXECUTABLE_START;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
@@ -3125,9 +3124,6 @@ fn write_internal_symbols(
         // __global_pointer$ = MIN(__SDATA_BEGIN__ + 0x800, MAX(__DATA_BEGIN__ + 0x800, __BSS_END__ - 0x800));
         if symbol_name.bytes() == GLOBAL_POINTER_SYMBOL_NAME.as_bytes() {
             address += RISCV_TLS_DTV_OFFSET;
-        } else if symbol_name.bytes() == EXECUTABLE_START.as_bytes() {
-            let text_layout = layout.section_layouts.get(output_section_id::TEXT);
-            address = text_layout.mem_offset;
         }
 
         let entry = symbol_writer

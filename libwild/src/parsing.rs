@@ -203,6 +203,15 @@ impl<'data> Prelude<'data> {
                     name.as_bytes(),
                 ));
             }
+
+            if let Some(names) = def.synthetic_symbol_names {
+                for name in names {
+                    symbol_definitions.push(InternalSymDefInfo::notype(
+                        SymbolPlacement::SectionStart(section_id),
+                        name.as_bytes(),
+                    ));
+                }
+            }
         }
 
         // We define _TLS_MODULE_BASE_ either at the start or end of the TLS segment, depending on
