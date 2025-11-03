@@ -153,24 +153,40 @@ WILD_IGNORE_SKIP=mold cargo test --features mold_tests
 WILD_IGNORE_SKIP=all cargo test --features external_tests
 ```
 
+## Commit messages
+
+The title of your commit message should ideally be written with a view to it being included in the
+release notes. i.e. write what would be useful for a user of the linker to read. Implementation
+details can go in the extended description.
+
+When we write the release notes, we try to categorise commits into groups. You can help by prefixing
+the commit title with a word that gives a clue as to which section it should go in. If you think it
+shouldn't go in the release notes, you can prefix the title with "chore:" or "typo:", neither of
+which get included in the notes. If in doubt, [conventional
+commits](https://www.conventionalcommits.org/en/v1.0.0/) is probably a good source of information
+for how we aspire to format commit messages.
+
+To see the current rules that we use for categorising commits, see `cliff.toml`.
+
 ## GitHub workflow
 
 TL;DR: We're pretty relaxed. Feel free to force push or not. Squash, rebase, merge, whatever you
 like, we'll find ways to work with it.
 
 In order to make things like `git bisect` easier, this project maintains a linear sequence of
-commits. So PRs get rebased and we don't use merge commits.
+commits.
 
 It's fine for you to use whatever workflow you like when making a PR. For example, if you want to
-add fix-up commits as the PR progresses, that's fine. We'll squash the PR when merging. It's also
-fine to amend commits as you go.
+add fix-up commits as the PR progresses, that's fine. It's also fine to amend commits as you go.
 
-When merging, if it looks like your commits are intended to be merged separately, we'll rebase
-without squashing. If you'd like your commits not to be squashed, then please mention this on the PR
-to save us needing to guess.
+All PRs get squashed when merging. We do this so that we have a reference to the PR in the commit
+message, which makes it easier to find the change later and write the release notes. If you have
+changes that you'd like to keep as separate commits, please send them as separate PRs.
 
-If you end up with merge commits in your PR, that's OK, but we'll definitely need to squash the
-commits when merging.
+When merging, by default we'll use the title and description of your PR as the commit message. So if
+you want to change the commit message after you've created the PR, edit the title and / or the
+description (first comment on the PR). We may sometimes edit the commit message ourselves when
+merging.
 
 Feel free to mark your PR as a draft at any stage if you know there's more you'd like to do with it
 and want to avoid us merging it before it's ready.
