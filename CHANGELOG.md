@@ -1,4 +1,128 @@
-# 0.6.0
+## 0.7.0
+
+### 🚀 Features
+
+- Add handling of the .symver asm directives (#994)
+- Allow absolute-value symbol to be used as an entry point
+- Allow setting entry point for shared objects
+- Reintroduce handling of tail-merged strings (#1117)
+- Implement --retain-symbols-file (#1262)
+- Allow mixing of @file and regular arguments (#1148)
+- Support `VERSION` command in linker script
+- Ignore '-no-fatal-warnings' option (#1192)
+- Increase maximal supported alignment to 2^16 (#1190)
+- Include git commit in linker version (#1203)
+- Add support for .note.stapsdt sections (#1202)
+- Check for overflow on 32bit relocations (#1175)
+- Support tokens enclosed in double quotes in linker scripts
+- Support flag --no-mmap-output-file (#1215)
+
+### ⚡ Performance
+
+- Limit default parallelism in string merging
+- Rewrite scheduling of string merging tasks (#1240)
+
+### 🪲 Bug Fixes
+
+- Fill some bytes with zeros (affects --update-in-place) (#1237)
+- Improve handling of non-absolute paths in save-dir (#1244)
+- Pad copy relocations according to alignment (#1251)
+- Don't allow hidden/protected symbols to reference shared objects (#1258)
+- Use local symbol interposability when processing relocations (#1259)
+- Make --strip-debug suppress earlier --strip-all (#1261)
+- Fix compilation on riscv (#1100)
+- Distinguish default version (@@) from non-default (@). (#1129)
+- Only emit `PT_INTERP` for shared executables
+- Add RISCV_ATTRIBUTE program segment (#1166)
+- Don't create GOT/PLT entries for ifuncs that aren't referenced (#1185)
+- Improve handling of relocations in non-alloc sections (#1196)
+- Fix lookup of the riscv-fix-hi-part (#1198)
+- Make --warn-unresolved-symbols match GNU ld's behaviour (#1217)
+- Handle missing GNU_PROPERTY .note.gnu.property values (#1222)
+- Allow dynamic symbols to refer to merged strings (#1147)
+
+### 🏗️ Builds
+- Build for `(aarch|x86_|riscv)64(|gc)-unknown-linux-(musl|gnu)` (#1151)
+- Link musl releases with Wild
+
+### 📚 Documentation
+
+- Move nix docs to a separate file and update supported features list (#1113)
+- Remove `archive_splitter.rs` reference from DESIGN.md (#1145)
+- Update benchmarks, this time with bar charts
+- Add instructions for using Wild with Rust on Illumos. (#1171)
+- Document crate dependency version policy (#1140)
+- Customise git-cliff config and document commit message format (#1267)
+
+### 🕹️ Porting
+
+- Initial support for Illumos (#1197)
+
+### ⚖️ Linker Diff
+
+- Add support for RISC-V (#920)
+- Ensure all columns in tables have same width (#1247)
+
+### 🧪 Testing
+
+- Use wild for build in CI (#1091)
+- Verify build on riscv (#1101)
+- Verify minimal versions in CI (#1142)
+- Ignore some diffs in risc-v tests (#1236)
+- Use test-config-ci.toml in CI (#1234)
+- Report sections where --update-in-place misses writes (#1239)
+- Set the `TRIPLE` environment variable if needed when running mold tests
+- Fix potential template-injection in CI
+- Fix a couple of tests that were failing on recent opensuse (#1241)
+- Don't skip running dynamically linked executables (#1248)
+- Apt-get update before installing for riscv build workflow (#1255)
+- Prevent race between test cases re-creating the same .so file (#1107)
+- Use depfile in integrationtests (#1123)
+- Use correct exit syscall number on Illumos (#1138)
+- Look for dynamic linker in /bin/less in integ test (#1159)
+- Unignore `symbol-versions3.sh` Mold test
+- Make integration test diffing an opt-in feature (#1158)
+- Integration tests: Make symbol assertions more extensible (#1169)
+- Better error message when test unexpectedly pasess (#1176)
+- Print clang version when clang-format fails (#1183)
+- Clarify clang-format version mismatch instructions (#1193)
+- Increase test binary execution timeout (#1188)
+- Add a test for handling of note sections (#1211)
+- Integration tests: Make skipping tests on unsupported flags more generic (#1225)
+- Integration tests: Make compilation errors easier to find (#1224)
+- Add basic testing for update-in-place flag (#1230)
+- Limit the conditions for executing `update-nix-lockfile`
+
+### 🔨 Refactor
+
+- Use u32_from_slice (#1128)
+- Introduce BitExtraction trait for u64 (#1157)
+- Restructure code in symbol_db.rs a bit (#1252)
+- Build only C++ and Rust demanglers
+- Simplify get_host_architecture (#1164)
+- Merge ResolutionFlags and ValueFlags (#1180)
+- Move per-symbol-flags out of SymbolDb (#1186)
+- Delete ValueFlags::ADDRESS (#1189)
+- Replace all uses of bytemuck with zerocopy (#1210)
+- Add readable Debug implementations for internal data structures (#1227)
+- Macro to generate ELF newtypes and new SymbolType (#1228)
+
+### 👥 Contributors
+
+- davidlattimore
+- marxin
+- mati865
+- daniel-levin
+- lapla-cogito
+- karolzwolak
+- andrewdavidmackenzie
+- el-yawd
+- TechnoPorg
+- jarjk
+- jakobhellermann
+- YamasouA
+
+## 0.6.0
 
 274 commits since the last release.
 
@@ -80,7 +204,7 @@
 * Update .preinit_array section locations and flags #761 (marxin)
 * Set DT_PREINIT_ARRAY{,SZ} if .preinit_array is present #759 (marxin)
 
-# 0.5.0
+## 0.5.0
 
 A lot of fixes and new features since 0.4.0. We had 200 commits.
 
@@ -125,7 +249,7 @@ A lot of fixes and new features since 0.4.0. We had 200 commits.
 * Added support for --undefined #528 (davidlattimore)
 * More aarch64 relaxations (marxin)
 
-# 0.4.0
+## 0.4.0
 
 A huge release with more than 250 commits since 0.3.0. We've also had several new contributors,
 which is awesome.
@@ -163,7 +287,7 @@ which is awesome.
 * We should now be publishing to crates.io, so tools like cargo-binstall should work.
 * Numerous bugfixes
 
-# 0.3.0
+## 0.3.0
 
 This release had 581 commits. Since the release notes are being added retrospectively, we just focus
 on contributions from people other than davidlattimore.
@@ -178,7 +302,7 @@ on contributions from people other than davidlattimore.
 * Added support .note.ABI-tag section and NOTE segment (marxin)
 * Emit GNU_STACK segment (marxin)
 
-# 0.2.0
+## 0.2.0
 
 Also added retrospectively.
 

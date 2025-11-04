@@ -64,7 +64,7 @@ commit_parsers = [
     # ignoring.
     { message = "^chore|cargo update", group = "<!-- 50 -->Ignored" },
     { message = "^fix", group = "<!-- 02 -->🪲 Bug Fixes" },
-    { message = "^build", group = "<! -- 03 -->🏗️ Builds"}
+    { message = "^build", group = "<! -- 03 -->🏗️ Builds"},
     { message = "^doc", group = "<!-- 04 -->📚 Documentation" },
     { message = "^port", group = "<!-- 05 -->🕹️ Porting" },
     { message = "^style", group = "<!-- 06 -->🎨 Styling" },
