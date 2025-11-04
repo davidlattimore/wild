@@ -172,7 +172,6 @@ tests = [
   "arch-riscv64-relax-align.sh",
   "arch-riscv64-relax-got.sh",
   "arch-riscv64-relax-hi20.sh",
-  "arch-riscv64-relax-j.sh",
   "arch-riscv64-reloc-overflow.sh",
   "arch-riscv64-symbol-size.sh",
   "arch-riscv64-variant-cc.sh",
@@ -185,6 +184,7 @@ tests  = ["tls-common.sh", "tls-le-error.sh"]
 [skipped_groups.ignore]
 reason = "We ignore these tests for some reasons"
 tests = [
+  "arch-riscv64-relax-j.sh",        # Passes when `--no-gc-sections` is passed.
   "build-id.sh",                    # Different build ID data size
   "cmdline.sh",                     # Different message formats for unknown options.
   "comment.sh",                     # We store a different string in the comment section than mold.
