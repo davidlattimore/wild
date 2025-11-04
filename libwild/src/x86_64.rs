@@ -43,6 +43,8 @@ const _ASSERTS: () = {
 impl crate::arch::Arch for X86_64 {
     type Relaxation = Relaxation;
 
+    const KIND: crate::arch::Architecture = crate::arch::Architecture::X86_64;
+
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_X86_64
     }

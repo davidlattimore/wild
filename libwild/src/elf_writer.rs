@@ -2666,6 +2666,7 @@ fn write_epilogue_dynamic_entries(
     let inputs = DynamicEntryInputs {
         args: layout.args(),
         has_static_tls: layout.has_static_tls,
+        has_variant_pcs: layout.has_variant_pcs,
         section_layouts: &layout.section_layouts,
         section_part_layouts: &layout.section_part_layouts,
         non_addressable_counts: layout.non_addressable_counts,
@@ -3346,6 +3347,11 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |inputs| inputs.dt_flags_1() != 0,
         |inputs| inputs.dt_flags_1(),
     ),
+    DynamicEntryWriter::optional(
+        crate::elf::DT_AARCH64_VARIANT_PCS,
+        |inputs| inputs.has_variant_pcs,
+        |_inputs| 0,
+    ),
     DynamicEntryWriter::new(object::elf::DT_NULL, |_inputs| 0),
 ];
 
@@ -3358,6 +3364,7 @@ struct DynamicEntryWriter {
 struct DynamicEntryInputs<'layout> {
     args: &'layout Args,
     has_static_tls: bool,
+    has_variant_pcs: bool,
     section_layouts: &'layout OutputSectionMap<OutputRecordLayout>,
     section_part_layouts: &'layout OutputSectionPartMap<OutputRecordLayout>,
     non_addressable_counts: NonAddressableCounts,
