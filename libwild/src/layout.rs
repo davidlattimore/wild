@@ -1081,7 +1081,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         }
 
         // Check for VARIANT_PCS flag in AArch64 symbols
-        if matches!(A::elf_header_arch_magic(), object::elf::EM_AARCH64)
+        if A::KIND == crate::arch::Architecture::AArch64
             && let Ok(sym) = self.object.symbols.symbol(object::SymbolIndex(local_index))
             && (sym.st_other & crate::elf::STO_AARCH64_VARIANT_PCS) != 0
         {
