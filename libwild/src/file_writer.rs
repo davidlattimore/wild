@@ -170,7 +170,8 @@ impl Output {
                     // Create the output file.
                     let sized_output = SizedOutput::new(path, output_config, size);
 
-                    // Pass it to the main thread, so that it can start writing it once layout finishes.
+                    // Pass it to the main thread, so that it can start writing it once layout
+                    // finishes.
                     let _ = sender.send(sized_output);
                 });
             }
@@ -264,7 +265,8 @@ impl SizedOutput {
         // subprocess to inherit our file descriptor. This unfortunately doesn't prevent that, since
         // unless and until the subprocess calls exec, it will inherit the file descriptor. However,
         // assuming it eventually calls exec, this at least means that it inherits the file
-        // descriptor for less time. i.e. this doesn't really fix anything, but makes problems less bad.
+        // descriptor for less time. i.e. this doesn't really fix anything, but makes problems less
+        // bad.
         std::os::unix::fs::OpenOptionsExt::custom_flags(&mut open_options, libc::O_CLOEXEC);
 
         match output_config.file_write_mode {

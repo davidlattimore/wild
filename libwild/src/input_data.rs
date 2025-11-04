@@ -30,8 +30,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub(crate) struct InputData<'data> {
-    /// These are actual files on disk. We mostly only need to keep these so that we can verify that
-    /// they didn't change while we were running.
+    /// These are actual files on disk. We mostly only need to keep these so that we can verify
+    /// that they didn't change while we were running.
     pub(crate) files: Vec<&'data InputFile>,
 
     /// This is like `files`, but archives have been split into their separate parts.
@@ -130,11 +130,11 @@ struct TemporaryState<'data, 'ch> {
     /// Indexed by FileLoadIndex. As we finish each file, we'll put them into their appropriate
     /// slot. The order in which we finish isn't deterministic, but the indexes at which we place
     /// them are deterministic. Note, the order here is not quite the output order, since files
-    /// requested by linker scripts will appear at the end of this Vec, even though those files need
-    /// to be put into the final ordering at the place where the linker script was listed. We do it
-    /// this way because we don't know how many files a linker script will request until we parse
-    /// it. In fact, we don't even know that it will be a linker script until we've actually opened
-    /// it.
+    /// requested by linker scripts will appear at the end of this Vec, even though those files
+    /// need to be put into the final ordering at the place where the linker script was listed.
+    /// We do it this way because we don't know how many files a linker script will request
+    /// until we parse it. In fact, we don't even know that it will be a linker script until
+    /// we've actually opened it.
     files: Vec<Option<LoadedFileState<'data>>>,
 
     work_recv: &'ch Receiver<OpenFileRequest>,

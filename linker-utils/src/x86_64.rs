@@ -265,7 +265,8 @@ const RELOC_1_BYTE_SIGNED: RelocSizeAndRange = (
 );
 const RELOC_NONE: RelocSizeAndRange = (RelocationSize::ByteSize(0), AllowedRange::no_check());
 
-/// Returns the supplied x86-64 relocation as RelocationKindType. Returns `None` if the r_type isn't recognised.
+/// Returns the supplied x86-64 relocation as RelocationKindType. Returns `None` if the r_type isn't
+/// recognised.
 #[must_use]
 #[inline(always)]
 pub const fn relocation_from_raw(r_type: u32) -> Option<RelocationKindInfo> {

@@ -384,15 +384,17 @@ fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) -> Result {
 
 pub(crate) enum PropertyClass {
     // A bit in the output pr_data is set if it is set in any relocatable input.
-    // If all bits in the output pr_data field are zero, this property should be removed from output.
+    // If all bits in the output pr_data field are zero, this property should be removed from
+    // output.
     Or,
-    // A bit in the output pr_data field is set only if it is set in all relocatable input pr_data fields.
-    // If all bits in the output pr_data field are zero, this property should be removed from output.
+    // A bit in the output pr_data field is set only if it is set in all relocatable input pr_data
+    // fields. If all bits in the output pr_data field are zero, this property should be
+    // removed from output.
     And,
-    // A bit in the output pr_data field is set if it is set in any relocatable input pr_data fields
-    // and this property is present in all relocatable input files. When all bits in the output pr_data
-    // field are zero, this property should not be removed from output to indicate it has
-    // zero in all bits.
+    // A bit in the output pr_data field is set if it is set in any relocatable input pr_data
+    // fields and this property is present in all relocatable input files. When all bits in
+    // the output pr_data field are zero, this property should not be removed from output to
+    // indicate it has zero in all bits.
     AndOr,
 }
 
@@ -663,8 +665,8 @@ pub(crate) struct Resolution {
 
     pub(crate) dynamic_symbol_index: Option<NonZeroU32>,
 
-    /// The base GOT address for this resolution. For pointers to symbols the GOT entry will contain
-    /// a single pointer. For TLS variables there can be up to 3 pointers. If
+    /// The base GOT address for this resolution. For pointers to symbols the GOT entry will
+    /// contain a single pointer. For TLS variables there can be up to 3 pointers. If
     /// ValueFlags::GOT_TLS_OFFSET is set, then that will be the first value. If
     /// ValueFlags::GOT_TLS_MODULE is set, then there will be a pair of values (module and
     /// offset within module).
@@ -1415,9 +1417,10 @@ struct DynamicLayoutState<'data> {
 }
 
 struct CopyRelocationInfo {
-    /// The symbol ID for which we'll actually generate the copy relocation. Initially, this is just
-    /// the first symbol at a particular address for which we requested a copy relocation, then
-    /// later we may update it to point to a different symbol if that first symbol was weak.
+    /// The symbol ID for which we'll actually generate the copy relocation. Initially, this is
+    /// just the first symbol at a particular address for which we requested a copy relocation,
+    /// then later we may update it to point to a different symbol if that first symbol was
+    /// weak.
     symbol_id: SymbolId,
 
     is_weak: bool,
@@ -1501,8 +1504,8 @@ struct GraphResources<'data, 'scope> {
     /// A queue in which we store threads when they're idle so that other threads can wake them up
     /// when more work comes in. We always have one less slot in this array than the number of
     /// threads, since we never want all threads to be idle because that means we're finished. None
-    /// if we're running with a single thread - mostly because ArrayQueue panics if we try to create
-    /// an instance with zero size.
+    /// if we're running with a single thread - mostly because ArrayQueue panics if we try to
+    /// create an instance with zero size.
     idle_threads: Option<ArrayQueue<std::thread::Thread>>,
 
     done: AtomicBool,
@@ -1564,8 +1567,8 @@ enum WorkItem {
 struct SectionLoadRequest {
     file_id: FileId,
 
-    /// The offset of the section within the file's sections. i.e. the same as object::SectionIndex,
-    /// but stored as a u32 for compactness.
+    /// The offset of the section within the file's sections. i.e. the same as
+    /// object::SectionIndex, but stored as a u32 for compactness.
     section_index: u32,
 }
 
@@ -1938,7 +1941,8 @@ fn compute_segment_layout(
                     // RISCV_ATTRIBUTES segment.
                     if [NOTE, RISCV_ATTRIBUTES].contains(&section_info.ty) {
                     } else {
-                        // All segments should only cover sections that are allocated and have a non-zero address.
+                        // All segments should only cover sections that are allocated and have a
+                        // non-zero address.
                         ensure!(
                             section_layout.mem_offset != 0 || merge_target == FILE_HEADER,
                             "Missing memory offset for section {} present in a program segment.",
@@ -4070,7 +4074,8 @@ impl<'data> ObjectLayoutState<'data> {
                 self.load_section::<A>(common, queue, *unloaded, section_index, resources)?;
             }
             SectionSlot::UnloadedDebugInfo(part_id) => {
-                // On RISC-V, the debug info sections contain relocations to local symbols (e.g. labels).
+                // On RISC-V, the debug info sections contain relocations to local symbols (e.g.
+                // labels).
                 self.load_debug_section::<A>(common, queue, *part_id, section_index, resources)?;
             }
             SectionSlot::Discard => {
@@ -4403,8 +4408,8 @@ impl<'data> ObjectLayoutState<'data> {
                 SectionSlot::Loaded(sec) => {
                     let part_id = sec.part_id;
                     let address = *memory_offsets.get(part_id);
-                    // TODO: We probably need to be able to handle sections that are ifuncs and sections
-                    // that need a TLS GOT struct.
+                    // TODO: We probably need to be able to handle sections that are ifuncs and
+                    // sections that need a TLS GOT struct.
                     *memory_offsets.get_mut(part_id) += sec.capacity();
                     SectionResolution { address }
                 }
@@ -5299,8 +5304,8 @@ fn layout_section_parts(
                         let section_flags = output_sections.section_flags(merge_target);
                         let mem_size = part_size;
 
-                        // Note, we align up even if our size is zero, otherwise our section will start at an
-                        // unaligned address.
+                        // Note, we align up even if our size is zero, otherwise our section will
+                        // start at an unaligned address.
                         file_offset = alignment.align_up_usize(file_offset);
 
                         if section_flags.contains(shf::ALLOC) {

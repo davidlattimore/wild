@@ -215,8 +215,8 @@ pub struct Modifiers {
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct Input {
     pub(crate) spec: InputSpec,
-    /// A directory to search first. Only present when the input came from a linker script, in which
-    /// case this is the directory containing the linker script.
+    /// A directory to search first. Only present when the input came from a linker script, in
+    /// which case this is the directory containing the linker script.
     pub(crate) search_first: Option<PathBuf>,
     pub(crate) modifiers: Modifiers,
 }
@@ -291,7 +291,8 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
 const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &[
     "(",
     ")",
-    // On Illumos, the Clang driver inserts a meaningless -C flag before calling any non-GNU ld linker.
+    // On Illumos, the Clang driver inserts a meaningless -C flag before calling any non-GNU ld
+    // linker.
     #[cfg(target_os = "illumos")]
     "C",
 ];
@@ -332,10 +333,11 @@ impl Default for Args {
             time_phase_options: None,
             num_threads: None,
             strip: Strip::Nothing,
-            // For now, we default to --gc-sections. This is different to other linkers, but other than
-            // being different, there doesn't seem to be any downside to doing this. We don't currently do
-            // any less work if we're not GCing sections, but do end up writing more, so --no-gc-sections
-            // will almost always be as slow or slower than --gc-sections. For that reason, the latter is
+            // For now, we default to --gc-sections. This is different to other linkers, but other
+            // than being different, there doesn't seem to be any downside to doing
+            // this. We don't currently do any less work if we're not GCing sections,
+            // but do end up writing more, so --no-gc-sections will almost always be as
+            // slow or slower than --gc-sections. For that reason, the latter is
             // probably a good default.
             gc_sections: true,
             prepopulate_maps: false,

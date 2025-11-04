@@ -284,9 +284,9 @@ impl Arch for X86_64 {
                     0xf2, 0xe9, 0, 0, 0, 0,    // bnd jmp {plt[0]}(%rip)
                     0x90, // nop
                 ];
-                // Note: Some variants use jmp instead of bnd jmp, then a different padding instruction.
-                // Because we use the index that gets pushed, we ignore the bytes of the later
-                // instructions, so that we support these variants.
+                // Note: Some variants use jmp instead of bnd jmp, then a different padding
+                // instruction. Because we use the index that gets pushed, we ignore the bytes of
+                // the later instructions, so that we support these variants.
                 if plt_entry[..5] == PLT_ENTRY_TEMPLATE[..5] {
                     let index = u32_from_slice(&plt_entry[5..]);
                     return Some(PltEntry::JumpSlot(index));

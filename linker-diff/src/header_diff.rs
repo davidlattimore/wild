@@ -76,8 +76,8 @@ impl Converter {
         match self {
             Converter::None => Ok(ConvertedValue::Single(format!("0x{value:x}"))),
             Converter::SectionAddress => {
-                // Find the first non-empty, section at that address. Only return an empty section if
-                // there is no non-empty sections at that address.
+                // Find the first non-empty, section at that address. Only return an empty section
+                // if there is no non-empty sections at that address.
                 let mut empty_section_name = None;
                 for section in obj.elf_file.sections() {
                     let object::SectionFlags::Elf { sh_flags } = section.flags() else {

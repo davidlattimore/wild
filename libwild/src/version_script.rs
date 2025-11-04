@@ -260,8 +260,8 @@ impl<'data> VersionScript<'data> {
             }
         }
 
-        // 2) Otherwise, the last version tag with a non-* wildcard pattern wins ('global' should be checked first).
-        //    Otherwise, the last version tag with a * pattern wins.
+        // 2) Otherwise, the last version tag with a non-* wildcard pattern wins ('global' should be
+        //    checked first). Otherwise, the last version tag with a * pattern wins.
         for &non_star in &[true, false] {
             for (i, version) in self.versions.iter().enumerate().rev() {
                 let body = &version.version_body;
