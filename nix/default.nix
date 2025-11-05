@@ -142,52 +142,6 @@ craneLib.buildPackage (
         gccWrapper
         gppWrapper
       ];
-      tests =
-        let
-          helloTest =
-            name: helloWild:
-            let
-              command = "$READELF -p .comment ${lib.getExe helloWild}";
-              emulator = stdenv.hostPlatform.emulator buildPackages;
-            in
-            runCommandCC "wild-${name}-test" { passthru = { inherit helloWild; }; } ''
-              echo "Testing running the 'hello' binary which should be linked with 'wild'" >&2
-              ${emulator} ${lib.getExe helloWild}
-              echo "Checking for wild in the '.comment' section" >&2
-              if output=$(${command} 2>&1); then
-                if grep -Fw -- "Wild" - <<< "$output"; then
-                  touch $out
-                else
-                  echo "No mention of 'wild' detected in the '.comment' section" >&2
-                  echo "The command was:" >&2
-                  echo "${command}" >&2
-                  echo "The output was:" >&2
-                  echo "$output" >&2
-                  exit 1
-                fi
-              else
-                echo -n "${command}" >&2
-                echo " returned a non-zero exit code." >&2
-                echo "$output" >&2
-                exit 1
-              fi
-            '';
-
-          useWildLinker = import ./adapter.nix { inherit pkgs lib; };
-        in
-        lib.optionalAttrs stdenv.hostPlatform.isLinux {
-          adapterGcc = helloTest "adapter-gcc" (
-            hello.override {
-              stdenv = useWildLinker gccStdenv;
-            }
-          );
-
-          adapterClang = helloTest "adapter-clang" (
-            hello.override {
-              stdenv = useWildLinker clangStdenv;
-            }
-          );
-        };
     };
 
     doInstallCheck = true;

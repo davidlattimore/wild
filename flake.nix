@@ -46,6 +46,12 @@
           inherit (self.packages.${system}) default;
         in
         {
+          # Tests in Nixpkgs to run
+          inherit (pkgs.callPackage "${nixpkgs}/pkgs/by-name/wi/wild-unwrapped/adapterTest.nix" { })
+            adapterGcc
+            adapter-llvm
+            ;
+
           wild = default.overrideAttrs {
             doCheck = true;
             doInstallCheck = false;
@@ -56,7 +62,6 @@
             installPhase = "touch $out";
           };
         }
-        // ((pkgs.callPackage ./nix { inherit craneLib; }).tests)
       );
 
       devShells = forAllSystems (system: {
