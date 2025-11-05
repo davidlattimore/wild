@@ -167,6 +167,11 @@ struct OpenFileRequest {
     file_index: FileLoadIndex,
     paths: InputPath,
     modifiers: Modifiers,
+
+    /// The file that requested this file be opened. e.g. a linker script. In theory, we could have
+    /// a chain of files where linker scripts reference linker scripts, but for simplicity, we only
+    /// report the last file in the chain.
+    referenced_by: Option<PathBuf>,
 }
 
 struct OpenFileResponse<'data> {
@@ -398,7 +403,13 @@ fn process_open_file_request<'data>(
 ) -> OpenFileResponse<'data> {
     let files = (|| -> Result<ResponseKind<'data>> {
         let absolute_path = &request.paths.absolute;
-        let data = FileData::new(absolute_path.as_path(), args.prepopulate_maps)?;
+        let result = FileData::new(absolute_path.as_path(), args.prepopulate_maps);
+        let data = match request.referenced_by.as_ref() {
+            Some(referenced_by) => {
+                result.with_context(|| format!("Failed to process `{}`", referenced_by.display()))
+            }
+            None => result,
+        }?;
 
         let kind = FileKind::identify_bytes(&data.bytes)?;
 
@@ -495,7 +506,13 @@ fn process_thin_archive<'data>(
                 let path = entry.identifier(extended_filenames).as_path();
                 let entry_path = parent_path.join(path);
 
-                let file_data = FileData::new(&entry_path, args.prepopulate_maps)?;
+                let file_data =
+                    FileData::new(&entry_path, args.prepopulate_maps).with_context(|| {
+                        format!(
+                            "Failed to open file referenced by thin archive `{}`",
+                            input_file.filename.display()
+                        )
+                    })?;
 
                 let input_file = InputFile {
                     filename: entry_path.clone(),
@@ -525,7 +542,7 @@ impl<'data, 'ch> TemporaryState<'data, 'ch> {
         inputs_arena: &'data Arena<InputFile>,
     ) -> Result {
         for input in &self.args.inputs {
-            self.load_input(input, work_sender)?;
+            self.load_input(input, work_sender, None)?;
         }
 
         while self.outstanding_work_items > 0 {
@@ -538,7 +555,13 @@ impl<'data, 'ch> TemporaryState<'data, 'ch> {
                         let file_indexes = loaded
                             .extra_inputs
                             .into_iter()
-                            .map(|input| self.load_input(&input, work_sender))
+                            .map(|input| {
+                                self.load_input(
+                                    &input,
+                                    work_sender,
+                                    Some(loaded.script.input_file.filename.clone()),
+                                )
+                            })
                             .collect::<Result<Vec<FileLoadIndex>>>()?;
 
                         LoadedFileState::LinkerScript(LoadedLinkerScriptState {
@@ -572,6 +595,7 @@ impl<'data, 'ch> TemporaryState<'data, 'ch> {
         &mut self,
         input: &Input,
         work_sender: &Sender<OpenFileRequest>,
+        referenced_by: Option<PathBuf>,
     ) -> Result<FileLoadIndex> {
         let paths = input.path(self.args)?;
 
@@ -589,6 +613,7 @@ impl<'data, 'ch> TemporaryState<'data, 'ch> {
                     file_index: new_index,
                     paths,
                     modifiers: input.modifiers,
+                    referenced_by,
                 })?;
 
                 new_index
@@ -620,7 +645,7 @@ fn read_script_data<'data>(
     path: &Path,
     inputs_arena: &'data Arena<InputFile>,
 ) -> Result<ScriptData<'data>> {
-    let data = FileData::new(path, false)?;
+    let data = FileData::new(path, false).context("Failed to read script")?;
 
     let file = inputs_arena.alloc(InputFile {
         filename: path.to_owned(),
