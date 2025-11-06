@@ -306,7 +306,8 @@ impl<'data> ThinEntry<'data> {
 
 impl<'data> Identifier<'data> {
     pub(crate) fn as_slice(&self) -> &'data [u8] {
-        // For BSD format placeholder, return as-is (this shouldn't normally be called for BSD format)
+        // For BSD format placeholder, return as-is (this shouldn't normally be called for BSD
+        // format)
         if self.data.is_empty() {
             return self.data;
         }

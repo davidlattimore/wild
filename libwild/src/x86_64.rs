@@ -365,7 +365,8 @@ impl crate::arch::Relaxation for Relaxation {
             object::elf::R_X86_64_GOTPC32_TLSDESC
                 if !interposable && output_kind.is_executable() =>
             {
-                // We require that the instruction that this relocation applies to is a LEA instruction.
+                // We require that the instruction that this relocation applies to is a LEA
+                // instruction.
                 let bytes = section_bytes.get(offset - 3..offset - 1);
                 if bytes == Some(&[0x48, 0x8d]) || bytes == Some(&[0x4c, 0x8d]) {
                     return Some(Relaxation {
@@ -378,7 +379,8 @@ impl crate::arch::Relaxation for Relaxation {
             // Note, the conditions on this relaxation (is_executable) must match those on
             // TLSDESC_CALL below.
             object::elf::R_X86_64_GOTPC32_TLSDESC if output_kind.is_executable() => {
-                // We require that the instruction that this relocation applies to is a LEA instruction.
+                // We require that the instruction that this relocation applies to is a LEA
+                // instruction.
                 let bytes = section_bytes.get(offset - 3..offset - 1);
                 if bytes == Some(&[0x48, 0x8d]) || bytes == Some(&[0x4c, 0x8d]) {
                     return Some(Relaxation {

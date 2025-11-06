@@ -143,9 +143,9 @@ impl Config {
     fn apply_wild_defaults(&mut self, arch: ArchKind) {
         self.ignore.extend(
             [
-                // We don't currently support allocating space except in sections, so we have sections
-                // to hold the section and program headers. We then need to ignore them because GNU ld
-                // doesn't define such sections.
+                // We don't currently support allocating space except in sections, so we have
+                // sections to hold the section and program headers. We then need
+                // to ignore them because GNU ld doesn't define such sections.
                 "section.shdr",
                 "section.phdr",
                 // We don't yet support these sections.
@@ -164,9 +164,9 @@ impl Config {
                 "section.annobin.notes.entsize",
                 // We don't yet group .lrodata sections separately.
                 "section.lrodata",
-                // We sometimes eliminate __tls_get_addr where GNU ld doesn't. This can mean that we
-                // have no versioned symbols for ld-linux-x86-64.so.2 or equivalent, which means we
-                // end up with one less version record.
+                // We sometimes eliminate __tls_get_addr where GNU ld doesn't. This can mean that
+                // we have no versioned symbols for ld-linux-x86-64.so.2 or
+                // equivalent, which means we end up with one less version record.
                 ".dynamic.DT_VERNEEDNUM",
                 // We currently handle these dynamic tags differently
                 ".dynamic.DT_JMPREL",
@@ -179,7 +179,8 @@ impl Config {
                 "section.plt.sec",
                 // We don't yet write this.
                 ".dynamic.DT_HASH",
-                // aarch64-linux-gnu-ld on arch linux emits DT_BIND_NOW instead of DT_FLAGS.BIND_NOW
+                // aarch64-linux-gnu-ld on arch linux emits DT_BIND_NOW instead of
+                // DT_FLAGS.BIND_NOW
                 ".dynamic.DT_BIND_NOW",
                 ".dynamic.DT_FLAGS.BIND_NOW",
                 // TODO: Implement proper ordering of .init .ctors etc
@@ -189,10 +190,11 @@ impl Config {
                 // canonical PLT entry and points the GOT at that. This means that it ends up with
                 // GOT->PLT->GOT. We don't as yet support doing this.
                 "rel.missing-got-plt-got",
-                // We do support this. TODO: Should definitely look into why we're seeing this missing
-                // in our output.
+                // We do support this. TODO: Should definitely look into why we're seeing this
+                // missing in our output.
                 "section.rela.plt",
-                // We currently write 10 byte PLT entries in some cases where GNU ld writes 8 byte ones.
+                // We currently write 10 byte PLT entries in some cases where GNU ld writes 8 byte
+                // ones.
                 "section.plt.got.alignment",
                 // GNU ld sometimes makes this writable sometimes not. Presumably this depends on
                 // whether there are relocations or some flags.
@@ -227,8 +229,8 @@ impl Config {
                 // `-zdynamic-undefined-weak`.
                 "rel.undefined-weak.dynamic.R_X86_64_64",
                 "rel.undefined-weak.dynamic.R_AARCH64_ABS64",
-                // On aarch64, GNU ld, at least sometimes, converts R_AARCH64_ABS64 to a PLT-forming
-                // relocation. We at present, don't.
+                // On aarch64, GNU ld, at least sometimes, converts R_AARCH64_ABS64 to a
+                // PLT-forming relocation. We at present, don't.
                 "rel.dynamic-plt-bypass",
                 // If we don't optimise a TLS access, then we'll have references to __tls_get_addr,
                 // when GNU ld doesn't.
@@ -254,8 +256,8 @@ impl Config {
         match arch {
             ArchKind::Aarch64 => self.ignore.extend(
                 [
-                    // Other linkers have a bigger initial PLT entry, thus the entsize is set to zero:
-                    // https://sourceware.org/bugzilla/show_bug.cgi?id=26312
+                    // Other linkers have a bigger initial PLT entry, thus the entsize is set to
+                    // zero: https://sourceware.org/bugzilla/show_bug.cgi?id=26312
                     "section.plt.entsize",
                     // On Alpine Linux, aarch64, GNU ld seems to emit the _DYNAMIC symbol without a
                     // section index instead of pointing it at the .dynamic section.

@@ -71,8 +71,9 @@ pub(crate) struct ParsedInputs<'data> {
     pub(crate) objects: Vec<ParsedInputObject<'data>>,
     pub(crate) linker_scripts: Vec<ProcessedLinkerScript<'data>>,
 
-    /// Total number of symbols in the prelude, input objects and defined by linker scripts. Doesn't
-    /// include symbols defined by the epilogue, since we don't know what they will be until later.
+    /// Total number of symbols in the prelude, input objects and defined by linker scripts.
+    /// Doesn't include symbols defined by the epilogue, since we don't know what they will be
+    /// until later.
     pub(crate) num_symbols: usize,
 }
 

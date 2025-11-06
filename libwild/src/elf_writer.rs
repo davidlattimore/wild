@@ -463,8 +463,8 @@ struct TableWriter<'layout, 'out> {
     eh_frame_start_address: u64,
     eh_frame: &'out mut [u8],
 
-    /// Note, this is stored as raw bytes because it starts with an EhFrameHdr, but is then followed
-    /// by multiple EhFrameHdrEntry.
+    /// Note, this is stored as raw bytes because it starts with an EhFrameHdr, but is then
+    /// followed by multiple EhFrameHdrEntry.
     eh_frame_hdr: &'out mut [u8],
 
     dynamic: DynamicEntriesWriter<'out>,
@@ -538,7 +538,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         let mut got_address = got_address.get();
         let flags = res.flags;
 
-        // For TLS variables, we'll generally only have one of these, but we might have all 3 combinations.
+        // For TLS variables, we'll generally only have one of these, but we might have all 3
+        // combinations.
         if flags.needs_got_tls_offset()
             || flags.needs_got_tls_module()
             || flags.needs_got_tls_descriptor()
@@ -610,7 +611,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = 0;
             return Ok(());
         }
-        // TLS_MODULE_BASE points at the end of the .tbss in some cases, thus relax the verification.
+        // TLS_MODULE_BASE points at the end of the .tbss in some cases, thus relax the
+        // verification.
         if !(self.tls.start..=self.tls.end).contains(&address) {
             bail!(
                 "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
@@ -1986,8 +1988,9 @@ fn apply_relocation<'data, A: Arch>(
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::RelativeRiscVLow12 => {
-            // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of relocations where the later
-            // one actually points to a label of the HI20 relocations and thus we need to find it. The relocation is typically
+            // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of
+            // relocations where the later one actually points to a label of the HI20
+            // relocations and thus we need to find it. The relocation is typically
             // right before the LO12_* relocation.
             ensure!(
                 addend == 0,
@@ -3122,7 +3125,8 @@ fn write_internal_symbols(
         }
 
         // Mandatory RISC-V symbol defined by the default linker script as:
-        // __global_pointer$ = MIN(__SDATA_BEGIN__ + 0x800, MAX(__DATA_BEGIN__ + 0x800, __BSS_END__ - 0x800));
+        // __global_pointer$ = MIN(__SDATA_BEGIN__ + 0x800, MAX(__DATA_BEGIN__ + 0x800, __BSS_END__
+        // - 0x800));
         if symbol_name.bytes() == GLOBAL_POINTER_SYMBOL_NAME.as_bytes() {
             address += RISCV_TLS_DTV_OFFSET;
         }

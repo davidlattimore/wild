@@ -37,8 +37,8 @@ pub(crate) trait Arch: Clone + Copy + Eq + PartialEq + Debug {
     /// The maximum number of bytes after a relocation offset that a relaxation might modify.
     const MAX_RELAX_MODIFY_AFTER: u64;
 
-    /// Calls `cb` with each relaxation that we think is possible for the supplied relocation type and
-    /// section kind.
+    /// Calls `cb` with each relaxation that we think is possible for the supplied relocation type
+    /// and section kind.
     fn possible_relaxations_do(
         r_type: Self::RType,
         section_kind: object::SectionKind,
@@ -169,9 +169,9 @@ pub(crate) struct Relaxation<A: Arch> {
     pub(crate) relaxation_kind: A::RelaxationKind,
     pub(crate) new_r_type: A::RType,
 
-    /// A second relocation type that is also consistent with the same relaxation. The main use-case
-    /// for this is calling a function directly, or calling a function via the PLT. When just
-    /// looking at the instructions, we cannot tell these two apart.
+    /// A second relocation type that is also consistent with the same relaxation. The main
+    /// use-case for this is calling a function directly, or calling a function via the PLT.
+    /// When just looking at the instructions, we cannot tell these two apart.
     pub(crate) alt_r_type: Option<A::RType>,
 }
 
@@ -204,11 +204,11 @@ pub(crate) struct RelaxationMask {
 
     /// Which bits should be considered part of the instructions modified by a particular
     /// relaxation. e.g. a byte of 0xff would indicate that all bits of the corresponding byte
-    /// should be treated as part of the instruction. A 0 byte would indicate that the corresponding
-    /// byte should not be compared - i.e. if it's part of the offset written by the new relocation.
-    /// Note that bytes that are part of the instruction should still be compared even if they're
-    /// not written by the relocation, since the fact that the byte wasn't changed is important in
-    /// identifying a particular relaxation.
+    /// should be treated as part of the instruction. A 0 byte would indicate that the
+    /// corresponding byte should not be compared - i.e. if it's part of the offset written by
+    /// the new relocation. Note that bytes that are part of the instruction should still be
+    /// compared even if they're not written by the relocation, since the fact that the byte
+    /// wasn't changed is important in identifying a particular relaxation.
     ///
     /// Example: 48 8d 3d 00 00 00 00    lea    0x0(%rip),%rdi
     ///                   ^ The relocation points here

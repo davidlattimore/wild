@@ -7,9 +7,9 @@
 //!   the multi-part sections.
 //! * Add the section to `test_constant_ids` to make sure the ID is consistent with its position in
 //!   `SECTION_DEFINITIONS`.
-//! * Insert the new section into the output order in `sections_and_segments_events`. The position needs
-//!   to be consistent with the access flags on the section. e.g. if the section is read-only data,
-//!   it should go between the start and end of the read-only segment.
+//! * Insert the new section into the output order in `sections_and_segments_events`. The position
+//!   needs to be consistent with the access flags on the section. e.g. if the section is read-only
+//!   data, it should go between the start and end of the read-only segment.
 //!
 //! Adding a new alignment-base (regular) section is similar to the above, but skip the steps
 //! related to `part_id.rs` and insert later in `SECTION_DEFINITIONS` (probably at the end). Also,

@@ -696,8 +696,9 @@ fn canonicalise_undefined_symbols<'data>(
                             }
                         }
 
-                        // If the symbol isn't a start/stop symbol, then assign responsibility for the
-                        // symbol to the first object that referenced it. This lets us have PLT/GOT entries
+                        // If the symbol isn't a start/stop symbol, then assign responsibility for
+                        // the symbol to the first object that referenced
+                        // it. This lets us have PLT/GOT entries
                         // for the symbol if they're needed.
                         let symbol_id = symbol_id.unwrap_or(undefined.symbol_id);
                         entry.insert(symbol_id);

@@ -2009,12 +2009,12 @@ impl LinkCommand {
                         Compiler::Gcc(_) => {
                             match linker {
                                 Linker::Wild => {
-                                    // GCC unfortunately doesn't provide any way to use a custom linker.
-                                    // Their flag for switching linkers only accepts a hard-coded list
-                                    // of alternatives and the developers don't seem to want any
-                                    // equivalent to clang's --ld-path. The closest we can get is to put
-                                    // a file called "ld" in a directory, then pass "-B" and that
-                                    // directory.
+                                    // GCC unfortunately doesn't provide any way to use a custom
+                                    // linker. Their flag for switching linkers only accepts a
+                                    // hard-coded list of alternatives and the developers don't seem
+                                    // to want any equivalent to clang's --ld-path. The closest we
+                                    // can get is to put a file called "ld" in a directory, then
+                                    // pass "-B" and that directory.
                                     let bin_dir = wild_path().parent().unwrap();
                                     command.arg("-B").arg(bin_dir);
                                 }
@@ -2027,8 +2027,8 @@ impl LinkCommand {
                     }
 
                     if arch == Architecture::AArch64 {
-                        // Provide a workaround for ld.lld: error: unknown argument '--fix-cortex-a53-835769'
-                        // Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
+                        // Provide a workaround for ld.lld: error: unknown argument
+                        // '--fix-cortex-a53-835769' Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
                         command.arg("-mno-fix-cortex-a53-835769");
                     }
 

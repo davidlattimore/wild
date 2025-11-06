@@ -74,8 +74,8 @@ pub struct SymbolDb<'data> {
 
     epilogue_file_id: FileId,
 
-    /// The names of symbols that mark the start / stop of sections. These are indexed by the offset
-    /// into the epilogue's symbol IDs.
+    /// The names of symbols that mark the start / stop of sections. These are indexed by the
+    /// offset into the epilogue's symbol IDs.
     start_stop_symbol_names: Vec<UnversionedSymbolName<'data>>,
 
     pub(crate) version_script: VersionScript<'data>,
@@ -107,9 +107,9 @@ struct SymbolBucket<'data> {
     /// Global symbols that have multiple definitions keyed by the first symbol with that name.
     alternative_definitions: HashMap<SymbolId, Vec<SymbolId>>,
 
-    /// Alternative definitions, but only for versioned symbols. This might be more efficient with a
-    /// proper multi-map that doesn't need a separate Vec for each value, however we don't expect
-    /// many entries here.
+    /// Alternative definitions, but only for versioned symbols. This might be more efficient with
+    /// a proper multi-map that doesn't need a separate Vec for each value, however we don't
+    /// expect many entries here.
     alternative_versioned_definitions: HashMap<SymbolId, Vec<SymbolId>>,
 }
 
@@ -801,8 +801,9 @@ impl<'data> SymbolBucket<'data> {
             .get(&symbol_id)?
             .iter()
             .find(|alt| {
-                // For now, we just get the first definition that isn't from a shared object. We should
-                // actually take symbol binding into account, but don't yet. TODO: Fix this.
+                // For now, we just get the first definition that isn't from a shared object. We
+                // should actually take symbol binding into account, but don't yet.
+                // TODO: Fix this.
                 let file_id = symbol_db.file_id_for_symbol(**alt);
                 !symbol_db.file(file_id).is_dynamic()
             })

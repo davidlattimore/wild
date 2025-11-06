@@ -167,7 +167,8 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
         // object::elf::R_AARCH64_PLT32
 
         // 5.7.6   Static AArch64 relocations
-        // Group relocations to create a 16-, 32-, 48-, or 64-bit unsigned data value or address inline
+        // Group relocations to create a 16-, 32-, 48-, or 64-bit unsigned data value or address
+        // inline
         object::elf::R_AARCH64_MOVW_UABS_G0 => (
             RelocationKind::Absolute,
             RelocationSize::bit_mask_aarch64(0, 16, AArch64Instruction::Movkz),
@@ -947,8 +948,8 @@ pub const fn relocation_type_from_raw(r_type: u32) -> Option<RelocationKindInfo>
 
 impl AArch64Instruction {
     // Encode computed relocation value and store it based on the encoding of an instruction.
-    // Each instruction links to a chapter in the Arm Architecture Reference Manual for A-profile architecture
-    // manual: https://developer.arm.com/documentation/ddi0487/latest/
+    // Each instruction links to a chapter in the Arm Architecture Reference Manual for A-profile
+    // architecture manual: https://developer.arm.com/documentation/ddi0487/latest/
     pub fn write_to_value(self, extracted_value: u64, negative: bool, dest: &mut [u8]) {
         let mut mask;
         match self {

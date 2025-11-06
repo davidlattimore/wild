@@ -353,10 +353,10 @@ fn decompress_into(
                 flate2::FlushDecompress::Finish,
             )?;
         }
-        // We might use pure Rust implementation for the decompression (ruzstd), however the decompression
-        // speed is not on par with the official C library.
-        // With the official library, the linking time of Clang binary (contains 1GB of debug info sections)
-        // shrinks by 30%!
+        // We might use pure Rust implementation for the decompression (ruzstd), however the
+        // decompression speed is not on par with the official C library.
+        // With the official library, the linking time of Clang binary (contains 1GB of debug info
+        // sections) shrinks by 30%!
         object::elf::ELFCOMPRESS_ZSTD => {
             zstd::stream::Decoder::new(input)?.read_exact(out)?;
         }
@@ -552,8 +552,9 @@ pub(crate) fn write_relocation_to_buffer(
             insn.write_to_value(
                 extracted_value,
                 negative,
-                // We can write a non-text section, so we might need to limit the output buffer slice
-                // e.g. .gcc_except_table is written on riscv64 using the ULEB128 encoding
+                // We can write a non-text section, so we might need to limit the output buffer
+                // slice e.g. .gcc_except_table is written on riscv64 using the
+                // ULEB128 encoding
                 &mut output[..insn.write_windows_size().min(output_len)],
             );
         }
