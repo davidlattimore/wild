@@ -2785,13 +2785,8 @@ fn run_with_config(
             let result = program_inputs
                 .build(linker, config, cross_arch)
                 .with_context(|| {
-                    let message = if config.expect_errors.is_empty() {
-                        "Failed"
-                    } else {
-                        "Unexpectedly succeeded"
-                    };
                     format!(
-                        "{message} to build program `{program_inputs}` \
+                        "Test failed: `{program_inputs}` \
                         with linker `{linker}` config `{}`",
                         config.name
                     )
