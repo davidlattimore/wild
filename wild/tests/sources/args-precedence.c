@@ -19,11 +19,6 @@
 //#Mode:unspecified
 //#RunEnabled:false
 
-//#Config:wip
-//#LinkArgs:--no-dynamic-linker -z now -no-pie
-//#Object:runtime.c
-//#RunEnabled:false
-
 #include "runtime.h"
 
 void _start(void) {
