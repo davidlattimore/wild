@@ -12,6 +12,14 @@
 //#LinkArgs:-shared -z now -no-pie
 //#Object:runtime.c
 
+// Only loaded libs should affect output kind
+//#Config:unloaded-dso
+//#LinkArgs:-z now -as-needed
+//#Object:runtime.c
+//#Shared:empty.c
+//#Mode:unspecified
+//#RunEnabled:false
+
 #include "runtime.h"
 
 void _start(void) {
