@@ -450,9 +450,11 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             CopyRelocations::Disallowed(CopyRelocationsDisabledReason::SharedObject);
     }
 
-    // LD turns dynamic executables into static ones if dynamic linker is absent.
-    if args.dynamic_linker.is_none() && args.output_kind().is_dynamic_executable() {
-        args.output_kind = Some(OutputKind::StaticExecutable(args.relocation_model));
+    // LD turns static relocatable executables into dynamic ones if dynamic linker is set.
+    if args.dynamic_linker.is_some()
+        && args.output_kind() == OutputKind::StaticExecutable(RelocationModel::Relocatable)
+    {
+        args.output_kind = Some(OutputKind::DynamicExecutable(args.relocation_model));
     }
 
     if !args.unrecognized_options.is_empty() {
@@ -1558,7 +1560,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Create a position-independent executable")
         .execute(|args, _modifier_stack| {
             args.relocation_model = RelocationModel::Relocatable;
-            args.output_kind = Some(OutputKind::DynamicExecutable(args.relocation_model));
+            args.output_kind = None;
             Ok(())
         });
 
@@ -1568,18 +1570,6 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Do not create a position-dependent executable (default)")
         .execute(|args, _modifier_stack| {
             args.relocation_model = RelocationModel::NonRelocatable;
-            // FIXME: This is necessary but not easy to test. My best attempt was modifying another test:
-            // ```
-            // ❯ diff wild/tests/build/rust-integration.llvm-dynamic-host-aa5800734d2ac191.d/run-with wild/tests/build/rust-integration.llvm-dynamic-host-aa5800734d2ac191.d/run-with2
-            // 13,15c13
-            // <   -pie \
-            // <   -dynamic-linker \
-            // <   /lib64/ld-linux-x86-64.so.2 \
-            // ---
-            // >   -no-pie \
-            // ```
-            // Without the commented code this fails with `wild: error: Tried to create dynamic symbol index 0`
-            // args.output_kind = Some(OutputKind::DynamicExecutable(args.relocation_model));
             args.output_kind = None;
             Ok(())
         });
