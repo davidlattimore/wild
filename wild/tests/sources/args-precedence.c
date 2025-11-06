@@ -13,10 +13,15 @@
 
 // Only loaded libs should affect output kind
 //#Config:unloaded-dso
-//#LinkArgs:-z now -as-needed
+//#LinkArgs:-z now --as-needed
 //#Object:runtime.c
 //#Shared:empty.c
 //#Mode:unspecified
+//#RunEnabled:false
+
+//#Config:wip
+//#LinkArgs:--no-dynamic-linker -z now -no-pie
+//#Object:runtime.c
 //#RunEnabled:false
 
 #include "runtime.h"

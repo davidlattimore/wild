@@ -328,7 +328,8 @@ impl Default for Args {
             inputs: Vec::new(),
             output: Arc::from(Path::new("a.out")),
             is_dynamic_executable: AtomicBool::new(false),
-            dynamic_linker: None,
+            // FIXME: temporary to make diffs of integration test easier
+            dynamic_linker: Some(Box::from(Path::new("/lib/ld64.so.1"))),
             output_kind: None,
             time_phase_options: None,
             num_threads: None,
@@ -1550,9 +1551,13 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare()
         .long("pie")
         .help("Create a position-independent executable")
-        .execute(|args, _modifier_stack| {
+        .execute(|args, modifier_stack| {
             args.relocation_model = RelocationModel::Relocatable;
-            args.output_kind = None;
+            if modifier_stack.last().unwrap().allow_shared {
+                args.output_kind = Some(OutputKind::DynamicExecutable(args.relocation_model));
+            } else {
+                args.output_kind = Some(OutputKind::StaticExecutable(args.relocation_model));
+            }
             Ok(())
         });
 
