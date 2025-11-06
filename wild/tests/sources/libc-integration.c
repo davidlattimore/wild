@@ -17,6 +17,7 @@
 //#AbstractConfig:shared:default
 //#Shared:libc-integration-0.c,libc-integration-0b.c
 //#Shared:libc-integration-1.c
+//#TestUpdateInPlace:true
 // Each binary links against shared objects created by that linker. So different
 // names are expected.
 //#DiffIgnore:.dynamic.DT_NEEDED
@@ -33,6 +34,7 @@
 //#CompArgs:-fPIE -fPIC
 //#LinkerDriver:clang
 //#LinkArgs:-static-pie -Wl,--strip-debug -Wl,--gc-sections -Wl,-z,now
+//#TestUpdateInPlace:true
 //#Object:libc-integration-0.c
 //#Object:libc-integration-1.c
 //#EnableLinker:lld

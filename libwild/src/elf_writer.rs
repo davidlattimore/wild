@@ -230,7 +230,16 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
                 relocations, "resolved relocations");
         }
     }
+
+    fill_padding(section_buffers);
+
     Ok(())
+}
+
+fn fill_padding(mut section_buffers: OutputSectionMap<&mut [u8]>) {
+    section_buffers.for_each_mut(|_, out| {
+        out.fill(0);
+    });
 }
 
 #[tracing::instrument(skip_all, name = "Sort .eh_frame_hdr")]
@@ -568,6 +577,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             || (flags.needs_export_dynamic() && res.flags.is_interposable())
                 && !res.flags.is_ifunc()
         {
+            *got_entry = 0;
             debug_assert_bail!(
                 *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
                 "Tried to write glob-dat with no allocation. {}",
@@ -580,6 +590,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 DynamicRelocationKind::GotEntry,
             )?;
         } else if res.flags.is_ifunc() {
+            *got_entry = 0;
             self.write_ifunc_relocation::<A>(res)?;
         } else {
             *got_entry = res.raw_value;
@@ -603,6 +614,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if res.flags.is_dynamic()
             || (res.flags.needs_export_dynamic() && res.flags.is_interposable())
         {
+            *got_entry = 0;
             return self.write_tpoff_relocation::<A>(got_address, res.dynamic_symbol_index()?, 0);
         }
         let address = res.raw_value;
@@ -643,6 +655,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if self.output_kind.is_executable() && !res.flags.is_dynamic() {
             *got_entry = elf::CURRENT_EXE_TLS_MOD;
         } else {
+            *got_entry = 0;
             let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
             debug_assert_bail!(
                 *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
@@ -659,6 +672,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                     dynamic_symbol_index.get(),
                 )?;
             }
+            *offset_entry = 0;
             return Ok(());
         }
         // Convert the address to an offset within the TLS segment
@@ -675,8 +689,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         got_address: u64,
     ) -> Result {
         // TLS descriptor occupies 2 entries
-        self.take_next_got_entry()?;
-        self.take_next_got_entry()?;
+        *self.take_next_got_entry()? = 0;
+        *self.take_next_got_entry()? = 0;
 
         ensure!(
             !self.output_kind.is_static_executable(),
@@ -722,6 +736,13 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
     /// Checks that we used all of the entries that we requested during layout.
     fn validate_empty(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
+        if !self.got.is_empty() {
+            return Err(excessive_allocation(
+                ".got",
+                self.got.len() as u64 * elf::GOT_ENTRY_SIZE,
+                *mem_sizes.get(part_id::GOT),
+            ));
+        }
         if !self.rela_dyn_relative.is_empty() {
             return Err(excessive_allocation(
                 ".rela.dyn (relative)",
@@ -751,6 +772,13 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 ".eh_frame_hdr",
                 self.eh_frame_hdr.len() as u64,
                 *mem_sizes.get(part_id::EH_FRAME_HDR),
+            ));
+        }
+        if !self.dynamic.out.is_empty() {
+            return Err(excessive_allocation(
+                ".dynamic",
+                std::mem::size_of_val(self.dynamic.out) as u64,
+                *mem_sizes.get(part_id::DYNAMIC),
             ));
         }
         Ok(())
@@ -1082,6 +1110,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         let name = RawSymbolName::parse(name).name;
         let string_offset = self.strtab_writer.write_str(name);
         entry.st_name.set(e, string_offset);
+        entry.st_info = 0;
         entry.st_other = 0;
         entry.st_shndx.set(e, shndx);
         entry.st_value.set(e, value);
@@ -2522,7 +2551,7 @@ fn write_plt_got_entries<A: Arch>(
             // which is at the end of the TLS segment.
             raw_value = A::tp_offset_start(layout) - layout.tls_start_address();
         } else {
-            table_writer.take_next_got_entry()?;
+            *table_writer.take_next_got_entry()? = 0;
             table_writer.write_dtpmod_relocation::<A>(got_address.get(), 0)?;
         }
 
@@ -2548,9 +2577,7 @@ fn write_symbol_table_entries(
     layout: &Layout,
 ) -> Result {
     // Define symbol 0. This needs to be a null placeholder.
-    let entry = symbol_writer.define_symbol(true, 0, 0, 0, &[])?;
-    entry.st_info = 0;
-    entry.st_other = 0;
+    symbol_writer.define_symbol(true, 0, 0, 0, &[])?;
 
     let internal_symbols = &prelude.internal_symbols;
 
@@ -2612,12 +2639,13 @@ fn write_verdef(
             .vd_aux
             .set(e, size_of::<crate::elf::Verdef>() as u32);
         // Offset to the next entry, unless it's the last one
-        if i < verdefs.len() - 1 {
-            let offset = (size_of::<crate::elf::Verdef>()
-                + size_of::<crate::elf::Verdaux>() * aux_count as usize)
-                as u32;
-            verdef_out.vd_next.set(e, offset);
+        let offset = if i < verdefs.len() - 1 {
+            (size_of::<crate::elf::Verdef>()
+                + size_of::<crate::elf::Verdaux>() * aux_count as usize) as u32
+        } else {
+            0
         };
+        verdef_out.vd_next.set(e, offset);
 
         let verdaux = table_writer.version_writer.take_verdaux()?;
         verdaux.vda_name.set(e, name_offset);
@@ -2678,6 +2706,8 @@ fn write_epilogue_dynamic_entries(
     for writer in EPILOGUE_DYNAMIC_ENTRY_WRITERS {
         writer.write(&mut table_writer.dynamic, &inputs)?;
     }
+
+    table_writer.dynamic.write_unused();
 
     Ok(())
 }
@@ -2743,6 +2773,13 @@ fn write_epilogue<A: Arch>(
             &epilogue_offsets,
         )?;
     }
+
+    // The actual build-id will be filled in later once all writing has completed. It's important
+    // that we fill it with zeros now however, since if we're overwriting an existing file, there
+    // might be other data there and it we don't zero it, then the build ID will be hashing that
+    // data.
+    let build_id_buffer = buffers.get_mut(part_id::NOTE_GNU_BUILD_ID);
+    build_id_buffer.fill(0);
 
     Ok(())
 }
@@ -2837,9 +2874,9 @@ fn write_gnu_hash_tables(
         return Ok(());
     };
 
-    let (header, rest) =
-        object::from_bytes_mut::<GnuHashHeader>(buffers.get_mut(part_id::GNU_HASH))
-            .map_err(|_| error!("Insufficient .gnu.hash allocation"))?;
+    let buffer = buffers.get_mut(part_id::GNU_HASH);
+    let (header, rest) = object::from_bytes_mut::<GnuHashHeader>(buffer)
+        .map_err(|_| error!("Insufficient .gnu.hash allocation"))?;
     let e = LittleEndian;
     header.bucket_count.set(e, gnu_hash_layout.bucket_count);
     header.bloom_shift.set(e, gnu_hash_layout.bloom_shift);
@@ -2852,10 +2889,15 @@ fn write_gnu_hash_tables(
     let (buckets, rest) =
         object::slice_from_bytes_mut::<u32>(rest, gnu_hash_layout.bucket_count as usize)
             .map_err(|_| error!("Insufficient bytes for .gnu.hash buckets"))?;
-    let (chains, _) =
+    let (chains, rest) =
         object::slice_from_bytes_mut::<u32>(rest, epilogue.dynamic_symbol_definitions.len())
             .map_err(|_| error!("Insufficient bytes for .gnu.hash chains"))?;
 
+    debug_assert_eq!(rest.len(), 0);
+
+    // Some buckets and bloom entries might not get written below, so fill with zeros to ensure
+    // deterministic output if we're editing in-place.
+    buckets.fill(0);
     bloom.fill(0);
 
     let mut sym_defs = epilogue.dynamic_symbol_definitions.iter().peekable();
@@ -3483,6 +3525,19 @@ impl<'out> DynamicEntriesWriter<'out> {
         entry.d_val.set(e, value);
         Ok(())
     }
+
+    /// Some dynamic entries aren't used, but we currently allocate space for them anyway. This
+    /// makes sure that they're written with zeros.
+    fn write_unused(&mut self) {
+        loop {
+            let Some(entry) = self.out.split_off_first_mut() else {
+                return;
+            };
+            let e = LittleEndian;
+            entry.d_tag.set(e, 0);
+            entry.d_val.set(e, 0);
+        }
+    }
 }
 
 fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
@@ -3767,9 +3822,11 @@ fn write_dynamic_file<A: Arch>(
                 aux_out.vna_other.set(e, output_version);
                 aux_out.vna_name.set(e, name_offset);
                 aux_out.vna_hash.set(e, sysv_name_hash);
+                aux_out.vna_flags.set(e, 0);
                 aux_index += 1;
             }
         }
+        debug_assert_eq!(aux_index, auxes.len());
     }
 
     Ok(())
