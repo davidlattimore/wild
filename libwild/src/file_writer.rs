@@ -1,5 +1,6 @@
 use crate::args::Args;
 use crate::args::FileWriteMode;
+use crate::args::OutputKind;
 use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
 use crate::error;
 use crate::error::Context as _;
@@ -11,6 +12,7 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
 use memmap2::MmapOptions;
+use std::io::ErrorKind;
 use std::io::Write;
 use std::ops::Deref;
 use std::ops::DerefMut;
@@ -108,7 +110,7 @@ impl Output {
     pub(crate) fn new(args: &Args) -> Output {
         let file_write_mode = args
             .file_write_mode
-            .unwrap_or_else(|| default_file_write_mode(&args.output));
+            .unwrap_or_else(|| default_file_write_mode(args));
 
         let creator = if args.available_threads.get() > 1 {
             let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
@@ -223,27 +225,16 @@ impl Output {
 }
 
 /// Returns the file write mode that we should use to write to the specified path.
-fn default_file_write_mode(path: &Path) -> FileWriteMode {
-    use std::os::unix::fs::FileTypeExt as _;
+fn default_file_write_mode(args: &Args) -> FileWriteMode {
+    if matches!(args.output_kind(), OutputKind::SharedObject) {
+        return FileWriteMode::UnlinkAndReplace;
+    }
 
-    let Ok(metadata) = std::fs::metadata(path) else {
+    if std::fs::metadata(&args.output).is_err() {
         return FileWriteMode::UnlinkAndReplace;
     };
 
-    let file_type = metadata.file_type();
-
-    // If we've been asked to write to a path that currently holds some exotic kind of file, then we
-    // don't want to delete it, even if we have permission to. For example, we don't want to delete
-    // `/dev/null` if we're running in a container as root.
-    if file_type.is_char_device()
-        || file_type.is_block_device()
-        || file_type.is_socket()
-        || file_type.is_fifo()
-    {
-        return FileWriteMode::UpdateInPlace;
-    }
-
-    FileWriteMode::UnlinkAndReplace
+    FileWriteMode::UpdateInPlace { specified: false }
 }
 
 /// Delete the old output file. Note, this is only used when running from a single thread.
@@ -273,17 +264,30 @@ impl SizedOutput {
             FileWriteMode::UnlinkAndReplace => {
                 open_options.truncate(true);
             }
-            FileWriteMode::UpdateInPlace => {
+            FileWriteMode::UpdateInPlace { .. } => {
                 open_options.truncate(false);
             }
         }
 
-        let file = open_options
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&path)
-            .with_context(|| format!("Failed to open `{}`", path.display()))?;
+        let file = match open_options.read(true).write(true).create(true).open(&path) {
+            Ok(file) => file,
+            Err(error) => {
+                // Retry open operation with UnlinkAndReplace if it's an
+                // ETXTBSY error and UpdateInPlace was not explicitly specified
+                // by the user
+                if error.kind() == ErrorKind::ExecutableFileBusy
+                    && matches!(
+                        output_config.file_write_mode,
+                        FileWriteMode::UpdateInPlace { specified: false }
+                    )
+                {
+                    open_options.truncate(true).open(&path)?
+                } else {
+                    return Err(error)
+                        .with_context(|| format!("Failed to open `{}`", path.display()));
+                }
+            }
+        };
 
         let out = OutputBuffer::new(&file, file_size, output_config);
 
