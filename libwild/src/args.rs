@@ -328,8 +328,7 @@ impl Default for Args {
             inputs: Vec::new(),
             output: Arc::from(Path::new("a.out")),
             is_dynamic_executable: AtomicBool::new(false),
-            // FIXME: temporary to make diffs of integration test easier
-            dynamic_linker: Some(Box::from(Path::new("/lib/ld64.so.1"))),
+            dynamic_linker: None,
             output_kind: None,
             time_phase_options: None,
             num_threads: None,
