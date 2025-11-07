@@ -7,7 +7,8 @@
 //#LinkArgs:-shared -z now -pie
 //#Object:runtime.c
 //#Mode:dynamic
-//
+//#DiffIgnore:section.got
+
 // `-no-pie` should override `-shared`.
 //#Config:no-pie-over-shared
 //#LinkArgs:-shared -z now -no-pie
@@ -21,6 +22,7 @@
 //#Shared:empty.c
 //#Mode:dynamic
 //#DiffIgnore:.dynamic.DT_NEEDED
+//#DiffIgnore:section.got
 
 // Non-loaded DSO has no effect on output kind.
 //#Config:non-loaded-dso
