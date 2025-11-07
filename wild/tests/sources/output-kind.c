@@ -30,6 +30,7 @@
 //#Object:runtime.c
 //#Shared:empty.c
 //#Mode:unspecified
+//#DiffIgnore:section.got
 
 // Setting dynamic linker doesn't change output kind on its own.
 //#Config:dynamic-linker
