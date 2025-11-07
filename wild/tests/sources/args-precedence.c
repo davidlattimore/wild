@@ -11,8 +11,17 @@
 //#LinkArgs:-shared -z now -no-pie
 //#Object:runtime.c
 
-// Only loaded libs should affect output kind
-//#Config:unloaded-dso
+// Loaded DSO turns static non-relocatable executable into dynamic one if
+// dynamic linker is set.
+//#Config:loaded-dso
+//#LinkArgs:-z now
+//#Object:runtime.c
+//#Shared:empty.c
+//#Mode:dynamic
+//#DiffIgnore:.dynamic.DT_NEEDED
+
+// Not loaded DSO has no effect on output kind.
+//#Config:not-loaded-dso
 //#LinkArgs:-z now --as-needed
 //#Object:runtime.c
 //#Shared:empty.c
