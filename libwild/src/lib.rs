@@ -205,8 +205,8 @@ impl Linker {
         // LD switches to a dynamic executable.
         if args.output_kind().is_static_executable()
             && groups.iter().any(|group| {
-                if let grouping::Group::Objects(a) = group {
-                    a.iter().any(|b| b.is_dynamic() && !b.is_optional())
+                if let grouping::Group::Objects(objects) = group {
+                    objects.iter().any(|b| b.is_dynamic() && !b.is_optional())
                 } else {
                     false
                 }
