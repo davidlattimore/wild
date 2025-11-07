@@ -32,6 +32,16 @@
 //#Mode:unspecified
 //#DiffIgnore:section.got
 
+// Minimized CI failure, that means `is_dynamic_executable` logic was wrong.
+//#Config:wip
+//#LinkArgs:-z now --as-needed
+//#Shared:runtime.c
+//#Mode:dynamic
+//#DiffIgnore:.dynamic.DT_NEEDED
+//#DiffIgnore:section.got
+//#DiffIgnore:.dynamic.DT_RELA
+//#DiffIgnore:.dynamic.DT_RELAENT
+
 // Setting dynamic linker doesn't change output kind on its own.
 //#Config:dynamic-linker
 //#LinkArgs:-z now --dynamic-linker=/lib64/bad.so

@@ -201,12 +201,20 @@ impl Linker {
 
         let groups = grouping::group_files(parsed_inputs, args, &self.herd);
 
-        // When outputting static executable but a non-optional shared object is linked,
-        // LD switches to a dynamic executable.
+        // Insane attempt part 1, if we are going to create static executable but non-optional DSO is linked,
+        // we end up with dynamic executable. Otherwise, if optional DSO is linked, we try to proceed as a
+        // dynamic executable during the resolution, and later on check if we actually linked DSO, if not
+        // we revert to a static executable.
+        let mut might_end_up_as_static = false;
         if args.output_kind().is_static_executable()
             && groups.iter().any(|group| {
                 if let grouping::Group::Objects(objects) = group {
-                    objects.iter().any(|b| b.is_dynamic() && !b.is_optional())
+                    objects.iter().any(|b| {
+                        if b.is_optional() {
+                            might_end_up_as_static = true;
+                        }
+                        b.is_dynamic()
+                    })
                 } else {
                     false
                 }
@@ -231,6 +239,22 @@ impl Linker {
             &mut output_sections,
             &layout_rules,
         )?;
+
+        // Insane attempt part 2, if the previously considered DSO was optional and we didn't link any DSO
+        // in the end, revert back to static executable.
+        if might_end_up_as_static
+            && resolved.groups.iter().all(|group| {
+                group.files.iter().all(|file| {
+                    if let resolution::ResolvedFile::Object(object) = file {
+                        object.input.file.kind != crate::file_kind::FileKind::ElfDynamic
+                    } else {
+                        true
+                    }
+                })
+            })
+        {
+            args.is_dynamic_executable.store(false, Ordering::Relaxed);
+        }
 
         let layout = layout::compute::<A>(
             symbol_db,
