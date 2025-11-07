@@ -2923,7 +2923,7 @@ fn integration_test(
         "lto-undefined.c",
         "symbol-version-symver.c",
         "symbol-version-symver-error.c",
-        "args-precedence.c",
+        "output-kind.c",
         "entry-in-shared.c",
         "alignment.c"
     )]
