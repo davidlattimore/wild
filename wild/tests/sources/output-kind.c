@@ -23,6 +23,7 @@
 //#Mode:dynamic
 //#DiffIgnore:.dynamic.DT_NEEDED
 //#DiffIgnore:section.got
+//#DiffIgnore:segment.RISCV_ATTRIBUTES.*
 
 // Non-loaded DSO has no effect on output kind.
 //#Config:non-loaded-dso
