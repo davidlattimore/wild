@@ -27,6 +27,12 @@
 //#Shared:empty.c
 //#Mode:unspecified
 
+// Setting dynamic linker doesn't change output kind on its own.
+//#Config:dynamic-linker
+//#LinkArgs:-z now --dynamic-linker=/lib64/bad.so
+//#Object:runtime.c
+//#Mode:unspecified
+
 // LD creates static PIE only when both `--no-dynamic-linker` and `-pie` are
 // present.
 // There are three approaches for this case: emit PIE with incorrect interpreter
