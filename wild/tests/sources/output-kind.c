@@ -36,6 +36,7 @@
 //#Shared:empty.c
 //#Mode:unspecified
 //#DiffIgnore:section.got
+//#DiffIgnore:segment.RISCV_ATTRIBUTES.*
 
 // Minimized CI failure, that means `is_dynamic_executable` logic was wrong.
 //#Config:wip
