@@ -33,12 +33,12 @@
 //#Object:runtime.c
 //#Mode:unspecified
 
-// LD creates static PIE only when both `--no-dynamic-linker` and `-pie` are
-// present.
-// There are three approaches for this case: emit PIE with incorrect interpreter
-// like LD (at least on x86_64 Linux), emit static PIE like LLD, or
-// emit PIE with correct implicit interpreter unlike other linkers. This time we
-// follow what LLD does.
+// Unlike other linkers, LD creates static PIE only when both
+// `--no-dynamic-linker` and `-pie` are present.
+// There are three approaches for
+// this case: emit PIE with incorrect interpreter like LD (at least on x86_64
+// Linux), emit static PIE like LLD, or emit PIE with correct implicit
+// interpreter unlike other linkers. This time we follow what LLD does.
 //#Config:wip
 //#LinkArgs:-z now -pie
 //#Object:runtime.c
