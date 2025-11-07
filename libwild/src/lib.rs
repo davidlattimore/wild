@@ -205,6 +205,9 @@ impl Linker {
         // we end up with dynamic executable. Otherwise, if optional DSO is linked, we try to proceed as a
         // dynamic executable during the resolution, and later on check if we actually linked DSO, if not
         // we revert to a static executable.
+        //
+        // Possible optimisation idea if we go for something like this: iterate manually and don't stop until
+        // we hit a non-optional DSO, so we can reset the boolean.
         let mut might_end_up_as_static = false;
         if args.output_kind().is_static_executable()
             && groups.iter().any(|group| {
