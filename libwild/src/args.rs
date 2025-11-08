@@ -564,7 +564,7 @@ impl Args {
     }
 
     pub(crate) fn output_kind(&self) -> OutputKind {
-        self.output_kind.unwrap_or({
+        self.output_kind.unwrap_or_else(|| {
             if self.is_dynamic_executable.load(Ordering::Relaxed) {
                 OutputKind::DynamicExecutable(self.relocation_model)
             } else {
