@@ -190,6 +190,7 @@ tests = [
   "duplicate-error.sh",             # Different message formats
   "empty-arg.sh",                   # Different message formats
   "empty-input.sh",                 # Different message formats
+  "hash-style.sh",                  # Wild doesn't support `--hash-style=none`.
   "help.sh",
   "invalid-version-script.sh",      # Different message formats
   "linker-script-error.sh",         # Different message formats
