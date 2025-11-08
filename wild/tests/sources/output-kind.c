@@ -29,7 +29,8 @@
 //#DiffIgnore:.dynamic.DT_RELA
 //#DiffIgnore:.dynamic.DT_RELAENT
 
-// Non-loaded DSO has no effect on output kind.
+// With LD non-loaded DSO has no effect on output kind, but LLD's approach
+// simplifies code a lot.
 //#Config:non-loaded-dso
 //#LinkArgs:-z now --as-needed
 //#Object:runtime.c
@@ -37,16 +38,9 @@
 //#Mode:unspecified
 //#DiffIgnore:section.got
 //#DiffIgnore:segment.RISCV_ATTRIBUTES.*
-
-// Minimized CI failure, that means `is_dynamic_executable` logic was wrong.
-//#Config:wip
-//#LinkArgs:-z now --as-needed
-//#Shared:runtime.c
-//#Mode:dynamic
-//#DiffIgnore:.dynamic.DT_NEEDED
-//#DiffIgnore:section.got
-//#DiffIgnore:.dynamic.DT_RELA
-//#DiffIgnore:.dynamic.DT_RELAENT
+//#EnableLinker:lld
+//#SkipLinker:ld
+//#DiffIgnore:section.relro_padding
 
 // Setting dynamic linker doesn't change output kind on its own.
 //#Config:dynamic-linker

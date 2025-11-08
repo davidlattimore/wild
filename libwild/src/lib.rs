@@ -201,27 +201,12 @@ impl Linker {
 
         let groups = grouping::group_files(parsed_inputs, args, &self.herd);
 
-        // Insane attempt part 1, if we are going to create static executable but non-optional DSO is linked,
-        // we end up with dynamic executable. Otherwise, if optional DSO is linked, we try to proceed as a
-        // dynamic executable during the resolution, and later on check if we actually linked DSO, if not
-        // we revert to a static executable.
-        //
-        // Possible optimisation idea if we go for something like this: iterate manually and don't stop until
-        // we hit a non-optional DSO, so we can reset the boolean.
-        let mut might_end_up_as_static = false;
+        // FIXME: write
         if args.output_kind().is_static_executable()
-            && groups.iter().any(|group| {
-                if let grouping::Group::Objects(objects) = group {
-                    objects.iter().any(|b| {
-                        if b.is_optional() {
-                            might_end_up_as_static = true;
-                        }
-                        b.is_dynamic()
-                    })
-                } else {
-                    false
-                }
-            })
+            && input_data
+                .inputs
+                .iter()
+                .any(|input| input.kind == crate::file_kind::FileKind::ElfDynamic)
         {
             args.is_dynamic_executable.store(true, Ordering::Relaxed);
         }
@@ -242,22 +227,6 @@ impl Linker {
             &mut output_sections,
             &layout_rules,
         )?;
-
-        // Insane attempt part 2, if the previously considered DSO was optional and we didn't link any DSO
-        // in the end, revert back to static executable.
-        if might_end_up_as_static
-            && resolved.groups.iter().all(|group| {
-                group.files.iter().all(|file| {
-                    if let resolution::ResolvedFile::Object(object) = file {
-                        object.input.file.kind != crate::file_kind::FileKind::ElfDynamic
-                    } else {
-                        true
-                    }
-                })
-            })
-        {
-            args.is_dynamic_executable.store(false, Ordering::Relaxed);
-        }
 
         let layout = layout::compute::<A>(
             symbol_db,
