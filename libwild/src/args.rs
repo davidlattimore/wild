@@ -171,7 +171,6 @@ pub(crate) enum OutputKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HashStyle {
-    None,
     Gnu,
     Sysv,
     Both,
@@ -2105,7 +2104,6 @@ fn setup_argument_parser() -> ArgumentParser {
                 "gnu" => HashStyle::Gnu,
                 "sysv" => HashStyle::Sysv,
                 "both" => HashStyle::Both,
-                "none" => HashStyle::None,
                 _ => bail!("Unknown hash-style `{value}`"),
             };
             Ok(())
