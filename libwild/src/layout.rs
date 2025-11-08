@@ -2384,6 +2384,9 @@ impl<'data> GroupState<'data> {
             )?;
         }
 
+        // Finalise the epilogue after everything else so it sees the fully populated
+        // dynsym/dynstr accounting before it sizes hashes. We look it up explicitly instead
+        // of assuming it is placed last to avoid baking in ordering assumptions here.
         if let Some(epilogue) = self
             .files
             .iter_mut()
@@ -3678,6 +3681,9 @@ impl<'data> EpilogueLayoutState<'data> {
         };
     }
 
+    // TODO: `existing_dynsym_entries` will eventually match the `dynsym_start_index` calculated
+    // within `EpilogueLayoutState::finalise_layout`. However, we need the number of existing
+    // entries before finalizing the layout, so a more efficient design would be ideal.
     fn update_existing_dynsym_entries(
         &mut self,
         symbol_db: &SymbolDb<'data>,
