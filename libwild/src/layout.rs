@@ -1101,6 +1101,16 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
                 .store(true, atomic::Ordering::Relaxed);
         }
 
+        // Check for VARIANT_CC flag in RISC-V symbols
+        if A::KIND == crate::arch::Architecture::RISCV64
+            && let Ok(sym) = self.object.symbols.symbol(object::SymbolIndex(local_index))
+            && (sym.st_other & crate::elf::STO_RISCV_VARIANT_CC) != 0
+        {
+            resources
+                .has_variant_pcs
+                .store(true, atomic::Ordering::Relaxed);
+        }
+
         Ok(())
     }
 }

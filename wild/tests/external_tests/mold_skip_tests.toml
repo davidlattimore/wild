@@ -173,7 +173,6 @@ tests = [
   "arch-riscv64-relax-hi20.sh",
   "arch-riscv64-reloc-overflow.sh",
   "arch-riscv64-symbol-size.sh",
-  "arch-riscv64-variant-cc.sh",
 ]
 
 [skipped_groups.tls]
