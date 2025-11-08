@@ -81,6 +81,7 @@ use crate::value_flags::ValueFlags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
+use hashbrown::HashSet;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
@@ -381,7 +382,6 @@ fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) -> Result {
     epilogue.dynamic_symbol_definitions = dynamic_symbol_definitions;
     Ok(())
 }
-
 pub(crate) enum PropertyClass {
     // A bit in the output pr_data is set if it is set in any relocatable input.
     // If all bits in the output pr_data field are zero, this property should be removed from
@@ -739,6 +739,9 @@ pub(crate) struct EpilogueLayoutState<'data> {
     internal_symbols: InternalSymbols<'data>,
 
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
+    // Counts dynsym entries that already exist before the epilogue adds new ones.
+    existing_dynsym_entries: u32,
+    sysv_hash_layout: Option<SysvHashLayout>,
     gnu_hash_layout: Option<GnuHashLayout>,
     gnu_property_notes: Vec<GnuProperty>,
     build_id_size: Option<usize>,
@@ -762,12 +765,20 @@ pub(crate) struct GnuHashLayout {
     pub(crate) symbol_base: u32,
 }
 
+#[derive(Default, Debug, Clone, Copy)]
+pub(crate) struct SysvHashLayout {
+    pub(crate) bucket_count: u32,
+    pub(crate) chain_count: u32,
+}
+
 #[derive(Debug)]
 pub(crate) struct EpilogueLayout<'data> {
     pub(crate) internal_symbols: InternalSymbols<'data>,
+    pub(crate) sysv_hash_layout: Option<SysvHashLayout>,
+    pub(crate) sysv_hash_size: Option<u64>,
     pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
-    dynsym_start_index: u32,
+    pub(crate) dynsym_start_index: u32,
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
     pub(crate) verdefs: Option<Vec<VersionDef>>,
     pub(crate) riscv_attributes: Vec<RiscVAttribute>,
@@ -2361,7 +2372,24 @@ impl<'data> GroupState<'data> {
         per_symbol_flags: &AtomicPerSymbolFlags,
     ) -> Result {
         for file_state in &mut self.files {
+            if matches!(file_state, FileLayoutState::Epilogue(_)) {
+                continue;
+            }
+
             file_state.finalise_sizes(
+                &mut self.common,
+                symbol_db,
+                output_sections,
+                per_symbol_flags,
+            )?;
+        }
+
+        if let Some(epilogue) = self
+            .files
+            .iter_mut()
+            .find(|file| matches!(file, FileLayoutState::Epilogue(_)))
+        {
+            epilogue.finalise_sizes(
                 &mut self.common,
                 symbol_db,
                 output_sections,
@@ -2373,7 +2401,7 @@ impl<'data> GroupState<'data> {
     }
 
     fn finalise_layout(
-        self,
+        mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution>>,
         resources: &FinaliseLayoutResources<'_, 'data>,
@@ -2384,6 +2412,18 @@ impl<'data> GroupState<'data> {
             .into_iter()
             .map(|file| file.finalise_layout(memory_offsets, resolutions_out, resources))
             .collect::<Result<Vec<_>>>()?;
+
+        if let Some(epilogue_layout) = files.iter().find_map(|file| {
+            if let FileLayout::Epilogue(epilogue) = file {
+                Some(epilogue)
+            } else {
+                None
+            }
+        }) {
+            let size = epilogue_layout.sysv_hash_size.unwrap_or(0);
+            *self.common.mem_sizes.get_mut(part_id::SYSV_HASH) = size;
+        }
+
         let strtab_start_offset = self
             .common
             .finalise_layout(memory_offsets, resources.section_layouts);
@@ -3638,6 +3678,35 @@ impl<'data> EpilogueLayoutState<'data> {
         };
     }
 
+    fn update_existing_dynsym_entries(
+        &mut self,
+        symbol_db: &SymbolDb<'data>,
+        per_symbol_flags: &AtomicPerSymbolFlags,
+    ) -> Result {
+        let mut defined_symbols = HashSet::with_capacity(self.dynamic_symbol_definitions.len());
+        for def in &self.dynamic_symbol_definitions {
+            defined_symbols.insert(def.symbol_id);
+        }
+
+        let mut entries: u64 = 1; // Account for the null dynsym entry.
+        for index in 0..symbol_db.num_symbols() {
+            let symbol_id = SymbolId::from_usize(index);
+            if !symbol_db.is_canonical(symbol_id) || defined_symbols.contains(&symbol_id) {
+                continue;
+            }
+
+            let flags = per_symbol_flags.flags_for_symbol(symbol_id);
+            if flags.is_dynamic() && flags.has_resolution() {
+                entries += 1;
+            }
+        }
+
+        self.existing_dynsym_entries =
+            u32::try_from(entries).context("Too many dynamic symbols for .hash")?;
+
+        Ok(())
+    }
+
     fn new(input_state: ResolvedEpilogue<'data>) -> EpilogueLayoutState<'data> {
         EpilogueLayoutState {
             file_id: input_state.file_id,
@@ -3650,6 +3719,8 @@ impl<'data> EpilogueLayoutState<'data> {
                 start_symbol_id: input_state.start_symbol_id,
             },
             dynamic_symbol_definitions: Default::default(),
+            existing_dynsym_entries: 0,
+            sysv_hash_layout: None,
             gnu_hash_layout: None,
             gnu_property_notes: Default::default(),
             build_id_size: Default::default(),
@@ -3750,7 +3821,14 @@ impl<'data> EpilogueLayoutState<'data> {
                 common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
             }
 
-            self.allocate_gnu_hash(common);
+            self.update_existing_dynsym_entries(symbol_db, per_symbol_flags)?;
+
+            if symbol_db.args.hash_style.includes_gnu() {
+                self.allocate_gnu_hash(common);
+            }
+            if symbol_db.args.hash_style.includes_sysv() {
+                self.allocate_sysv_hash(common)?;
+            }
 
             common.allocate(
                 part_id::DYNSTR,
@@ -3855,6 +3933,33 @@ impl<'data> EpilogueLayoutState<'data> {
         self.gnu_hash_layout = Some(gnu_hash_layout);
     }
 
+    fn allocate_sysv_hash(&mut self, common: &mut CommonGroupState) -> Result {
+        let num_defs = self.dynamic_symbol_definitions.len();
+        if num_defs == 0 {
+            return Ok(());
+        }
+
+        let bucket_count = ((num_defs / 2).max(1)).next_power_of_two() as u32;
+        let num_defs_u32 = u32::try_from(num_defs).context("Too many dynamic symbols for .hash")?;
+        let base_entries = self.existing_dynsym_entries.max(1);
+        let chain_count = base_entries
+            .checked_add(num_defs_u32)
+            .context("Too many dynamic symbols for .hash")?;
+
+        let words = 2u64 + u64::from(bucket_count) + u64::from(chain_count);
+        let allocation = words
+            .checked_mul(size_of::<u32>() as u64)
+            .context("Overflow allocating .hash")?;
+
+        common.allocate(part_id::SYSV_HASH, allocation);
+        self.sysv_hash_layout = Some(SysvHashLayout {
+            bucket_count,
+            chain_count,
+        });
+
+        Ok(())
+    }
+
     fn finalise_layout(
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
@@ -3876,6 +3981,26 @@ impl<'data> EpilogueLayoutState<'data> {
         if let Some(gnu_hash_layout) = self.gnu_hash_layout.as_mut() {
             gnu_hash_layout.symbol_base = dynsym_start_index;
         }
+
+        if let Some(sysv_hash_layout) = self.sysv_hash_layout.as_mut() {
+            let additional = u32::try_from(self.dynamic_symbol_definitions.len())
+                .context("Too many dynamic symbols for .hash")?;
+            sysv_hash_layout.chain_count = dynsym_start_index
+                .checked_add(additional)
+                .context("Too many dynamic symbols for .hash")?;
+        }
+
+        let sysv_hash_size = if let Some(sysv_hash_layout) = &self.sysv_hash_layout {
+            let words = 2u64
+                .checked_add(u64::from(sysv_hash_layout.bucket_count))
+                .and_then(|v| v.checked_add(u64::from(sysv_hash_layout.chain_count)))
+                .context("Too many dynamic symbols for .hash")?;
+            let size = words * size_of::<u32>() as u64;
+            memory_offsets.increment(part_id::SYSV_HASH, size);
+            Some(size)
+        } else {
+            None
+        };
 
         memory_offsets.increment(
             part_id::DYNSYM,
@@ -3909,6 +4034,8 @@ impl<'data> EpilogueLayoutState<'data> {
         let riscv_attributes_length = self.riscv_attributes_section_size() as u32;
         Ok(EpilogueLayout {
             internal_symbols: self.internal_symbols,
+            sysv_hash_layout: self.sysv_hash_layout,
+            sysv_hash_size,
             gnu_hash_layout: self.gnu_hash_layout,
             dynamic_symbol_definitions: self.dynamic_symbol_definitions,
             dynsym_start_index,
