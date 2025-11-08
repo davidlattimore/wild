@@ -80,6 +80,7 @@ pub(crate) const RELA_PLT: OutputSectionId = part_id::RELA_PLT.output_section_id
 pub(crate) const EH_FRAME: OutputSectionId = part_id::EH_FRAME.output_section_id();
 pub(crate) const EH_FRAME_HDR: OutputSectionId = part_id::EH_FRAME_HDR.output_section_id();
 pub(crate) const DYNAMIC: OutputSectionId = part_id::DYNAMIC.output_section_id();
+pub(crate) const HASH: OutputSectionId = part_id::SYSV_HASH.output_section_id();
 pub(crate) const GNU_HASH: OutputSectionId = part_id::GNU_HASH.output_section_id();
 pub(crate) const DYNSYM: OutputSectionId = part_id::DYNSYM.output_section_id();
 pub(crate) const DYNSTR: OutputSectionId = part_id::DYNSTR.output_section_id();
@@ -491,6 +492,14 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(HASH_SECTION_NAME)),
+        ty: sht::HASH,
+        section_flags: shf::ALLOC,
+        link: &[DYNSYM],
+        min_alignment: alignment::SYSV_HASH,
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(GNU_HASH_SECTION_NAME)),
         ty: sht::GNU_HASH,
         section_flags: shf::ALLOC,
@@ -845,6 +854,7 @@ impl CustomSectionIds {
         builder.add_section(NOTE_GNU_PROPERTY);
         builder.add_section(NOTE_GNU_BUILD_ID);
         builder.add_section(NOTE_ABI_TAG);
+        builder.add_section(HASH);
         builder.add_section(GNU_HASH);
         builder.add_section(DYNSYM);
         builder.add_section(DYNSTR);
@@ -1237,6 +1247,7 @@ fn test_constant_ids() {
         (RISCV_ATTRIBUTES, RISCV_ATTRIBUTES_SECTION_NAME),
         (GCC_EXCEPT_TABLE, GCC_EXCEPT_TABLE_SECTION_NAME),
         (INTERP, INTERP_SECTION_NAME),
+        (HASH, HASH_SECTION_NAME),
         (GNU_VERSION, GNU_VERSION_SECTION_NAME),
         (GNU_VERSION_D, GNU_VERSION_D_SECTION_NAME),
         (GNU_VERSION_R, GNU_VERSION_R_SECTION_NAME),
