@@ -102,6 +102,7 @@ pub struct Args {
     pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
     pub(crate) relax: bool,
+    pub(crate) hash_style: HashStyle,
     pub(crate) unresolved_symbols: UnresolvedSymbols,
     pub(crate) error_unresolved_symbols: bool,
     pub(crate) allow_multiple_definitions: bool,
@@ -166,6 +167,24 @@ pub(crate) enum OutputKind {
     StaticExecutable(RelocationModel),
     DynamicExecutable(RelocationModel),
     SharedObject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HashStyle {
+    None,
+    Gnu,
+    Sysv,
+    Both,
+}
+
+impl HashStyle {
+    pub(crate) const fn includes_gnu(self) -> bool {
+        matches!(self, HashStyle::Gnu | HashStyle::Both)
+    }
+
+    pub(crate) const fn includes_sysv(self) -> bool {
+        matches!(self, HashStyle::Sysv | HashStyle::Both)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,6 +407,7 @@ impl Default for Args {
             export_list_path: None,
             got_plt_syms: false,
             relax: true,
+            hash_style: HashStyle::Both,
             jobserver_client: None,
             available_threads: NonZeroUsize::new(1).unwrap(),
             unresolved_symbols: UnresolvedSymbols::ReportAll,
@@ -2080,10 +2100,14 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("hash-style")
         .help("Set hash style")
-        .execute(|_args, _modifier_stack, value| {
-            if value != "gnu" && value != "both" {
-                bail!("Unsupported hash-style `{value}`");
-            }
+        .execute(|args, _modifier_stack, value| {
+            args.hash_style = match value {
+                "gnu" => HashStyle::Gnu,
+                "sysv" => HashStyle::Sysv,
+                "both" => HashStyle::Both,
+                "none" => HashStyle::None,
+                _ => bail!("Unknown hash-style `{value}`"),
+            };
             Ok(())
         });
 
