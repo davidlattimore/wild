@@ -2754,6 +2754,7 @@ fn write_epilogue<A: Arch>(
     if layout.args().needs_dynamic() {
         write_epilogue_dynamic_entries(layout, table_writer, &mut epilogue_offsets)?;
     }
+    write_sysv_hash_table(epilogue, buffers)?;
     write_gnu_hash_tables(epilogue, buffers)?;
 
     write_dynamic_symbol_definitions(epilogue, table_writer, layout)?;
@@ -2861,6 +2862,76 @@ fn write_riscv_attributes(
                 leb128::write::unsigned(&mut writer, version)?;
             }
         }
+    }
+
+    Ok(())
+}
+
+fn write_sysv_hash_table(
+    epilogue: &EpilogueLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+) -> Result {
+    let Some(sysv_hash_layout) = epilogue.sysv_hash_layout.as_ref() else {
+        return Ok(());
+    };
+
+    let bucket_count =
+        usize::try_from(sysv_hash_layout.bucket_count).context("Too many buckets for .hash")?;
+    let chain_count =
+        usize::try_from(sysv_hash_layout.chain_count).context("Too many chains for .hash")?;
+
+    if bucket_count == 0 || chain_count == 0 {
+        return Ok(());
+    }
+
+    let total_words = 2usize
+        .checked_add(bucket_count)
+        .and_then(|v| v.checked_add(chain_count))
+        .context("Insufficient .hash allocation")?;
+    let required_bytes = total_words
+        .checked_mul(std::mem::size_of::<u32>())
+        .context("Insufficient .hash allocation")?;
+
+    let buffer = buffers.get_mut(part_id::SYSV_HASH);
+    if buffer.len() < required_bytes {
+        return Err(error!("Insufficient .hash allocation"));
+    }
+    let buffer = &mut buffer[..required_bytes];
+    buffer.fill(0);
+
+    let (header_bytes, rest) = buffer.split_at_mut(2 * std::mem::size_of::<u32>());
+    header_bytes[..4].copy_from_slice(&sysv_hash_layout.bucket_count.to_le_bytes());
+    header_bytes[4..8].copy_from_slice(&sysv_hash_layout.chain_count.to_le_bytes());
+
+    let (buckets, rest) = object::slice_from_bytes_mut::<u32>(rest, bucket_count)
+        .map_err(|_| error!("Insufficient bytes for .hash buckets"))?;
+    let (chains, rest) = object::slice_from_bytes_mut::<u32>(rest, chain_count)
+        .map_err(|_| error!("Insufficient bytes for .hash chains"))?;
+
+    debug_assert!(rest.is_empty());
+
+    buckets.fill(0);
+    chains.fill(0);
+    let mut last_in_bucket: Vec<Option<usize>> = vec![None; bucket_count];
+
+    for (i, sym_def) in epilogue.dynamic_symbol_definitions.iter().enumerate() {
+        let additional = u32::try_from(i).context("Too many dynamic symbols for .hash")?;
+        let sym_index = epilogue
+            .dynsym_start_index
+            .checked_add(additional)
+            .context("Too many dynamic symbols for .hash")?;
+        let sym_index_usize =
+            usize::try_from(sym_index).context("Too many dynamic symbols for .hash")?;
+        let hash = object::elf::hash(sym_def.name);
+        let bucket = (hash % sysv_hash_layout.bucket_count) as usize;
+
+        if buckets[bucket] == 0 {
+            buckets[bucket] = sym_index;
+        } else {
+            let last = last_in_bucket[bucket].context("Invalid .hash bucket chain construction")?;
+            chains[last] = sym_index;
+        }
+        last_in_bucket[bucket] = Some(sym_index_usize);
     }
 
     Ok(())
@@ -3380,9 +3451,16 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
             .mem_size
             / size_of::<elf::Rela>() as u64
     }),
-    DynamicEntryWriter::new(object::elf::DT_GNU_HASH, |inputs| {
-        inputs.vma_of_section(output_section_id::GNU_HASH)
-    }),
+    DynamicEntryWriter::optional(
+        object::elf::DT_HASH,
+        |inputs| inputs.has_data_in_section(output_section_id::HASH),
+        |inputs| inputs.vma_of_section(output_section_id::HASH),
+    ),
+    DynamicEntryWriter::optional(
+        object::elf::DT_GNU_HASH,
+        |inputs| inputs.has_data_in_section(output_section_id::GNU_HASH),
+        |inputs| inputs.vma_of_section(output_section_id::GNU_HASH),
+    ),
     DynamicEntryWriter::optional(
         object::elf::DT_FLAGS,
         |inputs| inputs.dt_flags() != 0,
