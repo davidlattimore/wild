@@ -449,7 +449,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             CopyRelocations::Disallowed(CopyRelocationsDisabledReason::SharedObject);
     }
 
-    // LD turns static relocatable executables into dynamic ones if dynamic linker is set.
+    // GNU ld turns static relocatable executables into dynamic ones if dynamic linker is set.
     if args.dynamic_linker.is_some()
         && args.output_kind() == OutputKind::StaticExecutable(RelocationModel::Relocatable)
     {
