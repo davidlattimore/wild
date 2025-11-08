@@ -194,6 +194,11 @@ impl Linker {
     ) -> error::Result<LinkerOutput<'data>> {
         let mut output_sections = OutputSections::with_base_address(args.base_address());
 
+        // When attempting to create static executable, but DSO is added as an input we need to
+        // proceed with dynamic executable.
+        // This is in line with LLD, but GNU ld goes a step further: if no DSO ends up loaded, it'll
+        // go back to static one. This would add a lot of complexity with the current design, so we
+        // just stick to LLD behaviour.
         if args.output_kind().is_static_executable()
             && input_data
                 .inputs

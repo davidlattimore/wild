@@ -2259,7 +2259,7 @@ impl Assertions {
         let bytes = std::fs::read(path)?;
         let obj = ElfFile64::parse(bytes.as_slice())?;
 
-        self.verify_fild_kind(&obj)?;
+        self.verify_file_kind(&obj)?;
         verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols())?;
         verify_symbol_assertions(&obj, &self.expected_dynsym_entries, obj.dynamic_symbols())?;
         self.verify_symbols_absent(obj.symbols(), ".symtab")?;
@@ -2339,7 +2339,7 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_fild_kind(&self, obj: &ElfFile64) -> Result {
+    fn verify_file_kind(&self, obj: &ElfFile64) -> Result {
         // For now, our file-kind identification is limited to just whether there's a dynamic symbol
         // table.
         if self.expect_dynamic {
@@ -2923,7 +2923,7 @@ fn integration_test(
         "lto-undefined.c",
         "symbol-version-symver.c",
         "symbol-version-symver-error.c",
-        "args-precedence.c",
+        "output-kind.c",
         "entry-in-shared.c",
         "alignment.c"
     )]

@@ -449,6 +449,13 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
             CopyRelocations::Disallowed(CopyRelocationsDisabledReason::SharedObject);
     }
 
+    // GNU ld turns static relocatable executables into dynamic ones if dynamic linker is set.
+    if args.dynamic_linker.is_some()
+        && args.output_kind() == OutputKind::StaticExecutable(RelocationModel::Relocatable)
+    {
+        args.output_kind = Some(OutputKind::DynamicExecutable(args.relocation_model));
+    }
+
     if !args.unrecognized_options.is_empty() {
         let options_list = args.unrecognized_options.join(", ");
         bail!("unrecognized option(s): {}", options_list);
@@ -557,7 +564,7 @@ impl Args {
     }
 
     pub(crate) fn output_kind(&self) -> OutputKind {
-        self.output_kind.unwrap_or({
+        self.output_kind.unwrap_or_else(|| {
             if self.is_dynamic_executable.load(Ordering::Relaxed) {
                 OutputKind::DynamicExecutable(self.relocation_model)
             } else {
