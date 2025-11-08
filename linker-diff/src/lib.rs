@@ -177,8 +177,11 @@ impl Config {
                 GOT_PLT_SECTION_NAME_STR,
                 // We don't currently produce a separate .plt.sec section.
                 "section.plt.sec",
-                // We don't yet write this.
+                // Different hash values due to different implementations.
                 ".dynamic.DT_HASH",
+                // Different hash values due to different implementations.
+                "section.hash.alignment",
+                "section.hash.entsize",
                 // aarch64-linux-gnu-ld on arch linux emits DT_BIND_NOW instead of
                 // DT_FLAGS.BIND_NOW
                 ".dynamic.DT_BIND_NOW",
