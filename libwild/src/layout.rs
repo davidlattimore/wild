@@ -41,6 +41,7 @@ use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SortOrder;
+use crate::layout_rules::sorted_section_priority;
 use crate::output_section_id;
 use crate::output_section_id::FILE_HEADER;
 use crate::output_section_id::OrderEvent;
@@ -4714,7 +4715,7 @@ impl<'data> ObjectLayoutState<'data> {
                     if let Some(order) = sec.sort_order {
                         let header = self.object.section(sec.index)?;
                         let name = self.object.section_name(header)?;
-                        let priority = layout_rules::sorted_section_priority(name);
+                        let priority = sorted_section_priority(name);
 
                         let pending = PendingSortedSection {
                             index,
