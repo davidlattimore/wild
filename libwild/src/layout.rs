@@ -775,7 +775,6 @@ pub(crate) struct SysvHashLayout {
 pub(crate) struct EpilogueLayout<'data> {
     pub(crate) internal_symbols: InternalSymbols<'data>,
     pub(crate) sysv_hash_layout: Option<SysvHashLayout>,
-    pub(crate) sysv_hash_size: Option<u64>,
     pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
     pub(crate) dynsym_start_index: u32,
@@ -2372,10 +2371,6 @@ impl<'data> GroupState<'data> {
         per_symbol_flags: &AtomicPerSymbolFlags,
     ) -> Result {
         for file_state in &mut self.files {
-            if matches!(file_state, FileLayoutState::Epilogue(_)) {
-                continue;
-            }
-
             file_state.finalise_sizes(
                 &mut self.common,
                 symbol_db,
@@ -2384,27 +2379,12 @@ impl<'data> GroupState<'data> {
             )?;
         }
 
-        // Finalise the epilogue after everything else so it sees the fully populated
-        // dynsym/dynstr accounting before it sizes hashes. We look it up explicitly instead
-        // of assuming it is placed last to avoid baking in ordering assumptions here.
-        if let Some(epilogue) = self
-            .files
-            .iter_mut()
-            .find(|file| matches!(file, FileLayoutState::Epilogue(_)))
-        {
-            epilogue.finalise_sizes(
-                &mut self.common,
-                symbol_db,
-                output_sections,
-                per_symbol_flags,
-            )?;
-        }
         self.common.validate_sizes()?;
         Ok(())
     }
 
     fn finalise_layout(
-        mut self,
+        self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution>>,
         resources: &FinaliseLayoutResources<'_, 'data>,
@@ -2415,17 +2395,6 @@ impl<'data> GroupState<'data> {
             .into_iter()
             .map(|file| file.finalise_layout(memory_offsets, resolutions_out, resources))
             .collect::<Result<Vec<_>>>()?;
-
-        if let Some(epilogue_layout) = files.iter().find_map(|file| {
-            if let FileLayout::Epilogue(epilogue) = file {
-                Some(epilogue)
-            } else {
-                None
-            }
-        }) {
-            let size = epilogue_layout.sysv_hash_size.unwrap_or(0);
-            *self.common.mem_sizes.get_mut(part_id::SYSV_HASH) = size;
-        }
 
         let strtab_start_offset = self
             .common
@@ -3951,16 +3920,13 @@ impl<'data> EpilogueLayoutState<'data> {
             .checked_add(num_defs_u32)
             .context("Too many dynamic symbols for .hash")?;
 
-        let words = 2u64 + u64::from(bucket_count) + u64::from(chain_count);
-        let allocation = words
-            .checked_mul(size_of::<u32>() as u64)
-            .context("Overflow allocating .hash")?;
-
-        common.allocate(part_id::SYSV_HASH, allocation);
-        self.sysv_hash_layout = Some(SysvHashLayout {
+        let sysv_hash_layout = SysvHashLayout {
             bucket_count,
             chain_count,
-        });
+        };
+
+        common.allocate(part_id::SYSV_HASH, sysv_hash_layout.byte_size()?);
+        self.sysv_hash_layout = Some(sysv_hash_layout);
 
         Ok(())
     }
@@ -3995,17 +3961,9 @@ impl<'data> EpilogueLayoutState<'data> {
                 .context("Too many dynamic symbols for .hash")?;
         }
 
-        let sysv_hash_size = if let Some(sysv_hash_layout) = &self.sysv_hash_layout {
-            let words = 2u64
-                .checked_add(u64::from(sysv_hash_layout.bucket_count))
-                .and_then(|v| v.checked_add(u64::from(sysv_hash_layout.chain_count)))
-                .context("Too many dynamic symbols for .hash")?;
-            let size = words * size_of::<u32>() as u64;
-            memory_offsets.increment(part_id::SYSV_HASH, size);
-            Some(size)
-        } else {
-            None
-        };
+        if let Some(sysv_hash_layout) = &self.sysv_hash_layout {
+            memory_offsets.increment(part_id::SYSV_HASH, sysv_hash_layout.byte_size()?);
+        }
 
         memory_offsets.increment(
             part_id::DYNSYM,
@@ -4040,7 +3998,6 @@ impl<'data> EpilogueLayoutState<'data> {
         Ok(EpilogueLayout {
             internal_symbols: self.internal_symbols,
             sysv_hash_layout: self.sysv_hash_layout,
-            sysv_hash_size,
             gnu_hash_layout: self.gnu_hash_layout,
             dynamic_symbol_definitions: self.dynamic_symbol_definitions,
             dynsym_start_index,
@@ -6321,5 +6278,15 @@ impl<'scope, 'data> FinaliseLayoutResources<'scope, 'data> {
     fn symbol_debug(&'_ self, symbol_id: SymbolId) -> SymbolDebug<'_> {
         self.symbol_db
             .symbol_debug(self.per_symbol_flags, symbol_id)
+    }
+}
+
+impl SysvHashLayout {
+    fn byte_size(self) -> Result<u64> {
+        let words = 2u64
+            .checked_add(u64::from(self.bucket_count))
+            .and_then(|v| v.checked_add(u64::from(self.chain_count)))
+            .context("Too many dynamic symbols for .hash")?;
+        Ok(words * size_of::<u32>() as u64)
     }
 }
