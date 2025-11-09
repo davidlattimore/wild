@@ -622,6 +622,8 @@ pub mod secnames {
     pub const GNU_VERSION_D_SECTION_NAME: &[u8] = GNU_VERSION_D_SECTION_NAME_STR.as_bytes();
     pub const GNU_VERSION_R_SECTION_NAME_STR: &str = ".gnu.version_r";
     pub const GNU_VERSION_R_SECTION_NAME: &[u8] = GNU_VERSION_R_SECTION_NAME_STR.as_bytes();
+    pub const HASH_SECTION_NAME_STR: &str = ".hash";
+    pub const HASH_SECTION_NAME: &[u8] = HASH_SECTION_NAME_STR.as_bytes();
     pub const PROGRAM_HEADERS_SECTION_NAME_STR: &str = ".phdr";
     pub const PROGRAM_HEADERS_SECTION_NAME: &[u8] = PROGRAM_HEADERS_SECTION_NAME_STR.as_bytes();
     pub const SECTION_HEADERS_SECTION_NAME_STR: &str = ".shdr";

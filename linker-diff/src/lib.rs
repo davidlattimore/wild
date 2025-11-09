@@ -47,6 +47,7 @@ pub(crate) mod section_map;
 mod segment;
 mod symbol_diff;
 mod symtab;
+mod sysv_hash;
 mod trace;
 mod utils;
 mod version_diff;
@@ -150,7 +151,6 @@ impl Config {
                 "section.phdr",
                 // We don't yet support these sections.
                 "section.data.rel.ro",
-                "section.hash",
                 "section.sframe",
                 // We set this to 8. GNU ld sometimes does too, but sometimes to 0.
                 "section.got.entsize",
@@ -177,8 +177,15 @@ impl Config {
                 GOT_PLT_SECTION_NAME_STR,
                 // We don't currently produce a separate .plt.sec section.
                 "section.plt.sec",
-                // We don't yet write this.
+                // Different hash values due to different implementations.
                 ".dynamic.DT_HASH",
+                // Different hash values due to different implementations.
+                ".hash",
+                "section.hash.alignment",
+                "section.hash.entsize",
+                // Some other linkers seem to generate a `.hash` section even when there are no
+                // dynamic symbols.
+                "section.hash",
                 // aarch64-linux-gnu-ld on arch linux emits DT_BIND_NOW instead of
                 // DT_FLAGS.BIND_NOW
                 ".dynamic.DT_BIND_NOW",
@@ -599,6 +606,12 @@ impl Report {
             objects,
             GNU_HASH_SECTION_NAME_STR,
             gnu_hash::check_object,
+        );
+        validate_objects(
+            self,
+            objects,
+            HASH_SECTION_NAME_STR,
+            sysv_hash::check_object,
         );
         validate_objects(self, objects, "index", asm_diff::validate_indexes);
         validate_objects(
