@@ -57,6 +57,8 @@ use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
 use crate::layout::VersionDef;
 use crate::layout::compute_allocations;
+use crate::layout_rules::SortOrder;
+use crate::layout_rules::sorted_section_priority;
 use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
@@ -200,6 +202,7 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
                 &mut buffers,
                 group.eh_frame_start_address,
             );
+            let mut sorted_sections = SortedSectionCollector::default();
 
             for file in &group.files {
                 write_file::<A>(
@@ -208,9 +211,17 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
                     &mut table_writer,
                     layout,
                     &sized_output.trace,
+                    &mut sorted_sections,
                 )
                 .with_context(|| format!("Failed copying from {file} to output file"))?;
             }
+
+            sorted_sections.flush::<A>(
+                &mut buffers,
+                &mut table_writer,
+                layout,
+                &sized_output.trace,
+            )?;
             table_writer
                 .validate_empty(&group.mem_sizes)
                 .with_context(|| format!("validate_empty failed for {group}"))?;
@@ -335,9 +346,12 @@ fn write_file<A: Arch>(
     table_writer: &mut TableWriter,
     layout: &Layout,
     trace: &TraceOutput,
+    sorted: &mut SortedSectionCollector,
 ) -> Result {
     match file {
-        FileLayout::Object(s) => write_object::<A>(s, buffers, table_writer, layout, trace)?,
+        FileLayout::Object(s) => {
+            write_object::<A>(s, buffers, table_writer, layout, trace, sorted)?
+        }
         FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, table_writer, layout)?,
         FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers, table_writer, layout)?,
         FileLayout::LinkerScript(s) => write_linker_script_state::<A>(s, table_writer, layout)?,
@@ -469,6 +483,92 @@ struct TableWriter<'layout, 'out> {
 
     dynamic: DynamicEntriesWriter<'out>,
     version_writer: VersionWriter<'out>,
+}
+
+#[derive(Default)]
+struct SortedSectionCollector<'data> {
+    init: Vec<PendingSortedSection<'data>>,
+    fini: Vec<PendingSortedSection<'data>>,
+}
+
+struct PendingSortedSection<'data> {
+    object: &'data ObjectLayout<'data>,
+    section: Section,
+    priority: u16,
+}
+
+impl<'data> SortedSectionCollector<'data> {
+    fn push(&mut self, object: &'data ObjectLayout<'data>, section: Section) -> Result<()> {
+        let sort_order = section
+            .sort_order
+            .expect("sorted sections should carry a sort order");
+        let header = object.object.section(section.index)?;
+        let name = object.object.section_name(header)?;
+        let priority = sorted_section_priority(name);
+
+        let entry = PendingSortedSection {
+            object,
+            section,
+            priority,
+        };
+
+        match sort_order {
+            SortOrder::Init => self.init.push(entry),
+            SortOrder::Fini => self.fini.push(entry),
+        }
+
+        Ok(())
+    }
+
+    fn flush<A: Arch>(
+        &mut self,
+        buffers: &mut OutputSectionPartMap<&mut [u8]>,
+        table_writer: &mut TableWriter,
+        layout: &Layout,
+        trace: &TraceOutput,
+    ) -> Result {
+        self.flush_order::<A>(&mut self.init, buffers, table_writer, layout, trace)?;
+        self.flush_order::<A>(&mut self.fini, buffers, table_writer, layout, trace)?;
+        Ok(())
+    }
+
+    fn flush_order<A: Arch>(
+        &mut self,
+        sections: &mut Vec<PendingSortedSection<'data>>,
+        buffers: &mut OutputSectionPartMap<&mut [u8]>,
+        table_writer: &mut TableWriter,
+        layout: &Layout,
+        trace: &TraceOutput,
+    ) -> Result {
+        if sections.is_empty() {
+            return Ok(());
+        }
+
+        sections.sort_by(|lhs, rhs| {
+            lhs.priority
+                .cmp(&rhs.priority)
+                .then_with(|| file_rank(lhs.object.file_id).cmp(&file_rank(rhs.object.file_id)))
+                .then_with(|| lhs.section.index.0.cmp(&rhs.section.index.0))
+        });
+
+        for entry in sections.iter() {
+            write_object_section::<A>(
+                entry.object,
+                layout,
+                &entry.section,
+                buffers,
+                table_writer,
+                trace,
+            )?;
+        }
+
+        sections.clear();
+        Ok(())
+    }
+}
+
+fn file_rank(file_id: crate::input_data::FileId) -> u64 {
+    ((file_id.group() as u64) << 32) | file_id.file() as u64
 }
 
 impl<'layout, 'out> TableWriter<'layout, 'out> {
@@ -1127,13 +1227,18 @@ fn write_object<A: Arch>(
     table_writer: &mut TableWriter,
     layout: &Layout,
     trace: &TraceOutput,
+    sorted: &mut SortedSectionCollector,
 ) -> Result {
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().trace_span_for_file(object.file_id);
     for sec in &object.sections {
         match sec {
             SectionSlot::Loaded(sec) => {
-                write_object_section::<A>(object, layout, sec, buffers, table_writer, trace)?;
+                if sec.sort_order.is_some() {
+                    sorted.push(object, *sec)?;
+                } else {
+                    write_object_section::<A>(object, layout, sec, buffers, table_writer, trace)?;
+                }
             }
             SectionSlot::LoadedDebugInfo(sec) => {
                 write_debug_section::<A>(object, layout, sec, buffers)?;

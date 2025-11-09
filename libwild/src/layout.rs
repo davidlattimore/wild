@@ -39,6 +39,8 @@ use crate::input_data::InputData;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionKind;
+use crate::layout_rules::SortOrder;
+use crate::layout_rules::sorted_section_priority;
 use crate::output_section_id;
 use crate::output_section_id::FILE_HEADER;
 use crate::output_section_id::OrderEvent;
@@ -146,7 +148,7 @@ pub fn compute<'data, A: Arch>(
     let ResolutionOutputs {
         groups,
         merged_strings,
-    } = resolved;
+    } = resolverome;
 
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
 
@@ -1435,6 +1437,7 @@ pub(crate) struct Section {
     pub(crate) size: u64,
     pub(crate) flags: ValueFlags,
     pub(crate) is_writable: bool,
+    pub(crate) sort_order: Option<SortOrder>,
 }
 
 #[derive(Debug)]
@@ -2793,6 +2796,7 @@ impl Section {
         object_state: &mut ObjectLayoutState,
         section_index: object::SectionIndex,
         part_id: PartId,
+        sort_order: Option<SortOrder>,
     ) -> Result<Section> {
         let size = object_state.object.section_size(header)?;
         let section = Section {
@@ -2801,6 +2805,7 @@ impl Section {
             size,
             flags: ValueFlags::empty(),
             is_writable: SectionFlags::from_header(header).contains(shf::WRITE),
+            sort_order,
         };
         Ok(section)
     }
@@ -4085,7 +4090,7 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result {
         let part_id = unloaded.part_id;
         let header = self.object.section(section_index)?;
-        let section = Section::create(header, self, section_index, part_id)?;
+        let section = Section::create(header, self, section_index, part_id, unloaded.sort_order)?;
 
         match self.relocations(section.index)? {
             RelocationList::Rela(relocations) => {
@@ -4237,7 +4242,7 @@ impl<'data> ObjectLayoutState<'data> {
         resources: &GraphResources<'data, '_>,
     ) -> Result {
         let header = self.object.section(section_index)?;
-        let section = Section::create(header, self, section_index, part_id)?;
+        let section = Section::create(header, self, section_index, part_id, None)?;
         if A::local_symbols_in_debug_info() {
             match self.relocations(section.index)? {
                 RelocationList::Rela(relocations) => self.load_debug_relocations::<A>(
@@ -4376,16 +4381,43 @@ impl<'data> ObjectLayoutState<'data> {
         let _file_span = resources.symbol_db.args.trace_span_for_file(self.file_id());
         let symbol_id_range = self.symbol_id_range();
 
-        let mut section_resolutions = Vec::with_capacity(self.sections.len());
-        for slot in &mut self.sections {
+        let mut section_resolutions = vec![SectionResolution::none(); self.sections.len()];
+
+        struct PendingSortedSection {
+            index: usize,
+            section: Section,
+            priority: u16,
+        }
+
+        let mut pending_init = Vec::new();
+        let mut pending_fini = Vec::new();
+
+        for (index, slot) in self.sections.iter_mut().enumerate() {
             let resolution = match slot {
                 SectionSlot::Loaded(sec) => {
-                    let part_id = sec.part_id;
-                    let address = *memory_offsets.get(part_id);
-                    // TODO: We probably need to be able to handle sections that are ifuncs and sections
-                    // that need a TLS GOT struct.
-                    *memory_offsets.get_mut(part_id) += sec.capacity();
-                    SectionResolution { address }
+                    if let Some(order) = sec.sort_order {
+                        let header = self.object.section(sec.index)?;
+                        let name = self.object.section_name(header)?;
+                        let priority = layout_rules::sorted_section_priority(name);
+
+                        let pending = PendingSortedSection {
+                            index,
+                            section: *sec,
+                            priority,
+                        };
+
+                        match order {
+                            SortOrder::Init => pending_init.push(pending),
+                            SortOrder::Fini => pending_fini.push(pending),
+                        }
+
+                        SectionResolution::none()
+                    } else {
+                        let part_id = sec.part_id;
+                        let address = *memory_offsets.get(part_id);
+                        *memory_offsets.get_mut(part_id) += sec.capacity();
+                        SectionResolution { address }
+                    }
                 }
                 &mut SectionSlot::LoadedDebugInfo(sec) => {
                     let address = *memory_offsets.get(sec.part_id);
@@ -4393,16 +4425,41 @@ impl<'data> ObjectLayoutState<'data> {
                     SectionResolution { address }
                 }
                 SectionSlot::EhFrameData(..) => {
-                    // References to symbols defined in .eh_frame are a bit weird, since it's a
-                    // section where we're GCing stuff, but crtbegin.o and crtend.o use them in
-                    // order to find the start and end of the whole .eh_frame section.
                     let address = *memory_offsets.get(part_id::EH_FRAME);
                     SectionResolution { address }
                 }
                 _ => SectionResolution::none(),
             };
-            section_resolutions.push(resolution);
+            section_resolutions[index] = resolution;
         }
+
+        fn process_pending(
+            pending: &mut Vec<PendingSortedSection>,
+            memory_offsets: &mut OutputSectionPartMap<u64>,
+            section_resolutions: &mut [SectionResolution],
+        ) -> Result<()> {
+            if pending.is_empty() {
+                return Ok(());
+            }
+
+            pending.sort_by(|lhs, rhs| {
+                lhs.priority
+                    .cmp(&rhs.priority)
+                    .then_with(|| lhs.index.cmp(&rhs.index))
+            });
+
+            for entry in pending.iter() {
+                let address = *memory_offsets.get(entry.section.part_id);
+                *memory_offsets.get_mut(entry.section.part_id) += entry.section.capacity();
+                section_resolutions[entry.index] = SectionResolution { address };
+            }
+
+            pending.clear();
+            Ok(())
+        }
+
+        process_pending(&mut pending_init, memory_offsets, &mut section_resolutions)?;
+        process_pending(&mut pending_fini, memory_offsets, &mut section_resolutions)?;
 
         for ((local_symbol_index, local_symbol), &flags) in self
             .object
