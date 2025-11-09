@@ -34,6 +34,8 @@ const _ASSERTS: () = {
 impl crate::arch::Arch for RiscV64 {
     type Relaxation = Relaxation;
 
+    const KIND: crate::arch::Architecture = crate::arch::Architecture::RISCV64;
+
     fn elf_header_arch_magic() -> u16 {
         object::elf::EM_RISCV
     }

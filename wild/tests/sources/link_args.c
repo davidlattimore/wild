@@ -34,6 +34,26 @@
 //#EnableLinker:lld
 //#LinkArgs:--no-mmap-output-file
 
+// The later --strip-all flag should override --strip-debug.
+//#Config:strip-debug-strip-all
+//#Object:runtime.c
+//#LinkArgs:--strip-debug --strip-all
+//#DiffIgnore:file-header.entry
+//#NoSym:_start
+
+// The later --strip-debug flag should override --strip-all.
+//#Config:strip-all-strip-debug
+//#Object:runtime.c
+//#LinkArgs:--strip-all --strip-debug
+//#ExpectSym:_start
+
+//#Config:retain-symbols-file
+//#Object:runtime.c
+//#LinkArgs:--retain-symbols-file ./link_args.retain
+//#ExpectSym:_start
+//#ExpectSym:exit_syscall
+//#NoSym:runtime_init
+
 #include "runtime.h"
 
 void _start(void) {

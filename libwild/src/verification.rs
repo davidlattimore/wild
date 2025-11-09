@@ -37,7 +37,7 @@ impl OffsetVerifier {
         output_order: &OutputOrder,
         files: &[FileLayout],
     ) -> Result {
-        if memory_offsets == &self.expected {
+        if memory_offsets == &self.expected && self.alignments_ok() {
             return Ok(());
         }
         let expected = offsets_by_key(&self.expected, output_order);
@@ -56,6 +56,15 @@ impl OffsetVerifier {
                     output_sections.display_name(part_id.output_section_id())
                 ));
             }
+            if !size.is_multiple_of(part_id.alignment().value())
+                && !should_ignore_alignment(*part_id)
+            {
+                problems.push(format!(
+                    "Part #{part_id} (section {} alignment: {alignment}) \
+                     has non aligned size: 0x{size:x}\n",
+                    output_sections.display_name(part_id.output_section_id())
+                ));
+            }
         }
 
         let files = files.iter().map(|f| f.to_string()).collect_vec();
@@ -66,6 +75,18 @@ impl OffsetVerifier {
             files.join("\n")
         );
     }
+
+    fn alignments_ok(&self) -> bool {
+        self.sizes.parts.iter().enumerate().all(|(i, size)| {
+            let part_id = PartId::from_usize(i);
+            size.is_multiple_of(part_id.alignment().value()) || should_ignore_alignment(part_id)
+        })
+    }
+}
+
+fn should_ignore_alignment(part_id: PartId) -> bool {
+    part_id.should_pack()
+        || [part_id::GNU_HASH, part_id::EH_FRAME, part_id::GNU_VERSION_D].contains(&part_id)
 }
 
 /// Clear offsets for sections where we never take the address of a section offset during

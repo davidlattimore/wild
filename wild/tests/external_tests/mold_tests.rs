@@ -140,7 +140,8 @@ fn should_skip_mold_test_by_toml(path: &Path) -> bool {
     false
 }
 
-// Some mold tests have names starting with `arch-`, indicating the target architecture they run on. Therefore, we have to implement a similar filter for the wild tests as well.
+// Some mold tests have names starting with `arch-`, indicating the target architecture they run on.
+// Therefore, we have to implement a similar filter for the wild tests as well.
 fn should_skip_mold_test_by_arch(path: &Path) -> bool {
     let file_name = path
         .file_name()

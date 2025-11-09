@@ -1,9 +1,13 @@
 # Releasing wild
 
-* Add release notes to `CHANGELOG.md`. The header for the release must be just the version number
-  that is going to be released.
-* Change version in `Cargo.toml`
+* Run `git cliff {previous version}...`
+* Copy output into `CHANGELOG.md` and edit as necessary.
+* The header for the release must be just the version number that is going to be released.
+  * If in doubt, run the awk command from `release.yml`
+* Change version in workspace `Cargo.toml`
+* Search for `version = "{old version}"` for other places to update.
 * Ensure that the above changes are merged into the main repository.
+* Sync local repo to upstream `main`. i.e. no uncommitted changes.
 * Run `cargo publish` for each package.
 * Trigger the github release action by pushing a tag for the version number.
 

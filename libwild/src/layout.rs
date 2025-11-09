@@ -14,6 +14,7 @@ use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::BuildIdOption;
 use crate::args::OutputKind;
+use crate::args::Strip;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::diagnostics::SymbolInfoPrinter;
@@ -82,6 +83,7 @@ use crate::value_flags::ValueFlags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
+use hashbrown::HashSet;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
@@ -291,6 +293,7 @@ pub fn compute<'data, A: Arch>(
         merged_strings,
         merged_string_start_addresses,
         has_static_tls: gc_outputs.has_static_tls,
+        has_variant_pcs: gc_outputs.has_variant_pcs,
         relocation_statistics,
         per_symbol_flags,
     })
@@ -381,18 +384,19 @@ fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) -> Result {
     epilogue.dynamic_symbol_definitions = dynamic_symbol_definitions;
     Ok(())
 }
-
 pub(crate) enum PropertyClass {
     // A bit in the output pr_data is set if it is set in any relocatable input.
-    // If all bits in the output pr_data field are zero, this property should be removed from output.
+    // If all bits in the output pr_data field are zero, this property should be removed from
+    // output.
     Or,
-    // A bit in the output pr_data field is set only if it is set in all relocatable input pr_data fields.
-    // If all bits in the output pr_data field are zero, this property should be removed from output.
+    // A bit in the output pr_data field is set only if it is set in all relocatable input pr_data
+    // fields. If all bits in the output pr_data field are zero, this property should be
+    // removed from output.
     And,
-    // A bit in the output pr_data field is set if it is set in any relocatable input pr_data fields
-    // and this property is present in all relocatable input files. When all bits in the output pr_data
-    // field are zero, this property should not be removed from output to indicate it has
-    // zero in all bits.
+    // A bit in the output pr_data field is set if it is set in any relocatable input pr_data
+    // fields and this property is present in all relocatable input files. When all bits in
+    // the output pr_data field are zero, this property should not be removed from output to
+    // indicate it has zero in all bits.
     AndOr,
 }
 
@@ -623,6 +627,7 @@ pub struct Layout<'data> {
     pub(crate) merged_string_start_addresses: MergedStringStartAddresses,
     pub(crate) relocation_statistics: OutputSectionMap<AtomicU64>,
     pub(crate) has_static_tls: bool,
+    pub(crate) has_variant_pcs: bool,
     pub(crate) per_symbol_flags: PerSymbolFlags,
 }
 
@@ -662,8 +667,8 @@ pub(crate) struct Resolution {
 
     pub(crate) dynamic_symbol_index: Option<NonZeroU32>,
 
-    /// The base GOT address for this resolution. For pointers to symbols the GOT entry will contain
-    /// a single pointer. For TLS variables there can be up to 3 pointers. If
+    /// The base GOT address for this resolution. For pointers to symbols the GOT entry will
+    /// contain a single pointer. For TLS variables there can be up to 3 pointers. If
     /// ValueFlags::GOT_TLS_OFFSET is set, then that will be the first value. If
     /// ValueFlags::GOT_TLS_MODULE is set, then there will be a pair of values (module and
     /// offset within module).
@@ -736,6 +741,9 @@ pub(crate) struct EpilogueLayoutState<'data> {
     internal_symbols: InternalSymbols<'data>,
 
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
+    // Counts dynsym entries that already exist before the epilogue adds new ones.
+    existing_dynsym_entries: u32,
+    sysv_hash_layout: Option<SysvHashLayout>,
     gnu_hash_layout: Option<GnuHashLayout>,
     gnu_property_notes: Vec<GnuProperty>,
     build_id_size: Option<usize>,
@@ -759,12 +767,20 @@ pub(crate) struct GnuHashLayout {
     pub(crate) symbol_base: u32,
 }
 
+#[derive(Default, Debug, Clone, Copy)]
+pub(crate) struct SysvHashLayout {
+    pub(crate) bucket_count: u32,
+    pub(crate) chain_count: u32,
+}
+
 #[derive(Debug)]
 pub(crate) struct EpilogueLayout<'data> {
     pub(crate) internal_symbols: InternalSymbols<'data>,
+    pub(crate) sysv_hash_layout: Option<SysvHashLayout>,
+    pub(crate) sysv_hash_size: Option<u64>,
     pub(crate) gnu_hash_layout: Option<GnuHashLayout>,
     pub(crate) dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
-    dynsym_start_index: u32,
+    pub(crate) dynsym_start_index: u32,
     pub(crate) gnu_property_notes: Vec<GnuProperty>,
     pub(crate) verdefs: Option<Vec<VersionDef>>,
     pub(crate) riscv_attributes: Vec<RiscVAttribute>,
@@ -1072,7 +1088,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         &mut self,
         _common: &mut CommonGroupState,
         symbol_id: SymbolId,
-        _resources: &GraphResources<'data, 'scope>,
+        resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
     ) -> Result {
         let local_index = symbol_id.to_offset(self.symbol_id_range());
@@ -1087,6 +1103,27 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
                     true;
             }
         }
+
+        // Check for VARIANT_PCS flag in AArch64 symbols
+        if A::KIND == crate::arch::Architecture::AArch64
+            && let Ok(sym) = self.object.symbols.symbol(object::SymbolIndex(local_index))
+            && (sym.st_other & crate::elf::STO_AARCH64_VARIANT_PCS) != 0
+        {
+            resources
+                .has_variant_pcs
+                .store(true, atomic::Ordering::Relaxed);
+        }
+
+        // Check for VARIANT_CC flag in RISC-V symbols
+        if A::KIND == crate::arch::Architecture::RISCV64
+            && let Ok(sym) = self.object.symbols.symbol(object::SymbolIndex(local_index))
+            && (sym.st_other & crate::elf::STO_RISCV_VARIANT_CC) != 0
+        {
+            resources
+                .has_variant_pcs
+                .store(true, atomic::Ordering::Relaxed);
+        }
+
         Ok(())
     }
 }
@@ -1403,9 +1440,10 @@ struct DynamicLayoutState<'data> {
 }
 
 struct CopyRelocationInfo {
-    /// The symbol ID for which we'll actually generate the copy relocation. Initially, this is just
-    /// the first symbol at a particular address for which we requested a copy relocation, then
-    /// later we may update it to point to a different symbol if that first symbol was weak.
+    /// The symbol ID for which we'll actually generate the copy relocation. Initially, this is
+    /// just the first symbol at a particular address for which we requested a copy relocation,
+    /// then later we may update it to point to a different symbol if that first symbol was
+    /// weak.
     symbol_id: SymbolId,
 
     is_weak: bool,
@@ -1490,8 +1528,8 @@ struct GraphResources<'data, 'scope> {
     /// A queue in which we store threads when they're idle so that other threads can wake them up
     /// when more work comes in. We always have one less slot in this array than the number of
     /// threads, since we never want all threads to be idle because that means we're finished. None
-    /// if we're running with a single thread - mostly because ArrayQueue panics if we try to create
-    /// an instance with zero size.
+    /// if we're running with a single thread - mostly because ArrayQueue panics if we try to
+    /// create an instance with zero size.
     idle_threads: Option<ArrayQueue<std::thread::Thread>>,
 
     done: AtomicBool,
@@ -1507,6 +1545,8 @@ struct GraphResources<'data, 'scope> {
     merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
 
     has_static_tls: AtomicBool,
+
+    has_variant_pcs: AtomicBool,
 
     uses_tlsld: AtomicBool,
 
@@ -1551,8 +1591,8 @@ enum WorkItem {
 struct SectionLoadRequest {
     file_id: FileId,
 
-    /// The offset of the section within the file's sections. i.e. the same as object::SectionIndex,
-    /// but stored as a u32 for compactness.
+    /// The offset of the section within the file's sections. i.e. the same as
+    /// object::SectionIndex, but stored as a u32 for compactness.
     section_index: u32,
 }
 
@@ -1925,7 +1965,8 @@ fn compute_segment_layout(
                     // RISCV_ATTRIBUTES segment.
                     if [NOTE, RISCV_ATTRIBUTES].contains(&section_info.ty) {
                     } else {
-                        // All segments should only cover sections that are allocated and have a non-zero address.
+                        // All segments should only cover sections that are allocated and have a
+                        // non-zero address.
                         ensure!(
                             section_layout.mem_offset != 0 || merge_target == FILE_HEADER,
                             "Missing memory offset for section {} present in a program segment.",
@@ -2143,6 +2184,7 @@ struct GcOutputs<'data> {
     group_states: Vec<GroupState<'data>>,
     sections_with_content: OutputSectionMap<bool>,
     has_static_tls: bool,
+    has_variant_pcs: bool,
 }
 
 #[tracing::instrument(skip_all, name = "Find required sections")]
@@ -2173,6 +2215,7 @@ fn find_required_sections<'data, A: Arch>(
         sections_with_content: output_sections.new_section_map(),
         merged_strings,
         has_static_tls: AtomicBool::new(false),
+        has_variant_pcs: AtomicBool::new(false),
         uses_tlsld: AtomicBool::new(false),
         start_stop_sections: output_sections.new_section_map(),
         input_data,
@@ -2255,6 +2298,7 @@ fn find_required_sections<'data, A: Arch>(
         group_states,
         sections_with_content,
         has_static_tls: resources.has_static_tls.load(atomic::Ordering::Relaxed),
+        has_variant_pcs: resources.has_variant_pcs.load(atomic::Ordering::Relaxed),
     })
 }
 
@@ -2331,7 +2375,27 @@ impl<'data> GroupState<'data> {
         per_symbol_flags: &AtomicPerSymbolFlags,
     ) -> Result {
         for file_state in &mut self.files {
+            if matches!(file_state, FileLayoutState::Epilogue(_)) {
+                continue;
+            }
+
             file_state.finalise_sizes(
+                &mut self.common,
+                symbol_db,
+                output_sections,
+                per_symbol_flags,
+            )?;
+        }
+
+        // Finalise the epilogue after everything else so it sees the fully populated
+        // dynsym/dynstr accounting before it sizes hashes. We look it up explicitly instead
+        // of assuming it is placed last to avoid baking in ordering assumptions here.
+        if let Some(epilogue) = self
+            .files
+            .iter_mut()
+            .find(|file| matches!(file, FileLayoutState::Epilogue(_)))
+        {
+            epilogue.finalise_sizes(
                 &mut self.common,
                 symbol_db,
                 output_sections,
@@ -2343,7 +2407,7 @@ impl<'data> GroupState<'data> {
     }
 
     fn finalise_layout(
-        self,
+        mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
         resolutions_out: &mut sharded_vec_writer::Shard<Option<Resolution>>,
         resources: &FinaliseLayoutResources<'_, 'data>,
@@ -2354,6 +2418,18 @@ impl<'data> GroupState<'data> {
             .into_iter()
             .map(|file| file.finalise_layout(memory_offsets, resolutions_out, resources))
             .collect::<Result<Vec<_>>>()?;
+
+        if let Some(epilogue_layout) = files.iter().find_map(|file| {
+            if let FileLayout::Epilogue(epilogue) = file {
+                Some(epilogue)
+            } else {
+                None
+            }
+        }) {
+            let size = epilogue_layout.sysv_hash_size.unwrap_or(0);
+            *self.common.mem_sizes.get_mut(part_id::SYSV_HASH) = size;
+        }
+
         let strtab_start_offset = self
             .common
             .finalise_layout(memory_offsets, resources.section_layouts);
@@ -2848,8 +2924,10 @@ fn process_relocation<A: Arch>(
     let mut next_modifier = RelocationModifier::Normal;
     if let Some(local_sym_index) = rel.symbol() {
         let symbol_db = resources.symbol_db;
-        let symbol_id = symbol_db.definition(object.symbol_id_range.input_to_id(local_sym_index));
-        let local_flags = resources.local_flags_for_symbol(symbol_id);
+        let local_symbol_id = object.symbol_id_range.input_to_id(local_sym_index);
+        let symbol_id = symbol_db.definition(local_symbol_id);
+        let mut flags = resources.local_flags_for_symbol(symbol_id);
+        flags.merge(resources.local_flags_for_symbol(local_symbol_id));
         let rel_offset = rel.r_offset;
         let r_type = rel.r_type;
         let section_flags = SectionFlags::from_header(section);
@@ -2858,7 +2936,7 @@ fn process_relocation<A: Arch>(
             r_type,
             object.object.raw_section_data(section)?,
             rel_offset,
-            local_flags,
+            flags,
             args.output_kind(),
             section_flags,
             true,
@@ -2886,14 +2964,14 @@ fn process_relocation<A: Arch>(
             if needs_tlsld(rel_info.kind) && !resources.uses_tlsld.load(atomic::Ordering::Relaxed) {
                 resources.uses_tlsld.store(true, atomic::Ordering::Relaxed);
             }
-        } else if flags_to_add.needs_direct() && local_flags.is_interposable() {
+        } else if flags_to_add.needs_direct() && flags.is_interposable() {
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_GENERAL, elf::RELA_ENTRY_SIZE);
-            } else if local_flags.is_function() {
+            } else if flags.is_function() {
                 // Create a PLT entry for the function and refer to that instead.
                 flags_to_add.remove(ValueFlags::DIRECT);
                 flags_to_add |= ValueFlags::PLT | ValueFlags::GOT;
-            } else if !local_flags.is_absolute() {
+            } else if !flags.is_absolute() {
                 match args.copy_relocations {
                     crate::args::CopyRelocations::Allowed => {
                         flags_to_add |= ValueFlags::COPY_RELOCATION;
@@ -2912,7 +2990,7 @@ fn process_relocation<A: Arch>(
             }
         } else if args.is_relocatable()
             && rel_info.kind == RelocationKind::Absolute
-            && (local_flags.is_address() | local_flags.is_ifunc())
+            && (flags.is_address() | flags.is_ifunc())
         {
             if section_is_writable {
                 common.allocate(part_id::RELA_DYN_RELATIVE, elf::RELA_ENTRY_SIZE);
@@ -2938,7 +3016,7 @@ fn process_relocation<A: Arch>(
                 object.object.symbol(local_sym_index)?,
                 object.file_id,
                 symbol_db.file_id_for_symbol(symbol_id),
-                local_flags,
+                flags,
                 args,
             ) {
                 let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
@@ -3107,7 +3185,7 @@ impl<'data> PreludeLayoutState<'data> {
 
         // The first entry in the symbol table must be null. Similarly, the first string in the
         // strings table must be empty.
-        if !resources.symbol_db.args.strip_all {
+        if !resources.symbol_db.args.strip_all() {
             common.allocate(part_id::SYMTAB_LOCAL, size_of::<elf::SymtabEntry>() as u64);
             common.allocate(part_id::STRTAB, 1);
         }
@@ -3245,7 +3323,7 @@ impl<'data> PreludeLayoutState<'data> {
         symbol_db: &SymbolDb<'_>,
         extra_sizes: &mut OutputSectionPartMap<u64>,
     ) -> Result<(), Error> {
-        if symbol_db.args.strip_all {
+        if symbol_db.args.strip_all() {
             return Ok(());
         }
 
@@ -3608,6 +3686,38 @@ impl<'data> EpilogueLayoutState<'data> {
         };
     }
 
+    // TODO: `existing_dynsym_entries` will eventually match the `dynsym_start_index` calculated
+    // within `EpilogueLayoutState::finalise_layout`. However, we need the number of existing
+    // entries before finalizing the layout, so a more efficient design would be ideal.
+    fn update_existing_dynsym_entries(
+        &mut self,
+        symbol_db: &SymbolDb<'data>,
+        per_symbol_flags: &AtomicPerSymbolFlags,
+    ) -> Result {
+        let mut defined_symbols = HashSet::with_capacity(self.dynamic_symbol_definitions.len());
+        for def in &self.dynamic_symbol_definitions {
+            defined_symbols.insert(def.symbol_id);
+        }
+
+        let mut entries: u64 = 1; // Account for the null dynsym entry.
+        for index in 0..symbol_db.num_symbols() {
+            let symbol_id = SymbolId::from_usize(index);
+            if !symbol_db.is_canonical(symbol_id) || defined_symbols.contains(&symbol_id) {
+                continue;
+            }
+
+            let flags = per_symbol_flags.flags_for_symbol(symbol_id);
+            if flags.is_dynamic() && flags.has_resolution() {
+                entries += 1;
+            }
+        }
+
+        self.existing_dynsym_entries =
+            u32::try_from(entries).context("Too many dynamic symbols for .hash")?;
+
+        Ok(())
+    }
+
     fn new(input_state: ResolvedEpilogue<'data>) -> EpilogueLayoutState<'data> {
         EpilogueLayoutState {
             file_id: input_state.file_id,
@@ -3620,6 +3730,8 @@ impl<'data> EpilogueLayoutState<'data> {
                 start_symbol_id: input_state.start_symbol_id,
             },
             dynamic_symbol_definitions: Default::default(),
+            existing_dynsym_entries: 0,
+            sysv_hash_layout: None,
             gnu_hash_layout: None,
             gnu_property_notes: Default::default(),
             build_id_size: Default::default(),
@@ -3692,7 +3804,7 @@ impl<'data> EpilogueLayoutState<'data> {
         symbol_db: &SymbolDb<'data>,
         per_symbol_flags: &AtomicPerSymbolFlags,
     ) -> Result {
-        if !symbol_db.args.strip_all {
+        if !symbol_db.args.strip_all() {
             self.internal_symbols.allocate_symbol_table_sizes(
                 &mut common.mem_sizes,
                 symbol_db,
@@ -3720,7 +3832,13 @@ impl<'data> EpilogueLayoutState<'data> {
                 common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
             }
 
-            self.allocate_gnu_hash(common);
+            if symbol_db.args.hash_style.includes_gnu() {
+                self.allocate_gnu_hash(common);
+            }
+            if symbol_db.args.hash_style.includes_sysv() {
+                self.update_existing_dynsym_entries(symbol_db, per_symbol_flags)?;
+                self.allocate_sysv_hash(common)?;
+            }
 
             common.allocate(
                 part_id::DYNSTR,
@@ -3825,6 +3943,33 @@ impl<'data> EpilogueLayoutState<'data> {
         self.gnu_hash_layout = Some(gnu_hash_layout);
     }
 
+    fn allocate_sysv_hash(&mut self, common: &mut CommonGroupState) -> Result {
+        let num_defs = self.dynamic_symbol_definitions.len();
+        if num_defs == 0 {
+            return Ok(());
+        }
+
+        let bucket_count = ((num_defs / 2).max(1)).next_power_of_two() as u32;
+        let num_defs_u32 = u32::try_from(num_defs).context("Too many dynamic symbols for .hash")?;
+        let base_entries = self.existing_dynsym_entries.max(1);
+        let chain_count = base_entries
+            .checked_add(num_defs_u32)
+            .context("Too many dynamic symbols for .hash")?;
+
+        let words = 2u64 + u64::from(bucket_count) + u64::from(chain_count);
+        let allocation = words
+            .checked_mul(size_of::<u32>() as u64)
+            .context("Overflow allocating .hash")?;
+
+        common.allocate(part_id::SYSV_HASH, allocation);
+        self.sysv_hash_layout = Some(SysvHashLayout {
+            bucket_count,
+            chain_count,
+        });
+
+        Ok(())
+    }
+
     fn finalise_layout(
         mut self,
         memory_offsets: &mut OutputSectionPartMap<u64>,
@@ -3846,6 +3991,26 @@ impl<'data> EpilogueLayoutState<'data> {
         if let Some(gnu_hash_layout) = self.gnu_hash_layout.as_mut() {
             gnu_hash_layout.symbol_base = dynsym_start_index;
         }
+
+        if let Some(sysv_hash_layout) = self.sysv_hash_layout.as_mut() {
+            let additional = u32::try_from(self.dynamic_symbol_definitions.len())
+                .context("Too many dynamic symbols for .hash")?;
+            sysv_hash_layout.chain_count = dynsym_start_index
+                .checked_add(additional)
+                .context("Too many dynamic symbols for .hash")?;
+        }
+
+        let sysv_hash_size = if let Some(sysv_hash_layout) = &self.sysv_hash_layout {
+            let words = 2u64
+                .checked_add(u64::from(sysv_hash_layout.bucket_count))
+                .and_then(|v| v.checked_add(u64::from(sysv_hash_layout.chain_count)))
+                .context("Too many dynamic symbols for .hash")?;
+            let size = words * size_of::<u32>() as u64;
+            memory_offsets.increment(part_id::SYSV_HASH, size);
+            Some(size)
+        } else {
+            None
+        };
 
         memory_offsets.increment(
             part_id::DYNSYM,
@@ -3879,6 +4044,8 @@ impl<'data> EpilogueLayoutState<'data> {
         let riscv_attributes_length = self.riscv_attributes_section_size() as u32;
         Ok(EpilogueLayout {
             internal_symbols: self.internal_symbols,
+            sysv_hash_layout: self.sysv_hash_layout,
+            sysv_hash_size,
             gnu_hash_layout: self.gnu_hash_layout,
             dynamic_symbol_definitions: self.dynamic_symbol_definitions,
             dynsym_start_index,
@@ -4054,7 +4221,8 @@ impl<'data> ObjectLayoutState<'data> {
                 self.load_section::<A>(common, queue, *unloaded, section_index, resources)?;
             }
             SectionSlot::UnloadedDebugInfo(part_id) => {
-                // On RISC-V, the debug info sections contain relocations to local symbols (e.g. labels).
+                // On RISC-V, the debug info sections contain relocations to local symbols (e.g.
+                // labels).
                 self.load_debug_section::<A>(common, queue, *part_id, section_index, resources)?;
             }
             SectionSlot::Discard => {
@@ -4310,7 +4478,7 @@ impl<'data> ObjectLayoutState<'data> {
         per_symbol_flags: &AtomicPerSymbolFlags,
     ) {
         common.mem_sizes.resize(output_sections.num_parts());
-        if !symbol_db.args.strip_all {
+        if !symbol_db.args.strip_all() {
             self.allocate_symtab_space(common, symbol_db, per_symbol_flags);
         }
         let output_kind = symbol_db.args.output_kind();
@@ -4415,6 +4583,8 @@ impl<'data> ObjectLayoutState<'data> {
                     } else {
                         let part_id = sec.part_id;
                         let address = *memory_offsets.get(part_id);
+                        // TODO: We probably need to be able to handle sections that are ifuncs and
+                        // sections that need a TLS GOT struct.
                         *memory_offsets.get_mut(part_id) += sec.capacity();
                         SectionResolution { address }
                     }
@@ -4708,6 +4878,12 @@ impl<'data> SymbolCopyInfo<'data> {
         if name.is_empty()
             || (sym.is_local() && name.starts_with(b".L"))
             || is_mapping_symbol_name(name)
+        {
+            return None;
+        }
+
+        if let Strip::Retain(retain) = &symbol_db.args.strip
+            && !retain.contains(name)
         {
             return None;
         }
@@ -5332,8 +5508,8 @@ fn layout_section_parts(
                         let section_flags = output_sections.section_flags(merge_target);
                         let mem_size = part_size;
 
-                        // Note, we align up even if our size is zero, otherwise our section will start at an
-                        // unaligned address.
+                        // Note, we align up even if our size is zero, otherwise our section will
+                        // start at an unaligned address.
                         file_offset = alignment.align_up_usize(file_offset);
 
                         if section_flags.contains(shf::ALLOC) {
@@ -5615,7 +5791,7 @@ impl<'data> DynamicLayoutState<'data> {
             let st_size = symbol.st_size(LittleEndian);
             common.allocate(
                 output_section_id::BSS.part_id_with_alignment(alignment),
-                st_size,
+                alignment.align_up(st_size),
             );
 
             // Allocate space required for the copy relocation itself.
@@ -5910,7 +6086,7 @@ fn assign_copy_relocation_address(
     let alignment = Alignment::new(file.section_alignment(section)?)?;
     let bss = memory_offsets.get_mut(output_section_id::BSS.part_id_with_alignment(alignment));
     let a = *bss;
-    *bss += local_symbol.st_size(LittleEndian);
+    *bss += alignment.align_up(local_symbol.st_size(LittleEndian));
     Ok(a)
 }
 

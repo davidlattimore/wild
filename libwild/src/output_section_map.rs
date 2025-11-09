@@ -54,6 +54,13 @@ impl<T> OutputSectionMap<T> {
             .for_each(|(k, v)| cb(OutputSectionId::from_usize(k), v));
     }
 
+    pub(crate) fn for_each_mut(&mut self, mut cb: impl FnMut(OutputSectionId, &mut T)) {
+        self.values
+            .iter_mut()
+            .enumerate()
+            .for_each(|(k, v)| cb(OutputSectionId::from_usize(k), v));
+    }
+
     pub(crate) fn try_for_each(&self, mut cb: impl FnMut(OutputSectionId, &T) -> Result) -> Result {
         self.values
             .iter()

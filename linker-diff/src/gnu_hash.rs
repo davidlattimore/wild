@@ -59,8 +59,8 @@ pub(crate) fn check_object(obj: &Binary) -> Result {
             )
         })?;
 
-    // For a simple binary, both LLD and BFD create .gnu.hash section that does not contain any chain:
-    // Contents of section .gnu.hash:
+    // For a simple binary, both LLD and BFD create .gnu.hash section that does not contain any
+    // chain: Contents of section .gnu.hash:
     // objdump -s -j .gnu.hash
     // 4003e8 01000000 01000000 01000000 00000000
     // 4003f8 00000000 00000000 00000000

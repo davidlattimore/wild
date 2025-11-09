@@ -25,3 +25,8 @@ __attribute__((weak, alias("s3"))) extern int w3;
 
 int get_s3(void) { return s3; }
 int get_w3(void) { return w3; }
+
+// An int that has 64-byte alignment. Notably, the size here is smaller than the
+// alignment. This is to verify that we correctly handle the alignment when
+// performing a copy relocation.
+__attribute__((aligned(0x100))) int aligned_int = 700;

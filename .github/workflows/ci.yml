@@ -162,7 +162,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         targets: riscv64gc-unknown-linux-gnu
-    - run: sudo apt-get install gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
+    - run: sudo apt-get update && sudo apt-get install gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
     - run: cp .cargo/config.toml.cross-riscv .cargo/config.toml
     - run: cargo build --target riscv64gc-unknown-linux-gnu
 
@@ -174,7 +174,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Spell Check Repo
-        uses: crate-ci/typos@v1.38.1
+        uses: crate-ci/typos@v1.39.0
 
   calc-matrix:
     name: Find Nix checks

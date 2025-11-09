@@ -46,8 +46,7 @@ pub struct Args {
     pub(crate) output: Arc<Path>,
     pub(crate) dynamic_linker: Option<Box<Path>>,
     pub num_threads: Option<NonZeroUsize>,
-    pub(crate) strip_all: bool,
-    pub(crate) strip_debug: bool,
+    pub(crate) strip: Strip,
     pub(crate) prepopulate_maps: bool,
     pub(crate) sym_info: Option<String>,
     pub(crate) merge_strings: bool,
@@ -103,6 +102,7 @@ pub struct Args {
     pub(crate) got_plt_syms: bool,
     pub(crate) b_symbolic: BSymbolicKind,
     pub(crate) relax: bool,
+    pub(crate) hash_style: HashStyle,
     pub(crate) unresolved_symbols: UnresolvedSymbols,
     pub(crate) error_unresolved_symbols: bool,
     pub(crate) allow_multiple_definitions: bool,
@@ -118,6 +118,14 @@ pub struct Args {
     pub(crate) numeric_experiments: Vec<Option<u64>>,
 
     jobserver_client: Option<Client>,
+}
+
+#[derive(Debug)]
+pub(crate) enum Strip {
+    Nothing,
+    Debug,
+    All,
+    Retain(HashSet<Vec<u8>>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -162,6 +170,23 @@ pub(crate) enum OutputKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HashStyle {
+    Gnu,
+    Sysv,
+    Both,
+}
+
+impl HashStyle {
+    pub(crate) const fn includes_gnu(self) -> bool {
+        matches!(self, HashStyle::Gnu | HashStyle::Both)
+    }
+
+    pub(crate) const fn includes_sysv(self) -> bool {
+        matches!(self, HashStyle::Sysv | HashStyle::Both)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RelocationModel {
     NonRelocatable,
     Relocatable,
@@ -185,8 +210,8 @@ pub(crate) enum FileWriteMode {
 
     /// The existing output file, if any, will be edited in-place. Any hard links to the file will
     /// update accordingly. If the file is locked due to currently being executed, then our write
-    /// will fail.
-    UpdateInPlace,
+    /// will fail. Specified indicates whether the mode was explicitly specified by the user or not.
+    UpdateInPlace { specified: bool },
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -208,8 +233,8 @@ pub struct Modifiers {
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct Input {
     pub(crate) spec: InputSpec,
-    /// A directory to search first. Only present when the input came from a linker script, in which
-    /// case this is the directory containing the linker script.
+    /// A directory to search first. Only present when the input came from a linker script, in
+    /// which case this is the directory containing the linker script.
     pub(crate) search_first: Option<PathBuf>,
     pub(crate) modifiers: Modifiers,
 }
@@ -284,7 +309,8 @@ const SILENTLY_IGNORED_FLAGS: &[&str] = &[
 const SILENTLY_IGNORED_SHORT_FLAGS: &[&str] = &[
     "(",
     ")",
-    // On Illumos, the Clang driver inserts a meaningless -C flag before calling any non-GNU ld linker.
+    // On Illumos, the Clang driver inserts a meaningless -C flag before calling any non-GNU ld
+    // linker.
     #[cfg(target_os = "illumos")]
     "C",
 ];
@@ -324,12 +350,12 @@ impl Default for Args {
             output_kind: None,
             time_phase_options: None,
             num_threads: None,
-            strip_all: false,
-            strip_debug: false,
-            // For now, we default to --gc-sections. This is different to other linkers, but other than
-            // being different, there doesn't seem to be any downside to doing this. We don't currently do
-            // any less work if we're not GCing sections, but do end up writing more, so --no-gc-sections
-            // will almost always be as slow or slower than --gc-sections. For that reason, the latter is
+            strip: Strip::Nothing,
+            // For now, we default to --gc-sections. This is different to other linkers, but other
+            // than being different, there doesn't seem to be any downside to doing
+            // this. We don't currently do any less work if we're not GCing sections,
+            // but do end up writing more, so --no-gc-sections will almost always be as
+            // slow or slower than --gc-sections. For that reason, the latter is
             // probably a good default.
             gc_sections: true,
             prepopulate_maps: false,
@@ -380,6 +406,7 @@ impl Default for Args {
             export_list_path: None,
             got_plt_syms: false,
             relax: true,
+            hash_style: HashStyle::Both,
             jobserver_client: None,
             available_threads: NonZeroUsize::new(1).unwrap(),
             unresolved_symbols: UnresolvedSymbols::ReportAll,
@@ -439,6 +466,13 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
     if args.output_kind() == OutputKind::SharedObject {
         args.copy_relocations =
             CopyRelocations::Disallowed(CopyRelocationsDisabledReason::SharedObject);
+    }
+
+    // GNU ld turns static relocatable executables into dynamic ones if dynamic linker is set.
+    if args.dynamic_linker.is_some()
+        && args.output_kind() == OutputKind::StaticExecutable(RelocationModel::Relocatable)
+    {
+        args.output_kind = Some(OutputKind::DynamicExecutable(args.relocation_model));
     }
 
     if !args.unrecognized_options.is_empty() {
@@ -549,7 +583,7 @@ impl Args {
     }
 
     pub(crate) fn output_kind(&self) -> OutputKind {
-        self.output_kind.unwrap_or({
+        self.output_kind.unwrap_or_else(|| {
             if self.is_dynamic_executable.load(Ordering::Relaxed) {
                 OutputKind::DynamicExecutable(self.relocation_model)
             } else {
@@ -612,6 +646,14 @@ impl Args {
             .copied()
             .flatten()
             .unwrap_or(default)
+    }
+
+    pub(crate) fn strip_all(&self) -> bool {
+        matches!(self.strip, Strip::All)
+    }
+
+    pub(crate) fn strip_debug(&self) -> bool {
+        matches!(self.strip, Strip::All | Strip::Debug)
     }
 }
 
@@ -1488,8 +1530,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .short("s")
         .help("Strip all symbols")
         .execute(|args, _modifier_stack| {
-            args.strip_all = true;
-            args.strip_debug = true;
+            args.strip = Strip::All;
             Ok(())
         });
 
@@ -1499,7 +1540,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .short("S")
         .help("Strip debug symbols")
         .execute(|args, _modifier_stack| {
-            args.strip_debug = true;
+            args.strip = Strip::Debug;
             Ok(())
         });
 
@@ -2065,10 +2106,42 @@ fn setup_argument_parser() -> ArgumentParser {
         .declare_with_param()
         .long("hash-style")
         .help("Set hash style")
-        .execute(|_args, _modifier_stack, value| {
-            if value != "gnu" && value != "both" {
-                bail!("Unsupported hash-style `{value}`");
-            }
+        .execute(|args, _modifier_stack, value| {
+            args.hash_style = match value {
+                "gnu" => HashStyle::Gnu,
+                "sysv" => HashStyle::Sysv,
+                "both" => HashStyle::Both,
+                _ => bail!("Unknown hash-style `{value}`"),
+            };
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("retain-symbols-file")
+        .help(
+            "Filter symtab to contain only symbols listed in the supplied file. \
+            One symbol per line.",
+        )
+        .execute(|args, _modifier_stack, value| {
+            // The performance this flag is not especially optimised. For one, we copy each string
+            // to the heap. We also do two lookups in the hashset for each symbol. This is a pretty
+            // obscure flag that we don't expect to be used much, so at this stage, it doesn't seem
+            // worthwhile to optimise it.
+            let contents = std::fs::read_to_string(value)
+                .with_context(|| format!("Failed to read `{value}`"))?;
+            args.strip = Strip::Retain(
+                contents
+                    .lines()
+                    .filter_map(|l| {
+                        if l.is_empty() {
+                            None
+                        } else {
+                            Some(l.as_bytes().to_owned())
+                        }
+                    })
+                    .collect(),
+            );
             Ok(())
         });
 
@@ -2199,7 +2272,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("update-in-place")
         .help("Update file in place")
         .execute(|args, _modifier_stack| {
-            args.file_write_mode = Some(FileWriteMode::UpdateInPlace);
+            args.file_write_mode = Some(FileWriteMode::UpdateInPlace { specified: true });
             Ok(())
         });
 

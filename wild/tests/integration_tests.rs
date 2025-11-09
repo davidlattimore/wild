@@ -998,7 +998,11 @@ impl ProgramInputs {
 
         let link_output = linker.link(self.name(), &inputs, config, cross_arch)?;
 
-        if config.test_update_in_place && matches!(linker, Linker::Wild) {
+        if config.test_update_in_place
+            && matches!(linker, Linker::Wild)
+            && config.expect_errors.is_empty()
+            && (config.should_diff || config.should_run)
+        {
             self.run_update_in_place_test(&inputs, config, cross_arch)?;
         }
 
@@ -2009,12 +2013,12 @@ impl LinkCommand {
                         Compiler::Gcc(_) => {
                             match linker {
                                 Linker::Wild => {
-                                    // GCC unfortunately doesn't provide any way to use a custom linker.
-                                    // Their flag for switching linkers only accepts a hard-coded list
-                                    // of alternatives and the developers don't seem to want any
-                                    // equivalent to clang's --ld-path. The closest we can get is to put
-                                    // a file called "ld" in a directory, then pass "-B" and that
-                                    // directory.
+                                    // GCC unfortunately doesn't provide any way to use a custom
+                                    // linker. Their flag for switching linkers only accepts a
+                                    // hard-coded list of alternatives and the developers don't seem
+                                    // to want any equivalent to clang's --ld-path. The closest we
+                                    // can get is to put a file called "ld" in a directory, then
+                                    // pass "-B" and that directory.
                                     let bin_dir = wild_path().parent().unwrap();
                                     command.arg("-B").arg(bin_dir);
                                 }
@@ -2027,8 +2031,8 @@ impl LinkCommand {
                     }
 
                     if arch == Architecture::AArch64 {
-                        // Provide a workaround for ld.lld: error: unknown argument '--fix-cortex-a53-835769'
-                        // Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
+                        // Provide a workaround for ld.lld: error: unknown argument
+                        // '--fix-cortex-a53-835769' Bug link: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105941
                         command.arg("-mno-fix-cortex-a53-835769");
                     }
 
@@ -2255,7 +2259,7 @@ impl Assertions {
         let bytes = std::fs::read(path)?;
         let obj = ElfFile64::parse(bytes.as_slice())?;
 
-        self.verify_fild_kind(&obj)?;
+        self.verify_file_kind(&obj)?;
         verify_symbol_assertions(&obj, &self.expected_symtab_entries, obj.symbols())?;
         verify_symbol_assertions(&obj, &self.expected_dynsym_entries, obj.dynamic_symbols())?;
         self.verify_symbols_absent(obj.symbols(), ".symtab")?;
@@ -2335,7 +2339,7 @@ impl Assertions {
         Ok(())
     }
 
-    fn verify_fild_kind(&self, obj: &ElfFile64) -> Result {
+    fn verify_file_kind(&self, obj: &ElfFile64) -> Result {
         // For now, our file-kind identification is limited to just whether there's a dynamic symbol
         // table.
         if self.expect_dynamic {
@@ -2781,13 +2785,8 @@ fn run_with_config(
             let result = program_inputs
                 .build(linker, config, cross_arch)
                 .with_context(|| {
-                    let message = if config.expect_errors.is_empty() {
-                        "Failed"
-                    } else {
-                        "Unexpectedly succeeded"
-                    };
                     format!(
-                        "{message} to build program `{program_inputs}` \
+                        "Test failed: `{program_inputs}` \
                         with linker `{linker}` config `{}`",
                         config.name
                     )
@@ -2879,6 +2878,7 @@ fn integration_test(
         "custom-note.s",
         "eh_frame.c",
         "symbol-priority.c",
+        "hidden-ref.c",
         "trivial_asm.s",
         "non-alloc.s",
         "gnu-unique.c",
@@ -2923,9 +2923,10 @@ fn integration_test(
         "lto-undefined.c",
         "symbol-version-symver.c",
         "symbol-version-symver-error.c",
-        "args-precedence.c",
+        "output-kind.c",
         "entry-in-shared.c",
-        "alignment.c"
+        "alignment.c",
+        "hash-style.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),

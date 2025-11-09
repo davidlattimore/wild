@@ -53,7 +53,7 @@ jobs:
     - name: Extract release notes
       shell: bash
       run: |
-        awk "/# ${GITHUB_REF_NAME}/{flag=1; next} /^$/{flag=0} flag" CHANGELOG.md >REL.md
+        awk "/## ${GITHUB_REF_NAME}/{flag=1; next} /^## / && flag{exit} flag" CHANGELOG.md >REL.md
 
     - name: Build stage1
       run: cargo build --release

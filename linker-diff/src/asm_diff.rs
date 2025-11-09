@@ -124,8 +124,8 @@ pub(crate) fn report_section_diffs<A: Arch>(report: &mut Report, binaries: &[Bin
     let mut section_ids_to_process = matched_sections
         .keys()
         .copied()
-        // Sort sections so that we process sections in a deterministic order, since that affects our
-        // output order.
+        // Sort sections so that we process sections in a deterministic order, since that affects
+        // our output order.
         .sorted()
         .collect_vec();
 
@@ -388,9 +388,10 @@ impl<'data, A: Arch> RelaxationGroup<'data, A> {
             if let RelaxationMatchResult::Matched(m) = result
                 && let Some(alt_r_type) = m.relaxation.alt_r_type
             {
-                // Some relaxations cannot be identified purely by the instruction bytes. For example
-                // relaxing a PLT32 to a PC32, the instruction bytes are left the same. All that differs is
-                // whether we now point to the PLT or not.
+                // Some relaxations cannot be identified purely by the instruction bytes. For
+                // example relaxing a PLT32 to a PC32, the instruction bytes are
+                // left the same. All that differs is whether we now point to the
+                // PLT or not.
 
                 match (
                     reference.verify_consistent_with_r_type(m.relaxation.new_r_type),
@@ -1388,8 +1389,8 @@ struct ResolvedGroup<'data, A: Arch> {
     start: u64,
 
     /// The exclusive end of the bytes associated with this resolution. This should the the offset
-    /// of the first byte after the later of (a) any instructions modified by the relaxation and (b)
-    /// the bytes of the relocation offset.
+    /// of the first byte after the later of (a) any instructions modified by the relaxation and
+    /// (b) the bytes of the relocation offset.
     end: u64,
 
     trace: TraceOutput,
@@ -1726,14 +1727,14 @@ struct RelaxationTester<'data> {
 
     section_size: u64,
 
-    /// The exclusive offset of the end of the previous resolution. Bytes from this offset should be
-    /// checked when considering the next resolution.
+    /// The exclusive offset of the end of the previous resolution. Bytes from this offset should
+    /// be checked when considering the next resolution.
     previous_end: u64,
 
     /// Indicates whether the next relocation should be skipped. This is used when a relaxation
     /// replaces not only the current relocation, but the next one too. For example when relaxing
-    /// TLSGD to initial exec, the second relocation is a call to `__tls_get_addr` that is no longer
-    /// needed.
+    /// TLSGD to initial exec, the second relocation is a call to `__tls_get_addr` that is no
+    /// longer needed.
     next_modifier: RelocationModifier,
 
     bin: &'data Binary<'data>,
@@ -3352,9 +3353,9 @@ impl<'data> GotIndex<'data> {
                         }
                         (BasicValueKind::TlsGd, Some(symbol)) => Ok(Referent::TlsGd(*symbol)),
                         (BasicValueKind::TlsGd, None) => {
-                            // There's no symbol associated with the DTPMOD relocation, so it's a TLS
-                            // variable within the current DSO. Read the next word of data to get the
-                            // offset.
+                            // There's no symbol associated with the DTPMOD relocation, so it's a
+                            // TLS variable within the current DSO. Read
+                            // the next word of data to get the offset.
                             let tls_offset =
                                 read_word_at(bin.elf_file, got_address + size_of::<u64>() as u64)?
                                     .context("Short read after DTPMOD")?

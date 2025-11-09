@@ -7,3 +7,6 @@ int data1 __attribute__((weak, visibility(("hidden")))) = 0x100;
 int data3 __attribute__((weak, visibility(("protected")))) = 0x55;
 
 int data4 __attribute__((weak, visibility(("hidden")))) = 0x99;
+
+// This has default visibility here, but is hidden in the main file.
+int data5 = 0x101;

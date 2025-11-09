@@ -19,6 +19,9 @@ use std::fmt::Display;
 pub(crate) trait Arch {
     type Relaxation: Relaxation;
 
+    // Architecture identifier
+    const KIND: Architecture;
+
     // Get ELF header magic for the architecture.
     fn elf_header_arch_magic() -> u16;
 

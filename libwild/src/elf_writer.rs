@@ -241,7 +241,16 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
                 relocations, "resolved relocations");
         }
     }
+
+    fill_padding(section_buffers);
+
     Ok(())
+}
+
+fn fill_padding(mut section_buffers: OutputSectionMap<&mut [u8]>) {
+    section_buffers.for_each_mut(|_, out| {
+        out.fill(0);
+    });
 }
 
 #[tracing::instrument(skip_all, name = "Sort .eh_frame_hdr")]
@@ -477,8 +486,8 @@ struct TableWriter<'layout, 'out> {
     eh_frame_start_address: u64,
     eh_frame: &'out mut [u8],
 
-    /// Note, this is stored as raw bytes because it starts with an EhFrameHdr, but is then followed
-    /// by multiple EhFrameHdrEntry.
+    /// Note, this is stored as raw bytes because it starts with an EhFrameHdr, but is then
+    /// followed by multiple EhFrameHdrEntry.
     eh_frame_hdr: &'out mut [u8],
 
     dynamic: DynamicEntriesWriter<'out>,
@@ -647,7 +656,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         let mut got_address = got_address.get();
         let flags = res.flags;
 
-        // For TLS variables, we'll generally only have one of these, but we might have all 3 combinations.
+        // For TLS variables, we'll generally only have one of these, but we might have all 3
+        // combinations.
         if flags.needs_got_tls_offset()
             || flags.needs_got_tls_module()
             || flags.needs_got_tls_descriptor()
@@ -676,6 +686,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             || (flags.needs_export_dynamic() && res.flags.is_interposable())
                 && !res.flags.is_ifunc()
         {
+            *got_entry = 0;
             debug_assert_bail!(
                 *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
                 "Tried to write glob-dat with no allocation. {}",
@@ -688,6 +699,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 DynamicRelocationKind::GotEntry,
             )?;
         } else if res.flags.is_ifunc() {
+            *got_entry = 0;
             self.write_ifunc_relocation::<A>(res)?;
         } else {
             *got_entry = res.raw_value;
@@ -711,6 +723,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if res.flags.is_dynamic()
             || (res.flags.needs_export_dynamic() && res.flags.is_interposable())
         {
+            *got_entry = 0;
             return self.write_tpoff_relocation::<A>(got_address, res.dynamic_symbol_index()?, 0);
         }
         let address = res.raw_value;
@@ -719,7 +732,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             *got_entry = 0;
             return Ok(());
         }
-        // TLS_MODULE_BASE points at the end of the .tbss in some cases, thus relax the verification.
+        // TLS_MODULE_BASE points at the end of the .tbss in some cases, thus relax the
+        // verification.
         if !(self.tls.start..=self.tls.end).contains(&address) {
             bail!(
                 "GotTlsOffset resolves to address not in TLS segment 0x{:x}",
@@ -750,6 +764,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         if self.output_kind.is_executable() && !res.flags.is_dynamic() {
             *got_entry = elf::CURRENT_EXE_TLS_MOD;
         } else {
+            *got_entry = 0;
             let dynamic_symbol_index = res.dynamic_symbol_index.map_or(0, std::num::NonZero::get);
             debug_assert_bail!(
                 *compute_allocations(res, self.output_kind).get(part_id::RELA_DYN_GENERAL) > 0,
@@ -766,6 +781,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                     dynamic_symbol_index.get(),
                 )?;
             }
+            *offset_entry = 0;
             return Ok(());
         }
         // Convert the address to an offset within the TLS segment
@@ -782,8 +798,8 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
         got_address: u64,
     ) -> Result {
         // TLS descriptor occupies 2 entries
-        self.take_next_got_entry()?;
-        self.take_next_got_entry()?;
+        *self.take_next_got_entry()? = 0;
+        *self.take_next_got_entry()? = 0;
 
         ensure!(
             !self.output_kind.is_static_executable(),
@@ -829,6 +845,13 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
 
     /// Checks that we used all of the entries that we requested during layout.
     fn validate_empty(&self, mem_sizes: &OutputSectionPartMap<u64>) -> Result {
+        if !self.got.is_empty() {
+            return Err(excessive_allocation(
+                ".got",
+                self.got.len() as u64 * elf::GOT_ENTRY_SIZE,
+                *mem_sizes.get(part_id::GOT),
+            ));
+        }
         if !self.rela_dyn_relative.is_empty() {
             return Err(excessive_allocation(
                 ".rela.dyn (relative)",
@@ -858,6 +881,13 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
                 ".eh_frame_hdr",
                 self.eh_frame_hdr.len() as u64,
                 *mem_sizes.get(part_id::EH_FRAME_HDR),
+            ));
+        }
+        if !self.dynamic.out.is_empty() {
+            return Err(excessive_allocation(
+                ".dynamic",
+                std::mem::size_of_val(self.dynamic.out) as u64,
+                *mem_sizes.get(part_id::DYNAMIC),
             ));
         }
         Ok(())
@@ -1189,6 +1219,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         let name = RawSymbolName::parse(name).name;
         let string_offset = self.strtab_writer.write_str(name);
         entry.st_name.set(e, string_offset);
+        entry.st_info = 0;
         entry.st_other = 0;
         entry.st_shndx.set(e, shndx);
         entry.st_value.set(e, value);
@@ -1290,7 +1321,7 @@ fn write_object<A: Arch>(
         }
     }
 
-    if !layout.args().strip_all {
+    if !layout.args().strip_all() {
         write_symbols(object, &mut table_writer.debug_symbol_writer, layout)?;
     }
     Ok(())
@@ -2026,7 +2057,7 @@ fn apply_relocation<'data, A: Arch>(
     }
 
     let (resolution, symbol_index, local_symbol_id) = get_resolution(rel, object_layout, layout)?;
-    let flags = resolution.flags;
+    let flags = layout.flags_for_symbol(local_symbol_id);
     let mut next_modifier = RelocationModifier::Normal;
     let rel_info;
     let output_kind = layout.args().output_kind();
@@ -2100,8 +2131,9 @@ fn apply_relocation<'data, A: Arch>(
             .bitand(mask.symbol_plus_addend)
             .wrapping_sub(place.bitand(mask.place)),
         RelocationKind::RelativeRiscVLow12 => {
-            // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of relocations where the later
-            // one actually points to a label of the HI20 relocations and thus we need to find it. The relocation is typically
+            // The iterator is used for e.g. R_RISCV_PCREL_HI20 & R_RISCV_PCREL_LO12_I pair of
+            // relocations where the later one actually points to a label of the HI20
+            // relocations and thus we need to find it. The relocation is typically
             // right before the LO12_* relocation.
             ensure!(
                 addend == 0,
@@ -2538,7 +2570,7 @@ fn write_prelude<A: Arch>(
 
     write_plt_got_entries::<A>(prelude, layout, table_writer)?;
 
-    if !layout.args().strip_all {
+    if !layout.args().strip_all() {
         write_symbol_table_entries(prelude, &mut table_writer.debug_symbol_writer, layout)?;
     }
 
@@ -2633,7 +2665,7 @@ fn write_plt_got_entries<A: Arch>(
             // which is at the end of the TLS segment.
             raw_value = A::tp_offset_start(layout) - layout.tls_start_address();
         } else {
-            table_writer.take_next_got_entry()?;
+            *table_writer.take_next_got_entry()? = 0;
             table_writer.write_dtpmod_relocation::<A>(got_address.get(), 0)?;
         }
 
@@ -2659,9 +2691,7 @@ fn write_symbol_table_entries(
     layout: &Layout,
 ) -> Result {
     // Define symbol 0. This needs to be a null placeholder.
-    let entry = symbol_writer.define_symbol(true, 0, 0, 0, &[])?;
-    entry.st_info = 0;
-    entry.st_other = 0;
+    symbol_writer.define_symbol(true, 0, 0, 0, &[])?;
 
     let internal_symbols = &prelude.internal_symbols;
 
@@ -2723,12 +2753,13 @@ fn write_verdef(
             .vd_aux
             .set(e, size_of::<crate::elf::Verdef>() as u32);
         // Offset to the next entry, unless it's the last one
-        if i < verdefs.len() - 1 {
-            let offset = (size_of::<crate::elf::Verdef>()
-                + size_of::<crate::elf::Verdaux>() * aux_count as usize)
-                as u32;
-            verdef_out.vd_next.set(e, offset);
+        let offset = if i < verdefs.len() - 1 {
+            (size_of::<crate::elf::Verdef>()
+                + size_of::<crate::elf::Verdaux>() * aux_count as usize) as u32
+        } else {
+            0
         };
+        verdef_out.vd_next.set(e, offset);
 
         let verdaux = table_writer.version_writer.take_verdaux()?;
         verdaux.vda_name.set(e, name_offset);
@@ -2780,6 +2811,7 @@ fn write_epilogue_dynamic_entries(
     let inputs = DynamicEntryInputs {
         args: layout.args(),
         has_static_tls: layout.has_static_tls,
+        has_variant_pcs: layout.has_variant_pcs,
         section_layouts: &layout.section_layouts,
         section_part_layouts: &layout.section_part_layouts,
         non_addressable_counts: layout.non_addressable_counts,
@@ -2788,6 +2820,8 @@ fn write_epilogue_dynamic_entries(
     for writer in EPILOGUE_DYNAMIC_ENTRY_WRITERS {
         writer.write(&mut table_writer.dynamic, &inputs)?;
     }
+
+    table_writer.dynamic.write_unused();
 
     Ok(())
 }
@@ -2824,7 +2858,7 @@ fn write_epilogue<A: Arch>(
 
     write_internal_symbols_plt_got_entries::<A>(&epilogue.internal_symbols, table_writer, layout)?;
 
-    if !layout.args().strip_all {
+    if !layout.args().strip_all() {
         write_internal_symbols(
             &epilogue.internal_symbols,
             layout,
@@ -2834,6 +2868,7 @@ fn write_epilogue<A: Arch>(
     if layout.args().needs_dynamic() {
         write_epilogue_dynamic_entries(layout, table_writer, &mut epilogue_offsets)?;
     }
+    write_sysv_hash_table(epilogue, buffers)?;
     write_gnu_hash_tables(epilogue, buffers)?;
 
     write_dynamic_symbol_definitions(epilogue, table_writer, layout)?;
@@ -2853,6 +2888,13 @@ fn write_epilogue<A: Arch>(
             &epilogue_offsets,
         )?;
     }
+
+    // The actual build-id will be filled in later once all writing has completed. It's important
+    // that we fill it with zeros now however, since if we're overwriting an existing file, there
+    // might be other data there and it we don't zero it, then the build ID will be hashing that
+    // data.
+    let build_id_buffer = buffers.get_mut(part_id::NOTE_GNU_BUILD_ID);
+    build_id_buffer.fill(0);
 
     Ok(())
 }
@@ -2939,6 +2981,76 @@ fn write_riscv_attributes(
     Ok(())
 }
 
+fn write_sysv_hash_table(
+    epilogue: &EpilogueLayout,
+    buffers: &mut OutputSectionPartMap<&mut [u8]>,
+) -> Result {
+    let Some(sysv_hash_layout) = epilogue.sysv_hash_layout.as_ref() else {
+        return Ok(());
+    };
+
+    let bucket_count =
+        usize::try_from(sysv_hash_layout.bucket_count).context("Too many buckets for .hash")?;
+    let chain_count =
+        usize::try_from(sysv_hash_layout.chain_count).context("Too many chains for .hash")?;
+
+    if bucket_count == 0 || chain_count == 0 {
+        return Ok(());
+    }
+
+    let total_words = 2usize
+        .checked_add(bucket_count)
+        .and_then(|v| v.checked_add(chain_count))
+        .context("Insufficient .hash allocation")?;
+    let required_bytes = total_words
+        .checked_mul(std::mem::size_of::<u32>())
+        .context("Insufficient .hash allocation")?;
+
+    let buffer = buffers.get_mut(part_id::SYSV_HASH);
+    if buffer.len() < required_bytes {
+        return Err(error!("Insufficient .hash allocation"));
+    }
+    let buffer = &mut buffer[..required_bytes];
+    buffer.fill(0);
+
+    let (header_bytes, rest) = buffer.split_at_mut(2 * std::mem::size_of::<u32>());
+    header_bytes[..4].copy_from_slice(&sysv_hash_layout.bucket_count.to_le_bytes());
+    header_bytes[4..8].copy_from_slice(&sysv_hash_layout.chain_count.to_le_bytes());
+
+    let (buckets, rest) = object::slice_from_bytes_mut::<u32>(rest, bucket_count)
+        .map_err(|_| error!("Insufficient bytes for .hash buckets"))?;
+    let (chains, rest) = object::slice_from_bytes_mut::<u32>(rest, chain_count)
+        .map_err(|_| error!("Insufficient bytes for .hash chains"))?;
+
+    debug_assert!(rest.is_empty());
+
+    buckets.fill(0);
+    chains.fill(0);
+    let mut last_in_bucket: Vec<Option<usize>> = vec![None; bucket_count];
+
+    for (i, sym_def) in epilogue.dynamic_symbol_definitions.iter().enumerate() {
+        let additional = u32::try_from(i).context("Too many dynamic symbols for .hash")?;
+        let sym_index = epilogue
+            .dynsym_start_index
+            .checked_add(additional)
+            .context("Too many dynamic symbols for .hash")?;
+        let sym_index_usize =
+            usize::try_from(sym_index).context("Too many dynamic symbols for .hash")?;
+        let hash = object::elf::hash(sym_def.name);
+        let bucket = (hash % sysv_hash_layout.bucket_count) as usize;
+
+        if buckets[bucket] == 0 {
+            buckets[bucket] = sym_index;
+        } else {
+            let last = last_in_bucket[bucket].context("Invalid .hash bucket chain construction")?;
+            chains[last] = sym_index;
+        }
+        last_in_bucket[bucket] = Some(sym_index_usize);
+    }
+
+    Ok(())
+}
+
 fn write_gnu_hash_tables(
     epilogue: &EpilogueLayout,
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
@@ -2947,9 +3059,9 @@ fn write_gnu_hash_tables(
         return Ok(());
     };
 
-    let (header, rest) =
-        object::from_bytes_mut::<GnuHashHeader>(buffers.get_mut(part_id::GNU_HASH))
-            .map_err(|_| error!("Insufficient .gnu.hash allocation"))?;
+    let buffer = buffers.get_mut(part_id::GNU_HASH);
+    let (header, rest) = object::from_bytes_mut::<GnuHashHeader>(buffer)
+        .map_err(|_| error!("Insufficient .gnu.hash allocation"))?;
     let e = LittleEndian;
     header.bucket_count.set(e, gnu_hash_layout.bucket_count);
     header.bloom_shift.set(e, gnu_hash_layout.bloom_shift);
@@ -2962,10 +3074,15 @@ fn write_gnu_hash_tables(
     let (buckets, rest) =
         object::slice_from_bytes_mut::<u32>(rest, gnu_hash_layout.bucket_count as usize)
             .map_err(|_| error!("Insufficient bytes for .gnu.hash buckets"))?;
-    let (chains, _) =
+    let (chains, rest) =
         object::slice_from_bytes_mut::<u32>(rest, epilogue.dynamic_symbol_definitions.len())
             .map_err(|_| error!("Insufficient bytes for .gnu.hash chains"))?;
 
+    debug_assert_eq!(rest.len(), 0);
+
+    // Some buckets and bloom entries might not get written below, so fill with zeros to ensure
+    // deterministic output if we're editing in-place.
+    buckets.fill(0);
     bloom.fill(0);
 
     let mut sym_defs = epilogue.dynamic_symbol_definitions.iter().peekable();
@@ -3235,7 +3352,8 @@ fn write_internal_symbols(
         }
 
         // Mandatory RISC-V symbol defined by the default linker script as:
-        // __global_pointer$ = MIN(__SDATA_BEGIN__ + 0x800, MAX(__DATA_BEGIN__ + 0x800, __BSS_END__ - 0x800));
+        // __global_pointer$ = MIN(__SDATA_BEGIN__ + 0x800, MAX(__DATA_BEGIN__ + 0x800, __BSS_END__
+        // - 0x800));
         if symbol_name.bytes() == GLOBAL_POINTER_SYMBOL_NAME.as_bytes() {
             address += RISCV_TLS_DTV_OFFSET;
         }
@@ -3447,9 +3565,16 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
             .mem_size
             / size_of::<elf::Rela>() as u64
     }),
-    DynamicEntryWriter::new(object::elf::DT_GNU_HASH, |inputs| {
-        inputs.vma_of_section(output_section_id::GNU_HASH)
-    }),
+    DynamicEntryWriter::optional(
+        object::elf::DT_HASH,
+        |inputs| inputs.has_data_in_section(output_section_id::HASH),
+        |inputs| inputs.vma_of_section(output_section_id::HASH),
+    ),
+    DynamicEntryWriter::optional(
+        object::elf::DT_GNU_HASH,
+        |inputs| inputs.has_data_in_section(output_section_id::GNU_HASH),
+        |inputs| inputs.vma_of_section(output_section_id::GNU_HASH),
+    ),
     DynamicEntryWriter::optional(
         object::elf::DT_FLAGS,
         |inputs| inputs.dt_flags() != 0,
@@ -3459,6 +3584,16 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         object::elf::DT_FLAGS_1,
         |inputs| inputs.dt_flags_1() != 0,
         |inputs| inputs.dt_flags_1(),
+    ),
+    DynamicEntryWriter::optional(
+        crate::elf::DT_AARCH64_VARIANT_PCS,
+        |inputs| inputs.has_variant_pcs && inputs.args.arch == crate::arch::Architecture::AArch64,
+        |_inputs| 0,
+    ),
+    DynamicEntryWriter::optional(
+        crate::elf::DT_RISCV_VARIANT_CC,
+        |inputs| inputs.has_variant_pcs && inputs.args.arch == crate::arch::Architecture::RISCV64,
+        |_inputs| 0,
     ),
     DynamicEntryWriter::new(object::elf::DT_NULL, |_inputs| 0),
 ];
@@ -3472,6 +3607,7 @@ struct DynamicEntryWriter {
 struct DynamicEntryInputs<'layout> {
     args: &'layout Args,
     has_static_tls: bool,
+    has_variant_pcs: bool,
     section_layouts: &'layout OutputSectionMap<OutputRecordLayout>,
     section_part_layouts: &'layout OutputSectionPartMap<OutputRecordLayout>,
     non_addressable_counts: NonAddressableCounts,
@@ -3585,6 +3721,19 @@ impl<'out> DynamicEntriesWriter<'out> {
         entry.d_tag.set(e, u64::from(tag));
         entry.d_val.set(e, value);
         Ok(())
+    }
+
+    /// Some dynamic entries aren't used, but we currently allocate space for them anyway. This
+    /// makes sure that they're written with zeros.
+    fn write_unused(&mut self) {
+        loop {
+            let Some(entry) = self.out.split_off_first_mut() else {
+                return;
+            };
+            let e = LittleEndian;
+            entry.d_tag.set(e, 0);
+            entry.d_val.set(e, 0);
+        }
     }
 }
 
@@ -3870,9 +4019,11 @@ fn write_dynamic_file<A: Arch>(
                 aux_out.vna_other.set(e, output_version);
                 aux_out.vna_name.set(e, name_offset);
                 aux_out.vna_hash.set(e, sysv_name_hash);
+                aux_out.vna_flags.set(e, 0);
                 aux_index += 1;
             }
         }
+        debug_assert_eq!(aux_index, auxes.len());
     }
 
     Ok(())

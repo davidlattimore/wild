@@ -76,8 +76,8 @@ impl Converter {
         match self {
             Converter::None => Ok(ConvertedValue::Single(format!("0x{value:x}"))),
             Converter::SectionAddress => {
-                // Find the first non-empty, section at that address. Only return an empty section if
-                // there is no non-empty sections at that address.
+                // Find the first non-empty, section at that address. Only return an empty section
+                // if there is no non-empty sections at that address.
                 let mut empty_section_name = None;
                 for section in obj.elf_file.sections() {
                     let object::SectionFlags::Elf { sh_flags } = section.flags() else {
@@ -378,8 +378,13 @@ pub(crate) fn diff_array(
     let mut table = AsciiTable::default();
     let mut rows = Vec::new();
 
+    // Ensure all columns have the same width.
+    let column_width = (table.max_width() - 3) / binaries.len() - 3;
+
     for ((i, bin), values) in binaries.iter().enumerate().zip(arrays) {
-        table.column(i).set_header(&bin.name);
+        let column = table.column(i);
+        column.set_header(&bin.name);
+        column.set_max_width(column_width);
         if rows.len() < values.len() {
             rows.resize_with(values.len(), || vec![String::new(); i]);
         }

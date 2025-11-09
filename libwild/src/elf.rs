@@ -19,6 +19,7 @@ use object::read::elf::CrelIterator;
 use object::read::elf::FileHeader as _;
 use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
+use rayon::prelude::*;
 use std::borrow::Cow;
 use std::io::Read as _;
 use std::mem::offset_of;
@@ -139,6 +140,9 @@ impl RelocationSequence<'static> for Vec<Crel> {
 const _: () = assert!(!core::mem::needs_drop::<File>());
 
 impl<'data> File<'data> {
+    /// Threshold size for using parallel copy for section data copying.
+    const SECTION_PAR_COPY_SIZE_THRESHOLD: usize = 1_000_000;
+
     pub(crate) fn parse(data: &'data [u8], is_dynamic: bool) -> Result<Self> {
         let header = FileHeader::parse(data)?;
         let endian = header.endian()?;
@@ -249,6 +253,13 @@ impl<'data> File<'data> {
             decompress_into(compression, &data[COMPRESSION_HEADER_SIZE..], out)?;
         } else if section.sh_type(LittleEndian) == object::elf::SHT_NOBITS {
             out.fill(0);
+        } else if data.len() >= Self::SECTION_PAR_COPY_SIZE_THRESHOLD {
+            let threads = rayon::current_num_threads();
+            let chunk_size = (data.len() / threads).max(1);
+
+            data.par_chunks(chunk_size)
+                .zip(out.par_chunks_mut(chunk_size))
+                .for_each(|(src, dst)| dst.copy_from_slice(src));
         } else {
             out.copy_from_slice(data);
         }
@@ -353,10 +364,10 @@ fn decompress_into(
                 flate2::FlushDecompress::Finish,
             )?;
         }
-        // We might use pure Rust implementation for the decompression (ruzstd), however the decompression
-        // speed is not on par with the official C library.
-        // With the official library, the linking time of Clang binary (contains 1GB of debug info sections)
-        // shrinks by 30%!
+        // We might use pure Rust implementation for the decompression (ruzstd), however the
+        // decompression speed is not on par with the official C library.
+        // With the official library, the linking time of Clang binary (contains 1GB of debug info
+        // sections) shrinks by 30%!
         object::elf::ELFCOMPRESS_ZSTD => {
             zstd::stream::Decoder::new(input)?.read_exact(out)?;
         }
@@ -458,6 +469,16 @@ const _ASSERTS: () = {
 pub(crate) const GNU_NOTE_NAME: &[u8] = b"GNU\0";
 pub(crate) const GNU_NOTE_PROPERTY_ENTRY_SIZE: usize = 16;
 
+// AArch64-specific constants
+// TODO: Use values from object crate when they become available.
+pub(crate) const STO_AARCH64_VARIANT_PCS: u8 = 0x80;
+pub(crate) const DT_AARCH64_VARIANT_PCS: u32 = 0x70000005;
+
+// RISC-V-specific constants
+// TODO: Use values from object crate when they become available.
+pub(crate) const STO_RISCV_VARIANT_CC: u8 = 0x80;
+pub(crate) const DT_RISCV_VARIANT_CC: u32 = 0x70000001;
+
 /// For additional information on Elf_Prop, see
 /// Linux Extensions to gABI at https://gitlab.com/x86-psABIs/Linux-ABI.
 ///
@@ -548,8 +569,9 @@ pub(crate) fn write_relocation_to_buffer(
             insn.write_to_value(
                 extracted_value,
                 negative,
-                // We can write a non-text section, so we might need to limit the output buffer slice
-                // e.g. .gcc_except_table is written on riscv64 using the ULEB128 encoding
+                // We can write a non-text section, so we might need to limit the output buffer
+                // slice e.g. .gcc_except_table is written on riscv64 using the
+                // ULEB128 encoding
                 &mut output[..insn.write_windows_size().min(output_len)],
             );
         }

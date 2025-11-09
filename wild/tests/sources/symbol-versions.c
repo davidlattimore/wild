@@ -14,6 +14,7 @@
 //#EnableLinker:lld
 
 //#Config:verdef-0:verdef
+//#TestUpdateInPlace:true
 //#LinkArgs:--shared --version-script=./symbol-versions-script.map
 
 //#Config:verdef-1:verdef

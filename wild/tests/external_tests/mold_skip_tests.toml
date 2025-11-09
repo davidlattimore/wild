@@ -25,8 +25,6 @@ tests = [
   "filler.sh",
   "filter.sh",
   "global-offset-table.sh",            # `-defsym=foo=_GLOBAL_OFFSET_TABLE_`
-  "hash-style-sysv.sh",                # Currently we only supports `--hash-style=gnu`.
-  "hash-style.sh",                     # Currently we only supports `--hash-style=gnu`.
   "icf.sh",                            # `--icf`
   "image-base.sh",
   "init-in-dso.sh",
@@ -161,7 +159,6 @@ reason = "Aarch64 specific tests"
 tests = [
   "arch-aarch64-long-thunk.sh",
   "arch-aarch64-range-extension-thunk-disassembly.sh",
-  "arch-aarch64-variant-pcs.sh",
 ]
 
 [skipped_groups.arch_riscv64]
@@ -172,10 +169,8 @@ tests = [
   "arch-riscv64-relax-align.sh",
   "arch-riscv64-relax-got.sh",
   "arch-riscv64-relax-hi20.sh",
-  "arch-riscv64-relax-j.sh",
   "arch-riscv64-reloc-overflow.sh",
   "arch-riscv64-symbol-size.sh",
-  "arch-riscv64-variant-cc.sh",
 ]
 
 [skipped_groups.tls]
@@ -185,6 +180,7 @@ tests  = ["tls-common.sh", "tls-le-error.sh"]
 [skipped_groups.ignore]
 reason = "We ignore these tests for some reasons"
 tests = [
+  "arch-riscv64-relax-j.sh",        # Passes when `--no-gc-sections` is passed.
   "build-id.sh",                    # Different build ID data size
   "cmdline.sh",                     # Different message formats for unknown options.
   "comment.sh",                     # We store a different string in the comment section than mold.
@@ -194,6 +190,7 @@ tests = [
   "duplicate-error.sh",             # Different message formats
   "empty-arg.sh",                   # Different message formats
   "empty-input.sh",                 # Different message formats
+  "hash-style.sh",                  # Wild doesn't support `--hash-style=none`.
   "help.sh",
   "invalid-version-script.sh",      # Different message formats
   "linker-script-error.sh",         # Different message formats

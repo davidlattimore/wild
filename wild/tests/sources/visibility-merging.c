@@ -6,6 +6,7 @@
 // TODO: Prevent dynsym export of symbols like these.
 //#DiffIgnore:dynsym.data1.*
 //#DiffIgnore:dynsym.data4.*
+//#DiffIgnore:dynsym.data5.*
 
 // This symbol is included, but isn't exported as a dynamic symbol because of a
 // second definition in our other file that's marked as hidden.
@@ -31,3 +32,7 @@ int get_data1(void) { return data1; }
 // references should be permitted, however GNU ld < 2.40 would error in the case
 // of direct references to protected symbols, so in order to allow our tests to
 // pass with such versions, we don't.
+
+extern int data5 __attribute__((visibility(("hidden"))));
+
+int get_data5(void) { return data5; }

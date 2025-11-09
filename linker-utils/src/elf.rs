@@ -622,6 +622,8 @@ pub mod secnames {
     pub const GNU_VERSION_D_SECTION_NAME: &[u8] = GNU_VERSION_D_SECTION_NAME_STR.as_bytes();
     pub const GNU_VERSION_R_SECTION_NAME_STR: &str = ".gnu.version_r";
     pub const GNU_VERSION_R_SECTION_NAME: &[u8] = GNU_VERSION_R_SECTION_NAME_STR.as_bytes();
+    pub const HASH_SECTION_NAME_STR: &str = ".hash";
+    pub const HASH_SECTION_NAME: &[u8] = HASH_SECTION_NAME_STR.as_bytes();
     pub const PROGRAM_HEADERS_SECTION_NAME_STR: &str = ".phdr";
     pub const PROGRAM_HEADERS_SECTION_NAME: &[u8] = PROGRAM_HEADERS_SECTION_NAME_STR.as_bytes();
     pub const SECTION_HEADERS_SECTION_NAME_STR: &str = ".shdr";
@@ -814,9 +816,9 @@ pub enum RelocationKind {
     /// The address of the symbol, relative to the place of the relocation.
     Relative,
 
-    /// The address of the symbol, relative to the place of the relocation. The address of the relocation
-    /// points to an instruction for which the R_RISCV_PCREL_HI20 relocation is used and that is the place
-    /// we make this relocation relative to.
+    /// The address of the symbol, relative to the place of the relocation. The address of the
+    /// relocation points to an instruction for which the R_RISCV_PCREL_HI20 relocation is used
+    /// and that is the place we make this relocation relative to.
     RelativeRiscVLow12,
 
     /// The address of the symbol, relative to the base address of the GOT.
@@ -887,7 +889,8 @@ pub enum RelocationKind {
     /// The address of a TLS descriptor structure, relative to the start of the GOT.
     TlsDescGotBase,
 
-    /// Call to the TLS descriptor trampoline. Used only as a placeholder for a linker relaxation opportunity.
+    /// Call to the TLS descriptor trampoline. Used only as a placeholder for a linker relaxation
+    /// opportunity.
     TlsDescCall,
 
     /// No relocation needs to be applied. Produced when we eliminate a relocation due to an
@@ -1089,7 +1092,8 @@ pub enum RiscVInstruction {
     // Specifies a field as the immediate field in a CJ-type (compressed jump) instruction
     CjType,
 
-    // Encode the value using ULEB128 encoding (the size of the output is variable based on the value)
+    // Encode the value using ULEB128 encoding (the size of the output is variable based on the
+    // value)
     Uleb128,
 }
 

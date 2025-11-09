@@ -2,3 +2,5 @@ edition = "2024"
 use_field_init_shorthand = true
 imports_granularity = "Item"
 group_imports = "One"
+wrap_comments = true
+comment_width = 100

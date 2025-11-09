@@ -256,7 +256,8 @@ impl SaveDirState {
                 }
             }
 
-            // To save disk space, we first attempt to hard link the file. If that fails, then just copy it.
+            // To save disk space, we first attempt to hard link the file. If that fails, then just
+            // copy it.
             if std::fs::hard_link(source_path, &dest_path).is_err() {
                 std::fs::copy(source_path, &dest_path).with_context(|| {
                     format!(
