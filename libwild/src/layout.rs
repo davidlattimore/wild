@@ -4742,6 +4742,9 @@ impl<'data> ObjectLayoutState<'data> {
                     SectionResolution { address }
                 }
                 SectionSlot::EhFrameData(..) => {
+                    // References to symbols defined in .eh_frame are a bit weird, since it's a
+                    // section where we're GCing stuff, but crtbegin.o and crtend.o use them in
+                    // order to find the start and end of the whole .eh_frame section.
                     let address = *memory_offsets.get(part_id::EH_FRAME);
                     SectionResolution { address }
                 }
