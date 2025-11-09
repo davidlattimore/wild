@@ -4610,9 +4610,9 @@ impl<'data> ObjectLayoutState<'data> {
             pending: &mut Vec<PendingSortedSection>,
             memory_offsets: &mut OutputSectionPartMap<u64>,
             section_resolutions: &mut [SectionResolution],
-        ) -> Result<()> {
+        ) {
             if pending.is_empty() {
-                return Ok(());
+                return;
             }
 
             pending.sort_by(|lhs, rhs| {
@@ -4628,11 +4628,10 @@ impl<'data> ObjectLayoutState<'data> {
             }
 
             pending.clear();
-            Ok(())
         }
 
-        process_pending(&mut pending_init, memory_offsets, &mut section_resolutions)?;
-        process_pending(&mut pending_fini, memory_offsets, &mut section_resolutions)?;
+        process_pending(&mut pending_init, memory_offsets, &mut section_resolutions);
+        process_pending(&mut pending_fini, memory_offsets, &mut section_resolutions);
 
         for ((local_symbol_index, local_symbol), &flags) in self
             .object
