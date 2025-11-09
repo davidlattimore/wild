@@ -83,17 +83,15 @@ pub(crate) enum SortOrder {
 
 #[must_use]
 pub(crate) fn sorted_section_priority(name: &[u8]) -> u16 {
-    let mut priority = parse_priority_suffix(name).unwrap_or(u16::MAX);
-
-    if name.starts_with(b".ctors") {
-        priority = u16::MAX - priority;
+    if name.starts_with(b".ctors") || name.starts_with(b".dtors") {
+        if let Some(p) = parse_priority_suffix(name) {
+            return u16::MAX - p;
+        } else {
+            return u16::MAX;
+        }
     }
 
-    if name.starts_with(b".dtors") {
-        priority = u16::MAX - priority;
-    }
-
-    priority
+    parse_priority_suffix(name).unwrap_or(u16::MAX)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
