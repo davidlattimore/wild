@@ -220,45 +220,33 @@ shared object is about 230 MiB without debug info and 462 MiB with debug info. W
 some binaries, this is still a pretty reasonable size, making it good for benchmarking. It's also an
 interesting benchmark because it's a shared object rather than an executable.
 
-Build rustc as per the [instructions on the
-rustc-dev-guide](https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html). Before
-building, edit or create `config.toml` in your `rust` directory to contain:
+Before building rustc, edit or create `bootstrap.toml` in your `rust` directory to contain:
 
 ```toml
 [rust]
-use-lld = "self-contained"
+# use lld from $PATH instead of rust's bundled lld
+bootstrap-override-lld = true
 ```
 
-Once you've successfully built rustc, build it again, but using wild as the linker. In the following
-command, replace `$HOME/work/wild` with the path to the directory containing the wild repo. You'll
-need to have already built wild with `cargo build --release`.
+Now we can build rustc using wild as the linker. In the following
+command, replace `$WILD_REPO_PATH` with the path to the directory containing the wild repo. You'll
+need to have already built wild with `cargo build --release`. For more information about building rustc see [building instructions on the
+rustc-dev-guide](https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html).
 
+Cd into the rust repo root and run:
 ```sh
 touch compiler/rustc_driver/src/lib.rs
-WILD_SAVE_BASE=$HOME/tmp/rustc-link PATH=$HOME/work/wild/fakes:$PATH ./x build --keep-stage 1
+PATH=$WILD_REPO_PATH/fakes:$PATH echo "Using $(ld.lld --version) to link rustc"
+PATH=$WILD_REPO_PATH/fakes:$PATH WILD_SAVE_BASE=$HOME/tmp/rustc-link ./x build --keep-stage 1
+# verify that wild was used to link rustc
+readelf -p .comment build/x86_64-unknown-linux-gnu/stage1/bin/rustc | grep -i 'linker:'
 ```
 
 You should now have a few subdirectories under `$HOME/tmp/rustc-link`. You can identify which one is
 `rustc_driver` by looking at the last line of the `run-with` script in each directory.
 
 If the directory `$HOME/tmp/rustc-link` didn't get created, then most likely wild wasn't used to
-link. You can check what linker was used with `readelf`. e.g.:
-
-```sh
-readelf -p .comment build/x86_64-unknown-linux-gnu/stage1/bin/rustc
-
-String dump of section '.comment':
-  [     0]  GCC: (Ubuntu 12.3.0-1ubuntu1~22.04) 12.3.0
-  [    2c]  rustc version 1.83.0-beta.1 (0125edf41 2024-10-14)
-  [    5f]  Linker: Wild version 0.3.0
-```
-
-You can also verify the `PATH` setting, by running something like the following:
-
-```sh
-PATH=$HOME/work/wild/fakes:$PATH ld.lld --version
-Wild version 0.3.0 (compatible with GNU linkers)
-```
+link.
 
 ### Other tools
 
