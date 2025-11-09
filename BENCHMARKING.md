@@ -228,18 +228,12 @@ Before building rustc, edit or create `bootstrap.toml` in your `rust` directory 
 bootstrap-override-lld = true
 ```
 
-To build rustc, run this in the root of the rust repo:
-```sh
-./x build
-```
-
-For more information about building rustc see [building instructions on the
+Now we can build rustc using wild as the linker. In the following
+command, replace `$WILD_REPO_PATH` with the path to the directory containing the wild repo. You'll
+need to have already built wild with `cargo build --release`. For more information about building rustc see [building instructions on the
 rustc-dev-guide](https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html).
 
-Once you've successfully built rustc, build it again, but using wild as the linker. In the following
-command, replace `$WILD_REPO_PATH` with the path to the directory containing the wild repo. You'll
-need to have already built wild with `cargo build --release`.
-
+Cd into the rust repo root and run:
 ```sh
 touch compiler/rustc_driver/src/lib.rs
 PATH=$WILD_REPO_PATH/fakes:$PATH echo "Using $(ld.lld --version) to link rustc"
