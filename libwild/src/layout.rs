@@ -3827,12 +3827,11 @@ impl<'data> EpilogueLayoutState<'data> {
                 common.allocate(part_id::DYNAMIC, dynamic_entry_size as u64);
             }
 
-            self.update_existing_dynsym_entries(symbol_db, per_symbol_flags)?;
-
             if symbol_db.args.hash_style.includes_gnu() {
                 self.allocate_gnu_hash(common);
             }
             if symbol_db.args.hash_style.includes_sysv() {
+                self.update_existing_dynsym_entries(symbol_db, per_symbol_flags)?;
                 self.allocate_sysv_hash(common)?;
             }
 
