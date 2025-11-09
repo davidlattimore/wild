@@ -81,7 +81,6 @@ use crate::value_flags::ValueFlags;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
-use hashbrown::HashSet;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
@@ -739,8 +738,6 @@ pub(crate) struct EpilogueLayoutState<'data> {
     internal_symbols: InternalSymbols<'data>,
 
     dynamic_symbol_definitions: Vec<DynamicSymbolDefinition<'data>>,
-    // Counts dynsym entries that already exist before the epilogue adds new ones.
-    existing_dynsym_entries: u32,
     sysv_hash_layout: Option<SysvHashLayout>,
     gnu_hash_layout: Option<GnuHashLayout>,
     gnu_property_notes: Vec<GnuProperty>,
@@ -2046,12 +2043,22 @@ fn compute_total_section_part_sizes(
         total_sizes.merge(&group_state.common.mem_sizes);
     }
 
-    let first_group = group_states.first_mut().unwrap();
-    let Some(FileLayoutState::Prelude(internal_layout)) = first_group.files.first_mut() else {
+    // We need to apply late-stage adjustments for the epilogue before we do so for the prelude,
+    // since the prelude needs to know if the .hash section will be written, which is decided by the
+    // epilogue.
+    let last_group = group_states.last_mut().unwrap();
+    let Some(FileLayoutState::Epilogue(epilogue)) = last_group.files.last_mut() else {
         unreachable!();
     };
 
-    internal_layout.apply_late_size_adjustments(
+    epilogue.apply_late_size_adjustments(&mut last_group.common, &mut total_sizes, symbol_db)?;
+
+    let first_group = group_states.first_mut().unwrap();
+    let Some(FileLayoutState::Prelude(prelude)) = first_group.files.first_mut() else {
+        unreachable!();
+    };
+
+    prelude.apply_late_size_adjustments(
         &mut first_group.common,
         &mut total_sizes,
         sections_with_content,
@@ -3650,38 +3657,6 @@ impl<'data> EpilogueLayoutState<'data> {
         };
     }
 
-    // TODO: `existing_dynsym_entries` will eventually match the `dynsym_start_index` calculated
-    // within `EpilogueLayoutState::finalise_layout`. However, we need the number of existing
-    // entries before finalizing the layout, so a more efficient design would be ideal.
-    fn update_existing_dynsym_entries(
-        &mut self,
-        symbol_db: &SymbolDb<'data>,
-        per_symbol_flags: &AtomicPerSymbolFlags,
-    ) -> Result {
-        let mut defined_symbols = HashSet::with_capacity(self.dynamic_symbol_definitions.len());
-        for def in &self.dynamic_symbol_definitions {
-            defined_symbols.insert(def.symbol_id);
-        }
-
-        let mut entries: u64 = 1; // Account for the null dynsym entry.
-        for index in 0..symbol_db.num_symbols() {
-            let symbol_id = SymbolId::from_usize(index);
-            if !symbol_db.is_canonical(symbol_id) || defined_symbols.contains(&symbol_id) {
-                continue;
-            }
-
-            let flags = per_symbol_flags.flags_for_symbol(symbol_id);
-            if flags.is_dynamic() && flags.has_resolution() {
-                entries += 1;
-            }
-        }
-
-        self.existing_dynsym_entries =
-            u32::try_from(entries).context("Too many dynamic symbols for .hash")?;
-
-        Ok(())
-    }
-
     fn new(input_state: ResolvedEpilogue<'data>) -> EpilogueLayoutState<'data> {
         EpilogueLayoutState {
             file_id: input_state.file_id,
@@ -3694,7 +3669,6 @@ impl<'data> EpilogueLayoutState<'data> {
                 start_symbol_id: input_state.start_symbol_id,
             },
             dynamic_symbol_definitions: Default::default(),
-            existing_dynsym_entries: 0,
             sysv_hash_layout: None,
             gnu_hash_layout: None,
             gnu_property_notes: Default::default(),
@@ -3702,6 +3676,24 @@ impl<'data> EpilogueLayoutState<'data> {
             verdefs: Default::default(),
             riscv_attributes: Default::default(),
         }
+    }
+
+    fn apply_late_size_adjustments(
+        &mut self,
+        common: &mut CommonGroupState,
+        total_sizes: &mut OutputSectionPartMap<u64>,
+        symbol_db: &SymbolDb,
+    ) -> Result {
+        if symbol_db.args.hash_style.includes_sysv() {
+            let mut extra_sizes = OutputSectionPartMap::with_size(common.mem_sizes.num_parts());
+            self.allocate_sysv_hash(&mut extra_sizes, total_sizes)?;
+
+            // See comments in Prelude::apply_late_size_adjustments.
+            total_sizes.merge(&extra_sizes);
+            common.mem_sizes.merge(&extra_sizes);
+        }
+
+        Ok(())
     }
 
     fn gnu_property_notes_section_size(&self) -> u64 {
@@ -3798,10 +3790,6 @@ impl<'data> EpilogueLayoutState<'data> {
 
             if symbol_db.args.hash_style.includes_gnu() {
                 self.allocate_gnu_hash(common);
-            }
-            if symbol_db.args.hash_style.includes_sysv() {
-                self.update_existing_dynsym_entries(symbol_db, per_symbol_flags)?;
-                self.allocate_sysv_hash(common)?;
             }
 
             common.allocate(
@@ -3907,17 +3895,22 @@ impl<'data> EpilogueLayoutState<'data> {
         self.gnu_hash_layout = Some(gnu_hash_layout);
     }
 
-    fn allocate_sysv_hash(&mut self, common: &mut CommonGroupState) -> Result {
+    fn allocate_sysv_hash(
+        &mut self,
+        sizes_out: &mut OutputSectionPartMap<u64>,
+        total_sizes: &OutputSectionPartMap<u64>,
+    ) -> Result {
         let num_defs = self.dynamic_symbol_definitions.len();
         if num_defs == 0 {
             return Ok(());
         }
 
         let bucket_count = ((num_defs / 2).max(1)).next_power_of_two() as u32;
-        let num_defs_u32 = u32::try_from(num_defs).context("Too many dynamic symbols for .hash")?;
-        let base_entries = self.existing_dynsym_entries.max(1);
-        let chain_count = base_entries
-            .checked_add(num_defs_u32)
+        // Whereas `num_defs` above is the number of definitions, this is the number of dynamic
+        // symbols, which also includes undefined dynamic symbols.
+        let num_dynsym = *total_sizes.get(part_id::DYNSYM) / elf::SYMTAB_ENTRY_SIZE;
+        let chain_count = num_dynsym
+            .try_into()
             .context("Too many dynamic symbols for .hash")?;
 
         let sysv_hash_layout = SysvHashLayout {
@@ -3925,7 +3918,7 @@ impl<'data> EpilogueLayoutState<'data> {
             chain_count,
         };
 
-        common.allocate(part_id::SYSV_HASH, sysv_hash_layout.byte_size()?);
+        *sizes_out.get_mut(part_id::SYSV_HASH) += sysv_hash_layout.byte_size()?;
         self.sysv_hash_layout = Some(sysv_hash_layout);
 
         Ok(())
