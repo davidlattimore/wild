@@ -497,19 +497,19 @@ struct TableWriter<'layout, 'out> {
 }
 
 #[derive(Default)]
-struct SortedSectionCollector<'data> {
-    init: Vec<PendingSortedSection<'data>>,
-    fini: Vec<PendingSortedSection<'data>>,
+struct SortedSectionCollector {
+    init: Vec<PendingSortedSection>,
+    fini: Vec<PendingSortedSection>,
 }
 
-struct PendingSortedSection<'data> {
-    object: &'data ObjectLayout<'data>,
+struct PendingSortedSection {
+    file_id: crate::input_data::FileId,
     section: Section,
     priority: u16,
 }
 
-impl<'data> SortedSectionCollector<'data> {
-    fn push(&mut self, object: &'data ObjectLayout<'data>, section: Section) -> Result<()> {
+impl SortedSectionCollector {
+    fn push(&mut self, object: &ObjectLayout, section: Section) -> Result<()> {
         let sort_order = section
             .sort_order
             .expect("sorted sections should carry a sort order");
@@ -518,7 +518,7 @@ impl<'data> SortedSectionCollector<'data> {
         let priority = sorted_section_priority(name);
 
         let entry = PendingSortedSection {
-            object,
+            file_id: object.file_id,
             section,
             priority,
         };
@@ -538,14 +538,16 @@ impl<'data> SortedSectionCollector<'data> {
         layout: &Layout,
         trace: &TraceOutput,
     ) -> Result {
-        self.flush_order::<A>(&mut self.init, buffers, table_writer, layout, trace)?;
-        self.flush_order::<A>(&mut self.fini, buffers, table_writer, layout, trace)?;
+        let mut init = core::mem::take(&mut self.init);
+        let mut fini = core::mem::take(&mut self.fini);
+        self.flush_order::<A>(&mut init, buffers, table_writer, layout, trace)?;
+        self.flush_order::<A>(&mut fini, buffers, table_writer, layout, trace)?;
         Ok(())
     }
 
     fn flush_order<A: Arch>(
         &mut self,
-        sections: &mut Vec<PendingSortedSection<'data>>,
+        sections: &mut Vec<PendingSortedSection>,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
         layout: &Layout,
@@ -558,13 +560,20 @@ impl<'data> SortedSectionCollector<'data> {
         sections.sort_by(|lhs, rhs| {
             lhs.priority
                 .cmp(&rhs.priority)
-                .then_with(|| file_rank(lhs.object.file_id).cmp(&file_rank(rhs.object.file_id)))
+                .then_with(|| file_rank(lhs.file_id).cmp(&file_rank(rhs.file_id)))
                 .then_with(|| lhs.section.index.0.cmp(&rhs.section.index.0))
         });
 
         for entry in sections.iter() {
+            let file_layout = &layout.file_layout(entry.file_id);
+            let object = match file_layout {
+                FileLayout::Object(obj) => obj,
+                _ => {
+                    continue;
+                }
+            };
             write_object_section::<A>(
-                entry.object,
+                object,
                 layout,
                 &entry.section,
                 buffers,
