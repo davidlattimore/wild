@@ -40,7 +40,6 @@ use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SortOrder;
-use crate::layout_rules::sorted_section_priority;
 use crate::output_section_id;
 use crate::output_section_id::FILE_HEADER;
 use crate::output_section_id::OrderEvent;
@@ -148,7 +147,7 @@ pub fn compute<'data, A: Arch>(
     let ResolutionOutputs {
         groups,
         merged_strings,
-    } = resolverome;
+    } = resolved;
 
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
 
