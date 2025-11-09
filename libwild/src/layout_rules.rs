@@ -86,9 +86,8 @@ pub(crate) fn sorted_section_priority(name: &[u8]) -> u16 {
     if name.starts_with(b".ctors") || name.starts_with(b".dtors") {
         if let Some(p) = parse_priority_suffix(name) {
             return u16::MAX - p;
-        } else {
-            return u16::MAX;
         }
+        return u16::MAX;
     }
 
     parse_priority_suffix(name).unwrap_or(u16::MAX)
@@ -315,16 +314,6 @@ impl<'data> SectionRule<'data> {
         )
     }
 
-    const fn prefix_section_keep(
-        name: &'data [u8],
-        section_id: OutputSectionId,
-    ) -> SectionRule<'data> {
-        Self::prefix(
-            name,
-            SectionRuleOutcome::Section(SectionOutputInfo::keep(section_id)),
-        )
-    }
-
     const fn prefix_section_keep_sorted(
         name: &'data [u8],
         section_id: OutputSectionId,
@@ -476,7 +465,7 @@ fn parse_priority_suffix(name: &[u8]) -> Option<u16> {
         return None;
     }
     let value = core::str::from_utf8(suffix).ok()?.parse::<u32>().ok()?;
-    Some(value.min(u16::MAX as u32) as u16)
+    Some(u16::try_from(value).unwrap_or(u16::MAX))
 }
 
 /// Returns a hash of the first four bytes of the supplied name or `None` if the name is shorter

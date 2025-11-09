@@ -361,7 +361,7 @@ fn write_file<A: Arch>(
 ) -> Result {
     match file {
         FileLayout::Object(s) => {
-            write_object::<A>(s, buffers, table_writer, layout, trace, sorted)?
+            write_object::<A>(s, buffers, table_writer, layout, trace, sorted)?;
         }
         FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, table_writer, layout)?,
         FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers, table_writer, layout)?,
@@ -540,13 +540,12 @@ impl SortedSectionCollector {
     ) -> Result {
         let mut init = core::mem::take(&mut self.init);
         let mut fini = core::mem::take(&mut self.fini);
-        self.flush_order::<A>(&mut init, buffers, table_writer, layout, trace)?;
-        self.flush_order::<A>(&mut fini, buffers, table_writer, layout, trace)?;
+        SortedSectionCollector::flush_order::<A>(&mut init, buffers, table_writer, layout, trace)?;
+        SortedSectionCollector::flush_order::<A>(&mut fini, buffers, table_writer, layout, trace)?;
         Ok(())
     }
 
     fn flush_order<A: Arch>(
-        &mut self,
         sections: &mut Vec<PendingSortedSection>,
         buffers: &mut OutputSectionPartMap<&mut [u8]>,
         table_writer: &mut TableWriter,
