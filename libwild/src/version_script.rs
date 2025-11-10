@@ -573,10 +573,16 @@ pub(crate) fn parse_matcher<'data>(
             let glob_type = analyze_glob_pattern(token);
 
             let create_pattern = |token: &[u8]| -> winnow::Result<Pattern> {
-                Pattern::new(str::from_utf8(token).map_err(|_| {
+                let pattern = str::from_utf8(token).map_err(|_| {
                     ContextError::from_external_error(input, VersionScriptError::InvalidUtf8String)
-                })?)
-                .map_err(|_| {
+                })?;
+                // Right now, there is a pending PR that will support the '^' as the negation
+                // character in the glob crate: https://github.com/rust-lang/glob/issues/116
+                //
+                // Let's optimistically assume the '^' cannot be part of the symbol's name (escaped
+                // in a pattern).
+                let pattern = pattern.replace("[^", "[!");
+                Pattern::new(pattern.as_str()).map_err(|_| {
                     ContextError::from_external_error(input, VersionScriptError::InvalidGlobPattern)
                 })
             };
@@ -1041,5 +1047,25 @@ mod tests {
             .collect();
 
         assert!(nonstar_patterns.contains(&"f?"));
+    }
+
+    #[test]
+    fn test_negation() {
+        let data = ScriptData {
+            raw: br#"
+                VERS_1.1 {
+                    f*;
+                };
+
+                VERS_1.2 {
+                    f[^o]*;
+                } VERS_1.1;
+            "#,
+        };
+        let script = VersionScript::parse(data).unwrap();
+        let sym = UnversionedSymbolName::prehashed;
+
+        assert_eq!(script.find_match(&sym(b"foo")).unwrap().0, 1);
+        assert_eq!(script.find_match(&sym(b"fxxx")).unwrap().0, 2);
     }
 }
