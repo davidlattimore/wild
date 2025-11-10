@@ -581,7 +581,7 @@ pub(crate) fn parse_matcher<'data>(
                 //
                 // Let's optimistically assume the '^' cannot be part of the symbol's name (escaped
                 // in a pattern).
-                let pattern = pattern.replace("^", "!");
+                let pattern = pattern.replace("[^", "[!");
                 Pattern::new(pattern.as_str()).map_err(|_| {
                     ContextError::from_external_error(input, VersionScriptError::InvalidGlobPattern)
                 })
