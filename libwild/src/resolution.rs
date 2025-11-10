@@ -906,7 +906,11 @@ fn resolve_section<'data>(
 
     match rules.lookup(section_name, section_flags, section_type) {
         SectionRuleOutcome::Section(output_info) => {
-            let part_id = output_info.section_id.part_id_with_alignment(alignment);
+            let part_id = if output_info.section_id.is_regular() {
+                output_info.section_id.part_id_with_alignment(alignment)
+            } else {
+                output_info.section_id.base_part_id()
+            };
 
             must_load |= output_info.must_keep;
 
