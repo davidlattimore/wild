@@ -80,6 +80,7 @@ pub(crate) const GOT: OutputSectionId = part_id::GOT.output_section_id();
 pub(crate) const RELA_PLT: OutputSectionId = part_id::RELA_PLT.output_section_id();
 pub(crate) const EH_FRAME: OutputSectionId = part_id::EH_FRAME.output_section_id();
 pub(crate) const EH_FRAME_HDR: OutputSectionId = part_id::EH_FRAME_HDR.output_section_id();
+pub(crate) const SFRAME: OutputSectionId = part_id::SFRAME.output_section_id();
 pub(crate) const DYNAMIC: OutputSectionId = part_id::DYNAMIC.output_section_id();
 pub(crate) const HASH: OutputSectionId = part_id::SYSV_HASH.output_section_id();
 pub(crate) const GNU_HASH: OutputSectionId = part_id::GNU_HASH.output_section_id();
@@ -495,6 +496,14 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(SFRAME_SECTION_NAME)),
+        ty: sht::GNU_SFRAME,
+        section_flags: shf::ALLOC,
+        min_alignment: alignment::USIZE,
+        target_segment_type: Some(pt::GNU_SFRAME),
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(DYNAMIC_SECTION_NAME)),
         ty: sht::DYNAMIC,
         section_flags: shf::ALLOC.with(shf::WRITE),
@@ -883,6 +892,7 @@ impl CustomSectionIds {
         builder.add_section(RODATA);
         builder.add_section(EH_FRAME_HDR);
         builder.add_section(EH_FRAME);
+        builder.add_section(SFRAME);
         builder.add_section(GCC_EXCEPT_TABLE);
         builder.add_sections(&self.ro);
 
@@ -1249,6 +1259,7 @@ fn test_constant_ids() {
         (DATA, DATA_SECTION_NAME),
         (EH_FRAME, EH_FRAME_SECTION_NAME),
         (EH_FRAME_HDR, EH_FRAME_HDR_SECTION_NAME),
+        (SFRAME, SFRAME_SECTION_NAME),
         (SHSTRTAB, SHSTRTAB_SECTION_NAME),
         (SYMTAB_LOCAL, SYMTAB_SECTION_NAME),
         (SYMTAB_GLOBAL, &[]),
