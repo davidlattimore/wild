@@ -43,6 +43,7 @@ use crate::symbol_db::Visibility;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use atomic_take::AtomicTake;
+use crossbeam_channel::Sender;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use linker_utils::elf::SectionFlags;
@@ -52,10 +53,8 @@ use linker_utils::elf::shf;
 use linker_utils::elf::sht::NOTE;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
-use rayon::Scope;
-use rayon::iter::IndexedParallelIterator;
-use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator;
+use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
 use std::num::NonZeroU32;
 use std::sync::atomic::AtomicUsize;
@@ -126,13 +125,20 @@ pub fn resolve_symbols_and_sections<'data>(
 fn resolve_symbols_in_files<'data>(
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result<(Vec<ResolvedGroup<'data>>, SegQueue<UndefinedSymbol<'data>>)> {
+    let num_objects = symbol_db.num_objects();
+    if num_objects == 0 {
+        bail!("no input files");
+    }
+
     let mut symbol_definitions = symbol_db.take_definitions();
     let mut symbol_definitions_slice = symbol_definitions.as_mut();
 
     let mut definitions_per_group_and_file = Vec::new();
     definitions_per_group_and_file.resize_with(symbol_db.groups.len(), Vec::new);
 
-    let mut initial_work = Vec::new();
+    let (work_sender, work_recv) = crossbeam_channel::unbounded();
+
+    let outputs = Outputs::new(num_objects);
 
     let mut resolved: Vec<ResolvedGroup<'_>> = symbol_db
         .groups
@@ -141,18 +147,14 @@ fn resolve_symbols_in_files<'data>(
         .map(|(group, definitions_out_per_file)| {
             resolve_group(
                 group,
-                &mut initial_work,
+                &work_sender,
                 definitions_out_per_file,
                 &mut symbol_definitions_slice,
+                symbol_db,
+                &outputs,
             )
         })
         .collect();
-
-    let num_objects = symbol_db.num_objects();
-    if num_objects == 0 {
-        bail!("no input files");
-    }
-    let outputs = Outputs::new(num_objects);
 
     let resources = ResolutionResources {
         definitions_per_file: &definitions_per_group_and_file,
@@ -160,18 +162,12 @@ fn resolve_symbols_in_files<'data>(
         outputs: &outputs,
     };
 
-    rayon::in_place_scope(|scope| {
-        let resources = &resources;
-        for work_item in initial_work {
-            scope.spawn(move |scope| {
-                process_object(
-                    work_item.file_id,
-                    work_item.definitions_out,
-                    resources,
-                    scope,
-                );
-            });
-        }
+    // The loop below terminates once all work senders have been dropped. Each work item has a
+    // sender.
+    drop(work_sender);
+
+    work_recv.into_iter().par_bridge().for_each(|work_item| {
+        process_object(work_item, &resources);
     });
 
     drop(definitions_per_group_and_file);
@@ -191,9 +187,11 @@ fn resolve_symbols_in_files<'data>(
 
 fn resolve_group<'data, 'definitions>(
     group: &Group<'data>,
-    initial_work: &mut Vec<LoadObjectRequest<'definitions>>,
+    work_sender: &Sender<LoadObjectSymbolsRequest<'definitions>>,
     definitions_out_per_file: &mut Vec<AtomicTake<&'definitions mut [SymbolId]>>,
     symbol_definitions_slice: &mut &'definitions mut [SymbolId],
+    symbol_db: &SymbolDb<'data>,
+    outputs: &Outputs<'data>,
 ) -> ResolvedGroup<'data> {
     match group {
         Group::Prelude(prelude) => {
@@ -201,10 +199,13 @@ fn resolve_group<'data, 'definitions>(
                 .split_off_mut(..prelude.symbol_definitions.len())
                 .unwrap();
 
-            initial_work.push(LoadObjectRequest {
-                file_id: PRELUDE_FILE_ID,
+            request_file_id(
+                PRELUDE_FILE_ID,
+                work_sender,
                 definitions_out,
-            });
+                symbol_db,
+                outputs,
+            );
 
             definitions_out_per_file.push(AtomicTake::empty());
 
@@ -227,10 +228,13 @@ fn resolve_group<'data, 'definitions>(
                     if s.is_optional() {
                         definitions_out_per_file.push(AtomicTake::new(definitions_out));
                     } else {
-                        initial_work.push(LoadObjectRequest {
-                            file_id: s.file_id,
+                        request_file_id(
+                            s.file_id,
+                            work_sender,
                             definitions_out,
-                        });
+                            symbol_db,
+                            outputs,
+                        );
                         definitions_out_per_file.push(AtomicTake::empty());
                     }
 
@@ -317,14 +321,20 @@ fn resolve_sections<'data>(
     Ok(())
 }
 
-/// A request to load an object.
-struct LoadObjectRequest<'definitions> {
+const MAX_SYMBOLS_PER_WORK_ITEM: usize = 5000;
+
+/// A request to load a chunk of symbols from an object.
+struct LoadObjectSymbolsRequest<'definitions> {
     /// The ID of the object to load.
     file_id: FileId,
+
+    symbol_start_offset: usize,
 
     /// The symbol resolutions for the object to be loaded that should be written to when we load
     /// the object.
     definitions_out: &'definitions mut [SymbolId],
+
+    work_sender: Sender<LoadObjectSymbolsRequest<'definitions>>,
 }
 
 #[derive(Default)]
@@ -349,10 +359,14 @@ struct ResolutionResources<'data, 'definitions, 'scope> {
     outputs: &'scope Outputs<'data>,
 }
 
-impl<'scope> ResolutionResources<'_, '_, 'scope> {
-    /// Request loading of `file_id`.
+impl<'definitions> ResolutionResources<'_, 'definitions, '_> {
+    /// Request loading of `file_id` if it hasn't already been requested.
     #[inline(always)]
-    fn request_file_id(&'scope self, file_id: FileId, scope: &Scope<'scope>) {
+    fn try_request_file_id(
+        &self,
+        file_id: FileId,
+        work_sender: &Sender<LoadObjectSymbolsRequest<'definitions>>,
+    ) {
         let Some(definitions_out) =
             self.definitions_per_file[file_id.group()][file_id.file()].take()
         else {
@@ -361,9 +375,55 @@ impl<'scope> ResolutionResources<'_, '_, 'scope> {
             return;
         };
 
-        scope.spawn(move |s| {
-            process_object(file_id, definitions_out, self, s);
+        request_file_id(
+            file_id,
+            work_sender,
+            definitions_out,
+            self.symbol_db,
+            self.outputs,
+        );
+    }
+}
+
+fn request_file_id<'definitions, 'data>(
+    file_id: FileId,
+    work_sender: &Sender<LoadObjectSymbolsRequest<'definitions>>,
+    mut definitions_out: &'definitions mut [SymbolId],
+    symbol_db: &SymbolDb<'data>,
+    outputs: &Outputs<'data>,
+) {
+    match &symbol_db.groups[file_id.group()] {
+        Group::Objects(parsed_input_objects) => {
+            let obj = &parsed_input_objects[file_id.file()];
+            // Push won't fail because we allocated enough space for all the objects.
+            outputs.loaded.push(ResolvedObject::new(obj)).unwrap();
+        }
+        _ => {}
+    }
+
+    let chunk_size = match &symbol_db.groups[file_id.group()] {
+        Group::Objects(_) => MAX_SYMBOLS_PER_WORK_ITEM,
+        _ => definitions_out.len(),
+    };
+
+    let mut symbol_start_offset = 0;
+    loop {
+        let len = chunk_size.min(definitions_out.len());
+        let chunk_definitions_out = definitions_out.split_off_mut(..len).unwrap();
+
+        // Send can only fail if the receiver has been dropped, but the receiver should only
+        // drop once all senders are dropped and we hold a sender.
+        let _ = work_sender.send(LoadObjectSymbolsRequest {
+            file_id,
+            definitions_out: chunk_definitions_out,
+            work_sender: work_sender.clone(),
+            symbol_start_offset,
         });
+
+        symbol_start_offset += len;
+        if definitions_out.is_empty() {
+            break;
+        }
     }
 }
 
@@ -528,35 +588,31 @@ impl Outputs<'_> {
 }
 
 fn process_object<'scope, 'data: 'scope, 'definitions>(
-    file_id: FileId,
-    definitions_out: &mut [SymbolId],
+    work_item: LoadObjectSymbolsRequest<'definitions>,
     resources: &'scope ResolutionResources<'data, 'definitions, 'scope>,
-    scope: &Scope<'scope>,
 ) {
+    let file_id = work_item.file_id;
+    let definitions_out = work_item.definitions_out;
+
     match &resources.symbol_db.groups[file_id.group()] {
         Group::Prelude(prelude) => {
-            load_prelude(prelude, definitions_out, resources, scope);
+            load_prelude(prelude, definitions_out, resources, &work_item.work_sender);
         }
         Group::Objects(parsed_input_objects) => {
             let obj = &parsed_input_objects[file_id.file()];
-            let input = obj.parsed.input.clone();
 
-            let res = ResolvedObject::new(
+            let res = resolve_symbols(
                 obj,
                 resources,
-                definitions_out,
                 &resources.outputs.undefined_symbols,
-                scope,
+                work_item.symbol_start_offset,
+                definitions_out,
+                &work_item.work_sender,
             )
-            .with_context(|| format!("Failed to process {input}"));
+            .with_context(|| format!("Failed to resolve symbols in {obj}"));
 
-            match res {
-                Ok(res) => {
-                    let _ = resources.outputs.loaded.push(res);
-                }
-                Err(error) => {
-                    let _ = resources.outputs.errors.push(error);
-                }
+            if let Err(error) = res {
+                let _ = resources.outputs.errors.push(error);
             }
         }
         Group::LinkerScripts(_) => {}
@@ -572,11 +628,11 @@ struct UndefinedSymbol<'data> {
     symbol_id: SymbolId,
 }
 
-fn load_prelude<'scope>(
+fn load_prelude<'definitions>(
     prelude: &crate::parsing::Prelude,
     definitions_out: &mut [SymbolId],
-    resources: &'scope ResolutionResources,
-    scope: &Scope<'scope>,
+    resources: &ResolutionResources<'_, 'definitions, '_>,
+    work_sender: &Sender<LoadObjectSymbolsRequest<'definitions>>,
 ) {
     // The start symbol could be defined within an archive entry. If it is, then we need to load
     // it. We don't currently store the resulting SymbolId, but instead look it up again during
@@ -585,7 +641,7 @@ fn load_prelude<'scope>(
         resources,
         &mut SymbolId::undefined(),
         resources.symbol_db.entry_symbol_name(),
-        scope,
+        work_sender,
     );
 
     // Try to resolve any symbols that the user requested be undefined (e.g. via --undefined). If an
@@ -594,18 +650,18 @@ fn load_prelude<'scope>(
     for (def_info, definition_out) in prelude.symbol_definitions.iter().zip(definitions_out) {
         match def_info.placement {
             SymbolPlacement::ForceUndefined => {
-                load_symbol_named(resources, definition_out, def_info.name, scope);
+                load_symbol_named(resources, definition_out, def_info.name, work_sender);
             }
             _ => {}
         }
     }
 }
 
-fn load_symbol_named<'scope>(
-    resources: &'scope ResolutionResources,
+fn load_symbol_named<'definitions>(
+    resources: &ResolutionResources<'_, 'definitions, '_>,
     definition_out: &mut SymbolId,
     name: &[u8],
-    scope: &Scope<'scope>,
+    work_sender: &Sender<LoadObjectSymbolsRequest<'definitions>>,
 ) {
     if let Some(symbol_id) = resources
         .symbol_db
@@ -614,7 +670,7 @@ fn load_symbol_named<'scope>(
         *definition_out = symbol_id;
 
         let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
-        resources.request_file_id(symbol_file_id, scope);
+        resources.try_request_file_id(symbol_file_id, work_sender);
     }
 }
 
@@ -757,35 +813,11 @@ fn allocate_start_stop_symbol_id<'data>(
     Some(symbol_id)
 }
 
-impl<'data, 'scope> ResolvedObject<'data> {
-    fn new(
-        obj: &'data SequencedInputObject<'data>,
-        resources: &'scope ResolutionResources<'data, '_, '_>,
-        definitions_out: &mut [SymbolId],
-        undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
-        scope: &Scope<'scope>,
-    ) -> Result<Self> {
+impl<'data> ResolvedObject<'data> {
+    fn new(obj: &'data SequencedInputObject<'data>) -> Self {
         let mut non_dynamic = None;
 
-        if obj.is_dynamic() {
-            resolve_dynamic_symbols(
-                obj,
-                resources,
-                undefined_symbols_out,
-                definitions_out,
-                scope,
-            )
-            .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
-        } else {
-            resolve_symbols(
-                obj,
-                resources,
-                undefined_symbols_out,
-                definitions_out,
-                scope,
-            )
-            .with_context(|| format!("Failed to resolve symbols in {obj}"))?;
-
+        if !obj.is_dynamic() {
             // We'll fill this in during section resolution.
             non_dynamic = Some(NonDynamicResolved {
                 sections: Default::default(),
@@ -795,13 +827,13 @@ impl<'data, 'scope> ResolvedObject<'data> {
             });
         }
 
-        Ok(Self {
+        Self {
             input: obj.parsed.input.clone(),
             object: &obj.parsed.object,
             file_id: obj.file_id,
             symbol_id_range: obj.symbol_id_range,
             non_dynamic,
-        })
+        }
     }
 }
 
@@ -908,91 +940,49 @@ fn resolve_sections_for_object<'data>(
     Ok(sections)
 }
 
-fn resolve_symbols<'data, 'scope>(
+fn resolve_symbols<'data, 'definitions>(
     obj: &SequencedInputObject<'data>,
-    resources: &'scope ResolutionResources<'data, '_, '_>,
+    resources: &ResolutionResources<'data, 'definitions, '_>,
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
+    start_symbol_offset: usize,
     definitions_out: &mut [SymbolId],
-    scope: &Scope<'scope>,
+    work_sender: &Sender<LoadObjectSymbolsRequest<'definitions>>,
 ) -> Result {
-    // We're already processing separate object groups in parallel. However, sometimes a single
-    // object can have heaps more undefined symbols than others. e.g. symbols.o written by the rust
-    // compiler, which for the bevy dylib contains around 500k undefined symbols. In order to ensure
-    // that we utilise all our threads when processing such an object, we parallelise over symbols.
-    obj.parsed
-        .object
-        .symbols
-        .symbols()
-        .par_iter()
-        .enumerate()
-        .zip_eq(definitions_out)
-        // A single symbol is too small a unit of work, so we set a somewhat higher minimum
-        // grouping. This is important to reduce stack usage by rayon. If we don't set this, or set
-        // it less than ~35, then linking of chromium fails with a stack overflow.
-        .with_min_len(1000)
-        .try_for_each(
-            |((local_symbol_index, local_symbol), definition)| -> Result {
-                resolve_symbol(
-                    object::SymbolIndex(local_symbol_index),
-                    local_symbol,
-                    definition,
-                    resources,
-                    obj,
-                    undefined_symbols_out,
-                    false,
-                    scope,
-                )
-            },
-        )?;
-    Ok(())
-}
-
-fn resolve_dynamic_symbols<'data, 'scope>(
-    obj: &SequencedInputObject<'data>,
-    resources: &'scope ResolutionResources<'data, '_, '_>,
-    undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
-    definitions_out: &mut [SymbolId],
-    scope: &Scope<'scope>,
-) -> Result {
-    obj.parsed
-        .object
-        .symbols
+    obj.parsed.object.symbols.symbols()[start_symbol_offset..]
+        .iter()
         .enumerate()
         .zip(definitions_out)
         .try_for_each(
             |((local_symbol_index, local_symbol), definition)| -> Result {
                 resolve_symbol(
-                    local_symbol_index,
+                    object::SymbolIndex(start_symbol_offset + local_symbol_index),
                     local_symbol,
                     definition,
                     resources,
                     obj,
                     undefined_symbols_out,
-                    true,
-                    scope,
+                    work_sender,
                 )
             },
-        )?;
-    Ok(())
+        )
 }
 
 #[inline(always)]
-fn resolve_symbol<'data, 'scope>(
+fn resolve_symbol<'data, 'definitions>(
     local_symbol_index: object::SymbolIndex,
     local_symbol: &crate::elf::SymtabEntry,
     definition_out: &mut SymbolId,
-    resources: &'scope ResolutionResources<'data, '_, '_>,
+    resources: &ResolutionResources<'data, 'definitions, '_>,
     obj: &SequencedInputObject<'data>,
     undefined_symbols_out: &SegQueue<UndefinedSymbol<'data>>,
-    is_from_shared_object: bool,
-    scope: &Scope<'scope>,
+    work_sender: &Sender<LoadObjectSymbolsRequest<'definitions>>,
 ) -> Result {
     // Don't try to resolve symbols that are already defined, e.g. locals and globals that we
     // define. Also don't try to resolve symbol zero - the undefined symbol. Hidden symbols exported
     // from shared objects don't make sense, so we skip resolving them as well.
     if !definition_out.is_undefined()
         || local_symbol_index.0 == 0
-        || (is_from_shared_object && crate::elf::is_hidden_symbol(local_symbol))
+        || (obj.is_dynamic() && crate::elf::is_hidden_symbol(local_symbol))
     {
         return Ok(());
     }
@@ -1023,9 +1013,8 @@ fn resolve_symbol<'data, 'scope>(
                 // objects. See
                 // https://github.com/davidlattimore/wild/issues/930#issuecomment-3007027924 for
                 // more details. TODO: Fix this.
-                if !is_from_shared_object || !resources.symbol_db.file(symbol_file_id).is_dynamic()
-                {
-                    resources.request_file_id(symbol_file_id, scope);
+                if !obj.is_dynamic() || !resources.symbol_db.file(symbol_file_id).is_dynamic() {
+                    resources.try_request_file_id(symbol_file_id, work_sender);
                 }
             } else if symbol_file_id != PRELUDE_FILE_ID {
                 // The symbol is weak and we can't be sure that the file that defined it will end up
