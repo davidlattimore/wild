@@ -28,6 +28,7 @@ pub(crate) fn parse_input_files<'data>(
     inputs: &[InputBytes<'data>],
     linker_scripts: Vec<ProcessedLinkerScript<'data>>,
     args: &'data Args,
+    output_kind: OutputKind,
 ) -> Result<ParsedInputs<'data>> {
     let (objects, prelude) = rayon::join(
         || {
@@ -36,7 +37,7 @@ pub(crate) fn parse_input_files<'data>(
                 .map(|f| ParsedInputObject::new(f, args))
                 .collect::<Result<Vec<ParsedInputObject>>>()
         },
-        move || Prelude::new(args),
+        move || Prelude::new(args, output_kind),
     );
 
     let objects = objects?;
@@ -166,7 +167,7 @@ impl<'data> ParsedInputObject<'data> {
 }
 
 impl<'data> Prelude<'data> {
-    fn new(args: &'data Args) -> Self {
+    fn new(args: &'data Args, output_kind: OutputKind) -> Self {
         // The undefined symbol must always be symbol 0.
         let mut symbol_definitions =
             vec![InternalSymDefInfo::notype(SymbolPlacement::Undefined, &[])];
@@ -175,8 +176,7 @@ impl<'data> Prelude<'data> {
             // If we're producing non-relocatable, static executable, then don't define any symbols
             // for the .dynamic section.
             if section_id == output_section_id::DYNAMIC
-                && args.output_kind()
-                    == OutputKind::StaticExecutable(RelocationModel::NonRelocatable)
+                && output_kind == OutputKind::StaticExecutable(RelocationModel::NonRelocatable)
             {
                 continue;
             }
@@ -185,7 +185,7 @@ impl<'data> Prelude<'data> {
             // .rela.plt start/stop symbols are only emitted for non-relocatable executables.
             // Emitting them for relocatable binaries causes glibc to try to call the resolver
             // functions without taking into account that the binary has been relocated.
-            if args.output_kind() != OutputKind::StaticExecutable(RelocationModel::NonRelocatable)
+            if output_kind != OutputKind::StaticExecutable(RelocationModel::NonRelocatable)
                 && section_id == output_section_id::RELA_PLT
             {
                 continue;
@@ -210,7 +210,7 @@ impl<'data> Prelude<'data> {
         // whether we're building a shared object or an executable. This symbol is used for TLSDESC.
         // See https://www.fsfla.org/~lxoliva/writeups/TLS/RFC-TLSDESC-x86.txt for more details.
         symbol_definitions.push(InternalSymDefInfo {
-            placement: if args.output_kind() == OutputKind::SharedObject {
+            placement: if output_kind == OutputKind::SharedObject {
                 SymbolPlacement::SectionStart(output_section_id::TDATA)
             } else {
                 SymbolPlacement::SectionEnd(output_section_id::TBSS)

@@ -295,8 +295,8 @@ fn populate_file_header<A: Arch>(
     header_info: &HeaderInfo,
     header: &mut FileHeader,
 ) -> Result {
-    let args = layout.args();
-    let ty = if args.output_kind().is_relocatable() {
+    let output_kind = layout.symbol_db.output_kind;
+    let ty = if output_kind.is_relocatable() {
         object::elf::ET_DYN
     } else {
         object::elf::ET_EXEC
@@ -494,7 +494,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             SymbolTableWriter::new(strtab_start_offset, buffers, &layout.output_sections);
 
         Self::new(
-            layout.args().output_kind(),
+            layout.symbol_db.output_kind,
             layout.tls_start_address()..layout.tls_end_address(),
             buffers,
             dynsym_writer,
@@ -1946,7 +1946,7 @@ fn apply_relocation<'data, A: Arch>(
     let flags = layout.flags_for_symbol(local_symbol_id);
     let mut next_modifier = RelocationModifier::Normal;
     let rel_info;
-    let output_kind = layout.args().output_kind();
+    let output_kind = layout.symbol_db.output_kind;
 
     let relaxation = A::Relaxation::new(
         r_type,
@@ -2477,7 +2477,7 @@ fn write_prelude<A: Arch>(
     }
 
     // Define the null dynamic symbol.
-    if layout.args().needs_dynsym() {
+    if layout.symbol_db.output_kind.needs_dynsym() {
         table_writer
             .dynsym_writer
             .define_symbol(false, 0, 0, 0, &[])?;
@@ -2535,7 +2535,7 @@ fn write_plt_got_entries<A: Arch>(
     if let Some(got_address) = prelude.tlsld_got_entry {
         let mut raw_value = 0;
 
-        if layout.args().output_kind().is_executable() {
+        if layout.symbol_db.output_kind.is_executable() {
             table_writer.process_resolution::<A>(
                 Some(layout),
                 &Resolution {
@@ -2701,6 +2701,7 @@ fn write_epilogue_dynamic_entries(
         section_layouts: &layout.section_layouts,
         section_part_layouts: &layout.section_part_layouts,
         non_addressable_counts: layout.non_addressable_counts,
+        output_kind: layout.symbol_db.output_kind,
     };
 
     for writer in EPILOGUE_DYNAMIC_ENTRY_WRITERS {
@@ -2751,7 +2752,7 @@ fn write_epilogue<A: Arch>(
             &mut table_writer.debug_symbol_writer,
         )?;
     }
-    if layout.args().needs_dynamic() {
+    if layout.symbol_db.output_kind.needs_dynamic() {
         write_epilogue_dynamic_entries(layout, table_writer, &mut epilogue_offsets)?;
     }
     write_sysv_hash_table(epilogue, buffers)?;
@@ -3408,7 +3409,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |inputs| {
             // Not sure why, but GNU ld seems to emit this for executables but not for shared
             // objects.
-            inputs.args.output_kind() != OutputKind::SharedObject
+            inputs.output_kind.is_executable()
         },
         |_inputs| 0,
     ),
@@ -3419,7 +3420,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_PLTGOT,
-        |inputs| inputs.args.needs_dynamic(),
+        |inputs| inputs.output_kind.needs_dynamic(),
         |inputs| inputs.vma_of_section(output_section_id::GOT),
     ),
     DynamicEntryWriter::optional(
@@ -3497,6 +3498,7 @@ struct DynamicEntryInputs<'layout> {
     section_layouts: &'layout OutputSectionMap<OutputRecordLayout>,
     section_part_layouts: &'layout OutputSectionPartMap<OutputRecordLayout>,
     non_addressable_counts: NonAddressableCounts,
+    output_kind: OutputKind,
 }
 
 impl DynamicEntryInputs<'_> {
@@ -3504,7 +3506,7 @@ impl DynamicEntryInputs<'_> {
         let mut flags = 0;
         flags |= object::elf::DF_BIND_NOW;
 
-        if !self.args.output_kind().is_executable() && self.has_static_tls {
+        if !self.output_kind.is_executable() && self.has_static_tls {
             flags |= object::elf::DF_STATIC_TLS;
         }
 
@@ -3519,7 +3521,7 @@ impl DynamicEntryInputs<'_> {
         let mut flags = 0;
         flags |= object::elf::DF_1_NOW;
 
-        if self.args.output_kind().is_executable() && self.args.is_relocatable() {
+        if self.output_kind.is_executable() && self.output_kind.is_relocatable() {
             flags |= object::elf::DF_1_PIE;
         }
 
@@ -3527,7 +3529,7 @@ impl DynamicEntryInputs<'_> {
             flags |= object::elf::DF_1_ORIGIN;
         }
 
-        if self.args.output_kind().is_shared_object() {
+        if self.output_kind.is_shared_object() {
             if self.args.needs_nodelete_handling {
                 flags |= object::elf::DF_1_NODELETE;
             }
