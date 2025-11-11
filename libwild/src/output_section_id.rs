@@ -395,6 +395,7 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) min_alignment: Alignment,
     info_fn: Option<fn(&InfoInputs) -> u32>,
     pub(crate) keep_if_empty: bool,
+    pub(crate) mark_zero_sized_input_as_content: bool,
     pub(crate) element_size: u64,
     pub(crate) ty: SectionType,
     is_relro: bool,
@@ -410,6 +411,7 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     min_alignment: alignment::MIN,
     info_fn: None,
     keep_if_empty: false,
+    mark_zero_sized_input_as_content: true,
     element_size: 0,
     ty: sht::NULL,
     is_relro: false,
@@ -501,6 +503,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::ALLOC,
         min_alignment: alignment::USIZE,
         target_segment_type: Some(pt::GNU_SFRAME),
+        mark_zero_sized_input_as_content: false,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -787,6 +790,14 @@ impl OutputSectionId {
         SECTION_DEFINITIONS
             .get(self.as_usize())
             .map_or(alignment::MIN, |d| d.min_alignment)
+    }
+
+    pub(crate) fn marks_zero_sized_inputs_as_content(self) -> bool {
+        if let Some(details) = self.opt_built_in_details() {
+            details.mark_zero_sized_input_as_content
+        } else {
+            true
+        }
     }
 
     pub(crate) fn is_regular(self) -> bool {
