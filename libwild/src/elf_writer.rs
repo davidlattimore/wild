@@ -227,7 +227,7 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
         if relocations > 0 {
             tracing::debug!(
                 target: "metrics",
-                section = layout.output_sections.display_name(output_section_id),
+                section = %layout.output_sections.display_name(output_section_id),
                 relocations, "resolved relocations");
         }
     }

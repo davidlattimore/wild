@@ -1057,14 +1057,10 @@ impl<'data> OutputSections<'data> {
         }
     }
 
-    pub(crate) fn display_name(&self, section_id: OutputSectionId) -> String {
-        match self.output_info(section_id).kind {
-            SectionKind::Primary(section_name) => {
-                format!("`{}`", String::from_utf8_lossy(section_name.0))
-            }
-            SectionKind::Secondary(primary_id) => {
-                format!("`{}` (secondary)", self.display_name(primary_id))
-            }
+    pub(crate) fn display_name(&self, section_id: OutputSectionId) -> SectionDisplayName<'_, '_> {
+        SectionDisplayName {
+            output_sections: self,
+            section_id,
         }
     }
 
@@ -1093,6 +1089,28 @@ impl<'data> OutputSections<'data> {
         add_name("data");
         add_name("bss");
         output_sections
+    }
+}
+
+pub(crate) struct SectionDisplayName<'a, 'data> {
+    output_sections: &'a OutputSections<'data>,
+    section_id: OutputSectionId,
+}
+
+impl Display for SectionDisplayName<'_, '_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.output_sections.output_info(self.section_id).kind {
+            SectionKind::Primary(section_name) => {
+                write!(f, "`{}`", String::from_utf8_lossy(section_name.0))
+            }
+            SectionKind::Secondary(primary_id) => {
+                write!(
+                    f,
+                    "`{}` (secondary)",
+                    self.output_sections.display_name(primary_id)
+                )
+            }
+        }
     }
 }
 
