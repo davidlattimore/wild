@@ -68,6 +68,7 @@ use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
 use crate::resolution::SectionSlot;
+use crate::sframe;
 use crate::sharding::ShardKey;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::RawSymbolName;
@@ -220,6 +221,14 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
                 .with_context(|| format!("validate_empty failed for {group}"))?;
             Ok(())
         })?;
+
+    let sframe_buffer = section_buffers.get_mut(output_section_id::SFRAME);
+    if !sframe_buffer.is_empty() {
+        sframe::sort_sframe_section(
+            sframe_buffer,
+            layout.mem_address_of_built_in(output_section_id::SFRAME),
+        )?;
+    }
 
     for (output_section_id, _) in layout.output_sections.ids_with_info() {
         let relocations = layout
