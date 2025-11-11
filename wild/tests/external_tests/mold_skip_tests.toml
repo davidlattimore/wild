@@ -190,6 +190,7 @@ tests = [
   "duplicate-error.sh",             # Different message formats
   "empty-arg.sh",                   # Different message formats
   "empty-input.sh",                 # Different message formats
+  "gc-sections.sh",                 # Passes when `--no-gc-sections` is passed.
   "hash-style.sh",                  # Wild doesn't support `--hash-style=none`.
   "help.sh",
   "invalid-version-script.sh",      # Different message formats
@@ -198,11 +199,15 @@ tests = [
   "mold-wrapper2.sh",
   "plt-symbols.sh",                 # Wild currently doesn't create entries in the symbol table with the `$plt` suffix unless `--got-plt-syms` is specified
   "run-clang.sh",                   # This test checks the comment section to verify if it's linked with mold.
+  "start-lib.sh",                   # Passes when `--no-gc-sections` is passed.
   "stdout.sh",
+  "undefined.sh",                   # Passes when `--no-gc-sections` is passed.
+  "undefined2.sh",                  # Passes when `--no-gc-sections` is passed.
   "unresolved-symbols.sh",          # Different message formats
   "verbose.sh",
   "version.sh",                     # The message of `--version` is different from mold's one.
   "warn-unresolved-symbols.sh",     # Different message formats
+  "whole-archive.sh",               # Passes when `--no-gc-sections` is passed.
   "z-defs.sh",                      # Different message formats
 ]
 
@@ -227,7 +232,6 @@ tests = [
   "discard-section.sh",
   "discard.sh",
   "dynamic-linker.sh",
-  "gc-sections.sh",
   "glibc-2.22-bug.sh",
   "gnu-property.sh",
   "hidden-undef.sh",
@@ -252,7 +256,6 @@ tests = [
   "rodata-name.sh",
   "rpath.sh",
   "section-attributes.sh",
-  "start-lib.sh",
   "strip.sh",
   "stt-common.sh",
   "symbol-version-as-needed.sh",
@@ -263,8 +266,6 @@ tests = [
   "symtab-section-symbols.sh",
   "symtab.sh",
   "textrel2.sh",
-  "undefined.sh",
-  "undefined2.sh",
   "unkown-section-type.sh",
   "versioned-undef.sh",
   "warn-symbol-type.sh",
@@ -272,5 +273,4 @@ tests = [
   "weak-undef.sh",
   "weak-undef2.sh",
   "weak-undef5.sh",
-  "whole-archive.sh",
 ]
