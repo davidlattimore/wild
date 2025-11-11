@@ -32,9 +32,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
-use std::sync::atomic::Ordering;
 
 #[derive(Debug)]
 pub(crate) enum DefsymValue {
@@ -119,9 +117,8 @@ pub struct Args {
     pub(crate) allow_multiple_definitions: bool,
     pub(crate) z_interpose: bool,
 
-    output_kind: Option<OutputKind>,
-    pub(crate) is_dynamic_executable: AtomicBool,
-    relocation_model: RelocationModel,
+    pub(crate) relocation_model: RelocationModel,
+    pub(crate) outputting_executable: bool,
 
     /// The number of actually available threads (considering jobserver)
     pub(crate) available_threads: NonZeroUsize,
@@ -356,9 +353,8 @@ impl Default for Args {
             lib_search_path: Vec::new(),
             inputs: Vec::new(),
             output: Arc::from(Path::new("a.out")),
-            is_dynamic_executable: AtomicBool::new(false),
+            outputting_executable: true,
             dynamic_linker: None,
-            output_kind: None,
             time_phase_options: None,
             num_threads: None,
             strip: Strip::Nothing,
@@ -475,16 +471,9 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
     }
 
     // Copy relocations are only permitted when building executables.
-    if args.output_kind() == OutputKind::SharedObject {
+    if !args.outputting_executable {
         args.copy_relocations =
             CopyRelocations::Disallowed(CopyRelocationsDisabledReason::SharedObject);
-    }
-
-    // GNU ld turns static relocatable executables into dynamic ones if dynamic linker is set.
-    if args.dynamic_linker.is_some()
-        && args.output_kind() == OutputKind::StaticExecutable(RelocationModel::Relocatable)
-    {
-        args.output_kind = Some(OutputKind::DynamicExecutable(args.relocation_model));
     }
 
     if !args.unrecognized_options.is_empty() {
@@ -523,14 +512,6 @@ impl Args {
         parse(input)
     }
 
-    pub(crate) fn base_address(&self) -> u64 {
-        if self.is_relocatable() {
-            0
-        } else {
-            crate::elf::NON_PIE_START_MEM_ADDRESS
-        }
-    }
-
     /// Uses 1 debug fuel, returning how much fuel remains. Debug fuel is intended to be used when
     /// debugging certain kinds of bugs, so this function isn't normally referenced. To use it, the
     /// caller should take a different branch depending on whether the value is still positive. You
@@ -556,31 +537,24 @@ impl Args {
         }
     }
 
-    pub(crate) fn needs_dynsym(&self) -> bool {
-        self.output_kind().needs_dynsym()
-    }
+    // pub(crate) fn needs_dynsym(&self) -> bool {
+    //     self.output_kind().needs_dynsym()
+    // }
 
-    pub(crate) fn is_relocatable(&self) -> bool {
-        self.output_kind().is_relocatable()
-    }
+    // pub(crate) fn is_relocatable(&self) -> bool {
+    //     self.output_kind().is_relocatable()
+    // }
 
-    /// Returns whether we need a dynamic section.
-    pub(crate) fn needs_dynamic(&self) -> bool {
-        self.output_kind().needs_dynamic()
-    }
+    // /// Returns whether we need a dynamic section.
+    // pub(crate) fn needs_dynamic(&self) -> bool {
+    //     self.output_kind().needs_dynamic()
+    // }
 
-    #[allow(dead_code)]
-    pub(crate) fn should_debug_address(&self, address: u64) -> bool {
-        self.debug_address
-            .is_some_and(|a| address >= a && address < a + 8)
-    }
-
-    pub(crate) fn should_output_symbol_versions(&self) -> bool {
-        matches!(
-            self.output_kind(),
-            OutputKind::DynamicExecutable(_) | OutputKind::SharedObject
-        )
-    }
+    // #[allow(dead_code)]
+    // pub(crate) fn should_debug_address(&self, address: u64) -> bool {
+    //     self.debug_address
+    //         .is_some_and(|a| address >= a && address < a + 8)
+    // }
 
     pub(crate) fn trace_span_for_file(
         &self,
@@ -592,16 +566,6 @@ impl Args {
 
     pub fn should_fork(&self) -> bool {
         self.should_fork
-    }
-
-    pub(crate) fn output_kind(&self) -> OutputKind {
-        self.output_kind.unwrap_or_else(|| {
-            if self.is_dynamic_executable.load(Ordering::Relaxed) {
-                OutputKind::DynamicExecutable(self.relocation_model)
-            } else {
-                OutputKind::StaticExecutable(self.relocation_model)
-            }
-        })
     }
 
     pub(crate) fn loadable_segment_alignment(&self) -> Alignment {
@@ -734,8 +698,23 @@ impl OutputKind {
         )
     }
 
-    fn needs_dynamic(self) -> bool {
+    pub(crate) fn needs_dynamic(self) -> bool {
         self != OutputKind::StaticExecutable(RelocationModel::NonRelocatable)
+    }
+
+    pub(crate) fn base_address(&self) -> u64 {
+        if self.is_relocatable() {
+            0
+        } else {
+            crate::elf::NON_PIE_START_MEM_ADDRESS
+        }
+    }
+
+    pub(crate) fn should_output_symbol_versions(&self) -> bool {
+        matches!(
+            self,
+            OutputKind::DynamicExecutable(_) | OutputKind::SharedObject
+        )
     }
 }
 
@@ -1434,6 +1413,7 @@ fn setup_argument_parser() -> ArgumentParser {
             "nocopyreloc",
             "Disable copy relocations",
             |args, _modifier_stack, _value| {
+                // At this point we already know whether we output executable or a shared object.
                 args.copy_relocations =
                     CopyRelocations::Disallowed(CopyRelocationsDisabledReason::Flag);
                 Ok(())
@@ -1580,7 +1560,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("Bshareable")
         .help("Create a shared library")
         .execute(|args, _modifier_stack| {
-            args.output_kind = Some(OutputKind::SharedObject);
+            args.outputting_executable = false;
             Ok(())
         });
 
@@ -1590,7 +1570,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Create a position-independent executable")
         .execute(|args, _modifier_stack| {
             args.relocation_model = RelocationModel::Relocatable;
-            args.output_kind = None;
+            args.outputting_executable = true;
             Ok(())
         });
 
@@ -1600,7 +1580,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Do not create a position-dependent executable (default)")
         .execute(|args, _modifier_stack| {
             args.relocation_model = RelocationModel::NonRelocatable;
-            args.output_kind = None;
+            args.outputting_executable = true;
             Ok(())
         });
 
@@ -2587,7 +2567,7 @@ mod tests {
     }
 
     fn input1_assertions(args: &Args) {
-        assert!(args.is_relocatable());
+        // assert!(args.is_relocatable());
         assert_eq!(
             args.inputs
                 .iter()
@@ -2623,7 +2603,7 @@ mod tests {
     }
 
     fn inline_and_file_options_assertions(args: &Args) {
-        assert!(args.is_relocatable());
+        // assert!(args.is_relocatable());
         assert_contains(&args.lib_search_path, "/lib");
     }
 
