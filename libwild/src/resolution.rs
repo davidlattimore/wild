@@ -367,11 +367,18 @@ impl<'definitions> ResolutionResources<'_, 'definitions, '_> {
         file_id: FileId,
         work_sender: &Sender<LoadObjectSymbolsRequest<'definitions>>,
     ) {
-        let Some(definitions_out) =
-            self.definitions_per_file[file_id.group()][file_id.file()].take()
-        else {
+        let atomic_take = &self.definitions_per_file[file_id.group()][file_id.file()];
+
+        // Do a read before we call `take`. Reads are cheaper, so this is an optimisation that
+        // reduces the need for exclusive access to the cache line.
+        if atomic_take.is_taken() {
             // The definitions have previously been taken indicating that this file has already been
             // processed, nothing more to do.
+            return;
+        }
+
+        let Some(definitions_out) = atomic_take.take() else {
+            // Another thread just beat us to it.
             return;
         };
 
