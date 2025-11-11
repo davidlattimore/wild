@@ -15,6 +15,12 @@ You're also welcome to reach out directly to the following people:
   maintainer. I love talking about this stuff, so feel free to set up a video call to discuss.
   You're also welcome to PM me on the [rust-lang zulip](https://rust-lang.zulipchat.com/).
 
+## Meetings
+
+We try to have about one video call per month. To add this to your calendar, join the
+[wild-dev-meetings](https://groups.google.com/g/wild-dev-meetings) google group. If this doesn't
+work for some reason, come and talk to us on Zulip and we'll try to find another way to add you.
+
 ## Ways you can contribute
 
 * Use `wild` and let us know your experiences, or file issues for problems found.
