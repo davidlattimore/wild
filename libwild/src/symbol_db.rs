@@ -36,6 +36,7 @@ use crate::value_flags::FlagsForSymbol;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::RawFlags;
 use crate::value_flags::ValueFlags;
+use crate::verbose_timing_phase;
 use crate::version_script::VersionScript;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
@@ -344,8 +345,17 @@ impl<'data> SymbolDb<'data> {
 
             populate_symbol_db(&mut buckets, &per_group_outputs);
 
-            for shard in per_group_shards {
-                writers.return_shard(shard);
+            {
+                verbose_timing_phase!("Return shards");
+
+                for shard in per_group_shards {
+                    writers.return_shard(shard);
+                }
+            }
+            {
+                // TODO: Do this on a separate thread.
+                verbose_timing_phase!("Drop per-group outputs");
+                drop(per_group_outputs);
             }
         }
 
@@ -365,6 +375,8 @@ impl<'data> SymbolDb<'data> {
         };
 
         index.apply_wrapped_symbol_overrides(args, herd);
+
+        verbose_timing_phase!("Apply linker scripts");
 
         for script in linker_scripts {
             index.apply_linker_script(script);
@@ -405,6 +417,8 @@ impl<'data> SymbolDb<'data> {
         if args.wrap.is_empty() {
             return;
         }
+
+        verbose_timing_phase!("Apply wrapped symbol overrides");
 
         let allocator = herd.get();
 
@@ -877,6 +891,8 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
     let error_queue = SegQueue::new();
 
     buckets.par_iter_mut().for_each(|bucket| {
+        verbose_timing_phase!("Resolve alternative for bucket");
+
         process_alternatives(
             &mut bucket.alternative_definitions,
             &error_queue,
@@ -1118,6 +1134,12 @@ fn read_symbols_for_group<'data>(
     args: &Args,
     output_kind: OutputKind,
 ) -> Result<SymbolLoadOutputs<'data>> {
+    verbose_timing_phase!(
+        "Read group symbols",
+        group_id = shard.group.group_id(),
+        num_symbols = shard.group.num_symbols()
+    );
+
     let mut outputs = SymbolLoadOutputs {
         pending_symbols_by_bucket: vec![PendingSymbolHashBucket::default(); num_buckets],
     };
@@ -1160,6 +1182,8 @@ fn populate_symbol_db<'data>(
     timing_phase!("Populate symbol map");
 
     buckets.par_iter_mut().enumerate().for_each(|(b, bucket)| {
+        verbose_timing_phase!("Process symbol bucket");
+
         // The following approximation should be an upper bound on the number of global
         // names we'll have. There will likely be at least a few global symbols with the
         // same name, in which case the actual number will be slightly smaller.

@@ -43,6 +43,7 @@ use crate::symbol_db::Visibility;
 use crate::timing_phase;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
+use crate::verbose_timing_phase;
 use atomic_take::AtomicTake;
 use crossbeam_channel::Sender;
 use crossbeam_queue::ArrayQueue;
@@ -294,6 +295,8 @@ fn resolve_sections<'data>(
     groups.par_iter_mut().try_for_each_init(
         || herd.get(),
         |allocator, group| -> Result {
+            verbose_timing_phase!("Resolve group sections");
+
             for file in &mut group.files {
                 let ResolvedFile::Object(obj) = file else {
                     continue;
@@ -608,9 +611,13 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
 
     match &resources.symbol_db.groups[file_id.group()] {
         Group::Prelude(prelude) => {
+            verbose_timing_phase!("Resolve prelude symbols");
+
             load_prelude(prelude, definitions_out, resources, &work_item.work_sender);
         }
         Group::Objects(parsed_input_objects) => {
+            verbose_timing_phase!("Resolve object symbols");
+
             let obj = &parsed_input_objects[file_id.file()];
 
             let res = resolve_symbols(

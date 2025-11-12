@@ -46,6 +46,17 @@ pub(crate) enum SequencedInput<'data> {
 }
 
 impl Group<'_> {
+    // This is used when the verbose-ttttiming feature is enabled.
+    #[allow(dead_code)]
+    pub(crate) fn group_id(&self) -> usize {
+        match self {
+            Group::Prelude(_) => 0,
+            Group::Objects(objects) => objects[0].file_id.group(),
+            Group::LinkerScripts(scripts) => scripts[0].file_id.group(),
+            Group::Epilogue(epilogue) => epilogue.file_id.group(),
+        }
+    }
+
     pub(crate) fn start_symbol_id(&self) -> SymbolId {
         self.symbol_id_range().start()
     }
@@ -136,7 +147,7 @@ pub(crate) fn group_files<'data>(
         }
     }
 
-    let linker_scripts = parsed_inputs
+    let linker_scripts: Vec<SequencedLinkerScript<'_>> = parsed_inputs
         .linker_scripts
         .into_iter()
         .enumerate()
@@ -152,7 +163,9 @@ pub(crate) fn group_files<'data>(
         })
         .collect();
 
-    groups.push(Group::LinkerScripts(linker_scripts));
+    if !linker_scripts.is_empty() {
+        groups.push(Group::LinkerScripts(linker_scripts));
+    }
 
     groups.push(Group::Epilogue(Epilogue {
         file_id: FileId::new(groups.len() as u32, 0),

@@ -41,6 +41,7 @@ use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::SectionSlot;
 use crate::timing_phase;
+use crate::verbose_timing_phase;
 use crossbeam_channel::Sender;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
@@ -222,6 +223,18 @@ pub(crate) fn merge_strings<'data>(
     let reuse_pool = ReusePool::new(MERGE_STRING_BUCKETS * split_parallelism);
 
     input_sections_by_output.try_for_each(|section_id, input_sections| {
+        // We later create ArrayQueues with capacity for all input sections and ArrayQueue panics if
+        // asked for zero capacity. Also, spawning tasks and all the other work we do here would be
+        // a waste if we have no input sections.
+        if input_sections.is_empty() {
+            return Ok(());
+        }
+
+        verbose_timing_phase!(
+            "Merge section",
+            section_name = output_sections.display_name(section_id)
+        );
+
         let output_section = output_string_sections.get_mut(section_id);
         output_section.add_input_sections(input_sections, &reuse_pool, args)?;
 
@@ -373,13 +386,6 @@ impl<'data> MergedStringsSection<'data> {
         reuse_pool: &ReusePool,
         args: &Args,
     ) -> Result {
-        // We later create ArrayQueues with capacity for all input sections and ArrayQueue panics if
-        // asked for zero capacity. Also, spawning tasks and all the other work we do here would be
-        // a waste if we have no input sections.
-        if input_sections.is_empty() {
-            return Ok(());
-        }
-
         let mut resources =
             create_split_resources(&mut self.string_offsets, input_sections, reuse_pool, args);
 
@@ -430,14 +436,20 @@ impl<'data> MergedStringsSection<'data> {
             return Err(error);
         }
 
-        // Handle any offsets that didn't fit in their respective blocks in the offset map.
-        let overflow = core::mem::take(&mut resources.overflowed_offsets);
-        overflow
-            .into_iter()
-            .flat_map(|cell| cell.into_inner())
-            .for_each(|o| {
-                self.overflowed_string_offsets.insert(o.input, o.output);
-            });
+        {
+            verbose_timing_phase!("Handle overflows");
+
+            // Handle any offsets that didn't fit in their respective blocks in the offset map.
+            let overflow = core::mem::take(&mut resources.overflowed_offsets);
+            overflow
+                .into_iter()
+                .flat_map(|cell| cell.into_inner())
+                .for_each(|o| {
+                    self.overflowed_string_offsets.insert(o.input, o.output);
+                });
+        }
+
+        verbose_timing_phase!("Finalise merged section");
 
         // Move our buckets out of `resources` and convert it to a regular Vec.
         let mut buckets = resources
@@ -728,6 +740,16 @@ fn process_input_section_group<'data, 'offsets, 'scope>(
     work_send: &Arc<Sender<WorkItem<'data>>>,
     reservation: &mut PoolReservation,
 ) -> Result {
+    verbose_timing_phase!(
+        "Split and hash",
+        num_sections = group_in.sections.len(),
+        num_bytes = group_in
+            .sections
+            .iter()
+            .map(|s| s.section_data.len())
+            .sum::<usize>()
+    );
+
     let mut buckets: [Vec<StringToMerge<'data, 'offsets>>; MERGE_STRING_BUCKETS] = [();
         MERGE_STRING_BUCKETS]
         .map(|()| resources.reuse_pool.take_string_merge_vec(reservation));
@@ -758,6 +780,8 @@ fn work_with_bucket<'data>(
     mut bucket: Box<MergeStringsSectionBucket<'data>>,
     work_send: &Arc<Sender<WorkItem<'data>>>,
 ) -> Result {
+    verbose_timing_phase!("Bucket strings");
+
     let mut overflowed_offsets = resources.overflowed_offsets.get_or_default().borrow_mut();
 
     while bucket.next_input_group_index < resources.num_input_groups {

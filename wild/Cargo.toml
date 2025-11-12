@@ -40,6 +40,8 @@ default = ["fork"]
 
 fork = ["libwild/fork"]
 
+perfetto = ["libwild/perfetto"]
+
 # external tests
 external_tests = ["mold_tests"]
 mold_tests = []

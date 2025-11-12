@@ -20,6 +20,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::timing_phase;
+use crate::verbose_timing_phase;
 use linker_utils::elf::SymbolType;
 use linker_utils::elf::stt;
 use rayon::iter::IntoParallelRefIterator;
@@ -40,8 +41,13 @@ pub(crate) fn parse_input_files<'data>(
                 .map(|f| ParsedInputObject::new(f, args))
                 .collect::<Result<Vec<ParsedInputObject>>>()
         },
-        move || Prelude::new(args, output_kind),
+        move || {
+            verbose_timing_phase!("Construct prelude");
+            Prelude::new(args, output_kind)
+        },
     );
+
+    verbose_timing_phase!("Count symbols");
 
     let objects = objects?;
     let mut prelude = prelude;
@@ -153,6 +159,7 @@ impl<'data> InternalSymDefInfo<'data> {
 
 impl<'data> ParsedInputObject<'data> {
     fn new(input: &InputBytes<'data>, args: &Args) -> Result<Self> {
+        verbose_timing_phase!("Parse file");
         let is_dynamic = input.kind == FileKind::ElfDynamic;
 
         let object = File::parse(input.data, is_dynamic)
