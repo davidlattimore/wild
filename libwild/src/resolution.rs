@@ -871,8 +871,8 @@ fn resolve_sections_for_object<'data>(
             let section_flags = SectionFlags::from_header(input_section);
             let raw_alignment = obj.object.section_alignment(input_section)?;
             let alignment = Alignment::new(raw_alignment.max(1))?;
-            let should_merge_strings =
-                part_id::should_merge_strings(section_flags, raw_alignment, args);
+            let should_merge_sections =
+                part_id::should_merge_sections(section_flags, raw_alignment, args);
 
             let mut unloaded_section;
             let mut is_debug_info = false;
@@ -922,7 +922,7 @@ fn resolve_sections_for_object<'data>(
                 custom_sections.push(custom_section);
             }
 
-            let slot = if should_merge_strings {
+            let slot = if should_merge_sections {
                 let section_data =
                     obj.object
                         .section_data(input_section, allocator, loaded_metrics)?;

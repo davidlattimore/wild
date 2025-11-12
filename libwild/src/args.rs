@@ -49,7 +49,7 @@ pub struct Args {
     pub(crate) strip: Strip,
     pub(crate) prepopulate_maps: bool,
     pub(crate) sym_info: Option<String>,
-    pub(crate) merge_strings: bool,
+    pub(crate) merge_sections: bool,
     pub(crate) debug_fuel: Option<AtomicI64>,
     pub(crate) validate_output: bool,
     pub(crate) version_script_path: Option<PathBuf>,
@@ -360,7 +360,7 @@ impl Default for Args {
             gc_sections: true,
             prepopulate_maps: false,
             sym_info: None,
-            merge_strings: true,
+            merge_sections: true,
             copy_relocations: CopyRelocations::Allowed,
             debug_fuel: None,
             validate_output: std::env::var(VALIDATE_ENV).is_ok_and(|v| v == "1"),
@@ -1843,9 +1843,9 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare()
         .long("no-string-merge")
-        .help("Disable string merging")
+        .help("Disable section merging")
         .execute(|args, _modifier_stack| {
-            args.merge_strings = false;
+            args.merge_sections = false;
             Ok(())
         });
 
