@@ -18,17 +18,19 @@ use crate::output_section_id;
 use crate::output_section_id::OutputSectionId;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
+use crate::timing_phase;
 use linker_utils::elf::SymbolType;
 use linker_utils::elf::stt;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 
-#[tracing::instrument(skip_all, name = "Parse input files")]
 pub(crate) fn parse_input_files<'data>(
     inputs: &[InputBytes<'data>],
     linker_scripts: Vec<ProcessedLinkerScript<'data>>,
     args: &'data Args,
 ) -> Result<ParsedInputs<'data>> {
+    timing_phase!("Parse input files");
+
     let (objects, prelude) = rayon::join(
         || {
             inputs
@@ -51,11 +53,12 @@ pub(crate) fn parse_input_files<'data>(
     })
 }
 
-#[tracing::instrument(skip_all, name = "Process linker scripts")]
 pub(crate) fn process_linker_scripts<'data>(
     linker_scripts_in: &[InputLinkerScript<'data>],
     output_sections: &mut OutputSections<'data>,
 ) -> Result<(Vec<ProcessedLinkerScript<'data>>, LayoutRules<'data>)> {
+    timing_phase!("Process linker scripts");
+
     let mut builder = LayoutRulesBuilder::default();
 
     let linker_scripts = linker_scripts_in

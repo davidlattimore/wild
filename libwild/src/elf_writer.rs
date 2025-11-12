@@ -73,6 +73,7 @@ use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::RawSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
+use crate::timing_phase;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use hashbrown::HashMap;
@@ -184,8 +185,8 @@ fn compute_hash(sized_output: &SizedOutput) -> blake3::Hash {
         .finalize()
 }
 
-#[tracing::instrument(skip_all, name = "Write data to file")]
 fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout) -> Result {
+    timing_phase!("Write data to file");
     let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
 
     let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
@@ -242,8 +243,8 @@ fn fill_padding(mut section_buffers: OutputSectionMap<&mut [u8]>) {
     });
 }
 
-#[tracing::instrument(skip_all, name = "Sort .eh_frame_hdr")]
 fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {
+    timing_phase!("Sort .eh_frame_hdr");
     let entry_bytes = &mut eh_frame_hdr[size_of::<elf::EhFrameHdr>()..];
     let entries = <[elf::EhFrameHdrEntry]>::mut_from_bytes(entry_bytes).unwrap();
     entries.par_sort_by_key(|e| e.frame_ptr);

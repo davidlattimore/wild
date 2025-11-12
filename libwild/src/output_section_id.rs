@@ -37,6 +37,7 @@ use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
 use crate::program_segments::STACK_SEGMENT_DEF;
 use crate::resolution::SectionSlot;
+use crate::timing_phase;
 use core::slice;
 use hashbrown::HashMap;
 use linker_utils::elf::SectionFlags;
@@ -974,8 +975,9 @@ impl<'data> OutputSections<'data> {
         }
     }
 
-    #[tracing::instrument(skip_all, name = "Compute output order")]
     pub(crate) fn output_order(&self) -> (OutputOrder, ProgramSegments) {
+        timing_phase!("Compute output order");
+
         let mut custom = CustomSectionIds::default();
 
         self.section_infos.for_each(|id, info| {

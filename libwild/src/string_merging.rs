@@ -37,6 +37,7 @@ use crate::part_id::PartId;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::SectionSlot;
+use crate::timing_phase;
 use crossbeam_channel::Sender;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
@@ -192,12 +193,13 @@ pub(crate) struct MergeStringsSectionBucket<'data> {
 
 /// Merges identical strings from all loaded objects where those strings are from input sections
 /// that are marked with both the SHF_MERGE and SHF_STRINGS flags.
-#[tracing::instrument(skip_all, name = "Merge strings")]
 pub(crate) fn merge_strings<'data>(
     resolved: &mut [ResolvedGroup<'data>],
     output_sections: &OutputSections,
     args: &Args,
 ) -> Result<OutputSectionMap<MergedStringsSection<'data>>> {
+    timing_phase!("Merge strings");
+
     let input_sections_by_output =
         group_merge_string_sections_by_output(resolved, output_sections)?;
 
@@ -966,12 +968,13 @@ fn find_string(
 }
 
 impl MergedStringStartAddresses {
-    #[tracing::instrument(skip_all, name = "Compute merged string section start addresses")]
     pub(crate) fn compute(
         output_sections: &OutputSections<'_>,
         starting_mem_offsets_by_group: &[OutputSectionPartMap<u64>],
         merge_string_sections: &OutputSectionMap<MergedStringsSection>,
     ) -> Self {
+        timing_phase!("Compute merged string section start addresses");
+
         let mut addresses = output_sections.new_section_map_with(|| [0; MERGE_STRING_BUCKETS]);
         let internal_start_offsets = starting_mem_offsets_by_group.first().unwrap();
         merge_string_sections.for_each(|section_id, sec| {

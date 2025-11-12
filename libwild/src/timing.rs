@@ -9,6 +9,14 @@ use std::time::Duration;
 use std::time::Instant;
 use tracing::field::Visit;
 
+#[macro_export]
+macro_rules! timing_phase {
+    ($phase:expr) => {
+        let span = tracing::span!(tracing::Level::INFO, $phase);
+        let _guard = span.enter();
+    };
+}
+
 struct TimingLayer {
     counter_pool: Option<ArrayQueue<CounterList>>,
 }

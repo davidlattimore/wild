@@ -11,6 +11,7 @@ use crate::sharding::ShardKey as _;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
+use crate::timing_phase;
 use std::fmt::Display;
 
 #[derive(Debug)]
@@ -74,12 +75,13 @@ impl Group<'_> {
     }
 }
 
-#[tracing::instrument(skip_all, name = "Group files")]
 pub(crate) fn group_files<'data>(
     parsed_inputs: ParsedInputs<'data>,
     args: &Args,
     herd: &'data bumpalo_herd::Herd,
 ) -> Vec<Group<'data>> {
+    timing_phase!("Group files");
+
     let max_files_per_group = determine_max_files_per_group(args);
     let symbols_per_group = determine_symbols_per_group(&parsed_inputs, args);
 

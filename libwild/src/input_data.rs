@@ -14,6 +14,7 @@ use crate::error::Error;
 use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::linker_script::LinkerScript;
+use crate::timing_phase;
 use colosseum::sync::Arena;
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
@@ -193,8 +194,9 @@ struct LoadedLinkerScript<'data> {
 }
 
 impl<'data> InputData<'data> {
-    #[tracing::instrument(skip_all, name = "Open input files")]
     pub fn from_args(args: &'data Args, inputs_arena: &'data Arena<InputFile>) -> Result<Self> {
+        timing_phase!("Open input files");
+
         let version_script_data = args
             .version_script_path
             .as_ref()
@@ -267,8 +269,9 @@ impl<'data> InputData<'data> {
     /// them. If they were modified while we were running, then we may fail with a SIGBUS if we try
     /// to access part of the file that's no longer there, however if we don't, then we may have
     /// read inconsistent data from the changed object, so we want to fail the link.
-    #[tracing::instrument(skip_all, name = "Verify inputs unchanged")]
     pub(crate) fn verify_inputs_unchanged(&self) -> Result {
+        timing_phase!("Verify inputs unchanged");
+
         self.files.par_iter().try_for_each(|file| {
             let Some(file_data) = &file.data else {
                 return Ok(());

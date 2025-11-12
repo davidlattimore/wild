@@ -12,6 +12,7 @@ use crate::hash::PreHashed;
 use crate::input_data::ScriptData;
 use crate::linker_script::skip_comments_and_whitespace;
 use crate::symbol::UnversionedSymbolName;
+use crate::timing_phase;
 use glob::Pattern;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
@@ -377,8 +378,9 @@ fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<Vers
 }
 
 impl<'data> VersionScript<'data> {
-    #[tracing::instrument(skip_all, name = "Parse version script")]
     pub(crate) fn parse(data: ScriptData<'data>) -> Result<VersionScript<'data>> {
+        timing_phase!("Parse version script");
+
         parse_version_script
             .parse(BStr::new(data.raw))
             .map_err(|err| error!("Failed to parse version script:\n{err}"))

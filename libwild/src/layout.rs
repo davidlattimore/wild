@@ -74,6 +74,7 @@ use crate::symbol_db::SymbolDebug;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::symbol_db::is_mapping_symbol_name;
+use crate::timing_phase;
 use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::FlagsForSymbol as _;
 use crate::value_flags::PerSymbolFlags;
@@ -135,7 +136,6 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use zerocopy::FromBytes;
 
-#[tracing::instrument(skip_all, name = "Layout")]
 pub fn compute<'data, A: Arch>(
     symbol_db: SymbolDb<'data>,
     mut per_symbol_flags: PerSymbolFlags,
@@ -144,6 +144,8 @@ pub fn compute<'data, A: Arch>(
     output: &mut file_writer::Output,
     input_data: &InputData<'data>,
 ) -> Result<Layout<'data>> {
+    timing_phase!("Layout");
+
     let ResolutionOutputs {
         groups,
         merged_strings,
@@ -167,10 +169,10 @@ pub fn compute<'data, A: Arch>(
     let mut group_states = gc_outputs.group_states;
 
     finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
-    merge_dynamic_symbol_definitions(&mut group_states)?;
+    merge_dynamic_symbol_definitions(&mut group_states);
     merge_gnu_property_notes::<A>(&mut group_states)?;
     merge_eflags::<A>(&mut group_states)?;
-    merge_riscv_attributes::<A>(&mut group_states)?;
+    merge_riscv_attributes::<A>(&mut group_states);
 
     finalise_all_sizes(
         &symbol_db,
@@ -297,11 +299,12 @@ pub fn compute<'data, A: Arch>(
 }
 
 /// Update resolutions for all dynamic symbols that our output file defines.
-#[tracing::instrument(skip_all, name = "Update dynamic symbol resolutions")]
 fn update_dynamic_symbol_resolutions(
     layouts: &[GroupLayout],
     resolutions: &mut [Option<Resolution>],
 ) {
+    timing_phase!("Update dynamic symbol resolutions");
+
     let Some(FileLayout::Epilogue(epilogue)) = layouts.last().and_then(|g| g.files.last()) else {
         panic!("Epilogue should be the last file");
     };
@@ -319,12 +322,13 @@ fn update_dynamic_symbol_resolutions(
 /// symbols with copy relocations. If the other symbol is non-weak, then we do the copy relocation
 /// for that symbol instead. We also request dynamic symbol definitions for each copy relocation.
 /// For that reason, this needs to be done before we merge dynamic symbol definitions.
-#[tracing::instrument(skip_all, name = "Finalise copy relocations")]
 fn finalise_copy_relocations<'data>(
     group_states: &mut [GroupState<'data>],
     symbol_db: &SymbolDb<'data>,
     symbol_flags: &AtomicPerSymbolFlags,
 ) -> Result {
+    timing_phase!("Finalise copy relocations");
+
     group_states.par_iter_mut().try_for_each(|group| {
         for file in &mut group.files {
             if let FileLayoutState::Dynamic(dynamic) = file {
@@ -336,13 +340,14 @@ fn finalise_copy_relocations<'data>(
     })
 }
 
-#[tracing::instrument(skip_all, name = "Finalise per-object sizes")]
 fn finalise_all_sizes<'data>(
     symbol_db: &SymbolDb<'data>,
     output_sections: &OutputSections,
     group_states: &mut [GroupState<'data>],
     per_symbol_flags: &AtomicPerSymbolFlags,
 ) -> Result {
+    timing_phase!("Finalise per-object sizes");
+
     group_states
         .par_iter_mut()
         .try_for_each(|state| state.finalise_sizes(symbol_db, output_sections, per_symbol_flags))
@@ -370,8 +375,9 @@ fn get_epilogue_mut<'a, 'data>(
     epilogue
 }
 
-#[tracing::instrument(skip_all, name = "Merge dynamic symbol definitions")]
-fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) -> Result {
+fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) {
+    timing_phase!("Merge dynamic symbol definitions");
+
     let mut dynamic_symbol_definitions = Vec::new();
     for group in group_states.iter() {
         dynamic_symbol_definitions.extend(group.common.dynamic_symbol_definitions.iter().copied());
@@ -379,7 +385,6 @@ fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) -> Result {
 
     let epilogue = get_epilogue_mut(group_states);
     epilogue.dynamic_symbol_definitions = dynamic_symbol_definitions;
-    Ok(())
 }
 pub(crate) enum PropertyClass {
     // A bit in the output pr_data is set if it is set in any relocatable input.
@@ -397,8 +402,9 @@ pub(crate) enum PropertyClass {
     AndOr,
 }
 
-#[tracing::instrument(skip_all, name = "Merge GNU property notes")]
 fn merge_gnu_property_notes<A: Arch>(group_states: &mut [GroupState]) -> Result {
+    timing_phase!("Merge GNU property notes");
+
     let properties_per_file = group_states
         .iter()
         .flat_map(|group| {
@@ -462,8 +468,9 @@ fn merge_gnu_property_notes<A: Arch>(group_states: &mut [GroupState]) -> Result 
     Ok(())
 }
 
-#[tracing::instrument(skip_all, name = "Merge e_flags")]
 fn merge_eflags<A: Arch>(group_states: &mut [GroupState]) -> Result {
+    timing_phase!("Merge e_flags");
+
     let eflags = group_states
         .iter()
         .flat_map(|group| {
@@ -482,8 +489,9 @@ fn merge_eflags<A: Arch>(group_states: &mut [GroupState]) -> Result {
     Ok(())
 }
 
-#[tracing::instrument(skip_all, name = "Merge .riscv.attributes sections")]
-fn merge_riscv_attributes<A: Arch>(group_states: &mut [GroupState]) -> Result {
+fn merge_riscv_attributes<A: Arch>(group_states: &mut [GroupState]) {
+    timing_phase!("Merge .riscv.attributes sections");
+
     let attributes = group_states
         .iter()
         .flat_map(|group| {
@@ -596,8 +604,6 @@ fn merge_riscv_attributes<A: Arch>(group_states: &mut [GroupState]) -> Result {
 
     let epilogue = get_epilogue_mut(group_states);
     epilogue.riscv_attributes = merged;
-
-    Ok(())
 }
 
 fn compute_total_file_size(section_layouts: &OutputSectionMap<OutputRecordLayout>) -> u64 {
@@ -1817,11 +1823,12 @@ fn layout_sections(
     })
 }
 
-#[tracing::instrument(skip_all, name = "Compute per-group start offsets")]
 fn compute_start_offsets_by_group(
     group_states: &[GroupState<'_>],
     mut mem_offsets: OutputSectionPartMap<u64>,
 ) -> Vec<OutputSectionPartMap<u64>> {
+    timing_phase!("Compute per-group start offsets");
+
     group_states
         .iter()
         .map(|group| {
@@ -1832,13 +1839,14 @@ fn compute_start_offsets_by_group(
         .collect_vec()
 }
 
-#[tracing::instrument(skip_all, name = "Assign symbol addresses")]
 fn compute_symbols_and_layouts<'data>(
     group_states: Vec<GroupState<'data>>,
     starting_mem_offsets_by_group: Vec<OutputSectionPartMap<u64>>,
     per_group_res_writers: &mut [sharded_vec_writer::Shard<Option<Resolution>>],
     resources: &FinaliseLayoutResources<'_, 'data>,
 ) -> Result<Vec<GroupLayout<'data>>> {
+    timing_phase!("Assign symbol addresses");
+
     group_states
         .into_par_iter()
         .zip(starting_mem_offsets_by_group)
@@ -1870,7 +1878,6 @@ fn compute_symbols_and_layouts<'data>(
         .collect()
 }
 
-#[tracing::instrument(skip_all, name = "Compute segment layouts")]
 fn compute_segment_layout(
     section_layouts: &OutputSectionMap<OutputRecordLayout>,
     output_sections: &OutputSections,
@@ -1887,6 +1894,8 @@ fn compute_segment_layout(
         mem_end: u64,
         alignment: Alignment,
     }
+
+    timing_phase!("Compute segment layouts");
 
     use output_section_id::OrderEvent;
     let mut complete = Vec::with_capacity(program_segments.len());
@@ -2028,7 +2037,6 @@ fn compute_segment_layout(
     })
 }
 
-#[tracing::instrument(skip_all, name = "Compute total section sizes")]
 fn compute_total_section_part_sizes(
     group_states: &mut [GroupState],
     output_sections: &mut OutputSections,
@@ -2038,6 +2046,8 @@ fn compute_total_section_part_sizes(
     sections_with_content: OutputSectionMap<bool>,
     symbol_db: &SymbolDb,
 ) -> Result<OutputSectionPartMap<u64>> {
+    timing_phase!("Compute total section sizes");
+
     let mut total_sizes: OutputSectionPartMap<u64> = output_sections.new_part_map();
     for group_state in group_states.iter() {
         total_sizes.merge(&group_state.common.mem_sizes);
@@ -2078,8 +2088,9 @@ const SECTION_FLAGS_PROPAGATION_MASK: SectionFlags =
     SectionFlags::from_u32(!object::elf::SHF_GROUP);
 
 /// Propagates attributes from input sections to the output sections into which they were placed.
-#[tracing::instrument(skip_all, name = "Propagate section attributes")]
 fn propagate_section_attributes(group_states: &[GroupState], output_sections: &mut OutputSections) {
+    timing_phase!("Propagate section attributes");
+
     for group_state in group_states {
         group_state
             .common
@@ -2107,11 +2118,12 @@ impl SectionAttributes {
 /// This is similar to computing start addresses, but is used for things that aren't addressable,
 /// but which need to be unique. It's non parallel. It could potentially be run in parallel with
 /// some of the stages that run after it, that don't need access to the file states.
-#[tracing::instrument(skip_all, name = "Apply non-addressable indexes")]
 fn apply_non_addressable_indexes(
     group_states: &mut [GroupState],
     symbol_db: &SymbolDb,
 ) -> Result<NonAddressableCounts> {
+    timing_phase!("Apply non-addressable indexes");
+
     let mut indexes = NonAddressableIndexes {
         // Allocate version indexes starting from after the local and global indexes and any
         // versions defined by a version script.
@@ -2169,10 +2181,11 @@ pub(crate) struct NonAddressableCounts {
 }
 
 /// Returns the starting memory address for each alignment within each segment.
-#[tracing::instrument(skip_all, name = "Compute per-alignment offsets")]
 fn starting_memory_offsets(
     section_layouts: &OutputSectionPartMap<OutputRecordLayout>,
 ) -> OutputSectionPartMap<u64> {
+    timing_phase!("Compute per-alignment offsets");
+
     section_layouts.map(|_, rec| rec.mem_offset)
 }
 
@@ -2190,7 +2203,6 @@ struct GcOutputs<'data> {
     has_variant_pcs: bool,
 }
 
-#[tracing::instrument(skip_all, name = "Find required sections")]
 fn find_required_sections<'data, A: Arch>(
     groups_in: Vec<resolution::ResolvedGroup<'data>>,
     symbol_db: &SymbolDb<'data>,
@@ -2199,6 +2211,8 @@ fn find_required_sections<'data, A: Arch>(
     merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
     input_data: &InputData<'data>,
 ) -> Result<GcOutputs<'data>> {
+    timing_phase!("Find required sections");
+
     let num_workers = groups_in.len();
     let (worker_slots, groups) = create_worker_slots(groups_in, output_sections, symbol_db);
 

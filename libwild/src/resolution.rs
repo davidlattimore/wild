@@ -40,6 +40,7 @@ use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::symbol_db::SymbolStrength;
 use crate::symbol_db::Visibility;
+use crate::timing_phase;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use atomic_take::AtomicTake;
@@ -66,7 +67,6 @@ pub(crate) struct ResolutionOutputs<'data> {
     pub(crate) merged_strings: OutputSectionMap<MergedStringsSection<'data>>,
 }
 
-#[tracing::instrument(skip_all, name = "Symbol resolution")]
 pub fn resolve_symbols_and_sections<'data>(
     symbol_db: &mut SymbolDb<'data>,
     per_symbol_flags: &mut PerSymbolFlags,
@@ -74,6 +74,8 @@ pub fn resolve_symbols_and_sections<'data>(
     output_sections: &mut OutputSections<'data>,
     layout_rules: &LayoutRules<'data>,
 ) -> Result<ResolutionOutputs<'data>> {
+    timing_phase!("Symbol resolution");
+
     let (mut resolved_groups, undefined_symbols) = resolve_symbols_in_files(symbol_db)?;
 
     resolve_sections(&mut resolved_groups, herd, symbol_db, layout_rules)?;
@@ -95,7 +97,7 @@ pub fn resolve_symbols_and_sections<'data>(
         symbol_db,
         per_symbol_flags,
         &mut custom_start_stop_defs,
-    )?;
+    );
 
     let ResolvedFile::Epilogue(epilogue) = resolved_groups
         .last_mut()
@@ -121,10 +123,11 @@ pub fn resolve_symbols_and_sections<'data>(
     })
 }
 
-#[tracing::instrument(skip_all, name = "Resolve symbols")]
 fn resolve_symbols_in_files<'data>(
     symbol_db: &mut SymbolDb<'data>,
 ) -> Result<(Vec<ResolvedGroup<'data>>, SegQueue<UndefinedSymbol<'data>>)> {
+    timing_phase!("Resolve symbols");
+
     let num_objects = symbol_db.num_objects();
     if num_objects == 0 {
         bail!("no input files");
@@ -278,13 +281,14 @@ fn resolve_group<'data, 'definitions>(
     }
 }
 
-#[tracing::instrument(skip_all, name = "Resolve sections")]
 fn resolve_sections<'data>(
     groups: &mut [ResolvedGroup<'data>],
     herd: &'data bumpalo_herd::Herd,
     symbol_db: &SymbolDb<'data>,
     layout_rules: &LayoutRules<'data>,
 ) -> Result {
+    timing_phase!("Resolve sections");
+
     let loaded_metrics: LoadedMetrics = Default::default();
 
     groups.par_iter_mut().try_for_each_init(
@@ -548,11 +552,12 @@ pub(crate) struct ResolvedEpilogue<'data> {
     pub(crate) custom_start_stop_defs: Vec<InternalSymDefInfo<'data>>,
 }
 
-#[tracing::instrument(skip_all, name = "Assign section IDs")]
 fn assign_section_ids<'data>(
     resolved: &mut [ResolvedGroup<'data>],
     output_sections: &mut OutputSections<'data>,
 ) {
+    timing_phase!("Assign section IDs");
+
     for group in resolved {
         for file in &mut group.files {
             if let ResolvedFile::Object(s) = file
@@ -674,7 +679,6 @@ fn load_symbol_named<'definitions>(
     }
 }
 
-#[tracing::instrument(skip_all, name = "Canonicalise undefined symbols")]
 fn canonicalise_undefined_symbols<'data>(
     undefined_symbols: SegQueue<UndefinedSymbol<'data>>,
     output_sections: &OutputSections,
@@ -682,7 +686,9 @@ fn canonicalise_undefined_symbols<'data>(
     symbol_db: &mut SymbolDb<'data>,
     per_symbol_flags: &mut PerSymbolFlags,
     custom_start_stop_defs: &mut Vec<InternalSymDefInfo<'data>>,
-) -> Result {
+) {
+    timing_phase!("Canonicalise undefined symbols");
+
     let mut name_to_id: PassThroughHashMap<UnversionedSymbolName<'data>, SymbolId> =
         Default::default();
 
@@ -777,8 +783,6 @@ fn canonicalise_undefined_symbols<'data>(
             }
         }
     }
-
-    Ok(())
 }
 
 fn allocate_start_stop_symbol_id<'data>(
