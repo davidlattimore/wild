@@ -29,6 +29,7 @@ use crate::sharding::ShardKey;
 use crate::symbol::PreHashedSymbolName;
 use crate::symbol::UnversionedSymbolName;
 use crate::symbol::VersionedSymbolName;
+use crate::timing_phase;
 use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::FlagsForSymbol;
 use crate::value_flags::PerSymbolFlags;
@@ -275,7 +276,6 @@ struct PendingSymbolHashBucket<'data> {
 }
 
 impl<'data> SymbolDb<'data> {
-    #[tracing::instrument(skip_all, name = "Build symbol DB")]
     pub fn build(
         groups: Vec<Group<'data>>,
         version_script_data: Option<ScriptData<'data>>,
@@ -284,6 +284,8 @@ impl<'data> SymbolDb<'data> {
         herd: &'data bumpalo_herd::Herd,
         export_list_data: Option<ScriptData<'data>>,
     ) -> Result<(Self, PerSymbolFlags)> {
+        timing_phase!("Build symbol DB");
+
         let version_script = version_script_data
             .map(VersionScript::parse)
             .transpose()?
@@ -331,7 +333,7 @@ impl<'data> SymbolDb<'data> {
             let per_group_outputs =
                 read_symbols(&version_script, &mut per_group_shards, args, &export_list)?;
 
-            populate_symbol_db(&mut buckets, &per_group_outputs)?;
+            populate_symbol_db(&mut buckets, &per_group_outputs);
 
             for shard in per_group_shards {
                 writers.return_shard(shard);
@@ -816,12 +818,13 @@ impl<'data> SymbolBucket<'data> {
 /// symbol we're using. The symbol we select will be the first strongly defined symbol in a loaded
 /// object, or if there are no strong definitions, then the first definition in a loaded object. If
 /// a symbol definition is a common symbol, then the largest definition will be used.
-#[tracing::instrument(skip_all, name = "Resolve alternative symbol definitions")]
 pub(crate) fn resolve_alternative_symbol_definitions<'data>(
     symbol_db: &mut SymbolDb<'data>,
     per_symbol_flags: &mut PerSymbolFlags,
     resolved: &[ResolvedGroup],
 ) -> Result {
+    timing_phase!("Resolve alternative symbol definitions");
+
     let mut buckets = take(&mut symbol_db.buckets);
     let atomic_symbol_db = symbol_db.borrow_atomic();
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
@@ -1035,13 +1038,14 @@ pub(crate) fn is_mapping_symbol_name(name: &[u8]) -> bool {
     name.starts_with(b"$x") || name.starts_with(b"$d")
 }
 
-#[tracing::instrument(skip_all, name = "Read symbols")]
 fn read_symbols<'data>(
     version_script: &VersionScript,
     shards: &mut [SymbolWriterShard<'_, '_, 'data>],
     args: &Args,
     export_list: &Option<ExportList<'data>>,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
+    timing_phase!("Read symbols");
+
     let num_buckets = num_symbol_hash_buckets(args);
 
     shards
@@ -1086,11 +1090,12 @@ fn read_symbols_for_group<'data>(
     Ok(outputs)
 }
 
-#[tracing::instrument(skip_all, name = "Populate symbol map")]
 fn populate_symbol_db<'data>(
     buckets: &mut [SymbolBucket<'data>],
     per_group_outputs: &[SymbolLoadOutputs<'data>],
-) -> Result {
+) {
+    timing_phase!("Populate symbol map");
+
     buckets.par_iter_mut().enumerate().for_each(|(b, bucket)| {
         // The following approximation should be an upper bound on the number of global
         // names we'll have. There will likely be at least a few global symbols with the
@@ -1113,8 +1118,6 @@ fn populate_symbol_db<'data>(
             }
         }
     });
-
-    Ok(())
 }
 
 fn load_linker_script_symbols<'data>(

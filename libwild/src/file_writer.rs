@@ -11,6 +11,7 @@ use crate::output_section_id::OutputSectionId;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
+use crate::timing_phase;
 use memmap2::MmapOptions;
 use std::io::ErrorKind;
 use std::io::Write;
@@ -181,12 +182,12 @@ impl Output {
         }
     }
 
-    #[tracing::instrument(skip_all, name = "Write output file")]
     pub fn write<'data>(
         &self,
         layout: &Layout<'data>,
         write_fn: impl Fn(&mut SizedOutput, &Layout) -> Result,
     ) -> Result {
+        timing_phase!("Write output file");
         if layout.args().write_layout {
             write_layout(layout)?;
         }
@@ -218,8 +219,8 @@ impl Output {
         Ok(())
     }
 
-    #[tracing::instrument(skip_all, name = "Create output file")]
     fn create_file_non_lazily(&self, file_size: u64) -> Result<SizedOutput> {
+        timing_phase!("Create output file");
         SizedOutput::new(self.path.clone(), self.config, file_size)
     }
 }
@@ -238,13 +239,13 @@ fn default_file_write_mode(args: &Args) -> FileWriteMode {
 }
 
 /// Delete the old output file. Note, this is only used when running from a single thread.
-#[tracing::instrument(skip_all, name = "Delete old output")]
 fn delete_old_output(path: &Path) {
+    timing_phase!("Delete old output");
     let _ = std::fs::remove_file(path);
 }
 
-#[tracing::instrument(skip_all, name = "Wait for output file creation")]
 fn wait_for_sized_output(sized_output_recv: &Receiver<Result<SizedOutput>>) -> Result<SizedOutput> {
+    timing_phase!("Wait for output file creation");
     sized_output_recv.recv()?
 }
 
@@ -346,7 +347,6 @@ pub(crate) fn verify_allocations_message() -> String {
     }
 }
 
-#[tracing::instrument(skip_all, name = "Split output buffers by group")]
 pub(crate) fn split_output_by_group<'layout, 'data, 'out>(
     layout: &'layout Layout<'data>,
     writable_buckets: &'out mut OutputSectionPartMap<&mut [u8]>,
@@ -354,6 +354,7 @@ pub(crate) fn split_output_by_group<'layout, 'data, 'out>(
     &'layout GroupLayout<'data>,
     OutputSectionPartMap<&'out mut [u8]>,
 )> {
+    timing_phase!("Split output buffers by group");
     layout
         .group_layouts
         .iter()
