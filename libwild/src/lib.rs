@@ -182,7 +182,8 @@ impl Linker {
         } else if args.dynamic_linker.is_some()
             && args.relocation_model == RelocationModel::Relocatable
         {
-            // GNU ld turns static relocatable executables into dynamic ones if dynamic linker is set.
+            // GNU ld turns static relocatable executables into dynamic ones if dynamic linker is
+            // set.
             OutputKind::DynamicExecutable(args.relocation_model)
         } else if input_data
             .inputs
@@ -191,9 +192,9 @@ impl Linker {
         {
             // When attempting to create static executable, but DSO is added as an input we need to
             // proceed with dynamic executable.
-            // This is in line with LLD, but GNU ld goes a step further: if no DSO ends up loaded, it'll
-            // go back to static one. This would add a lot of complexity with the current design, so we
-            // just stick to LLD behaviour.
+            // This is in line with LLD, but GNU ld goes a step further: if no DSO ends up loaded,
+            // it'll go back to static one. This would add a lot of complexity with the
+            // current design, so we just stick to LLD behaviour.
             OutputKind::DynamicExecutable(args.relocation_model)
         } else {
             OutputKind::StaticExecutable(args.relocation_model)
