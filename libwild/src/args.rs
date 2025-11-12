@@ -702,7 +702,7 @@ impl OutputKind {
         self != OutputKind::StaticExecutable(RelocationModel::NonRelocatable)
     }
 
-    pub(crate) fn base_address(&self) -> u64 {
+    pub(crate) fn base_address(self) -> u64 {
         if self.is_relocatable() {
             0
         } else {
@@ -710,7 +710,7 @@ impl OutputKind {
         }
     }
 
-    pub(crate) fn should_output_symbol_versions(&self) -> bool {
+    pub(crate) fn should_output_symbol_versions(self) -> bool {
         matches!(
             self,
             OutputKind::DynamicExecutable(_) | OutputKind::SharedObject
