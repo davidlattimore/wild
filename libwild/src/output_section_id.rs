@@ -564,6 +564,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         ty: sht::NOTE,
         section_flags: shf::ALLOC,
         min_alignment: alignment::NOTE_GNU_PROPERTY,
+        target_segment_type: Some(pt::GNU_PROPERTY),
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {

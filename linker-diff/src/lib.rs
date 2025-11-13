@@ -248,13 +248,16 @@ impl Config {
                 "segment.PHDR.*",
                 "segment.GNU_RELRO.*",
                 "segment.GNU_STACK.*",
-                "segment.GNU_PROPERTY.*",
                 "segment.GNU_SFRAME.*",
                 // Wild currently generates PT_NOTE even for non-alloc note sections, while the
                 // other linkers don't.
                 "segment.NOTE.*",
                 // TODO: RISC-V
                 "segment.LOAD.RW.alignment",
+                // TODO: Latest lld sometimes doesn’t create a .note.gnu.property section even when
+                // Wild does.
+                "segment.GNU_PROPERTY.alignment",
+                "segment.GNU_PROPERTY.flags",
             ]
             .into_iter()
             .map(ToOwned::to_owned),
