@@ -2117,7 +2117,7 @@ fn setup_argument_parser() -> ArgumentParser {
     parser
         .declare_with_param()
         .long("defsym")
-        .help("Define a symbol")
+        .help("Define a symbol alias: --defsym=symbol=value")
         .execute(|args, _modifier_stack, value| {
             let parts: Vec<&str> = value.splitn(2, '=').collect();
             if parts.len() != 2 {
