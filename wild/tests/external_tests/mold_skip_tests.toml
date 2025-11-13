@@ -8,7 +8,6 @@ tests = [
   "compress-debug-sections.sh",        # Compressed debug sections support #493
   "default-symver-version-script.sh",
   "default-symver.sh",
-  "defsym2.sh",
   "depaudit.sh",
   "depaudit2.sh",
   "dependency-file-response-file.sh",  # `-dependency-file={file}`

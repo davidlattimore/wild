@@ -3062,6 +3062,17 @@ fn write_dynamic_symbol_definitions(
                             script,
                         )?;
                     }
+                    FileLayout::Prelude(prelude) => {
+                        write_prelude_dynsym(
+                            &mut table_writer.dynsym_writer,
+                            layout,
+                            sym_def.symbol_id,
+                            prelude,
+                        )?;
+                        if let Some(versym) = table_writer.versym.as_mut() {
+                            write_symbol_version(versym, sym_def.version)?;
+                        }
+                    }
                     _ => bail!(
                         "Internal error: Unexpected dynamic symbol definition from {:?}. {}",
                         file_layout,
@@ -3108,6 +3119,44 @@ fn write_linker_script_dynsym(
 
     let entry = dynsym_writer.define_symbol(false, shndx, address, 0, name.bytes())?;
 
+    entry.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
+
+    Ok(())
+}
+
+fn write_prelude_dynsym(
+    dynsym_writer: &mut SymbolTableWriter,
+    layout: &Layout,
+    symbol_id: SymbolId,
+    prelude: &PreludeLayout,
+) -> Result {
+    let offset = symbol_id.offset_from(prelude.internal_symbols.start_symbol_id);
+    let def_info = prelude
+        .internal_symbols
+        .symbol_definitions
+        .get(offset)
+        .with_context(|| format!("Invalid prelude symbol {}", layout.symbol_debug(symbol_id)))?;
+
+    debug_assert!(matches!(
+        def_info.placement,
+        crate::parsing::SymbolPlacement::DefsymSymbol
+            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
+    ));
+
+    let resolution = layout
+        .local_symbol_resolution(symbol_id)
+        .with_context(|| format!("Missing resolution for {}", layout.symbol_debug(symbol_id)))?;
+    let address = resolution.raw_value;
+    let name = layout.symbol_db.symbol_name(symbol_id)?;
+
+    let entry = dynsym_writer
+        .define_symbol(false, object::elf::SHN_ABS, address, 0, name.bytes())
+        .with_context(|| {
+            format!(
+                "Failed to define dynamic {}",
+                layout.symbol_debug(symbol_id)
+            )
+        })?;
     entry.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
 
     Ok(())

@@ -170,7 +170,7 @@ pub fn compute<'data, A: Arch>(
     let mut group_states = gc_outputs.group_states;
 
     finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
-    merge_dynamic_symbol_definitions(&mut group_states);
+    merge_dynamic_symbol_definitions(&mut group_states, &symbol_db)?;
     merge_gnu_property_notes::<A>(&mut group_states)?;
     merge_eflags::<A>(&mut group_states)?;
     merge_riscv_attributes::<A>(&mut group_states);
@@ -424,7 +424,10 @@ fn get_epilogue_mut<'a, 'data>(
     epilogue
 }
 
-fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) {
+fn merge_dynamic_symbol_definitions<'data>(
+    group_states: &mut [GroupState<'data>],
+    symbol_db: &SymbolDb<'data>,
+) -> Result {
     timing_phase!("Merge dynamic symbol definitions");
 
     let mut dynamic_symbol_definitions = Vec::new();
@@ -432,8 +435,57 @@ fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) {
         dynamic_symbol_definitions.extend(group.common.dynamic_symbol_definitions.iter().copied());
     }
 
+    if symbol_db.args.needs_dynsym()
+        && let Some(first_group) = group_states.first()
+        && let Some(FileLayoutState::Prelude(prelude)) = first_group.files.first()
+    {
+        let symbol_id_range = prelude.symbol_id_range;
+        for (index, def_info) in prelude
+            .internal_symbols
+            .symbol_definitions
+            .iter()
+            .enumerate()
+        {
+            if !matches!(def_info.placement, SymbolPlacement::DefsymSymbol) {
+                continue;
+            }
+
+            let symbol_id = symbol_id_range.offset_to_id(index);
+            if !symbol_db.is_canonical(symbol_id)
+                || dynamic_symbol_definitions
+                    .iter()
+                    .any(|def| def.symbol_id == symbol_id)
+            {
+                continue;
+            }
+
+            let symbol_name = symbol_db.symbol_name(symbol_id)?;
+            let RawSymbolName {
+                name,
+                version_name,
+                is_default,
+            } = RawSymbolName::parse(symbol_name.bytes());
+
+            let mut version = object::elf::VER_NDX_GLOBAL;
+            if symbol_db.version_script.version_count() > 0
+                && let Some(v) = symbol_db
+                    .version_script
+                    .version_for_symbol(&UnversionedSymbolName::prehashed(name), version_name)?
+            {
+                version = v;
+                if !is_default {
+                    version |= object::elf::VERSYM_HIDDEN;
+                }
+            }
+
+            dynamic_symbol_definitions.push(DynamicSymbolDefinition::new(symbol_id, name, version));
+        }
+    }
+
     let epilogue = get_epilogue_mut(group_states);
     epilogue.dynamic_symbol_definitions = dynamic_symbol_definitions;
+
+    Ok(())
 }
 pub(crate) enum PropertyClass {
     // A bit in the output pr_data is set if it is set in any relocatable input.
@@ -3251,6 +3303,35 @@ impl<'data> PreludeLayoutState<'data> {
                 part_id::INTERP,
                 dynamic_linker.as_bytes_with_nul().len() as u64,
             );
+        }
+
+        let needs_dynsym = resources.symbol_db.args.needs_dynsym();
+        for (index, def_info) in self.internal_symbols.symbol_definitions.iter().enumerate() {
+            let symbol_id = self.symbol_id_range.offset_to_id(index);
+            if !resources.symbol_db.is_canonical(symbol_id) {
+                continue;
+            }
+
+            match def_info.placement {
+                SymbolPlacement::DefsymAbsolute(_) => {
+                    resources
+                        .per_symbol_flags
+                        .get_atomic(symbol_id)
+                        .or_assign(ValueFlags::DIRECT);
+                }
+                SymbolPlacement::DefsymSymbol => {
+                    let flags_to_set = if needs_dynsym {
+                        ValueFlags::DIRECT | ValueFlags::EXPORT_DYNAMIC
+                    } else {
+                        ValueFlags::DIRECT
+                    };
+                    resources
+                        .per_symbol_flags
+                        .get_atomic(symbol_id)
+                        .or_assign(flags_to_set);
+                }
+                _ => {}
+            }
         }
 
         Ok(())
