@@ -36,6 +36,10 @@ pub(crate) const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
         segment_flags: pf::READABLE,
     },
     ProgramSegmentDef {
+        segment_type: pt::GNU_PROPERTY,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
         segment_type: pt::LOAD,
         segment_flags: pf::READABLE,
     },

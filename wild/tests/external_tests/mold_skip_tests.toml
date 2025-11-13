@@ -233,7 +233,6 @@ tests = [
   "discard.sh",
   "dynamic-linker.sh",
   "glibc-2.22-bug.sh",
-  "gnu-property.sh",
   "hidden-undef.sh",
   "ifunc-address-equality-exported.sh",
   "ifunc-address-equality.sh",
