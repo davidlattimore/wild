@@ -1638,6 +1638,14 @@ impl<'data> Prelude<'data> {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
                     ValueFlags::NON_INTERPOSABLE
                 }
+                SymbolPlacement::DefsymAbsolute(_) => {
+                    outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
+                    ValueFlags::NON_INTERPOSABLE | ValueFlags::ABSOLUTE
+                }
+                SymbolPlacement::DefsymSymbol => {
+                    outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
+                    ValueFlags::NON_INTERPOSABLE
+                }
             };
             symbols_out.set_next(flags, symbol_id, PRELUDE_FILE_ID);
         }
@@ -1653,7 +1661,10 @@ impl std::fmt::Display for SymbolId {
 impl InternalSymDefInfo<'_> {
     pub(crate) fn section_id(self) -> Option<OutputSectionId> {
         match self.placement {
-            SymbolPlacement::Undefined | SymbolPlacement::ForceUndefined => None,
+            SymbolPlacement::Undefined
+            | SymbolPlacement::ForceUndefined
+            | SymbolPlacement::DefsymAbsolute(_)
+            | SymbolPlacement::DefsymSymbol => None,
             SymbolPlacement::SectionStart(i) => Some(i),
             SymbolPlacement::SectionEnd(i) => Some(i),
         }

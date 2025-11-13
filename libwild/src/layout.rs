@@ -13,6 +13,7 @@ use crate::arch::Arch;
 use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::BuildIdOption;
+use crate::args::DefsymValue;
 use crate::args::OutputKind;
 use crate::args::Strip;
 use crate::bail;
@@ -274,6 +275,7 @@ pub fn compute<'data, A: Arch>(
     }
 
     update_dynamic_symbol_resolutions(&group_layouts, &mut symbol_resolutions.resolutions);
+    update_defsym_symbol_resolutions(&symbol_db, &mut symbol_resolutions.resolutions);
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, symbol_db.args)?;
 
     let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
@@ -296,6 +298,53 @@ pub fn compute<'data, A: Arch>(
         relocation_statistics,
         per_symbol_flags,
     })
+}
+
+/// Update resolutions for defsym symbols that reference other symbols.
+fn update_defsym_symbol_resolutions(symbol_db: &SymbolDb, resolutions: &mut [Option<Resolution>]) {
+    let Some(Group::Prelude(prelude)) = symbol_db.groups.first() else {
+        return;
+    };
+
+    let symbol_id_range = SymbolIdRange::prelude(prelude.symbol_definitions.len());
+
+    for (local_index, def_info) in prelude.symbol_definitions.iter().enumerate() {
+        if !matches!(def_info.placement, SymbolPlacement::DefsymSymbol) {
+            continue;
+        }
+
+        let symbol_id = symbol_id_range.offset_to_id(local_index);
+        if !symbol_db.is_canonical(symbol_id) {
+            continue;
+        }
+
+        // Find the target symbol name in `args.defsym`
+        let symbol_name = def_info.name;
+        for (name, defsym_value) in &symbol_db.args.defsym {
+            if name.as_bytes() != symbol_name {
+                continue;
+            }
+
+            if let DefsymValue::Symbol(target_name) = defsym_value {
+                // Look up the target symbol and get its address
+                if let Some(target_symbol_id) = symbol_db
+                    .get_unversioned(&UnversionedSymbolName::prehashed(target_name.as_bytes()))
+                {
+                    let target_value = resolutions[target_symbol_id.as_usize()]
+                        .as_ref()
+                        .map(|r| r.raw_value);
+
+                    if let Some(target_value) = target_value
+                        && let Some(resolution) = &mut resolutions[symbol_id.as_usize()]
+                    {
+                        resolution.raw_value = target_value;
+                    }
+                }
+            }
+
+            break;
+        }
+    }
 }
 
 /// Update resolutions for all dynamic symbols that our output file defines.
@@ -3627,6 +3676,15 @@ fn create_start_end_symbol_resolution(
         SymbolPlacement::SectionEnd(section_id) => {
             let sec = resources.section_layouts.get(section_id);
             sec.mem_offset + sec.mem_size
+        }
+
+        SymbolPlacement::DefsymAbsolute(value) => value,
+
+        SymbolPlacement::DefsymSymbol => {
+            // For defsym symbols that reference another symbol, we defer resolution
+            // until later when all symbols have been resolved. This is handled by
+            // update_defsym_symbol_resolutions() which is called after layout is complete.
+            0
         }
     };
 

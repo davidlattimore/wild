@@ -664,6 +664,9 @@ fn load_prelude<'definitions>(
             SymbolPlacement::ForceUndefined => {
                 load_symbol_named(resources, definition_out, def_info.name, work_sender);
             }
+            SymbolPlacement::DefsymSymbol => {
+                load_symbol_named(resources, definition_out, def_info.name, work_sender);
+            }
             _ => {}
         }
     }
