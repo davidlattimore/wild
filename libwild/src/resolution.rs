@@ -661,10 +661,7 @@ fn load_prelude<'definitions>(
     // symbol record to the definition.
     for (def_info, definition_out) in prelude.symbol_definitions.iter().zip(definitions_out) {
         match def_info.placement {
-            SymbolPlacement::ForceUndefined => {
-                load_symbol_named(resources, definition_out, def_info.name, work_sender);
-            }
-            SymbolPlacement::DefsymSymbol => {
+            SymbolPlacement::ForceUndefined | SymbolPlacement::DefsymSymbol => {
                 load_symbol_named(resources, definition_out, def_info.name, work_sender);
             }
             _ => {}
