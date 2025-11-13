@@ -52,6 +52,7 @@ jobs:
       fail-fast: false
 
     runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 10
 
     container:
       image: ${{ matrix.container }}
@@ -93,8 +94,8 @@ jobs:
       - run: WILD_TEST_CROSS=$WILD_TEST_CROSS cargo test --profile ci --workspace
 
   minimal-versions:
-    runs-on:
-      - ubuntu-24.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - run: sudo apt-get update && sudo apt-get -y install gcc g++ clang clang-format lld curl
       - uses: actions/checkout@v5
@@ -118,6 +119,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@v5
       with:
@@ -143,6 +145,7 @@ jobs:
   rustfmt:
     name: Check formatting
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@v5
       with:
@@ -155,6 +158,7 @@ jobs:
   riscv-build:
     name: RISC-V build
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@v5
       with:
@@ -169,6 +173,7 @@ jobs:
   spelling:
     name: Spell Check with Typos
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
         with:
@@ -179,6 +184,7 @@ jobs:
   calc-matrix:
     name: Find Nix checks
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     outputs:
       matrix: ${{ steps.calc-matrix.outputs.matrix }}
 
@@ -210,6 +216,7 @@ jobs:
       matrix:
         check: ${{ fromJson(needs.calc-matrix.outputs.matrix) }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     name: Nix/${{ matrix.check }}
 
     steps:

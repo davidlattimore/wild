@@ -18,6 +18,7 @@ jobs:
   external-tests:
     name: Run mold tests
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     container:
       image: 'ubuntu:25.04'
     steps:
