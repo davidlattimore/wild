@@ -1,6 +1,7 @@
 use crate::LayoutRules;
 use crate::OutputSections;
 use crate::args::Args;
+use crate::args::DefsymValue;
 use crate::args::Modifiers;
 use crate::args::OutputKind;
 use crate::args::RelocationModel;
@@ -127,6 +128,12 @@ pub(crate) enum SymbolPlacement {
 
     /// An undefined symbol supplied by the user, e.g. via `--undefined=symbol-name`.
     ForceUndefined,
+
+    /// A symbol defined via --defsym with an absolute address.
+    DefsymAbsolute(u64),
+
+    /// A symbol defined via --defsym that references another symbol.
+    DefsymSymbol,
 }
 
 impl<'data> InternalSymDefInfo<'data> {
@@ -224,6 +231,15 @@ impl<'data> Prelude<'data> {
 
         symbol_definitions.extend(args.undefined.iter().map(|name| {
             InternalSymDefInfo::notype(SymbolPlacement::ForceUndefined, name.as_bytes())
+        }));
+
+        // Add symbols defined via --defsym
+        symbol_definitions.extend(args.defsym.iter().map(|(name, value)| {
+            let placement = match value {
+                DefsymValue::Value(addr) => SymbolPlacement::DefsymAbsolute(*addr),
+                DefsymValue::Symbol(_) => SymbolPlacement::DefsymSymbol,
+            };
+            InternalSymDefInfo::notype(placement, name.as_bytes())
         }));
 
         Self { symbol_definitions }
