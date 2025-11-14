@@ -2123,7 +2123,7 @@ fn setup_argument_parser() -> ArgumentParser {
             if parts.len() != 2 {
                 bail!("Invalid --defsym format. Expected: --defsym=symbol=value");
             }
-
+            // TODO: Also parse expressions like `--defsym=symbol=other_symbol+offset`
             let symbol_name = parts[0].to_owned();
             let value_str = parts[1];
 
