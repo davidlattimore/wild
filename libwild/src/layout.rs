@@ -435,6 +435,23 @@ fn merge_dynamic_symbol_definitions<'data>(
         dynamic_symbol_definitions.extend(group.common.dynamic_symbol_definitions.iter().copied());
     }
 
+    append_prelude_defsym_dynamic_symbols(
+        group_states,
+        symbol_db,
+        &mut dynamic_symbol_definitions,
+    )?;
+
+    let epilogue = get_epilogue_mut(group_states);
+    epilogue.dynamic_symbol_definitions = dynamic_symbol_definitions;
+
+    Ok(())
+}
+
+fn append_prelude_defsym_dynamic_symbols<'data>(
+    group_states: &[GroupState<'data>],
+    symbol_db: &SymbolDb<'data>,
+    dynamic_symbol_definitions: &mut Vec<DynamicSymbolDefinition<'data>>,
+) -> Result {
     if symbol_db.args.needs_dynsym()
         && let Some(first_group) = group_states.first()
         && let Some(FileLayoutState::Prelude(prelude)) = first_group.files.first()
@@ -477,13 +494,9 @@ fn merge_dynamic_symbol_definitions<'data>(
                     version |= object::elf::VERSYM_HIDDEN;
                 }
             }
-
             dynamic_symbol_definitions.push(DynamicSymbolDefinition::new(symbol_id, name, version));
         }
     }
-
-    let epilogue = get_epilogue_mut(group_states);
-    epilogue.dynamic_symbol_definitions = dynamic_symbol_definitions;
 
     Ok(())
 }
