@@ -303,7 +303,7 @@ pub fn compute<'data, A: Arch>(
 /// Update resolutions for defsym symbols that reference other symbols.
 fn update_defsym_symbol_resolutions(symbol_db: &SymbolDb, resolutions: &mut [Option<Resolution>]) {
     let Some(Group::Prelude(prelude)) = symbol_db.groups.first() else {
-        return;
+        unreachable!()
     };
 
     let symbol_id_range = SymbolIdRange::prelude(prelude.symbol_definitions.len());
@@ -3305,6 +3305,12 @@ impl<'data> PreludeLayoutState<'data> {
             );
         }
 
+        self.assign_defsym_flags(resources);
+
+        Ok(())
+    }
+
+    fn assign_defsym_flags(&self, resources: &GraphResources) {
         let needs_dynsym = resources.symbol_db.args.needs_dynsym();
         for (index, def_info) in self.internal_symbols.symbol_definitions.iter().enumerate() {
             let symbol_id = self.symbol_id_range.offset_to_id(index);
@@ -3333,8 +3339,6 @@ impl<'data> PreludeLayoutState<'data> {
                 _ => {}
             }
         }
-
-        Ok(())
     }
 
     fn load_entry_point(&mut self, resources: &GraphResources, queue: &mut LocalWorkQueue) {
