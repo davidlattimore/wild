@@ -3124,6 +3124,52 @@ fn write_linker_script_dynsym(
     Ok(())
 }
 
+/// Get the section index and type for a symbol.
+/// This is used to copy attributes from a target symbol to a defsym alias.
+fn get_symbol_attributes(layout: &Layout, symbol_id: SymbolId) -> Result<(u16, u8)> {
+    let file_id = layout.symbol_db.file_id_for_symbol(symbol_id);
+    let file = layout.symbol_db.file(file_id);
+
+    match file {
+        crate::grouping::SequencedInput::Object(obj) => {
+            let local_index = symbol_id.to_input(obj.symbol_id_range);
+            let sym = obj.parsed.object.symbol(local_index)?;
+
+            let shndx = obj
+                .parsed
+                .object
+                .symbol_section(sym, local_index)?
+                .and_then(|section_index| match layout.file_layout(file_id) {
+                    FileLayout::Object(obj_layout) => obj_layout
+                        .sections
+                        .get(section_index.0)
+                        .and_then(|slot| match slot {
+                            SectionSlot::Loaded(section) => Some(section.output_section_id()),
+                            SectionSlot::MergeStrings(section) => {
+                                Some(section.part_id.output_section_id())
+                            }
+                            _ => None,
+                        })
+                        .and_then(|output_section_id| {
+                            layout
+                                .output_sections
+                                .output_index_of_section(output_section_id)
+                        }),
+                    _ => None,
+                })
+                .unwrap_or(object::elf::SHN_ABS);
+
+            let st_type = sym.st_type();
+
+            Ok((shndx, st_type))
+        }
+        _ => {
+            // For non-object files (e.g., prelude, epilogue), default to ABS
+            Ok((object::elf::SHN_ABS, object::elf::STT_NOTYPE))
+        }
+    }
+}
+
 fn write_prelude_dynsym(
     dynsym_writer: &mut SymbolTableWriter,
     layout: &Layout,
@@ -3139,7 +3185,7 @@ fn write_prelude_dynsym(
 
     debug_assert!(matches!(
         def_info.placement,
-        crate::parsing::SymbolPlacement::DefsymSymbol
+        crate::parsing::SymbolPlacement::DefsymSymbol(_)
             | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
     ));
 
@@ -3149,15 +3195,44 @@ fn write_prelude_dynsym(
     let address = resolution.raw_value;
     let name = layout.symbol_db.symbol_name(symbol_id)?;
 
+    // For DefsymSymbol, try to get the attributes (section, type, size) from the target symbol
+    let (shndx, st_type) = if let crate::parsing::SymbolPlacement::DefsymSymbol(_) =
+        def_info.placement
+    {
+        let target_symbol_id = layout
+            .symbol_db
+            .args
+            .defsym
+            .iter()
+            .find(|(n, _)| n.as_bytes() == def_info.name)
+            .and_then(|(_, val)| {
+                if let crate::args::DefsymValue::Symbol(target_name) = val {
+                    layout.symbol_db.get_unversioned(
+                        &crate::symbol::UnversionedSymbolName::prehashed(target_name.as_bytes()),
+                    )
+                } else {
+                    None
+                }
+            });
+
+        if let Some(target_id) = target_symbol_id {
+            get_symbol_attributes(layout, target_id)?
+        } else {
+            (object::elf::SHN_ABS, object::elf::STT_NOTYPE)
+        }
+    } else {
+        (object::elf::SHN_ABS, object::elf::STT_NOTYPE)
+    };
+
     let entry = dynsym_writer
-        .define_symbol(false, object::elf::SHN_ABS, address, 0, name.bytes())
+        .define_symbol(false, shndx, address, 0, name.bytes())
         .with_context(|| {
             format!(
                 "Failed to define dynamic {}",
                 layout.symbol_debug(symbol_id)
             )
         })?;
-    entry.set_st_info(object::elf::STB_GLOBAL, object::elf::STT_NOTYPE);
+    entry.set_st_info(object::elf::STB_GLOBAL, st_type);
 
     Ok(())
 }
@@ -3256,24 +3331,66 @@ fn write_internal_symbols(
         };
 
         let symbol_name = layout.symbol_db.symbol_name(symbol_id)?;
-        let mut shndx = def_info
-            .section_id()
-            .map(|section_id| {
-                let section_id = layout.output_sections.primary_output_section(section_id);
 
-                layout
-                    .output_sections
-                    .output_index_of_section(section_id)
-                    .with_context(|| {
-                        format!(
-                            "symbol `{}` in section `{}` that we're not going to output {resolution:?}",
-                            layout.symbol_db.symbol_name_for_display(symbol_id),
-                            layout.output_sections.display_name(section_id)
+        // For DefsymSymbol, get attributes from the target symbol
+        let (mut shndx, st_type) = if let crate::parsing::SymbolPlacement::DefsymSymbol(_) =
+            def_info.placement
+        {
+            let target_symbol_id = layout
+                .symbol_db
+                .args
+                .defsym
+                .iter()
+                .find(|(n, _)| n.as_bytes() == def_info.name)
+                .and_then(|(_, val)| {
+                    if let crate::args::DefsymValue::Symbol(target_name) = val {
+                        layout.symbol_db.get_unversioned(
+                            &crate::symbol::UnversionedSymbolName::prehashed(
+                                target_name.as_bytes(),
+                            ),
                         )
-                    })
-            })
-            .transpose()?
-            .unwrap_or(0);
+                    } else {
+                        None
+                    }
+                });
+
+            if let Some(target_id) = target_symbol_id {
+                get_symbol_attributes(layout, target_id)?
+            } else {
+                (
+                    def_info
+                        .section_id()
+                        .and_then(|section_id| {
+                            let section_id =
+                                layout.output_sections.primary_output_section(section_id);
+                            layout.output_sections.output_index_of_section(section_id)
+                        })
+                        .unwrap_or(0),
+                    def_info.elf_symbol_type.raw(),
+                )
+            }
+        } else {
+            let shndx = def_info
+                .section_id()
+                .map(|section_id| {
+                    let section_id = layout.output_sections.primary_output_section(section_id);
+
+                    layout
+                        .output_sections
+                        .output_index_of_section(section_id)
+                        .with_context(|| {
+                            format!(
+                                "symbol `{}` in section `{}` that we're not going to output {resolution:?}",
+                                layout.symbol_db.symbol_name_for_display(symbol_id),
+                                layout.output_sections.display_name(section_id)
+                            )
+                        })
+                })
+                .transpose()?
+                .unwrap_or(0);
+
+            (shndx, def_info.elf_symbol_type.raw())
+        };
 
         // Move symbols that are in our header (section 0) into the first section, otherwise they'll
         // show up as undefined.
@@ -3298,7 +3415,7 @@ fn write_internal_symbols(
             .define_symbol(false, shndx, address, 0, symbol_name.bytes())
             .with_context(|| format!("Failed to write {}", layout.symbol_debug(symbol_id)))?;
 
-        entry.set_st_info(object::elf::STB_GLOBAL, def_info.elf_symbol_type.raw());
+        entry.set_st_info(object::elf::STB_GLOBAL, st_type);
     }
     Ok(())
 }

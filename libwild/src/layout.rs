@@ -309,7 +309,7 @@ fn update_defsym_symbol_resolutions(symbol_db: &SymbolDb, resolutions: &mut [Opt
     let symbol_id_range = SymbolIdRange::prelude(prelude.symbol_definitions.len());
 
     for (local_index, def_info) in prelude.symbol_definitions.iter().enumerate() {
-        if !matches!(def_info.placement, SymbolPlacement::DefsymSymbol) {
+        if !matches!(def_info.placement, SymbolPlacement::DefsymSymbol(_)) {
             continue;
         }
 
@@ -463,7 +463,7 @@ fn append_prelude_defsym_dynamic_symbols<'data>(
             .iter()
             .enumerate()
         {
-            if !matches!(def_info.placement, SymbolPlacement::DefsymSymbol) {
+            if !matches!(def_info.placement, SymbolPlacement::DefsymSymbol(_)) {
                 continue;
             }
 
@@ -3338,7 +3338,7 @@ impl<'data> PreludeLayoutState<'data> {
                         .get_atomic(symbol_id)
                         .or_assign(ValueFlags::DIRECT);
                 }
-                SymbolPlacement::DefsymSymbol => {
+                SymbolPlacement::DefsymSymbol(_) => {
                     let flags_to_set = if needs_dynsym {
                         ValueFlags::DIRECT | ValueFlags::EXPORT_DYNAMIC
                     } else {
@@ -3778,7 +3778,7 @@ fn create_start_end_symbol_resolution(
 
         SymbolPlacement::DefsymAbsolute(value) => value,
 
-        SymbolPlacement::DefsymSymbol => {
+        SymbolPlacement::DefsymSymbol(_) => {
             // For defsym symbols that reference another symbol, we defer resolution
             // until later when all symbols have been resolved. This is handled by
             // update_defsym_symbol_resolutions() which is called after layout is complete.

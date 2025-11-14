@@ -1642,7 +1642,7 @@ impl<'data> Prelude<'data> {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
                     ValueFlags::NON_INTERPOSABLE | ValueFlags::ABSOLUTE
                 }
-                SymbolPlacement::DefsymSymbol => {
+                SymbolPlacement::DefsymSymbol(_) => {
                     outputs.add_non_versioned(PendingSymbol::new(symbol_id, definition.name));
                     ValueFlags::NON_INTERPOSABLE
                 }
@@ -1664,7 +1664,7 @@ impl InternalSymDefInfo<'_> {
             SymbolPlacement::Undefined
             | SymbolPlacement::ForceUndefined
             | SymbolPlacement::DefsymAbsolute(_)
-            | SymbolPlacement::DefsymSymbol => None,
+            | SymbolPlacement::DefsymSymbol(_) => None,
             SymbolPlacement::SectionStart(i) => Some(i),
             SymbolPlacement::SectionEnd(i) => Some(i),
         }

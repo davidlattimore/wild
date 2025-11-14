@@ -133,7 +133,8 @@ pub(crate) enum SymbolPlacement {
     DefsymAbsolute(u64),
 
     /// A symbol defined via --defsym that references another symbol.
-    DefsymSymbol,
+    /// The SymbolId is initially None and will be filled in during layout.
+    DefsymSymbol(Option<SymbolId>),
 }
 
 impl<'data> InternalSymDefInfo<'data> {
@@ -237,7 +238,7 @@ impl<'data> Prelude<'data> {
         symbol_definitions.extend(args.defsym.iter().map(|(name, value)| {
             let placement = match value {
                 DefsymValue::Value(addr) => SymbolPlacement::DefsymAbsolute(*addr),
-                DefsymValue::Symbol(_) => SymbolPlacement::DefsymSymbol,
+                DefsymValue::Symbol(_) => SymbolPlacement::DefsymSymbol(None),
             };
             InternalSymDefInfo::notype(placement, name.as_bytes())
         }));
