@@ -926,6 +926,7 @@ fn resolve_sections_for_object<'data>(
                 let section_data =
                     obj.object
                         .section_data(input_section, allocator, loaded_metrics)?;
+                let section_flags = SectionFlags::from_header(input_section);
 
                 if section_data.is_empty() {
                     SectionSlot::Discard
@@ -933,6 +934,7 @@ fn resolve_sections_for_object<'data>(
                     string_merge_extras.push(StringMergeSectionExtra {
                         index: input_section_index,
                         section_data,
+                        section_flags,
                     });
 
                     SectionSlot::MergeStrings(StringMergeSectionSlot::new(unloaded_section.part_id))
