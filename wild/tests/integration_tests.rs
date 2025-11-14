@@ -131,6 +131,8 @@
 //!
 //! offset-in-section=N: Type: Integer. Asserts the offset of the symbol within the section.
 //! Requires that section is also specified.
+//!
+//! address=N: Type: Integer. Asserts the absolute address of the symbol in the binary.
 
 mod external_tests;
 
@@ -628,6 +630,9 @@ struct SymtabAssertions {
 
     #[serde(rename = "offset-in-section")]
     section_offset: Option<u64>,
+
+    #[serde(rename = "address")]
+    absolute_address: Option<u64>,
 }
 
 impl ExpectedSymtabEntry {
@@ -2390,6 +2395,16 @@ fn verify_symbol_assertions(
                     }
                 }
             }
+
+            if let Some(expected_address) = exp.assertions.absolute_address {
+                let actual_address = sym.address();
+                if expected_address != actual_address {
+                    bail!(
+                        "Expected symbol `{name}` to have address {expected_address:#x}, \
+                                    but it actually had address {actual_address:#x}"
+                    );
+                }
+            }
         }
     }
 
@@ -2926,7 +2941,8 @@ fn integration_test(
         "output-kind.c",
         "entry-in-shared.c",
         "alignment.c",
-        "hash-style.c"
+        "hash-style.c",
+        "defsym.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
