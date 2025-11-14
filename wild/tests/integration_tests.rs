@@ -2873,6 +2873,7 @@ fn integration_test(
         "exclude-section.s",
         "common_section.c",
         "string_merging.c",
+        "non_string_merging.c",
         "string-merge-missing-null.c",
         "comments.c",
         "custom-note.s",
