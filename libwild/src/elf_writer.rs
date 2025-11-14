@@ -3206,7 +3206,10 @@ fn write_prelude_dynsym(
         if let Some(target_id) = target_symbol_id {
             get_symbol_attributes(layout, target_id)?
         } else {
-            (object::elf::SHN_ABS, object::elf::STT_NOTYPE)
+            bail!(
+                "Symbol '{}' referenced by --defsym does not exist",
+                target_name
+            )
         }
     } else {
         (object::elf::SHN_ABS, object::elf::STT_NOTYPE)
@@ -3331,16 +3334,9 @@ fn write_internal_symbols(
             if let Some(target_id) = target_symbol_id {
                 get_symbol_attributes(layout, target_id)?
             } else {
-                (
-                    def_info
-                        .section_id()
-                        .and_then(|section_id| {
-                            let section_id =
-                                layout.output_sections.primary_output_section(section_id);
-                            layout.output_sections.output_index_of_section(section_id)
-                        })
-                        .unwrap_or(0),
-                    def_info.elf_symbol_type.raw(),
+                bail!(
+                    "Symbol '{}' referenced by --defsym does not exist",
+                    target_name
                 )
             }
         } else {
