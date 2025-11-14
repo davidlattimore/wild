@@ -3195,7 +3195,7 @@ fn write_prelude_dynsym(
     let address = resolution.raw_value;
     let name = layout.symbol_db.symbol_name(symbol_id)?;
 
-    // For DefsymSymbol, try to get the attributes (section, type, size) from the target symbol
+    // For DefsymSymbol, try to get the attributes (section, type) from the target symbol
     let (shndx, st_type) = if let crate::parsing::SymbolPlacement::DefsymSymbol(_) =
         def_info.placement
     {
