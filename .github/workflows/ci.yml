@@ -65,7 +65,7 @@ jobs:
         if: ${{ contains(matrix.container, 'ubuntu') }}
       - run: apt-get update && apt-get -y install qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-riscv64-linux-gnu g++-riscv64-linux-gnu
         if: ${{ matrix.test-qemu }}
-      - run: zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
+      - run: zypper refresh && zypper in -y gcc gcc-c++ glibc-devel-static clang lld curl rustup bubblewrap
         if: ${{ contains(matrix.container, 'opensuse') }}
       - run: apk add build-base lld clang clang-extra-tools bash curl
         if: ${{ contains(matrix.container, 'alpine') }}
