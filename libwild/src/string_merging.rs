@@ -43,6 +43,8 @@ use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
+use linker_utils::elf;
+use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
 use rayon::iter::ParallelBridge as _;
@@ -101,6 +103,7 @@ impl StringMergeSectionSlot {
 pub(crate) struct StringMergeSectionExtra<'data> {
     pub(crate) index: object::SectionIndex,
     pub(crate) section_data: &'data [u8],
+    pub(crate) section_flags: elf::SectionFlags,
 }
 
 /// An input offset. We pretend that we've placed all input sections for a given output section one
@@ -122,6 +125,9 @@ struct StringMergeInputSection<'data> {
 
     /// The sum of the sizes of the input sections prior to this one with the same `part_id`.
     start_input_offset: LinearInputOffset,
+
+    // TODO: remove this flag and store non string sections elsewhere
+    is_string: bool,
 }
 
 /// A string from a string-merge section. Includes the null terminator.
@@ -279,6 +285,7 @@ fn group_merge_string_sections_by_output<'data>(
                     .push(StringMergeInputSection {
                         section_data: extra.section_data,
                         start_input_offset: *starting_offset,
+                        is_string: extra.section_flags.contains(shf::STRINGS),
                     });
 
                 *starting_offset = *starting_offset
@@ -319,7 +326,11 @@ fn process_input_section<'data, 'offsets>(
     let mut input_offset = input_section.start_input_offset;
     let mut remaining = input_section.section_data;
     while !remaining.is_empty() {
-        let string = MergeString::take_hashed(&mut remaining)?;
+        let string = if input_section.is_string {
+            MergeString::take_hashed(&mut remaining)?
+        } else {
+            MergeString::take_hashed_non_string(&mut remaining)
+        };
         // Insert 0, then we'll update it later once we know the output offset. We do the
         // initial insertion now since insertions need to happen in sequential order, whereas by
         // the time we know the output offset, we're processing just a single bucket.
@@ -869,6 +880,15 @@ impl<'data> MergeString<'data> {
         let hash = crate::hash::hash_bytes(bytes);
         *source = rest;
         Ok(PreHashed::new(MergeString { bytes }, hash))
+    }
+
+    /// Takes the whole `source`. Returns a prehashed reference to what was taken.
+    pub(crate) fn take_hashed_non_string(
+        source: &mut &'data [u8],
+    ) -> PreHashed<MergeString<'data>> {
+        let bytes = take(source);
+        let hash = crate::hash::hash_bytes(bytes);
+        PreHashed::new(MergeString { bytes }, hash)
     }
 }
 

@@ -53,20 +53,18 @@ pub(crate) const NUM_BUILT_IN_PARTS: usize = NUM_SINGLE_PART_SECTIONS as usize
 /// A placeholder used for custom sections before we know their actual PartId.
 pub(crate) const CUSTOM_PLACEHOLDER: PartId = PartId(u32::MAX);
 
-/// Returns whether the supplied section meets our criteria for string merging. String merging is
+/// Returns whether the supplied section meets our criteria for section merging. Section merging is
 /// optional, so there are cases where we might be able to merge, but don't currently. For example
 /// if alignment is > 1.
-pub(crate) fn should_merge_strings(
+pub(crate) fn should_merge_sections(
     section_flags: SectionFlags,
     section_alignment: u64,
     args: &Args,
 ) -> bool {
-    if !args.merge_strings {
+    if !args.merge_sections {
         return false;
     }
-    section_flags.contains(shf::MERGE)
-        && section_flags.contains(shf::STRINGS)
-        && section_alignment <= 1
+    section_flags.contains(shf::MERGE) && section_alignment <= 1
 }
 
 impl PartId {
