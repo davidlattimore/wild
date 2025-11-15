@@ -1,6 +1,7 @@
 use crate::LayoutRules;
 use crate::OutputSections;
 use crate::args::Args;
+use crate::args::DefsymValue;
 use crate::args::Modifiers;
 use crate::args::OutputKind;
 use crate::args::RelocationModel;
@@ -107,14 +108,14 @@ pub(crate) struct Epilogue {
 
 #[derive(Clone, Copy, derive_more::Debug)]
 pub(crate) struct InternalSymDefInfo<'data> {
-    pub(crate) placement: SymbolPlacement,
+    pub(crate) placement: SymbolPlacement<'data>,
     #[debug("{:?}", String::from_utf8_lossy(name))]
     pub(crate) name: &'data [u8],
     pub(crate) elf_symbol_type: SymbolType,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum SymbolPlacement {
+pub(crate) enum SymbolPlacement<'data> {
     /// Symbol 0 - the undefined symbol.
     Undefined,
 
@@ -127,10 +128,17 @@ pub(crate) enum SymbolPlacement {
 
     /// An undefined symbol supplied by the user, e.g. via `--undefined=symbol-name`.
     ForceUndefined,
+
+    /// A symbol defined via --defsym with an absolute address.
+    DefsymAbsolute(u64),
+
+    /// A symbol defined via --defsym that references another symbol.
+    /// Stores the name of the target symbol.
+    DefsymSymbol(&'data str),
 }
 
 impl<'data> InternalSymDefInfo<'data> {
-    pub(crate) fn notype(placement: SymbolPlacement, name: &'data [u8]) -> Self {
+    pub(crate) fn notype(placement: SymbolPlacement<'data>, name: &'data [u8]) -> Self {
         Self {
             placement,
             name,
@@ -224,6 +232,15 @@ impl<'data> Prelude<'data> {
 
         symbol_definitions.extend(args.undefined.iter().map(|name| {
             InternalSymDefInfo::notype(SymbolPlacement::ForceUndefined, name.as_bytes())
+        }));
+
+        // Add symbols defined via --defsym
+        symbol_definitions.extend(args.defsym.iter().map(|(name, value)| {
+            let placement = match value {
+                DefsymValue::Value(addr) => SymbolPlacement::DefsymAbsolute(*addr),
+                DefsymValue::Symbol(target) => SymbolPlacement::DefsymSymbol(target.as_str()),
+            };
+            InternalSymDefInfo::notype(placement, name.as_bytes())
         }));
 
         Self { symbol_definitions }

@@ -37,6 +37,14 @@ use std::sync::atomic::AtomicI64;
 use std::sync::atomic::Ordering;
 
 #[derive(Debug)]
+pub(crate) enum DefsymValue {
+    /// A numeric value (address)
+    Value(u64),
+    /// Reference to another symbol
+    Symbol(String),
+}
+
+#[derive(Debug)]
 pub struct Args {
     pub(crate) unrecognized_options: Vec<String>,
 
@@ -79,6 +87,9 @@ pub struct Args {
     pub(crate) export_all_dynamic_symbols: bool,
     pub(crate) export_list: Vec<String>,
     pub(crate) export_list_path: Option<PathBuf>,
+
+    /// Symbol definitions from `--defsym` options. Each entry is (symbol_name, value_or_symbol).
+    pub(crate) defsym: Vec<(String, DefsymValue)>,
 
     /// If set, GC stats will be written to the specified filename.
     pub(crate) write_gc_stats: Option<PathBuf>,
@@ -404,6 +415,7 @@ impl Default for Args {
             export_all_dynamic_symbols: false,
             export_list: Vec::new(),
             export_list_path: None,
+            defsym: Vec::new(),
             got_plt_syms: false,
             relax: true,
             hash_style: HashStyle::Both,
@@ -2099,6 +2111,29 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Use a wrapper function")
         .execute(|args, _modifier_stack, value| {
             args.wrap.push(value.to_owned());
+            Ok(())
+        });
+
+    parser
+        .declare_with_param()
+        .long("defsym")
+        .help("Define a symbol alias: --defsym=symbol=value")
+        .execute(|args, _modifier_stack, value| {
+            let parts: Vec<&str> = value.splitn(2, '=').collect();
+            if parts.len() != 2 {
+                bail!("Invalid --defsym format. Expected: --defsym=symbol=value");
+            }
+            // TODO: Also parse expressions like `--defsym=symbol=other_symbol+offset`
+            let symbol_name = parts[0].to_owned();
+            let value_str = parts[1];
+
+            let defsym_value = if let Ok(num) = parse_number(value_str) {
+                DefsymValue::Value(num)
+            } else {
+                DefsymValue::Symbol(value_str.to_owned())
+            };
+
+            args.defsym.push((symbol_name, defsym_value));
             Ok(())
         });
 

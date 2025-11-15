@@ -13,6 +13,7 @@ use crate::arch::Arch;
 use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::BuildIdOption;
+use crate::args::DefsymValue;
 use crate::args::OutputKind;
 use crate::args::Strip;
 use crate::bail;
@@ -169,7 +170,7 @@ pub fn compute<'data, A: Arch>(
     let mut group_states = gc_outputs.group_states;
 
     finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
-    merge_dynamic_symbol_definitions(&mut group_states);
+    merge_dynamic_symbol_definitions(&mut group_states, &symbol_db)?;
     merge_gnu_property_notes::<A>(&mut group_states)?;
     merge_eflags::<A>(&mut group_states)?;
     merge_riscv_attributes::<A>(&mut group_states);
@@ -274,6 +275,7 @@ pub fn compute<'data, A: Arch>(
     }
 
     update_dynamic_symbol_resolutions(&group_layouts, &mut symbol_resolutions.resolutions);
+    update_defsym_symbol_resolutions(&symbol_db, &mut symbol_resolutions.resolutions);
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, symbol_db.args)?;
 
     let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
@@ -296,6 +298,53 @@ pub fn compute<'data, A: Arch>(
         relocation_statistics,
         per_symbol_flags,
     })
+}
+
+/// Update resolutions for defsym symbols that reference other symbols.
+fn update_defsym_symbol_resolutions(symbol_db: &SymbolDb, resolutions: &mut [Option<Resolution>]) {
+    let Some(Group::Prelude(prelude)) = symbol_db.groups.first() else {
+        unreachable!()
+    };
+
+    let symbol_id_range = SymbolIdRange::prelude(prelude.symbol_definitions.len());
+
+    for (local_index, def_info) in prelude.symbol_definitions.iter().enumerate() {
+        if !matches!(def_info.placement, SymbolPlacement::DefsymSymbol(_)) {
+            continue;
+        }
+
+        let symbol_id = symbol_id_range.offset_to_id(local_index);
+        if !symbol_db.is_canonical(symbol_id) {
+            continue;
+        }
+
+        // Find the target symbol name in `args.defsym`
+        let symbol_name = def_info.name;
+        for (name, defsym_value) in &symbol_db.args.defsym {
+            if name.as_bytes() != symbol_name {
+                continue;
+            }
+
+            if let DefsymValue::Symbol(target_name) = defsym_value {
+                // Look up the target symbol and get its address
+                if let Some(target_symbol_id) = symbol_db
+                    .get_unversioned(&UnversionedSymbolName::prehashed(target_name.as_bytes()))
+                {
+                    let target_value = resolutions[target_symbol_id.as_usize()]
+                        .as_ref()
+                        .map(|r| r.raw_value);
+
+                    if let Some(target_value) = target_value
+                        && let Some(resolution) = &mut resolutions[symbol_id.as_usize()]
+                    {
+                        resolution.raw_value = target_value;
+                    }
+                }
+            }
+
+            break;
+        }
+    }
 }
 
 /// Update resolutions for all dynamic symbols that our output file defines.
@@ -375,7 +424,10 @@ fn get_epilogue_mut<'a, 'data>(
     epilogue
 }
 
-fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) {
+fn merge_dynamic_symbol_definitions<'data>(
+    group_states: &mut [GroupState<'data>],
+    symbol_db: &SymbolDb<'data>,
+) -> Result {
     timing_phase!("Merge dynamic symbol definitions");
 
     let mut dynamic_symbol_definitions = Vec::new();
@@ -383,8 +435,70 @@ fn merge_dynamic_symbol_definitions(group_states: &mut [GroupState]) {
         dynamic_symbol_definitions.extend(group.common.dynamic_symbol_definitions.iter().copied());
     }
 
+    append_prelude_defsym_dynamic_symbols(
+        group_states,
+        symbol_db,
+        &mut dynamic_symbol_definitions,
+    )?;
+
     let epilogue = get_epilogue_mut(group_states);
     epilogue.dynamic_symbol_definitions = dynamic_symbol_definitions;
+
+    Ok(())
+}
+
+fn append_prelude_defsym_dynamic_symbols<'data>(
+    group_states: &[GroupState<'data>],
+    symbol_db: &SymbolDb<'data>,
+    dynamic_symbol_definitions: &mut Vec<DynamicSymbolDefinition<'data>>,
+) -> Result {
+    if symbol_db.args.needs_dynsym()
+        && let Some(first_group) = group_states.first()
+        && let Some(FileLayoutState::Prelude(prelude)) = first_group.files.first()
+    {
+        let symbol_id_range = prelude.symbol_id_range;
+        for (index, def_info) in prelude
+            .internal_symbols
+            .symbol_definitions
+            .iter()
+            .enumerate()
+        {
+            if !matches!(def_info.placement, SymbolPlacement::DefsymSymbol(_)) {
+                continue;
+            }
+
+            let symbol_id = symbol_id_range.offset_to_id(index);
+            if !symbol_db.is_canonical(symbol_id)
+                || dynamic_symbol_definitions
+                    .iter()
+                    .any(|def| def.symbol_id == symbol_id)
+            {
+                continue;
+            }
+
+            let symbol_name = symbol_db.symbol_name(symbol_id)?;
+            let RawSymbolName {
+                name,
+                version_name,
+                is_default,
+            } = RawSymbolName::parse(symbol_name.bytes());
+
+            let mut version = object::elf::VER_NDX_GLOBAL;
+            if symbol_db.version_script.version_count() > 0
+                && let Some(v) = symbol_db
+                    .version_script
+                    .version_for_symbol(&UnversionedSymbolName::prehashed(name), version_name)?
+            {
+                version = v;
+                if !is_default {
+                    version |= object::elf::VERSYM_HIDDEN;
+                }
+            }
+            dynamic_symbol_definitions.push(DynamicSymbolDefinition::new(symbol_id, name, version));
+        }
+    }
+
+    Ok(())
 }
 pub(crate) enum PropertyClass {
     // A bit in the output pr_data is set if it is set in any relocatable input.
@@ -3204,7 +3318,40 @@ impl<'data> PreludeLayoutState<'data> {
             );
         }
 
+        self.assign_defsym_flags(resources);
+
         Ok(())
+    }
+
+    fn assign_defsym_flags(&self, resources: &GraphResources) {
+        let needs_dynsym = resources.symbol_db.args.needs_dynsym();
+        for (index, def_info) in self.internal_symbols.symbol_definitions.iter().enumerate() {
+            let symbol_id = self.symbol_id_range.offset_to_id(index);
+            if !resources.symbol_db.is_canonical(symbol_id) {
+                continue;
+            }
+
+            match def_info.placement {
+                SymbolPlacement::DefsymAbsolute(_) => {
+                    resources
+                        .per_symbol_flags
+                        .get_atomic(symbol_id)
+                        .or_assign(ValueFlags::DIRECT);
+                }
+                SymbolPlacement::DefsymSymbol(_) => {
+                    let flags_to_set = if needs_dynsym {
+                        ValueFlags::DIRECT | ValueFlags::EXPORT_DYNAMIC
+                    } else {
+                        ValueFlags::DIRECT
+                    };
+                    resources
+                        .per_symbol_flags
+                        .get_atomic(symbol_id)
+                        .or_assign(flags_to_set);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn load_entry_point(&mut self, resources: &GraphResources, queue: &mut LocalWorkQueue) {
@@ -3627,6 +3774,15 @@ fn create_start_end_symbol_resolution(
         SymbolPlacement::SectionEnd(section_id) => {
             let sec = resources.section_layouts.get(section_id);
             sec.mem_offset + sec.mem_size
+        }
+
+        SymbolPlacement::DefsymAbsolute(value) => value,
+
+        SymbolPlacement::DefsymSymbol(_) => {
+            // For defsym symbols that reference another symbol, we defer resolution
+            // until later when all symbols have been resolved. This is handled by
+            // update_defsym_symbol_resolutions() which is called after layout is complete.
+            0
         }
     };
 
