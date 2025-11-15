@@ -377,6 +377,7 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) link: &'static [OutputSectionId],
     pub(crate) start_symbol_name: Option<&'static str>,
     pub(crate) end_symbol_name: Option<&'static str>,
+    pub(crate) synthetic_symbol_names: Option<&'static [&'static str]>,
     pub(crate) min_alignment: Alignment,
     info_fn: Option<fn(&InfoInputs) -> u32>,
     pub(crate) keep_if_empty: bool,
@@ -392,6 +393,7 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     link: &[],
     start_symbol_name: None,
     end_symbol_name: None,
+    synthetic_symbol_names: None,
     min_alignment: alignment::MIN,
     info_fn: None,
     keep_if_empty: false,
@@ -406,7 +408,7 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     BuiltInSectionDetails {
         kind: SectionKind::Primary(SectionName(b"")),
         section_flags: shf::ALLOC,
-        start_symbol_name: Some("__ehdr_start"),
+        synthetic_symbol_names: Some(&["__ehdr_start", "__executable_start"]),
         keep_if_empty: true,
         ..DEFAULT_DEFS
     },
