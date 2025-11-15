@@ -3,7 +3,8 @@ use crate::input_data::FileId;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
-use crate::symbol::UnversionedSymbolName;
+use crate::symbol::PreHashedSymbolName;
+use crate::symbol_db::RawSymbolName;
 use crate::symbol_db::SymbolDb;
 use crate::symbol_db::SymbolId;
 use crate::value_flags::AtomicPerSymbolFlags;
@@ -59,9 +60,16 @@ impl<'data> SymbolInfoPrinter<'data> {
             .find_mangled_name(self.name)
             .unwrap_or_else(|| self.name.to_owned());
 
-        let symbol_id = self
-            .symbol_db
-            .get_unversioned(&UnversionedSymbolName::prehashed(name.as_bytes()));
+        let versioned_prefix = if name.contains("@") {
+            name.clone()
+        } else {
+            format!("{name}@")
+        };
+
+        let symbol_id = self.symbol_db.get(
+            &PreHashedSymbolName::from_raw(&RawSymbolName::parse(name.as_bytes())),
+            true,
+        );
         println!("Global name `{name}` refers to: {symbol_id:?}",);
 
         println!("Definitions / references with name `{name}`:");
@@ -77,10 +85,9 @@ impl<'data> SymbolInfoPrinter<'data> {
                 "NOT LOADED"
             };
 
-            if self
-                .symbol_db
-                .symbol_name(symbol_id)
-                .is_ok_and(|sym_name| sym_name.bytes() == name.as_bytes())
+            if let Ok(sym_name) = self.symbol_db.symbol_name(symbol_id)
+                && (sym_name.bytes() == name.as_bytes()
+                    || sym_name.bytes().starts_with(versioned_prefix.as_bytes()))
             {
                 let file = self.symbol_db.file(file_id);
                 let local_index = symbol_id.to_input(file.symbol_id_range());
@@ -117,9 +124,17 @@ impl<'data> SymbolInfoPrinter<'data> {
                     }
                 }
 
+                // Versions can be either literally within the symbol name or in separate version
+                // tables. It's useful to know which we've got, so if we get a version from a
+                // separate table, we separate it visually from the rest of the name.
+                let version_str = self
+                    .symbol_db
+                    .symbol_version_debug(symbol_id)
+                    .map_or_else(String::new, |v| format!(" version `{v}`"));
+
                 println!(
                     "  {sym_debug}: symbol_id={symbol_id} -> {canonical} {flags} \
-                            \n    \
+                            \n    {sym_name}{version_str}\n    \
                             #{local_index} in File #{file_id} {input} ({file_state})"
                 );
             }
