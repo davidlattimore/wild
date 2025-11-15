@@ -749,7 +749,7 @@ fn canonicalise_undefined_symbols<'data>(
                         // behaviour differs in this case. GNU ld makes the symbol non-interposable,
                         // while lld makes it dynamic. We match GNU ld in this case.
                         if symbol_id.is_none() {
-                            let output_kind = symbol_db.args.output_kind();
+                            let output_kind = symbol_db.output_kind;
                             let visibility = symbol_db.input_symbol_visibility(undefined.symbol_id);
 
                             if visibility == Visibility::Default

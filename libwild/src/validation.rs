@@ -18,7 +18,7 @@ pub(crate) fn validate_bytes(layout: &Layout, file_bytes: &[u8]) -> Result {
 /// Checks that what we actually wrote to our output file matches what we intended to write in
 /// `layout`.
 fn validate_object(object: &crate::elf::File, layout: &Layout) -> Result {
-    if layout.args().is_relocatable() {
+    if layout.symbol_db.output_kind.is_relocatable() {
         // For now, we don't do any validation of relocatable outputs. The only thing we're
         // currently validating is GOT entries and they'll all have dynamic relocations.
         return Ok(());
