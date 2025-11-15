@@ -107,7 +107,17 @@ impl<'data> LayoutRulesBuilder<'data> {
         let mut symbol_defs = Vec::new();
 
         for cmd in &input.script.commands {
-            if let linker_script::Command::Sections(sections) = cmd {
+            if let linker_script::Command::SymbolDefinition { name, value } = cmd {
+                let value_str = std::str::from_utf8(value)
+                    .map_err(|_| crate::error!("Invalid UTF-8 in symbol value"))?;
+
+                let placement = if let Ok(num) = parse_symbol_value(value_str) {
+                    crate::parsing::SymbolPlacement::DefsymAbsolute(num)
+                } else {
+                    crate::parsing::SymbolPlacement::DefsymSymbol(value_str)
+                };
+                symbol_defs.push(crate::parsing::InternalSymDefInfo::notype(placement, name));
+            } else if let linker_script::Command::Sections(sections) = cmd {
                 let mut location = None;
 
                 // "Extra alignment" is what we call it when a linker script sets alignment via a
@@ -436,6 +446,17 @@ fn unnamed_section_output(section_flags: SectionFlags, sh_type: SectionType) -> 
         }
     } else {
         SectionRuleOutcome::Discard
+    }
+}
+
+/// Parse a symbol value from a linker script. Returns Ok(num) if it's a numeric value,
+/// otherwise returns Err.
+fn parse_symbol_value(s: &str) -> Result<u64, ()> {
+    // TODO: Support expressions like "foo=bar + 4".
+    if let Some(s) = s.strip_prefix("0x") {
+        u64::from_str_radix(s, 16).map_err(|_| ())
+    } else {
+        s.parse::<u64>().map_err(|_| ())
     }
 }
 
