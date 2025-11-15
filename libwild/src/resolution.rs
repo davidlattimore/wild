@@ -20,6 +20,7 @@ use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::layout_rules::SectionRules;
+use crate::layout_rules::SortOrder;
 use crate::output_section_id::CustomSectionDetails;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
@@ -501,14 +502,17 @@ pub(crate) struct UnloadedSection {
     /// Whether the section has a name that makes it eligible for generation of __start_ / __stop_
     /// symbols. In particular, the name of the section doesn't start with a ".".
     pub(crate) start_stop_eligible: bool,
+
+    pub(crate) sort_order: Option<SortOrder>,
 }
 
 impl UnloadedSection {
-    fn new(part_id: PartId) -> Self {
+    fn new(part_id: PartId, sort_order: Option<SortOrder>) -> Self {
         Self {
             part_id,
             last_frame_index: None,
             start_stop_eligible: false,
+            sort_order,
         }
     }
 }
@@ -885,7 +889,7 @@ fn resolve_sections_for_object<'data>(
 
                     must_load |= output_info.must_keep;
 
-                    unloaded_section = UnloadedSection::new(part_id);
+                    unloaded_section = UnloadedSection::new(part_id, output_info.sort_order);
                 }
                 SectionRuleOutcome::Discard => return Ok(SectionSlot::Discard),
                 SectionRuleOutcome::EhFrame => {
@@ -901,10 +905,10 @@ fn resolve_sections_for_object<'data>(
 
                     is_debug_info = !section_flags.contains(shf::ALLOC);
 
-                    unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
+                    unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER, None);
                 }
                 SectionRuleOutcome::Custom => {
-                    unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
+                    unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER, None);
                     unloaded_section.start_stop_eligible = !section_name.starts_with(b".");
                 }
                 SectionRuleOutcome::RiscVAttribute => {
