@@ -3099,14 +3099,14 @@ fn write_linker_script_dynsym(
 
     let info = &script.internal_symbols.symbol_definitions[local_index];
 
-    // Check if this is a --defsym style symbol definition
-    if matches!(
-        info.placement,
-        crate::parsing::SymbolPlacement::DefsymSymbol(_)
-            | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
-    ) {
-        return write_defsym_dynsym(dynsym_writer, layout, symbol_id, info);
-    }
+    debug_assert!(
+        !matches!(
+            info.placement,
+            crate::parsing::SymbolPlacement::DefsymSymbol(_)
+                | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
+        ),
+        "Defsym symbols from linker scripts should be emitted via the prelude"
+    );
 
     let section_id = info
         .section_id()
@@ -3244,10 +3244,9 @@ fn write_defsym_dynsym(
             if let Some(target_id) = target_symbol_id {
                 get_symbol_attributes(layout, target_id)?
             } else {
-                bail!(
-                    "Symbol '{}' referenced by --defsym does not exist",
-                    target_name
-                )
+                return Err(layout
+                    .symbol_db
+                    .missing_defsym_target_error(def_info.name, target_name));
             }
         } else {
             (object::elf::SHN_ABS, object::elf::STT_NOTYPE)
@@ -3376,10 +3375,9 @@ fn write_internal_symbols(
             if let Some(target_id) = target_symbol_id {
                 get_symbol_attributes(layout, target_id)?
             } else {
-                bail!(
-                    "Symbol '{}' referenced by --defsym does not exist",
-                    target_name
-                )
+                return Err(layout
+                    .symbol_db
+                    .missing_defsym_target_error(def_info.name, target_name));
             }
         } else {
             let shndx = def_info

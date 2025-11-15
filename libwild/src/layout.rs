@@ -13,7 +13,6 @@ use crate::arch::Arch;
 use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::BuildIdOption;
-use crate::args::DefsymValue;
 use crate::args::OutputKind;
 use crate::args::Strip;
 use crate::bail;
@@ -305,92 +304,31 @@ fn update_defsym_symbol_resolutions(
     symbol_db: &SymbolDb,
     resolutions: &mut [Option<Resolution>],
 ) -> Result {
-    // Process prelude defsym symbols
     if let Some(Group::Prelude(prelude)) = symbol_db.groups.first() {
         let symbol_id_range = SymbolIdRange::prelude(prelude.symbol_definitions.len());
 
         for (local_index, def_info) in prelude.symbol_definitions.iter().enumerate() {
-            if !matches!(def_info.placement, SymbolPlacement::DefsymSymbol(_)) {
+            let SymbolPlacement::DefsymSymbol(target_name) = def_info.placement else {
                 continue;
-            }
+            };
 
             let symbol_id = symbol_id_range.offset_to_id(local_index);
             if !symbol_db.is_canonical(symbol_id) {
                 continue;
             }
 
-            // Find the target symbol name in `args.defsym`
-            let symbol_name = def_info.name;
-            for (name, defsym_value) in &symbol_db.args.defsym {
-                if name.as_bytes() != symbol_name {
-                    continue;
-                }
+            let Some(target_symbol_id) = symbol_db
+                .get_unversioned(&UnversionedSymbolName::prehashed(target_name.as_bytes()))
+            else {
+                return Err(symbol_db.missing_defsym_target_error(def_info.name, target_name));
+            };
 
-                if let DefsymValue::Symbol(target_name) = defsym_value {
-                    // Look up the target symbol and get its address
-                    if let Some(target_symbol_id) = symbol_db
-                        .get_unversioned(&UnversionedSymbolName::prehashed(target_name.as_bytes()))
-                    {
-                        let target_value = resolutions[target_symbol_id.as_usize()]
-                            .as_ref()
-                            .map(|r| r.raw_value);
-
-                        if let Some(target_value) = target_value
-                            && let Some(resolution) = &mut resolutions[symbol_id.as_usize()]
-                        {
-                            resolution.raw_value = target_value;
-                        }
-                    } else {
-                        bail!(
-                            "Symbol '{}' referenced by --defsym does not exist",
-                            target_name
-                        );
-                    }
-                }
-
-                break;
-            }
-        }
-    }
-
-    // Process linker script defsym symbols
-    for group in &symbol_db.groups {
-        if let Group::LinkerScripts(scripts) = group {
-            for script in scripts {
-                let symbol_id_range = script.symbol_id_range;
-
-                for (local_index, def_info) in script.parsed.symbol_defs.iter().enumerate() {
-                    if !matches!(def_info.placement, SymbolPlacement::DefsymSymbol(_)) {
-                        continue;
-                    }
-
-                    let symbol_id = symbol_id_range.offset_to_id(local_index);
-                    if !symbol_db.is_canonical(symbol_id) {
-                        continue;
-                    }
-
-                    // For linker script defsym, the target symbol name is in the placement itself
-                    if let SymbolPlacement::DefsymSymbol(target_name) = def_info.placement {
-                        if let Some(target_symbol_id) = symbol_db.get_unversioned(
-                            &UnversionedSymbolName::prehashed(target_name.as_bytes()),
-                        ) {
-                            let target_value = resolutions[target_symbol_id.as_usize()]
-                                .as_ref()
-                                .map(|r| r.raw_value);
-
-                            if let Some(target_value) = target_value
-                                && let Some(resolution) = &mut resolutions[symbol_id.as_usize()]
-                            {
-                                resolution.raw_value = target_value;
-                            }
-                        } else {
-                            bail!(
-                                "Undefined symbol '{}' referenced in expression",
-                                target_name
-                            );
-                        }
-                    }
-                }
+            if let Some(target_value) = resolutions[target_symbol_id.as_usize()]
+                .as_ref()
+                .map(|r| r.raw_value)
+                && let Some(resolution) = &mut resolutions[symbol_id.as_usize()]
+            {
+                resolution.raw_value = target_value;
             }
         }
     }
