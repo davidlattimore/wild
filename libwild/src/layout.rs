@@ -65,10 +65,10 @@ use crate::resolution::ResolvedEpilogue;
 use crate::resolution::ResolvedLinkerScript;
 use crate::resolution::SectionSlot;
 use crate::resolution::UnloadedSection;
+use crate::sharding::ShardKey;
 use crate::sorted::SectionToSort;
 use crate::sorted::SortedPlanEntry;
 use crate::sorted::file_rank;
-use crate::sharding::ShardKey;
 use crate::string_merging::MergedStringStartAddresses;
 use crate::string_merging::MergedStringsSection;
 use crate::string_merging::get_merged_string_output_address;
@@ -433,8 +433,7 @@ fn update_sorted_section_resolutions(
             let delta = entry.dst_file_off.saturating_sub(base_file);
             let address = base_mem + delta;
             let group_layout = &mut group_layouts[entry.file_id.group()];
-            if let Some(FileLayout::Object(obj)) =
-                group_layout.files.get_mut(entry.file_id.file())
+            if let Some(FileLayout::Object(obj)) = group_layout.files.get_mut(entry.file_id.file())
             {
                 if entry.section.index.0 < obj.section_resolutions.len() {
                     obj.section_resolutions[entry.section.index.0] = SectionResolution { address };
@@ -4002,7 +4001,10 @@ impl<'data> EpilogueLayoutState<'data> {
         Ok(())
     }
 
-    fn finalise_sorted_sections(&mut self, resources: &FinaliseLayoutResources<'_, 'data>) -> Result {
+    fn finalise_sorted_sections(
+        &mut self,
+        resources: &FinaliseLayoutResources<'_, 'data>,
+    ) -> Result {
         for (out_id, items) in self.sorted_sections.iter_mut() {
             if items.is_empty() {
                 continue;

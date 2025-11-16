@@ -122,9 +122,9 @@ use std::ops::BitAnd;
 use std::ops::Not as _;
 use std::ops::Range;
 use std::ops::Sub;
-use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::Ordering::Relaxed;
 use tracing::debug_span;
 use tracing::instrument;
 use uuid::Uuid;
@@ -1492,9 +1492,15 @@ fn emit_sorted_section_bytes<'data, A: Arch>(
 
     let relocations = object.relocations(section.index)?;
     match relocations {
-        elf::RelocationList::Rela(rela) => {
-            apply_relocations::<A>(object, &mut out, section, &rela, layout, table_writer, trace)?
-        }
+        elf::RelocationList::Rela(rela) => apply_relocations::<A>(
+            object,
+            &mut out,
+            section,
+            &rela,
+            layout,
+            table_writer,
+            trace,
+        )?,
         elf::RelocationList::Crel(crel_iter) => apply_relocations::<A>(
             object,
             &mut out,

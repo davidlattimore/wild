@@ -29,7 +29,6 @@ pub(crate) mod output_section_part_map;
 pub(crate) mod output_trace;
 pub(crate) mod parsing;
 pub(crate) mod part_id;
-pub(crate) mod sorted;
 #[cfg(all(
     target_os = "linux",
     any(target_arch = "x86_64", target_arch = "aarch64")
@@ -46,6 +45,7 @@ pub(crate) mod resolution;
 pub(crate) mod riscv64;
 pub(crate) mod save_dir;
 pub(crate) mod sharding;
+pub(crate) mod sorted;
 pub(crate) mod string_merging;
 #[cfg(feature = "fork")]
 pub(crate) mod subprocess;
