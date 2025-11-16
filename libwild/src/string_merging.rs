@@ -126,7 +126,6 @@ struct StringMergeInputSection<'data> {
     /// The sum of the sizes of the input sections prior to this one with the same `part_id`.
     start_input_offset: LinearInputOffset,
 
-    // TODO: remove this flag and store non string sections elsewhere
     is_string: bool,
 }
 
