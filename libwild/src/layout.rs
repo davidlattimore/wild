@@ -4887,7 +4887,7 @@ impl<'data> ObjectLayoutState<'data> {
         for (index, slot) in self.sections.iter_mut().enumerate() {
             let resolution = match slot {
                 SectionSlot::Loaded(sec) => {
-                    if let Some(order) = sec.sort_order {
+                    if sec.sort_order.is_some() {
                         // Sorted sections are owned by the epilogue and assigned addresses there.
                         SectionResolution::none()
                     } else {
