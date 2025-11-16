@@ -222,6 +222,34 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
                 )
                 .with_context(|| format!("Failed copying from {file} to output file"))?;
             }
+            // Account for sorted sections for files in this group so validation sees them consumed.
+            use hashbrown::{HashMap, HashSet};
+            let mut group_file_ids: HashSet<crate::input_data::FileId> = HashSet::new();
+            for f in &group.files {
+                if let FileLayout::Object(o) = f {
+                    group_file_ids.insert(o.file_id);
+                }
+            }
+
+            let mut totals: HashMap<part_id::PartId, u64> = HashMap::new();
+            layout.sorted_plan.for_each(|_, items| {
+                for entry in items {
+                    if group_file_ids.contains(&entry.file_id) {
+                        let part = entry.section.part_id;
+                        *totals.entry(part).or_default() += entry.section.capacity();
+                    }
+                }
+            });
+            for (part, sum) in totals {
+                let buf = buffers.get_mut(part);
+                let need = sum as usize;
+                ensure!(
+                    buf.len() >= need,
+                    "Insufficient buffer when accounting sorted section {}",
+                    layout.output_sections.display_name(part.output_section_id())
+                );
+                let _ = buf.split_off_mut(..need).unwrap();
+            }
             table_writer
                 .validate_empty(&group.mem_sizes)
                 .with_context(|| format!("validate_empty failed for {group}"))?;

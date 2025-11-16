@@ -3976,8 +3976,10 @@ impl<'data> EpilogueLayoutState<'data> {
     }
 
     #[allow(clippy::unnecessary_wraps)]
+    #[allow(clippy::unnecessary_wraps)]
     fn finalise_sorted_sections(
         &mut self,
+        memory_offsets: &mut OutputSectionPartMap<u64>,
         resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result {
         self.sorted_sections.for_each_mut(|out_id, items| {
@@ -4006,6 +4008,7 @@ impl<'data> EpilogueLayoutState<'data> {
                     is_ctors_like: item.is_ctors_like,
                 });
                 cursor += item.section.capacity();
+                *memory_offsets.get_mut(item.section.part_id) += item.section.capacity();
             }
         });
 
@@ -4290,7 +4293,7 @@ impl<'data> EpilogueLayoutState<'data> {
         self.internal_symbols
             .finalise_layout(memory_offsets, resolutions_out, resources)?;
 
-        self.finalise_sorted_sections(resources)?;
+        self.finalise_sorted_sections(memory_offsets, resources)?;
 
         let dynsym_start_index = ((memory_offsets.get(part_id::DYNSYM)
             - resources
@@ -4602,8 +4605,8 @@ impl<'data> ObjectLayoutState<'data> {
                     priority,
                     is_ctors_like,
                 });
-            // Sorted sections still contribute size/alignment here; epilogue only decides order.
-            common.section_loaded(part_id, header, section);
+            // Record attributes; size/placement will be handled in epilogue.
+            common.store_section_attributes(part_id, header);
         } else {
             common.section_loaded(part_id, header, section);
         }
