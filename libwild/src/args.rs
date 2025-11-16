@@ -530,25 +530,6 @@ impl Args {
         }
     }
 
-    // pub(crate) fn needs_dynsym(&self) -> bool {
-    //     self.output_kind().needs_dynsym()
-    // }
-
-    // pub(crate) fn is_relocatable(&self) -> bool {
-    //     self.output_kind().is_relocatable()
-    // }
-
-    // /// Returns whether we need a dynamic section.
-    // pub(crate) fn needs_dynamic(&self) -> bool {
-    //     self.output_kind().needs_dynamic()
-    // }
-
-    // #[allow(dead_code)]
-    // pub(crate) fn should_debug_address(&self, address: u64) -> bool {
-    //     self.debug_address
-    //         .is_some_and(|a| address >= a && address < a + 8)
-    // }
-
     pub(crate) fn trace_span_for_file(
         &self,
         file_id: FileId,
