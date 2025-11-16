@@ -5003,7 +5003,10 @@ impl<'data> ObjectLayoutState<'data> {
                     Some(x) => x,
                     None => {
                         // Allow symbols in epilogue-owned sorted sections to be resolved later.
-                        if self.sections[section_index.0].sort_order.is_some() {
+                        if matches!(
+                            self.sections.get(section_index.0),
+                            Some(SectionSlot::Loaded(sec)) if sec.sort_order.is_some()
+                        ) {
                             return Ok(None);
                         }
                         // Don't error for mapping symbols. They cannot have relocations refer to
