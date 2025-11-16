@@ -4884,34 +4884,11 @@ impl<'data> ObjectLayoutState<'data> {
 
         let mut section_resolutions = vec![SectionResolution::none(); self.sections.len()];
 
-        struct PendingSortedSection {
-            index: usize,
-            section: Section,
-            priority: u16,
-        }
-
-        let mut pending_init = Vec::new();
-        let mut pending_fini = Vec::new();
-
         for (index, slot) in self.sections.iter_mut().enumerate() {
             let resolution = match slot {
                 SectionSlot::Loaded(sec) => {
                     if let Some(order) = sec.sort_order {
-                        let header = self.object.section(sec.index)?;
-                        let name = self.object.section_name(header)?;
-                        let priority = sorted_section_priority(name);
-
-                        let pending = PendingSortedSection {
-                            index,
-                            section: *sec,
-                            priority,
-                        };
-
-                        match order {
-                            SortOrder::Init => pending_init.push(pending),
-                            SortOrder::Fini => pending_fini.push(pending),
-                        }
-
+                        // Sorted sections are owned by the epilogue and assigned addresses there.
                         SectionResolution::none()
                     } else {
                         let part_id = sec.part_id;
@@ -4936,33 +4913,6 @@ impl<'data> ObjectLayoutState<'data> {
             };
             section_resolutions[index] = resolution;
         }
-
-        fn process_pending(
-            pending: &mut Vec<PendingSortedSection>,
-            memory_offsets: &mut OutputSectionPartMap<u64>,
-            section_resolutions: &mut [SectionResolution],
-        ) {
-            if pending.is_empty() {
-                return;
-            }
-
-            pending.sort_by(|lhs, rhs| {
-                lhs.priority
-                    .cmp(&rhs.priority)
-                    .then_with(|| lhs.index.cmp(&rhs.index))
-            });
-
-            for entry in pending.iter() {
-                let address = *memory_offsets.get(entry.section.part_id);
-                *memory_offsets.get_mut(entry.section.part_id) += entry.section.capacity();
-                section_resolutions[entry.index] = SectionResolution { address };
-            }
-
-            pending.clear();
-        }
-
-        process_pending(&mut pending_init, memory_offsets, &mut section_resolutions);
-        process_pending(&mut pending_fini, memory_offsets, &mut section_resolutions);
 
         for ((local_symbol_index, local_symbol), &flags) in self
             .object
