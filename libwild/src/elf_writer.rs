@@ -1252,6 +1252,7 @@ fn write_object<A: Arch>(
                         (sec.output_section_id(), object.file_id, sec.index.0 as u32),
                         data,
                     );
+                    continue;
                 }
                 write_object_section::<A>(object, layout, sec, buffers, table_writer, trace)?;
             }
