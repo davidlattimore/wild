@@ -8,6 +8,8 @@
 //#ExpectSym:start_bar section="bar",offset-in-section=0
 //#ExpectSym:start_aaa section="bar",offset-in-section=8
 //#ExpectSym:end_bar section="bar",offset-in-section=12
+//#ExpectSym:defsym_start_aaa section="bar"
+//#ExpectSym:defsym_addr address=0x1234
 //#DiffIgnore:section.riscv.attributes
 //#DiffIgnore:segment.RISCV_ATTRIBUTES.*
 

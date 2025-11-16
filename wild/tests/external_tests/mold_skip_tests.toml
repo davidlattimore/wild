@@ -100,10 +100,6 @@ tests = [
   "version-script17.sh",
 ]
 
-[skipped_groups.linker_script]
-reason = "Linker script support"
-tests  = ["linker-script-defsym.sh"]
-
 [skipped_groups.z_options]
 reason = "Related to -z"
 tests = [

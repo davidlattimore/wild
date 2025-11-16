@@ -27,7 +27,7 @@ use rayon::iter::ParallelIterator;
 
 pub(crate) fn parse_input_files<'data>(
     inputs: &[InputBytes<'data>],
-    linker_scripts: Vec<ProcessedLinkerScript<'data>>,
+    mut linker_scripts: Vec<ProcessedLinkerScript<'data>>,
     args: &'data Args,
 ) -> Result<ParsedInputs<'data>> {
     timing_phase!("Parse input files");
@@ -43,6 +43,9 @@ pub(crate) fn parse_input_files<'data>(
     );
 
     let objects = objects?;
+    let mut prelude = prelude;
+
+    move_linker_script_defsyms_to_prelude(&mut prelude, &mut linker_scripts);
 
     let num_symbols = count_symbols(&prelude, &objects, &linker_scripts);
 
@@ -249,6 +252,24 @@ impl<'data> Prelude<'data> {
     pub(crate) fn symbol_name(&self, symbol_id: SymbolId) -> UnversionedSymbolName<'data> {
         let def = &self.symbol_definitions[symbol_id.as_usize()];
         UnversionedSymbolName::new(def.name)
+    }
+}
+
+fn move_linker_script_defsyms_to_prelude<'data>(
+    prelude: &mut Prelude<'data>,
+    linker_scripts: &mut [ProcessedLinkerScript<'data>],
+) {
+    for script in linker_scripts {
+        script.symbol_defs.retain(|def| {
+            let is_defsym = matches!(
+                def.placement,
+                SymbolPlacement::DefsymAbsolute(_) | SymbolPlacement::DefsymSymbol(_)
+            );
+            if is_defsym {
+                prelude.symbol_definitions.push(*def);
+            }
+            !is_defsym
+        });
     }
 }
 

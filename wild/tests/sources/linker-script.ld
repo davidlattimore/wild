@@ -7,3 +7,5 @@ SECTIONS {
         end_bar = .;
     }
 }
+defsym_start_aaa = start_aaa;
+defsym_addr = 0x1234;

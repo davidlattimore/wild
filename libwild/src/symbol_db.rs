@@ -712,6 +712,31 @@ impl<'data> SymbolDb<'data> {
             .unwrap_or(b"_start")
     }
 
+    pub(crate) fn defsym_defined_via_cli_option(&self, symbol_name: &[u8]) -> bool {
+        self.args
+            .defsym
+            .iter()
+            .any(|(name, _)| name.as_bytes() == symbol_name)
+    }
+
+    pub(crate) fn missing_defsym_target_error(
+        &self,
+        symbol_name: &[u8],
+        target_name: &str,
+    ) -> Error {
+        if self.defsym_defined_via_cli_option(symbol_name) {
+            crate::error!(
+                "Symbol '{}' referenced by --defsym does not exist",
+                target_name
+            )
+        } else {
+            crate::error!(
+                "Undefined symbol '{}' referenced in expression",
+                target_name
+            )
+        }
+    }
+
     fn apply_linker_script(&mut self, script: &InputLinkerScript<'data>) {
         for cmd in &script.script.commands {
             if let crate::linker_script::Command::Entry(symbol_name) = cmd {

@@ -2942,7 +2942,8 @@ fn integration_test(
         "entry-in-shared.c",
         "alignment.c",
         "hash-style.c",
-        "defsym.c"
+        "defsym.c",
+        "linker-script-defsym-notfound.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),

@@ -64,6 +64,10 @@ pub(crate) enum Command<'a> {
     Entry(&'a [u8]),
     #[debug("{}", String::from_utf8_lossy(_0))]
     Version(&'a [u8]),
+    SymbolDefinition {
+        name: &'a [u8],
+        value: &'a [u8],
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -147,7 +151,7 @@ fn parse_token<'input>(input: &mut &'input BStr) -> winnow::Result<&'input [u8]>
 
         Ok(content)
     } else {
-        take_while(1.., |b| !b" (){}\n\t".contains(&b)).parse_next(input)
+        take_while(1.., |b| !b" (){};\n\t".contains(&b)).parse_next(input)
     }
 }
 
@@ -188,7 +192,19 @@ fn parse_command<'input>(input: &mut &'input BStr) -> winnow::Result<Command<'in
         b"SECTIONS" => Command::Sections(parse_sections(input)?),
         b"ENTRY" => Command::Entry(parse_entry(input)?),
         b"VERSION" => Command::Version(parse_version(input)?),
-        other => Command::Arg(other),
+        other => {
+            if input.starts_with(b"=") {
+                // Symbol definition
+                '='.parse_next(input)?;
+                skip_comments_and_whitespace(input)?;
+                let value = parse_token(input)?;
+                skip_comments_and_whitespace(input)?;
+                opt(';').parse_next(input)?;
+                Command::SymbolDefinition { name: other, value }
+            } else {
+                Command::Arg(other)
+            }
+        }
     };
 
     skip_comments_and_whitespace(input)?;

@@ -3099,6 +3099,15 @@ fn write_linker_script_dynsym(
 
     let info = &script.internal_symbols.symbol_definitions[local_index];
 
+    debug_assert!(
+        !matches!(
+            info.placement,
+            crate::parsing::SymbolPlacement::DefsymSymbol(_)
+                | crate::parsing::SymbolPlacement::DefsymAbsolute(_)
+        ),
+        "Defsym symbols from linker scripts should be emitted via the prelude"
+    );
+
     let section_id = info
         .section_id()
         .context("Tried to export dynamic symbol not associated with a section")?;
@@ -3163,6 +3172,23 @@ fn get_symbol_attributes(layout: &Layout, symbol_id: SymbolId) -> Result<(u16, u
 
             Ok((shndx, st_type))
         }
+        crate::grouping::SequencedInput::LinkerScript(script) => {
+            let local_index = symbol_id.to_input(script.symbol_id_range);
+            let shndx = script
+                .parsed
+                .symbol_defs
+                .get(local_index.0)
+                .and_then(|def_info| def_info.section_id())
+                .map_or(object::elf::SHN_ABS, |section_id| {
+                    let section_id = layout.output_sections.primary_output_section(section_id);
+                    layout
+                        .output_sections
+                        .output_index_of_section(section_id)
+                        .unwrap_or(object::elf::SHN_ABS)
+                });
+
+            Ok((shndx, object::elf::STT_NOTYPE))
+        }
         _ => {
             // For non-object files (e.g., prelude, epilogue), default to ABS
             Ok((object::elf::SHN_ABS, object::elf::STT_NOTYPE))
@@ -3183,6 +3209,16 @@ fn write_prelude_dynsym(
         .get(offset)
         .with_context(|| format!("Invalid prelude symbol {}", layout.symbol_debug(symbol_id)))?;
 
+    write_defsym_dynsym(dynsym_writer, layout, symbol_id, def_info)
+}
+
+/// Writes a dynsym entry for a symbol defined via --defsym or linker script symbol assignment.
+fn write_defsym_dynsym(
+    dynsym_writer: &mut SymbolTableWriter,
+    layout: &Layout,
+    symbol_id: SymbolId,
+    def_info: &crate::parsing::InternalSymDefInfo,
+) -> Result {
     debug_assert!(matches!(
         def_info.placement,
         crate::parsing::SymbolPlacement::DefsymSymbol(_)
@@ -3208,10 +3244,9 @@ fn write_prelude_dynsym(
             if let Some(target_id) = target_symbol_id {
                 get_symbol_attributes(layout, target_id)?
             } else {
-                bail!(
-                    "Symbol '{}' referenced by --defsym does not exist",
-                    target_name
-                )
+                return Err(layout
+                    .symbol_db
+                    .missing_defsym_target_error(def_info.name, target_name));
             }
         } else {
             (object::elf::SHN_ABS, object::elf::STT_NOTYPE)
@@ -3340,10 +3375,9 @@ fn write_internal_symbols(
             if let Some(target_id) = target_symbol_id {
                 get_symbol_attributes(layout, target_id)?
             } else {
-                bail!(
-                    "Symbol '{}' referenced by --defsym does not exist",
-                    target_name
-                )
+                return Err(layout
+                    .symbol_db
+                    .missing_defsym_target_error(def_info.name, target_name));
             }
         } else {
             let shndx = def_info
@@ -3356,14 +3390,14 @@ fn write_internal_symbols(
                         .output_index_of_section(section_id)
                         .with_context(|| {
                             format!(
-                                "symbol `{}` in section `{}` that we're not going to output {resolution:?}",
+                                "symbol '{}' in section '{}' that we're not going to output {resolution:?}",
                                 layout.symbol_db.symbol_name_for_display(symbol_id),
                                 layout.output_sections.display_name(section_id)
                             )
                         })
                 })
                 .transpose()?
-                .unwrap_or(0);
+                .unwrap_or(object::elf::SHN_ABS);
 
             (shndx, def_info.elf_symbol_type.raw())
         };
