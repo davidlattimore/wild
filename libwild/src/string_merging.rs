@@ -1,6 +1,9 @@
 //! Input sections that are marked as string-merge sections need special processing. Our algorithm
 //! is somewhat complicated in an attempt to get good performance. A rough outline of our algorithm
-//! is here with more details throughout the code.
+//! is here with more details throughout the code. Contrary to what the name might suggest, this
+//! algorithm also supports merging non-string sections. The only difference between handling string
+//! and non-string sections is we split the former into multiple slices at the null terminators, and
+//! treat the latter as a single slice.
 //!
 //! We group input sections by the output section into which they are to be placed. We then process
 //! each output section one at a time.
@@ -10,11 +13,11 @@
 //!
 //! With multiple threads, we alternate between two phases:
 //!
-//! Phase 1: We split input sections by looking for null terminators, then we hash the resulting
-//! string and store it in a bucket based on its hash.
+//! Phase 1: We take the whole input sections or split string sections by looking for null
+//! terminators, then we hash the resulting slices and store it in a bucket based on its hash.
 //!
-//! Phase 2: We take the outputs of phase 1 and insert the strings into a hashmap for the bucket
-//! that the string is in. As we do this, we compute bucket-relative offsets for each string and
+//! Phase 2: We take the outputs of phase 1 and insert the slices into a hashmap for the bucket
+//! that the slice is in. As we do this, we compute bucket-relative offsets for each string and
 //! store these into entries in a map that we set up in phase 1.
 //!
 //! Threads can switch between phases multiple times until all work for the section is complete. At
