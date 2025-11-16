@@ -7,8 +7,9 @@ s1h: .ascii "Hello"
 .section .rodata.bar, "aM", @progbits, 1
 .align 1
 
+// Test that null terminated strings in non-string sections are merged correctly.
 .globl s1w
-s1w: .ascii "World"
+s1w: .ascii "World\0"
 
 // Put some regular data in .rodata with alignment >1 to make sure that doesn't mess up our merged
 // string offsets.

@@ -1,8 +1,9 @@
 .section .rodata.foo, "aM", @progbits, 1
 .align 1
 
+// Test that null terminated strings in non-string sections are merged correctly.
 .globl s2w
-s2w: .ascii "World"
+s2w: .ascii "World\0"
 
 .section .rodata.bar, "aM", @progbits, 1
 .align 1
