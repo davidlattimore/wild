@@ -106,6 +106,7 @@ use linker_utils::elf::sht::RISCV_ATTRIBUTES;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::SectionIndex;
+use object::elf::STT_TLS;
 use object::elf::gnu_hash;
 use object::read::elf::Crel;
 use object::read::elf::Dyn as _;
@@ -1166,8 +1167,13 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
                 )));
         } else if local_symbol.is_common(LittleEndian) {
             let common_symbol = CommonSymbol::new(local_symbol)?;
+            let output_section_id = if local_symbol.st_type() == STT_TLS {
+                output_section_id::TBSS
+            } else {
+                output_section_id::BSS
+            };
             common.allocate(
-                output_section_id::BSS.part_id_with_alignment(common_symbol.alignment),
+                output_section_id.part_id_with_alignment(common_symbol.alignment),
                 common_symbol.size,
             );
         }
@@ -4785,8 +4791,13 @@ impl<'data> ObjectLayoutState<'data> {
             }
         } else if local_symbol.is_common(e) {
             let common = CommonSymbol::new(local_symbol)?;
-            let offset = memory_offsets
-                .get_mut(output_section_id::BSS.part_id_with_alignment(common.alignment));
+            let output_section_id = if local_symbol.st_type() == STT_TLS {
+                output_section_id::TBSS
+            } else {
+                output_section_id::BSS
+            };
+            let offset =
+                memory_offsets.get_mut(output_section_id.part_id_with_alignment(common.alignment));
             let address = *offset;
             *offset += common.size;
             address
