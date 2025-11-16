@@ -176,21 +176,12 @@ pub fn compute<'data, A: Arch>(
     let mut group_states = gc_outputs.group_states;
     let sorted_sections = gc_outputs.sorted_sections;
 
-    // Attach sorted section contributions to the epilogue and account for their sizes up front.
+    // Attach sorted section contributions to the epilogue; sizing already accounted for by objects.
     if let Some(epilogue_group) = group_states.last_mut()
         && let Some(FileLayoutState::Epilogue(ep)) = epilogue_group.files.last_mut()
     {
         ep.sorted_sections = sorted_sections;
         ep.sorted_plan = output_sections.new_section_map_with(Vec::new);
-
-        for (_out_id, items) in ep.sorted_sections.iter() {
-            for it in items {
-                let part_id = it.section.part_id;
-                epilogue_group
-                    .common
-                    .allocate(part_id, it.section.capacity());
-            }
-        }
     }
 
     // Ensure coverage map records presence of sorted sections.
@@ -4611,9 +4602,8 @@ impl<'data> ObjectLayoutState<'data> {
                     priority,
                     is_ctors_like,
                 });
-            // TODO: When epilogue-owned sorted sections are implemented, this call will be moved
-            // there. For now we still record allocation information so existing behaviour remains.
-            common.store_section_attributes(part_id, header);
+            // Sorted sections still contribute size/alignment here; epilogue only decides order.
+            common.section_loaded(part_id, header, section);
         } else {
             common.section_loaded(part_id, header, section);
         }
