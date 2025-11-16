@@ -1988,17 +1988,6 @@ impl<'data> Layout<'data> {
         &group_layout.files[file_id.file()]
     }
 
-    pub(crate) fn sorted_items_for(&self, out: OutputSectionId) -> &[SortedPlanEntry] {
-        self.sorted_plan.get(out)
-    }
-
-    pub(crate) fn sorted_output_sections(&self) -> impl Iterator<Item = OutputSectionId> + '_ {
-        self.sorted_plan
-            .iter()
-            .filter(|(_, v)| !v.is_empty())
-            .map(|(id, _)| id)
-    }
-
     /// Returns the base address of the global offset table. This needs to be consistent with the
     /// symbol `_GLOBAL_OFFSET_TABLE_`.
     pub(crate) fn got_base(&self) -> u64 {
