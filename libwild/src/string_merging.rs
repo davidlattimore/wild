@@ -326,9 +326,9 @@ fn process_input_section<'data, 'offsets>(
     let mut remaining = input_section.section_data;
     while !remaining.is_empty() {
         let string = if input_section.is_string {
-            MergeString::take_hashed(&mut remaining)?
+            MergeString::take_string_hashed(&mut remaining)?
         } else {
-            MergeString::take_hashed_non_string(&mut remaining)
+            MergeString::take_hashed(&mut remaining)
         };
         // Insert 0, then we'll update it later once we know the output offset. We do the
         // initial insertion now since insertions need to happen in sequential order, whereas by
@@ -871,7 +871,9 @@ impl<'data> MergeStringsSectionBucket<'data> {
 impl<'data> MergeString<'data> {
     /// Takes from `source` up to the next null terminator. Returns a prehashed reference to what
     /// was taken.
-    pub(crate) fn take_hashed(source: &mut &'data [u8]) -> Result<PreHashed<MergeString<'data>>> {
+    pub(crate) fn take_string_hashed(
+        source: &mut &'data [u8],
+    ) -> Result<PreHashed<MergeString<'data>>> {
         let len = memchr::memchr(0, source)
             .map(|i| i + 1)
             .context("String in merge-string section is not null-terminated")?;
@@ -882,9 +884,7 @@ impl<'data> MergeString<'data> {
     }
 
     /// Takes the whole `source`. Returns a prehashed reference to what was taken.
-    pub(crate) fn take_hashed_non_string(
-        source: &mut &'data [u8],
-    ) -> PreHashed<MergeString<'data>> {
+    pub(crate) fn take_hashed(source: &mut &'data [u8]) -> PreHashed<MergeString<'data>> {
         let bytes = take(source);
         let hash = crate::hash::hash_bytes(bytes);
         PreHashed::new(MergeString { bytes }, hash)
