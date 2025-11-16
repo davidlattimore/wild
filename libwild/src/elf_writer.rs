@@ -294,7 +294,10 @@ fn write_sorted_init_fini<A: Arch>(
                 for i in 0..(elems / 2) {
                     let a = i * ptr_size;
                     let b = (elems - 1 - i) * ptr_size;
-                    bytes[a..a + ptr_size].swap_with_slice(&mut bytes[b..b + ptr_size]);
+                    let (left, right) = bytes.split_at_mut(b);
+                    let left_chunk = &mut left[a..a + ptr_size];
+                    let right_chunk = &mut right[..ptr_size];
+                    left_chunk.swap_with_slice(right_chunk);
                 }
             }
 

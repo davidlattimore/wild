@@ -300,7 +300,7 @@ pub fn compute<'data, A: Arch>(
         per_symbol_flags: &per_symbol_flags,
     };
 
-    let group_layouts = compute_symbols_and_layouts(
+    let mut group_layouts = compute_symbols_and_layouts(
         group_states,
         starting_mem_offsets_by_group,
         &mut per_group_res_writers,
