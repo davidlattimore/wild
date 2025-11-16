@@ -486,6 +486,17 @@ impl<'data> SymbolDb<'data> {
         }
     }
 
+    /// Get the version of a symbol. Only intended for diagnostic purposes.
+    pub(crate) fn symbol_version_debug(&self, symbol_id: SymbolId) -> Option<String> {
+        let file_id = self.file_id_for_symbol(symbol_id);
+        match &self.groups[file_id.group()] {
+            Group::Objects(parsed_input_objects) => {
+                parsed_input_objects[file_id.file()].symbol_version_debug(symbol_id)
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn flags_for_symbol(
         &self,
         per_symbol_flags: &PerSymbolFlags,

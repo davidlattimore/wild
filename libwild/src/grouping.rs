@@ -12,6 +12,7 @@ use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::timing_phase;
+use object::LittleEndian;
 use std::fmt::Display;
 
 #[derive(Debug)]
@@ -205,6 +206,45 @@ impl<'data> SequencedInputObject<'data> {
         Ok(UnversionedSymbolName::new(
             self.parsed.object.symbol_name(symbol)?,
         ))
+    }
+
+    /// Get the version of a symbol. Only intended for diagnostic purposes since it's potentially
+    /// quite slow.
+    pub(crate) fn symbol_version_debug(
+        &self,
+        symbol_id: crate::symbol_db::SymbolId,
+    ) -> Option<String> {
+        let object = &self.parsed.object;
+        let endian = LittleEndian;
+        let local_index = symbol_id.to_input(self.symbol_id_range);
+
+        let versym = object.versym.get(local_index.0)?;
+        let versym = versym.0.get(endian);
+        let is_default = versym & object::elf::VERSYM_HIDDEN == 0;
+        let symbol_version_index = versym & object::elf::VERSYM_VERSION;
+
+        let (verdefs, string_table_index) = self.parsed.object.verdef.clone()?;
+        let strings = object
+            .sections
+            .strings(endian, object.data, string_table_index)
+            .ok()?;
+
+        for r in verdefs.clone() {
+            let (verdef, mut aux_iterator) = r.ok()?;
+            // Every VERDEF entry should have at least one AUX entry. We currently only care
+            // about the first one.
+            let aux = aux_iterator.next().ok()??;
+            let version_index = verdef.vd_ndx.get(endian);
+            if version_index == symbol_version_index {
+                return Some(format!(
+                    "{}{}",
+                    if is_default { "@@" } else { "@" },
+                    String::from_utf8_lossy(aux.name(endian, strings).ok()?)
+                ));
+            }
+        }
+
+        None
     }
 
     /// Returns whether this input should be skipped if there are no non-weak references to symbols
