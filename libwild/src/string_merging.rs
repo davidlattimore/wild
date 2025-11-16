@@ -324,12 +324,8 @@ fn process_input_section<'data, 'offsets>(
 ) -> Result {
     let mut input_offset = input_section.start_input_offset;
     let mut remaining = input_section.section_data;
-    while !remaining.is_empty() {
-        let string = if input_section.is_string {
-            MergeString::take_string_hashed(&mut remaining)?
-        } else {
-            MergeString::take_hashed(&mut remaining)
-        };
+
+    let mut insert_data = |data: PreHashed<MergeString<'data>>| {
         // Insert 0, then we'll update it later once we know the output offset. We do the
         // initial insertion now since insertions need to happen in sequential order, whereas by
         // the time we know the output offset, we're processing just a single bucket.
@@ -337,11 +333,24 @@ fn process_input_section<'data, 'offsets>(
             Ok(offset_in_shard) => OffsetOut::InShard(offset_in_shard),
             Err(_) => OffsetOut::Overflow(input_offset),
         };
-        buckets[(string.hash() as usize) % MERGE_STRING_BUCKETS].push(StringToMerge {
-            string,
+        buckets[(data.hash() as usize) % MERGE_STRING_BUCKETS].push(StringToMerge {
+            string: data,
             offset_out: offset_key,
         });
-        input_offset = input_offset + string.bytes.len() as u64;
+        input_offset = input_offset + data.bytes.len() as u64;
+    };
+
+    // Non-string section is just a single slice.
+    if !input_section.is_string {
+        let section_data = MergeString::take_hashed(&mut remaining);
+        insert_data(section_data);
+        return Ok(());
+    }
+
+    // String section, so split at null terminators.
+    while !remaining.is_empty() {
+        let string = MergeString::take_string_hashed(&mut remaining)?;
+        insert_data(string);
     }
     Ok(())
 }
