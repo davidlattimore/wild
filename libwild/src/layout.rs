@@ -5002,6 +5002,10 @@ impl<'data> ObjectLayoutState<'data> {
                 )? {
                     Some(x) => x,
                     None => {
+                        // Allow symbols in epilogue-owned sorted sections to be resolved later.
+                        if self.sections[section_index.0].sort_order.is_some() {
+                            return Ok(None);
+                        }
                         // Don't error for mapping symbols. They cannot have relocations refer to
                         // them, so we don't need to produce a resolution.
                         if resources.symbol_db.is_mapping_symbol(symbol_id) {
