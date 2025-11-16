@@ -40,6 +40,7 @@ use crate::file_writer::insufficient_allocation;
 use crate::file_writer::split_buffers_by_alignment;
 use crate::file_writer::split_output_by_group;
 use crate::file_writer::split_output_into_sections;
+use crate::file_writer::OutputBuffer;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
@@ -57,8 +58,6 @@ use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
 use crate::layout::VersionDef;
 use crate::layout::compute_allocations;
-use crate::layout_rules::SortOrder;
-use crate::layout_rules::sorted_section_priority;
 use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
@@ -262,30 +261,35 @@ fn write_sorted_init_fini<A: Arch>(
     sorted_data: &SortedDataMap,
     out: &mut OutputBuffer,
 ) -> Result {
-    let ptr_size = A::ptr_size() as usize;
+    // All supported arches are 64-bit.
+    let ptr_size = 8usize;
 
-    layout.sorted_plan.for_each(|out_id, items| {
+    for (out_id, items) in layout.sorted_plan.iter() {
         if items.is_empty() {
-            return;
+            continue;
         }
 
         for entry in items {
             let key = (out_id, entry.file_id, entry.section.index.0 as u32);
-            let Some(bytes) = sorted_data.get(&key) else {
-                error::bail!(
-                    "Missing sorted section data for {:?} (section {})",
-                    key,
-                    layout
-                        .output_sections
-                        .display_name(entry.section.output_section_id())
-                );
-            };
-            let mut bytes = bytes.clone();
+            let mut bytes = sorted_data
+                .get(&key)
+                .cloned()
+                .with_context(|| {
+                    format!(
+                        "Missing sorted section data for {:?} (section {})",
+                        key,
+                        layout
+                            .output_sections
+                            .display_name(entry.section.output_section_id())
+                    )
+                })?;
+
             if entry.is_ctors_like {
                 let data_len = entry.section.size as usize;
-                if data_len % ptr_size != 0 {
-                    error::bail!("ctors/dtors section has size not aligned to pointer");
-                }
+                ensure!(
+                    data_len % ptr_size == 0,
+                    "ctors/dtors section has size not aligned to pointer"
+                );
                 let elems = data_len / ptr_size;
                 for i in 0..(elems / 2) {
                     let a = i * ptr_size;
@@ -304,7 +308,7 @@ fn write_sorted_init_fini<A: Arch>(
             );
             out[offset..end].copy_from_slice(&bytes);
         }
-    });
+    }
 
     Ok(())
 }

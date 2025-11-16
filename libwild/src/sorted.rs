@@ -1,7 +1,7 @@
 use crate::input_data::FileId;
 use crate::layout::Section;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SectionToSort {
     pub file_id: FileId,
     pub section: Section,
@@ -9,7 +9,7 @@ pub struct SectionToSort {
     pub is_ctors_like: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SortedPlanEntry {
     pub file_id: FileId,
     pub section: Section,

@@ -199,9 +199,7 @@ pub fn compute<'data, A: Arch>(
         if let Some(FileLayoutState::Epilogue(ep)) = epilogue_group.files.last() {
             ep.sorted_sections.for_each(|out, items| {
                 if !items.is_empty() {
-                    if let Some(flag) = sections_with_content.get_mut(out) {
-                        *flag = true;
-                    }
+                    *sections_with_content.get_mut(out) = true;
                 }
             });
         }
@@ -4005,9 +4003,9 @@ impl<'data> EpilogueLayoutState<'data> {
         &mut self,
         resources: &FinaliseLayoutResources<'_, 'data>,
     ) -> Result {
-        for (out_id, items) in self.sorted_sections.iter_mut() {
+        self.sorted_sections.for_each_mut(|out_id, items| {
             if items.is_empty() {
-                continue;
+                return;
             }
 
             // Sections marked for ordering are laid out as one contiguous block owned by the
@@ -4020,11 +4018,11 @@ impl<'data> EpilogueLayoutState<'data> {
                     .then_with(|| a.section.index.0.cmp(&b.section.index.0))
             });
 
-            let base_file_off = resources.section_layouts.get(*out_id).file_offset as u64;
+            let base_file_off = resources.section_layouts.get(out_id).file_offset as u64;
             let mut cursor = 0u64;
             for item in items.iter() {
                 let dst = base_file_off + cursor;
-                self.sorted_plan.get_mut(*out_id).push(SortedPlanEntry {
+                self.sorted_plan.get_mut(out_id).push(SortedPlanEntry {
                     file_id: item.file_id,
                     section: item.section,
                     dst_file_off: dst,
@@ -4032,7 +4030,7 @@ impl<'data> EpilogueLayoutState<'data> {
                 });
                 cursor += item.section.capacity();
             }
-        }
+        });
 
         Ok(())
     }
