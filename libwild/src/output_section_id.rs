@@ -224,14 +224,6 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
                     .output_sections
                     .should_include_in_segment(section_id, *segment_def);
 
-                // let info = self.output_sections.output_info(section_id);
-                // match segment_def.segment_type {
-                //     pt::TLS if info.section_flags.contains(shf::TLS) => {
-                //         dbg!(&active_id, should_be_active);
-                //     }
-                //     _ => {}
-                // }
-
                 match (active_id.as_ref().copied(), should_be_active) {
                     // Remain inactive
                     (None, false) => {}
