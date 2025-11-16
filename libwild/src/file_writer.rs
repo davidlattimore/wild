@@ -1,6 +1,6 @@
+use crate::OutputKind;
 use crate::args::Args;
 use crate::args::FileWriteMode;
-use crate::args::OutputKind;
 use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
 use crate::error;
 use crate::error::Context as _;

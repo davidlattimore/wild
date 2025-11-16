@@ -2,9 +2,9 @@
 //! information about where each symbol can be obtained.
 
 use crate::InputLinkerScript;
+use crate::OutputKind;
 use crate::args;
 use crate::args::Args;
-use crate::args::OutputKind;
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Error;

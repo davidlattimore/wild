@@ -22,6 +22,7 @@ pub(crate) mod input_data;
 pub(crate) mod layout;
 pub(crate) mod layout_rules;
 pub(crate) mod linker_script;
+pub(crate) mod output_kind;
 pub(crate) mod output_section_id;
 pub(crate) mod output_section_map;
 pub(crate) mod output_section_part_map;
@@ -60,9 +61,9 @@ pub(crate) mod version_script;
 pub(crate) mod x86_64;
 
 use crate::args::ActivatedArgs;
-use crate::args::OutputKind;
 use crate::args::RelocationModel;
 use crate::identity::linker_identity;
+use crate::output_kind::OutputKind;
 pub use args::Args;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;

@@ -1,9 +1,9 @@
 use crate::LayoutRules;
+use crate::OutputKind;
 use crate::OutputSections;
 use crate::args::Args;
 use crate::args::DefsymValue;
 use crate::args::Modifiers;
-use crate::args::OutputKind;
 use crate::args::RelocationModel;
 use crate::bail;
 use crate::elf::File;

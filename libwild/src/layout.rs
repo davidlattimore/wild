@@ -7,13 +7,13 @@ use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use self::elf::NoteHeader;
 use self::elf::Symbol;
 use self::output_section_id::InfoInputs;
+use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::BuildIdOption;
-use crate::args::OutputKind;
 use crate::args::Strip;
 use crate::bail;
 use crate::debug_assert_bail;
@@ -441,7 +441,7 @@ fn append_prelude_defsym_dynamic_symbols<'data>(
     symbol_db: &SymbolDb<'data>,
     dynamic_symbol_definitions: &mut Vec<DynamicSymbolDefinition<'data>>,
 ) -> Result {
-    if symbol_db.args.needs_dynsym()
+    if symbol_db.output_kind.needs_dynsym()
         && let Some(first_group) = group_states.first()
         && let Some(FileLayoutState::Prelude(prelude)) = first_group.files.first()
     {
@@ -3310,7 +3310,7 @@ impl<'data> PreludeLayoutState<'data> {
     }
 
     fn assign_defsym_flags(&self, resources: &GraphResources) {
-        let needs_dynsym = resources.symbol_db.args.needs_dynsym();
+        let needs_dynsym = resources.symbol_db.output_kind.needs_dynsym();
         for (index, def_info) in self.internal_symbols.symbol_definitions.iter().enumerate() {
             let symbol_id = self.symbol_id_range.offset_to_id(index);
             if !resources.symbol_db.is_canonical(symbol_id) {
