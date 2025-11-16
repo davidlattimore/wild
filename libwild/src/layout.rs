@@ -5801,6 +5801,10 @@ impl<'data> DynamicLayoutState<'data> {
 
             let symbol_id = self.symbol_id_range.offset_to_id(i);
 
+            if !symbol_db.is_canonical(symbol_id) {
+                continue;
+            }
+
             export_dynamic(common, symbol_id, symbol_db)?;
 
             per_symbol_flags

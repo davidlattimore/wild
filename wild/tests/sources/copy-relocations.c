@@ -24,10 +24,17 @@ extern int s2;
 int get_s2(void);
 int get_w2(void);
 
-// Lastly, we reference the weak symbol and not the strong one.
+// Here, we reference the weak symbol and not the strong one.
 extern int w3;
 int get_s3(void);
 int get_w3(void);
+
+// This time we strongly define w4, which overrides the weak alias w4 in the
+// shared object.
+extern int s4;
+int w4 = 24;
+int get_s4(void);
+int get_w4(void);
 
 // This is defined in a separate object file that is compiled with -fPIC.
 int get_s1_pic(void);
@@ -88,7 +95,18 @@ void _start(void) {
     exit_syscall(54);
   }
   if (ptr_to_int(&aligned_int2) & 0xff) {
-    exit_syscall(54);
+    exit_syscall(55);
+  }
+
+  if (get_s4() != 4) {
+    exit_syscall(56);
+  }
+  s4 = 14;
+  if (get_s4() != 14) {
+    exit_syscall(57);
+  }
+  if (get_w4() != 24) {
+    exit_syscall(58);
   }
 
   exit_syscall(42);
