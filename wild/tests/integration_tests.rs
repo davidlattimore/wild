@@ -2943,7 +2943,8 @@ fn integration_test(
         "alignment.c",
         "hash-style.c",
         "defsym.c",
-        "linker-script-defsym-notfound.c"
+        "linker-script-defsym-notfound.c",
+        "tls-wip.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
