@@ -103,6 +103,7 @@ use object::LittleEndian;
 use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
+use object::elf::STT_TLS;
 use object::from_bytes_mut;
 use object::read::elf::Crel;
 use object::read::elf::Sym as _;
@@ -1356,7 +1357,11 @@ fn write_symbols(
                         ),
                     }
                 } else if sym.is_common(e) {
-                    output_section_id::BSS
+                    if sym.st_type() == STT_TLS {
+                        output_section_id::TBSS
+                    } else {
+                        output_section_id::BSS
+                    }
                 } else if sym.is_absolute(e) {
                     symbol_writer
                         .copy_absolute_symbol(sym, info.name)

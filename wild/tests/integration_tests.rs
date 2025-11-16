@@ -2944,7 +2944,7 @@ fn integration_test(
         "hash-style.c",
         "defsym.c",
         "linker-script-defsym-notfound.c",
-        "tls-wip.c"
+        "tls-common.c"
     )]
     program_name: &'static str,
     #[allow(unused_variables)] setup_symlink: (),
