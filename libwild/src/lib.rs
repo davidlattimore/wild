@@ -177,29 +177,7 @@ impl Linker {
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
         let input_data = input_data::InputData::from_args(args, &self.inputs)?;
 
-        // FIXME: Move to OutputKind::new
-        let output_kind = if !args.outputting_executable {
-            OutputKind::SharedObject
-        } else if args.dynamic_linker.is_some()
-            && args.relocation_model == RelocationModel::Relocatable
-        {
-            // GNU ld turns static relocatable executables into dynamic ones if dynamic linker is
-            // set.
-            OutputKind::DynamicExecutable(args.relocation_model)
-        } else if input_data
-            .inputs
-            .iter()
-            .any(|input| input.kind == crate::file_kind::FileKind::ElfDynamic)
-        {
-            // When attempting to create static executable, but DSO is added as an input we need to
-            // proceed with dynamic executable.
-            // This is in line with LLD, but GNU ld goes a step further: if no DSO ends up loaded,
-            // it'll go back to static one. This would add a lot of complexity with the
-            // current design, so we just stick to LLD behaviour.
-            OutputKind::DynamicExecutable(args.relocation_model)
-        } else {
-            OutputKind::StaticExecutable(args.relocation_model)
-        };
+        let output_kind = OutputKind::new(args, &input_data);
 
         let output = file_writer::Output::new(args, output_kind);
 
