@@ -2704,7 +2704,7 @@ fn write_epilogue_dynamic_entries(
         args: layout.args(),
         has_static_tls: layout.has_static_tls,
         has_variant_pcs: layout.has_variant_pcs,
-        section_layouts: &layout.section_layouts,
+        section_layouts: &layout.merged_section_layouts,
         section_part_layouts: &layout.section_part_layouts,
         non_addressable_counts: layout.non_addressable_counts,
     };
@@ -3821,7 +3821,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
 
         let output_info = output_sections.output_info(section_id);
         let section_type = output_info.ty;
-        let section_layout = layout.section_layouts.get(section_id);
+        let section_layout = layout.merged_section_layouts.get(section_id);
 
         if output_sections
             .output_index_of_section(section_id)
@@ -3831,7 +3831,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
         }
 
         let entsize = output_info.entsize.max(section_id.element_size());
-        let mut size;
+        let size;
         let alignment;
 
         if section_type == sht::NULL {
@@ -3841,14 +3841,16 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
             size = section_layout.mem_size;
             alignment = section_layout.alignment.value();
 
-            while let Some(OrderEvent::Section(next_section_id)) = order.peek() {
-                if let Some(primary_id) = output_sections.merge_target(*next_section_id) {
-                    debug_assert_eq!(primary_id, section_id);
-                    size += layout.section_layouts.get(*next_section_id).mem_size;
-                    order.next();
-                } else {
-                    break;
-                }
+            while let Some(OrderEvent::Section(next_section_id)) = order.peek()
+                && let Some(primary_id) = output_sections.merge_target(*next_section_id)
+            {
+                debug_assert_bail!(
+                    primary_id == section_id,
+                    "Section order mismatch {} != {}",
+                    output_sections.section_debug(primary_id),
+                    output_sections.section_debug(section_id),
+                );
+                order.next();
             }
         };
 

@@ -12,6 +12,7 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
 use crate::timing_phase;
+use anyhow::anyhow;
 use memmap2::MmapOptions;
 use std::io::ErrorKind;
 use std::io::Write;
@@ -407,6 +408,16 @@ pub(crate) fn split_buffers_by_alignment<'out>(
             section_buffers
                 .get_mut(part_id.output_section_id())
                 .split_off_mut(..rec.file_size)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Failed to take {} bytes for section {} with alignment {}",
+                        rec.file_size,
+                        layout
+                            .output_sections
+                            .section_debug(part_id.output_section_id()),
+                        part_id.alignment(),
+                    )
+                })
                 .unwrap()
         },
     )
