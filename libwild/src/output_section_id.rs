@@ -96,6 +96,7 @@ pub(crate) const NOTE_GNU_BUILD_ID: OutputSectionId =
     part_id::NOTE_GNU_BUILD_ID.output_section_id();
 
 pub(crate) const SYMTAB_LOCAL: OutputSectionId = part_id::SYMTAB_LOCAL.output_section_id();
+#[allow(dead_code)]
 pub(crate) const SYMTAB_GLOBAL: OutputSectionId = part_id::SYMTAB_GLOBAL.output_section_id();
 pub(crate) const RELA_DYN_RELATIVE: OutputSectionId =
     part_id::RELA_DYN_RELATIVE.output_section_id();
@@ -157,15 +158,20 @@ struct OutputOrderBuilder<'scope, 'data> {
     active_segment_kinds: Vec<Option<ProgramSegmentId>>,
 
     output_sections: &'scope OutputSections<'data>,
+    secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
 }
 
 impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
-    fn new(output_sections: &'scope OutputSections<'data>) -> Self {
+    fn new(
+        output_sections: &'scope OutputSections<'data>,
+        secondary: &'scope OutputSectionMap<Vec<OutputSectionId>>,
+    ) -> Self {
         Self {
             events: Vec::new(),
             program_segments: ProgramSegments::empty(),
             output_sections,
             active_segment_kinds: vec![None; PROGRAM_SEGMENT_DEFS.len()],
+            secondary,
         }
     }
 
@@ -177,6 +183,10 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
         }
 
         let section_info = self.output_sections.output_info(section_id);
+        debug_assert!(
+            matches!(section_info.kind, SectionKind::Primary(_)),
+            "Attempted to directly emit secondary section {section_id}"
+        );
         if let Some(location) = section_info.location {
             self.events.push(OrderEvent::SetLocation(location));
         }
@@ -186,6 +196,10 @@ impl<'scope, 'data> OutputOrderBuilder<'scope, 'data> {
         }
 
         self.events.push(OrderEvent::Section(section_id));
+
+        for secondary_id in self.secondary.get(section_id) {
+            self.events.push(OrderEvent::Section(*secondary_id));
+        }
     }
 
     /// Returns whatever `SegmentStart` and/or `SegmentEnd` events are necessary prior to the start
@@ -846,8 +860,9 @@ impl CustomSectionIds {
     fn build_output_order_and_program_segments(
         &self,
         output_sections: &OutputSections,
+        secondary: &OutputSectionMap<Vec<OutputSectionId>>,
     ) -> (OutputOrder, ProgramSegments) {
-        let mut builder = OutputOrderBuilder::new(output_sections);
+        let mut builder = OutputOrderBuilder::new(output_sections, secondary);
 
         builder.add_section(FILE_HEADER);
         builder.add_section(PROGRAM_HEADERS);
@@ -864,7 +879,6 @@ impl CustomSectionIds {
         builder.add_section(GNU_VERSION_D);
         builder.add_section(GNU_VERSION_R);
         builder.add_section(RELA_DYN_RELATIVE);
-        builder.add_section(RELA_DYN_GENERAL);
         builder.add_section(RELA_PLT);
         builder.add_section(RODATA);
         builder.add_section(EH_FRAME_HDR);
@@ -898,7 +912,6 @@ impl CustomSectionIds {
         builder.add_section(RISCV_ATTRIBUTES);
         builder.add_section(SHSTRTAB);
         builder.add_section(SYMTAB_LOCAL);
-        builder.add_section(SYMTAB_GLOBAL);
         builder.add_section(STRTAB);
 
         builder.build()
@@ -981,7 +994,13 @@ impl<'data> OutputSections<'data> {
 
         let mut custom = CustomSectionIds::default();
 
+        let mut secondary: OutputSectionMap<Vec<OutputSectionId>> = self.new_section_map();
+
         self.section_infos.for_each(|id, info| {
+            if let SectionKind::Secondary(primary) = info.kind {
+                secondary.get_mut(primary).push(id);
+                return;
+            }
             if id.as_usize() < NUM_BUILT_IN_SECTIONS {
                 return;
             }
@@ -1007,7 +1026,7 @@ impl<'data> OutputSections<'data> {
             }
         });
 
-        custom.build_output_order_and_program_segments(self)
+        custom.build_output_order_and_program_segments(self, &secondary)
     }
 
     #[must_use]
