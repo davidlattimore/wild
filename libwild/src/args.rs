@@ -1330,7 +1330,6 @@ fn setup_argument_parser() -> ArgumentParser {
             "nocopyreloc",
             "Disable copy relocations",
             |args, _modifier_stack, _value| {
-                // At this point we already know whether we output executable or a shared object.
                 args.copy_relocations =
                     CopyRelocations::Disallowed(CopyRelocationsDisabledReason::Flag);
                 Ok(())
