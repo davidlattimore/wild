@@ -1241,7 +1241,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         // Check for VARIANT_PCS flag in AArch64 symbols
         if A::KIND == crate::arch::Architecture::AArch64
             && let Ok(sym) = self.object.symbols.symbol(object::SymbolIndex(local_index))
-            && (sym.st_other & crate::elf::STO_AARCH64_VARIANT_PCS) != 0
+            && (sym.st_other & object::elf::STO_AARCH64_VARIANT_PCS) != 0
         {
             resources
                 .has_variant_pcs
@@ -1251,7 +1251,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         // Check for VARIANT_CC flag in RISC-V symbols
         if A::KIND == crate::arch::Architecture::RISCV64
             && let Ok(sym) = self.object.symbols.symbol(object::SymbolIndex(local_index))
-            && (sym.st_other & crate::elf::STO_RISCV_VARIANT_CC) != 0
+            && (sym.st_other & object::elf::STO_RISCV_VARIANT_CC) != 0
         {
             resources
                 .has_variant_pcs

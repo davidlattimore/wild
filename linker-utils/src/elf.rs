@@ -108,7 +108,7 @@ elf_constant_newtype!(
     GNU_RELRO,
     GNU_PROPERTY,
     GNU_SFRAME,
-    RISCV_ATTRIBUTES = 0x70000003,
+    RISCV_ATTRIBUTES,
 );
 
 impl SegmentType {

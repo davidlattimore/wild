@@ -469,16 +469,6 @@ const _ASSERTS: () = {
 pub(crate) const GNU_NOTE_NAME: &[u8] = b"GNU\0";
 pub(crate) const GNU_NOTE_PROPERTY_ENTRY_SIZE: usize = 16;
 
-// AArch64-specific constants
-// TODO: Use values from object crate when they become available.
-pub(crate) const STO_AARCH64_VARIANT_PCS: u8 = 0x80;
-pub(crate) const DT_AARCH64_VARIANT_PCS: u32 = 0x70000005;
-
-// RISC-V-specific constants
-// TODO: Use values from object crate when they become available.
-pub(crate) const STO_RISCV_VARIANT_CC: u8 = 0x80;
-pub(crate) const DT_RISCV_VARIANT_CC: u32 = 0x70000001;
-
 /// For additional information on Elf_Prop, see
 /// Linux Extensions to gABI at https://gitlab.com/x86-psABIs/Linux-ABI.
 ///
