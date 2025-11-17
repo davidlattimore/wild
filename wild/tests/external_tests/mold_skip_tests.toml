@@ -162,9 +162,7 @@ tests = [
   "arch-riscv64-obj-compatible.sh",
   "arch-riscv64-relax-align.sh",
   "arch-riscv64-relax-got.sh",
-  "arch-riscv64-relax-hi20.sh",
   "arch-riscv64-reloc-overflow.sh",
-  "arch-riscv64-symbol-size.sh",
 ]
 
 [skipped_groups.tls]
