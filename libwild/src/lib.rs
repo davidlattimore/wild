@@ -61,7 +61,6 @@ pub(crate) mod version_script;
 pub(crate) mod x86_64;
 
 use crate::args::ActivatedArgs;
-use crate::args::RelocationModel;
 use crate::identity::linker_identity;
 use crate::output_kind::OutputKind;
 pub use args::Args;
