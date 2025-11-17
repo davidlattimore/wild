@@ -86,7 +86,6 @@ pub struct SymbolDb<'data> {
     /// The name of the entry symbol if overridden by a linker script.
     entry: Option<&'data [u8]>,
 
-    // FIXME
     pub(crate) output_kind: OutputKind,
 }
 
