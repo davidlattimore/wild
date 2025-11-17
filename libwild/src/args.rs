@@ -2483,7 +2483,6 @@ mod tests {
     }
 
     fn input1_assertions(args: &Args) {
-        // assert!(args.is_relocatable());
         assert_eq!(
             args.inputs
                 .iter()
@@ -2519,7 +2518,6 @@ mod tests {
     }
 
     fn inline_and_file_options_assertions(args: &Args) {
-        // assert!(args.is_relocatable());
         assert_contains(&args.lib_search_path, "/lib");
     }
 
