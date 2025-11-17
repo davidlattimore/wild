@@ -112,10 +112,10 @@ priority:
 
 ### How can I verify that Wild was used to link a binary?
 
-Install `readelf`, then run:
+Install `readelf` (available from binutils package), then run:
 
 ```sh
-readelf  -p .comment my-executable
+readelf --string-dump .comment my-executable
 ```
 
 Look for a line like:
@@ -124,7 +124,7 @@ Look for a line like:
 Linker: Wild version 0.1.0
 ```
 
-Or if you don't want to install readelf, you can probably get away with:
+You can probably also get away with `strings` (also available from binutils package):
 
 ```sh
 strings my-executable | grep 'Linker:'
