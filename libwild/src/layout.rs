@@ -900,6 +900,52 @@ pub(crate) struct ObjectLayout<'data> {
     pub(crate) relocations: RelocationSections,
     pub(crate) section_resolutions: Vec<SectionResolution>,
     pub(crate) symbol_id_range: SymbolIdRange,
+    pub(crate) riscv_relax_entries: Vec<RiscvRelaxEntry>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RiscvRelaxEntry {
+    pub(crate) section_index: object::SectionIndex,
+    pub(crate) offset: u64,
+    pub(crate) symbol_id: SymbolId,
+    pub(crate) addend: i64,
+    pub(crate) register_is_compressible: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct RelaxRecorder<'a> {
+    symbol_id_range: SymbolIdRange,
+    riscv_relax_entries: &'a mut Vec<RiscvRelaxEntry>,
+}
+
+impl<'a> RelaxRecorder<'a> {
+    pub(crate) fn new(
+        symbol_id_range: SymbolIdRange,
+        riscv_relax_entries: &'a mut Vec<RiscvRelaxEntry>,
+    ) -> Self {
+        Self {
+            symbol_id_range,
+            riscv_relax_entries,
+        }
+    }
+
+    pub(crate) fn record_riscv_hi20_pair(
+        &mut self,
+        section_index: object::SectionIndex,
+        offset: u64,
+        symbol_index: object::SymbolIndex,
+        addend: i64,
+        register_is_compressible: bool,
+    ) {
+        let symbol_id = self.symbol_id_range.input_to_id(symbol_index);
+        self.riscv_relax_entries.push(RiscvRelaxEntry {
+            section_index,
+            offset,
+            symbol_id,
+            addend,
+            register_is_compressible,
+        });
+    }
 }
 
 #[derive(Debug)]
@@ -1466,6 +1512,9 @@ struct ObjectLayoutState<'data> {
 
     /// Indexed by `FrameIndex`.
     exception_frames: Vec<ExceptionFrame<'data>>,
+
+    /// Locations where we can pretend that instructions were shrunk.
+    riscv_relax_entries: Vec<RiscvRelaxEntry>,
 }
 
 #[derive(Default)]
@@ -4205,6 +4254,7 @@ fn new_object_layout_state(input_state: resolution::ResolvedObject) -> FileLayou
             gnu_property_notes: Default::default(),
             riscv_attributes: Default::default(),
             exception_frames: Default::default(),
+            riscv_relax_entries: Vec::new(),
         })
     } else {
         FileLayoutState::Dynamic(DynamicLayoutState {
@@ -4415,15 +4465,28 @@ impl<'data> ObjectLayoutState<'data> {
     }
 
     fn load_section_relocations<A: Arch>(
-        &self,
+        &mut self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
         resources: &GraphResources<'data, '_>,
         section: Section,
         relocations: impl Iterator<Item = Crel>,
     ) -> Result {
+        let section_header = self.object.section(section.index)?;
+        let section_data = self.object.raw_section_data(section_header)?;
+        let mut new_relax_entries = Vec::new();
+        let mut relax_recorder = RelaxRecorder::new(self.symbol_id_range, &mut new_relax_entries);
+
         let mut modifier = RelocationModifier::Normal;
+        let mut previous_rel: Option<Crel> = None;
         for rel in relocations {
+            A::record_relaxation_metadata(
+                &mut relax_recorder,
+                &section,
+                section_data,
+                previous_rel.as_ref(),
+                &rel,
+            );
             if modifier == RelocationModifier::SkipNextRelocation {
                 modifier = RelocationModifier::Normal;
                 continue;
@@ -4443,11 +4506,14 @@ impl<'data> ObjectLayoutState<'data> {
                     section_debug(self.object, section.index)
                 )
             })?;
+
+            previous_rel = Some(rel);
         }
+
+        self.riscv_relax_entries.append(&mut new_relax_entries);
 
         Ok(())
     }
-
     /// Processes the exception frames for a section that we're loading.
     fn process_section_exception_frames<A: Arch>(
         &mut self,
@@ -4714,6 +4780,7 @@ impl<'data> ObjectLayoutState<'data> {
             relocations: self.relocations,
             section_resolutions,
             symbol_id_range,
+            riscv_relax_entries: self.riscv_relax_entries,
         })
     }
 
@@ -5329,6 +5396,18 @@ impl ResolutionWriter<'_, '_> {
         self.resolutions_out.try_push(res)?;
         Ok(())
     }
+}
+
+#[inline(always)]
+fn riscv_value_fits(value: i64, bits: u32) -> bool {
+    if bits == 0 {
+        return value == 0;
+    }
+    let shift = bits - 1;
+    let min = -(1i64 << shift);
+    let max = (1i64 << shift) - 1;
+
+    value >= min && value <= max
 }
 
 #[inline(always)]
@@ -6282,6 +6361,74 @@ fn needs_tlsld(relocation_kind: RelocationKind) -> bool {
 impl<'data> ObjectLayout<'data> {
     pub(crate) fn relocations(&self, index: SectionIndex) -> Result<RelocationList<'data>> {
         self.object.relocations(index, &self.relocations)
+    }
+
+    pub(crate) fn riscv_adjusted_symbol_size(
+        &self,
+        sym_index: object::SymbolIndex,
+        sym: &crate::elf::Symbol,
+        layout: &Layout,
+    ) -> Option<u64> {
+        if self.object.arch != crate::arch::Architecture::RISCV64
+            || self.riscv_relax_entries.is_empty()
+            || !layout.args().relax
+        {
+            return None;
+        }
+
+        let size = sym.st_size(LittleEndian);
+        if size == 0 {
+            return None;
+        }
+        let start = sym.st_value(LittleEndian);
+        let end = start.saturating_add(size);
+        let section_index = self.object.symbol_section(sym, sym_index).ok().flatten()?;
+
+        // Sum up all the bytes saved by RISC-V relaxations in this symbol.
+        let saved = self
+            .riscv_relax_entries
+            .iter()
+            .filter(|entry| entry.section_index == section_index)
+            .filter(|entry| entry.offset >= start && entry.offset < end)
+            .filter_map(|entry| self.riscv_entry_bytes_saved(entry, layout))
+            .map(u64::from)
+            .sum::<u64>();
+
+        if saved == 0 {
+            return None;
+        }
+
+        Some(size.saturating_sub(saved.min(size)))
+    }
+
+    fn riscv_entry_bytes_saved(&self, entry: &RiscvRelaxEntry, layout: &Layout) -> Option<u8> {
+        let resolution = layout.merged_symbol_resolution(entry.symbol_id)?;
+        if !resolution.is_absolute() {
+            return None;
+        }
+
+        let raw_value = resolution.value();
+        let value = raw_value.min(i64::MAX as u64) as i64;
+        let adjusted_value = value.wrapping_add(entry.addend);
+
+        // If the adjusted displacement fits in 12 bits we can replace the auipc+addi pair with a
+        // single addi, which frees 4 bytes in the instruction stream.
+        if riscv_value_fits(adjusted_value, 12) {
+            return Some(4);
+        }
+
+        // Otherwise, on RISC-V cores with compressed ISA enabled, a relaxable register lets us
+        // shrink the auipc+addi sequence into a 2-byte C.LI/C.ADDI combination when the
+        // 18-bit-aligned displacement still fits after rounding (the +0x800 adjustment mirrors the
+        // hardware's HI20 rounding). That reclaim 2 bytes.
+        if (self.object.eflags & object::elf::EF_RISCV_RVC) != 0
+            && entry.register_is_compressible
+            && riscv_value_fits(adjusted_value.saturating_add(0x800), 18)
+        {
+            return Some(2);
+        }
+
+        None
     }
 }
 

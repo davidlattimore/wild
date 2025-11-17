@@ -1031,6 +1031,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         name: &[u8],
         output_section_id: OutputSectionId,
         value: u64,
+        size_override: Option<u64>,
     ) -> Result {
         let shndx = self
             .output_sections
@@ -1043,7 +1044,7 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
                     output_section_id,
                 )
             })?;
-        self.copy_symbol_shndx(sym, name, shndx, value)
+        self.copy_symbol_shndx(sym, name, shndx, value, size_override)
     }
 
     #[inline(always)]
@@ -1053,10 +1054,11 @@ impl<'layout, 'out> SymbolTableWriter<'layout, 'out> {
         name: &[u8],
         shndx: u16,
         value: u64,
+        size_override: Option<u64>,
     ) -> Result {
         let e = LittleEndian;
         let is_local = sym.is_local();
-        let size = sym.st_size(e);
+        let size = size_override.unwrap_or_else(|| sym.st_size(e));
         let entry = self.define_symbol(is_local, shndx, value, size, name)?;
         entry.st_info = sym.st_info();
         entry.st_other = sym.st_other();
@@ -1199,7 +1201,7 @@ fn write_object<A: Arch>(
                 let name = object.object.symbol_name(symbol)?;
                 table_writer
                     .dynsym_writer
-                    .copy_symbol_shndx(symbol, name, 0, 0)?;
+                    .copy_symbol_shndx(symbol, name, 0, 0, None)?;
                 if layout.gnu_version_enabled() {
                     table_writer
                         .version_writer
@@ -1385,8 +1387,10 @@ fn write_symbols(
                 symbol_value -= layout.tls_start_address();
             }
 
+            let size_override = object.riscv_adjusted_symbol_size(sym_index, sym, layout);
+
             symbol_writer
-                .copy_symbol(sym, info.name, section_id, symbol_value)
+                .copy_symbol(sym, info.name, section_id, symbol_value, size_override)
                 .with_context(|| format!("Failed to copy {}", layout.symbol_debug(symbol_id)))?;
         }
     }
@@ -3293,7 +3297,7 @@ fn write_copy_relocation_dynamic_symbol_definition(
         .local_symbol_resolution(sym_def.symbol_id)
         .context("Copy relocation for unresolved symbol")?;
     dynamic_symbol_writer
-        .copy_symbol_shndx(sym, name, shndx, res.raw_value)
+        .copy_symbol_shndx(sym, name, shndx, res.raw_value, None)
         .with_context(|| {
             format!(
                 "Failed to copy dynamic {}",
@@ -3331,14 +3335,15 @@ fn write_regular_object_dynamic_symbol_definition(
         if sym.st_type() == object::elf::STT_TLS {
             symbol_value -= layout.tls_start_address();
         }
+        let size_override = object.riscv_adjusted_symbol_size(sym_index, sym, layout);
         dynamic_symbol_writer
-            .copy_symbol(sym, name, output_section_id, symbol_value)
+            .copy_symbol(sym, name, output_section_id, symbol_value, size_override)
             .with_context(|| {
                 format!("Failed to copy dynamic {}", layout.symbol_debug(symbol_id))
             })?;
     } else {
         dynamic_symbol_writer
-            .copy_symbol_shndx(sym, name, 0, 0)
+            .copy_symbol_shndx(sym, name, 0, 0, None)
             .with_context(|| {
                 format!(
                     "Failed to copy dynamic {}",
@@ -3984,6 +3989,7 @@ fn write_dynamic_file<A: Arch>(
                     name,
                     output_section_id::BSS,
                     res.value(),
+                    None,
                 )?;
             } else {
                 let entry = table_writer

@@ -5,6 +5,8 @@ use crate::bail;
 use crate::error::Result;
 use crate::layout::Layout;
 use crate::layout::PropertyClass;
+use crate::layout::RelaxRecorder;
+use crate::layout::Section;
 use crate::value_flags::ValueFlags;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RelocationKindInfo;
@@ -13,6 +15,7 @@ use linker_utils::relaxation::RelocationModifier;
 use object::elf::EM_AARCH64;
 use object::elf::EM_RISCV;
 use object::elf::EM_X86_64;
+use object::read::elf::Crel;
 use std::borrow::Cow;
 use std::fmt::Display;
 
@@ -56,6 +59,17 @@ pub(crate) trait Arch {
     // Merge e_flags of the input files and provide an error
     // if the flags are not compatible.
     fn merge_eflags(eflags: &[u32]) -> Result<u32>;
+
+    // For RISC-V, record relaxation metadata.
+    #[allow(unused_variables)]
+    fn record_relaxation_metadata(
+        recorder: &mut RelaxRecorder,
+        section: &Section,
+        section_data: &[u8],
+        previous_rel: Option<&Crel>,
+        current_rel: &Crel,
+    ) {
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
