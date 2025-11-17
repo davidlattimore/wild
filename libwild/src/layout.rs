@@ -214,6 +214,9 @@ pub fn compute<'data, A: Arch>(
         symbol_db.args,
     );
     let section_layouts = layout_sections(&output_sections, &section_part_layouts);
+    let mut merged_section_layouts = section_layouts.clone();
+    merge_secondary_parts(&output_sections, &mut merged_section_layouts);
+
     output.set_size(compute_total_file_size(&section_layouts));
 
     let Some(FileLayoutState::Prelude(internal)) =
@@ -285,6 +288,7 @@ pub fn compute<'data, A: Arch>(
         segment_layouts,
         section_part_layouts,
         section_layouts,
+        merged_section_layouts,
         group_layouts,
         output_sections,
         program_segments,
@@ -722,7 +726,13 @@ pub struct Layout<'data> {
     pub(crate) symbol_db: SymbolDb<'data>,
     pub(crate) symbol_resolutions: SymbolResolutions,
     pub(crate) section_part_layouts: OutputSectionPartMap<OutputRecordLayout>,
+
     pub(crate) section_layouts: OutputSectionMap<OutputRecordLayout>,
+
+    /// This is like `section_layouts`, but where secondary sections are merged into their primary
+    /// section. Values for secondary sections are reset to 0 and should not be used.
+    pub(crate) merged_section_layouts: OutputSectionMap<OutputRecordLayout>,
+
     pub(crate) group_layouts: Vec<GroupLayout<'data>>,
     pub(crate) segment_layouts: SegmentLayouts,
     pub(crate) output_sections: OutputSections<'data>,
@@ -1924,6 +1934,18 @@ fn layout_sections(
             mem_offset,
         }
     })
+}
+
+fn merge_secondary_parts(
+    output_sections: &OutputSections,
+    section_layouts: &mut OutputSectionMap<OutputRecordLayout>,
+) {
+    for (id, info) in output_sections.ids_with_info() {
+        if let SectionKind::Secondary(primary_id) = info.kind {
+            let secondary_layout = take(section_layouts.get_mut(id));
+            section_layouts.get_mut(primary_id).merge(&secondary_layout);
+        }
+    }
 }
 
 fn compute_start_offsets_by_group(
@@ -6444,5 +6466,17 @@ impl SysvHashLayout {
             .and_then(|v| v.checked_add(u64::from(self.chain_count)))
             .context("Too many dynamic symbols for .hash")?;
         Ok(words * size_of::<u32>() as u64)
+    }
+}
+
+impl OutputRecordLayout {
+    fn merge(&mut self, other: &OutputRecordLayout) {
+        debug_assert!(other.mem_offset >= self.mem_offset);
+        debug_assert!(other.file_offset >= self.file_offset);
+        self.mem_size += other.mem_size;
+        self.file_size += other.file_size;
+        if other.mem_size > 0 {
+            self.alignment = self.alignment.max(other.alignment);
+        }
     }
 }
