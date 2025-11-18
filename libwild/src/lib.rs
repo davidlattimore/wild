@@ -22,6 +22,7 @@ pub(crate) mod input_data;
 pub(crate) mod layout;
 pub(crate) mod layout_rules;
 pub(crate) mod linker_script;
+pub(crate) mod output_kind;
 pub(crate) mod output_section_id;
 pub(crate) mod output_section_map;
 pub(crate) mod output_section_part_map;
@@ -61,6 +62,7 @@ pub(crate) mod x86_64;
 
 use crate::args::ActivatedArgs;
 use crate::identity::linker_identity;
+use crate::output_kind::OutputKind;
 pub use args::Args;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
@@ -70,7 +72,6 @@ use input_data::InputFile;
 use input_data::InputLinkerScript;
 use layout_rules::LayoutRules;
 use output_section_id::OutputSections;
-use std::sync::atomic::Ordering;
 pub use subprocess::run_in_subprocess;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
@@ -173,13 +174,15 @@ impl Linker {
         &'layout_inputs self,
         args: &'layout_inputs Args,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
-        let output = file_writer::Output::new(args);
-
         let input_data = input_data::InputData::from_args(args, &self.inputs)?;
+
+        let output_kind = OutputKind::new(args, &input_data);
+
+        let output = file_writer::Output::new(args, output_kind);
 
         // Note, we propagate errors from `link_with_input_data` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
-        let result = self.link_with_input_data::<A>(output, &input_data, args);
+        let result = self.link_with_input_data::<A>(output, &input_data, args, output_kind);
 
         input_data.verify_inputs_unchanged()?;
 
@@ -191,27 +194,15 @@ impl Linker {
         mut output: file_writer::Output,
         input_data: &InputData<'data>,
         args: &'data Args,
+        output_kind: OutputKind,
     ) -> error::Result<LinkerOutput<'data>> {
-        let mut output_sections = OutputSections::with_base_address(args.base_address());
-
-        // When attempting to create static executable, but DSO is added as an input we need to
-        // proceed with dynamic executable.
-        // This is in line with LLD, but GNU ld goes a step further: if no DSO ends up loaded, it'll
-        // go back to static one. This would add a lot of complexity with the current design, so we
-        // just stick to LLD behaviour.
-        if args.output_kind().is_static_executable()
-            && input_data
-                .inputs
-                .iter()
-                .any(|input| input.kind == crate::file_kind::FileKind::ElfDynamic)
-        {
-            args.is_dynamic_executable.store(true, Ordering::Relaxed);
-        }
+        let mut output_sections = OutputSections::with_base_address(output_kind.base_address());
 
         let (linker_scripts, layout_rules) =
             parsing::process_linker_scripts(&input_data.linker_scripts, &mut output_sections)?;
 
-        let parsed_inputs = parsing::parse_input_files(&input_data.inputs, linker_scripts, args)?;
+        let parsed_inputs =
+            parsing::parse_input_files(&input_data.inputs, linker_scripts, args, output_kind)?;
 
         let groups = grouping::group_files(parsed_inputs, args, &self.herd);
 
@@ -222,6 +213,7 @@ impl Linker {
             &input_data.linker_scripts,
             &self.herd,
             input_data.export_list_data,
+            output_kind,
         )?;
 
         let resolved = resolution::resolve_symbols_and_sections(

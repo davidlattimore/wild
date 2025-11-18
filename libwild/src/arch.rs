@@ -1,6 +1,6 @@
 //! Abstraction over different CPU architectures.
 
-use crate::args::OutputKind;
+use crate::OutputKind;
 use crate::bail;
 use crate::error::Result;
 use crate::layout::Layout;

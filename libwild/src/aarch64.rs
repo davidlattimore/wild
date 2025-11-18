@@ -138,7 +138,7 @@ impl crate::arch::Relaxation for Relaxation {
         section_bytes: &[u8],
         offset_in_section: u64,
         flags: crate::value_flags::ValueFlags,
-        output_kind: crate::args::OutputKind,
+        output_kind: crate::output_kind::OutputKind,
         section_flags: linker_utils::elf::SectionFlags,
         non_zero_address: bool,
     ) -> Option<Self>

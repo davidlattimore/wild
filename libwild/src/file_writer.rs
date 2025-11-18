@@ -1,6 +1,6 @@
+use crate::OutputKind;
 use crate::args::Args;
 use crate::args::FileWriteMode;
-use crate::args::OutputKind;
 use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
 use crate::error;
 use crate::error::Context as _;
@@ -109,10 +109,10 @@ struct SectionAllocation {
 }
 
 impl Output {
-    pub(crate) fn new(args: &Args) -> Output {
+    pub(crate) fn new(args: &Args, output_kind: OutputKind) -> Output {
         let file_write_mode = args
             .file_write_mode
-            .unwrap_or_else(|| default_file_write_mode(args));
+            .unwrap_or_else(|| default_file_write_mode(args, output_kind));
 
         let creator = if args.available_threads.get() > 1 {
             let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
@@ -227,8 +227,8 @@ impl Output {
 }
 
 /// Returns the file write mode that we should use to write to the specified path.
-fn default_file_write_mode(args: &Args) -> FileWriteMode {
-    if matches!(args.output_kind(), OutputKind::SharedObject) {
+fn default_file_write_mode(args: &Args, output_kind: OutputKind) -> FileWriteMode {
+    if output_kind.is_shared_object() {
         return FileWriteMode::UnlinkAndReplace;
     }
 

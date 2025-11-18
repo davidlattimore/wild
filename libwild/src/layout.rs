@@ -7,13 +7,13 @@ use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use self::elf::NoteHeader;
 use self::elf::Symbol;
 use self::output_section_id::InfoInputs;
+use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::BuildIdOption;
-use crate::args::OutputKind;
 use crate::args::Strip;
 use crate::bail;
 use crate::debug_assert_bail;
@@ -446,7 +446,7 @@ fn append_prelude_defsym_dynamic_symbols<'data>(
     symbol_db: &SymbolDb<'data>,
     dynamic_symbol_definitions: &mut Vec<DynamicSymbolDefinition<'data>>,
 ) -> Result {
-    if symbol_db.args.needs_dynsym()
+    if symbol_db.output_kind.needs_dynsym()
         && let Some(first_group) = group_states.first()
         && let Some(FileLayoutState::Prelude(prelude)) = first_group.files.first()
     {
@@ -996,10 +996,10 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
             }
 
             if symbol_db.args.verify_allocation_consistency {
-                verify_consistent_allocation_handling(flags, symbol_db.args.output_kind())?;
+                verify_consistent_allocation_handling(flags, symbol_db.output_kind)?;
             }
 
-            allocate_symbol_resolution(flags, &mut common.mem_sizes, symbol_db.args.output_kind());
+            allocate_symbol_resolution(flags, &mut common.mem_sizes, symbol_db.output_kind);
 
             if symbol_db.args.got_plt_syms && flags.needs_got() {
                 let name = symbol_db.symbol_name(symbol_id)?;
@@ -1016,7 +1016,7 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
                 }
             }
         }
-        if symbol_db.args.should_output_symbol_versions() {
+        if symbol_db.output_kind.should_output_symbol_versions() {
             let num_dynamic_symbols =
                 common.mem_sizes.get(part_id::DYNSYM) / crate::elf::SYMTAB_ENTRY_SIZE;
             // Note, sets the GNU_VERSION allocation rather than incrementing it. Assuming there are
@@ -1773,7 +1773,7 @@ impl<'data> Layout<'data> {
 
     pub(crate) fn entry_symbol_address(&self) -> Result<u64> {
         let Some(symbol_id) = self.prelude().entry_symbol_id else {
-            if self.args().output_kind() == OutputKind::SharedObject {
+            if self.symbol_db.output_kind == OutputKind::SharedObject {
                 // Shared objects don't have an implicit entry point.
                 return Ok(0);
             }
@@ -2289,7 +2289,7 @@ fn apply_non_addressable_indexes(
     // versym allocations. This is partly to avoid wasting unnecessary space in the output file, but
     // mostly in order match what GNU ld does.
     if (counts.verneed_count == 0 && counts.verdef_count == 0)
-        && symbol_db.args.should_output_symbol_versions()
+        && symbol_db.output_kind.should_output_symbol_versions()
     {
         for g in group_states {
             *g.common.mem_sizes.get_mut(part_id::GNU_VERSION) = 0;
@@ -2440,6 +2440,7 @@ fn find_required_sections<'data, A: Arch>(
         &mut prelude_group.common,
         &resources.uses_tlsld,
         resources.symbol_db.args,
+        resources.symbol_db.output_kind,
     );
 
     Ok(GcOutputs {
@@ -3053,7 +3054,7 @@ fn process_relocation<A: Arch>(
             object.object.raw_section_data(section)?,
             rel_offset,
             flags,
-            args.output_kind(),
+            symbol_db.output_kind,
             section_flags,
             true,
         )
@@ -3104,7 +3105,7 @@ fn process_relocation<A: Arch>(
                     }
                 }
             }
-        } else if args.is_relocatable()
+        } else if symbol_db.output_kind.is_relocatable()
             && rel_info.kind == RelocationKind::Absolute
             && (flags.is_address() | flags.is_ifunc())
         {
@@ -3134,6 +3135,7 @@ fn process_relocation<A: Arch>(
                 symbol_db.file_id_for_symbol(symbol_id),
                 flags,
                 args,
+                symbol_db.output_kind,
             ) {
                 let symbol_name = symbol_db.symbol_name_for_display(symbol_id);
                 let source_info = crate::dwarf_address_info::get_source_info::<A>(
@@ -3308,18 +3310,13 @@ impl<'data> PreludeLayoutState<'data> {
 
         self.load_entry_point(resources, queue);
 
-        if resources.symbol_db.args.needs_dynsym() {
+        if resources.symbol_db.output_kind.needs_dynsym() {
             // Allocate space for the null symbol.
             common.allocate(part_id::DYNSTR, 1);
             common.allocate(part_id::DYNSYM, size_of::<elf::SymtabEntry>() as u64);
         }
 
-        if resources
-            .symbol_db
-            .args
-            .output_kind()
-            .is_dynamic_executable()
-        {
+        if resources.symbol_db.output_kind.is_dynamic_executable() {
             self.dynamic_linker = resources
                 .symbol_db
                 .args
@@ -3341,7 +3338,7 @@ impl<'data> PreludeLayoutState<'data> {
     }
 
     fn assign_defsym_flags(&self, resources: &GraphResources) {
-        let needs_dynsym = resources.symbol_db.args.needs_dynsym();
+        let needs_dynsym = resources.symbol_db.output_kind.needs_dynsym();
         for (index, def_info) in self.internal_symbols.symbol_definitions.iter().enumerate() {
             let symbol_id = self.symbol_id_range.offset_to_id(index);
             if !resources.symbol_db.is_canonical(symbol_id) {
@@ -3399,6 +3396,7 @@ impl<'data> PreludeLayoutState<'data> {
         common: &mut CommonGroupState,
         uses_tlsld: &AtomicBool,
         args: &Args,
+        output_kind: OutputKind,
     ) {
         if uses_tlsld.load(atomic::Ordering::Relaxed) {
             // Allocate space for a TLS module number and offset for use with TLSLD relocations.
@@ -3406,7 +3404,7 @@ impl<'data> PreludeLayoutState<'data> {
             self.needs_tlsld_got_entry = true;
             // For shared objects, we'll need to use a DTPMOD relocation to fill in the TLS module
             // number.
-            if !args.output_kind().is_executable() {
+            if !output_kind.is_executable() {
                 common.allocate(part_id::RELA_DYN_GENERAL, crate::elf::RELA_ENTRY_SIZE);
             }
         }
@@ -3682,7 +3680,7 @@ impl<'data> PreludeLayoutState<'data> {
         });
 
         // Take the null symbol's index.
-        if resources.symbol_db.args.needs_dynsym() {
+        if resources.symbol_db.output_kind.needs_dynsym() {
             take_dynsym_index(memory_offsets, resources.section_layouts)?;
         }
 
@@ -3819,8 +3817,9 @@ fn should_emit_undefined_error(
     sym_def_file_id: FileId,
     flags: ValueFlags,
     args: &Args,
+    output_kind: OutputKind,
 ) -> bool {
-    if (args.output_kind() == OutputKind::SharedObject && !args.no_undefined) || symbol.is_weak() {
+    if (output_kind.is_shared_object() && !args.no_undefined) || symbol.is_weak() {
         return false;
     }
 
@@ -3960,7 +3959,7 @@ impl<'data> EpilogueLayoutState<'data> {
             )?;
         }
 
-        if symbol_db.args.needs_dynamic() {
+        if symbol_db.output_kind.needs_dynamic() {
             let dynamic_entry_size = size_of::<crate::elf::DynamicEntry>();
             common.allocate(
                 part_id::DYNAMIC,
@@ -4328,12 +4327,13 @@ impl<'data> ObjectLayoutState<'data> {
                 .context("Cannot parse .riscv.attributes section")?;
         }
 
-        let export_all_dynamic = resources.symbol_db.args.output_kind() == OutputKind::SharedObject
+        let export_all_dynamic = resources.symbol_db.output_kind == OutputKind::SharedObject
             && (!resources.symbol_db.args.exclude_libs || !self.input.has_archive_semantics())
-            || resources.symbol_db.args.needs_dynsym()
+            || resources.symbol_db.output_kind.needs_dynsym()
                 && resources.symbol_db.args.export_all_dynamic_symbols;
         if export_all_dynamic
-            || resources.symbol_db.args.needs_dynsym() && resources.symbol_db.export_list.is_some()
+            || resources.symbol_db.output_kind.needs_dynsym()
+                && resources.symbol_db.export_list.is_some()
         {
             self.load_non_hidden_symbols::<A>(common, resources, queue, export_all_dynamic)?;
         }
@@ -4613,7 +4613,7 @@ impl<'data> ObjectLayoutState<'data> {
         if !symbol_db.args.strip_all() {
             self.allocate_symtab_space(common, symbol_db, per_symbol_flags);
         }
-        let output_kind = symbol_db.args.output_kind();
+        let output_kind = symbol_db.output_kind;
         for slot in &mut self.sections {
             if let SectionSlot::Loaded(section) = slot {
                 allocate_resolution(section.flags, &mut common.mem_sizes, output_kind);
@@ -5678,8 +5678,9 @@ impl<'data> DynamicLayoutState<'data> {
 
                 let args = resources.symbol_db.args;
                 let check_undefined = *check_undefined_cache.get_or_insert_with(|| {
+                    let is_executable = resources.symbol_db.output_kind.is_executable();
                     !args.allow_shlib_undefined
-                        && args.output_kind().is_executable()
+                        && is_executable
                         // Like lld, our behaviour for --no-allow-shlib-undefined is to only report
                         // errors for shared objects that have all their dependencies in the link.
                         // This is in contrast to GNU ld which recursively loads all transitive
@@ -6112,7 +6113,7 @@ impl<'data> LinkerScriptLayoutState<'data> {
                 .get_atomic(symbol_id)
                 .fetch_or(ValueFlags::EXPORT_DYNAMIC);
 
-            if resources.symbol_db.args.needs_dynsym() {
+            if resources.symbol_db.output_kind.needs_dynsym() {
                 export_dynamic(common, symbol_id, resources.symbol_db)?;
             }
         }
