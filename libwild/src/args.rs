@@ -118,7 +118,7 @@ pub struct Args {
     pub(crate) z_interpose: bool,
 
     pub(crate) relocation_model: RelocationModel,
-    pub(crate) outputting_executable: bool,
+    pub(crate) should_output_executable: bool,
 
     /// The number of actually available threads (considering jobserver)
     pub(crate) available_threads: NonZeroUsize,
@@ -346,7 +346,7 @@ impl Default for Args {
             lib_search_path: Vec::new(),
             inputs: Vec::new(),
             output: Arc::from(Path::new("a.out")),
-            outputting_executable: true,
+            should_output_executable: true,
             dynamic_linker: None,
             time_phase_options: None,
             num_threads: None,
@@ -464,7 +464,7 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
     }
 
     // Copy relocations are only permitted when building executables.
-    if !args.outputting_executable {
+    if !args.should_output_executable {
         args.copy_relocations =
             CopyRelocations::Disallowed(CopyRelocationsDisabledReason::SharedObject);
     }
@@ -1476,7 +1476,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("Bshareable")
         .help("Create a shared library")
         .execute(|args, _modifier_stack| {
-            args.outputting_executable = false;
+            args.should_output_executable = false;
             Ok(())
         });
 
@@ -1486,7 +1486,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Create a position-independent executable")
         .execute(|args, _modifier_stack| {
             args.relocation_model = RelocationModel::Relocatable;
-            args.outputting_executable = true;
+            args.should_output_executable = true;
             Ok(())
         });
 
@@ -1496,7 +1496,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .help("Do not create a position-dependent executable (default)")
         .execute(|args, _modifier_stack| {
             args.relocation_model = RelocationModel::NonRelocatable;
-            args.outputting_executable = true;
+            args.should_output_executable = true;
             Ok(())
         });
 

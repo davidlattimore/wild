@@ -11,7 +11,7 @@ pub(crate) enum OutputKind {
 
 impl OutputKind {
     pub(crate) fn new(args: &Args, input_data: &InputData<'_>) -> OutputKind {
-        if !args.outputting_executable {
+        if !args.should_output_executable {
             OutputKind::SharedObject
         } else if args.dynamic_linker.is_some()
             && args.relocation_model == RelocationModel::Relocatable
