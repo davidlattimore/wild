@@ -106,6 +106,7 @@ use linker_utils::elf::sht::RISCV_ATTRIBUTES;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::SectionIndex;
+use object::elf::GNU_PROPERTY_X86_ISA_1_NEEDED;
 use object::elf::STT_TLS;
 use object::elf::gnu_hash;
 use object::read::elf::Crel;
@@ -171,7 +172,7 @@ pub fn compute<'data, A: Arch>(
 
     finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
     merge_dynamic_symbol_definitions(&mut group_states, &symbol_db)?;
-    merge_gnu_property_notes::<A>(&mut group_states)?;
+    merge_gnu_property_notes::<A>(&mut group_states, symbol_db.args.z_isa)?;
     merge_eflags::<A>(&mut group_states)?;
     merge_riscv_attributes::<A>(&mut group_states);
 
@@ -510,7 +511,7 @@ pub(crate) enum PropertyClass {
     AndOr,
 }
 
-fn merge_gnu_property_notes<A: Arch>(group_states: &mut [GroupState]) -> Result {
+fn merge_gnu_property_notes<A: Arch>(group_states: &mut [GroupState], isa_needed: u32) -> Result {
     timing_phase!("Merge GNU property notes");
 
     let properties_per_file = group_states
@@ -544,6 +545,13 @@ fn merge_gnu_property_notes<A: Arch>(group_states: &mut [GroupState]) -> Result 
                 })
                 .or_insert_with(|| (prop.data, property_class));
         }
+    }
+
+    if isa_needed > 0 {
+        property_map
+            .entry(GNU_PROPERTY_X86_ISA_1_NEEDED)
+            .or_insert((0, PropertyClass::Or))
+            .0 |= isa_needed;
     }
 
     // Iterate the properties sorted by property_type so that we have a stable output!
