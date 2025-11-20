@@ -23,7 +23,6 @@ dhat = { workspace = true, optional = true }
 
 [dev-dependencies]
 ar = { workspace = true }
-fd-lock = { workspace = true }
 itertools = { workspace = true }
 linker-diff = { path = "../linker-diff" }
 object = { workspace = true }
