@@ -1420,8 +1420,8 @@ fn build_linker_input(
         InputType::SharedObject => {
             let so_path = first_obj_path.with_extension(format!("{linker}.so"));
             let so_lockfile = first_obj_path.with_extension(format!("{linker}.so.lock"));
-            let mut so_lock = fd_lock::RwLock::new(File::create(&so_lockfile)?);
-            let _write_lock = so_lock.write().unwrap();
+            let so_lock = File::create(&so_lockfile)?;
+            let _write_lock = so_lock.lock();
 
             let out = linker.link_shared(&objects, &so_path, &config, cross_arch)?;
             let assertions = Assertions::default();
@@ -1644,8 +1644,8 @@ fn build_obj(
             .and_then(|ext| ext.to_str())
             .unwrap_or_default()
     ));
-    let mut output_file_lock = fd_lock::RwLock::new(File::create(&lock_path)?);
-    let _write_lock = output_file_lock.write().unwrap();
+    let output_file_lock = File::create(&lock_path)?;
+    let _write_lock = output_file_lock.lock();
 
     if is_newer(&output_path, std::iter::once(&src_path)) {
         return Ok(BuiltObject {
