@@ -547,6 +547,7 @@ fn merge_gnu_property_notes<A: Arch>(group_states: &mut [GroupState], isa_needed
         }
     }
 
+    // Merge needed ISA from CLI if set.
     if isa_needed > 0 {
         property_map
             .entry(GNU_PROPERTY_X86_ISA_1_NEEDED)
