@@ -7,38 +7,34 @@ your flake inputs. A devShell example is also shown with the flake.
 ```nix
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nix/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     wild = {
       url = "github:davidlattimore/wild";
       inputs.nixpkgs.follows = "nixpkgs";
     };
   };
 
-  outputs =
-    {
-      self,
-      nixpkgs,
-      wild,
-    }:
+  outputs = { self, nixpkgs, wild }:
     let
-      pkgs = import nixpkgs {
-        system = "x86_64-linux";
-        overlays = [
-          (import wild)
-        ];
-      };
-
-      wildStdenv = pkgs.useWildLinker pkgs.stdenv;
+      forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
     in
     {
-      packages.x86_64-linux.default = pkgs.callPackage ./package.nix { stdenv = wildStdenv; };
+      packages = forAllSystems (system: {
+        default = wild.packages.${system}.default;
+      });
 
-      devShell.x86_64-linux.default = pkgs.mkShell.override { stdenv = wildStdenv; } {
-        inputsFrom = [ self.packages.x86_64-linux.default ];
-        packages = [
-          pkgs.rust-analyzer
-        ];
-      };
+      devShells = forAllSystems (system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+          wildStdenv = pkgs.useWildLinker pkgs.stdenv;
+        in
+        {
+          default = pkgs.mkShell.override { stdenv = wildStdenv; } {
+            inputsFrom = [ self.packages.${system}.default ];
+            packages = [ pkgs.rust-analyzer ];
+          };
+        }
+      );
     };
 }
 ```
@@ -49,11 +45,7 @@ Without flakes (npins shown):
 ```nix
 let
   sources = import ./npins;
-  pkgs = import sources.nixpkgs {
-    overlays = [
-      (import sources.wild)
-    ];
-  };
+  pkgs = import sources.nixpkgs { };
   wildStdenv = pkgs.useWildLinker pkgs.stdenv;
 in
 {
