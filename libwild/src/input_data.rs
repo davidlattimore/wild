@@ -362,7 +362,8 @@ impl<'data> InputData<'data> {
 
     pub(crate) fn has_file(&self, name: &'data [u8]) -> bool {
         self.path_to_load_index
-            .contains_key(Path::new(OsStr::from_bytes(name)))
+            .keys()
+            .any(|path| path.ends_with(Path::new(OsStr::from_bytes(name))))
     }
 }
 
