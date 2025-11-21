@@ -190,6 +190,9 @@ tests = [
   "linker-script-error.sh",         # Different message formats
   "mold-wrapper.sh",
   "mold-wrapper2.sh",
+  "no-allow-shlib-undefined.sh",    # Different message formats
+  "no-allow-shlib-undefined3.sh",   # Different message formats
+  "no-allow-shlib-undefined4.sh",   # GNU ld and LLD also fail
   "plt-symbols.sh",                 # Wild currently doesn't create entries in the symbol table with the `$plt` suffix unless `--got-plt-syms` is specified
   "run-clang.sh",                   # This test checks the comment section to verify if it's linked with mold.
   "start-lib.sh",                   # Passes when `--no-gc-sections` is passed.
@@ -238,10 +241,6 @@ tests = [
   "mergeable-strings.sh",
   "missing-error.sh",
   "no-allow-shlib-undefined-circular.sh",
-  "no-allow-shlib-undefined.sh",
-  "no-allow-shlib-undefined2.sh",
-  "no-allow-shlib-undefined3.sh",
-  "no-allow-shlib-undefined4.sh",
   "no-undefined-version.sh",
   "nocopyreloc.sh",
   "noinhibit-exec.sh",
