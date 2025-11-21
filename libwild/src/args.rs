@@ -25,8 +25,14 @@ use hashbrown::HashMap;
 use hashbrown::HashSet;
 use jobserver::Acquired;
 use jobserver::Client;
+use object::elf::GNU_PROPERTY_X86_ISA_1_BASELINE;
+use object::elf::GNU_PROPERTY_X86_ISA_1_V2;
+use object::elf::GNU_PROPERTY_X86_ISA_1_V3;
+use object::elf::GNU_PROPERTY_X86_ISA_1_V4;
 use rayon::ThreadPoolBuilder;
 use std::fmt::Display;
+use std::num::NonZero;
+use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::path::PathBuf;
@@ -116,6 +122,7 @@ pub struct Args {
     pub(crate) error_unresolved_symbols: bool,
     pub(crate) allow_multiple_definitions: bool,
     pub(crate) z_interpose: bool,
+    pub(crate) z_isa: Option<NonZeroU32>,
 
     pub(crate) relocation_model: RelocationModel,
     pub(crate) should_output_executable: bool,
@@ -414,6 +421,7 @@ impl Default for Args {
             error_unresolved_symbols: true,
             allow_multiple_definitions: false,
             z_interpose: false,
+            z_isa: None,
             numeric_experiments: Vec::new(),
         }
     }
@@ -1377,6 +1385,38 @@ fn setup_argument_parser() -> ArgumentParser {
             "Mark object to interpose all DSOs but executable",
             |args, _modifier_stack, _value| {
                 args.z_interpose = true;
+                Ok(())
+            },
+        )
+        .sub_option(
+            "x86-64-baseline",
+            "Mark x86-64-baseline ISA as needed",
+            |args, _modifier_stack, _value| {
+                args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_BASELINE);
+                Ok(())
+            },
+        )
+        .sub_option(
+            "x86-64-v2",
+            "Mark x86-64-v2 ISA as needed",
+            |args, _modifier_stack, _value| {
+                args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V2);
+                Ok(())
+            },
+        )
+        .sub_option(
+            "x86-64-v3",
+            "Mark x86-64-v3 ISA as needed",
+            |args, _modifier_stack, _value| {
+                args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V3);
+                Ok(())
+            },
+        )
+        .sub_option(
+            "x86-64-v4",
+            "Mark x86-64-v4 ISA as needed",
+            |args, _modifier_stack, _value| {
+                args.z_isa = NonZero::new(GNU_PROPERTY_X86_ISA_1_V4);
                 Ok(())
             },
         )
