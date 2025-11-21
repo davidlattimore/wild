@@ -1,7 +1,9 @@
 {
   pkgs ? import <nixpkgs> { },
-  craneLib,
 }:
+let
+  inherit (pkgs.callPackage ./wrappers.nix { }) gccWrapper gppWrapper;
+in
 pkgs.mkShell {
   packages = [
     pkgs.binutils-unwrapped-all-targets
@@ -12,7 +14,9 @@ pkgs.mkShell {
     pkgs.glibc.out
     pkgs.glibc.static
     pkgs.rustup
-  ] ++ (pkgs.callPackage ./. { inherit craneLib; }).gccWrappers;
+    gccWrapper
+    gppWrapper
+  ];
 
   env.LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib ];
 }
