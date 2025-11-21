@@ -511,7 +511,10 @@ pub(crate) enum PropertyClass {
     AndOr,
 }
 
-fn merge_gnu_property_notes<A: Arch>(group_states: &mut [GroupState], isa_needed: u32) -> Result {
+fn merge_gnu_property_notes<A: Arch>(
+    group_states: &mut [GroupState],
+    isa_needed: Option<NonZeroU32>,
+) -> Result {
     timing_phase!("Merge GNU property notes");
 
     let properties_per_file = group_states
@@ -548,11 +551,11 @@ fn merge_gnu_property_notes<A: Arch>(group_states: &mut [GroupState], isa_needed
     }
 
     // Merge needed ISA from CLI if set.
-    if isa_needed > 0 {
+    if let Some(isa_needed) = isa_needed {
         property_map
             .entry(GNU_PROPERTY_X86_ISA_1_NEEDED)
             .or_insert((0, PropertyClass::Or))
-            .0 |= isa_needed;
+            .0 |= isa_needed.get();
     }
 
     // Iterate the properties sorted by property_type so that we have a stable output!
