@@ -34,12 +34,9 @@ Follow-these steps:
     * Modify (or add) the `.cargo/config.toml` file in your chosen crate (example for `ripgrep`)
 
 ```toml
-  [target.x86_64-unknown-linux-gnu]
-linker = "/usr/bin/clang"
-
-rustflags = [
-    "-C", "link-arg=--ld-path=wild"
-]
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-Clink-arg=--ld-path=wild"]
 ```
 
 * Make sure that you have a version of wild in your `$PATH` so that it will be used (try `which
