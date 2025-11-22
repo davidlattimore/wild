@@ -76,9 +76,31 @@ pub(crate) enum SectionRuleOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SortOrder {
+    Init,
+    Fini,
+}
+
+#[must_use]
+pub(crate) fn sorted_section_priority(name: &[u8]) -> u16 {
+    let mut priority = parse_priority_suffix(name).unwrap_or(u16::MAX);
+
+    if name.starts_with(b".ctors") || name == b".ctors" {
+        priority = u16::MAX - priority;
+    }
+
+    if name.starts_with(b".dtors") || name == b".dtors" {
+        priority = u16::MAX - priority;
+    }
+
+    priority
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SectionOutputInfo {
     pub(crate) section_id: OutputSectionId,
     pub(crate) must_keep: bool,
+    pub(crate) sort_order: Option<SortOrder>,
 }
 
 impl SectionOutputInfo {
@@ -86,6 +108,7 @@ impl SectionOutputInfo {
         Self {
             section_id,
             must_keep: false,
+            sort_order: None,
         }
     }
 
@@ -93,6 +116,15 @@ impl SectionOutputInfo {
         Self {
             section_id,
             must_keep: true,
+            sort_order: None,
+        }
+    }
+
+    const fn keep_with_sort(section_id: OutputSectionId, sort_order: SortOrder) -> Self {
+        Self {
+            section_id,
+            must_keep: true,
+            sort_order: Some(sort_order),
         }
     }
 }
@@ -164,6 +196,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                                     SectionOutputInfo {
                                                         section_id,
                                                         must_keep: matcher.must_keep,
+                                                        sort_order: None,
                                                     },
                                                 ),
                                             )?);
@@ -294,6 +327,17 @@ impl<'data> SectionRule<'data> {
         )
     }
 
+    const fn prefix_section_keep_sorted(
+        name: &'data [u8],
+        section_id: OutputSectionId,
+        sort_order: SortOrder,
+    ) -> SectionRule<'data> {
+        Self::prefix(
+            name,
+            SectionRuleOutcome::Section(SectionOutputInfo::keep_with_sort(section_id, sort_order)),
+        )
+    }
+
     const fn exact(name: &'data [u8], outcome: SectionRuleOutcome) -> SectionRule<'data> {
         SectionRule {
             name,
@@ -335,16 +379,26 @@ const BUILT_IN_RULES: &[SectionRule<'static>] = &[
     ),
     SectionRule::prefix_section(secnames::DATA_SECTION_NAME, output_section_id::DATA),
     SectionRule::prefix_section(secnames::BSS_SECTION_NAME, output_section_id::BSS),
-    SectionRule::prefix_section_keep(
+    SectionRule::prefix_section_keep_sorted(
         secnames::INIT_ARRAY_SECTION_NAME,
         output_section_id::INIT_ARRAY,
+        SortOrder::Init,
     ),
-    SectionRule::prefix_section_keep(b".ctors", output_section_id::INIT_ARRAY),
-    SectionRule::prefix_section_keep(
+    SectionRule::prefix_section_keep_sorted(
+        b".ctors",
+        output_section_id::INIT_ARRAY,
+        SortOrder::Init,
+    ),
+    SectionRule::prefix_section_keep_sorted(
         secnames::FINI_ARRAY_SECTION_NAME,
         output_section_id::FINI_ARRAY,
+        SortOrder::Fini,
     ),
-    SectionRule::prefix_section_keep(b".dtors", output_section_id::FINI_ARRAY),
+    SectionRule::prefix_section_keep_sorted(
+        b".dtors",
+        output_section_id::FINI_ARRAY,
+        SortOrder::Fini,
+    ),
     SectionRule::prefix_section(secnames::TDATA_SECTION_NAME, output_section_id::TDATA),
     SectionRule::prefix_section(secnames::TBSS_SECTION_NAME, output_section_id::TBSS),
     SectionRule::prefix_section(
@@ -417,6 +471,16 @@ impl<'data> SectionRules<'data> {
     }
 }
 
+fn parse_priority_suffix(name: &[u8]) -> Option<u16> {
+    let idx = name.iter().rposition(|&b| b == b'.')?;
+    let suffix = name.get(idx + 1..)?;
+    if suffix.is_empty() || !suffix.iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let value = core::str::from_utf8(suffix).ok()?.parse::<u32>().ok()?;
+    Some(value.min(u16::MAX as u32) as u16)
+}
+
 /// Returns a hash of the first four bytes of the supplied name or `None` if the name is shorter
 /// than 4 bytes.
 #[inline(always)]
@@ -475,7 +539,8 @@ fn test_section_mapping() {
         lookup_name(".comment"),
         SectionRuleOutcome::Section(SectionOutputInfo {
             section_id: output_section_id::COMMENT,
-            must_keep: true
+            must_keep: true,
+            sort_order: None,
         })
     );
 }
