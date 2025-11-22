@@ -2,6 +2,7 @@
 //! entries are needed. We also resolve which output section, if any, each input section should be
 //! assigned to.
 
+use crate::LayoutRules;
 use crate::alignment::Alignment;
 use crate::args::Args;
 use crate::bail;
@@ -45,17 +46,15 @@ use crate::symbol_db::Visibility;
 use crate::timing_phase;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
-use crate::LayoutRules;
 use atomic_take::AtomicTake;
 use crossbeam_channel::Sender;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
+use linker_utils::elf::SectionFlags;
+use linker_utils::elf::SectionType;
 use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht::NOTE;
-use linker_utils::elf::SectionFlags;
-use linker_utils::elf::SectionType;
-use object::read::elf::Sym as _;
 use object::LittleEndian;
 use object::SectionIndex;
 use object::read::elf::Sym as _;

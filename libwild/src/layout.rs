@@ -2,11 +2,12 @@
 //! referenced. Determines which sections need to be linked, sums their sizes decides what goes
 //! where in the output file then allocates addresses for each symbol.
 
-use self::elf::NoteHeader;
-use self::elf::Symbol;
 use self::elf::GNU_NOTE_NAME;
 use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
+use self::elf::NoteHeader;
+use self::elf::Symbol;
 use self::output_section_id::InfoInputs;
+use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::arch::Arch;
@@ -28,10 +29,10 @@ use crate::elf::Versym;
 use crate::elf_writer;
 use crate::ensure;
 use crate::error;
-use crate::error::warning;
 use crate::error::Context;
 use crate::error::Error;
 use crate::error::Result;
+use crate::error::warning;
 use crate::file_writer;
 use crate::grouping::Group;
 use crate::input_data::FileId;
@@ -41,11 +42,11 @@ use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SortOrder;
 use crate::output_section_id;
+use crate::output_section_id::FILE_HEADER;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
-use crate::output_section_id::FILE_HEADER;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
@@ -79,12 +80,15 @@ use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::FlagsForSymbol as _;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
-use crate::OutputKind;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
 use itertools::Itertools;
+use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
+use linker_utils::elf::RelocationKind;
+use linker_utils::elf::SectionFlags;
+use linker_utils::elf::SectionType;
 use linker_utils::elf::pt;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
 use linker_utils::elf::riscvattr::TAG_RISCV_ATOMIC_ABI;
@@ -100,10 +104,6 @@ use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::elf::sht::NOTE;
 use linker_utils::elf::sht::RISCV_ATTRIBUTES;
-use linker_utils::elf::RelocationKind;
-use linker_utils::elf::SectionFlags;
-use linker_utils::elf::SectionType;
-use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::SectionIndex;
@@ -122,7 +122,6 @@ use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
 use smallvec::SmallVec;
-use std::collections::HashSet;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::fmt::Display;
@@ -134,10 +133,10 @@ use std::mem::take;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
-use std::sync::Mutex;
 use zerocopy::FromBytes;
 
 pub fn compute<'data, A: Arch>(
@@ -3861,35 +3860,6 @@ impl<'data> EpilogueLayoutState<'data> {
         };
     }
 
-    // TODO: `existing_dynsym_entries` will eventually match the `dynsym_start_index` calculated
-    // within `EpilogueLayoutState::finalise_layout`. However, we need the number of existing
-    // entries before finalizing the layout, so a more efficient design would be ideal.
-    fn update_existing_dynsym_entries(
-        &mut self,
-        symbol_db: &SymbolDb<'data>,
-        per_symbol_flags: &AtomicPerSymbolFlags,
-    ) -> Result {
-        let mut defined_symbols = HashSet::with_capacity(self.dynamic_symbol_definitions.len());
-        for def in &self.dynamic_symbol_definitions {
-            defined_symbols.insert(def.symbol_id);
-        }
-
-        let mut entries: u64 = 1; // Account for the null dynsym entry.
-        for index in 0..symbol_db.num_symbols() {
-            let symbol_id = SymbolId::from_usize(index);
-            if !symbol_db.is_canonical(symbol_id) || defined_symbols.contains(&symbol_id) {
-                continue;
-            }
-
-            let flags = per_symbol_flags.flags_for_symbol(symbol_id);
-            if flags.is_dynamic() && flags.has_resolution() {
-                entries += 1;
-            }
-        }
-
-        Ok(())
-    }
-
     fn new(input_state: ResolvedEpilogue<'data>) -> EpilogueLayoutState<'data> {
         EpilogueLayoutState {
             file_id: input_state.file_id,
@@ -4439,7 +4409,6 @@ impl<'data> ObjectLayoutState<'data> {
         let header = self.object.section(section_index)?;
         let mut section =
             Section::create(header, self, section_index, part_id, unloaded.sort_order)?;
-
         match self.relocations(section.index)? {
             RelocationList::Rela(relocations) => {
                 self.load_section_relocations::<A>(
