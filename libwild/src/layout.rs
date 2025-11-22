@@ -177,32 +177,32 @@ pub fn compute<'data, A: Arch>(
     let sorted_sections = gc_outputs.sorted_sections;
 
     // Attach sorted section contributions to the epilogue and account for their sizes up front.
-    if let Some(epilogue_group) = group_states.last_mut() {
-        if let Some(FileLayoutState::Epilogue(ep)) = epilogue_group.files.last_mut() {
-            ep.sorted_sections = sorted_sections;
-            ep.sorted_plan = output_sections.new_section_map_with(Vec::new);
+    if let Some(epilogue_group) = group_states.last_mut()
+        && let Some(FileLayoutState::Epilogue(ep)) = epilogue_group.files.last_mut()
+    {
+        ep.sorted_sections = sorted_sections;
+        ep.sorted_plan = output_sections.new_section_map_with(Vec::new);
 
-            for (_out_id, items) in ep.sorted_sections.iter() {
-                for it in items {
-                    let part_id = it.section.part_id;
-                    epilogue_group
-                        .common
-                        .allocate(part_id, it.section.capacity());
-                }
+        for (_out_id, items) in ep.sorted_sections.iter() {
+            for it in items {
+                let part_id = it.section.part_id;
+                epilogue_group
+                    .common
+                    .allocate(part_id, it.section.capacity());
             }
         }
     }
 
     // Ensure coverage map records presence of sorted sections.
     let mut sections_with_content = gc_outputs.sections_with_content;
-    if let Some(epilogue_group) = group_states.last() {
-        if let Some(FileLayoutState::Epilogue(ep)) = epilogue_group.files.last() {
-            ep.sorted_sections.for_each(|out, items| {
-                if !items.is_empty() {
-                    *sections_with_content.get_mut(out) = true;
-                }
-            });
-        }
+    if let Some(epilogue_group) = group_states.last()
+        && let Some(FileLayoutState::Epilogue(ep)) = epilogue_group.files.last()
+    {
+        ep.sorted_sections.for_each(|out, items| {
+            if !items.is_empty() {
+                *sections_with_content.get_mut(out) = true;
+            }
+        });
     }
 
     finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
@@ -431,11 +431,11 @@ fn update_sorted_section_resolutions(
             let delta = entry.dst_file_off.saturating_sub(base_file);
             let address = base_mem + delta;
             let group_layout = &mut group_layouts[entry.file_id.group()];
-            if let Some(FileLayout::Object(obj)) = group_layout.files.get_mut(entry.file_id.file())
+            if let Some(FileLayout::Object(obj)) =
+                group_layout.files.get_mut(entry.file_id.file())
+                && entry.section.index.0 < obj.section_resolutions.len()
             {
-                if entry.section.index.0 < obj.section_resolutions.len() {
-                    obj.section_resolutions[entry.section.index.0] = SectionResolution { address };
-                }
+                obj.section_resolutions[entry.section.index.0] = SectionResolution { address };
             }
         }
     });
@@ -3982,12 +3982,10 @@ impl<'data> EpilogueLayoutState<'data> {
             }
         }
 
-        self.existing_dynsym_entries =
-            u32::try_from(entries).context("Too many dynamic symbols for .hash")?;
-
         Ok(())
     }
 
+    #[allow(clippy::unnecessary_wraps)]
     fn finalise_sorted_sections(
         &mut self,
         resources: &FinaliseLayoutResources<'_, 'data>,

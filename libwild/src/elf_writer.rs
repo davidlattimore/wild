@@ -287,7 +287,7 @@ fn write_sorted_init_fini<A: Arch>(
             if entry.is_ctors_like {
                 let data_len = entry.section.size as usize;
                 ensure!(
-                    data_len % ptr_size == 0,
+                    data_len.is_multiple_of(ptr_size),
                     "ctors/dtors section has size not aligned to pointer"
                 );
                 let elems = data_len / ptr_size;
@@ -1252,10 +1252,8 @@ fn write_object<A: Arch>(
                         (sec.output_section_id(), object.file_id, sec.index.0 as u32),
                         data,
                     );
-                    continue;
-                } else {
-                    write_object_section::<A>(object, layout, sec, buffers, table_writer, trace)?;
                 }
+                write_object_section::<A>(object, layout, sec, buffers, table_writer, trace)?;
             }
             SectionSlot::LoadedDebugInfo(sec) => {
                 write_debug_section::<A>(object, layout, sec, buffers)?;
