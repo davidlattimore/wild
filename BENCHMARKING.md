@@ -232,7 +232,7 @@ need to have already built wild with `cargo build --release`.
 To build rustc just cd into the rust repo root and run:
 
 ```sh
-PATH="$WILD_REPO_PATH/target/release/wild:$PATH" WILD_SAVE_BASE=/tmp/rustc-link ./x build rustc
+PATH="$WILD_REPO_PATH/target/release:$PATH" WILD_SAVE_BASE=/tmp/rustc-link ./x build rustc
 ```
 
 For more information about building rustc see [building instructions on the rustc-dev-guide](https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html).
