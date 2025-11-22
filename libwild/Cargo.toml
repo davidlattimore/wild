@@ -38,6 +38,7 @@ linker-utils = { path = "../linker-utils", version = "0.7.0" }
 memchr = { workspace = true }
 memmap2 = { workspace = true }
 object = { workspace = true }
+perfetto-recorder = { workspace = true }
 rayon = { workspace = true }
 sharded-offset-map = { workspace = true }
 sharded-vec-writer = { workspace = true }
@@ -62,6 +63,9 @@ tempfile = { workspace = true }
 [features]
 # Support for running the linker as a subprocess.
 fork = []
+
+# Enable support for emitting a perfetto trace.
+perfetto = ["perfetto-recorder/enable", "tracing/release_max_level_info"]
 
 # Enable work-in-progress features
 wip = []

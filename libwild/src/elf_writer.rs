@@ -76,6 +76,7 @@ use crate::symbol_db::SymbolId;
 use crate::timing_phase;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
+use crate::verbose_timing_phase;
 use hashbrown::HashMap;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
@@ -122,7 +123,6 @@ use std::ops::Range;
 use std::ops::Sub;
 use std::sync::atomic::Ordering::Relaxed;
 use tracing::debug_span;
-use tracing::instrument;
 use uuid::Uuid;
 use zerocopy::FromBytes;
 use zerocopy::transmute_mut;
@@ -179,8 +179,8 @@ fn write_gnu_build_id_note(
     Ok(())
 }
 
-#[instrument(skip_all, name = "Compute build ID")]
 fn compute_hash(sized_output: &SizedOutput) -> blake3::Hash {
+    timing_phase!("Compute build ID");
     blake3::Hasher::new()
         .update_rayon(&sized_output.out)
         .finalize()
@@ -195,6 +195,8 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
     groups_and_buffers
         .into_par_iter()
         .try_for_each(|(group, mut buffers)| -> Result {
+            verbose_timing_phase!("Write group");
+
             let mut table_writer = TableWriter::from_layout(
                 layout,
                 group.dynstr_start_offset,
@@ -1161,6 +1163,8 @@ fn write_object<A: Arch>(
     layout: &Layout,
     trace: &TraceOutput,
 ) -> Result {
+    verbose_timing_phase!("Write object", file_id = object.file_id.as_u32());
+
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().trace_span_for_file(object.file_id);
     for sec in &object.sections {
@@ -2444,6 +2448,8 @@ fn write_prelude<A: Arch>(
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
+    verbose_timing_phase!("Write prelude");
+
     let header: &mut FileHeader = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
         .map_err(|_| error!("Invalid file header allocation"))?
         .0;
@@ -2730,6 +2736,8 @@ fn write_linker_script_state<A: Arch>(
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
+    verbose_timing_phase!("Write linker script state");
+
     write_internal_symbols(
         &script.internal_symbols,
         layout,
@@ -2747,6 +2755,8 @@ fn write_epilogue<A: Arch>(
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
+    verbose_timing_phase!("Write epilogue");
+
     let mut epilogue_offsets = EpilogueOffsets::default();
 
     write_internal_symbols_plt_got_entries::<A>(&epilogue.internal_symbols, table_writer, layout)?;
@@ -3965,6 +3975,8 @@ fn write_dynamic_file<A: Arch>(
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
+    verbose_timing_phase!("Write dynamic");
+
     write_so_name(object, table_writer)?;
 
     write_copy_relocations::<A>(object, table_writer, layout)?;

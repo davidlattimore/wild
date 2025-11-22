@@ -79,6 +79,7 @@ use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::FlagsForSymbol as _;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
+use crate::verbose_timing_phase;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
@@ -374,6 +375,7 @@ fn finalise_copy_relocations<'data>(
     timing_phase!("Finalise copy relocations");
 
     group_states.par_iter_mut().try_for_each(|group| {
+        verbose_timing_phase!("Finalise copy relocations for group");
         for file in &mut group.files {
             if let FileLayoutState::Dynamic(dynamic) = file {
                 dynamic.finalise_copy_relocations(&mut group.common, symbol_db, symbol_flags)?;
@@ -392,9 +394,10 @@ fn finalise_all_sizes<'data>(
 ) -> Result {
     timing_phase!("Finalise per-object sizes");
 
-    group_states
-        .par_iter_mut()
-        .try_for_each(|state| state.finalise_sizes(symbol_db, output_sections, per_symbol_flags))
+    group_states.par_iter_mut().try_for_each(|state| {
+        verbose_timing_phase!("Finalise sizes for group");
+        state.finalise_sizes(symbol_db, output_sections, per_symbol_flags)
+    })
 }
 
 fn get_prelude_mut<'a, 'data>(
@@ -1995,6 +1998,8 @@ fn compute_symbols_and_layouts<'data>(
         .zip(starting_mem_offsets_by_group)
         .zip(per_group_res_writers)
         .map(|((state, mut memory_offsets), symbols_out)| {
+            verbose_timing_phase!("Assign addresses for group");
+
             if cfg!(debug_assertions) {
                 let offset_verifier = crate::verification::OffsetVerifier::new(
                     &memory_offsets,
@@ -2382,18 +2387,23 @@ fn find_required_sections<'data, A: Arch>(
     };
     let resources_ref = &resources;
 
-    groups
-        .into_par_iter()
-        .enumerate()
-        .try_for_each(|(i, mut group)| -> Result {
-            let _span = tracing::debug_span!("find_required_sections", gid = i).entered();
-            for file in &mut group.files {
-                activate::<A>(&mut group.common, file, &mut group.queue, resources_ref)
-                    .with_context(|| format!("Failed to activate {file}"))?;
-            }
-            let _ = resources_ref.waiting_workers.push(group);
-            Ok(())
-        })?;
+    {
+        timing_phase!("Activate objects");
+        groups
+            .into_par_iter()
+            .enumerate()
+            .try_for_each(|(i, mut group)| -> Result {
+                verbose_timing_phase!("Activate objects in group");
+
+                let _span = tracing::debug_span!("find_required_sections", gid = i).entered();
+                for file in &mut group.files {
+                    activate::<A>(&mut group.common, file, &mut group.queue, resources_ref)
+                        .with_context(|| format!("Failed to activate {file}"))?;
+                }
+                let _ = resources_ref.waiting_workers.push(group);
+                Ok(())
+            })?;
+    }
 
     rayon::scope(|scope| {
         scope.spawn_broadcast(|_, _| {
@@ -2401,6 +2411,7 @@ fn find_required_sections<'data, A: Arch>(
                 let mut idle = false;
                 while !resources.done.load(atomic::Ordering::SeqCst) {
                     while let Some(worker) = resources.waiting_workers.pop() {
+                        verbose_timing_phase!("Work with object");
                         worker.do_pending_work::<A>(resources_ref);
                     }
                     if idle {
@@ -2468,6 +2479,8 @@ fn create_worker_slots<'data>(
     output_sections: &OutputSections<'data>,
     symbol_db: &SymbolDb<'data>,
 ) -> (Vec<Mutex<WorkerSlot<'data>>>, Vec<GroupState<'data>>) {
+    verbose_timing_phase!("Create worker slots");
+
     let mut worker_slots = Vec::with_capacity(groups_in.len());
     let group_states = groups_in
         .into_iter()

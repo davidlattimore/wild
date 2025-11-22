@@ -301,6 +301,26 @@ useful to check which phase or phases that increase has occurred in. You can get
 instruction counts by running with `--time=cycles,instructions`. To see the full list of counters,
 search `args.rs` for "branch-misses".
 
+### Perfetto
+
+The `--time` flag only shows the course stages of the linker. To see what each thread is doing
+during each stage, we can capture a perfetto trace and view the results in the perfetto UI.
+
+Start by building with the `perfetto` feature enabled:
+
+```sh
+cargo build --release --features perfetto
+```
+
+Run the linker with `WILD_PERFETTO_OUT` set to some file. e.g.:
+
+```sh
+WILD_PERFETTO_OUT=$HOME/tmp/tmp.pftrace ./run-with wild
+```
+
+Open the [perfetto UI](https://ui.perfetto.dev/). Click "Open trace file" and select `tmp.pftrace`.
+Use the keys w, a, s, d to navigate (scroll and zoom).
+
 ### Samply
 
 To look for hot functions and to check how the work distribution looks between threads, you can use

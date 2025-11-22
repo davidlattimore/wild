@@ -12,6 +12,7 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
 use crate::timing_phase;
+use crate::verbose_timing_phase;
 use anyhow::anyhow;
 use memmap2::MmapOptions;
 use std::io::ErrorKind;
@@ -149,6 +150,8 @@ impl Output {
                 let output_config = self.config;
 
                 rayon::spawn(move || {
+                    verbose_timing_phase!("Create output file");
+
                     if output_config.file_write_mode == FileWriteMode::UnlinkAndReplace {
                         // Rename the old output file so that we can create a new file in its place.
                         // Reusing the existing file would also be an option, but that wouldn't
@@ -213,7 +216,7 @@ impl Output {
         // While we have the output file mmapped with write permission, the file will be locked and
         // unusable, so we can't really say that we've finished writing it until we've unmapped it.
         {
-            let _span = tracing::info_span!("Unmap output file").entered();
+            timing_phase!("Unmap output file");
             drop(sized_output);
         }
 

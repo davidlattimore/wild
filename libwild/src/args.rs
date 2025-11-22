@@ -21,6 +21,7 @@ use crate::error::Result;
 use crate::input_data::FileId;
 use crate::linker_script::maybe_forced_sysroot;
 use crate::save_dir::SaveDir;
+use crate::timing_phase;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
 use jobserver::Acquired;
@@ -510,6 +511,7 @@ fn read_args_from_file(path: &Path) -> Result<Vec<String>> {
 
 impl Args {
     pub fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F) -> Result<Args> {
+        timing_phase!("Parse args");
         parse(input)
     }
 
@@ -573,6 +575,8 @@ impl Args {
     ///
     /// <https://www.gnu.org/software/make/manual/html_node/POSIX-Jobserver.html>
     pub fn activate_thread_pool(mut self) -> Result<ActivatedArgs> {
+        timing_phase!("Activate thread pool");
+
         let mut tokens = Vec::new();
         self.available_threads = self.num_threads.unwrap_or_else(|| {
             if let Some(client) = &self.jobserver_client {

@@ -15,6 +15,7 @@ use crate::error::Result;
 use crate::file_kind::FileKind;
 use crate::linker_script::LinkerScript;
 use crate::timing_phase;
+use crate::verbose_timing_phase;
 use colosseum::sync::Arena;
 use crossbeam_channel::Receiver;
 use crossbeam_channel::Sender;
@@ -245,6 +246,8 @@ impl<'data> InputData<'data> {
             drop(response_recv);
         });
 
+        verbose_timing_phase!("Finalise open input files");
+
         if let Some(e) = error {
             return Err(e);
         }
@@ -405,6 +408,8 @@ fn process_open_file_request<'data>(
     args: &Args,
     inputs_arena: &'data Arena<InputFile>,
 ) -> OpenFileResponse<'data> {
+    verbose_timing_phase!("Open file");
+
     let files = (|| -> Result<ResponseKind<'data>> {
         let absolute_path = &request.paths.absolute;
         let result = FileData::new(absolute_path.as_path(), args.prepopulate_maps);
@@ -814,6 +819,10 @@ impl FileId {
 
     pub(crate) fn file(self) -> usize {
         self.0 as usize & ((1 << FILE_INDEX_BITS) - 1)
+    }
+
+    pub(crate) fn as_u32(self) -> u32 {
+        self.0
     }
 }
 

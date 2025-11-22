@@ -61,6 +61,7 @@ pub(crate) mod version_script;
 pub(crate) mod x86_64;
 
 use crate::args::ActivatedArgs;
+use crate::error::Result;
 use crate::identity::linker_identity;
 use crate::output_kind::OutputKind;
 pub use args::Args;
@@ -88,6 +89,8 @@ pub fn run(args: Args) -> error::Result {
     let args = args.activate_thread_pool()?;
     let linker = Linker::new();
     linker.run(&args)?;
+    drop(linker);
+    timing::finalise_perfetto_trace()?;
     Ok(())
 }
 
@@ -124,10 +127,12 @@ pub struct Linker {
 
     /// We'll fill this in when we're done linking and start shutting down. Once this is dropped,
     /// that signals the end of shutdown for the purposes of timing measurement.
-    shutdown_scope: AtomicCell<Option<Box<tracing::span::EnteredSpan>>>,
+    #[allow(dyn_drop)]
+    shutdown_scope: AtomicCell<Vec<Box<dyn Drop>>>,
 
     /// A timing scope that exists for the whole time we're linking.
-    _link_scope: tracing::span::EnteredSpan,
+    #[allow(dyn_drop)]
+    _link_scope: Vec<Box<dyn Drop>>,
 }
 
 pub struct LinkerOutput<'layout_inputs> {
@@ -140,11 +145,13 @@ pub struct LinkerOutput<'layout_inputs> {
 impl Linker {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
+        let (guard_a, guard_b) = timing_guard!("Link");
+
         Self {
             inputs: Arena::new(),
             herd: Default::default(),
             shutdown_scope: Default::default(),
-            _link_scope: tracing::info_span!("Link").entered(),
+            _link_scope: vec![Box::new(guard_a), Box::new(guard_b)],
         }
     }
 
@@ -237,9 +244,8 @@ impl Linker {
         diff::maybe_diff()?;
 
         // We've finished linking. We consider everything from this point onwards as shutdown.
-        let shutdown_span = tracing::info_span!("Shutdown");
-        self.shutdown_scope
-            .store(Some(Box::new(shutdown_span.entered())));
+        let (g1, g2) = timing_guard!("Shutdown");
+        self.shutdown_scope.store(vec![Box::new(g1), Box::new(g2)]);
 
         Ok(LinkerOutput {
             layout: Some(layout),
@@ -255,7 +261,7 @@ impl Default for Linker {
 
 impl Drop for Linker {
     fn drop(&mut self) {
-        let _span = tracing::info_span!("Drop inputs").entered();
+        timing_phase!("Drop inputs");
         self.inputs = Arena::new();
         self.herd = Default::default();
     }
@@ -263,7 +269,13 @@ impl Drop for Linker {
 
 impl Drop for LinkerOutput<'_> {
     fn drop(&mut self) {
-        let _span = tracing::info_span!("Drop layout").entered();
+        timing_phase!("Drop layout");
         self.layout.take();
     }
+}
+
+/// Possibly initialise timing if a timing-related environment variable is active and it was enabled
+/// in the build, otherwise, do nothing. See `BENCHMARKING.md` for details.
+pub fn init_timing() -> Result {
+    timing::setup()
 }
