@@ -65,6 +65,9 @@ use crate::resolution::ResolvedEpilogue;
 use crate::resolution::ResolvedLinkerScript;
 use crate::resolution::SectionSlot;
 use crate::resolution::UnloadedSection;
+use crate::sorted::SectionToSort;
+use crate::sorted::SortedPlanEntry;
+use crate::sorted::file_rank;
 use crate::sharding::ShardKey;
 use crate::string_merging::MergedStringStartAddresses;
 use crate::string_merging::MergedStringsSection;
@@ -171,6 +174,38 @@ pub fn compute<'data, A: Arch>(
     )?;
 
     let mut group_states = gc_outputs.group_states;
+    let sorted_sections = gc_outputs.sorted_sections;
+
+    // Attach sorted section contributions to the epilogue and account for their sizes up front.
+    if let Some(epilogue_group) = group_states.last_mut() {
+        if let Some(FileLayoutState::Epilogue(ep)) = epilogue_group.files.last_mut() {
+            ep.sorted_sections = sorted_sections;
+            ep.sorted_plan = output_sections.new_section_map_with(Vec::new);
+
+            for (_out_id, items) in ep.sorted_sections.iter() {
+                for it in items {
+                    let part_id = it.section.part_id;
+                    epilogue_group
+                        .common
+                        .allocate(part_id, it.section.capacity());
+                }
+            }
+        }
+    }
+
+    // Ensure coverage map records presence of sorted sections.
+    let mut sections_with_content = gc_outputs.sections_with_content;
+    if let Some(epilogue_group) = group_states.last() {
+        if let Some(FileLayoutState::Epilogue(ep)) = epilogue_group.files.last() {
+            ep.sorted_sections.for_each(|out, items| {
+                if !items.is_empty() {
+                    if let Some(flag) = sections_with_content.get_mut(out) {
+                        *flag = true;
+                    }
+                }
+            });
+        }
+    }
 
     finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
     merge_dynamic_symbol_definitions(&mut group_states, &symbol_db)?;
@@ -206,7 +241,7 @@ pub fn compute<'data, A: Arch>(
         &output_order,
         &program_segments,
         &mut per_symbol_flags,
-        gc_outputs.sections_with_content,
+        sections_with_content,
         &symbol_db,
     )?;
 
@@ -280,12 +315,27 @@ pub fn compute<'data, A: Arch>(
             .context("Group resolutions not filled")?;
     }
 
+    let epilogue_sorted_plan = group_layouts
+        .last()
+        .and_then(|g| g.files.last())
+        .and_then(|f| {
+            if let FileLayout::Epilogue(ep) = f {
+                Some(OutputSectionMap::from_values(
+                    ep.sorted_plan.values_iter().cloned().collect(),
+                ))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| output_sections.new_section_map_with(Vec::new));
+
+    update_sorted_section_resolutions(&epilogue_sorted_plan, &section_layouts, &mut group_layouts);
+
     update_dynamic_symbol_resolutions(&group_layouts, &mut symbol_resolutions.resolutions);
     update_defsym_symbol_resolutions(&symbol_db, &mut symbol_resolutions.resolutions)?;
     crate::gc_stats::maybe_write_gc_stats(&group_layouts, symbol_db.args)?;
 
     let relocation_statistics = OutputSectionMap::with_size(section_layouts.len());
-
     Ok(Layout {
         symbol_db,
         symbol_resolutions,
@@ -304,6 +354,7 @@ pub fn compute<'data, A: Arch>(
         has_variant_pcs: gc_outputs.has_variant_pcs,
         relocation_statistics,
         per_symbol_flags,
+        sorted_plan: epilogue_sorted_plan,
     })
 }
 
@@ -362,6 +413,35 @@ fn update_dynamic_symbol_resolutions(
             res.dynamic_symbol_index = Some(dynamic_symbol_index);
         }
     }
+}
+
+fn update_sorted_section_resolutions(
+    plan: &OutputSectionMap<Vec<SortedPlanEntry>>,
+    section_layouts: &OutputSectionMap<OutputRecordLayout>,
+    group_layouts: &mut [GroupLayout],
+) {
+    plan.for_each(|out_id, items| {
+        if items.is_empty() {
+            return;
+        }
+
+        let layout = section_layouts.get(out_id);
+        let base_file = layout.file_offset as u64;
+        let base_mem = layout.mem_offset;
+
+        for entry in items {
+            let delta = entry.dst_file_off.saturating_sub(base_file);
+            let address = base_mem + delta;
+            let group_layout = &mut group_layouts[entry.file_id.group()];
+            if let Some(FileLayout::Object(obj)) =
+                group_layout.files.get_mut(entry.file_id.file())
+            {
+                if entry.section.index.0 < obj.section_resolutions.len() {
+                    obj.section_resolutions[entry.section.index.0] = SectionResolution { address };
+                }
+            }
+        }
+    });
 }
 
 /// Where we've decided that we need copy relocations, look for symbols with the same address as the
@@ -760,6 +840,8 @@ pub struct Layout<'data> {
     pub(crate) has_static_tls: bool,
     pub(crate) has_variant_pcs: bool,
     pub(crate) per_symbol_flags: PerSymbolFlags,
+
+    pub(crate) sorted_plan: OutputSectionMap<Vec<SortedPlanEntry>>,
 }
 
 #[derive(Debug)]
@@ -879,6 +961,9 @@ pub(crate) struct EpilogueLayoutState<'data> {
     riscv_attributes: Vec<RiscVAttribute>,
 
     verdefs: Option<Vec<VersionDef>>,
+
+    sorted_sections: OutputSectionMap<Vec<SectionToSort>>,
+    sorted_plan: OutputSectionMap<Vec<SortedPlanEntry>>,
 }
 
 pub(crate) struct LinkerScriptLayoutState<'data> {
@@ -913,6 +998,8 @@ pub(crate) struct EpilogueLayout<'data> {
     pub(crate) verdefs: Option<Vec<VersionDef>>,
     pub(crate) riscv_attributes: Vec<RiscVAttribute>,
     pub(crate) riscv_attributes_length: u32,
+
+    pub(crate) sorted_plan: OutputSectionMap<Vec<SortedPlanEntry>>,
 }
 
 #[derive(Debug)]
@@ -1688,6 +1775,8 @@ struct GraphResources<'data, 'scope> {
     /// __start_ / __stop_ symbols. i.e. sections that don't start their names with a ".".
     start_stop_sections: OutputSectionMap<SegQueue<SectionLoadRequest>>,
 
+    sorted_sections: OutputSectionMap<SegQueue<SectionToSort>>,
+
     input_data: &'scope InputData<'data>,
 }
 
@@ -1900,6 +1989,17 @@ impl<'data> Layout<'data> {
     pub(crate) fn file_layout(&self, file_id: FileId) -> &FileLayout<'data> {
         let group_layout = &self.group_layouts[file_id.group()];
         &group_layout.files[file_id.file()]
+    }
+
+    pub(crate) fn sorted_items_for(&self, out: OutputSectionId) -> &[SortedPlanEntry] {
+        self.sorted_plan.get(out)
+    }
+
+    pub(crate) fn sorted_output_sections(&self) -> impl Iterator<Item = OutputSectionId> + '_ {
+        self.sorted_plan
+            .iter()
+            .filter(|(_, v)| !v.is_empty())
+            .map(|(id, _)| id)
     }
 
     /// Returns the base address of the global offset table. This needs to be consistent with the
@@ -2347,6 +2447,7 @@ struct GcOutputs<'data> {
     sections_with_content: OutputSectionMap<bool>,
     has_static_tls: bool,
     has_variant_pcs: bool,
+    sorted_sections: OutputSectionMap<Vec<SectionToSort>>,
 }
 
 fn find_required_sections<'data, A: Arch>(
@@ -2381,6 +2482,7 @@ fn find_required_sections<'data, A: Arch>(
         has_variant_pcs: AtomicBool::new(false),
         uses_tlsld: AtomicBool::new(false),
         start_stop_sections: output_sections.new_section_map(),
+        sorted_sections: output_sections.new_section_map_with(SegQueue::new),
         input_data,
     };
     let resources_ref = &resources;
@@ -2444,6 +2546,13 @@ fn find_required_sections<'data, A: Arch>(
 
     let mut group_states = unwrap_worker_states(&resources.worker_slots);
     let sections_with_content = resources.sections_with_content.into_map(|v| v.into_inner());
+    let sorted_sections = resources.sorted_sections.into_map(|q| {
+        let mut v = Vec::new();
+        while let Some(item) = q.pop() {
+            v.push(item);
+        }
+        v
+    });
 
     // Give our prelude a chance to tie up a few last sizes while we still have access to
     // `resources`.
@@ -2463,6 +2572,7 @@ fn find_required_sections<'data, A: Arch>(
         sections_with_content,
         has_static_tls: resources.has_static_tls.load(atomic::Ordering::Relaxed),
         has_variant_pcs: resources.has_variant_pcs.load(atomic::Ordering::Relaxed),
+        sorted_sections,
     })
 }
 
@@ -3860,6 +3970,71 @@ impl<'data> EpilogueLayoutState<'data> {
         };
     }
 
+    // TODO: `existing_dynsym_entries` will eventually match the `dynsym_start_index` calculated
+    // within `EpilogueLayoutState::finalise_layout`. However, we need the number of existing
+    // entries before finalizing the layout, so a more efficient design would be ideal.
+    fn update_existing_dynsym_entries(
+        &mut self,
+        symbol_db: &SymbolDb<'data>,
+        per_symbol_flags: &AtomicPerSymbolFlags,
+    ) -> Result {
+        let mut defined_symbols = HashSet::with_capacity(self.dynamic_symbol_definitions.len());
+        for def in &self.dynamic_symbol_definitions {
+            defined_symbols.insert(def.symbol_id);
+        }
+
+        let mut entries: u64 = 1; // Account for the null dynsym entry.
+        for index in 0..symbol_db.num_symbols() {
+            let symbol_id = SymbolId::from_usize(index);
+            if !symbol_db.is_canonical(symbol_id) || defined_symbols.contains(&symbol_id) {
+                continue;
+            }
+
+            let flags = per_symbol_flags.flags_for_symbol(symbol_id);
+            if flags.is_dynamic() && flags.has_resolution() {
+                entries += 1;
+            }
+        }
+
+        self.existing_dynsym_entries =
+            u32::try_from(entries).context("Too many dynamic symbols for .hash")?;
+
+        Ok(())
+    }
+
+    fn finalise_sorted_sections(&mut self, resources: &FinaliseLayoutResources<'_, 'data>) -> Result {
+        for (out_id, items) in self.sorted_sections.iter_mut() {
+            if items.is_empty() {
+                continue;
+            }
+
+            // Sections marked for ordering are laid out as one contiguous block owned by the
+            // epilogue. We rely on the earlier capacity allocations (in compute) having grown the
+            // output section size, so we can hand out offsets by walking through that range here.
+            items.sort_by(|a, b| {
+                a.priority
+                    .cmp(&b.priority)
+                    .then_with(|| file_rank(a.file_id).cmp(&file_rank(b.file_id)))
+                    .then_with(|| a.section.index.0.cmp(&b.section.index.0))
+            });
+
+            let base_file_off = resources.section_layouts.get(*out_id).file_offset as u64;
+            let mut cursor = 0u64;
+            for item in items.iter() {
+                let dst = base_file_off + cursor;
+                self.sorted_plan.get_mut(*out_id).push(SortedPlanEntry {
+                    file_id: item.file_id,
+                    section: item.section,
+                    dst_file_off: dst,
+                    is_ctors_like: item.is_ctors_like,
+                });
+                cursor += item.section.capacity();
+            }
+        }
+
+        Ok(())
+    }
+
     fn new(input_state: ResolvedEpilogue<'data>) -> EpilogueLayoutState<'data> {
         EpilogueLayoutState {
             file_id: input_state.file_id,
@@ -3878,6 +4053,8 @@ impl<'data> EpilogueLayoutState<'data> {
             build_id_size: Default::default(),
             verdefs: Default::default(),
             riscv_attributes: Default::default(),
+            sorted_sections: OutputSectionMap::with_size(0),
+            sorted_plan: OutputSectionMap::with_size(0),
         }
     }
 
@@ -4136,6 +4313,8 @@ impl<'data> EpilogueLayoutState<'data> {
         self.internal_symbols
             .finalise_layout(memory_offsets, resolutions_out, resources)?;
 
+        self.finalise_sorted_sections(resources)?;
+
         let dynsym_start_index = ((memory_offsets.get(part_id::DYNSYM)
             - resources
                 .section_layouts
@@ -4201,6 +4380,7 @@ impl<'data> EpilogueLayoutState<'data> {
             verdefs: self.verdefs,
             riscv_attributes: self.riscv_attributes,
             riscv_attributes_length,
+            sorted_plan: self.sorted_plan,
         })
     }
 }
@@ -4432,7 +4612,25 @@ impl<'data> ObjectLayoutState<'data> {
 
         tracing::debug!(loaded_section = %self.object.section_display_name(section_index), file = %self.input);
 
-        common.section_loaded(part_id, header, section);
+        if section.sort_order.is_some() {
+            let name = self.object.section_name(header)?;
+            let priority = sorted_section_priority(name);
+            let is_ctors_like = name.starts_with(b".ctors") || name.starts_with(b".dtors");
+            resources
+                .sorted_sections
+                .get(section.output_section_id())
+                .push(SectionToSort {
+                    file_id: self.file_id,
+                    section,
+                    priority,
+                    is_ctors_like,
+                });
+            // TODO: When epilogue-owned sorted sections are implemented, this call will be moved
+            // there. For now we still record allocation information so existing behaviour remains.
+            common.store_section_attributes(part_id, header);
+        } else {
+            common.section_loaded(part_id, header, section);
+        }
 
         resources
             .sections_with_content
