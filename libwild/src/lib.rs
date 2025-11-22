@@ -45,7 +45,6 @@ pub(crate) mod resolution;
 pub(crate) mod riscv64;
 pub(crate) mod save_dir;
 pub(crate) mod sharding;
-pub(crate) mod sorted;
 pub(crate) mod string_merging;
 #[cfg(feature = "fork")]
 pub(crate) mod subprocess;

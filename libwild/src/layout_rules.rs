@@ -183,6 +183,7 @@ impl<'data> LayoutRulesBuilder<'data> {
                                             output_sections.add_secondary_section(
                                                 primary_section_id,
                                                 replace(&mut extra_min_alignment, alignment::MIN),
+                                                None,
                                             )
                                         };
 

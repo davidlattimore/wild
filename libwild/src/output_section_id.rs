@@ -48,6 +48,7 @@ use linker_utils::elf::pt;
 use linker_utils::elf::secnames::*;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
+use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::iter::Copied;
@@ -134,6 +135,7 @@ pub(crate) struct OutputSections<'data> {
     pub(crate) output_section_indexes: Vec<Option<u16>>,
 
     custom_by_name: HashMap<SectionName<'data>, OutputSectionId>,
+    init_fini_secondaries: HashMap<InitFiniKey, OutputSectionId>,
 }
 
 /// Encodes the order of output sections and the start and end of each program segment. This struct
@@ -343,6 +345,16 @@ impl<'data> OutputSections<'data> {
         }
     }
 
+    fn compare_secondary(&self, lhs: OutputSectionId, rhs: OutputSectionId) -> Ordering {
+        match (
+            self.section_infos.get(lhs).secondary_order,
+            self.section_infos.get(rhs).secondary_order,
+        ) {
+            (Some(SecondaryOrder::InitFini(a)), Some(SecondaryOrder::InitFini(b))) => a.cmp(&b),
+            _ => lhs.as_usize().cmp(&rhs.as_usize()),
+        }
+    }
+
     /// Returns whether we should include the specified section in a program segment with the
     /// supplied properties.
     fn should_include_in_segment(
@@ -382,6 +394,18 @@ pub(crate) struct SectionOutputInfo<'data> {
     pub(crate) min_alignment: Alignment,
     pub(crate) entsize: u64,
     pub(crate) location: Option<linker_script::Location>,
+    pub(crate) secondary_order: Option<SecondaryOrder>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SecondaryOrder {
+    InitFini(u16),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct InitFiniKey {
+    primary: OutputSectionId,
+    priority: u16,
 }
 
 pub(crate) struct BuiltInSectionDetails {
@@ -730,8 +754,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
 ];
 
-pub(crate) fn built_in_section_ids()
--> impl ExactSizeIterator<Item = OutputSectionId> + DoubleEndedIterator<Item = OutputSectionId> {
+pub(crate) fn built_in_section_ids(
+) -> impl ExactSizeIterator<Item = OutputSectionId> + DoubleEndedIterator<Item = OutputSectionId> {
     (0..NUM_BUILT_IN_SECTIONS).map(|n| OutputSectionId(n as u32))
 }
 
@@ -949,6 +973,7 @@ impl<'data> OutputSections<'data> {
                 min_alignment,
                 entsize: 0,
                 location,
+                secondary_order: None,
             })
         })
     }
@@ -957,6 +982,7 @@ impl<'data> OutputSections<'data> {
         &mut self,
         primary_id: OutputSectionId,
         min_alignment: Alignment,
+        secondary_order: Option<SecondaryOrder>,
     ) -> OutputSectionId {
         self.section_infos.add_new(SectionOutputInfo {
             kind: SectionKind::Secondary(primary_id),
@@ -965,7 +991,31 @@ impl<'data> OutputSections<'data> {
             min_alignment,
             entsize: 0,
             location: None,
+            secondary_order,
         })
+    }
+
+    pub(crate) fn init_fini_secondary_section(
+        &mut self,
+        primary_id: OutputSectionId,
+        priority: u16,
+        alignment: Alignment,
+    ) -> OutputSectionId {
+        let key = InitFiniKey {
+            primary: primary_id,
+            priority,
+        };
+        let entry = self.init_fini_secondaries.entry(key).or_insert_with(|| {
+            self.add_secondary_section(
+                primary_id,
+                alignment,
+                Some(SecondaryOrder::InitFini(priority)),
+            )
+        });
+        let section_id = *entry;
+        let info = self.section_infos.get_mut(section_id);
+        info.min_alignment = info.min_alignment.max(alignment);
+        section_id
     }
 
     pub(crate) fn with_base_address(base_address: u64) -> Self {
@@ -978,6 +1028,7 @@ impl<'data> OutputSections<'data> {
                 min_alignment: d.min_alignment,
                 entsize: d.element_size,
                 location: None,
+                secondary_order: None,
             })
             .collect();
 
@@ -986,6 +1037,7 @@ impl<'data> OutputSections<'data> {
             base_address,
             custom_by_name: HashMap::new(),
             output_section_indexes: Default::default(),
+            init_fini_secondaries: HashMap::new(),
         }
     }
 
@@ -1024,6 +1076,10 @@ impl<'data> OutputSections<'data> {
             } else {
                 custom.data.push(id);
             }
+        });
+
+        secondary.for_each_mut(|_, ids| {
+            ids.sort_by(|a, b| self.compare_secondary(*a, *b));
         });
 
         custom.build_output_order_and_program_segments(self, &secondary)

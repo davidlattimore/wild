@@ -18,9 +18,11 @@ use crate::hash::PreHashed;
 use crate::input_data::FileId;
 use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
+use crate::layout_rules::sorted_section_priority;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::layout_rules::SectionRules;
 use crate::layout_rules::SortOrder;
+use crate::output_section_id;
 use crate::output_section_id::CustomSectionDetails;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
@@ -55,6 +57,7 @@ use linker_utils::elf::shf;
 use linker_utils::elf::sht::NOTE;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
+use object::SectionIndex;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
@@ -578,8 +581,49 @@ fn assign_section_ids<'data>(
                     &non_dynamic.custom_sections,
                     non_dynamic.sections.as_mut_slice(),
                 );
+                assign_init_fini_secondaries(
+                    s,
+                    non_dynamic.sections.as_mut_slice(),
+                    output_sections,
+                );
             }
         }
+    }
+}
+
+fn assign_init_fini_secondaries<'data>(
+    object: &ResolvedObject<'data>,
+    sections: &mut [SectionSlot],
+    output_sections: &mut OutputSections<'data>,
+) {
+    for (index, slot) in sections.iter_mut().enumerate() {
+        let Some(unloaded) = init_fini_unloaded_section(slot) else {
+            continue;
+        };
+        let part_id = unloaded.part_id;
+        let primary_id = part_id.output_section_id();
+        if primary_id != output_section_id::INIT_ARRAY
+            && primary_id != output_section_id::FINI_ARRAY
+        {
+            continue;
+        }
+
+        let Ok(header) = object.object.section(SectionIndex(index)) else {
+            continue;
+        };
+        let name = object.object.section_name(header).unwrap_or_default();
+        let priority = sorted_section_priority(name);
+        let alignment = part_id.alignment();
+        let secondary_id =
+            output_sections.init_fini_secondary_section(primary_id, priority, alignment);
+        unloaded.part_id = secondary_id.part_id_with_alignment(alignment);
+    }
+}
+
+fn init_fini_unloaded_section(slot: &mut SectionSlot) -> Option<&mut UnloadedSection> {
+    match slot {
+        SectionSlot::Unloaded(sec) | SectionSlot::MustLoad(sec) => Some(sec),
+        _ => None,
     }
 }
 

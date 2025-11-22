@@ -1,8 +1,7 @@
-use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
+use self::elf::get_page_mask;
 use self::elf::NoteHeader;
 use self::elf::NoteProperty;
-use self::elf::get_page_mask;
-use crate::OutputKind;
+use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use crate::alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
@@ -11,12 +10,12 @@ use crate::args::BuildIdOption;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf;
+use crate::elf::slice_from_all_bytes_mut;
+use crate::elf::write_relocation_to_buffer;
 use crate::elf::DynamicEntry;
 use crate::elf::EhFrameHdr;
 use crate::elf::EhFrameHdrEntry;
 use crate::elf::FileHeader;
-use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
-use crate::elf::GNU_NOTE_NAME;
 use crate::elf::GnuHashHeader;
 use crate::elf::ProgramHeader;
 use crate::elf::Rela;
@@ -28,19 +27,20 @@ use crate::elf::Verdef;
 use crate::elf::Vernaux;
 use crate::elf::Verneed;
 use crate::elf::Versym;
-use crate::elf::slice_from_all_bytes_mut;
-use crate::elf::write_relocation_to_buffer;
+use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
+use crate::elf::GNU_NOTE_NAME;
 use crate::ensure;
 use crate::error;
 use crate::error::Context as _;
 use crate::error::Result;
-use crate::file_writer::SizedOutput;
 use crate::file_writer::excessive_allocation;
 use crate::file_writer::insufficient_allocation;
 use crate::file_writer::split_buffers_by_alignment;
 use crate::file_writer::split_output_by_group;
 use crate::file_writer::split_output_into_sections;
 use crate::file_writer::OutputBuffer;
+use crate::file_writer::SizedOutput;
+use crate::layout::compute_allocations;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
@@ -57,7 +57,6 @@ use crate::layout::RiscVAttribute;
 use crate::layout::Section;
 use crate::layout::SymbolCopyInfo;
 use crate::layout::VersionDef;
-use crate::layout::compute_allocations;
 use crate::output_section_id;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
@@ -77,14 +76,8 @@ use crate::symbol_db::SymbolId;
 use crate::timing_phase;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
+use crate::OutputKind;
 use hashbrown::HashMap;
-use linker_utils::elf::DynamicRelocationKind;
-use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
-use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
-use linker_utils::elf::RelocationKind;
-use linker_utils::elf::RelocationKindInfo;
-use linker_utils::elf::RelocationSize;
-use linker_utils::elf::SectionFlags;
 use linker_utils::elf::pf;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
 use linker_utils::elf::riscvattr::TAG_RISCV_PRIV_SPEC;
@@ -99,15 +92,22 @@ use linker_utils::elf::secnames::DYNSYM_SECTION_NAME_STR;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::elf::stt;
+use linker_utils::elf::DynamicRelocationKind;
+use linker_utils::elf::RelocationKind;
+use linker_utils::elf::RelocationKindInfo;
+use linker_utils::elf::RelocationSize;
+use linker_utils::elf::SectionFlags;
+use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
+use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
 use linker_utils::relaxation::RelocationModifier;
-use object::LittleEndian;
-use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
 use object::elf::STT_TLS;
 use object::from_bytes_mut;
 use object::read::elf::Crel;
 use object::read::elf::Sym as _;
+use object::LittleEndian;
+use object::SymbolIndex;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
@@ -121,16 +121,12 @@ use std::ops::BitAnd;
 use std::ops::Not as _;
 use std::ops::Range;
 use std::ops::Sub;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::Ordering::Relaxed;
 use tracing::debug_span;
 use tracing::instrument;
 use uuid::Uuid;
 use zerocopy::FromBytes;
 
-type SortedDataKey = (OutputSectionId, crate::input_data::FileId, u32);
-type SortedDataMap = HashMap<SortedDataKey, Vec<u8>>;
 use zerocopy::transmute_mut;
 
 pub(crate) fn write<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout) -> Result {
@@ -198,7 +194,6 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
 
     let mut writable_buckets = split_buffers_by_alignment(&mut section_buffers, layout);
     let groups_and_buffers = split_output_by_group(layout, &mut writable_buckets);
-    let sorted_data: Arc<Mutex<SortedDataMap>> = Arc::new(Mutex::new(HashMap::new()));
     groups_and_buffers
         .into_par_iter()
         .try_for_each(|(group, mut buffers)| -> Result {
@@ -210,45 +205,15 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
                 group.eh_frame_start_address,
             );
 
-            let sorted_data = &sorted_data;
             for file in &group.files {
                 write_file::<A>(
                     file,
                     &mut buffers,
                     &mut table_writer,
                     layout,
-                    sorted_data,
                     &sized_output.trace,
                 )
                 .with_context(|| format!("Failed copying from {file} to output file"))?;
-            }
-            // Account for sorted sections for files in this group so validation sees them consumed.
-            use hashbrown::{HashMap, HashSet};
-            let mut group_file_ids: HashSet<crate::input_data::FileId> = HashSet::new();
-            for f in &group.files {
-                if let FileLayout::Object(o) = f {
-                    group_file_ids.insert(o.file_id);
-                }
-            }
-
-            let mut totals: HashMap<part_id::PartId, u64> = HashMap::new();
-            layout.sorted_plan.for_each(|_, items| {
-                for entry in items {
-                    if group_file_ids.contains(&entry.file_id) {
-                        let part = entry.section.part_id;
-                        *totals.entry(part).or_default() += entry.section.capacity();
-                    }
-                }
-            });
-            for (part, sum) in totals {
-                let buf = buffers.get_mut(part);
-                let need = sum as usize;
-                ensure!(
-                    buf.len() >= need,
-                    "Insufficient buffer when accounting sorted section {}",
-                    layout.output_sections.display_name(part.output_section_id())
-                );
-                let _ = buf.split_off_mut(..need).unwrap();
             }
             table_writer
                 .validate_empty(&group.mem_sizes)
@@ -271,8 +236,6 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
     }
 
     fill_padding(section_buffers);
-    let sorted_data = sorted_data.lock().unwrap();
-    write_sorted_init_fini::<A>(layout, &sorted_data, &mut sized_output.out)?;
 
     Ok(())
 }
@@ -284,68 +247,6 @@ fn fill_padding(mut section_buffers: OutputSectionMap<&mut [u8]>) {
 }
 
 #[tracing::instrument(skip_all, name = "Sort .eh_frame_hdr")]
-fn write_sorted_init_fini<A: Arch>(
-    layout: &Layout,
-    sorted_data: &SortedDataMap,
-    out: &mut OutputBuffer,
-) -> Result {
-    // All supported arches are 64-bit.
-    let ptr_size = 8usize;
-
-    for (out_id, items) in layout.sorted_plan.iter() {
-        if items.is_empty() {
-            continue;
-        }
-
-        for entry in items {
-            let key = (out_id, entry.file_id, entry.section.index.0 as u32);
-            let mut bytes = sorted_data
-                .get(&key)
-                .cloned()
-                .with_context(|| {
-                    format!(
-                        "Missing sorted section data for {:?} (section {})",
-                        key,
-                        layout
-                            .output_sections
-                            .display_name(entry.section.output_section_id())
-                    )
-                })?;
-
-            if entry.is_ctors_like {
-                let data_len = entry.section.size as usize;
-                ensure!(
-                    data_len.is_multiple_of(ptr_size),
-                    "ctors/dtors section has size not aligned to pointer"
-                );
-                let elems = data_len / ptr_size;
-                for i in 0..(elems / 2) {
-                    let a = i * ptr_size;
-                    let b = (elems - 1 - i) * ptr_size;
-                    let (left, right) = bytes.split_at_mut(b);
-                    let left_chunk = &mut left[a..a + ptr_size];
-                    let right_chunk = &mut right[..ptr_size];
-                    left_chunk.swap_with_slice(right_chunk);
-                }
-            }
-
-            let offset = entry.dst_file_off as usize;
-            let end = offset
-                .checked_add(bytes.len())
-                .context("Sorted section write would overflow output buffer")?;
-            ensure!(
-                end <= out.len(),
-                "Sorted section write exceeds output buffer"
-            );
-            out[offset..end].copy_from_slice(&bytes);
-        }
-    }
-
-    Ok(())
-}
-
-#[tracing::instrument(skip_all, name = "Sort .eh_frame_hdr")]
->>>>>>> 75f37a6 (sort section output use GraphResources)
 fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {
     timing_phase!("Sort .eh_frame_hdr");
     let entry_bytes = &mut eh_frame_hdr[size_of::<elf::EhFrameHdr>()..];
@@ -447,12 +348,11 @@ fn write_file<A: Arch>(
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
     layout: &Layout,
-    sorted_data: &Arc<Mutex<SortedDataMap>>,
     trace: &TraceOutput,
 ) -> Result {
     match file {
         FileLayout::Object(s) => {
-            write_object::<A>(s, buffers, table_writer, layout, sorted_data, trace)?;
+            write_object::<A>(s, buffers, table_writer, layout, trace)?;
         }
         FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, table_writer, layout)?,
         FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers, table_writer, layout)?,
@@ -1264,7 +1164,6 @@ fn write_object<A: Arch>(
     buffers: &mut OutputSectionPartMap<&mut [u8]>,
     table_writer: &mut TableWriter,
     layout: &Layout,
-    sorted_data: &Arc<Mutex<SortedDataMap>>,
     trace: &TraceOutput,
 ) -> Result {
     let _span = debug_span!("write_file", filename = %object.input).entered();
@@ -1272,16 +1171,6 @@ fn write_object<A: Arch>(
     for sec in &object.sections {
         match sec {
             SectionSlot::Loaded(sec) => {
-                if sec.sort_order.is_some() {
-                    let data =
-                        emit_sorted_section_bytes::<A>(object, layout, sec, table_writer, trace)?;
-                    let mut guard = sorted_data.lock().unwrap();
-                    guard.insert(
-                        (sec.output_section_id(), object.file_id, sec.index.0 as u32),
-                        data,
-                    );
-                    continue;
-                }
                 write_object_section::<A>(object, layout, sec, buffers, table_writer, trace)?;
             }
             SectionSlot::LoadedDebugInfo(sec) => {
@@ -1363,6 +1252,19 @@ fn write_object_section<A: Arch>(
             object.input
         )
     })?;
+    if section.is_ctors_like && !out.is_empty() {
+        const PTR_SIZE: usize = 8;
+        ensure!(
+            out.len().is_multiple_of(PTR_SIZE),
+            "ctors/dtors section has size not aligned to pointer"
+        );
+        let elems = out.len() / PTR_SIZE;
+        for i in 0..(elems / 2) {
+            let a = i * PTR_SIZE;
+            let b = (elems - 1 - i) * PTR_SIZE;
+            out[a..a + PTR_SIZE].swap_with_slice(&mut out[b..b + PTR_SIZE]);
+        }
+    }
     if section.flags.needs_got() || section.flags.needs_plt() {
         bail!("Section has GOT or PLT");
     };
@@ -1507,46 +1409,6 @@ fn write_symbols(
         }
     }
     Ok(())
-}
-
-fn emit_sorted_section_bytes<'data, A: Arch>(
-    object: &ObjectLayout<'data>,
-    layout: &Layout<'data>,
-    section: &Section,
-    table_writer: &mut TableWriter,
-    trace: &TraceOutput,
-) -> Result<Vec<u8>> {
-    let mut out = vec![0u8; section.capacity() as usize];
-    let object_section = object.object.section(section.index)?;
-    let section_size = object.object.section_size(object_section)? as usize;
-    object
-        .object
-        .copy_section_data(object_section, &mut out[..section_size])?;
-    out[section_size..].fill(0);
-
-    let relocations = object.relocations(section.index)?;
-    match relocations {
-        elf::RelocationList::Rela(rela) => apply_relocations::<A>(
-            object,
-            &mut out,
-            section,
-            &rela,
-            layout,
-            table_writer,
-            trace,
-        )?,
-        elf::RelocationList::Crel(crel_iter) => apply_relocations::<A>(
-            object,
-            &mut out,
-            section,
-            &crel_iter.into_iter().collect::<Result<Vec<_>, _>>()?,
-            layout,
-            table_writer,
-            trace,
-        )?,
-    };
-
-    Ok(out)
 }
 
 fn apply_relocations<'data, A: Arch>(
