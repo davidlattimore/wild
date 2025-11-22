@@ -223,25 +223,22 @@ interesting benchmark because it's a shared object rather than an executable.
 Before building rustc, edit or create `bootstrap.toml` in your `rust` directory to contain:
 
 ```toml
-[rust]
-# use lld from $PATH instead of rust's bundled lld
-bootstrap-override-lld = true
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-Clink-arg=--ld-path=wild"]
 ```
 
-Now we can build rustc using wild as the linker. In the following
-command, replace `$WILD_REPO_PATH` with the path to the directory containing the wild repo. You'll
-need to have already built wild with `cargo build --release`. For more information about building rustc see [building instructions on the
-rustc-dev-guide](https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html).
+Now rustc will use wild as the linker on every build. You must have wild in your PATH.
+In the following command, replace `$WILD_REPO_PATH` with the path to the directory containing the wild repo. You'll
+need to have already built wild with `cargo build --release`.
 
-Cd into the rust repo root and run:
+To build rustc just cd into the rust repo root and run:
+
 ```sh
-touch compiler/rustc_driver/src/lib.rs
-PATH=$WILD_REPO_PATH/fakes:$PATH echo "Using $(ld.lld --version) to link rustc"
-PATH=$WILD_REPO_PATH/fakes:$PATH WILD_SAVE_BASE=$HOME/tmp/rustc-link ./x build --keep-stage 1
-# verify that wild was used to link rustc
-readelf -p .comment build/x86_64-unknown-linux-gnu/stage1/bin/rustc | grep -i 'linker:'
+PATH="$WILD_REPO_PATH/target/release/wild:$PATH" WILD_SAVE_BASE=/tmp/rustc-link ./x build rustc
 ```
 
+For more information about building rustc see [building instructions on the rustc-dev-guide](https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html).
 You should now have a few subdirectories under `$HOME/tmp/rustc-link`. You can identify which one is
 `rustc_driver` by looking at the last line of the `run-with` script in each directory.
 
