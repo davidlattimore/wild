@@ -754,8 +754,8 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
     },
 ];
 
-pub(crate) fn built_in_section_ids(
-) -> impl ExactSizeIterator<Item = OutputSectionId> + DoubleEndedIterator<Item = OutputSectionId> {
+pub(crate) fn built_in_section_ids()
+-> impl ExactSizeIterator<Item = OutputSectionId> + DoubleEndedIterator<Item = OutputSectionId> {
     (0..NUM_BUILT_IN_SECTIONS).map(|n| OutputSectionId(n as u32))
 }
 
