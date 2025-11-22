@@ -48,7 +48,7 @@ On Linux:
 ```toml
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
-rustflags = ["-C", "link-arg=--ld-path=wild"]
+rustflags = ["-Clink-arg=--ld-path=wild"]
 ```
 
 On Illumos:
@@ -59,7 +59,7 @@ linker = "/usr/bin/clang"
 
 rustflags = [
     # Will silently delegate to GNU ld or Sun ld unless the absolute path to Wild is provided.
-    "-C", "link-arg=-fuse-ld=/absolute/path/to/wild"
+    "-Clink-arg=-fuse-ld=/absolute/path/to/wild"
 ]
 ```
 
