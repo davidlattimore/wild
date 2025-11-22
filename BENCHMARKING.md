@@ -236,10 +236,10 @@ PATH="$WILD_REPO_PATH/target/release:$PATH" WILD_SAVE_BASE=/tmp/rustc-link ./x b
 ```
 
 For more information about building rustc see [building instructions on the rustc-dev-guide](https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html).
-You should now have a few subdirectories under `$HOME/tmp/rustc-link`. You can identify which one is
+You should now have a few subdirectories under `/tmp/rustc-link`. You can identify which one is
 `rustc_driver` by looking at the last line of the `run-with` script in each directory.
 
-If the directory `$HOME/tmp/rustc-link` didn't get created, then most likely wild wasn't used to
+If the directory `/tmp/rustc-link` didn't get created, then most likely wild wasn't used to
 link.
 
 ### Other tools
