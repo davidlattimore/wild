@@ -3665,12 +3665,12 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |inputs| inputs.dt_flags_1(),
     ),
     DynamicEntryWriter::optional(
-        crate::elf::DT_AARCH64_VARIANT_PCS,
+        object::elf::DT_AARCH64_VARIANT_PCS,
         |inputs| inputs.has_variant_pcs && inputs.args.arch == crate::arch::Architecture::AArch64,
         |_inputs| 0,
     ),
     DynamicEntryWriter::optional(
-        crate::elf::DT_RISCV_VARIANT_CC,
+        object::elf::DT_RISCV_VARIANT_CC,
         |inputs| inputs.has_variant_pcs && inputs.args.arch == crate::arch::Architecture::RISCV64,
         |_inputs| 0,
     ),
