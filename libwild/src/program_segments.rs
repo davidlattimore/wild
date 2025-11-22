@@ -60,6 +60,10 @@ pub(crate) const PROGRAM_SEGMENT_DEFS: &[ProgramSegmentDef] = &[
         segment_flags: pf::READABLE,
     },
     ProgramSegmentDef {
+        segment_type: pt::GNU_SFRAME,
+        segment_flags: pf::READABLE,
+    },
+    ProgramSegmentDef {
         segment_type: pt::DYNAMIC,
         segment_flags: pf::READABLE.with(pf::WRITABLE),
     },
