@@ -7,7 +7,7 @@ your flake inputs. A devShell example is also shown with the flake.
 ```nix
 {
   inputs = {
-    nixpkgs.url = "github:NixOS/nix/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     wild = {
       url = "github:davidlattimore/wild";
       inputs.nixpkgs.follows = "nixpkgs";
