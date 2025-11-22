@@ -2,12 +2,11 @@
 //! referenced. Determines which sections need to be linked, sums their sizes decides what goes
 //! where in the output file then allocates addresses for each symbol.
 
-use self::elf::GNU_NOTE_NAME;
-use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use self::elf::NoteHeader;
 use self::elf::Symbol;
+use self::elf::GNU_NOTE_NAME;
+use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use self::output_section_id::InfoInputs;
-use crate::OutputKind;
 use crate::alignment;
 use crate::alignment::Alignment;
 use crate::arch::Arch;
@@ -29,10 +28,10 @@ use crate::elf::Versym;
 use crate::elf_writer;
 use crate::ensure;
 use crate::error;
+use crate::error::warning;
 use crate::error::Context;
 use crate::error::Error;
 use crate::error::Result;
-use crate::error::warning;
 use crate::file_writer;
 use crate::grouping::Group;
 use crate::input_data::FileId;
@@ -42,11 +41,11 @@ use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionKind;
 use crate::layout_rules::SortOrder;
 use crate::output_section_id;
-use crate::output_section_id::FILE_HEADER;
 use crate::output_section_id::OrderEvent;
 use crate::output_section_id::OutputOrder;
 use crate::output_section_id::OutputSectionId;
 use crate::output_section_id::OutputSections;
+use crate::output_section_id::FILE_HEADER;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::parsing::InternalSymDefInfo;
@@ -80,15 +79,12 @@ use crate::value_flags::AtomicPerSymbolFlags;
 use crate::value_flags::FlagsForSymbol as _;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
+use crate::OutputKind;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
 use itertools::Itertools;
-use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
-use linker_utils::elf::RelocationKind;
-use linker_utils::elf::SectionFlags;
-use linker_utils::elf::SectionType;
 use linker_utils::elf::pt;
 use linker_utils::elf::riscvattr::TAG_RISCV_ARCH;
 use linker_utils::elf::riscvattr::TAG_RISCV_ATOMIC_ABI;
@@ -104,6 +100,10 @@ use linker_utils::elf::shf;
 use linker_utils::elf::sht;
 use linker_utils::elf::sht::NOTE;
 use linker_utils::elf::sht::RISCV_ATTRIBUTES;
+use linker_utils::elf::RelocationKind;
+use linker_utils::elf::SectionFlags;
+use linker_utils::elf::SectionType;
+use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
 use linker_utils::relaxation::RelocationModifier;
 use object::LittleEndian;
 use object::SectionIndex;
@@ -122,6 +122,7 @@ use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
 use smallvec::SmallVec;
+use std::collections::HashSet;
 use std::ffi::CStr;
 use std::ffi::CString;
 use std::fmt::Display;
@@ -133,10 +134,10 @@ use std::mem::take;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
-use std::sync::Mutex;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
+use std::sync::Mutex;
 use zerocopy::FromBytes;
 
 pub fn compute<'data, A: Arch>(
@@ -170,7 +171,7 @@ pub fn compute<'data, A: Arch>(
     )?;
 
     let mut group_states = gc_outputs.group_states;
-    let mut sections_with_content = gc_outputs.sections_with_content;
+    let sections_with_content = gc_outputs.sections_with_content;
 
     finalise_copy_relocations(&mut group_states, &symbol_db, &atomic_per_symbol_flags)?;
     merge_dynamic_symbol_definitions(&mut group_states, &symbol_db)?;
@@ -267,7 +268,7 @@ pub fn compute<'data, A: Arch>(
         per_symbol_flags: &per_symbol_flags,
     };
 
-    let mut group_layouts = compute_symbols_and_layouts(
+    let group_layouts = compute_symbols_and_layouts(
         group_states,
         starting_mem_offsets_by_group,
         &mut per_group_res_writers,
@@ -4436,7 +4437,8 @@ impl<'data> ObjectLayoutState<'data> {
     ) -> Result {
         let part_id = unloaded.part_id;
         let header = self.object.section(section_index)?;
-        let section = Section::create(header, self, section_index, part_id, unloaded.sort_order)?;
+        let mut section =
+            Section::create(header, self, section_index, part_id, unloaded.sort_order)?;
 
         match self.relocations(section.index)? {
             RelocationList::Rela(relocations) => {

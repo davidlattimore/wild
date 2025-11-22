@@ -2,7 +2,6 @@
 //! entries are needed. We also resolve which output section, if any, each input section should be
 //! assigned to.
 
-use crate::LayoutRules;
 use crate::alignment::Alignment;
 use crate::args::Args;
 use crate::bail;
@@ -46,15 +45,17 @@ use crate::symbol_db::Visibility;
 use crate::timing_phase;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
+use crate::LayoutRules;
 use atomic_take::AtomicTake;
 use crossbeam_channel::Sender;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
-use linker_utils::elf::SectionFlags;
-use linker_utils::elf::SectionType;
 use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht::NOTE;
+use linker_utils::elf::SectionFlags;
+use linker_utils::elf::SectionType;
+use object::read::elf::Sym as _;
 use object::LittleEndian;
 use object::SectionIndex;
 use object::read::elf::Sym as _;
@@ -582,7 +583,7 @@ fn assign_section_ids<'data>(
                     non_dynamic.sections.as_mut_slice(),
                 );
                 assign_init_fini_secondaries(
-                    s,
+                    s.object,
                     non_dynamic.sections.as_mut_slice(),
                     output_sections,
                 );
@@ -592,7 +593,7 @@ fn assign_section_ids<'data>(
 }
 
 fn assign_init_fini_secondaries<'data>(
-    object: &ResolvedObject<'data>,
+    object_file: &File<'data>,
     sections: &mut [SectionSlot],
     output_sections: &mut OutputSections<'data>,
 ) {
@@ -608,10 +609,10 @@ fn assign_init_fini_secondaries<'data>(
             continue;
         }
 
-        let Ok(header) = object.object.section(SectionIndex(index)) else {
+        let Ok(header) = object_file.section(SectionIndex(index)) else {
             continue;
         };
-        let name = object.object.section_name(header).unwrap_or_default();
+        let name = object_file.section_name(header).unwrap_or_default();
         let priority = sorted_section_priority(name);
         let alignment = part_id.alignment();
         let secondary_id =

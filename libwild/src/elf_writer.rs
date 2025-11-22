@@ -41,6 +41,8 @@ use crate::file_writer::insufficient_allocation;
 use crate::file_writer::split_buffers_by_alignment;
 use crate::file_writer::split_output_by_group;
 use crate::file_writer::split_output_into_sections;
+use crate::file_writer::SizedOutput;
+use crate::layout::compute_allocations;
 use crate::layout::DynamicLayout;
 use crate::layout::EpilogueLayout;
 use crate::layout::FileLayout;
@@ -1262,7 +1264,8 @@ fn write_object_section<A: Arch>(
         for i in 0..(elems / 2) {
             let a = i * PTR_SIZE;
             let b = (elems - 1 - i) * PTR_SIZE;
-            out[a..a + PTR_SIZE].swap_with_slice(&mut out[b..b + PTR_SIZE]);
+            let (left, right) = out.split_at_mut(b);
+            left[a..a + PTR_SIZE].swap_with_slice(&mut right[..PTR_SIZE]);
         }
     }
     if section.flags.needs_got() || section.flags.needs_plt() {

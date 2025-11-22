@@ -20,8 +20,8 @@ use crate::alignment::Alignment;
 use crate::alignment::NUM_ALIGNMENTS;
 use crate::elf;
 use crate::elf::DynamicEntry;
-use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::elf::Versym;
+use crate::elf::GLOBAL_POINTER_SYMBOL_NAME;
 use crate::layout::NonAddressableCounts;
 use crate::layout::OutputRecordLayout;
 use crate::layout_rules::SectionKind;
@@ -29,25 +29,26 @@ use crate::linker_script;
 use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::part_id;
-use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::part_id::PartId;
-use crate::program_segments::PROGRAM_SEGMENT_DEFS;
+use crate::part_id::NUM_SINGLE_PART_SECTIONS;
 use crate::program_segments::ProgramSegmentDef;
 use crate::program_segments::ProgramSegmentId;
 use crate::program_segments::ProgramSegments;
+use crate::program_segments::PROGRAM_SEGMENT_DEFS;
 use crate::program_segments::STACK_SEGMENT_DEF;
 use crate::resolution::SectionSlot;
 use crate::timing_phase;
 use core::slice;
+use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
-use linker_utils::elf::SectionFlags;
-use linker_utils::elf::SectionType;
-use linker_utils::elf::SegmentType;
 use linker_utils::elf::pt;
 #[allow(clippy::wildcard_imports)]
 use linker_utils::elf::secnames::*;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht;
+use linker_utils::elf::SectionFlags;
+use linker_utils::elf::SectionType;
+use linker_utils::elf::SegmentType;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::fmt::Display;
@@ -1005,14 +1006,17 @@ impl<'data> OutputSections<'data> {
             primary: primary_id,
             priority,
         };
-        let entry = self.init_fini_secondaries.entry(key).or_insert_with(|| {
-            self.add_secondary_section(
-                primary_id,
-                alignment,
-                Some(SecondaryOrder::InitFini(priority)),
-            )
-        });
-        let section_id = *entry;
+        let section_id = match self.init_fini_secondaries.entry(key) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                let id = self.add_secondary_section(
+                    primary_id,
+                    alignment,
+                    Some(SecondaryOrder::InitFini(priority)),
+                );
+                *entry.insert(id)
+            }
+        };
         let info = self.section_infos.get_mut(section_id);
         info.min_alignment = info.min_alignment.max(alignment);
         section_id
