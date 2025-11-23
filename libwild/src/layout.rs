@@ -165,7 +165,6 @@ pub fn compute<'data, A: Arch>(
         &symbol_db,
         &atomic_per_symbol_flags,
         &output_sections,
-        &merged_strings,
         input_data,
     )?;
 
@@ -182,6 +181,7 @@ pub fn compute<'data, A: Arch>(
         &output_sections,
         &mut group_states,
         &atomic_per_symbol_flags,
+        &merged_strings,
     )?;
 
     // Dropping `symbol_info_printer` will cause it to print. So we'll either print now, or, if we
@@ -391,12 +391,13 @@ fn finalise_all_sizes<'data>(
     output_sections: &OutputSections,
     group_states: &mut [GroupState<'data>],
     per_symbol_flags: &AtomicPerSymbolFlags,
+    merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
 ) -> Result {
     timing_phase!("Finalise per-object sizes");
 
     group_states.par_iter_mut().try_for_each(|state| {
         verbose_timing_phase!("Finalise sizes for group");
-        state.finalise_sizes(symbol_db, output_sections, per_symbol_flags)
+        state.finalise_sizes(symbol_db, output_sections, per_symbol_flags, merged_strings)
     })
 }
 
@@ -1675,8 +1676,6 @@ struct GraphResources<'data, 'scope> {
     /// something to refer to in the symtab.
     sections_with_content: OutputSectionMap<AtomicBool>,
 
-    merged_strings: &'scope OutputSectionMap<MergedStringsSection<'data>>,
-
     has_static_tls: AtomicBool,
 
     has_variant_pcs: AtomicBool,
@@ -2356,7 +2355,6 @@ fn find_required_sections<'data, A: Arch>(
     symbol_db: &SymbolDb<'data>,
     per_symbol_flags: &AtomicPerSymbolFlags,
     output_sections: &OutputSections<'data>,
-    merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
     input_data: &InputData<'data>,
 ) -> Result<GcOutputs<'data>> {
     timing_phase!("Find required sections");
@@ -2378,7 +2376,6 @@ fn find_required_sections<'data, A: Arch>(
         done: AtomicBool::new(false),
         per_symbol_flags,
         sections_with_content: output_sections.new_section_map(),
-        merged_strings,
         has_static_tls: AtomicBool::new(false),
         has_variant_pcs: AtomicBool::new(false),
         uses_tlsld: AtomicBool::new(false),
@@ -2547,6 +2544,7 @@ impl<'data> GroupState<'data> {
         symbol_db: &SymbolDb<'data>,
         output_sections: &OutputSections,
         per_symbol_flags: &AtomicPerSymbolFlags,
+        merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
     ) -> Result {
         for file_state in &mut self.files {
             file_state.finalise_sizes(
@@ -2554,6 +2552,7 @@ impl<'data> GroupState<'data> {
                 symbol_db,
                 output_sections,
                 per_symbol_flags,
+                merged_strings,
             )?;
         }
 
@@ -2738,6 +2737,7 @@ impl<'data> FileLayoutState<'data> {
         symbol_db: &SymbolDb<'data>,
         output_sections: &OutputSections,
         per_symbol_flags: &AtomicPerSymbolFlags,
+        merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
     ) -> Result {
         match self {
             FileLayoutState::Object(s) => {
@@ -2749,6 +2749,7 @@ impl<'data> FileLayoutState<'data> {
                 s.finalise_symbol_sizes(common, symbol_db, per_symbol_flags)?;
             }
             FileLayoutState::Prelude(s) => {
+                PreludeLayoutState::finalise_sizes(common, merged_strings);
                 s.finalise_symbol_sizes(common, symbol_db, per_symbol_flags)?;
             }
             FileLayoutState::Epilogue(s) => {
@@ -3311,15 +3312,6 @@ impl<'data> PreludeLayoutState<'data> {
         resources: &GraphResources,
         queue: &mut LocalWorkQueue,
     ) -> Result {
-        resources.merged_strings.for_each(|section_id, merged| {
-            if merged.len() > 0 {
-                common.allocate(
-                    section_id.part_id_with_alignment(alignment::MIN),
-                    merged.len(),
-                );
-            }
-        });
-
         // Allocate space to store the identity of the linker in the .comment section.
         common.allocate(
             output_section_id::COMMENT.part_id_with_alignment(alignment::MIN),
@@ -3437,6 +3429,20 @@ impl<'data> PreludeLayoutState<'data> {
         if args.should_write_eh_frame_hdr {
             common.allocate(part_id::EH_FRAME_HDR, size_of::<elf::EhFrameHdr>() as u64);
         }
+    }
+
+    fn finalise_sizes(
+        common: &mut CommonGroupState<'data>,
+        merged_strings: &OutputSectionMap<MergedStringsSection<'data>>,
+    ) {
+        merged_strings.for_each(|section_id, merged| {
+            if merged.len() > 0 {
+                common.allocate(
+                    section_id.part_id_with_alignment(alignment::MIN),
+                    merged.len(),
+                );
+            }
+        });
     }
 
     /// This function is where we determine sizes that depend on other sizes. For example, the size

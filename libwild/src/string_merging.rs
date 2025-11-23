@@ -273,6 +273,8 @@ fn group_merge_string_sections_by_output<'data>(
     resolved: &mut [ResolvedGroup<'data>],
     output_sections: &OutputSections,
 ) -> Result<OutputSectionMap<Vec<StringMergeInputSection<'data>>>> {
+    verbose_timing_phase!("Find merge sectionns");
+
     let mut input_sections = output_sections.new_section_map::<Vec<StringMergeInputSection>>();
 
     let mut starting_offsets = output_sections.new_section_map::<LinearInputOffset>();
