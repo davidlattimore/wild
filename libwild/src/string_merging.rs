@@ -1,6 +1,9 @@
 //! Input sections that are marked as string-merge sections need special processing. Our algorithm
 //! is somewhat complicated in an attempt to get good performance. A rough outline of our algorithm
-//! is here with more details throughout the code.
+//! is here with more details throughout the code. Contrary to what the name might suggest, this
+//! algorithm also supports merging non-string sections. The only difference between handling string
+//! and non-string sections is we split the former into multiple slices at the null terminators, and
+//! treat the latter as a single slice.
 //!
 //! We group input sections by the output section into which they are to be placed. We then process
 //! each output section one at a time.
@@ -10,11 +13,11 @@
 //!
 //! With multiple threads, we alternate between two phases:
 //!
-//! Phase 1: We split input sections by looking for null terminators, then we hash the resulting
-//! string and store it in a bucket based on its hash.
+//! Phase 1: We take the whole input sections or split string sections by looking for null
+//! terminators, then we hash the resulting slices and store it in a bucket based on its hash.
 //!
-//! Phase 2: We take the outputs of phase 1 and insert the strings into a hashmap for the bucket
-//! that the string is in. As we do this, we compute bucket-relative offsets for each string and
+//! Phase 2: We take the outputs of phase 1 and insert the slices into a hashmap for the bucket
+//! that the slice is in. As we do this, we compute bucket-relative offsets for each string and
 //! store these into entries in a map that we set up in phase 1.
 //!
 //! Threads can switch between phases multiple times until all work for the section is complete. At
@@ -38,11 +41,14 @@ use crate::resolution::ResolvedFile;
 use crate::resolution::ResolvedGroup;
 use crate::resolution::SectionSlot;
 use crate::timing_phase;
+use crate::verbose_timing_phase;
 use crossbeam_channel::Sender;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
 use hashbrown::HashMap;
 use itertools::Itertools as _;
+use linker_utils::elf;
+use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
 use rayon::iter::ParallelBridge as _;
@@ -101,6 +107,7 @@ impl StringMergeSectionSlot {
 pub(crate) struct StringMergeSectionExtra<'data> {
     pub(crate) index: object::SectionIndex,
     pub(crate) section_data: &'data [u8],
+    pub(crate) section_flags: elf::SectionFlags,
 }
 
 /// An input offset. We pretend that we've placed all input sections for a given output section one
@@ -122,6 +129,8 @@ struct StringMergeInputSection<'data> {
 
     /// The sum of the sizes of the input sections prior to this one with the same `part_id`.
     start_input_offset: LinearInputOffset,
+
+    is_string: bool,
 }
 
 /// A string from a string-merge section. Includes the null terminator.
@@ -214,6 +223,18 @@ pub(crate) fn merge_strings<'data>(
     let reuse_pool = ReusePool::new(MERGE_STRING_BUCKETS * split_parallelism);
 
     input_sections_by_output.try_for_each(|section_id, input_sections| {
+        // We later create ArrayQueues with capacity for all input sections and ArrayQueue panics if
+        // asked for zero capacity. Also, spawning tasks and all the other work we do here would be
+        // a waste if we have no input sections.
+        if input_sections.is_empty() {
+            return Ok(());
+        }
+
+        verbose_timing_phase!(
+            "Merge section",
+            section_name = output_sections.display_name(section_id)
+        );
+
         let output_section = output_string_sections.get_mut(section_id);
         output_section.add_input_sections(input_sections, &reuse_pool, args)?;
 
@@ -279,6 +300,7 @@ fn group_merge_string_sections_by_output<'data>(
                     .push(StringMergeInputSection {
                         section_data: extra.section_data,
                         start_input_offset: *starting_offset,
+                        is_string: extra.section_flags.contains(shf::STRINGS),
                     });
 
                 *starting_offset = *starting_offset
@@ -318,8 +340,8 @@ fn process_input_section<'data, 'offsets>(
 ) -> Result {
     let mut input_offset = input_section.start_input_offset;
     let mut remaining = input_section.section_data;
-    while !remaining.is_empty() {
-        let string = MergeString::take_hashed(&mut remaining)?;
+
+    let mut insert_data = |data: PreHashed<MergeString<'data>>| {
         // Insert 0, then we'll update it later once we know the output offset. We do the
         // initial insertion now since insertions need to happen in sequential order, whereas by
         // the time we know the output offset, we're processing just a single bucket.
@@ -327,11 +349,24 @@ fn process_input_section<'data, 'offsets>(
             Ok(offset_in_shard) => OffsetOut::InShard(offset_in_shard),
             Err(_) => OffsetOut::Overflow(input_offset),
         };
-        buckets[(string.hash() as usize) % MERGE_STRING_BUCKETS].push(StringToMerge {
-            string,
+        buckets[(data.hash() as usize) % MERGE_STRING_BUCKETS].push(StringToMerge {
+            string: data,
             offset_out: offset_key,
         });
-        input_offset = input_offset + string.bytes.len() as u64;
+        input_offset = input_offset + data.bytes.len() as u64;
+    };
+
+    // Non-string section is just a single slice.
+    if !input_section.is_string {
+        let section_data = MergeString::take_hashed(&mut remaining);
+        insert_data(section_data);
+        return Ok(());
+    }
+
+    // String section, so split at null terminators.
+    while !remaining.is_empty() {
+        let string = MergeString::take_string_hashed(&mut remaining)?;
+        insert_data(string);
     }
     Ok(())
 }
@@ -351,13 +386,6 @@ impl<'data> MergedStringsSection<'data> {
         reuse_pool: &ReusePool,
         args: &Args,
     ) -> Result {
-        // We later create ArrayQueues with capacity for all input sections and ArrayQueue panics if
-        // asked for zero capacity. Also, spawning tasks and all the other work we do here would be
-        // a waste if we have no input sections.
-        if input_sections.is_empty() {
-            return Ok(());
-        }
-
         let mut resources =
             create_split_resources(&mut self.string_offsets, input_sections, reuse_pool, args);
 
@@ -408,14 +436,20 @@ impl<'data> MergedStringsSection<'data> {
             return Err(error);
         }
 
-        // Handle any offsets that didn't fit in their respective blocks in the offset map.
-        let overflow = core::mem::take(&mut resources.overflowed_offsets);
-        overflow
-            .into_iter()
-            .flat_map(|cell| cell.into_inner())
-            .for_each(|o| {
-                self.overflowed_string_offsets.insert(o.input, o.output);
-            });
+        {
+            verbose_timing_phase!("Handle overflows");
+
+            // Handle any offsets that didn't fit in their respective blocks in the offset map.
+            let overflow = core::mem::take(&mut resources.overflowed_offsets);
+            overflow
+                .into_iter()
+                .flat_map(|cell| cell.into_inner())
+                .for_each(|o| {
+                    self.overflowed_string_offsets.insert(o.input, o.output);
+                });
+        }
+
+        verbose_timing_phase!("Finalise merged section");
 
         // Move our buckets out of `resources` and convert it to a regular Vec.
         let mut buckets = resources
@@ -706,6 +740,16 @@ fn process_input_section_group<'data, 'offsets, 'scope>(
     work_send: &Arc<Sender<WorkItem<'data>>>,
     reservation: &mut PoolReservation,
 ) -> Result {
+    verbose_timing_phase!(
+        "Split and hash",
+        num_sections = group_in.sections.len(),
+        num_bytes = group_in
+            .sections
+            .iter()
+            .map(|s| s.section_data.len())
+            .sum::<usize>()
+    );
+
     let mut buckets: [Vec<StringToMerge<'data, 'offsets>>; MERGE_STRING_BUCKETS] = [();
         MERGE_STRING_BUCKETS]
         .map(|()| resources.reuse_pool.take_string_merge_vec(reservation));
@@ -736,6 +780,8 @@ fn work_with_bucket<'data>(
     mut bucket: Box<MergeStringsSectionBucket<'data>>,
     work_send: &Arc<Sender<WorkItem<'data>>>,
 ) -> Result {
+    verbose_timing_phase!("Bucket strings");
+
     let mut overflowed_offsets = resources.overflowed_offsets.get_or_default().borrow_mut();
 
     while bucket.next_input_group_index < resources.num_input_groups {
@@ -861,7 +907,9 @@ impl<'data> MergeStringsSectionBucket<'data> {
 impl<'data> MergeString<'data> {
     /// Takes from `source` up to the next null terminator. Returns a prehashed reference to what
     /// was taken.
-    pub(crate) fn take_hashed(source: &mut &'data [u8]) -> Result<PreHashed<MergeString<'data>>> {
+    pub(crate) fn take_string_hashed(
+        source: &mut &'data [u8],
+    ) -> Result<PreHashed<MergeString<'data>>> {
         let len = memchr::memchr(0, source)
             .map(|i| i + 1)
             .context("String in merge-string section is not null-terminated")?;
@@ -869,6 +917,13 @@ impl<'data> MergeString<'data> {
         let hash = crate::hash::hash_bytes(bytes);
         *source = rest;
         Ok(PreHashed::new(MergeString { bytes }, hash))
+    }
+
+    /// Takes the whole `source`. Returns a prehashed reference to what was taken.
+    pub(crate) fn take_hashed(source: &mut &'data [u8]) -> PreHashed<MergeString<'data>> {
+        let bytes = take(source);
+        let hash = crate::hash::hash_bytes(bytes);
+        PreHashed::new(MergeString { bytes }, hash)
     }
 }
 

@@ -1,6 +1,6 @@
+use crate::OutputKind;
 use crate::args::Args;
 use crate::args::FileWriteMode;
-use crate::args::OutputKind;
 use crate::args::WRITE_VERIFY_ALLOCATIONS_ENV;
 use crate::error;
 use crate::error::Context as _;
@@ -12,6 +12,8 @@ use crate::output_section_map::OutputSectionMap;
 use crate::output_section_part_map::OutputSectionPartMap;
 use crate::output_trace::TraceOutput;
 use crate::timing_phase;
+use crate::verbose_timing_phase;
+use anyhow::anyhow;
 use memmap2::MmapOptions;
 use std::io::ErrorKind;
 use std::io::Write;
@@ -108,10 +110,10 @@ struct SectionAllocation {
 }
 
 impl Output {
-    pub(crate) fn new(args: &Args) -> Output {
+    pub(crate) fn new(args: &Args, output_kind: OutputKind) -> Output {
         let file_write_mode = args
             .file_write_mode
-            .unwrap_or_else(|| default_file_write_mode(args));
+            .unwrap_or_else(|| default_file_write_mode(args, output_kind));
 
         let creator = if args.available_threads.get() > 1 {
             let (sized_output_sender, sized_output_recv) = std::sync::mpsc::channel();
@@ -148,6 +150,8 @@ impl Output {
                 let output_config = self.config;
 
                 rayon::spawn(move || {
+                    verbose_timing_phase!("Create output file");
+
                     if output_config.file_write_mode == FileWriteMode::UnlinkAndReplace {
                         // Rename the old output file so that we can create a new file in its place.
                         // Reusing the existing file would also be an option, but that wouldn't
@@ -212,7 +216,7 @@ impl Output {
         // While we have the output file mmapped with write permission, the file will be locked and
         // unusable, so we can't really say that we've finished writing it until we've unmapped it.
         {
-            let _span = tracing::info_span!("Unmap output file").entered();
+            timing_phase!("Unmap output file");
             drop(sized_output);
         }
 
@@ -226,8 +230,8 @@ impl Output {
 }
 
 /// Returns the file write mode that we should use to write to the specified path.
-fn default_file_write_mode(args: &Args) -> FileWriteMode {
-    if matches!(args.output_kind(), OutputKind::SharedObject) {
+fn default_file_write_mode(args: &Args, output_kind: OutputKind) -> FileWriteMode {
+    if output_kind.is_shared_object() {
         return FileWriteMode::UnlinkAndReplace;
     }
 
@@ -407,6 +411,16 @@ pub(crate) fn split_buffers_by_alignment<'out>(
             section_buffers
                 .get_mut(part_id.output_section_id())
                 .split_off_mut(..rec.file_size)
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Failed to take {} bytes for section {} with alignment {}",
+                        rec.file_size,
+                        layout
+                            .output_sections
+                            .section_debug(part_id.output_section_id()),
+                        part_id.alignment(),
+                    )
+                })
                 .unwrap()
         },
     )

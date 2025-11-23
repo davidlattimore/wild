@@ -12,6 +12,7 @@ use crate::symbol::UnversionedSymbolName;
 use crate::symbol_db::SymbolId;
 use crate::symbol_db::SymbolIdRange;
 use crate::timing_phase;
+use object::LittleEndian;
 use std::fmt::Display;
 
 #[derive(Debug)]
@@ -45,6 +46,17 @@ pub(crate) enum SequencedInput<'data> {
 }
 
 impl Group<'_> {
+    // This is used when the verbose-ttttiming feature is enabled.
+    #[allow(dead_code)]
+    pub(crate) fn group_id(&self) -> usize {
+        match self {
+            Group::Prelude(_) => 0,
+            Group::Objects(objects) => objects[0].file_id.group(),
+            Group::LinkerScripts(scripts) => scripts[0].file_id.group(),
+            Group::Epilogue(epilogue) => epilogue.file_id.group(),
+        }
+    }
+
     pub(crate) fn start_symbol_id(&self) -> SymbolId {
         self.symbol_id_range().start()
     }
@@ -135,7 +147,7 @@ pub(crate) fn group_files<'data>(
         }
     }
 
-    let linker_scripts = parsed_inputs
+    let linker_scripts: Vec<SequencedLinkerScript<'_>> = parsed_inputs
         .linker_scripts
         .into_iter()
         .enumerate()
@@ -151,7 +163,9 @@ pub(crate) fn group_files<'data>(
         })
         .collect();
 
-    groups.push(Group::LinkerScripts(linker_scripts));
+    if !linker_scripts.is_empty() {
+        groups.push(Group::LinkerScripts(linker_scripts));
+    }
 
     groups.push(Group::Epilogue(Epilogue {
         file_id: FileId::new(groups.len() as u32, 0),
@@ -205,6 +219,45 @@ impl<'data> SequencedInputObject<'data> {
         Ok(UnversionedSymbolName::new(
             self.parsed.object.symbol_name(symbol)?,
         ))
+    }
+
+    /// Get the version of a symbol. Only intended for diagnostic purposes since it's potentially
+    /// quite slow.
+    pub(crate) fn symbol_version_debug(
+        &self,
+        symbol_id: crate::symbol_db::SymbolId,
+    ) -> Option<String> {
+        let object = &self.parsed.object;
+        let endian = LittleEndian;
+        let local_index = symbol_id.to_input(self.symbol_id_range);
+
+        let versym = object.versym.get(local_index.0)?;
+        let versym = versym.0.get(endian);
+        let is_default = versym & object::elf::VERSYM_HIDDEN == 0;
+        let symbol_version_index = versym & object::elf::VERSYM_VERSION;
+
+        let (verdefs, string_table_index) = self.parsed.object.verdef.clone()?;
+        let strings = object
+            .sections
+            .strings(endian, object.data, string_table_index)
+            .ok()?;
+
+        for r in verdefs.clone() {
+            let (verdef, mut aux_iterator) = r.ok()?;
+            // Every VERDEF entry should have at least one AUX entry. We currently only care
+            // about the first one.
+            let aux = aux_iterator.next().ok()??;
+            let version_index = verdef.vd_ndx.get(endian);
+            if version_index == symbol_version_index {
+                return Some(format!(
+                    "{}{}",
+                    if is_default { "@@" } else { "@" },
+                    String::from_utf8_lossy(aux.name(endian, strings).ok()?)
+                ));
+            }
+        }
+
+        None
     }
 
     /// Returns whether this input should be skipped if there are no non-weak references to symbols

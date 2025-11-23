@@ -22,6 +22,7 @@ pub(crate) mod input_data;
 pub(crate) mod layout;
 pub(crate) mod layout_rules;
 pub(crate) mod linker_script;
+pub(crate) mod output_kind;
 pub(crate) mod output_section_id;
 pub(crate) mod output_section_map;
 pub(crate) mod output_section_part_map;
@@ -60,7 +61,9 @@ pub(crate) mod version_script;
 pub(crate) mod x86_64;
 
 use crate::args::ActivatedArgs;
+use crate::error::Result;
 use crate::identity::linker_identity;
+use crate::output_kind::OutputKind;
 pub use args::Args;
 use colosseum::sync::Arena;
 use crossbeam_utils::atomic::AtomicCell;
@@ -70,7 +73,6 @@ use input_data::InputFile;
 use input_data::InputLinkerScript;
 use layout_rules::LayoutRules;
 use output_section_id::OutputSections;
-use std::sync::atomic::Ordering;
 pub use subprocess::run_in_subprocess;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt;
@@ -87,6 +89,8 @@ pub fn run(args: Args) -> error::Result {
     let args = args.activate_thread_pool()?;
     let linker = Linker::new();
     linker.run(&args)?;
+    drop(linker);
+    timing::finalise_perfetto_trace()?;
     Ok(())
 }
 
@@ -123,10 +127,12 @@ pub struct Linker {
 
     /// We'll fill this in when we're done linking and start shutting down. Once this is dropped,
     /// that signals the end of shutdown for the purposes of timing measurement.
-    shutdown_scope: AtomicCell<Option<Box<tracing::span::EnteredSpan>>>,
+    #[allow(dyn_drop)]
+    shutdown_scope: AtomicCell<Vec<Box<dyn Drop>>>,
 
     /// A timing scope that exists for the whole time we're linking.
-    _link_scope: tracing::span::EnteredSpan,
+    #[allow(dyn_drop)]
+    _link_scope: Vec<Box<dyn Drop>>,
 }
 
 pub struct LinkerOutput<'layout_inputs> {
@@ -139,11 +145,13 @@ pub struct LinkerOutput<'layout_inputs> {
 impl Linker {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
+        let (guard_a, guard_b) = timing_guard!("Link");
+
         Self {
             inputs: Arena::new(),
             herd: Default::default(),
             shutdown_scope: Default::default(),
-            _link_scope: tracing::info_span!("Link").entered(),
+            _link_scope: vec![Box::new(guard_a), Box::new(guard_b)],
         }
     }
 
@@ -173,13 +181,15 @@ impl Linker {
         &'layout_inputs self,
         args: &'layout_inputs Args,
     ) -> error::Result<LinkerOutput<'layout_inputs>> {
-        let output = file_writer::Output::new(args);
-
         let input_data = input_data::InputData::from_args(args, &self.inputs)?;
+
+        let output_kind = OutputKind::new(args, &input_data);
+
+        let output = file_writer::Output::new(args, output_kind);
 
         // Note, we propagate errors from `link_with_input_data` after we've checked if any files
         // changed. We want inputs-changed errors to take precedence over all other errors.
-        let result = self.link_with_input_data::<A>(output, &input_data, args);
+        let result = self.link_with_input_data::<A>(output, &input_data, args, output_kind);
 
         input_data.verify_inputs_unchanged()?;
 
@@ -191,27 +201,15 @@ impl Linker {
         mut output: file_writer::Output,
         input_data: &InputData<'data>,
         args: &'data Args,
+        output_kind: OutputKind,
     ) -> error::Result<LinkerOutput<'data>> {
-        let mut output_sections = OutputSections::with_base_address(args.base_address());
-
-        // When attempting to create static executable, but DSO is added as an input we need to
-        // proceed with dynamic executable.
-        // This is in line with LLD, but GNU ld goes a step further: if no DSO ends up loaded, it'll
-        // go back to static one. This would add a lot of complexity with the current design, so we
-        // just stick to LLD behaviour.
-        if args.output_kind().is_static_executable()
-            && input_data
-                .inputs
-                .iter()
-                .any(|input| input.kind == crate::file_kind::FileKind::ElfDynamic)
-        {
-            args.is_dynamic_executable.store(true, Ordering::Relaxed);
-        }
+        let mut output_sections = OutputSections::with_base_address(output_kind.base_address());
 
         let (linker_scripts, layout_rules) =
             parsing::process_linker_scripts(&input_data.linker_scripts, &mut output_sections)?;
 
-        let parsed_inputs = parsing::parse_input_files(&input_data.inputs, linker_scripts, args)?;
+        let parsed_inputs =
+            parsing::parse_input_files(&input_data.inputs, linker_scripts, args, output_kind)?;
 
         let groups = grouping::group_files(parsed_inputs, args, &self.herd);
 
@@ -222,6 +220,7 @@ impl Linker {
             &input_data.linker_scripts,
             &self.herd,
             input_data.export_list_data,
+            output_kind,
         )?;
 
         let resolved = resolution::resolve_symbols_and_sections(
@@ -245,9 +244,8 @@ impl Linker {
         diff::maybe_diff()?;
 
         // We've finished linking. We consider everything from this point onwards as shutdown.
-        let shutdown_span = tracing::info_span!("Shutdown");
-        self.shutdown_scope
-            .store(Some(Box::new(shutdown_span.entered())));
+        let (g1, g2) = timing_guard!("Shutdown");
+        self.shutdown_scope.store(vec![Box::new(g1), Box::new(g2)]);
 
         Ok(LinkerOutput {
             layout: Some(layout),
@@ -263,7 +261,7 @@ impl Default for Linker {
 
 impl Drop for Linker {
     fn drop(&mut self) {
-        let _span = tracing::info_span!("Drop inputs").entered();
+        timing_phase!("Drop inputs");
         self.inputs = Arena::new();
         self.herd = Default::default();
     }
@@ -271,7 +269,13 @@ impl Drop for Linker {
 
 impl Drop for LinkerOutput<'_> {
     fn drop(&mut self) {
-        let _span = tracing::info_span!("Drop layout").entered();
+        timing_phase!("Drop layout");
         self.layout.take();
     }
+}
+
+/// Possibly initialise timing if a timing-related environment variable is active and it was enabled
+/// in the build, otherwise, do nothing. See `BENCHMARKING.md` for details.
+pub fn init_timing() -> Result {
+    timing::setup()
 }

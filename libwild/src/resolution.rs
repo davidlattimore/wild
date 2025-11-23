@@ -43,6 +43,7 @@ use crate::symbol_db::Visibility;
 use crate::timing_phase;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
+use crate::verbose_timing_phase;
 use atomic_take::AtomicTake;
 use crossbeam_channel::Sender;
 use crossbeam_queue::ArrayQueue;
@@ -294,6 +295,8 @@ fn resolve_sections<'data>(
     groups.par_iter_mut().try_for_each_init(
         || herd.get(),
         |allocator, group| -> Result {
+            verbose_timing_phase!("Resolve group sections");
+
             for file in &mut group.files {
                 let ResolvedFile::Object(obj) = file else {
                     continue;
@@ -608,9 +611,13 @@ fn process_object<'scope, 'data: 'scope, 'definitions>(
 
     match &resources.symbol_db.groups[file_id.group()] {
         Group::Prelude(prelude) => {
+            verbose_timing_phase!("Resolve prelude symbols");
+
             load_prelude(prelude, definitions_out, resources, &work_item.work_sender);
         }
         Group::Objects(parsed_input_objects) => {
+            verbose_timing_phase!("Resolve object symbols");
+
             let obj = &parsed_input_objects[file_id.file()];
 
             let res = resolve_symbols(
@@ -749,7 +756,7 @@ fn canonicalise_undefined_symbols<'data>(
                         // behaviour differs in this case. GNU ld makes the symbol non-interposable,
                         // while lld makes it dynamic. We match GNU ld in this case.
                         if symbol_id.is_none() {
-                            let output_kind = symbol_db.args.output_kind();
+                            let output_kind = symbol_db.output_kind;
                             let visibility = symbol_db.input_symbol_visibility(undefined.symbol_id);
 
                             if visibility == Visibility::Default
@@ -871,8 +878,8 @@ fn resolve_sections_for_object<'data>(
             let section_flags = SectionFlags::from_header(input_section);
             let raw_alignment = obj.object.section_alignment(input_section)?;
             let alignment = Alignment::new(raw_alignment.max(1))?;
-            let should_merge_strings =
-                part_id::should_merge_strings(section_flags, raw_alignment, args);
+            let should_merge_sections =
+                part_id::should_merge_sections(section_flags, raw_alignment, args);
 
             let mut unloaded_section;
             let mut is_debug_info = false;
@@ -922,10 +929,11 @@ fn resolve_sections_for_object<'data>(
                 custom_sections.push(custom_section);
             }
 
-            let slot = if should_merge_strings {
+            let slot = if should_merge_sections {
                 let section_data =
                     obj.object
                         .section_data(input_section, allocator, loaded_metrics)?;
+                let section_flags = SectionFlags::from_header(input_section);
 
                 if section_data.is_empty() {
                     SectionSlot::Discard
@@ -933,6 +941,7 @@ fn resolve_sections_for_object<'data>(
                     string_merge_extras.push(StringMergeSectionExtra {
                         index: input_section_index,
                         section_data,
+                        section_flags,
                     });
 
                     SectionSlot::MergeStrings(StringMergeSectionSlot::new(unloaded_section.part_id))

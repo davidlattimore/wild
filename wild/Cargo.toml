@@ -23,7 +23,6 @@ dhat = { workspace = true, optional = true }
 
 [dev-dependencies]
 ar = { workspace = true }
-fd-lock = { workspace = true }
 itertools = { workspace = true }
 linker-diff = { path = "../linker-diff" }
 object = { workspace = true }
@@ -40,6 +39,8 @@ which = { workspace = true }
 default = ["fork"]
 
 fork = ["libwild/fork"]
+
+perfetto = ["libwild/perfetto"]
 
 # external tests
 external_tests = ["mold_tests"]

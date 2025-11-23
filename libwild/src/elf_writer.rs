@@ -2,12 +2,12 @@ use self::elf::GNU_NOTE_PROPERTY_ENTRY_SIZE;
 use self::elf::NoteHeader;
 use self::elf::NoteProperty;
 use self::elf::get_page_mask;
+use crate::OutputKind;
 use crate::alignment;
 use crate::arch::Arch;
 use crate::arch::Relaxation as _;
 use crate::args::Args;
 use crate::args::BuildIdOption;
-use crate::args::OutputKind;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf;
@@ -76,6 +76,7 @@ use crate::symbol_db::SymbolId;
 use crate::timing_phase;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
+use crate::verbose_timing_phase;
 use hashbrown::HashMap;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_ATTRIBUTE_VENDOR_NAME;
@@ -103,6 +104,7 @@ use object::LittleEndian;
 use object::SymbolIndex;
 use object::elf::NT_GNU_BUILD_ID;
 use object::elf::NT_GNU_PROPERTY_TYPE_0;
+use object::elf::STT_TLS;
 use object::from_bytes_mut;
 use object::read::elf::Crel;
 use object::read::elf::Sym as _;
@@ -121,7 +123,6 @@ use std::ops::Range;
 use std::ops::Sub;
 use std::sync::atomic::Ordering::Relaxed;
 use tracing::debug_span;
-use tracing::instrument;
 use uuid::Uuid;
 use zerocopy::FromBytes;
 use zerocopy::transmute_mut;
@@ -178,8 +179,8 @@ fn write_gnu_build_id_note(
     Ok(())
 }
 
-#[instrument(skip_all, name = "Compute build ID")]
 fn compute_hash(sized_output: &SizedOutput) -> blake3::Hash {
+    timing_phase!("Compute build ID");
     blake3::Hasher::new()
         .update_rayon(&sized_output.out)
         .finalize()
@@ -194,6 +195,8 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
     groups_and_buffers
         .into_par_iter()
         .try_for_each(|(group, mut buffers)| -> Result {
+            verbose_timing_phase!("Write group");
+
             let mut table_writer = TableWriter::from_layout(
                 layout,
                 group.dynstr_start_offset,
@@ -296,8 +299,8 @@ fn populate_file_header<A: Arch>(
     header_info: &HeaderInfo,
     header: &mut FileHeader,
 ) -> Result {
-    let args = layout.args();
-    let ty = if args.output_kind().is_relocatable() {
+    let output_kind = layout.symbol_db.output_kind;
+    let ty = if output_kind.is_relocatable() {
         object::elf::ET_DYN
     } else {
         object::elf::ET_EXEC
@@ -495,7 +498,7 @@ impl<'layout, 'out> TableWriter<'layout, 'out> {
             SymbolTableWriter::new(strtab_start_offset, buffers, &layout.output_sections);
 
         Self::new(
-            layout.args().output_kind(),
+            layout.symbol_db.output_kind,
             layout.tls_start_address()..layout.tls_end_address(),
             buffers,
             dynsym_writer,
@@ -1160,6 +1163,8 @@ fn write_object<A: Arch>(
     layout: &Layout,
     trace: &TraceOutput,
 ) -> Result {
+    verbose_timing_phase!("Write object", file_id = object.file_id.as_u32());
+
     let _span = debug_span!("write_file", filename = %object.input).entered();
     let _file_span = layout.args().trace_span_for_file(object.file_id);
     for sec in &object.sections {
@@ -1356,7 +1361,11 @@ fn write_symbols(
                         ),
                     }
                 } else if sym.is_common(e) {
-                    output_section_id::BSS
+                    if sym.st_type() == STT_TLS {
+                        output_section_id::TBSS
+                    } else {
+                        output_section_id::BSS
+                    }
                 } else if sym.is_absolute(e) {
                     symbol_writer
                         .copy_absolute_symbol(sym, info.name)
@@ -1947,7 +1956,7 @@ fn apply_relocation<'data, A: Arch>(
     let flags = layout.flags_for_symbol(local_symbol_id);
     let mut next_modifier = RelocationModifier::Normal;
     let rel_info;
-    let output_kind = layout.args().output_kind();
+    let output_kind = layout.symbol_db.output_kind;
 
     let relaxation = A::Relaxation::new(
         r_type,
@@ -2439,6 +2448,8 @@ fn write_prelude<A: Arch>(
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
+    verbose_timing_phase!("Write prelude");
+
     let header: &mut FileHeader = from_bytes_mut(buffers.get_mut(part_id::FILE_HEADER))
         .map_err(|_| error!("Invalid file header allocation"))?
         .0;
@@ -2478,7 +2489,7 @@ fn write_prelude<A: Arch>(
     }
 
     // Define the null dynamic symbol.
-    if layout.args().needs_dynsym() {
+    if layout.symbol_db.output_kind.needs_dynsym() {
         table_writer
             .dynsym_writer
             .define_symbol(false, 0, 0, 0, &[])?;
@@ -2536,7 +2547,7 @@ fn write_plt_got_entries<A: Arch>(
     if let Some(got_address) = prelude.tlsld_got_entry {
         let mut raw_value = 0;
 
-        if layout.args().output_kind().is_executable() {
+        if layout.symbol_db.output_kind.is_executable() {
             table_writer.process_resolution::<A>(
                 Some(layout),
                 &Resolution {
@@ -2699,9 +2710,10 @@ fn write_epilogue_dynamic_entries(
         args: layout.args(),
         has_static_tls: layout.has_static_tls,
         has_variant_pcs: layout.has_variant_pcs,
-        section_layouts: &layout.section_layouts,
+        section_layouts: &layout.merged_section_layouts,
         section_part_layouts: &layout.section_part_layouts,
         non_addressable_counts: layout.non_addressable_counts,
+        output_kind: layout.symbol_db.output_kind,
     };
 
     for writer in EPILOGUE_DYNAMIC_ENTRY_WRITERS {
@@ -2724,6 +2736,8 @@ fn write_linker_script_state<A: Arch>(
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
+    verbose_timing_phase!("Write linker script state");
+
     write_internal_symbols(
         &script.internal_symbols,
         layout,
@@ -2741,6 +2755,8 @@ fn write_epilogue<A: Arch>(
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
+    verbose_timing_phase!("Write epilogue");
+
     let mut epilogue_offsets = EpilogueOffsets::default();
 
     write_internal_symbols_plt_got_entries::<A>(&epilogue.internal_symbols, table_writer, layout)?;
@@ -2752,7 +2768,7 @@ fn write_epilogue<A: Arch>(
             &mut table_writer.debug_symbol_writer,
         )?;
     }
-    if layout.args().needs_dynamic() {
+    if layout.symbol_db.output_kind.needs_dynamic() {
         write_epilogue_dynamic_entries(layout, table_writer, &mut epilogue_offsets)?;
     }
     write_sysv_hash_table(epilogue, buffers)?;
@@ -3585,7 +3601,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
         |inputs| {
             // Not sure why, but GNU ld seems to emit this for executables but not for shared
             // objects.
-            inputs.args.output_kind() != OutputKind::SharedObject
+            inputs.output_kind.is_executable()
         },
         |_inputs| 0,
     ),
@@ -3596,7 +3612,7 @@ const EPILOGUE_DYNAMIC_ENTRY_WRITERS: &[DynamicEntryWriter] = &[
     ),
     DynamicEntryWriter::optional(
         object::elf::DT_PLTGOT,
-        |inputs| inputs.args.needs_dynamic(),
+        |inputs| inputs.output_kind.needs_dynamic(),
         |inputs| inputs.vma_of_section(output_section_id::GOT),
     ),
     DynamicEntryWriter::optional(
@@ -3674,6 +3690,7 @@ struct DynamicEntryInputs<'layout> {
     section_layouts: &'layout OutputSectionMap<OutputRecordLayout>,
     section_part_layouts: &'layout OutputSectionPartMap<OutputRecordLayout>,
     non_addressable_counts: NonAddressableCounts,
+    output_kind: OutputKind,
 }
 
 impl DynamicEntryInputs<'_> {
@@ -3681,7 +3698,7 @@ impl DynamicEntryInputs<'_> {
         let mut flags = 0;
         flags |= object::elf::DF_BIND_NOW;
 
-        if !self.args.output_kind().is_executable() && self.has_static_tls {
+        if !self.output_kind.is_executable() && self.has_static_tls {
             flags |= object::elf::DF_STATIC_TLS;
         }
 
@@ -3696,7 +3713,7 @@ impl DynamicEntryInputs<'_> {
         let mut flags = 0;
         flags |= object::elf::DF_1_NOW;
 
-        if self.args.output_kind().is_executable() && self.args.is_relocatable() {
+        if self.output_kind.is_executable() && self.output_kind.is_relocatable() {
             flags |= object::elf::DF_1_PIE;
         }
 
@@ -3704,7 +3721,7 @@ impl DynamicEntryInputs<'_> {
             flags |= object::elf::DF_1_ORIGIN;
         }
 
-        if self.args.output_kind().is_shared_object() {
+        if self.output_kind.is_shared_object() {
             if self.args.needs_nodelete_handling {
                 flags |= object::elf::DF_1_NODELETE;
             }
@@ -3816,7 +3833,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
 
         let output_info = output_sections.output_info(section_id);
         let section_type = output_info.ty;
-        let section_layout = layout.section_layouts.get(section_id);
+        let section_layout = layout.merged_section_layouts.get(section_id);
 
         if output_sections
             .output_index_of_section(section_id)
@@ -3826,7 +3843,7 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
         }
 
         let entsize = output_info.entsize.max(section_id.element_size());
-        let mut size;
+        let size;
         let alignment;
 
         if section_type == sht::NULL {
@@ -3836,14 +3853,16 @@ fn write_section_headers(out: &mut [u8], layout: &Layout) -> Result {
             size = section_layout.mem_size;
             alignment = section_layout.alignment.value();
 
-            while let Some(OrderEvent::Section(next_section_id)) = order.peek() {
-                if let Some(primary_id) = output_sections.merge_target(*next_section_id) {
-                    debug_assert_eq!(primary_id, section_id);
-                    size += layout.section_layouts.get(*next_section_id).mem_size;
-                    order.next();
-                } else {
-                    break;
-                }
+            while let Some(OrderEvent::Section(next_section_id)) = order.peek()
+                && let Some(primary_id) = output_sections.merge_target(*next_section_id)
+            {
+                debug_assert_bail!(
+                    primary_id == section_id,
+                    "Section order mismatch {} != {}",
+                    output_sections.section_debug(primary_id),
+                    output_sections.section_debug(section_id),
+                );
+                order.next();
             }
         };
 
@@ -3956,6 +3975,8 @@ fn write_dynamic_file<A: Arch>(
     table_writer: &mut TableWriter,
     layout: &Layout,
 ) -> Result {
+    verbose_timing_phase!("Write dynamic");
+
     write_so_name(object, table_writer)?;
 
     write_copy_relocations::<A>(object, table_writer, layout)?;

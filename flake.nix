@@ -11,42 +11,51 @@
       crane,
     }:
     let
+      # Generate an output for each flake-exposed system. Flakes suck.
       forAllSystems = nixpkgs.lib.genAttrs nixpkgs.lib.systems.flakeExposed;
 
-      common = forAllSystems (system: rec {
+      # Make an attribute-set that instances Nixpkgs with our overlay for each
+      # system
+      common = forAllSystems (system: {
         pkgs = import nixpkgs {
           inherit system;
           overlays = [
             (import self)
           ];
         };
-
-        craneLib = crane.mkLib pkgs;
       });
     in
     {
-      packages = forAllSystems (
-        system:
-        let
-          inherit (common.${system}) pkgs craneLib;
-        in
-        {
-          default = pkgs.callPackage ./nix { inherit craneLib; };
-        }
-      );
-
-      overlays.default = import self;
-
       formatter = forAllSystems (system: common.${system}.pkgs.nixfmt-tree);
 
+      # Route all uses through here so we are
+      # testing it the way most users will use the derivation
+      # Which is `import wild`
+      overlays.default = import self;
+
+      # Output Wild as a stand-alone package.
+      packages = forAllSystems (system: {
+        default = common.${system}.pkgs.wild;
+      });
+
+      # Tests to ensure Wild continues working on Nixos
+      # We run unit tests, and some smoke tests that are in Nixpkgs.
       checks = forAllSystems (
         system:
         let
-          inherit (common.${system}) pkgs craneLib;
-          inherit (self.packages.${system}) default;
+          inherit (common.${system}) pkgs;
         in
         {
-          wild = default.overrideAttrs {
+          # Tests in Nixpkgs to run
+          inherit (pkgs.callPackage "${nixpkgs}/pkgs/by-name/wi/wild-unwrapped/adapterTest.nix" { })
+            adapterGcc
+            adapter-llvm
+            ;
+
+          # Use the crane-cached build artifacts to speed up building the unit tests.
+          wild = pkgs.wild-unwrapped.overrideAttrs (old: {
+            stdenv = p: p.stdenvNoCC;
+
             doCheck = true;
             doInstallCheck = false;
             # Skip the build phase and don't install anything
@@ -54,15 +63,13 @@
             # once for the checkPhase.
             dontBuild = true;
             installPhase = "touch $out";
-          };
+          });
         }
-        // ((pkgs.callPackage ./nix { inherit craneLib; }).tests)
       );
 
+      # devShell for developing Wild
       devShells = forAllSystems (system: {
-        default = common.${system}.pkgs.callPackage ./nix/shell.nix {
-          inherit (common.${system}) craneLib;
-        };
+        default = common.${system}.pkgs.callPackage ./nix/shell.nix { };
       });
     };
 }

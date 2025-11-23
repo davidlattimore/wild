@@ -30,3 +30,10 @@ int get_w3(void) { return w3; }
 // alignment. This is to verify that we correctly handle the alignment when
 // performing a copy relocation.
 __attribute__((aligned(0x100))) int aligned_int = 700;
+
+int s4 = 4;
+
+__attribute__((weak, alias("s4"))) extern int w4;
+
+int get_s4(void) { return s4; }
+int get_w4(void) { return w4; }

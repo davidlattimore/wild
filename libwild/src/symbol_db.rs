@@ -2,6 +2,7 @@
 //! information about where each symbol can be obtained.
 
 use crate::InputLinkerScript;
+use crate::OutputKind;
 use crate::args;
 use crate::args::Args;
 use crate::bail;
@@ -35,6 +36,7 @@ use crate::value_flags::FlagsForSymbol;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::RawFlags;
 use crate::value_flags::ValueFlags;
+use crate::verbose_timing_phase;
 use crate::version_script::VersionScript;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
@@ -84,6 +86,8 @@ pub struct SymbolDb<'data> {
 
     /// The name of the entry symbol if overridden by a linker script.
     entry: Option<&'data [u8]>,
+
+    pub(crate) output_kind: OutputKind,
 }
 
 /// Borrows from a SymbolDb, but allows temporary atomic access to some of the tables. These tables
@@ -283,6 +287,7 @@ impl<'data> SymbolDb<'data> {
         linker_scripts: &[InputLinkerScript<'data>],
         herd: &'data bumpalo_herd::Herd,
         export_list_data: Option<ScriptData<'data>>,
+        output_kind: OutputKind,
     ) -> Result<(Self, PerSymbolFlags)> {
         timing_phase!("Build symbol DB");
 
@@ -330,13 +335,27 @@ impl<'data> SymbolDb<'data> {
                 .map(|group| writers.new_shard(group))
                 .collect_vec();
 
-            let per_group_outputs =
-                read_symbols(&version_script, &mut per_group_shards, args, &export_list)?;
+            let per_group_outputs = read_symbols(
+                &version_script,
+                &mut per_group_shards,
+                args,
+                &export_list,
+                output_kind,
+            )?;
 
             populate_symbol_db(&mut buckets, &per_group_outputs);
 
-            for shard in per_group_shards {
-                writers.return_shard(shard);
+            {
+                verbose_timing_phase!("Return shards");
+
+                for shard in per_group_shards {
+                    writers.return_shard(shard);
+                }
+            }
+            {
+                // TODO: Do this on a separate thread.
+                verbose_timing_phase!("Drop per-group outputs");
+                drop(per_group_outputs);
             }
         }
 
@@ -352,9 +371,12 @@ impl<'data> SymbolDb<'data> {
             version_script,
             export_list,
             entry: None,
+            output_kind,
         };
 
         index.apply_wrapped_symbol_overrides(args, herd);
+
+        verbose_timing_phase!("Apply linker scripts");
 
         for script in linker_scripts {
             index.apply_linker_script(script);
@@ -395,6 +417,8 @@ impl<'data> SymbolDb<'data> {
         if args.wrap.is_empty() {
             return;
         }
+
+        verbose_timing_phase!("Apply wrapped symbol overrides");
 
         let allocator = herd.get();
 
@@ -483,6 +507,17 @@ impl<'data> SymbolDb<'data> {
             Group::Epilogue(epilogue) => {
                 Ok(self.start_stop_symbol_names[symbol_id.offset_from(epilogue.start_symbol_id)])
             }
+        }
+    }
+
+    /// Get the version of a symbol. Only intended for diagnostic purposes.
+    pub(crate) fn symbol_version_debug(&self, symbol_id: SymbolId) -> Option<String> {
+        let file_id = self.file_id_for_symbol(symbol_id);
+        match &self.groups[file_id.group()] {
+            Group::Objects(parsed_input_objects) => {
+                parsed_input_objects[file_id.file()].symbol_version_debug(symbol_id)
+            }
+            _ => None,
         }
     }
 
@@ -856,6 +891,8 @@ pub(crate) fn resolve_alternative_symbol_definitions<'data>(
     let error_queue = SegQueue::new();
 
     buckets.par_iter_mut().for_each(|bucket| {
+        verbose_timing_phase!("Resolve alternative for bucket");
+
         process_alternatives(
             &mut bucket.alternative_definitions,
             &error_queue,
@@ -1068,6 +1105,7 @@ fn read_symbols<'data>(
     shards: &mut [SymbolWriterShard<'_, '_, 'data>],
     args: &Args,
     export_list: &Option<ExportList<'data>>,
+    output_kind: OutputKind,
 ) -> Result<Vec<SymbolLoadOutputs<'data>>> {
     timing_phase!("Read symbols");
 
@@ -1075,7 +1113,16 @@ fn read_symbols<'data>(
 
     shards
         .par_iter_mut()
-        .map(|shard| read_symbols_for_group(shard, version_script, export_list, num_buckets, args))
+        .map(|shard| {
+            read_symbols_for_group(
+                shard,
+                version_script,
+                export_list,
+                num_buckets,
+                args,
+                output_kind,
+            )
+        })
         .collect::<Result<Vec<SymbolLoadOutputs>>>()
 }
 
@@ -1085,7 +1132,14 @@ fn read_symbols_for_group<'data>(
     export_list: &Option<ExportList<'data>>,
     num_buckets: usize,
     args: &Args,
+    output_kind: OutputKind,
 ) -> Result<SymbolLoadOutputs<'data>> {
+    verbose_timing_phase!(
+        "Read group symbols",
+        group_id = shard.group.group_id(),
+        num_symbols = shard.group.num_symbols()
+    );
+
     let mut outputs = SymbolLoadOutputs {
         pending_symbols_by_bucket: vec![PendingSymbolHashBucket::default(); num_buckets],
     };
@@ -1096,10 +1150,16 @@ fn read_symbols_for_group<'data>(
         }
         Group::Objects(parsed_input_objects) => {
             for obj in *parsed_input_objects {
-                load_symbols_from_file(obj, version_script, shard, &mut outputs, args, export_list)
-                    .with_context(|| {
-                        format!("Failed to load symbols from `{}`", obj.parsed.input)
-                    })?;
+                load_symbols_from_file(
+                    obj,
+                    version_script,
+                    shard,
+                    &mut outputs,
+                    args,
+                    export_list,
+                    output_kind,
+                )
+                .with_context(|| format!("Failed to load symbols from `{}`", obj.parsed.input))?;
             }
         }
         Group::LinkerScripts(scripts) => {
@@ -1122,6 +1182,8 @@ fn populate_symbol_db<'data>(
     timing_phase!("Populate symbol map");
 
     buckets.par_iter_mut().enumerate().for_each(|(b, bucket)| {
+        verbose_timing_phase!("Process symbol bucket");
+
         // The following approximation should be an upper bound on the number of global
         // names we'll have. There will likely be at least a few global symbols with the
         // same name, in which case the actual number will be slightly smaller.
@@ -1172,6 +1234,7 @@ fn load_symbols_from_file<'data>(
     outputs: &mut SymbolLoadOutputs<'data>,
     args: &Args,
     export_list: &Option<ExportList<'data>>,
+    output_kind: OutputKind,
 ) -> Result {
     if s.is_dynamic() {
         DynamicObjectSymbolLoader::new(&s.parsed.object)?.load_symbols(
@@ -1186,6 +1249,7 @@ fn load_symbols_from_file<'data>(
             version_script,
             archive_semantics: s.parsed.input.has_archive_semantics(),
             export_list,
+            output_kind,
         }
         .load_symbols(s.file_id, symbols_out, outputs)
     }
@@ -1302,6 +1366,7 @@ struct RegularObjectSymbolLoader<'a, 'data> {
     version_script: &'a VersionScript<'a>,
     archive_semantics: bool,
     export_list: &'a Option<ExportList<'a>>,
+    output_kind: OutputKind,
 }
 
 struct DynamicObjectSymbolLoader<'a, 'data> {
@@ -1360,11 +1425,11 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
         };
         let non_interposable = sym.st_visibility() != object::elf::STV_DEFAULT
             || sym.is_local()
-            || self.args.output_kind().is_static_executable()
+            || self.output_kind.is_static_executable()
             // Symbols defined in an executable cannot be interposed since the executable is always the
             // first place checked for a symbol by the dynamic loader.
             || (!is_undefined && (
-                self.args.output_kind().is_executable()
+                self.output_kind.is_executable()
                 || (self.args.exclude_libs && self.archive_semantics)
                 || (
                     self.args.b_symbolic == args::BSymbolicKind::All
