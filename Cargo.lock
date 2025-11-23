@@ -143,7 +143,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "miniz_oxide",
- "object 0.37.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "object 0.37.3",
  "rustc-demangle",
  "windows-link",
 ]
@@ -764,7 +764,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "object 0.37.3 (git+https://github.com/gimli-rs/object?rev=ad26bd278b266cbf16ec39dd548f6a34c092340a)",
+ "object 0.38.0",
  "perf-event",
  "perfetto-recorder",
  "rayon",
@@ -810,7 +810,7 @@ dependencies = [
  "linker-utils",
  "memchr",
  "memmap2",
- "object 0.37.3 (git+https://github.com/gimli-rs/object?rev=ad26bd278b266cbf16ec39dd548f6a34c092340a)",
+ "object 0.38.0",
  "symbolic-demangle",
  "tempfile",
  "tracing",
@@ -844,7 +844,7 @@ dependencies = [
  "anyhow",
  "derive_more",
  "leb128",
- "object 0.37.3 (git+https://github.com/gimli-rs/object?rev=ad26bd278b266cbf16ec39dd548f6a34c092340a)",
+ "object 0.38.0",
  "paste",
 ]
 
@@ -972,8 +972,9 @@ dependencies = [
 
 [[package]]
 name = "object"
-version = "0.37.3"
-source = "git+https://github.com/gimli-rs/object?rev=ad26bd278b266cbf16ec39dd548f6a34c092340a#ad26bd278b266cbf16ec39dd548f6a34c092340a"
+version = "0.38.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8b28f24bd43920cd8e0bc4f9c6553e8b93221c512cb9a1014987fc89d36f830"
 dependencies = [
  "memchr",
 ]
@@ -1880,7 +1881,7 @@ dependencies = [
  "libwild",
  "linker-diff",
  "mimalloc",
- "object 0.37.3 (git+https://github.com/gimli-rs/object?rev=ad26bd278b266cbf16ec39dd548f6a34c092340a)",
+ "object 0.38.0",
  "os_info",
  "rstest",
  "serde",
