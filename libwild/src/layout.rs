@@ -164,19 +164,26 @@ pub fn compute<'data, A: Arch>(
     let string_merge_inputs =
         crate::string_merging::StringMergeInputs::new(&mut groups, &output_sections)?;
 
-    let merged_strings = crate::string_merging::merge_strings(
-        &string_merge_inputs,
-        &output_sections,
-        symbol_db.args,
-    )?;
-
-    let gc_outputs = find_required_sections::<A>(
-        groups,
-        &symbol_db,
-        &atomic_per_symbol_flags,
-        &output_sections,
-        input_data,
-    )?;
+    let (merged_strings, gc_outputs) = rayon::join(
+        || {
+            crate::string_merging::merge_strings(
+                &string_merge_inputs,
+                &output_sections,
+                symbol_db.args,
+            )
+        },
+        || {
+            find_required_sections::<A>(
+                groups,
+                &symbol_db,
+                &atomic_per_symbol_flags,
+                &output_sections,
+                input_data,
+            )
+        },
+    );
+    let merged_strings = merged_strings?;
+    let gc_outputs = gc_outputs?;
 
     let mut group_states = gc_outputs.group_states;
 
