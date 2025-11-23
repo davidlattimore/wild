@@ -60,6 +60,7 @@ use crate::resolution::FrameIndex;
 use crate::resolution::NotLoaded;
 use crate::resolution::ResolutionOutputs;
 use crate::resolution::ResolvedEpilogue;
+use crate::resolution::ResolvedGroup;
 use crate::resolution::ResolvedLinkerScript;
 use crate::resolution::SectionSlot;
 use crate::resolution::UnloadedSection;
@@ -81,6 +82,7 @@ use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
 use crossbeam_channel::Sender;
+use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 use indexmap::IndexMap;
@@ -138,6 +140,7 @@ use std::sync::Mutex;
 use std::sync::atomic;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
 use zerocopy::FromBytes;
 
 pub fn compute<'data, A: Arch>(
@@ -1690,6 +1693,12 @@ struct GraphResources<'data, 'scope> {
     start_stop_sections: OutputSectionMap<SegQueue<SectionLoadRequest>>,
 
     input_data: &'scope InputData<'data>,
+
+    /// The number of groups that haven't yet completed activation.
+    activations_remaining: AtomicUsize,
+
+    /// Groups that cannot be processed until all groups have completed activation.
+    delay_processing: ArrayQueue<GroupState<'data>>,
 }
 
 struct FinaliseLayoutResources<'scope, 'data> {
@@ -2353,8 +2362,84 @@ struct GcOutputs<'data> {
 }
 
 struct WaitingWorker<'data> {
-    group: GroupState<'data>,
+    work: GroupWorkKind<'data>,
     work_sender: Sender<WaitingWorker<'data>>,
+}
+
+enum GroupWorkKind<'data> {
+    CreateState(GroupActivationInputs<'data>),
+    ProcessWorkQueue(GroupState<'data>),
+}
+
+struct GroupActivationInputs<'data> {
+    resolved: ResolvedGroup<'data>,
+    num_symbols: usize,
+    group_index: usize,
+}
+impl<'data> GroupActivationInputs<'data> {
+    fn activate_group<A: Arch>(
+        self,
+        resources_ref: &GraphResources<'data, '_>,
+        output_sections: &OutputSections,
+        work_sender: &Sender<WaitingWorker<'data>>,
+    ) {
+        let GroupActivationInputs {
+            resolved,
+            num_symbols,
+            group_index,
+        } = self;
+
+        let files = resolved
+            .files
+            .into_iter()
+            .map(|file| file.create_layout_state())
+            .collect();
+        let mut group = GroupState {
+            queue: LocalWorkQueue::new(group_index),
+            num_symbols,
+            files,
+            common: CommonGroupState::new(output_sections),
+        };
+
+        let mut should_delay_processing = false;
+
+        for file in &mut group.files {
+            let r = activate::<A>(
+                &mut group.common,
+                file,
+                &mut group.queue,
+                resources_ref,
+                work_sender,
+            )
+            .with_context(|| format!("Failed to activate {file}"));
+
+            // The epilogue can't be processed until all groups have completed
+            // activation, since the epilogue can read from `start_stop_sections` which
+            // gets populated by other objects during activation.
+            should_delay_processing |= matches!(file, FileLayoutState::Epilogue(_));
+
+            if let Err(error) = r {
+                resources_ref.errors.lock().unwrap().push(error);
+            }
+        }
+
+        if should_delay_processing {
+            resources_ref.delay_processing.push(group).unwrap();
+        } else {
+            group.do_pending_work::<A>(resources_ref, work_sender);
+        }
+
+        let remaining = resources_ref
+            .activations_remaining
+            .fetch_sub(1, atomic::Ordering::Relaxed)
+            - 1;
+
+        if remaining == 0 {
+            while let Some(group) = resources_ref.delay_processing.pop() {
+                group.do_pending_work::<A>(resources_ref, work_sender);
+            }
+        }
+    }
 }
 
 fn find_required_sections<'data, A: Arch>(
@@ -2366,8 +2451,19 @@ fn find_required_sections<'data, A: Arch>(
 ) -> Result<GcOutputs<'data>> {
     timing_phase!("Find required sections");
 
-    let num_workers = groups_in.len();
-    let (worker_slots, groups) = create_worker_slots(groups_in, output_sections, symbol_db);
+    let num_groups = groups_in.len();
+
+    let (work_sender, work_recv) = crossbeam_channel::bounded(num_groups);
+
+    let mut worker_slots = Vec::with_capacity(num_groups);
+    worker_slots.resize_with(num_groups, || {
+        Mutex::new(WorkerSlot {
+            work: Default::default(),
+            worker: None,
+        })
+    });
+
+    queue_initial_group_processing(groups_in, symbol_db, &work_sender);
 
     let resources = GraphResources {
         symbol_db,
@@ -2380,48 +2476,26 @@ fn find_required_sections<'data, A: Arch>(
         uses_tlsld: AtomicBool::new(false),
         start_stop_sections: output_sections.new_section_map(),
         input_data,
+        activations_remaining: AtomicUsize::new(num_groups),
+        delay_processing: ArrayQueue::new(1),
     };
     let resources_ref = &resources;
-
-    let (work_sender, work_recv) = crossbeam_channel::bounded(num_workers);
-
-    {
-        timing_phase!("Activate objects");
-        groups
-            .into_par_iter()
-            .enumerate()
-            .try_for_each(|(i, mut group)| -> Result {
-                verbose_timing_phase!("Activate objects in group");
-
-                let _span = tracing::debug_span!("find_required_sections", gid = i).entered();
-                for file in &mut group.files {
-                    activate::<A>(
-                        &mut group.common,
-                        file,
-                        &mut group.queue,
-                        resources_ref,
-                        &work_sender,
-                    )
-                    .with_context(|| format!("Failed to activate {file}"))?;
-                }
-                let _ = work_sender.send(WaitingWorker {
-                    group,
-                    work_sender: work_sender.clone(),
-                });
-                Ok(())
-            })?;
-    }
 
     drop(work_sender);
 
     work_recv
         .into_iter()
         .par_bridge()
-        .for_each(|waiting_worker| {
+        .for_each(|WaitingWorker { work, work_sender }| {
             verbose_timing_phase!("Work with object");
-            waiting_worker
-                .group
-                .do_pending_work::<A>(resources_ref, &waiting_worker.work_sender);
+            match work {
+                GroupWorkKind::CreateState(inputs) => {
+                    inputs.activate_group::<A>(resources_ref, output_sections, &work_sender);
+                }
+                GroupWorkKind::ProcessWorkQueue(group_state) => {
+                    group_state.do_pending_work::<A>(resources_ref, &work_sender);
+                }
+            }
         });
 
     let mut errors: Vec<Error> = take(resources.errors.lock().unwrap().as_mut());
@@ -2454,37 +2528,29 @@ fn find_required_sections<'data, A: Arch>(
     })
 }
 
-fn create_worker_slots<'data>(
+fn queue_initial_group_processing<'data>(
     groups_in: Vec<resolution::ResolvedGroup<'data>>,
-    output_sections: &OutputSections<'data>,
     symbol_db: &SymbolDb<'data>,
-) -> (Vec<Mutex<WorkerSlot<'data>>>, Vec<GroupState<'data>>) {
+    work_send: &Sender<WaitingWorker<'data>>,
+) {
     verbose_timing_phase!("Create worker slots");
 
-    let mut worker_slots = Vec::with_capacity(groups_in.len());
-    let group_states = groups_in
+    groups_in
         .into_iter()
         .enumerate()
         .zip(&symbol_db.num_symbols_per_group)
-        .map(|((group_index, group), &num_symbols)| {
-            let files = group
-                .files
-                .into_iter()
-                .map(|file| file.create_layout_state())
-                .collect();
-            worker_slots.push(Mutex::new(WorkerSlot {
-                work: Default::default(),
-                worker: None,
-            }));
-            GroupState {
-                queue: LocalWorkQueue::new(group_index),
-                num_symbols,
-                files,
-                common: CommonGroupState::new(output_sections),
-            }
-        })
-        .collect();
-    (worker_slots, group_states)
+        .for_each(|((group_index, group), &num_symbols)| {
+            work_send
+                .send(WaitingWorker {
+                    work: GroupWorkKind::CreateState(GroupActivationInputs {
+                        resolved: group,
+                        num_symbols,
+                        group_index,
+                    }),
+                    work_sender: work_send.clone(),
+                })
+                .unwrap();
+        });
 }
 
 fn unwrap_worker_states<'data>(
@@ -2712,8 +2778,8 @@ impl<'data> GraphResources<'data, '_> {
         };
         if let Some(worker) = worker {
             let _ = work_sender.send(WaitingWorker {
-                group: worker,
                 work_sender: work_sender.clone(),
+                work: GroupWorkKind::ProcessWorkQueue(worker),
             });
         }
     }
