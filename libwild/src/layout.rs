@@ -157,8 +157,14 @@ pub fn compute<'data, A: Arch>(
         SymbolInfoPrinter::new(&symbol_db, sym_name, &atomic_per_symbol_flags, &groups)
     });
 
-    let merged_strings =
-        crate::string_merging::merge_strings(&mut groups, &output_sections, symbol_db.args)?;
+    let string_merge_inputs =
+        crate::string_merging::StringMergeInputs::new(&mut groups, &output_sections)?;
+
+    let merged_strings = crate::string_merging::merge_strings(
+        &string_merge_inputs,
+        &output_sections,
+        symbol_db.args,
+    )?;
 
     let gc_outputs = find_required_sections::<A>(
         groups,
