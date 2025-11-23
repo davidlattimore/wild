@@ -149,16 +149,16 @@ pub fn compute<'data, A: Arch>(
 ) -> Result<Layout<'data>> {
     timing_phase!("Layout");
 
-    let ResolutionOutputs {
-        groups,
-        merged_strings,
-    } = resolved;
+    let ResolutionOutputs { mut groups } = resolved;
 
     let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
 
     let symbol_info_printer = symbol_db.args.sym_info.as_ref().map(|sym_name| {
         SymbolInfoPrinter::new(&symbol_db, sym_name, &atomic_per_symbol_flags, &groups)
     });
+
+    let merged_strings =
+        crate::string_merging::merge_strings(&mut groups, &output_sections, symbol_db.args)?;
 
     let gc_outputs = find_required_sections::<A>(
         groups,
