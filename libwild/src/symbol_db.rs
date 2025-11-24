@@ -621,7 +621,7 @@ impl<'data> SymbolDb<'data> {
         self.symbol_definitions[symbol_id.as_usize()] = new_definition;
     }
 
-    pub(crate) fn file<'db>(&'db self, file_id: FileId) -> SequencedInput<'db> {
+    pub(crate) fn file(&self, file_id: FileId) -> SequencedInput<'_> {
         match &self.groups[file_id.group()] {
             Group::Prelude(prelude) => SequencedInput::Prelude(prelude),
             Group::Objects(parsed_input_objects) => {
@@ -1831,7 +1831,7 @@ impl<'data, 'db> AtomicSymbolDb<'data, 'db> {
         self.db.symbol_name_for_display(symbol_id)
     }
 
-    fn file<'a>(&'a self, file_id: FileId) -> SequencedInput<'a> {
+    fn file(&self, file_id: FileId) -> SequencedInput<'_> {
         self.db.file(file_id)
     }
 

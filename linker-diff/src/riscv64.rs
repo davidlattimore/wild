@@ -61,12 +61,12 @@ impl Arch for RiscV64 {
         String::new()
     }
 
-    fn decode_instructions_in_range<'data>(
-        section_bytes: &'data [u8],
+    fn decode_instructions_in_range(
+        section_bytes: &[u8],
         section_address: u64,
         _function_offset_in_section: u64,
         range: std::ops::Range<u64>,
-    ) -> Vec<crate::arch::Instruction<'data, Self>> {
+    ) -> Vec<crate::arch::Instruction<'_, Self>> {
         let mut offset = range.start & !3;
 
         let mut instructions = Vec::new();
