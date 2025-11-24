@@ -46,7 +46,7 @@ in
 pkgs.callPackage ./package { stdenv = wildStdenv; }  
 ```
 
-to use the latest unstable git revision of wild, see [./nix/nix.md](the nix documentation)
+to use the latest unstable git revision of wild, see [the nix documentation](./nix/nix.md)
 
 ## Using as your default linker
 
