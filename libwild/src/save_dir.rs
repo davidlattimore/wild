@@ -367,11 +367,11 @@ fn make_relative_path(target: &Path, directory: &Path) -> PathBuf {
     let mut target_comps = target.components().peekable();
     let mut dir_comps = directory.components().peekable();
 
+    // We consume identical components until they diverge.
     loop {
         match (target_comps.peek(), dir_comps.peek()) {
             // identical paths
             (None, None) => return PathBuf::from("."),
-            // consume identical components
             (Some(t), Some(d)) if t == d => {
                 target_comps.next();
                 dir_comps.next();
@@ -379,13 +379,12 @@ fn make_relative_path(target: &Path, directory: &Path) -> PathBuf {
             _ => break,
         }
     }
+    // Now we just have the components that differ.
 
-    // Escape all the remaining dir components.
     for _ in dir_comps {
         out.push("..");
     }
 
-    // And then add all the remaining target components.
     out.extend(target_comps);
 
     out
