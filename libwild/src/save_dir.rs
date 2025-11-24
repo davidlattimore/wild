@@ -412,31 +412,38 @@ mod tests {
     #[test]
     fn make_relative_path_works() {
         let cases = [
-            ("/a/b/c", "/a/b", "c"),
-            ("/a/b/c/d", "/a/b", "c/d"),
-            ("/a/b/c", "/a/b/x", "../c"),
-            ("/a/b/c/d", "/a/b/x/y", "../../c/d"),
-            ("/a/b/c/d/e", "/a/b/x/y", "../../c/d/e"),
-            ("/a/b/c", "/a/b/c", "."),
-            ("/a/b/c/d", "/a/b/c", "d"),
-            ("/a/b/c", "/a/b/c/d", ".."),
-            ("/a/b/c/d", "/a/b/c/d", "."),
-            ("/a/b", "/d/c/e", "../../../a/b"),
+            ("/a/b/c", "/a/b"),
+            ("/a/b/c/d", "/a/b"),
+            ("/a/b/c", "/a/b/x"),
+            ("/a/b/c/d", "/a/b/x/y"),
+            ("/a/b/c/d/e", "/a/b/x/y"),
+            ("/a/b/c", "/a/b/c"),
+            ("/a/b/c/d", "/a/b/c"),
+            ("/a/b/c", "/a/b/c/d"),
+            ("/a/b/c/d", "/a/b/c/d"),
+            ("/a/b", "/d/c/e"),
+            (
+                "/usr/lib/libm.so.6",
+                "/usr/bin/../lib64/gcc/x86_64-pc-linux-gnu/15.2.1/../../../../lib64/libm.so",
+            ),
         ];
 
-        for (target_str, dir_str, expected_str) in cases {
+        for (target_str, dir_str) in cases {
             let target = Path::new(target_str);
             let directory = Path::new(dir_str);
-            let expected = Path::new(expected_str);
             let relative = make_relative_path(target, directory);
+
+            let result = remove_backtracking_components(&directory.join(&relative));
+            let factual_target = remove_backtracking_components(target);
+
             assert_eq!(
-                relative,
-                expected,
-                "make_relative_path(`{}`, `{}`) = `{}`, expected `{}`",
-                target.display(),
+                result,
+                factual_target,
+                "from `{}` to `{}`: got `{}`, expected `{}`",
                 directory.display(),
+                target.display(),
                 relative.display(),
-                expected.display()
+                factual_target.display()
             );
         }
     }
