@@ -24,6 +24,8 @@ use crate::save_dir::SaveDir;
 use crate::timing_phase;
 use hashbrown::HashMap;
 use hashbrown::HashSet;
+use indexmap::IndexSet;
+use itertools::Itertools;
 use jobserver::Acquired;
 use jobserver::Client;
 use object::elf::GNU_PROPERTY_X86_ISA_1_BASELINE;
@@ -32,6 +34,7 @@ use object::elf::GNU_PROPERTY_X86_ISA_1_V3;
 use object::elf::GNU_PROPERTY_X86_ISA_1_V4;
 use rayon::ThreadPoolBuilder;
 use std::fmt::Display;
+use std::mem::take;
 use std::num::NonZero;
 use std::num::NonZeroU32;
 use std::num::NonZeroUsize;
@@ -132,6 +135,8 @@ pub struct Args {
     pub(crate) available_threads: NonZeroUsize,
 
     pub(crate) numeric_experiments: Vec<Option<u64>>,
+
+    rpath_set: IndexSet<String>,
 
     jobserver_client: Option<Client>,
 }
@@ -424,6 +429,7 @@ impl Default for Args {
             z_interpose: false,
             z_isa: None,
             numeric_experiments: Vec::new(),
+            rpath_set: Default::default(),
         }
     }
 }
@@ -476,6 +482,10 @@ pub(crate) fn parse<F: Fn() -> I, S: AsRef<str>, I: Iterator<Item = S>>(input: F
     if !args.should_output_executable {
         args.copy_relocations =
             CopyRelocations::Disallowed(CopyRelocationsDisabledReason::SharedObject);
+    }
+
+    if !args.rpath_set.is_empty() {
+        args.rpath = Some(take(&mut args.rpath_set).into_iter().join(":"));
     }
 
     if !args.unrecognized_options.is_empty() {
@@ -624,15 +634,6 @@ fn parse_number(s: &str) -> Result<u64> {
         Ok(u64::from_str_radix(s, 16)?)
     } else {
         Ok(s.parse::<u64>()?)
-    }
-}
-
-fn append_rpath(rpath: &mut Option<String>, rpath_value: &str) {
-    if let Some(rpath) = &mut *rpath {
-        rpath.push(':');
-        rpath.push_str(rpath_value);
-    } else {
-        *rpath = Some(rpath_value.to_string());
     }
 }
 
@@ -1435,7 +1436,7 @@ fn setup_argument_parser() -> ArgumentParser {
                 args.unrecognized_options
                     .push(format!("-R,{value}(filename)"));
             } else {
-                append_rpath(&mut args.rpath, value);
+                args.rpath_set.insert(value.to_string());
             }
             Ok(())
         });
@@ -1788,7 +1789,7 @@ fn setup_argument_parser() -> ArgumentParser {
         .long("rpath")
         .help("Add directory to runtime library search path")
         .execute(|args, _modifier_stack, value| {
-            append_rpath(&mut args.rpath, value);
+            args.rpath_set.insert(value.to_string());
             Ok(())
         });
 
@@ -2508,6 +2509,9 @@ mod tests {
         "-Rbaz",
         "-R",
         "somewhere",
+        // Adding the same rpath multiple times should not create duplicates
+        "-rpath",
+        "foo/",
     ];
 
     const FILE_OPTIONS: &[&str] = &["-pie"];

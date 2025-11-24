@@ -248,7 +248,6 @@ tests = [
   "nocopyreloc.sh",
   "noinhibit-exec.sh",
   "rodata-name.sh",
-  "rpath.sh",
   "section-attributes.sh",
   "strip.sh",
   "stt-common.sh",
