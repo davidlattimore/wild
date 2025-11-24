@@ -37,7 +37,16 @@ cargo install --locked --bin wild --git https://github.com/davidlattimore/wild.g
 
 ### Nix
 
-See [nix/nix.md](nix/nix.md)
+To use a stable Wild from Nixpkgs:
+
+```nix
+let
+ wildStdenv = pkgs.useWildLinker pkgs.stdenv;
+in
+pkgs.callPackage ./package { stdenv = wildStdenv; }  
+```
+
+to use the latest unstable git revision of wild, see [the nix documentation](./nix/nix.md)
 
 ## Using as your default linker
 
