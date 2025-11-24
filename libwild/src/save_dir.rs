@@ -344,16 +344,35 @@ fn make_relative_path(target: &Path, directory: &Path) -> PathBuf {
     assert!(target.is_absolute());
     assert!(directory.is_absolute());
     let mut out = PathBuf::new();
-    let mut p = directory;
 
-    // If `target` and `directory` share some common prefix, then our path may not be as short as
-    // possible, but it should still work.
-    while let Some(parent) = p.parent() {
+    let mut target_comps = target.components();
+    let mut dir_comps = directory.components();
+
+    // Consume all the common components and find the first differing pair of components.
+    let (target_comp, dir_comp) = loop {
+        match (target_comps.next(), dir_comps.next()) {
+            // the paths are identical
+            (None, None) => return PathBuf::from("."),
+            (Some(t), Some(d)) if t == d => continue,
+            pair => break pair,
+        }
+    };
+
+    // Escape all the remaining dir components.
+    for _ in dir_comps {
         out.push("..");
-        p = parent;
     }
 
-    out.extend(target.iter());
+    if dir_comp.is_some() {
+        out.push("..");
+    }
+
+    // Now we just need to append all the remaining target components.
+    if let Some(t) = target_comp {
+        out.push(t);
+    }
+
+    out.extend(target_comps);
 
     out
 }
@@ -369,4 +388,41 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
     path.iter()
         .filter(|p| p.as_encoded_bytes() != b"/")
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn make_relative_path_works() {
+        let cases = [
+            ("/a/b/c", "/a/b", "c"),
+            ("/a/b/c/d", "/a/b", "c/d"),
+            ("/a/b/c", "/a/b/x", "../c"),
+            ("/a/b/c/d", "/a/b/x/y", "../../c/d"),
+            ("/a/b/c/d/e", "/a/b/x/y", "../../c/d/e"),
+            ("/a/b/c", "/a/b/c", "."),
+            ("/a/b/c/d", "/a/b/c", "d"),
+            ("/a/b/c", "/a/b/c/d", ".."),
+            ("/a/b/c/d", "/a/b/c/d", "."),
+        ];
+
+        for (target_str, dir_str, expected_str) in cases {
+            let target = Path::new(target_str);
+            let directory = Path::new(dir_str);
+            let expected = Path::new(expected_str);
+            let relative = make_relative_path(target, directory);
+            assert_eq!(
+                relative,
+                expected,
+                "make_relative_path(`{}`, `{}`) = `{}`, expected `{}`",
+                target.display(),
+                directory.display(),
+                relative.display(),
+                expected.display()
+            );
+        }
+    }
 }
