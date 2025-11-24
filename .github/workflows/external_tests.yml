@@ -24,7 +24,7 @@ jobs:
     steps:
       - run: apt-get update && apt-get -y install gcc g++ clang lld curl bubblewrap binutils-aarch64-linux-gnu binutils-riscv64-linux-gnu qemu-user gcc-aarch64-linux-gnu g++-aarch64-linux-gnu gcc-riscv64-linux-gnu g++-riscv64-linux-gnu gdb git zstd
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           persist-credentials: false
           submodules: recursive
