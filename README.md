@@ -51,6 +51,13 @@ linker = "clang"
 rustflags = ["-Clink-arg=--ld-path=wild"]
 ```
 
+Alternatively, you can create symlink `ld.wild` pointing to `wild` and use:
+```toml
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-Clink-arg=-fuse-ld=wild"]
+```
+
 On Illumos:
 ```
 [target.x86_64-unknown-illumos]
@@ -178,7 +185,6 @@ binaries from each project.
 
 ![Benchmark of lld, mold and wild linking wild with debug info on a RaspberryPi5](images/benchmarks/rpi-wild-debug.svg)
 
-
 ### RISC-V 64
 
 RISC-V benchmarks were run on a VisionFive2 with 8 GiB of RAM running Ubuntu 24.04.
@@ -200,6 +206,11 @@ installed, since GCC doesn't allow using an arbitrary linker.
 
 ```sh
 RUSTFLAGS="-Clinker=clang -Clink-args=--ld-path=wild" cargo test
+```
+
+Alternatively, with `ld.wild` symlink pointing at `wild`:
+```sh
+RUSTFLAGS="-Clinker=clang -Clink-args=-fuse-ld=wild" cargo test
 ```
 
 ## Contributing
