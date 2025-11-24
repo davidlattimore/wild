@@ -82,6 +82,10 @@ const MERGE_STRING_BUCKETS: usize = 1 << MERGE_STRING_BUCKET_BITS;
 /// spilled to the hashmap.
 const MAP_BLOCK_SIZE: u64 = 256;
 
+pub(crate) struct StringMergeInputs<'data> {
+    input_sections_by_output: OutputSectionMap<Vec<StringMergeInputSection<'data>>>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StringMergeSectionSlot {
     pub(crate) part_id: PartId,
@@ -203,14 +207,11 @@ pub(crate) struct MergeStringsSectionBucket<'data> {
 /// Merges identical strings from all loaded objects where those strings are from input sections
 /// that are marked with both the SHF_MERGE and SHF_STRINGS flags.
 pub(crate) fn merge_strings<'data>(
-    resolved: &mut [ResolvedGroup<'data>],
+    inputs: &StringMergeInputs<'data>,
     output_sections: &OutputSections,
     args: &Args,
 ) -> Result<OutputSectionMap<MergedStringsSection<'data>>> {
     timing_phase!("Merge strings");
-
-    let input_sections_by_output =
-        group_merge_string_sections_by_output(resolved, output_sections)?;
 
     let mut output_string_sections = output_sections.new_section_map::<MergedStringsSection>();
 
@@ -222,29 +223,31 @@ pub(crate) fn merge_strings<'data>(
 
     let reuse_pool = ReusePool::new(MERGE_STRING_BUCKETS * split_parallelism);
 
-    input_sections_by_output.try_for_each(|section_id, input_sections| {
-        // We later create ArrayQueues with capacity for all input sections and ArrayQueue panics if
-        // asked for zero capacity. Also, spawning tasks and all the other work we do here would be
-        // a waste if we have no input sections.
-        if input_sections.is_empty() {
-            return Ok(());
-        }
+    inputs
+        .input_sections_by_output
+        .try_for_each(|section_id, input_sections| {
+            // We later create ArrayQueues with capacity for all input sections and ArrayQueue
+            // panics if asked for zero capacity. Also, spawning tasks and all the other
+            // work we do here would be a waste if we have no input sections.
+            if input_sections.is_empty() {
+                return Ok(());
+            }
 
-        verbose_timing_phase!(
-            "Merge section",
-            section_name = output_sections.display_name(section_id)
-        );
+            verbose_timing_phase!(
+                "Merge section",
+                section_name = output_sections.display_name(section_id)
+            );
 
-        let output_section = output_string_sections.get_mut(section_id);
-        output_section.add_input_sections(input_sections, &reuse_pool, args)?;
+            let output_section = output_string_sections.get_mut(section_id);
+            output_section.add_input_sections(input_sections, &reuse_pool, args)?;
 
-        assert_eq!(
-            reuse_pool.available.load(Ordering::Relaxed),
-            reuse_pool.capacity,
-        );
+            assert_eq!(
+                reuse_pool.available.load(Ordering::Relaxed),
+                reuse_pool.capacity,
+            );
 
-        Ok(())
-    })?;
+            Ok(())
+        })?;
 
     output_string_sections.for_each(|section_id, sec| {
         if sec.len() > 0 {
@@ -266,6 +269,20 @@ pub(crate) fn merge_strings<'data>(
     Ok(output_string_sections)
 }
 
+impl<'data> StringMergeInputs<'data> {
+    pub(crate) fn new(
+        resolved: &mut [ResolvedGroup<'data>],
+        output_sections: &OutputSections,
+    ) -> Result<Self> {
+        Ok(Self {
+            input_sections_by_output: group_merge_string_sections_by_output(
+                resolved,
+                output_sections,
+            )?,
+        })
+    }
+}
+
 // Gather up all the string-merge sections, grouping them by their output section ID. We return a
 // reference to the `MergeStringsFileSection` rather than copying it because it appears to be
 // faster.
@@ -273,6 +290,8 @@ fn group_merge_string_sections_by_output<'data>(
     resolved: &mut [ResolvedGroup<'data>],
     output_sections: &OutputSections,
 ) -> Result<OutputSectionMap<Vec<StringMergeInputSection<'data>>>> {
+    verbose_timing_phase!("Find merge sectionns");
+
     let mut input_sections = output_sections.new_section_map::<Vec<StringMergeInputSection>>();
 
     let mut starting_offsets = output_sections.new_section_map::<LinearInputOffset>();

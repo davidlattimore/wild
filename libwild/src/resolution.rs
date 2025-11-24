@@ -23,12 +23,10 @@ use crate::layout_rules::SectionRules;
 use crate::output_section_id::CustomSectionDetails;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
-use crate::output_section_map::OutputSectionMap;
 use crate::parsing::InternalSymDefInfo;
 use crate::parsing::SymbolPlacement;
 use crate::part_id;
 use crate::part_id::PartId;
-use crate::string_merging::MergedStringsSection;
 use crate::string_merging::StringMergeSectionExtra;
 use crate::string_merging::StringMergeSectionSlot;
 use crate::symbol::PreHashedSymbolName;
@@ -65,7 +63,6 @@ use std::sync::atomic::Ordering;
 #[derive(Debug)]
 pub(crate) struct ResolutionOutputs<'data> {
     pub(crate) groups: Vec<ResolvedGroup<'data>>,
-    pub(crate) merged_strings: OutputSectionMap<MergedStringsSection<'data>>,
 }
 
 pub fn resolve_symbols_and_sections<'data>(
@@ -84,12 +81,6 @@ pub fn resolve_symbols_and_sections<'data>(
     let mut custom_start_stop_defs = Vec::new();
 
     assign_section_ids(&mut resolved_groups, output_sections);
-
-    let merged_strings = crate::string_merging::merge_strings(
-        &mut resolved_groups,
-        output_sections,
-        symbol_db.args,
-    )?;
 
     canonicalise_undefined_symbols(
         undefined_symbols,
@@ -120,7 +111,6 @@ pub fn resolve_symbols_and_sections<'data>(
 
     Ok(ResolutionOutputs {
         groups: resolved_groups,
-        merged_strings,
     })
 }
 
