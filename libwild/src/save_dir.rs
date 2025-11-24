@@ -407,6 +407,7 @@ mod tests {
             ("/a/b/c/d", "/a/b/c", "d"),
             ("/a/b/c", "/a/b/c/d", ".."),
             ("/a/b/c/d", "/a/b/c/d", "."),
+            ("/a/b", "/d/c/e", "../../../a/b"),
         ];
 
         for (target_str, dir_str, expected_str) in cases {
