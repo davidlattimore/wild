@@ -345,33 +345,28 @@ fn make_relative_path(target: &Path, directory: &Path) -> PathBuf {
     assert!(directory.is_absolute());
     let mut out = PathBuf::new();
 
-    let mut target_comps = target.components();
-    let mut dir_comps = directory.components();
+    let mut target_comps = target.components().peekable();
+    let mut dir_comps = directory.components().peekable();
 
-    // Consume all the common components and find the first differing pair of components.
-    let (target_comp, dir_comp) = loop {
-        match (target_comps.next(), dir_comps.next()) {
-            // the paths are identical
+    loop {
+        match (target_comps.peek(), dir_comps.peek()) {
+            // identical paths
             (None, None) => return PathBuf::from("."),
-            (Some(t), Some(d)) if t == d => continue,
-            pair => break pair,
+            // consume identical components
+            (Some(t), Some(d)) if t == d => {
+                target_comps.next();
+                dir_comps.next();
+            }
+            _ => break,
         }
-    };
+    }
 
     // Escape all the remaining dir components.
     for _ in dir_comps {
         out.push("..");
     }
 
-    if dir_comp.is_some() {
-        out.push("..");
-    }
-
-    // Now we just need to append all the remaining target components.
-    if let Some(t) = target_comp {
-        out.push(t);
-    }
-
+    // And then add all the remaining target components.
     out.extend(target_comps);
 
     out
