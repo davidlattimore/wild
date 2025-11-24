@@ -1927,7 +1927,7 @@ impl<'data> Layout<'data> {
             > 0
     }
 
-    pub(crate) fn info_inputs<'layout>(&'layout self) -> InfoInputs<'layout> {
+    pub(crate) fn info_inputs(&self) -> InfoInputs<'_> {
         InfoInputs {
             section_part_layouts: &self.section_part_layouts,
             non_addressable_counts: &self.non_addressable_counts,

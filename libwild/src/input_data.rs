@@ -448,7 +448,7 @@ fn process_open_file_request<'data>(
     }
 }
 
-fn process_archive<'data>(input_file: &'data InputFile) -> Result<ResponseKind<'data>> {
+fn process_archive(input_file: &InputFile) -> Result<ResponseKind<'_>> {
     let mut extended_filenames = None;
     let mut outputs = Vec::new();
 
