@@ -339,11 +339,30 @@ fn make_linker_script_relative(bytes: &[u8], source_path: &Path) -> Result<Vec<u
     Ok(text.into_bytes())
 }
 
+/// Removes any backtracking components (`..`) and the next component from `path`
+/// For example, `/a/b/../c` becomes `/a/c`.
+/// The path must be absolute, otherwise it might start with `..` which we can't handle.
+fn remove_backtracking_components(path: &Path) -> PathBuf {
+    assert!(path.is_absolute());
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        if comp.as_os_str() == ".." {
+            out.pop();
+        } else {
+            out.push(comp);
+        }
+    }
+    out
+}
+
 /// Returns a relative path to reach `target` from `directory`. Both should be absolute paths.
 fn make_relative_path(target: &Path, directory: &Path) -> PathBuf {
     assert!(target.is_absolute());
     assert!(directory.is_absolute());
     let mut out = PathBuf::new();
+
+    let target = remove_backtracking_components(target);
+    let directory = remove_backtracking_components(directory);
 
     let mut target_comps = target.components().peekable();
     let mut dir_comps = directory.components().peekable();
