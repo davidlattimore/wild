@@ -407,7 +407,24 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+
+    fn test_make_relative_path(target: &Path, directory: &Path) {
+        let relative = make_relative_path(target, directory);
+
+        let result = remove_backtracking_components(&directory.join(&relative));
+        let factual_target = remove_backtracking_components(target);
+
+        assert_eq!(
+            result,
+            factual_target,
+            "from `{}` to `{}`: got `{}` (resolves to `{}`), expected to resolve to `{}`",
+            directory.display(),
+            target.display(),
+            relative.display(),
+            result.display(),
+            factual_target.display()
+        );
+    }
 
     #[test]
     fn make_relative_path_works() {
@@ -428,23 +445,11 @@ mod tests {
             ),
         ];
 
-        for (target_str, dir_str) in cases {
-            let target = Path::new(target_str);
-            let directory = Path::new(dir_str);
-            let relative = make_relative_path(target, directory);
-
-            let result = remove_backtracking_components(&directory.join(&relative));
-            let factual_target = remove_backtracking_components(target);
-
-            assert_eq!(
-                result,
-                factual_target,
-                "from `{}` to `{}`: got `{}`, expected `{}`",
-                directory.display(),
-                target.display(),
-                relative.display(),
-                factual_target.display()
-            );
+        for (a, b) in cases {
+            let a = PathBuf::from(a);
+            let b = PathBuf::from(b);
+            test_make_relative_path(&a, &b);
+            test_make_relative_path(&b, &a);
         }
     }
 }
