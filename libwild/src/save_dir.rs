@@ -226,7 +226,13 @@ impl SaveDirState {
 
             if target.is_absolute() {
                 self.copy_file(&target)?;
-                target = make_relative_path(&target, directory);
+                target = make_relative_path(&target, directory).with_context(|| {
+                    format!(
+                        "Failed to make path `{}` relative to `{}` while copying symlink",
+                        target.display(),
+                        directory.display()
+                    )
+                })?;
             } else {
                 let absolute_target = directory.join(&target);
                 self.copy_file(&absolute_target)?;
@@ -331,6 +337,10 @@ fn make_linker_script_relative(bytes: &[u8], source_path: &Path) -> Result<Vec<u
 
     for path in absolute_paths {
         let relative_path = make_relative_path(&path, script_dir);
+        // This shouldn't happen, but we don't want to fail in case it does.
+        let Some(relative_path) = relative_path else {
+            continue;
+        };
         let relative_str = relative_path.to_str().context("Path isn't valid UTF-8")?;
         let path_str = path.to_str().context("Path isn't valid UTF-8")?;
         text = text.replace(path_str, relative_str);
@@ -341,28 +351,31 @@ fn make_linker_script_relative(bytes: &[u8], source_path: &Path) -> Result<Vec<u
 
 /// Removes any backtracking components (`..`) and the next component from `path`
 /// For example, `/a/b/../c` becomes `/a/c`.
-/// The path must be absolute, otherwise it might start with `..` which we can't handle.
-fn remove_backtracking_components(path: &Path) -> PathBuf {
+/// The path must be absolute. Will return `None` if backtracking past the root is attempted.
+fn normalize_abs_path(path: &Path) -> Option<PathBuf> {
     assert!(path.is_absolute());
     let mut out = PathBuf::new();
     for comp in path.components() {
         if comp.as_os_str() == ".." {
-            out.pop();
+            if !out.pop() {
+                return None;
+            }
         } else {
             out.push(comp);
         }
     }
-    out
+    Some(out)
 }
 
-/// Returns a relative path to reach `target` from `directory`. Both should be absolute paths.
-fn make_relative_path(target: &Path, directory: &Path) -> PathBuf {
+/// Returns a relative path to reach `target` from `directory`. Both must be absolute paths.
+/// Returns `None` if the paths are invalid (e.g. contain backtracking past the root).
+fn make_relative_path(target: &Path, directory: &Path) -> Option<PathBuf> {
     assert!(target.is_absolute());
     assert!(directory.is_absolute());
     let mut out = PathBuf::new();
 
-    let target = remove_backtracking_components(target);
-    let directory = remove_backtracking_components(directory);
+    let target = normalize_abs_path(target)?;
+    let directory = normalize_abs_path(directory)?;
 
     let mut target_comps = target.components().peekable();
     let mut dir_comps = directory.components().peekable();
@@ -371,7 +384,7 @@ fn make_relative_path(target: &Path, directory: &Path) -> PathBuf {
     loop {
         match (target_comps.peek(), dir_comps.peek()) {
             // identical paths
-            (None, None) => return PathBuf::from("."),
+            (None, None) => return Some(PathBuf::from(".")),
             (Some(t), Some(d)) if t == d => {
                 target_comps.next();
                 dir_comps.next();
@@ -387,7 +400,7 @@ fn make_relative_path(target: &Path, directory: &Path) -> PathBuf {
 
     out.extend(target_comps);
 
-    out
+    Some(out)
 }
 
 fn write_copied_file_arg(out: &mut BufWriter<&mut std::fs::File>, path: &Path) -> Result {
@@ -408,10 +421,10 @@ mod tests {
     use super::*;
 
     fn test_make_relative_path(target: &Path, directory: &Path) {
-        let relative = make_relative_path(target, directory);
+        let relative = make_relative_path(target, directory).unwrap();
 
-        let result = remove_backtracking_components(&directory.join(&relative));
-        let factual_target = remove_backtracking_components(target);
+        let result = normalize_abs_path(&directory.join(&relative)).unwrap();
+        let factual_target = normalize_abs_path(target).unwrap();
 
         assert_eq!(
             result,
