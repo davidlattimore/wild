@@ -81,7 +81,6 @@ use crate::value_flags::FlagsForSymbol as _;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
-use crossbeam_channel::Sender;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
@@ -118,10 +117,10 @@ use object::read::elf::RelocationSections;
 use object::read::elf::SectionHeader as _;
 use object::read::elf::Sym;
 use object::read::elf::VerdefIterator;
+use rayon::Scope;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefMutIterator;
-use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelIterator;
 use rayon::slice::ParallelSliceMut;
 use smallvec::SmallVec;
@@ -1060,9 +1059,9 @@ trait SymbolRequestHandler<'data>: std::fmt::Display + HandlerData {
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
-        resources: &GraphResources<'data, 'scope>,
+        resources: &'scope GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) -> Result;
 }
 
@@ -1182,7 +1181,7 @@ impl<'data> SymbolRequestHandler<'data> for ObjectLayoutState<'data> {
         symbol_id: SymbolId,
         resources: &GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
-        _work_sender: &Sender<WaitingWorker<'data>>,
+        _scope: &Scope<'scope>,
     ) -> Result {
         debug_assert_bail!(
             resources.symbol_db.is_canonical(symbol_id),
@@ -1237,7 +1236,7 @@ impl<'data> SymbolRequestHandler<'data> for DynamicLayoutState<'data> {
         symbol_id: SymbolId,
         resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
-        _work_sender: &Sender<WaitingWorker<'data>>,
+        _scope: &Scope<'scope>,
     ) -> Result {
         let local_index = symbol_id.to_offset(self.symbol_id_range());
         if let Some(&version_index) = self.symbol_versions.get(local_index) {
@@ -1293,7 +1292,7 @@ impl<'data> SymbolRequestHandler<'data> for PreludeLayoutState<'data> {
         _symbol_id: SymbolId,
         _resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
-        _work_sender: &Sender<WaitingWorker<'data>>,
+        _scope: &Scope<'scope>,
     ) -> Result {
         Ok(())
     }
@@ -1316,7 +1315,7 @@ impl<'data> SymbolRequestHandler<'data> for LinkerScriptLayoutState<'data> {
         _symbol_id: SymbolId,
         _resources: &GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
-        _work_sender: &Sender<WaitingWorker<'data>>,
+        _scope: &Scope<'scope>,
     ) -> Result {
         Ok(())
     }
@@ -1337,9 +1336,9 @@ impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState<'data> {
         &mut self,
         _common: &mut CommonGroupState,
         symbol_id: SymbolId,
-        resources: &GraphResources<'data, 'scope>,
+        resources: &'scope GraphResources<'data, 'scope>,
         _queue: &mut LocalWorkQueue,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) -> Result {
         let def_info =
             &self.internal_symbols.symbol_definitions[self.symbol_id_range.id_to_offset(symbol_id)];
@@ -1349,7 +1348,12 @@ impl<'data> SymbolRequestHandler<'data> for EpilogueLayoutState<'data> {
             // sections that would go into that section.
             let sections = resources.start_stop_sections.get(output_section_id);
             while let Some(request) = sections.pop() {
-                resources.send_work(request.file_id, WorkItem::LoadSection(request), work_sender);
+                resources.send_work::<A>(
+                    request.file_id,
+                    WorkItem::LoadSection(request),
+                    resources,
+                    scope,
+                );
             }
         }
 
@@ -1668,6 +1672,8 @@ pub(crate) struct OutputRecordLayout {
 
 struct GraphResources<'data, 'scope> {
     symbol_db: &'scope SymbolDb<'data>,
+
+    output_sections: &'scope OutputSections<'data>,
 
     worker_slots: Vec<Mutex<WorkerSlot<'data>>>,
 
@@ -2361,27 +2367,16 @@ struct GcOutputs<'data> {
     has_variant_pcs: bool,
 }
 
-struct WaitingWorker<'data> {
-    work: GroupWorkKind<'data>,
-    work_sender: Sender<WaitingWorker<'data>>,
-}
-
-enum GroupWorkKind<'data> {
-    CreateState(GroupActivationInputs<'data>),
-    ProcessWorkQueue(GroupState<'data>),
-}
-
 struct GroupActivationInputs<'data> {
     resolved: ResolvedGroup<'data>,
     num_symbols: usize,
     group_index: usize,
 }
 impl<'data> GroupActivationInputs<'data> {
-    fn activate_group<A: Arch>(
+    fn activate_group<'scope, A: Arch>(
         self,
-        resources_ref: &GraphResources<'data, '_>,
-        output_sections: &OutputSections,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        resources: &'scope GraphResources<'data, '_>,
+        scope: &Scope<'scope>,
     ) {
         let GroupActivationInputs {
             resolved,
@@ -2398,20 +2393,14 @@ impl<'data> GroupActivationInputs<'data> {
             queue: LocalWorkQueue::new(group_index),
             num_symbols,
             files,
-            common: CommonGroupState::new(output_sections),
+            common: CommonGroupState::new(resources.output_sections),
         };
 
         let mut should_delay_processing = false;
 
         for file in &mut group.files {
-            let r = activate::<A>(
-                &mut group.common,
-                file,
-                &mut group.queue,
-                resources_ref,
-                work_sender,
-            )
-            .with_context(|| format!("Failed to activate {file}"));
+            let r = activate::<A>(&mut group.common, file, &mut group.queue, resources, scope)
+                .with_context(|| format!("Failed to activate {file}"));
 
             // The epilogue can't be processed until all groups have completed
             // activation, since the epilogue can read from `start_stop_sections` which
@@ -2419,24 +2408,24 @@ impl<'data> GroupActivationInputs<'data> {
             should_delay_processing |= matches!(file, FileLayoutState::Epilogue(_));
 
             if let Err(error) = r {
-                resources_ref.errors.lock().unwrap().push(error);
+                resources.errors.lock().unwrap().push(error);
             }
         }
 
         if should_delay_processing {
-            resources_ref.delay_processing.push(group).unwrap();
+            resources.delay_processing.push(group).unwrap();
         } else {
-            group.do_pending_work::<A>(resources_ref, work_sender);
+            group.do_pending_work::<A>(resources, scope);
         }
 
-        let remaining = resources_ref
+        let remaining = resources
             .activations_remaining
             .fetch_sub(1, atomic::Ordering::Relaxed)
             - 1;
 
         if remaining == 0 {
-            while let Some(group) = resources_ref.delay_processing.pop() {
-                group.do_pending_work::<A>(resources_ref, work_sender);
+            while let Some(group) = resources.delay_processing.pop() {
+                group.do_pending_work::<A>(resources, scope);
             }
         }
     }
@@ -2453,8 +2442,6 @@ fn find_required_sections<'data, A: Arch>(
 
     let num_groups = groups_in.len();
 
-    let (work_sender, work_recv) = crossbeam_channel::bounded(num_groups);
-
     let mut worker_slots = Vec::with_capacity(num_groups);
     worker_slots.resize_with(num_groups, || {
         Mutex::new(WorkerSlot {
@@ -2463,10 +2450,9 @@ fn find_required_sections<'data, A: Arch>(
         })
     });
 
-    queue_initial_group_processing(groups_in, symbol_db, &work_sender);
-
     let resources = GraphResources {
         symbol_db,
+        output_sections,
         worker_slots,
         errors: Mutex::new(Vec::new()),
         per_symbol_flags,
@@ -2481,22 +2467,9 @@ fn find_required_sections<'data, A: Arch>(
     };
     let resources_ref = &resources;
 
-    drop(work_sender);
-
-    work_recv
-        .into_iter()
-        .par_bridge()
-        .for_each(|WaitingWorker { work, work_sender }| {
-            verbose_timing_phase!("Work with object");
-            match work {
-                GroupWorkKind::CreateState(inputs) => {
-                    inputs.activate_group::<A>(resources_ref, output_sections, &work_sender);
-                }
-                GroupWorkKind::ProcessWorkQueue(group_state) => {
-                    group_state.do_pending_work::<A>(resources_ref, &work_sender);
-                }
-            }
-        });
+    rayon::in_place_scope(|scope| {
+        queue_initial_group_processing::<A>(groups_in, symbol_db, resources_ref, scope);
+    });
 
     let mut errors: Vec<Error> = take(resources.errors.lock().unwrap().as_mut());
     // TODO: Figure out good way to report more than one error.
@@ -2528,10 +2501,11 @@ fn find_required_sections<'data, A: Arch>(
     })
 }
 
-fn queue_initial_group_processing<'data>(
+fn queue_initial_group_processing<'data, 'scope, A: Arch>(
     groups_in: Vec<resolution::ResolvedGroup<'data>>,
     symbol_db: &SymbolDb<'data>,
-    work_send: &Sender<WaitingWorker<'data>>,
+    resources: &'scope GraphResources<'data, '_>,
+    scope: &Scope<'scope>,
 ) {
     verbose_timing_phase!("Create worker slots");
 
@@ -2540,16 +2514,15 @@ fn queue_initial_group_processing<'data>(
         .enumerate()
         .zip(&symbol_db.num_symbols_per_group)
         .for_each(|((group_index, group), &num_symbols)| {
-            work_send
-                .send(WaitingWorker {
-                    work: GroupWorkKind::CreateState(GroupActivationInputs {
-                        resolved: group,
-                        num_symbols,
-                        group_index,
-                    }),
-                    work_sender: work_send.clone(),
-                })
-                .unwrap();
+            scope.spawn(move |scope| {
+                verbose_timing_phase!("Activate group");
+                let inputs = GroupActivationInputs {
+                    resolved: group,
+                    num_symbols,
+                    group_index,
+                };
+                inputs.activate_group::<A>(resources, scope);
+            });
         });
 }
 
@@ -2567,8 +2540,8 @@ impl<'data> GroupState<'data> {
     /// shuts down.
     fn do_pending_work<'scope, A: Arch>(
         mut self,
-        resources: &GraphResources<'data, 'scope>,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        resources: &'scope GraphResources<'data, '_>,
+        scope: &Scope<'scope>,
     ) {
         loop {
             while let Some(work_item) = self.queue.local_work.pop() {
@@ -2579,7 +2552,7 @@ impl<'data> GroupState<'data> {
                     work_item,
                     resources,
                     &mut self.queue,
-                    work_sender,
+                    scope,
                 ) {
                     resources.report_error(error);
                     return;
@@ -2681,17 +2654,17 @@ fn set_last_verneed(
     }
 }
 
-fn activate<'data, A: Arch>(
+fn activate<'data, 'scope, A: Arch>(
     common: &mut CommonGroupState<'data>,
     file: &mut FileLayoutState<'data>,
     queue: &mut LocalWorkQueue,
-    resources: &GraphResources<'data, '_>,
-    work_sender: &Sender<WaitingWorker<'data>>,
+    resources: &'scope GraphResources<'data, '_>,
+    scope: &Scope<'scope>,
 ) -> Result {
     match file {
-        FileLayoutState::Object(s) => s.activate::<A>(common, resources, queue, work_sender)?,
-        FileLayoutState::Prelude(s) => s.activate(common, resources, queue, work_sender)?,
-        FileLayoutState::Dynamic(s) => s.activate(common, resources, queue, work_sender)?,
+        FileLayoutState::Object(s) => s.activate::<A>(common, resources, queue, scope)?,
+        FileLayoutState::Prelude(s) => s.activate::<A>(common, resources, queue, scope)?,
+        FileLayoutState::Dynamic(s) => s.activate::<A>(common, resources, queue, scope)?,
         FileLayoutState::LinkerScript(s) => s.activate(common, resources)?,
         FileLayoutState::NotLoaded(_) => {}
         FileLayoutState::Epilogue(s) => s.activate(resources, queue),
@@ -2701,17 +2674,17 @@ fn activate<'data, A: Arch>(
 
 impl LocalWorkQueue {
     #[inline(always)]
-    fn send_work<'data>(
+    fn send_work<'data, 'scope, A: Arch>(
         &mut self,
-        resources: &GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_>,
         file_id: FileId,
         work: WorkItem,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) {
         if file_id.group() == self.index {
             self.local_work.push(work);
         } else {
-            resources.send_work(file_id, work, work_sender);
+            resources.send_work::<A>(file_id, work, resources, scope);
         }
     }
 
@@ -2723,35 +2696,35 @@ impl LocalWorkQueue {
     }
 
     #[inline(always)]
-    fn send_symbol_request<'data>(
+    fn send_symbol_request<'data, 'scope, A: Arch>(
         &mut self,
         symbol_id: SymbolId,
-        resources: &GraphResources<'data, '_>,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        resources: &'scope GraphResources<'data, '_>,
+        scope: &Scope<'scope>,
     ) {
         debug_assert!(resources.symbol_db.is_canonical(symbol_id));
         let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
-        self.send_work(
+        self.send_work::<A>(
             resources,
             symbol_file_id,
             WorkItem::LoadGlobalSymbol(symbol_id),
-            work_sender,
+            scope,
         );
     }
 
-    fn send_copy_relocation_request<'data>(
+    fn send_copy_relocation_request<'data, 'scope, A: Arch>(
         &mut self,
         symbol_id: SymbolId,
-        resources: &GraphResources<'data, '_>,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        resources: &'scope GraphResources<'data, '_>,
+        scope: &Scope<'scope>,
     ) {
         debug_assert!(resources.symbol_db.is_canonical(symbol_id));
         let symbol_file_id = resources.symbol_db.file_id_for_symbol(symbol_id);
-        self.send_work(
+        self.send_work::<A>(
             resources,
             symbol_file_id,
             WorkItem::CopyRelocateSymbol(symbol_id),
-            work_sender,
+            scope,
         );
     }
 }
@@ -2764,11 +2737,12 @@ impl<'data> GraphResources<'data, '_> {
     /// Sends all work in `work` to the worker for `file_id`. Leaves `work` empty so that it can be
     /// reused.
     #[inline(always)]
-    fn send_work(
+    fn send_work<'scope, A: Arch>(
         &self,
         file_id: FileId,
         work: WorkItem,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        resources: &'scope GraphResources<'data, '_>,
+        scope: &Scope<'scope>,
     ) {
         let worker;
         {
@@ -2777,9 +2751,9 @@ impl<'data> GraphResources<'data, '_> {
             slot.work.push(work);
         };
         if let Some(worker) = worker {
-            let _ = work_sender.send(WaitingWorker {
-                work_sender: work_sender.clone(),
-                work: GroupWorkKind::ProcessWorkQueue(worker),
+            scope.spawn(|scope| {
+                verbose_timing_phase!("Work with object");
+                worker.do_pending_work::<A>(resources, scope);
             });
         }
     }
@@ -2833,13 +2807,13 @@ impl<'data> FileLayoutState<'data> {
         &mut self,
         common: &mut CommonGroupState<'data>,
         work_item: WorkItem,
-        resources: &GraphResources<'data, 'scope>,
+        resources: &'scope GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) -> Result {
         match work_item {
             WorkItem::LoadGlobalSymbol(symbol_id) => self
-                .handle_symbol_request::<A>(common, symbol_id, resources, queue, work_sender)
+                .handle_symbol_request::<A>(common, symbol_id, resources, queue, scope)
                 .with_context(|| {
                     format!(
                         "Failed to load {} from {self}",
@@ -2863,13 +2837,13 @@ impl<'data> FileLayoutState<'data> {
                         resources,
                         queue,
                         request.section_index(),
-                        work_sender,
+                        scope,
                     ),
                 _ => bail!("Request to load section from non-object: {self}"),
             },
             WorkItem::ExportDynamic(symbol_id) => match self {
                 FileLayoutState::Object(object) => {
-                    object.export_dynamic::<A>(common, symbol_id, resources, queue, work_sender)
+                    object.export_dynamic::<A>(common, symbol_id, resources, queue, scope)
                 }
                 _ => {
                     // Non-loaded and dynamic objects don't do anything in response to a request to
@@ -2884,24 +2858,24 @@ impl<'data> FileLayoutState<'data> {
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
-        resources: &GraphResources<'data, 'scope>,
+        resources: &'scope GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) -> Result {
         match self {
             FileLayoutState::Object(state) => {
-                state.load_symbol::<A>(common, symbol_id, resources, queue, work_sender)?;
+                state.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
             }
             FileLayoutState::Prelude(state) => {
-                state.load_symbol::<A>(common, symbol_id, resources, queue, work_sender)?;
+                state.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
             }
             FileLayoutState::Dynamic(state) => {
-                state.load_symbol::<A>(common, symbol_id, resources, queue, work_sender)?;
+                state.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
             }
             FileLayoutState::LinkerScript(_) => {}
             FileLayoutState::NotLoaded(_) => {}
             FileLayoutState::Epilogue(state) => {
-                state.load_symbol::<A>(common, symbol_id, resources, queue, work_sender)?;
+                state.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
             }
         }
         Ok(())
@@ -3121,15 +3095,15 @@ impl Section {
 }
 
 #[inline(always)]
-fn process_relocation<'data, A: Arch>(
+fn process_relocation<'data, 'scope, A: Arch>(
     object: &ObjectLayoutState,
     common: &mut CommonGroupState,
     rel: &Crel,
     section: &object::elf::SectionHeader64<LittleEndian>,
-    resources: &GraphResources<'data, '_>,
+    resources: &'scope GraphResources<'data, '_>,
     queue: &mut LocalWorkQueue,
     is_debug_section: bool,
-    work_sender: &Sender<WaitingWorker<'data>>,
+    scope: &Scope<'scope>,
 ) -> Result<RelocationModifier> {
     let args = resources.symbol_db.args;
     let mut next_modifier = RelocationModifier::Normal;
@@ -3222,7 +3196,7 @@ fn process_relocation<'data, A: Arch>(
                 atomic_flags.fetch_or(ValueFlags::GOT | ValueFlags::PLT);
             }
 
-            queue.send_symbol_request(symbol_id, resources, work_sender);
+            queue.send_symbol_request::<A>(symbol_id, resources, scope);
             if should_emit_undefined_error(
                 object.object.symbol(local_sym_index)?,
                 object.file_id,
@@ -3266,7 +3240,7 @@ fn process_relocation<'data, A: Arch>(
         }
 
         if flags_to_add.needs_copy_relocation() && !previous_flags.needs_copy_relocation() {
-            queue.send_copy_relocation_request(symbol_id, resources, work_sender);
+            queue.send_copy_relocation_request::<A>(symbol_id, resources, scope);
         }
     }
     Ok(next_modifier)
@@ -3374,12 +3348,12 @@ impl<'data> PreludeLayoutState<'data> {
         }
     }
 
-    fn activate(
+    fn activate<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState,
-        resources: &GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) -> Result {
         // Allocate space to store the identity of the linker in the .comment section.
         common.allocate(
@@ -3394,7 +3368,7 @@ impl<'data> PreludeLayoutState<'data> {
             common.allocate(part_id::STRTAB, 1);
         }
 
-        self.load_entry_point(resources, queue, work_sender);
+        self.load_entry_point::<A>(resources, queue, scope);
 
         if resources.symbol_db.output_kind.needs_dynsym() {
             // Allocate space for the null symbol.
@@ -3454,11 +3428,11 @@ impl<'data> PreludeLayoutState<'data> {
         }
     }
 
-    fn load_entry_point(
+    fn load_entry_point<'scope, A: Arch>(
         &mut self,
-        resources: &GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) {
         let Some(symbol_id) =
             resources
@@ -3478,11 +3452,11 @@ impl<'data> PreludeLayoutState<'data> {
             .get_atomic(symbol_id)
             .fetch_or(ValueFlags::DIRECT);
         if !old_flags.has_resolution() {
-            queue.send_work(
+            queue.send_work::<A>(
                 resources,
                 file_id,
                 WorkItem::LoadGlobalSymbol(symbol_id),
-                work_sender,
+                scope,
             );
         }
     }
@@ -4361,9 +4335,9 @@ impl<'data> ObjectLayoutState<'data> {
     fn activate<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
-        resources: &GraphResources<'data, 'scope>,
+        resources: &'scope GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) -> Result {
         let mut eh_frame_section = None;
         let mut note_gnu_property_section = None;
@@ -4422,7 +4396,7 @@ impl<'data> ObjectLayoutState<'data> {
                 eh_frame_section_index,
                 resources,
                 queue,
-                work_sender,
+                scope,
             )?;
             let eh_frame_section = self.object.section(eh_frame_section_index)?;
             self.eh_frame_section = Some(eh_frame_section);
@@ -4447,13 +4421,7 @@ impl<'data> ObjectLayoutState<'data> {
             || resources.symbol_db.output_kind.needs_dynsym()
                 && resources.symbol_db.export_list.is_some()
         {
-            self.load_non_hidden_symbols::<A>(
-                common,
-                resources,
-                queue,
-                export_all_dynamic,
-                work_sender,
-            )?;
+            self.load_non_hidden_symbols::<A>(common, resources, queue, export_all_dynamic, scope)?;
         }
 
         Ok(())
@@ -4462,21 +4430,14 @@ impl<'data> ObjectLayoutState<'data> {
     fn handle_section_load_request<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
-        resources: &GraphResources<'data, 'scope>,
+        resources: &'scope GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
         section_index: SectionIndex,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) -> Result<(), Error> {
         match &self.sections[section_index.0] {
             SectionSlot::Unloaded(unloaded) | SectionSlot::MustLoad(unloaded) => {
-                self.load_section::<A>(
-                    common,
-                    queue,
-                    *unloaded,
-                    section_index,
-                    resources,
-                    work_sender,
-                )?;
+                self.load_section::<A>(common, queue, *unloaded, section_index, resources, scope)?;
             }
             SectionSlot::UnloadedDebugInfo(part_id) => {
                 // On RISC-V, the debug info sections contain relocations to local symbols (e.g.
@@ -4487,7 +4448,7 @@ impl<'data> ObjectLayoutState<'data> {
                     *part_id,
                     section_index,
                     resources,
-                    work_sender,
+                    scope,
                 )?;
             }
             SectionSlot::Discard => {
@@ -4519,8 +4480,8 @@ impl<'data> ObjectLayoutState<'data> {
         queue: &mut LocalWorkQueue,
         unloaded: UnloadedSection,
         section_index: SectionIndex,
-        resources: &GraphResources<'data, 'scope>,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        resources: &'scope GraphResources<'data, 'scope>,
+        scope: &Scope<'scope>,
     ) -> Result {
         let part_id = unloaded.part_id;
         let header = self.object.section(section_index)?;
@@ -4534,7 +4495,7 @@ impl<'data> ObjectLayoutState<'data> {
                     resources,
                     section,
                     relocations.crel_iter(),
-                    work_sender,
+                    scope,
                 )?;
             }
             RelocationList::Crel(relocations) => {
@@ -4544,7 +4505,7 @@ impl<'data> ObjectLayoutState<'data> {
                     resources,
                     section,
                     relocations.flat_map(|r| r.ok()),
-                    work_sender,
+                    scope,
                 )?;
             }
         }
@@ -4564,7 +4525,7 @@ impl<'data> ObjectLayoutState<'data> {
                 common,
                 resources,
                 queue,
-                work_sender,
+                scope,
             )?;
         }
 
@@ -4573,14 +4534,14 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_section_relocations<A: Arch>(
+    fn load_section_relocations<'scope, A: Arch>(
         &self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
-        resources: &GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_>,
         section: Section,
         relocations: impl Iterator<Item = Crel>,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) -> Result {
         let mut modifier = RelocationModifier::Normal;
         for rel in relocations {
@@ -4596,7 +4557,7 @@ impl<'data> ObjectLayoutState<'data> {
                 resources,
                 queue,
                 false,
-                work_sender,
+                scope,
             )
             .with_context(|| {
                 format!(
@@ -4610,13 +4571,13 @@ impl<'data> ObjectLayoutState<'data> {
     }
 
     /// Processes the exception frames for a section that we're loading.
-    fn process_section_exception_frames<A: Arch>(
+    fn process_section_exception_frames<'scope, A: Arch>(
         &mut self,
         frame_index: Option<FrameIndex>,
         common: &mut CommonGroupState<'data>,
-        resources: &GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) -> Result {
         let mut num_frames = 0;
         let mut next_frame_index = frame_index;
@@ -4642,7 +4603,7 @@ impl<'data> ObjectLayoutState<'data> {
                                 resources,
                                 queue,
                                 false,
-                                work_sender,
+                                scope,
                             )?;
                         }
                     }
@@ -4656,7 +4617,7 @@ impl<'data> ObjectLayoutState<'data> {
                                 resources,
                                 queue,
                                 false,
-                                work_sender,
+                                scope,
                             )?;
                         }
                     }
@@ -4674,15 +4635,15 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_debug_section<A: Arch>(
+    fn load_debug_section<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
 
         part_id: PartId,
         section_index: SectionIndex,
-        resources: &GraphResources<'data, '_>,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        resources: &'scope GraphResources<'data, '_>,
+        scope: &Scope<'scope>,
     ) -> Result {
         let header = self.object.section(section_index)?;
         let section = Section::create(header, self, section_index, part_id)?;
@@ -4694,7 +4655,7 @@ impl<'data> ObjectLayoutState<'data> {
                     resources,
                     section,
                     relocations.crel_iter(),
-                    work_sender,
+                    scope,
                 )?,
                 RelocationList::Crel(relocations) => self.load_debug_relocations::<A>(
                     common,
@@ -4702,7 +4663,7 @@ impl<'data> ObjectLayoutState<'data> {
                     resources,
                     section,
                     relocations.flat_map(|r| r.ok()),
-                    work_sender,
+                    scope,
                 )?,
             }
         }
@@ -4714,14 +4675,14 @@ impl<'data> ObjectLayoutState<'data> {
         Ok(())
     }
 
-    fn load_debug_relocations<A: Arch>(
+    fn load_debug_relocations<'scope, A: Arch>(
         &self,
         common: &mut CommonGroupState<'data>,
         queue: &mut LocalWorkQueue,
-        resources: &GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_>,
         section: Section,
         relocations: impl Iterator<Item = Crel>,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) -> Result<(), Error> {
         for rel in relocations {
             let modifier = process_relocation::<A>(
@@ -4732,7 +4693,7 @@ impl<'data> ObjectLayoutState<'data> {
                 resources,
                 queue,
                 true,
-                work_sender,
+                scope,
             )
             .with_context(|| {
                 format!(
@@ -4996,10 +4957,10 @@ impl<'data> ObjectLayoutState<'data> {
     fn load_non_hidden_symbols<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
-        resources: &GraphResources<'data, 'scope>,
+        resources: &'scope GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
         export_all_dynamic: bool,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) -> Result {
         for (sym_index, sym) in self.object.symbols.enumerate() {
             let symbol_id = self.symbol_id_range().input_to_id(sym_index);
@@ -5014,7 +4975,7 @@ impl<'data> ObjectLayoutState<'data> {
                 .fetch_or(ValueFlags::EXPORT_DYNAMIC);
 
             if !old_flags.has_resolution() {
-                self.load_symbol::<A>(common, symbol_id, resources, queue, work_sender)?;
+                self.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
             }
 
             if !old_flags.needs_export_dynamic() {
@@ -5028,9 +4989,9 @@ impl<'data> ObjectLayoutState<'data> {
         &mut self,
         common: &mut CommonGroupState<'data>,
         symbol_id: SymbolId,
-        resources: &GraphResources<'data, 'scope>,
+        resources: &'scope GraphResources<'data, 'scope>,
         queue: &mut LocalWorkQueue,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) -> Result {
         let sym = self
             .object
@@ -5051,7 +5012,7 @@ impl<'data> ObjectLayoutState<'data> {
             .fetch_or(ValueFlags::EXPORT_DYNAMIC);
 
         if !old_flags.has_resolution() {
-            self.load_symbol::<A>(common, symbol_id, resources, queue, work_sender)?;
+            self.load_symbol::<A>(common, symbol_id, resources, queue, scope)?;
         }
 
         if !old_flags.needs_export_dynamic() {
@@ -5159,14 +5120,14 @@ fn can_export_symbol(
     true
 }
 
-fn process_eh_frame_data<'data, A: Arch>(
+fn process_eh_frame_data<'data, 'scope, A: Arch>(
     object: &mut ObjectLayoutState<'data>,
     common: &mut CommonGroupState<'data>,
     file_symbol_id_range: SymbolIdRange,
     eh_frame_section_index: object::SectionIndex,
-    resources: &GraphResources<'data, '_>,
+    resources: &'scope GraphResources<'data, '_>,
     queue: &mut LocalWorkQueue,
-    work_sender: &Sender<WaitingWorker<'data>>,
+    scope: &Scope<'scope>,
 ) -> Result {
     let eh_frame_section = object.object.section(eh_frame_section_index)?;
     let data = object.object.raw_section_data(eh_frame_section)?;
@@ -5180,7 +5141,7 @@ fn process_eh_frame_data<'data, A: Arch>(
             eh_frame_section,
             data,
             &relocations,
-            work_sender,
+            scope,
         ),
         RelocationList::Crel(crel_iterator) => process_eh_frame_relocations::<A>(
             object,
@@ -5191,21 +5152,21 @@ fn process_eh_frame_data<'data, A: Arch>(
             eh_frame_section,
             data,
             &crel_iterator.collect::<Result<Vec<Crel>, _>>()?,
-            work_sender,
+            scope,
         ),
     }
 }
 
-fn process_eh_frame_relocations<'data, 'rel: 'data, A: Arch>(
+fn process_eh_frame_relocations<'data, 'scope, 'rel: 'data, A: Arch>(
     object: &mut ObjectLayoutState<'data>,
     common: &mut CommonGroupState<'data>,
     file_symbol_id_range: SymbolIdRange,
-    resources: &GraphResources<'data, '_>,
+    resources: &'scope GraphResources<'data, '_>,
     queue: &mut LocalWorkQueue,
     eh_frame_section: &'data object::elf::SectionHeader64<LittleEndian>,
     data: &'data [u8],
     relocations: &impl RelocationSequence<'rel>,
-    work_sender: &Sender<WaitingWorker<'data>>,
+    scope: &Scope<'scope>,
 ) -> Result {
     const PREFIX_LEN: usize = size_of::<elf::EhFrameEntryPrefix>();
 
@@ -5250,7 +5211,7 @@ fn process_eh_frame_relocations<'data, 'rel: 'data, A: Arch>(
                     resources,
                     queue,
                     false,
-                    work_sender,
+                    scope,
                 )?;
 
                 if let Some(local_sym_index) = rel.symbol() {
@@ -5790,12 +5751,12 @@ fn layout_section_parts(
 }
 
 impl<'data> DynamicLayoutState<'data> {
-    fn activate(
+    fn activate<'scope, A: Arch>(
         &mut self,
         common: &mut CommonGroupState<'data>,
-        resources: &GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) -> Result {
         self.symbol_versions_needed = vec![false; self.object.verdefnum as usize];
 
@@ -5811,14 +5772,14 @@ impl<'data> DynamicLayoutState<'data> {
 
         common.allocate(part_id::DYNSTR, self.lib_name.len() as u64 + 1);
 
-        self.request_all_undefined_symbols(resources, queue, work_sender)
+        self.request_all_undefined_symbols::<A>(resources, queue, scope)
     }
 
-    fn request_all_undefined_symbols(
+    fn request_all_undefined_symbols<'scope, A: Arch>(
         &self,
-        resources: &GraphResources<'data, '_>,
+        resources: &'scope GraphResources<'data, '_>,
         queue: &mut LocalWorkQueue,
-        work_sender: &Sender<WaitingWorker<'data>>,
+        scope: &Scope<'scope>,
     ) -> Result {
         let mut check_undefined_cache = None;
 
@@ -5872,11 +5833,11 @@ impl<'data> DynamicLayoutState<'data> {
             } else if definition_symbol_id != symbol_id {
                 let file_id = resources.symbol_db.file_id_for_symbol(definition_symbol_id);
 
-                queue.send_work(
+                queue.send_work::<A>(
                     resources,
                     file_id,
                     WorkItem::ExportDynamic(definition_symbol_id),
-                    work_sender,
+                    scope,
                 );
             }
         }
