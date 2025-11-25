@@ -226,7 +226,13 @@ impl SaveDirState {
 
             if target.is_absolute() {
                 self.copy_file(&target)?;
-                target = make_relative_path(&target, directory);
+                target = make_relative_path(&target, directory).with_context(|| {
+                    format!(
+                        "Failed to make path `{}` relative to `{}` while copying symlink",
+                        target.display(),
+                        directory.display()
+                    )
+                })?;
             } else {
                 let absolute_target = directory.join(&target);
                 self.copy_file(&absolute_target)?;
@@ -331,6 +337,10 @@ fn make_linker_script_relative(bytes: &[u8], source_path: &Path) -> Result<Vec<u
 
     for path in absolute_paths {
         let relative_path = make_relative_path(&path, script_dir);
+        // This shouldn't happen, but we don't want to fail in case it does.
+        let Some(relative_path) = relative_path else {
+            continue;
+        };
         let relative_str = relative_path.to_str().context("Path isn't valid UTF-8")?;
         let path_str = path.to_str().context("Path isn't valid UTF-8")?;
         text = text.replace(path_str, relative_str);
@@ -339,23 +349,58 @@ fn make_linker_script_relative(bytes: &[u8], source_path: &Path) -> Result<Vec<u
     Ok(text.into_bytes())
 }
 
-/// Returns a relative path to reach `target` from `directory`. Both should be absolute paths.
-fn make_relative_path(target: &Path, directory: &Path) -> PathBuf {
+/// Removes any backtracking components (`..`) and the next component from `path`
+/// For example, `/a/b/../c` becomes `/a/c`.
+/// The path must be absolute. Will return `None` if backtracking past the root is attempted.
+fn normalize_abs_path(path: &Path) -> Option<PathBuf> {
+    assert!(path.is_absolute());
+    let mut out = PathBuf::new();
+    for comp in path.components() {
+        if comp.as_os_str() == ".." {
+            if !out.pop() {
+                return None;
+            }
+        } else {
+            out.push(comp);
+        }
+    }
+    Some(out)
+}
+
+/// Returns a relative path to reach `target` from `directory`. Both must be absolute paths.
+/// Returns `None` if the paths are invalid (e.g. contain backtracking past the root).
+fn make_relative_path(target: &Path, directory: &Path) -> Option<PathBuf> {
     assert!(target.is_absolute());
     assert!(directory.is_absolute());
     let mut out = PathBuf::new();
-    let mut p = directory;
 
-    // If `target` and `directory` share some common prefix, then our path may not be as short as
-    // possible, but it should still work.
-    while let Some(parent) = p.parent() {
+    let target = normalize_abs_path(target)?;
+    let directory = normalize_abs_path(directory)?;
+
+    let mut target_comps = target.components().peekable();
+    let mut dir_comps = directory.components().peekable();
+
+    // We consume identical components until they diverge.
+    loop {
+        match (target_comps.peek(), dir_comps.peek()) {
+            // identical paths
+            (None, None) => return Some(PathBuf::from(".")),
+            (Some(t), Some(d)) if t == d => {
+                target_comps.next();
+                dir_comps.next();
+            }
+            _ => break,
+        }
+    }
+    // Now we just have the components that differ.
+
+    for _ in dir_comps {
         out.push("..");
-        p = parent;
     }
 
-    out.extend(target.iter());
+    out.extend(target_comps);
 
-    out
+    Some(out)
 }
 
 fn write_copied_file_arg(out: &mut BufWriter<&mut std::fs::File>, path: &Path) -> Result {
@@ -369,4 +414,54 @@ fn to_output_relative_path(path: &Path) -> PathBuf {
     path.iter()
         .filter(|p| p.as_encoded_bytes() != b"/")
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_make_relative_path(target: &Path, directory: &Path) {
+        let relative = make_relative_path(target, directory).unwrap();
+
+        let result = normalize_abs_path(&directory.join(&relative)).unwrap();
+        let factual_target = normalize_abs_path(target).unwrap();
+
+        assert_eq!(
+            result,
+            factual_target,
+            "from `{}` to `{}`: got `{}` (resolves to `{}`), expected to resolve to `{}`",
+            directory.display(),
+            target.display(),
+            relative.display(),
+            result.display(),
+            factual_target.display()
+        );
+    }
+
+    #[test]
+    fn make_relative_path_works() {
+        let cases = [
+            ("/a/b/c", "/a/b"),
+            ("/a/b/c/d", "/a/b"),
+            ("/a/b/c", "/a/b/x"),
+            ("/a/b/c/d", "/a/b/x/y"),
+            ("/a/b/c/d/e", "/a/b/x/y"),
+            ("/a/b/c", "/a/b/c"),
+            ("/a/b/c/d", "/a/b/c"),
+            ("/a/b/c", "/a/b/c/d"),
+            ("/a/b/c/d", "/a/b/c/d"),
+            ("/a/b", "/d/c/e"),
+            (
+                "/usr/lib/libm.so.6",
+                "/usr/bin/../lib64/gcc/x86_64-pc-linux-gnu/15.2.1/../../../../lib64/libm.so",
+            ),
+        ];
+
+        for (a, b) in cases {
+            let a = PathBuf::from(a);
+            let b = PathBuf::from(b);
+            test_make_relative_path(&a, &b);
+            test_make_relative_path(&b, &a);
+        }
+    }
 }
