@@ -29,3 +29,8 @@ to avoid rebuilding. The testsuite is configured with `test-config.toml` file (d
 used if absent). To tweak the configuration, you can copy `test-config.toml.example` to
 `test-config.toml` and edit it to your liking. Just be careful with `run_all_diffs` option, it's
 meant mostly for Wild development and may cause false positives.
+
+## Issues
+
+If you, or the users of your package, encounter any issues or pain points with Wild, don't hesitate
+to report them to us or reach out for help.
