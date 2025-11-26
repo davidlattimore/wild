@@ -3,22 +3,22 @@
 ## Binaries
 
 This repository consists of Wild linker and linker-diff binaries. We recommend providing `wild`
-binary and symlink `ld.wild` pointing to it. This enables `-fuse-ld=wild` usage with Clang.
+binary and symlink `ld.wild` pointing to it, as this enables `-fuse-ld=wild` usage with Clang.
 Linker-diff is mainly a tool to aid Wild development, so you most likely don't want to package it.
 
 ## Building
 
-This project uses Cargo as its build system. Wild's official artifacts are built using with
-`--profile dist` that enables compiler's internal ThinLTO and strips the binaries. The benefit
-from ThinLTO is very mild in Wild's case, so it's up to you whether to use it. Musl artifacts
-also use `--feature mimalloc`, see below for the explanation.
+This project uses Cargo as its build system. The official artifacts are built with `--profile 
+dist` that enables compiler's internal ThinLTO and strips the binaries. The benefit from ThinLTO
+is very mild in Wild's case, so it's up to you whether to use it. Musl artifacts also use
+`--feature mimalloc`, see below for the explanation.
 
 ### Optional features
 
-Wild has two optional features:
+Wild has two optional build-time features:
 
-- `fork` (enabled by default) – an optimisation of cleanup phase using `fork()`. Can be disabled in
-  the runtime via `--no-fork` flag.
+- `fork` (enabled by default) – an optimisation of process clean-up phase using `fork()`. Can be
+  disabled in the runtime via `--no-fork` flag.
 - `mimalloc` (disabled by default) – build and use Mimalloc as the allocator instead of the system
   one. It performs marginally worse than Glibc in Wild's case, but much better than Musl.
 
