@@ -3,6 +3,8 @@ use crate::elf::PLT_ENTRY_SIZE;
 use crate::ensure;
 use crate::error;
 use crate::error::Result;
+use crate::layout::RelaxRecorder;
+use crate::layout::Section;
 use itertools::Itertools;
 use linker_utils::elf::DynamicRelocationKind;
 use linker_utils::elf::RISCV_TLS_DTV_OFFSET;
@@ -17,6 +19,7 @@ use linker_utils::riscv64::relocation_type_from_raw;
 use object::elf::EF_RISCV_FLOAT_ABI;
 use object::elf::EF_RISCV_RV64ILP32;
 use object::elf::EF_RISCV_RVE;
+use object::read::elf::Crel;
 
 pub(crate) struct RiscV64;
 
@@ -124,6 +127,66 @@ impl crate::arch::Arch for RiscV64 {
 
         Ok(or_eflags)
     }
+
+    fn record_relaxation_metadata(
+        recorder: &mut RelaxRecorder,
+        section: &Section,
+        section_data: &[u8],
+        previous_rel: Option<&Crel>,
+        current_rel: &Crel,
+    ) {
+        if current_rel.r_type != object::elf::R_RISCV_RELAX {
+            return;
+        }
+
+        let Some(prev) = previous_rel.filter(|rel| is_relaxable_hi20(rel.r_type)) else {
+            return;
+        };
+
+        let Some(symbol_index) = prev.symbol() else {
+            return;
+        };
+
+        let register_is_compressible = hi20_uses_compressible_register(section_data, prev);
+
+        recorder.record_riscv_hi20_pair(
+            section.index,
+            prev.r_offset,
+            symbol_index,
+            prev.r_addend,
+            register_is_compressible,
+        );
+    }
+}
+
+fn hi20_uses_compressible_register(section_data: &[u8], relocation: &Crel) -> bool {
+    let offset = relocation.r_offset as usize;
+    if offset + 4 > section_data.len() {
+        return false;
+    }
+
+    let bytes = match section_data[offset..offset + 4].try_into() {
+        Ok(slice) => slice,
+        Err(_) => return false,
+    };
+    let instruction = u32::from_le_bytes(bytes);
+    let rd = ((instruction >> 7) & 0x1f) as u8;
+
+    rd != 0 && rd != 2
+}
+
+fn is_relaxable_hi20(r_type: u32) -> bool {
+    // Relax metadata needs every HI20 variant that can legally pair with a RELAX tag so the
+    // symbol-size adjustment sees GOT/TLS/PCREL forms as well as the plain HI20 sequence.
+    matches!(
+        r_type,
+        object::elf::R_RISCV_HI20
+            | object::elf::R_RISCV_GOT_HI20
+            | object::elf::R_RISCV_TLS_GOT_HI20
+            | object::elf::R_RISCV_TLS_GD_HI20
+            | object::elf::R_RISCV_PCREL_HI20
+            | object::elf::R_RISCV_TPREL_HI20
+    )
 }
 
 #[derive(Debug, Clone)]
