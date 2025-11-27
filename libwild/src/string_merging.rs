@@ -52,9 +52,11 @@ use object::LittleEndian;
 use object::read::elf::Sym as _;
 use rayon::Scope;
 use sharded_offset_map::OffsetMap;
+use sharded_offset_map::ShardedWriter;
 use std::cell::RefCell;
 use std::mem::replace;
 use std::mem::take;
+use std::ops::Range;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -64,8 +66,8 @@ use thread_local::ThreadLocal;
 /// splitting parallelism up to the number of threads, but beyond about 24 it doesn't really help.
 const MAX_SPLIT_PARALLELISM: u64 = 24;
 
-/// How large a group of input sections should get before we break to the next group.
-const MIN_GROUP_BYTES: u64 = 140_000;
+/// How large should our chunks of input bytes be.
+const TARGET_GROUP_SIZE_BYTES: u64 = 140_000;
 
 /// Setting this to a higher value increases the potential for parallelism of hash table population
 /// and gives better cache performance. However, it also increases heap allocations. Changing this
@@ -121,6 +123,14 @@ impl std::ops::Add<u64> for LinearInputOffset {
 
     fn add(self, rhs: u64) -> Self::Output {
         Self(self.0 + rhs)
+    }
+}
+
+impl std::ops::Sub<LinearInputOffset> for LinearInputOffset {
+    type Output = u64;
+
+    fn sub(self, rhs: LinearInputOffset) -> Self::Output {
+        self.0 - rhs.0
     }
 }
 
@@ -345,6 +355,9 @@ struct SectionGroup<'data, 'offsets, 'sections> {
     index: usize,
     sections: &'sections [StringMergeInputSection<'data>],
     offsets_shard: sharded_offset_map::Shard<'offsets, BucketOffset, MAP_BLOCK_SIZE>,
+
+    /// Restrict to just strings that start within the specified range.
+    range: Range<LinearInputOffset>,
 }
 
 /// Split an input section into strings and hash those strings, collecting the results into
@@ -353,37 +366,63 @@ fn process_input_section<'data, 'offsets>(
     input_section: &StringMergeInputSection<'data>,
     buckets: &mut [Vec<StringToMerge<'data, 'offsets>>; MERGE_STRING_BUCKETS],
     offsets_shard: &mut sharded_offset_map::Shard<'offsets, BucketOffset, MAP_BLOCK_SIZE>,
+    range: &Range<LinearInputOffset>,
 ) -> Result {
     let mut input_offset = input_section.start_input_offset;
     let mut remaining = input_section.section_data;
+    if range.start > input_offset {
+        // Non-string merge sections should never be split.
+        debug_assert!(input_section.is_string);
 
-    let mut insert_data = |data: PreHashed<MergeString<'data>>| {
+        let offset_in_section = (range.start - input_offset) as usize;
+        let advance = if remaining[offset_in_section - 1] == 0 {
+            // Our range started just after a null character, so we're already at the start of a
+            // string.
+            offset_in_section
+        } else {
+            // Our range start is part way through a string, find end of the string and start from
+            // there.
+            memchr::memchr(0, &remaining[offset_in_section..])
+                .map_or(remaining.len(), |null_offset| {
+                    offset_in_section + null_offset + 1
+                })
+        };
+        input_offset = input_offset + advance as u64;
+        remaining = &remaining[advance..];
+    }
+
+    let mut insert_data = |data: PreHashed<MergeString<'data>>,
+                           input_offset: &mut LinearInputOffset| {
         // Insert 0, then we'll update it later once we know the output offset. We do the
         // initial insertion now since insertions need to happen in sequential order, whereas by
         // the time we know the output offset, we're processing just a single bucket.
+
         let offset_key = match offsets_shard.insert(input_offset.0, BucketOffset(0)) {
             Ok(offset_in_shard) => OffsetOut::InShard(offset_in_shard),
-            Err(_) => OffsetOut::Overflow(input_offset),
+            Err(_) => OffsetOut::Overflow(*input_offset),
         };
         buckets[(data.hash() as usize) % MERGE_STRING_BUCKETS].push(StringToMerge {
             string: data,
             offset_out: offset_key,
         });
-        input_offset = input_offset + data.bytes.len() as u64;
+        *input_offset = *input_offset + data.bytes.len() as u64;
     };
 
     // Non-string section is just a single slice.
     if !input_section.is_string {
         let section_data = MergeString::take_hashed(&mut remaining);
-        insert_data(section_data);
+
+        insert_data(section_data, &mut input_offset);
         return Ok(());
     }
 
     // String section, so split at null terminators.
-    while !remaining.is_empty() {
+    while !remaining.is_empty() && input_offset < range.end {
         let string = MergeString::take_string_hashed(&mut remaining)?;
-        insert_data(string);
+
+        insert_data(string, &mut input_offset);
     }
+
     Ok(())
 }
 
@@ -555,59 +594,24 @@ fn create_split_resources<'data, 'offsets, 'scope>(
     reuse_pool: &'scope ReusePool,
     args: &Args,
 ) -> SplitResources<'data, 'offsets, 'scope> {
+    verbose_timing_phase!("Create input section groups");
+
     let input_size = total_input_size(input_sections);
     let mut offset_writer = string_offsets.start_sharded_write(input_size.0);
 
-    let min_group_bytes =
-        args.numeric_experiment(Experiment::MergeStringMinGroupBytes, MIN_GROUP_BYTES);
+    let target_group_size = args
+        .numeric_experiment(
+            Experiment::MergeStringMinGroupBytes,
+            TARGET_GROUP_SIZE_BYTES,
+        )
+        .next_multiple_of(MAP_BLOCK_SIZE) as usize;
 
-    let unprocessed: ArrayQueue<SectionGroup> = ArrayQueue::new(input_sections.len());
+    let groups = split_sections(input_sections, &mut offset_writer, target_group_size);
 
-    let mut group_start_index = 0;
-    let mut group_size = 0;
-
-    input_sections
-        .iter()
-        .enumerate()
-        .for_each(|(index, section)| {
-            let size = (section.section_data.len() as u64).next_multiple_of(MAP_BLOCK_SIZE);
-            let is_last_section = index == input_sections.len() - 1;
-
-            let mut group_end_index = index;
-
-            let new_size = group_size + size;
-            let mut should_end_group = new_size > min_group_bytes
-                && new_size.abs_diff(min_group_bytes) > size.abs_diff(min_group_bytes)
-                && group_size > 0;
-
-            if is_last_section {
-                group_size += size;
-                should_end_group = true;
-                group_end_index += 1;
-            }
-
-            if should_end_group {
-                let first_section = &input_sections[group_start_index];
-                let last_section = &input_sections[group_end_index - 1];
-                let offsets_shard = offset_writer.take_shard(
-                    last_section.start_input_offset.0 - first_section.start_input_offset.0
-                        + (last_section.section_data.len() as u64).next_multiple_of(MAP_BLOCK_SIZE),
-                );
-
-                let r = unprocessed.push(SectionGroup {
-                    index: unprocessed.len(),
-                    sections: &input_sections[group_start_index..group_end_index],
-                    offsets_shard,
-                });
-                // We allocated enough space for each section to be in its own group.
-                assert!(r.is_ok());
-
-                group_size = 0;
-                group_start_index = group_end_index;
-            }
-
-            group_size += size;
-        });
+    let unprocessed: ArrayQueue<SectionGroup> = ArrayQueue::new(groups.len());
+    for group in groups {
+        let _ = unprocessed.push(group);
+    }
 
     let num_groups = unprocessed.len();
     let mut strings_by_bucket_and_group = Vec::new();
@@ -639,6 +643,80 @@ fn create_split_resources<'data, 'offsets, 'scope>(
     });
 
     resources
+}
+
+/// Split `sections` into slices of at most `size`. A single input section might be split into
+/// multiple groups, or a group might contain multiple input sections. The last slice may be
+/// smaller. If the sections are string sections, then the split will occur after exactly size bytes
+/// unless we run out of sections first. If a section is a non-string merge section, then the whole
+/// section will be taken regardless of size.
+fn split_sections<'data, 'offsets, 'sections>(
+    sections: &'sections [StringMergeInputSection<'data>],
+    offset_writer: &mut ShardedWriter<'offsets, BucketOffset, MAP_BLOCK_SIZE>,
+    size: usize,
+) -> Vec<SectionGroup<'data, 'offsets, 'sections>> {
+    assert!(size.is_multiple_of(MAP_BLOCK_SIZE as usize));
+
+    let mut result = Vec::new();
+
+    let mut section_index = 0;
+    let mut offset_in_section = 0;
+
+    while section_index < sections.len() {
+        // Remaining needs to be signed, since if we encounter non-string merge sections, we'll need
+        // to take the entire section, which may cause us to go negative.
+        let mut remaining = size as isize;
+        let start_section_index = section_index;
+        let first_section_start_offset = offset_in_section;
+        let mut end_section = false;
+
+        // Iterate through sections until we fill `size` bytes
+        while remaining > 0 {
+            let sec = &sections[section_index];
+            let available = (sec.padded_len() - offset_in_section) as isize;
+
+            if available > remaining && sec.is_string {
+                // Still some of this section left for the next group, so don't advance.
+                offset_in_section += remaining as usize;
+                remaining = 0;
+            } else {
+                remaining -= available;
+                if remaining <= 0 || section_index + 1 == sections.len() {
+                    offset_in_section += available as usize;
+                    end_section = true;
+                    break;
+                }
+                section_index += 1;
+                offset_in_section = 0;
+            }
+        }
+
+        let index = result.len();
+        let group_size = size as isize - remaining;
+
+        let linear_start =
+            sections[start_section_index].start_input_offset + first_section_start_offset as u64;
+        let linear_end = sections[section_index].start_input_offset + offset_in_section as u64;
+
+        let offsets_shard = offset_writer.take_shard(group_size as u64);
+
+        debug_assert_eq!(linear_start.0, offsets_shard.base());
+        debug_assert_eq!(linear_end.0, offsets_shard.base() + offsets_shard.len());
+
+        result.push(SectionGroup {
+            sections: &sections[start_section_index..=section_index],
+            range: linear_start..linear_end,
+            index,
+            offsets_shard,
+        });
+
+        if end_section {
+            section_index += 1;
+            offset_in_section = 0;
+        }
+    }
+
+    result
 }
 
 struct ReusePool {
@@ -737,22 +815,19 @@ fn process_input_section_group<'data, 'offsets, 'scope>(
     scope: &Scope<'scope>,
     reservation: &mut PoolReservation,
 ) -> Result {
-    verbose_timing_phase!(
-        "Split and hash",
-        num_sections = group_in.sections.len(),
-        num_bytes = group_in
-            .sections
-            .iter()
-            .map(|s| s.section_data.len())
-            .sum::<usize>()
-    );
+    verbose_timing_phase!("Split and hash");
 
     let mut buckets: [Vec<StringToMerge<'data, 'offsets>>; MERGE_STRING_BUCKETS] = [();
         MERGE_STRING_BUCKETS]
         .map(|()| resources.reuse_pool.take_string_merge_vec(reservation));
 
     for section in group_in.sections {
-        process_input_section(section, &mut buckets, &mut group_in.offsets_shard)?;
+        process_input_section(
+            section,
+            &mut buckets,
+            &mut group_in.offsets_shard,
+            &group_in.range,
+        )?;
     }
 
     group_in.offsets_shard.finish();
@@ -1042,6 +1117,15 @@ impl MergedStringStartAddresses {
             }
         });
         Self { addresses }
+    }
+}
+
+impl StringMergeInputSection<'_> {
+    /// Returns the length of this section's data rounded up to the next multiple of the block size.
+    fn padded_len(&self) -> usize {
+        self.section_data
+            .len()
+            .next_multiple_of(MAP_BLOCK_SIZE as usize)
     }
 }
 
