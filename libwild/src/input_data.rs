@@ -17,10 +17,11 @@ use crate::linker_script::LinkerScript;
 use crate::timing_phase;
 use crate::verbose_timing_phase;
 use colosseum::sync::Arena;
-use crossbeam_channel::Receiver;
-use crossbeam_channel::Sender;
+use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 use memmap2::Mmap;
+use rayon::Scope;
+use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use std::ffi::OsStr;
@@ -29,7 +30,9 @@ use std::ops::Deref;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
 pub(crate) struct InputData<'data> {
     /// These are actual files on disk. We mostly only need to keep these so that we can verify
@@ -119,28 +122,22 @@ pub(crate) struct InputLinkerScript<'data> {
     pub(crate) input_file: &'data InputFile,
 }
 
-struct TemporaryState<'data, 'ch> {
+struct TemporaryState<'data> {
     args: &'data Args,
 
     /// Mapping from paths to the index in `files` at which we'll place the result.
-    path_to_load_index: HashMap<PathBuf, FileLoadIndex>,
+    path_to_load_index: Mutex<HashMap<PathBuf, FileLoadIndex>>,
 
-    /// The number of OpenFileRequests that we've sent to workers minus the number of responses
-    /// we've received. Once this reaches zero, we can shut down.
-    outstanding_work_items: u32,
+    next_file_load_index: AtomicUsize,
 
-    /// Indexed by FileLoadIndex. As we finish each file, we'll put them into their appropriate
-    /// slot. The order in which we finish isn't deterministic, but the indexes at which we place
-    /// them are deterministic. Note, the order here is not quite the output order, since files
-    /// requested by linker scripts will appear at the end of this Vec, even though those files
-    /// need to be put into the final ordering at the place where the linker script was listed.
-    /// We do it this way because we don't know how many files a linker script will request
-    /// until we parse it. In fact, we don't even know that it will be a linker script until
-    /// we've actually opened it.
-    files: Vec<Option<LoadedFileState<'data>>>,
+    files: SegQueue<LoadedFile<'data>>,
 
-    work_recv: &'ch Receiver<OpenFileRequest>,
-    response_sender: &'ch Sender<OpenFileResponse<'data>>,
+    inputs_arena: &'data Arena<InputFile>,
+}
+
+struct LoadedFile<'data> {
+    index: FileLoadIndex,
+    state: LoadedFileState<'data>,
 }
 
 enum LoadedFileState<'data> {
@@ -160,6 +157,9 @@ struct LoadedLinkerScriptState<'data> {
     script: InputLinkerScript<'data>,
 }
 
+/// A temporary ID for files that we loaded. Files specified on the command-line will have
+/// deterministic values. Other files, e.g. those referenced by thin archives or linker scripts will
+/// have non-deterministic values.
 #[derive(Clone, Copy)]
 struct FileLoadIndex(usize);
 
@@ -174,19 +174,6 @@ struct OpenFileRequest {
     /// a chain of files where linker scripts reference linker scripts, but for simplicity, we only
     /// report the last file in the chain.
     referenced_by: Option<PathBuf>,
-}
-
-struct OpenFileResponse<'data> {
-    file_index: FileLoadIndex,
-    files: ResponseKind<'data>,
-}
-
-enum ResponseKind<'data> {
-    Regular(&'data InputFile),
-    Archive(&'data InputFile, Vec<InputBytes<'data>>),
-    ThinArchiveFiles(Vec<&'data InputFile>),
-    LinkerScript(LoadedLinkerScript<'data>),
-    Error(Error),
 }
 
 struct LoadedLinkerScript<'data> {
@@ -209,48 +196,43 @@ impl<'data> InputData<'data> {
             .map(|path| read_script_data(path, inputs_arena))
             .transpose()?;
 
-        let (work_sender, work_recv) = crossbeam_channel::unbounded();
-        let (response_sender, response_recv) = crossbeam_channel::unbounded();
+        let mut path_to_load_index = HashMap::new();
 
-        let mut temporary_state = TemporaryState {
+        let mut initial_work = Vec::with_capacity(args.inputs.len());
+        for input in &args.inputs {
+            let path = input.path(args)?;
+            path_to_load_index
+                .entry(path.absolute.clone())
+                .or_insert_with(|| {
+                    let file_index = FileLoadIndex(initial_work.len());
+
+                    initial_work.push(OpenFileRequest {
+                        file_index,
+                        paths: path,
+                        modifiers: input.modifiers,
+                        referenced_by: None,
+                    });
+
+                    file_index
+                });
+        }
+
+        let temporary_state = TemporaryState {
             args,
-            path_to_load_index: HashMap::new(),
-            outstanding_work_items: 0,
-            files: Vec::new(),
-            work_recv: &work_recv,
-            response_sender: &response_sender,
+            path_to_load_index: Mutex::new(path_to_load_index),
+            next_file_load_index: AtomicUsize::new(initial_work.len()),
+            files: SegQueue::new(),
+            inputs_arena,
         };
-
-        let mut error = None;
 
         // Open files, mmap them and identify their type from separate threads.
         rayon::scope(|scope| {
-            scope.spawn_broadcast(|_, _| {
-                while let Ok(request) = work_recv.recv() {
-                    let response = process_open_file_request(request, args, inputs_arena);
-
-                    if response_sender.send(response).is_err() {
-                        break;
-                    }
-                }
+            initial_work.into_par_iter().for_each(|request| {
+                temporary_state.process_and_record_open_file_request(request, scope);
             });
-
-            if let Err(e) =
-                temporary_state.run_main_thread(&work_sender, &response_recv, inputs_arena)
-            {
-                error = Some(e);
-            }
-
-            // Shut down worker threads.
-            drop(work_sender);
-            drop(response_recv);
         });
 
         verbose_timing_phase!("Finalise open input files");
-
-        if let Some(e) = error {
-            return Err(e);
-        }
 
         let mut inputs = Self {
             files: Vec::new(),
@@ -258,10 +240,23 @@ impl<'data> InputData<'data> {
             linker_scripts: Vec::new(),
             version_script_data,
             export_list_data,
-            path_to_load_index: temporary_state.path_to_load_index,
+            path_to_load_index: temporary_state.path_to_load_index.into_inner().unwrap(),
         };
 
-        inputs.extract_all(&mut temporary_state.files)?;
+        // Put files into a deterministic order. That order will the order we'd find them if we just
+        // processed command-line arguments in order, recursively processing any files that those
+        // files pulled in.
+        let mut files_by_index = Vec::new();
+        files_by_index.resize_with(temporary_state.files.len(), || None);
+        for file in temporary_state.files.into_iter() {
+            let entry = &mut files_by_index[file.index.0];
+            assert!(
+                entry.is_none(),
+                "Internal error: Multiple files with the same index"
+            );
+            *entry = Some(file.state);
+        }
+        inputs.extract_all(&mut files_by_index)?;
 
         args.save_dir.finish(inputs.path_to_load_index.keys())?;
 
@@ -373,7 +368,7 @@ impl<'data> InputData<'data> {
 fn process_linker_script<'data>(
     input_file: &'data InputFile,
     args: &Args,
-) -> Result<ResponseKind<'data>> {
+) -> Result<LoadedLinkerScript<'data>> {
     let bytes = input_file.data();
     let script = LinkerScript::parse(bytes, &input_file.filename)?;
 
@@ -397,58 +392,13 @@ fn process_linker_script<'data>(
         Ok(())
     })?;
 
-    Ok(ResponseKind::LinkerScript(LoadedLinkerScript {
+    Ok(LoadedLinkerScript {
         script: InputLinkerScript { script, input_file },
         extra_inputs,
-    }))
+    })
 }
 
-fn process_open_file_request<'data>(
-    request: OpenFileRequest,
-    args: &Args,
-    inputs_arena: &'data Arena<InputFile>,
-) -> OpenFileResponse<'data> {
-    verbose_timing_phase!("Open file");
-
-    let files = (|| -> Result<ResponseKind<'data>> {
-        let absolute_path = &request.paths.absolute;
-        let result = FileData::new(absolute_path.as_path(), args.prepopulate_maps);
-        let data = match request.referenced_by.as_ref() {
-            Some(referenced_by) => {
-                result.with_context(|| format!("Failed to process `{}`", referenced_by.display()))
-            }
-            None => result,
-        }?;
-
-        let kind = FileKind::identify_bytes(&data.bytes)?;
-
-        let input_file = InputFile {
-            filename: absolute_path.to_owned(),
-            original_filename: request.paths.original,
-            kind,
-            modifiers: request.modifiers,
-            data: Some(data),
-        };
-
-        let input_file = inputs_arena.alloc(input_file);
-
-        Ok(match kind {
-            FileKind::Archive => process_archive(input_file)?,
-            FileKind::ThinArchive => process_thin_archive(input_file, args, inputs_arena)?,
-            FileKind::Text => process_linker_script(input_file, args)?,
-            _ => ResponseKind::Regular(input_file),
-        })
-    })();
-
-    let files = files.unwrap_or_else(ResponseKind::Error);
-
-    OpenFileResponse {
-        file_index: request.file_index,
-        files,
-    }
-}
-
-fn process_archive(input_file: &InputFile) -> Result<ResponseKind<'_>> {
+fn process_archive(input_file: &InputFile) -> Result<LoadedFileState<'_>> {
     let mut extended_filenames = None;
     let mut outputs = Vec::new();
 
@@ -495,14 +445,14 @@ fn process_archive(input_file: &InputFile) -> Result<ResponseKind<'_>> {
         }
     }
 
-    Ok(ResponseKind::Archive(input_file, outputs))
+    Ok(LoadedFileState::Archive(input_file, outputs))
 }
 
 fn process_thin_archive<'data>(
     input_file: &InputFile,
     args: &Args,
     inputs_arena: &'data Arena<InputFile>,
-) -> Result<ResponseKind<'data>> {
+) -> Result<LoadedFileState<'data>> {
     let absolute_path = &input_file.filename;
     let parent_path = absolute_path.parent().unwrap();
     let mut extended_filenames = None;
@@ -540,113 +490,117 @@ fn process_thin_archive<'data>(
         }
     }
 
-    Ok(ResponseKind::ThinArchiveFiles(files))
+    Ok(LoadedFileState::ThinArchive(files))
 }
 
-impl<'data, 'ch> TemporaryState<'data, 'ch> {
-    fn run_main_thread(
-        &mut self,
-        work_sender: &Sender<OpenFileRequest>,
-        response_recv: &Receiver<OpenFileResponse<'data>>,
-        inputs_arena: &'data Arena<InputFile>,
-    ) -> Result {
-        for input in &self.args.inputs {
-            self.load_input(input, work_sender, None)?;
-        }
+impl<'data> TemporaryState<'data> {
+    fn process_and_record_open_file_request<'scope>(
+        &'scope self,
+        request: OpenFileRequest,
+        scope: &Scope<'scope>,
+    ) {
+        let file_index = request.file_index;
+        let loaded_state = self
+            .process_open_file_request(request, scope)
+            .unwrap_or_else(LoadedFileState::Error);
+        self.files.push(LoadedFile {
+            index: file_index,
+            state: loaded_state,
+        });
+    }
 
-        while self.outstanding_work_items > 0 {
-            while let Some(loaded) = self.try_recv_response(response_recv) {
-                let loaded_state = match loaded.files {
-                    ResponseKind::Regular(file) => LoadedFileState::Loaded(file),
-                    ResponseKind::Archive(file, parts) => LoadedFileState::Archive(file, parts),
-                    ResponseKind::ThinArchiveFiles(files) => LoadedFileState::ThinArchive(files),
-                    ResponseKind::LinkerScript(loaded) => {
-                        let file_indexes = loaded
-                            .extra_inputs
-                            .into_iter()
-                            .map(|input| {
-                                self.load_input(
-                                    &input,
-                                    work_sender,
-                                    Some(loaded.script.input_file.filename.clone()),
-                                )
-                            })
-                            .collect::<Result<Vec<FileLoadIndex>>>()?;
+    fn process_open_file_request<'scope>(
+        &'scope self,
+        request: OpenFileRequest,
+        scope: &Scope<'scope>,
+    ) -> Result<LoadedFileState<'data>> {
+        verbose_timing_phase!("Open file");
 
-                        LoadedFileState::LinkerScript(LoadedLinkerScriptState {
-                            file_indexes,
-                            script: loaded.script,
-                        })
-                    }
-                    ResponseKind::Error(error) => LoadedFileState::Error(error),
-                };
-
-                self.files[loaded.file_index.0] = Some(loaded_state);
-
-                self.outstanding_work_items -= 1;
+        let absolute_path = &request.paths.absolute;
+        let result = FileData::new(absolute_path.as_path(), self.args.prepopulate_maps);
+        let data = match request.referenced_by.as_ref() {
+            Some(referenced_by) => {
+                result.with_context(|| format!("Failed to process `{}`", referenced_by.display()))
             }
+            None => result,
+        }?;
 
-            // We've run out of work to receive from workers, so process a work item ourselves. This
-            // is mostly here so that we can still function even if there aren't any workers. i.e.
-            // if we're running single-threaded.
-            if let Ok(request) = self.work_recv.try_recv() {
-                let response = process_open_file_request(request, self.args, inputs_arena);
-                let _ = self.response_sender.send(response);
+        let kind = FileKind::identify_bytes(&data.bytes)?;
+
+        let input_file = InputFile {
+            filename: absolute_path.to_owned(),
+            original_filename: request.paths.original,
+            kind,
+            modifiers: request.modifiers,
+            data: Some(data),
+        };
+
+        let input_file = self.inputs_arena.alloc(input_file);
+
+        match kind {
+            FileKind::Archive => process_archive(input_file),
+            FileKind::ThinArchive => process_thin_archive(input_file, self.args, self.inputs_arena),
+            FileKind::Text => {
+                let script = process_linker_script(input_file, self.args)?;
+
+                let file_indexes = script
+                    .extra_inputs
+                    .into_iter()
+                    .map(|input| {
+                        self.load_input(
+                            &input,
+                            scope,
+                            Some(script.script.input_file.filename.clone()),
+                        )
+                    })
+                    .collect::<Result<Vec<FileLoadIndex>>>()?;
+
+                Ok(LoadedFileState::LinkerScript(LoadedLinkerScriptState {
+                    file_indexes,
+                    script: script.script,
+                }))
             }
+            _ => Ok(LoadedFileState::Loaded(input_file)),
         }
-
-        Ok(())
     }
 
     /// Sends a request to load `input` unless it has already been requested. In either case, return
     /// the index for `input` in our files Vec.
-    fn load_input(
-        &mut self,
+    fn load_input<'scope>(
+        &'scope self,
         input: &Input,
-        work_sender: &Sender<OpenFileRequest>,
+        scope: &Scope<'scope>,
         referenced_by: Option<PathBuf>,
     ) -> Result<FileLoadIndex> {
         let paths = input.path(self.args)?;
 
-        let index = match self.path_to_load_index.entry(paths.absolute.clone()) {
+        let mut path_to_load_index = self.path_to_load_index.lock().unwrap();
+
+        let index = match path_to_load_index.entry(paths.absolute.clone()) {
             hashbrown::hash_map::Entry::Occupied(e) => *e.get(),
             hashbrown::hash_map::Entry::Vacant(e) => {
-                let new_index = FileLoadIndex(self.files.len());
-                self.files.push(None);
-
+                let new_index =
+                    FileLoadIndex(self.next_file_load_index.fetch_add(1, Ordering::Relaxed));
                 e.insert(new_index);
 
-                self.outstanding_work_items += 1;
+                drop(path_to_load_index);
 
-                work_sender.send(OpenFileRequest {
+                let request = OpenFileRequest {
                     file_index: new_index,
                     paths,
                     modifiers: input.modifiers,
                     referenced_by,
-                })?;
+                };
+
+                scope.spawn(|scope| {
+                    self.process_and_record_open_file_request(request, scope);
+                });
 
                 new_index
             }
         };
 
         Ok(index)
-    }
-
-    /// Tries to receive a response from `response_recv`, returning None if there isn't any
-    /// currently available. If there's no work in the outgoing work queue, then we'll wait a short
-    /// time to try to receive a response. This is to avoid busy looping on the main thread when all
-    /// the remaining work has been claimed by worker threads. If there is work in the outgoing work
-    /// queue, then we don't wait for a response. This ensures that we run as fast as we can when
-    /// there are no worker threads.
-    fn try_recv_response(
-        &self,
-        response_recv: &Receiver<OpenFileResponse<'data>>,
-    ) -> Option<OpenFileResponse<'data>> {
-        if self.work_recv.is_empty() {
-            response_recv.recv_timeout(Duration::from_millis(1)).ok()
-        } else {
-            response_recv.try_recv().ok()
-        }
     }
 }
 
