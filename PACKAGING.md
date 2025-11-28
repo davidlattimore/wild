@@ -2,7 +2,7 @@
 
 ## Binaries
 
-This repository consists of Wild linker and linker-diff binaries. We recommend providing `wild`
+This repository consists of Wild linker and linker-diff binaries. We recommend providing the `wild`
 binary and symlink `ld.wild` pointing to it, as this enables `-fuse-ld=wild` usage with Clang.
 Linker-diff is mainly a tool to aid Wild development, so you most likely don't want to package it.
 
