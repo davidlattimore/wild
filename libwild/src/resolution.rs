@@ -20,6 +20,9 @@ use crate::input_data::InputRef;
 use crate::input_data::PRELUDE_FILE_ID;
 use crate::layout_rules::SectionRuleOutcome;
 use crate::layout_rules::SectionRules;
+use crate::layout_rules::SortOrder;
+use crate::layout_rules::sorted_section_priority;
+use crate::output_section_id;
 use crate::output_section_id::CustomSectionDetails;
 use crate::output_section_id::OutputSections;
 use crate::output_section_id::SectionName;
@@ -52,6 +55,7 @@ use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht::NOTE;
 use object::LittleEndian;
+use object::SectionIndex;
 use object::read::elf::Sym as _;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelBridge;
@@ -494,14 +498,17 @@ pub(crate) struct UnloadedSection {
     /// Whether the section has a name that makes it eligible for generation of __start_ / __stop_
     /// symbols. In particular, the name of the section doesn't start with a ".".
     pub(crate) start_stop_eligible: bool,
+
+    pub(crate) sort_order: Option<SortOrder>,
 }
 
 impl UnloadedSection {
-    fn new(part_id: PartId) -> Self {
+    fn new(part_id: PartId, sort_order: Option<SortOrder>) -> Self {
         Self {
             part_id,
             last_frame_index: None,
             start_stop_eligible: false,
+            sort_order,
         }
     }
 }
@@ -567,8 +574,49 @@ fn assign_section_ids<'data>(
                     &non_dynamic.custom_sections,
                     non_dynamic.sections.as_mut_slice(),
                 );
+                assign_init_fini_secondaries(
+                    s.object,
+                    non_dynamic.sections.as_mut_slice(),
+                    output_sections,
+                );
             }
         }
+    }
+}
+
+fn assign_init_fini_secondaries<'data>(
+    object_file: &File<'data>,
+    sections: &mut [SectionSlot],
+    output_sections: &mut OutputSections<'data>,
+) {
+    for (index, slot) in sections.iter_mut().enumerate() {
+        let Some(unloaded) = init_fini_unloaded_section(slot) else {
+            continue;
+        };
+        let part_id = unloaded.part_id;
+        let primary_id = part_id.output_section_id();
+        if primary_id != output_section_id::INIT_ARRAY
+            && primary_id != output_section_id::FINI_ARRAY
+        {
+            continue;
+        }
+
+        let Ok(header) = object_file.section(SectionIndex(index)) else {
+            continue;
+        };
+        let name = object_file.section_name(header).unwrap_or_default();
+        let priority = sorted_section_priority(name);
+        let alignment = part_id.alignment();
+        let secondary_id =
+            output_sections.init_fini_secondary_section(primary_id, priority, alignment);
+        unloaded.part_id = secondary_id.part_id_with_alignment(alignment);
+    }
+}
+
+fn init_fini_unloaded_section(slot: &mut SectionSlot) -> Option<&mut UnloadedSection> {
+    match slot {
+        SectionSlot::Unloaded(sec) | SectionSlot::MustLoad(sec) => Some(sec),
+        _ => None,
     }
 }
 
@@ -882,7 +930,7 @@ fn resolve_sections_for_object<'data>(
 
                     must_load |= output_info.must_keep;
 
-                    unloaded_section = UnloadedSection::new(part_id);
+                    unloaded_section = UnloadedSection::new(part_id, output_info.sort_order);
                 }
                 SectionRuleOutcome::Discard => return Ok(SectionSlot::Discard),
                 SectionRuleOutcome::EhFrame => {
@@ -898,10 +946,10 @@ fn resolve_sections_for_object<'data>(
 
                     is_debug_info = !section_flags.contains(shf::ALLOC);
 
-                    unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
+                    unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER, None);
                 }
                 SectionRuleOutcome::Custom => {
-                    unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
+                    unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER, None);
                     unloaded_section.start_stop_eligible = !section_name.starts_with(b".");
                 }
                 SectionRuleOutcome::RiscVAttribute => {

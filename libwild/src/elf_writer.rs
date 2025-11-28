@@ -125,6 +125,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use tracing::debug_span;
 use uuid::Uuid;
 use zerocopy::FromBytes;
+
 use zerocopy::transmute_mut;
 
 pub(crate) fn write<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout) -> Result {
@@ -246,6 +247,7 @@ fn fill_padding(mut section_buffers: OutputSectionMap<&mut [u8]>) {
     });
 }
 
+#[tracing::instrument(skip_all, name = "Sort .eh_frame_hdr")]
 fn sort_eh_frame_hdr_entries(eh_frame_hdr: &mut [u8]) {
     timing_phase!("Sort .eh_frame_hdr");
     let entry_bytes = &mut eh_frame_hdr[size_of::<elf::EhFrameHdr>()..];
@@ -350,7 +352,9 @@ fn write_file<A: Arch>(
     trace: &TraceOutput,
 ) -> Result {
     match file {
-        FileLayout::Object(s) => write_object::<A>(s, buffers, table_writer, layout, trace)?,
+        FileLayout::Object(s) => {
+            write_object::<A>(s, buffers, table_writer, layout, trace)?;
+        }
         FileLayout::Prelude(s) => write_prelude::<A>(s, buffers, table_writer, layout)?,
         FileLayout::Epilogue(s) => write_epilogue::<A>(s, buffers, table_writer, layout)?,
         FileLayout::LinkerScript(s) => write_linker_script_state::<A>(s, table_writer, layout)?,
@@ -1251,6 +1255,20 @@ fn write_object_section<A: Arch>(
             object.input
         )
     })?;
+    if section.is_ctors_like && !out.is_empty() {
+        const PTR_SIZE: usize = 8;
+        ensure!(
+            out.len().is_multiple_of(PTR_SIZE),
+            "ctors/dtors section has size not aligned to pointer"
+        );
+        let elems = out.len() / PTR_SIZE;
+        for i in 0..(elems / 2) {
+            let a = i * PTR_SIZE;
+            let b = (elems - 1 - i) * PTR_SIZE;
+            let (left, right) = out.split_at_mut(b);
+            left[a..a + PTR_SIZE].swap_with_slice(&mut right[..PTR_SIZE]);
+        }
+    }
     if section.flags.needs_got() || section.flags.needs_plt() {
         bail!("Section has GOT or PLT");
     };
