@@ -8,6 +8,7 @@ use crate::args::Args;
 use crate::bail;
 use crate::debug_assert_bail;
 use crate::elf::File;
+use crate::elf::SectionHeader;
 use crate::error::Context as _;
 use crate::error::Error;
 use crate::error::Result;
@@ -52,6 +53,7 @@ use linker_utils::elf::secnames;
 use linker_utils::elf::shf;
 use linker_utils::elf::sht::NOTE;
 use object::LittleEndian;
+use object::SectionIndex;
 use object::read::elf::Sym as _;
 use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::ParallelBridge;
@@ -854,100 +856,123 @@ fn resolve_sections_for_object<'data>(
     loaded_metrics: &LoadedMetrics,
     rules: &SectionRules,
 ) -> Result<Vec<SectionSlot>> {
-    let sections = obj
-        .object
-        .sections
-        .enumerate()
-        .map(|(input_section_index, input_section)| {
-            let section_name = obj.object.section_name(input_section).unwrap_or_default();
-
-            if section_name.starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes()) {
-                bail!("GCC IR (LTO mode) is not supported yet");
-            }
-
-            let section_flags = SectionFlags::from_header(input_section);
-            let raw_alignment = obj.object.section_alignment(input_section)?;
-            let alignment = Alignment::new(raw_alignment.max(1))?;
-            let should_merge_sections =
-                part_id::should_merge_sections(section_flags, raw_alignment, args);
-
-            let mut unloaded_section;
-            let mut is_debug_info = false;
-            let section_type = SectionType::from_header(input_section);
-            let mut must_load = section_flags.should_retain() || section_type == NOTE;
-
-            match rules.lookup(section_name, section_flags, section_type) {
-                SectionRuleOutcome::Section(output_info) => {
-                    let part_id = output_info.section_id.part_id_with_alignment(alignment);
-
-                    must_load |= output_info.must_keep;
-
-                    unloaded_section = UnloadedSection::new(part_id);
-                }
-                SectionRuleOutcome::Discard => return Ok(SectionSlot::Discard),
-                SectionRuleOutcome::EhFrame => {
-                    return Ok(SectionSlot::EhFrameData(input_section_index));
-                }
-                SectionRuleOutcome::NoteGnuProperty => {
-                    return Ok(SectionSlot::NoteGnuProperty(input_section_index));
-                }
-                SectionRuleOutcome::Debug => {
-                    if args.strip_debug() && !section_flags.contains(shf::ALLOC) {
-                        return Ok(SectionSlot::Discard);
-                    }
-
-                    is_debug_info = !section_flags.contains(shf::ALLOC);
-
-                    unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
-                }
-                SectionRuleOutcome::Custom => {
-                    unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
-                    unloaded_section.start_stop_eligible = !section_name.starts_with(b".");
-                }
-                SectionRuleOutcome::RiscVAttribute => {
-                    return Ok(SectionSlot::RiscvVAttributes(input_section_index));
-                }
-            };
-
-            if unloaded_section.part_id == part_id::CUSTOM_PLACEHOLDER {
-                let custom_section = CustomSectionDetails {
-                    name: SectionName(section_name),
-                    alignment,
-                    index: input_section_index,
-                };
-
-                custom_sections.push(custom_section);
-            }
-
-            let slot = if should_merge_sections {
-                let section_data =
-                    obj.object
-                        .section_data(input_section, allocator, loaded_metrics)?;
-                let section_flags = SectionFlags::from_header(input_section);
-
-                if section_data.is_empty() {
-                    SectionSlot::Discard
-                } else {
-                    string_merge_extras.push(StringMergeSectionExtra {
-                        index: input_section_index,
-                        section_data,
-                        section_flags,
-                    });
-
-                    SectionSlot::MergeStrings(StringMergeSectionSlot::new(unloaded_section.part_id))
-                }
-            } else if is_debug_info {
-                SectionSlot::UnloadedDebugInfo(part_id::CUSTOM_PLACEHOLDER)
-            } else if must_load {
-                SectionSlot::MustLoad(unloaded_section)
-            } else {
-                SectionSlot::Unloaded(unloaded_section)
-            };
-
-            Ok(slot)
-        })
-        .collect::<Result<Vec<_>>>()?;
+    // Note, we build up the collection with push rather than collect because at the time of
+    // writing, object's `SectionTable::enumerate` isn't an exact-size iterator, so using collect
+    // would result in resizing.
+    let mut sections = Vec::with_capacity(obj.object.sections.len());
+    for (input_section_index, input_section) in obj.object.sections.enumerate() {
+        sections.push(resolve_section(
+            input_section_index,
+            input_section,
+            obj,
+            custom_sections,
+            string_merge_extras,
+            args,
+            allocator,
+            loaded_metrics,
+            rules,
+        )?);
+    }
     Ok(sections)
+}
+
+#[inline(always)]
+fn resolve_section<'data>(
+    input_section_index: SectionIndex,
+    input_section: &SectionHeader,
+    obj: &ResolvedObject<'data>,
+    custom_sections: &mut Vec<CustomSectionDetails<'data>>,
+    string_merge_extras: &mut Vec<StringMergeSectionExtra<'data>>,
+    args: &Args,
+    allocator: &bumpalo_herd::Member<'data>,
+    loaded_metrics: &LoadedMetrics,
+    rules: &SectionRules,
+) -> Result<SectionSlot> {
+    let section_name = obj.object.section_name(input_section).unwrap_or_default();
+
+    if section_name.starts_with(secnames::GNU_LTO_SYMTAB_PREFIX.as_bytes()) {
+        bail!("GCC IR (LTO mode) is not supported yet");
+    }
+
+    let section_flags = SectionFlags::from_header(input_section);
+    let raw_alignment = obj.object.section_alignment(input_section)?;
+    let alignment = Alignment::new(raw_alignment.max(1))?;
+    let should_merge_sections = part_id::should_merge_sections(section_flags, raw_alignment, args);
+
+    let mut unloaded_section;
+    let mut is_debug_info = false;
+    let section_type = SectionType::from_header(input_section);
+    let mut must_load = section_flags.should_retain() || section_type == NOTE;
+
+    match rules.lookup(section_name, section_flags, section_type) {
+        SectionRuleOutcome::Section(output_info) => {
+            let part_id = output_info.section_id.part_id_with_alignment(alignment);
+
+            must_load |= output_info.must_keep;
+
+            unloaded_section = UnloadedSection::new(part_id);
+        }
+        SectionRuleOutcome::Discard => return Ok(SectionSlot::Discard),
+        SectionRuleOutcome::EhFrame => {
+            return Ok(SectionSlot::EhFrameData(input_section_index));
+        }
+        SectionRuleOutcome::NoteGnuProperty => {
+            return Ok(SectionSlot::NoteGnuProperty(input_section_index));
+        }
+        SectionRuleOutcome::Debug => {
+            if args.strip_debug() && !section_flags.contains(shf::ALLOC) {
+                return Ok(SectionSlot::Discard);
+            }
+
+            is_debug_info = !section_flags.contains(shf::ALLOC);
+
+            unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
+        }
+        SectionRuleOutcome::Custom => {
+            unloaded_section = UnloadedSection::new(part_id::CUSTOM_PLACEHOLDER);
+            unloaded_section.start_stop_eligible = !section_name.starts_with(b".");
+        }
+        SectionRuleOutcome::RiscVAttribute => {
+            return Ok(SectionSlot::RiscvVAttributes(input_section_index));
+        }
+    };
+
+    if unloaded_section.part_id == part_id::CUSTOM_PLACEHOLDER {
+        let custom_section = CustomSectionDetails {
+            name: SectionName(section_name),
+            alignment,
+            index: input_section_index,
+        };
+
+        custom_sections.push(custom_section);
+    }
+
+    let slot = if should_merge_sections {
+        let section_data = obj
+            .object
+            .section_data(input_section, allocator, loaded_metrics)?;
+        let section_flags = SectionFlags::from_header(input_section);
+
+        if section_data.is_empty() {
+            SectionSlot::Discard
+        } else {
+            string_merge_extras.push(StringMergeSectionExtra {
+                index: input_section_index,
+                section_data,
+                section_flags,
+            });
+
+            SectionSlot::MergeStrings(StringMergeSectionSlot::new(unloaded_section.part_id))
+        }
+    } else if is_debug_info {
+        SectionSlot::UnloadedDebugInfo(part_id::CUSTOM_PLACEHOLDER)
+    } else if must_load {
+        SectionSlot::MustLoad(unloaded_section)
+    } else {
+        SectionSlot::Unloaded(unloaded_section)
+    };
+
+    Ok(slot)
 }
 
 fn resolve_symbols<'data, 'definitions>(
