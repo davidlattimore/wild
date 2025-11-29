@@ -4521,10 +4521,16 @@ impl<'data> ObjectLayoutState<'data> {
 
         common.section_loaded(part_id, header, section);
 
-        resources
-            .sections_with_content
-            .get(part_id.output_section_id())
-            .fetch_or(true, atomic::Ordering::Relaxed);
+        let section_id = section.output_section_id();
+        let should_mark_content =
+            section.size > 0 || section_id.marks_zero_sized_inputs_as_content();
+
+        if should_mark_content {
+            resources
+                .sections_with_content
+                .get(section_id)
+                .fetch_or(true, atomic::Ordering::Relaxed);
+        }
 
         if section.size > 0 {
             self.process_section_exception_frames::<A>(

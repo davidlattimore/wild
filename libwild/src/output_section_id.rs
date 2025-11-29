@@ -80,6 +80,7 @@ pub(crate) const GOT: OutputSectionId = part_id::GOT.output_section_id();
 pub(crate) const RELA_PLT: OutputSectionId = part_id::RELA_PLT.output_section_id();
 pub(crate) const EH_FRAME: OutputSectionId = part_id::EH_FRAME.output_section_id();
 pub(crate) const EH_FRAME_HDR: OutputSectionId = part_id::EH_FRAME_HDR.output_section_id();
+pub(crate) const SFRAME: OutputSectionId = part_id::SFRAME.output_section_id();
 pub(crate) const DYNAMIC: OutputSectionId = part_id::DYNAMIC.output_section_id();
 pub(crate) const HASH: OutputSectionId = part_id::SYSV_HASH.output_section_id();
 pub(crate) const GNU_HASH: OutputSectionId = part_id::GNU_HASH.output_section_id();
@@ -394,6 +395,7 @@ pub(crate) struct BuiltInSectionDetails {
     pub(crate) min_alignment: Alignment,
     info_fn: Option<fn(&InfoInputs) -> u32>,
     pub(crate) keep_if_empty: bool,
+    pub(crate) mark_zero_sized_input_as_content: bool,
     pub(crate) element_size: u64,
     pub(crate) ty: SectionType,
     is_relro: bool,
@@ -409,6 +411,7 @@ const DEFAULT_DEFS: BuiltInSectionDetails = BuiltInSectionDetails {
     min_alignment: alignment::MIN,
     info_fn: None,
     keep_if_empty: false,
+    mark_zero_sized_input_as_content: true,
     element_size: 0,
     ty: sht::NULL,
     is_relro: false,
@@ -492,6 +495,15 @@ const SECTION_DEFINITIONS: [BuiltInSectionDetails; NUM_BUILT_IN_SECTIONS] = [
         section_flags: shf::ALLOC,
         min_alignment: alignment::EH_FRAME_HDR,
         target_segment_type: Some(pt::GNU_EH_FRAME),
+        ..DEFAULT_DEFS
+    },
+    BuiltInSectionDetails {
+        kind: SectionKind::Primary(SectionName(SFRAME_SECTION_NAME)),
+        ty: sht::GNU_SFRAME,
+        section_flags: shf::ALLOC,
+        min_alignment: alignment::USIZE,
+        target_segment_type: Some(pt::GNU_SFRAME),
+        mark_zero_sized_input_as_content: false,
         ..DEFAULT_DEFS
     },
     BuiltInSectionDetails {
@@ -780,6 +792,14 @@ impl OutputSectionId {
             .map_or(alignment::MIN, |d| d.min_alignment)
     }
 
+    pub(crate) fn marks_zero_sized_inputs_as_content(self) -> bool {
+        if let Some(details) = self.opt_built_in_details() {
+            details.mark_zero_sized_input_as_content
+        } else {
+            true
+        }
+    }
+
     pub(crate) fn is_regular(self) -> bool {
         self.0 >= NUM_SINGLE_PART_SECTIONS
     }
@@ -883,6 +903,7 @@ impl CustomSectionIds {
         builder.add_section(RODATA);
         builder.add_section(EH_FRAME_HDR);
         builder.add_section(EH_FRAME);
+        builder.add_section(SFRAME);
         builder.add_section(GCC_EXCEPT_TABLE);
         builder.add_sections(&self.ro);
 
@@ -1249,6 +1270,7 @@ fn test_constant_ids() {
         (DATA, DATA_SECTION_NAME),
         (EH_FRAME, EH_FRAME_SECTION_NAME),
         (EH_FRAME_HDR, EH_FRAME_HDR_SECTION_NAME),
+        (SFRAME, SFRAME_SECTION_NAME),
         (SHSTRTAB, SHSTRTAB_SECTION_NAME),
         (SYMTAB_LOCAL, SYMTAB_SECTION_NAME),
         (SYMTAB_GLOBAL, &[]),

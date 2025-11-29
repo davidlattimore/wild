@@ -68,6 +68,7 @@ use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
 use crate::resolution::SectionSlot;
+use crate::sframe;
 use crate::sharding::ShardKey;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::RawSymbolName;
@@ -220,6 +221,21 @@ fn write_file_contents<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout)
                 .with_context(|| format!("validate_empty failed for {group}"))?;
             Ok(())
         })?;
+
+    let sframe_buffer = section_buffers.get_mut(output_section_id::SFRAME);
+    if !sframe_buffer.is_empty() {
+        // TODO: To reliably ensure `sort_sframe_section` is called for all `.sframe` sections, you
+        // would need to modify `write_file_contents` to execute section splitting, writing, and
+        // initialization in a block, then call `split_output_into_sections` again to retrieve and
+        // sort the entire `.sframe` sections. However, this approach would introduce unnecessary
+        // overhead even when section sorting isn't required. While SFrames should maintain sorted
+        // sections when `FLAG_FDE_SORTED` is set, this flag isn't present when sorting isn't
+        // needed, so we currently leave it as is.
+        sframe::sort_sframe_section(
+            sframe_buffer,
+            layout.mem_address_of_built_in(output_section_id::SFRAME),
+        )?;
+    }
 
     for (output_section_id, _) in layout.output_sections.ids_with_info() {
         let relocations = layout
