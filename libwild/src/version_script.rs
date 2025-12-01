@@ -837,6 +837,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_rust_version_script() {
+        let data = ScriptData {
+            raw: br#"
+                    {
+                    global:
+                        foo;
+                        bar;
+                    local:
+                        *;
+                    };"#,
+        };
+        let script = VersionScript::parse(data).unwrap();
+        let VersionScript::Rust(rust_script) = script else {
+            panic!("Expected Rust-style version script");
+        };
+        assert_equal(
+            rust_script.global_general.iter().map(|sym| sym.to_string()),
+            ["foo", "bar"],
+        );
+    }
+
+    #[test]
     fn test_parse_simple_version_script() {
         let data = ScriptData {
             raw: br#"
