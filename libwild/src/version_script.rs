@@ -433,13 +433,15 @@ impl<'data> VersionScript<'data> {
 }
 
 impl<'data> RegularVersionScript<'data> {
-    // pub(crate) fn parse(data: ScriptData<'data>) -> Result<RegularVersionScript<'data>> {
-    //     timing_phase!("Parse version script");
-    //
-    //     parse_version_script
-    //         .parse(BStr::new(data.raw))
-    //         .map_err(|err| error!("Failed to parse version script:\n{err}"))
-    // }
+    #[cfg(test)]
+    fn parse(data: ScriptData<'data>) -> Result<RegularVersionScript<'data>> {
+        match VersionScript::parse(data)? {
+            VersionScript::Regular(script) => Ok(script),
+            VersionScript::Rust(_) => {
+                bail!("Rust-style version script cannot be used as a regular version script")
+            }
+        }
+    }
 
     pub(crate) fn is_local(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
         self.find_match(name)
@@ -892,7 +894,7 @@ mod tests {
                 } VERS_1.1;
             "#,
         };
-        let script = VersionScript::parse(data).unwrap();
+        let script = RegularVersionScript::parse(data).unwrap();
         assert_eq!(script.versions.len(), 3);
 
         let version = &script.versions[1];
@@ -939,7 +941,7 @@ mod tests {
         let data = ScriptData {
             raw: br#"VERSION42 { global: *; };"#,
         };
-        VersionScript::parse(data).unwrap();
+        RegularVersionScript::parse(data).unwrap();
     }
 
     #[test]
@@ -958,7 +960,7 @@ mod tests {
                         };
                 };"#,
         };
-        let script = VersionScript::parse(data).unwrap();
+        let script = RegularVersionScript::parse(data).unwrap();
         let version_body = &script.versions[1].version_body;
 
         assert_equal(
@@ -1019,7 +1021,7 @@ mod tests {
                         };
                 };"#,
         };
-        let script = VersionScript::parse(data).unwrap();
+        let script = RegularVersionScript::parse(data).unwrap();
         let version_body = &script.versions[1].version_body;
 
         assert_equal(
@@ -1044,7 +1046,7 @@ mod tests {
                     };
                 };"#,
         };
-        let script = VersionScript::parse(data).unwrap();
+        let script = RegularVersionScript::parse(data).unwrap();
         let version_body = &script.versions[0].version_body;
 
         assert_equal(
@@ -1066,7 +1068,7 @@ mod tests {
                     };
                 };"#,
         };
-        let script = VersionScript::parse(data).unwrap();
+        let script = RegularVersionScript::parse(data).unwrap();
         let version_body = &script.versions[0].version_body;
 
         assert_equal(
@@ -1121,7 +1123,7 @@ mod tests {
                 } VERS_1.1;
             "#,
         };
-        let script = VersionScript::parse(data).unwrap();
+        let script = RegularVersionScript::parse(data).unwrap();
         let sym = UnversionedSymbolName::prehashed;
 
         // Exact match wins
@@ -1150,7 +1152,7 @@ mod tests {
                 };
             "#,
         };
-        let script = VersionScript::parse(data).unwrap();
+        let script = RegularVersionScript::parse(data).unwrap();
         let version_body = &script.versions[0].version_body;
 
         let escaped_patterns: HashSet<&[u8]> = version_body
@@ -1200,7 +1202,7 @@ mod tests {
                 } VERS_1.1;
             "#,
         };
-        let script = VersionScript::parse(data).unwrap();
+        let script = RegularVersionScript::parse(data).unwrap();
         let sym = UnversionedSymbolName::prehashed;
 
         assert_eq!(script.find_match(&sym(b"foo")).unwrap().0, 1);

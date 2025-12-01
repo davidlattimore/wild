@@ -374,6 +374,18 @@ impl<'data> SymbolDb<'data> {
             output_kind,
         };
 
+        // If it's a rust version script, apply the global symbol visibility now.
+        // We previously downgraded all symbols to local visibility.
+        if let VersionScript::Rust(rust_vscript) = &index.version_script {
+            for symbol in &rust_vscript.global_general {
+                if let Some(id) = index.get_unversioned(symbol) {
+                    let mut flags = per_symbol_flags[id.as_usize()].get();
+                    flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
+                    per_symbol_flags[id.as_usize()] = flags.raw();
+                }
+            }
+        }
+
         index.apply_wrapped_symbol_overrides(args, herd);
 
         verbose_timing_phase!("Apply linker scripts");
