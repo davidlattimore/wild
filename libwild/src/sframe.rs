@@ -111,10 +111,7 @@ pub(crate) fn sort_sframe_section(section: &mut [u8], section_base_address: u64)
         } else {
             section_base + start_value
         };
-        entries.push(Entry {
-            bytes,
-            func_addr,
-        });
+        entries.push(Entry { bytes, func_addr });
     }
 
     entries.sort_by(|a, b| a.func_addr.cmp(&b.func_addr));
