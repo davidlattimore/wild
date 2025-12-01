@@ -22,7 +22,6 @@ const VERSION_FIELD: usize = 0x02;
 struct Entry {
     bytes: [u8; FDE_SIZE],
     func_addr: i128,
-    original_index: usize,
 }
 
 fn read_u16(data: &[u8], offset: usize) -> u16 {
@@ -115,15 +114,10 @@ pub(crate) fn sort_sframe_section(section: &mut [u8], section_base_address: u64)
         entries.push(Entry {
             bytes,
             func_addr,
-            original_index: index,
         });
     }
 
-    entries.sort_by(|a, b| {
-        a.func_addr
-            .cmp(&b.func_addr)
-            .then_with(|| a.original_index.cmp(&b.original_index))
-    });
+    entries.sort_by(|a, b| a.func_addr.cmp(&b.func_addr));
 
     flags |= FLAG_FDE_SORTED;
     section[FLAGS_FIELD] = flags;
