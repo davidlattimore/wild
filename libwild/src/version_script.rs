@@ -46,9 +46,30 @@ pub(crate) struct Version<'data> {
 
 /// A version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
 #[derive(Debug, Default)]
-pub(crate) struct VersionScript<'data> {
+pub(crate) struct RegularVersionScript<'data> {
     versions: Vec<Version<'data>>,
     version_name_mapping: HashMap<&'data [u8], usize>,
+}
+
+/// An optimized version script for Rustc.
+/// It declares all symbols as local except for the explicitly listed global symbols.
+/// Only contains general (non-C++) exact symbol matchers.
+#[derive(Debug, Default)]
+pub(crate) struct RustVersionScript<'data> {
+    pub(crate) global_general: Vec<PreHashed<UnversionedSymbolName<'data>>>,
+    pub(crate) global_cxx: Vec<PreHashed<UnversionedSymbolName<'data>>>,
+}
+
+#[derive(Debug)]
+pub(crate) enum VersionScript<'data> {
+    Regular(RegularVersionScript<'data>),
+    Rust(RustVersionScript<'data>),
+}
+
+impl Default for VersionScript<'_> {
+    fn default() -> Self {
+        VersionScript::Regular(RegularVersionScript::default())
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -236,7 +257,7 @@ impl<'data> SymbolLookupNameWrapper<'data> {
     }
 }
 
-impl<'data> VersionScript<'data> {
+impl<'data> RegularVersionScript<'data> {
     fn find_match(
         &self,
         name: &PreHashed<UnversionedSymbolName>,
@@ -311,6 +332,7 @@ fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<Vers
     skip_comments_and_whitespace(input)?;
 
     // Simple version script, only defines symbols visibility
+    // May be rust-style version script.
     if input.starts_with(b"{") {
         let version_body = parse_version_section(input)?;
 
@@ -327,7 +349,7 @@ fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<Vers
         });
     }
 
-    let mut version_script = VersionScript::default();
+    let mut version_script = RegularVersionScript::default();
 
     // Base version placeholder
     version_names.push(b"");
@@ -338,7 +360,7 @@ fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<Vers
 
         skip_comments_and_whitespace(input)?;
 
-        let version_body = parse_version_section(input)?;
+        let version_body = parse_version_section(input)?.into();
 
         let parent_name = take_until(0.., b';').parse_next(input)?;
 
@@ -374,9 +396,8 @@ fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<Vers
             .insert(name, version_script.versions.len() - 1);
     }
 
-    Ok(version_script)
+    Ok(VersionScript::Regular(version_script))
 }
-
 impl<'data> VersionScript<'data> {
     pub(crate) fn parse(data: ScriptData<'data>) -> Result<VersionScript<'data>> {
         timing_phase!("Parse version script");
@@ -385,6 +406,47 @@ impl<'data> VersionScript<'data> {
             .parse(BStr::new(data.raw))
             .map_err(|err| error!("Failed to parse version script:\n{err}"))
     }
+
+    pub(crate) fn version_count(&self) -> u16 {
+        match self {
+            VersionScript::Regular(script) => script.version_count(),
+            VersionScript::Rust(_) => 0,
+        }
+    }
+
+    pub(crate) fn version_iter(&self) -> impl Iterator<Item = &Version<'data>> {
+        match self {
+            VersionScript::Regular(script) => script.version_iter(),
+            VersionScript::Rust(_) => todo!(),
+        }
+    }
+
+    pub(crate) fn parent_count(&self) -> u16 {
+        match self {
+            VersionScript::Regular(script) => script.parent_count(),
+            VersionScript::Rust(_) => 0,
+        }
+    }
+    pub(crate) fn version_for_symbol(
+        &self,
+        name: &PreHashed<UnversionedSymbolName>,
+        version_name: Option<&[u8]>,
+    ) -> Result<Option<u16>> {
+        match self {
+            VersionScript::Regular(script) => script.version_for_symbol(name, version_name),
+            VersionScript::Rust(_) => Ok(None),
+        }
+    }
+}
+
+impl<'data> RegularVersionScript<'data> {
+    // pub(crate) fn parse(data: ScriptData<'data>) -> Result<RegularVersionScript<'data>> {
+    //     timing_phase!("Parse version script");
+    //
+    //     parse_version_script
+    //         .parse(BStr::new(data.raw))
+    //         .map_err(|err| error!("Failed to parse version script:\n{err}"))
+    // }
 
     pub(crate) fn is_local(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
         self.find_match(name)
@@ -440,10 +502,31 @@ impl<'data> VersionScript<'data> {
     }
 }
 
-fn parse_version_section<'data>(input: &mut &'data BStr) -> winnow::Result<VersionBody<'data>> {
+#[derive(Debug, Default)]
+struct ParseVersionBody<'data> {
+    pub globals: Vec<ParsedSymbolMatcher<'data>>,
+    pub locals: Vec<ParsedSymbolMatcher<'data>>,
+}
+
+impl<'data> From<ParseVersionBody<'data>> for VersionBody<'data> {
+    fn from(body: ParseVersionBody<'data>) -> Self {
+        let mut out = VersionBody::default();
+        for global in body.globals {
+            out.globals.push(global);
+        }
+        for local in body.locals {
+            out.locals.push(local);
+        }
+        out
+    }
+}
+
+fn parse_version_section<'data>(
+    input: &mut &'data BStr,
+) -> winnow::Result<ParseVersionBody<'data>> {
     let mut section = None;
 
-    let mut out = VersionBody::default();
+    let mut out = ParseVersionBody::default();
 
     '{'.parse_next(input)?;
 
@@ -689,7 +772,7 @@ mod tests {
     use itertools::Itertools;
     use itertools::assert_equal;
 
-    fn is_matching_global<'data>(script: &VersionScript<'data>, name: &str) -> bool {
+    fn is_matching_global<'data>(script: &RegularVersionScript<'data>, name: &str) -> bool {
         let Some(m) = script.find_match(&UnversionedSymbolName::prehashed(name.as_bytes())) else {
             return true;
         };
@@ -713,7 +796,7 @@ mod tests {
                         *;
                     };"#,
         };
-        let script = VersionScript::parse(data).unwrap();
+        let script = RegularVersionScript::parse(data).unwrap();
         let version_body = &script.versions[0].version_body;
         assert_equal(
             version_body
