@@ -135,9 +135,8 @@ pub(crate) fn sort_sframe_section(section: &mut [u8], section_base_address: u64)
         } else {
             entry.func_addr - section_base
         };
-        let new_value_i32 = i32::try_from(new_value).with_context(|| {
-            "Function start address out of 32-bit range for SFrame entry".to_string()
-        })?;
+        let new_value_i32 = i32::try_from(new_value)
+            .context("Function start address out of 32-bit range for SFrame entry")?;
         let mut bytes = entry.bytes;
         write_i32(&mut bytes, 0, new_value_i32);
         section[offset_in_section..offset_in_section + FDE_SIZE].copy_from_slice(&bytes);
