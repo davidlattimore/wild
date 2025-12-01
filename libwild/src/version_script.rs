@@ -505,10 +505,12 @@ struct ParseVersionBody<'data> {
 impl<'data> ParseVersionBody<'data> {
     fn rust_like(&self) -> bool {
         // has to be only one local: '*'
-        if !matches!(
-            self.locals.first(),
-            Some(ParsedSymbolMatcher::Single(SymbolMatcher::StarGlob(_)))
-        ) {
+        if self.locals.len() != 1
+            || !matches!(
+                self.locals.first(),
+                Some(ParsedSymbolMatcher::Single(SymbolMatcher::MatchesAll))
+            )
+        {
             return false;
         }
 
