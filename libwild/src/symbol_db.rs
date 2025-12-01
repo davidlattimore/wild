@@ -1474,7 +1474,12 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
     }
 
     fn should_downgrade_to_local(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
-        self.version_script.is_local(name)
+        match self.version_script {
+            // We first downgrade all symbols when using a Rust version script.
+            // We're gonna set the ones that are exported back to global later.
+            VersionScript::Rust(_) => true,
+            VersionScript::Regular(version_script) => version_script.is_local(name),
+        }
     }
 
     fn get_symbol_name_and_version(

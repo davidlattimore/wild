@@ -57,7 +57,6 @@ pub(crate) struct RegularVersionScript<'data> {
 #[derive(Debug, Default)]
 pub(crate) struct RustVersionScript<'data> {
     pub(crate) global_general: Vec<PreHashed<UnversionedSymbolName<'data>>>,
-    pub(crate) global_cxx: Vec<PreHashed<UnversionedSymbolName<'data>>>,
 }
 
 #[derive(Debug)]
@@ -340,13 +339,7 @@ fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<Vers
 
         skip_comments_and_whitespace(input)?;
 
-        return Ok(VersionScript {
-            versions: vec![Version {
-                version_body,
-                ..Default::default()
-            }],
-            version_name_mapping: HashMap::new(),
-        });
+        return Ok(version_body.into());
     }
 
     let mut version_script = RegularVersionScript::default();
@@ -506,6 +499,66 @@ impl<'data> RegularVersionScript<'data> {
 struct ParseVersionBody<'data> {
     pub globals: Vec<ParsedSymbolMatcher<'data>>,
     pub locals: Vec<ParsedSymbolMatcher<'data>>,
+}
+impl<'data> ParseVersionBody<'data> {
+    fn rust_like(&self) -> bool {
+        // has to be only one local: '*'
+        if !matches!(
+            self.locals.first(),
+            Some(ParsedSymbolMatcher::Single(SymbolMatcher::StarGlob(_)))
+        ) {
+            return false;
+        }
+
+        // and only exact matchers in global
+        self.globals.iter().all(|matcher| {
+            matches!(
+                matcher,
+                ParsedSymbolMatcher::Single(SymbolMatcher::Exact(_))
+            )
+        })
+    }
+}
+
+impl<'data> TryFrom<ParseVersionBody<'data>> for RustVersionScript<'data> {
+    type Error = ParseVersionBody<'data>;
+
+    fn try_from(body: ParseVersionBody<'data>) -> Result<Self, Self::Error> {
+        if !body.rust_like() {
+            return Err(body);
+        }
+        let global_general = body
+            .globals
+            .into_iter()
+            .map(|matcher| {
+                if let ParsedSymbolMatcher::Single(SymbolMatcher::Exact(name)) = matcher {
+                    UnversionedSymbolName::prehashed(name)
+                } else {
+                    unreachable!()
+                }
+            })
+            .collect();
+
+        Ok(RustVersionScript { global_general })
+    }
+}
+
+impl<'data> From<ParseVersionBody<'data>> for VersionScript<'data> {
+    fn from(body: ParseVersionBody<'data>) -> Self {
+        match RustVersionScript::try_from(body) {
+            Ok(rust_script) => VersionScript::Rust(rust_script),
+            Err(body) => {
+                let version_body = body.into();
+                VersionScript::Regular(RegularVersionScript {
+                    versions: vec![Version {
+                        version_body,
+                        ..Default::default()
+                    }],
+                    version_name_mapping: HashMap::new(),
+                })
+            }
+        }
+    }
 }
 
 impl<'data> From<ParseVersionBody<'data>> for VersionBody<'data> {
