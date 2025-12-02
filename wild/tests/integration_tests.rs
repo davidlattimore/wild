@@ -97,6 +97,8 @@
 //! having been pre-filled with random data. It then compares the output of the two runs to verify
 //! that they're the same.
 //!
+//! RemoveSection:{section-name} Remove the section with the specified name from the output binary.
+//!
 //! ## Inputs
 //!
 //! The following input types support an optional template parameter. This should look something
@@ -470,6 +472,7 @@ struct Config {
     requires_compiler_flags: Vec<String>,
     requires_nightly_rustc: bool,
     auto_add_objects: bool,
+    remove_sections: Vec<String>,
     rustc_channel: RustcChannel,
     requires_rust_musl: bool,
     test_update_in_place: bool,
@@ -713,6 +716,7 @@ impl Config {
             section_equiv: Default::default(),
             is_abstract: false,
             deps: Default::default(),
+            remove_sections: Vec::new(),
             compiler: "gcc".to_owned(),
             should_diff: true,
             should_run: true,
@@ -919,6 +923,7 @@ fn parse_configs(src_filename: &Path, default_config: &Config) -> Result<Vec<Con
                         template,
                     })
                 }
+                "RemoveSection" => config.remove_sections.push(arg.trim().to_owned()),
                 "Compiler" => config.compiler = arg.trim().to_owned(),
                 "Arch" => {
                     config.support_architectures = arg
@@ -1015,6 +1020,10 @@ impl ProgramInputs {
             .into_iter()
             .filter(|input| input.path.extension().is_some_and(|ext| ext == "so"))
             .collect();
+
+        if !config.remove_sections.is_empty() {
+            remove_sections(&link_output, &config.remove_sections)?;
+        }
 
         Ok(Program {
             link_output,
@@ -1123,6 +1132,24 @@ impl ProgramInputs {
 
         Ok(())
     }
+}
+
+/// Removes the specified sections from the output file.
+fn remove_sections(link_output: &LinkOutput, section_names: &[String]) -> Result {
+    let mut command = Command::new("objcopy");
+    for section_name in section_names {
+        command.arg("--remove-section").arg(section_name);
+    }
+    command.arg(&link_output.binary);
+    let output = command.output().context("Failed to run objcopy")?;
+    if !output.status.success() {
+        bail!(
+            "objcopy reported error:\n{}{}",
+            String::from_utf8_lossy(&output.stderr),
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+    Ok(())
 }
 
 /// Returns the unique section names in which `bytes_a` differs from `bytes_b`.
@@ -2892,6 +2919,7 @@ fn integration_test(
         "string-merge-missing-null.c",
         "comments.c",
         "custom-note.s",
+        "backtrace.c",
         "eh_frame.c",
         "symbol-priority.c",
         "hidden-ref.c",
