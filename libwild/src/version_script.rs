@@ -504,13 +504,13 @@ struct ParseVersionBody<'data> {
 }
 impl<'data> ParseVersionBody<'data> {
     fn rust_like(&self) -> bool {
-        // has to be only one local: '*'
-        if self.locals.len() != 1
-            || !matches!(
-                self.locals.first(),
-                Some(ParsedSymbolMatcher::Single(SymbolMatcher::MatchesAll))
+        // one of the local has to be match-all `*` wildcard
+        if !self.locals.iter().any(|matcher| {
+            matches!(
+                matcher,
+                ParsedSymbolMatcher::Single(SymbolMatcher::MatchesAll)
             )
-        {
+        }) {
             return false;
         }
 
