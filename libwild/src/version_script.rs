@@ -498,11 +498,13 @@ impl<'data> RegularVersionScript<'data> {
 }
 
 #[derive(Debug, Default)]
-struct ParseVersionBody<'data> {
+/// A generaic parsed version body before version script specialization optimizations.
+struct RawVersionBody<'data> {
     pub globals: Vec<ParsedSymbolMatcher<'data>>,
     pub locals: Vec<ParsedSymbolMatcher<'data>>,
 }
-impl<'data> ParseVersionBody<'data> {
+
+impl<'data> RawVersionBody<'data> {
     fn rust_like(&self) -> bool {
         // one of the local has to be match-all `*` wildcard
         if !self.locals.iter().any(|matcher| {
@@ -524,10 +526,10 @@ impl<'data> ParseVersionBody<'data> {
     }
 }
 
-impl<'data> TryFrom<ParseVersionBody<'data>> for RustVersionScript<'data> {
-    type Error = ParseVersionBody<'data>;
+impl<'data> TryFrom<RawVersionBody<'data>> for RustVersionScript<'data> {
+    type Error = RawVersionBody<'data>;
 
-    fn try_from(body: ParseVersionBody<'data>) -> Result<Self, Self::Error> {
+    fn try_from(body: RawVersionBody<'data>) -> Result<Self, Self::Error> {
         if !body.rust_like() {
             return Err(body);
         }
@@ -547,8 +549,8 @@ impl<'data> TryFrom<ParseVersionBody<'data>> for RustVersionScript<'data> {
     }
 }
 
-impl<'data> From<ParseVersionBody<'data>> for VersionScript<'data> {
-    fn from(body: ParseVersionBody<'data>) -> Self {
+impl<'data> From<RawVersionBody<'data>> for VersionScript<'data> {
+    fn from(body: RawVersionBody<'data>) -> Self {
         match RustVersionScript::try_from(body) {
             Ok(rust_script) => VersionScript::Rust(rust_script),
             Err(body) => {
@@ -565,8 +567,8 @@ impl<'data> From<ParseVersionBody<'data>> for VersionScript<'data> {
     }
 }
 
-impl<'data> From<ParseVersionBody<'data>> for VersionBody<'data> {
-    fn from(body: ParseVersionBody<'data>) -> Self {
+impl<'data> From<RawVersionBody<'data>> for VersionBody<'data> {
+    fn from(body: RawVersionBody<'data>) -> Self {
         let mut out = VersionBody::default();
         for global in body.globals {
             out.globals.push(global);
@@ -578,12 +580,10 @@ impl<'data> From<ParseVersionBody<'data>> for VersionBody<'data> {
     }
 }
 
-fn parse_version_section<'data>(
-    input: &mut &'data BStr,
-) -> winnow::Result<ParseVersionBody<'data>> {
+fn parse_version_section<'data>(input: &mut &'data BStr) -> winnow::Result<RawVersionBody<'data>> {
     let mut section = None;
 
-    let mut out = ParseVersionBody::default();
+    let mut out = RawVersionBody::default();
 
     '{'.parse_next(input)?;
 
