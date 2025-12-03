@@ -47,6 +47,7 @@ use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
 use rayon::iter::IndexedParallelIterator as _;
+use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator as _;
 use rayon::iter::ParallelIterator;
 use std::fmt::Display;
@@ -374,16 +375,18 @@ impl<'data> SymbolDb<'data> {
             output_kind,
         };
 
+        let mut per_symbol_flags = PerSymbolFlags::new(per_symbol_flags);
+        let atomic_per_system_flags = per_symbol_flags.borrow_atomic();
+
         // If it's a rust version script, apply the global symbol visibility now.
         // We previously downgraded all symbols to local visibility.
         if let VersionScript::Rust(rust_vscript) = &index.version_script {
-            for symbol in &rust_vscript.global_general {
-                if let Some(id) = index.get_unversioned(symbol) {
-                    let mut flags = per_symbol_flags[id.as_usize()].get();
-                    flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
-                    per_symbol_flags[id.as_usize()] = flags.raw();
+            rust_vscript.global_general.par_iter().for_each(|symbol| {
+                if let Some(symbol_id) = index.get_unversioned(symbol) {
+                    let symbol_atomic_flags = atomic_per_system_flags.get_atomic(symbol_id);
+                    symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
                 }
-            }
+            });
         }
 
         index.apply_wrapped_symbol_overrides(args, herd);
@@ -394,7 +397,7 @@ impl<'data> SymbolDb<'data> {
             index.apply_linker_script(script);
         }
 
-        Ok((index, PerSymbolFlags::new(per_symbol_flags)))
+        Ok((index, per_symbol_flags))
     }
 
     pub(crate) fn add_start_stop_symbol(

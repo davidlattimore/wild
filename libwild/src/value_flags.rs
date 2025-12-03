@@ -234,6 +234,14 @@ impl AtomicValueFlags {
     pub(crate) fn or_assign(&self, flags: ValueFlags) {
         self.0.fetch_or(flags.bits(), Ordering::Relaxed);
     }
+
+    pub(crate) fn remove(&self, flags_to_remove: ValueFlags) {
+        let mut res = self.get();
+        res.remove(flags_to_remove);
+        if res != flags_to_remove {
+            self.0.store(res.bits(), Ordering::Relaxed);
+        }
+    }
 }
 
 impl std::fmt::Display for ValueFlags {
