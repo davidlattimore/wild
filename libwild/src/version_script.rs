@@ -44,7 +44,7 @@ pub(crate) struct Version<'data> {
     pub(crate) version_body: VersionBody<'data>,
 }
 
-/// A version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
+/// A general version script. See https://sourceware.org/binutils/docs/ld/VERSION.html
 #[derive(Debug, Default)]
 pub(crate) struct RegularVersionScript<'data> {
     versions: Vec<Version<'data>>,
@@ -54,12 +54,15 @@ pub(crate) struct RegularVersionScript<'data> {
 /// An optimized version script for Rustc.
 /// It declares all symbols as local except for the explicitly listed global symbols.
 /// Only contains general (non-C++) exact symbol matchers.
+/// Doesn't use actual versioning.
 #[derive(Debug, Default)]
 pub(crate) struct RustVersionScript<'data> {
-    pub(crate) global_general: Vec<&'data [u8]>,
+    pub(crate) global: Vec<&'data [u8]>,
 }
 
 #[derive(Debug)]
+/// Possibly specialized version script.
+/// See `RegularVersionScript` for the general case.
 pub(crate) enum VersionScript<'data> {
     Regular(RegularVersionScript<'data>),
     Rust(RustVersionScript<'data>),
@@ -342,6 +345,7 @@ fn parse_version_script<'input>(input: &mut &'input BStr) -> winnow::Result<Vers
         return Ok(version_body.into());
     }
 
+    // Multiple versions, won't be rust-style.
     let mut version_script = RegularVersionScript::default();
 
     // Base version placeholder
@@ -533,7 +537,7 @@ impl<'data> TryFrom<RawVersionBody<'data>> for RustVersionScript<'data> {
         if !body.rust_like() {
             return Err(body);
         }
-        let global_general = body
+        let global = body
             .globals
             .into_iter()
             .map(|matcher| {
@@ -545,7 +549,7 @@ impl<'data> TryFrom<RawVersionBody<'data>> for RustVersionScript<'data> {
             })
             .collect();
 
-        Ok(RustVersionScript { global_general })
+        Ok(RustVersionScript { global })
     }
 }
 
@@ -854,7 +858,7 @@ mod tests {
         };
         assert_equal(
             rust_script
-                .global_general
+                .global
                 .iter()
                 .map(|sym| String::from_utf8_lossy(sym)),
             ["foo", "bar"],
