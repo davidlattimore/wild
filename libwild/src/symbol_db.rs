@@ -382,7 +382,8 @@ impl<'data> SymbolDb<'data> {
         // We previously downgraded all symbols to local visibility.
         if let VersionScript::Rust(rust_vscript) = &index.version_script {
             rust_vscript.global_general.par_iter().for_each(|symbol| {
-                if let Some(symbol_id) = index.get_unversioned(symbol) {
+                let prehashed = UnversionedSymbolName::prehashed(symbol);
+                if let Some(symbol_id) = index.get_unversioned(&prehashed) {
                     let symbol_atomic_flags = atomic_per_system_flags.get_atomic(symbol_id);
                     symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
                 }

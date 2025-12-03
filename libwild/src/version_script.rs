@@ -56,7 +56,7 @@ pub(crate) struct RegularVersionScript<'data> {
 /// Only contains general (non-C++) exact symbol matchers.
 #[derive(Debug, Default)]
 pub(crate) struct RustVersionScript<'data> {
-    pub(crate) global_general: Vec<PreHashed<UnversionedSymbolName<'data>>>,
+    pub(crate) global_general: Vec<&'data [u8]>,
 }
 
 #[derive(Debug)]
@@ -536,7 +536,7 @@ impl<'data> TryFrom<ParseVersionBody<'data>> for RustVersionScript<'data> {
             .into_iter()
             .map(|matcher| {
                 if let ParsedSymbolMatcher::Single(SymbolMatcher::Exact(name)) = matcher {
-                    UnversionedSymbolName::prehashed(name)
+                    name
                 } else {
                     unreachable!()
                 }
@@ -853,7 +853,10 @@ mod tests {
             panic!("Expected Rust-style version script");
         };
         assert_equal(
-            rust_script.global_general.iter().map(|sym| sym.to_string()),
+            rust_script
+                .global_general
+                .iter()
+                .map(|sym| String::from_utf8_lossy(sym)),
             ["foo", "bar"],
         );
     }
