@@ -66,6 +66,22 @@ Alternatively, you can create symlink `ld.wild` pointing to `wild` and use:
 linker = "clang"
 rustflags = ["-Clink-arg=-fuse-ld=wild"]
 ```
+The above steps also work for clang when building C/C++ code, just add the following to your LDFLAGS
+after adding the `ld.wild` symlink:
+```
+export LDFLAGS="${LDFLAGS} -fuse-ld=wild"
+```
+GCC doesn't have [native](https://sourceware.org/pipermail/binutils/2025-November/145870.html) support for `wild` in any released version yet. You can make it force use it with the [-Bprefix](https://gcc.gnu.org/onlinedocs/gcc/Directory-Options.html#index-B) option. Create a symlink `ld` pointing to `wild` and pass the directory containing it to gcc. For example you can do the following:
+```
+ln -s /usr/bin/wild /tmp/ld
+```
+And when compiling C/C++ code pass the directory containing `ld` to your CFLAGS,CXXFLAGS and LDFLAGS:
+```
+export CFLAGS="${CFLAGS} -B/tmp"
+export CXXFLAGS="${CXXFLAGS} -B/tmp"
+export LDFLAGS="${LDFLAGS} -B/tmp"
+```
+Afterwards you can check if wild was used for linking with [readelf](#how-can-i-verify-that-wild-was-used-to-link-a-binary)
 
 On Illumos:
 ```
