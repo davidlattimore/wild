@@ -142,10 +142,29 @@ pub(crate) fn write<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout) ->
 
     let sframe_buffer = section_buffers.get_mut(output_section_id::SFRAME);
     if !sframe_buffer.is_empty() {
-        sframe::sort_sframe_section(
-            sframe_buffer,
-            layout.mem_address_of_built_in(output_section_id::SFRAME),
-        )?;
+        let sframe_start_address = layout.mem_address_of_built_in(output_section_id::SFRAME);
+        let mut sframe_ranges = Vec::new();
+
+        for group in &layout.group_layouts {
+            for file in &group.files {
+                if let FileLayout::Object(object) = file {
+                    for (section_slot, resolution) in
+                        object.sections.iter().zip(&object.section_resolutions)
+                    {
+                        if let SectionSlot::Loaded(section) = section_slot
+                            && section.part_id.output_section_id() == output_section_id::SFRAME
+                        {
+                            let offset =
+                                (resolution.address().unwrap() - sframe_start_address) as usize;
+                            let len = section.size as usize;
+                            sframe_ranges.push(offset..offset + len);
+                        }
+                    }
+                }
+            }
+        }
+
+        sframe::sort_sframe_section(sframe_buffer, sframe_start_address, &sframe_ranges)?;
     }
 
     write_gnu_build_id_note(sized_output, &layout.args().build_id, layout)?;
