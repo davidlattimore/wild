@@ -330,33 +330,26 @@ impl<'data> SymbolDb<'data> {
             alternative_versioned_definitions: HashMap::new(),
         });
 
+        let mut per_group_shards = groups
+            .iter()
+            .map(|group| writers.new_shard(group))
+            .collect_vec();
+
+        let per_group_outputs = read_symbols(
+            &version_script,
+            &mut per_group_shards,
+            args,
+            &export_list,
+            output_kind,
+        )?;
+
+        populate_symbol_db(&mut buckets, &per_group_outputs);
+
         {
-            let mut per_group_shards = groups
-                .iter()
-                .map(|group| writers.new_shard(group))
-                .collect_vec();
+            verbose_timing_phase!("Return shards");
 
-            let per_group_outputs = read_symbols(
-                &version_script,
-                &mut per_group_shards,
-                args,
-                &export_list,
-                output_kind,
-            )?;
-
-            populate_symbol_db(&mut buckets, &per_group_outputs);
-
-            {
-                verbose_timing_phase!("Return shards");
-
-                for shard in per_group_shards {
-                    writers.return_shard(shard);
-                }
-            }
-            {
-                // TODO: Do this on a separate thread.
-                verbose_timing_phase!("Drop per-group outputs");
-                drop(per_group_outputs);
+            for shard in per_group_shards {
+                writers.return_shard(shard);
             }
         }
 
@@ -376,27 +369,38 @@ impl<'data> SymbolDb<'data> {
         };
 
         let mut per_symbol_flags = PerSymbolFlags::new(per_symbol_flags);
-        let atomic_per_system_flags = per_symbol_flags.borrow_atomic();
 
-        // If it's a rust version script, apply the global symbol visibility now.
-        // We previously downgraded all symbols to local visibility.
-        if let VersionScript::Rust(rust_vscript) = &index.version_script {
-            rust_vscript.global.par_iter().for_each(|symbol| {
-                let prehashed = UnversionedSymbolName::prehashed(symbol);
-                if let Some(symbol_id) = index.get_unversioned(&prehashed) {
-                    let symbol_atomic_flags = atomic_per_system_flags.get_atomic(symbol_id);
-                    symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
-                }
+        rayon::scope(|s| {
+            s.spawn(|_| {
+                verbose_timing_phase!("Drop per-group outputs");
+                drop(per_group_outputs);
             });
-        }
 
-        index.apply_wrapped_symbol_overrides(args, herd);
+            // If it's a rust version script, apply the global symbol visibility now.
+            // We previously downgraded all symbols to local visibility.
+            if let VersionScript::Rust(rust_vscript) = &index.version_script {
+                verbose_timing_phase!("Upgrade locals for export");
+                let atomic_per_system_flags = per_symbol_flags.borrow_atomic();
 
-        verbose_timing_phase!("Apply linker scripts");
+                rust_vscript.global.par_iter().for_each(|symbol| {
+                    let prehashed = UnversionedSymbolName::prehashed(symbol);
+                    if let Some(symbol_id) = index.get_unversioned(&prehashed) {
+                        let symbol_atomic_flags = atomic_per_system_flags.get_atomic(symbol_id);
+                        symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
+                    }
+                });
+            }
 
-        for script in linker_scripts {
-            index.apply_linker_script(script);
-        }
+            {
+                index.apply_wrapped_symbol_overrides(args, herd);
+
+                verbose_timing_phase!("Apply linker scripts");
+
+                for script in linker_scripts {
+                    index.apply_linker_script(script);
+                }
+            }
+        });
 
         Ok((index, per_symbol_flags))
     }
