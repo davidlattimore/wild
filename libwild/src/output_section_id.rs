@@ -867,9 +867,9 @@ impl CustomSectionIds {
         builder.add_section(FILE_HEADER);
         builder.add_section(PROGRAM_HEADERS);
         builder.add_section(SECTION_HEADERS);
-        builder.add_section(INTERP);
         builder.add_section(NOTE_GNU_PROPERTY);
         builder.add_section(NOTE_GNU_BUILD_ID);
+        builder.add_section(INTERP);
         builder.add_section(NOTE_ABI_TAG);
         builder.add_section(HASH);
         builder.add_section(GNU_HASH);
