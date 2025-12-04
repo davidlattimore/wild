@@ -291,9 +291,7 @@ pub(crate) fn sort_sframe_section(
 
     // padding
     if total_size < section.len() {
-        for i in total_size..section.len() {
-            section[i] = 0;
-        }
+        section[total_size..].fill(0);
     }
 
     Ok(())
