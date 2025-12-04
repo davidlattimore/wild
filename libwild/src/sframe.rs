@@ -35,8 +35,6 @@ struct Entry {
     bytes: [u8; FDE_SIZE],
     func_addr: i128,
     fre_bytes: Vec<u8>,
-    fre_type: u32,
-    num_fres: usize,
 }
 
 fn read_u16(data: &[u8], offset: usize) -> u16 {
@@ -185,7 +183,6 @@ pub(crate) fn sort_sframe_section(
                 section_base + start_value
             };
 
-            let num_fres = read_u32(&bytes, 12) as usize;
             let curr_fre_offset = read_u32(&bytes, 8) as usize;
             let curr_fre_abs_start = fre_start + curr_fre_offset;
 
@@ -221,8 +218,6 @@ pub(crate) fn sort_sframe_section(
                 bytes,
                 func_addr,
                 fre_bytes,
-                fre_type,
-                num_fres,
             });
         }
     }
