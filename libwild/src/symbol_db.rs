@@ -370,37 +370,39 @@ impl<'data> SymbolDb<'data> {
 
         let mut per_symbol_flags = PerSymbolFlags::new(per_symbol_flags);
 
-        rayon::scope(|s| {
-            s.spawn(|_| {
+        rayon::join(
+            || {
+                // This can take a while, so do it in parallel with other work.
                 verbose_timing_phase!("Drop per-group outputs");
                 drop(per_group_outputs);
-            });
+            },
+            || {
+                // If it's a rust version script, apply the global symbol visibility now.
+                // We previously downgraded all symbols to local visibility.
+                if let VersionScript::Rust(rust_vscript) = &index.version_script {
+                    verbose_timing_phase!("Upgrade locals for export");
+                    let atomic_per_system_flags = per_symbol_flags.borrow_atomic();
 
-            // If it's a rust version script, apply the global symbol visibility now.
-            // We previously downgraded all symbols to local visibility.
-            if let VersionScript::Rust(rust_vscript) = &index.version_script {
-                verbose_timing_phase!("Upgrade locals for export");
-                let atomic_per_system_flags = per_symbol_flags.borrow_atomic();
-
-                rust_vscript.global.par_iter().for_each(|symbol| {
-                    let prehashed = UnversionedSymbolName::prehashed(symbol);
-                    if let Some(symbol_id) = index.get_unversioned(&prehashed) {
-                        let symbol_atomic_flags = atomic_per_system_flags.get_atomic(symbol_id);
-                        symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
-                    }
-                });
-            }
-
-            {
-                index.apply_wrapped_symbol_overrides(args, herd);
-
-                verbose_timing_phase!("Apply linker scripts");
-
-                for script in linker_scripts {
-                    index.apply_linker_script(script);
+                    rust_vscript.global.par_iter().for_each(|symbol| {
+                        let prehashed = UnversionedSymbolName::prehashed(symbol);
+                        if let Some(symbol_id) = index.get_unversioned(&prehashed) {
+                            let symbol_atomic_flags = atomic_per_system_flags.get_atomic(symbol_id);
+                            symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
+                        }
+                    });
                 }
-            }
-        });
+
+                {
+                    index.apply_wrapped_symbol_overrides(args, herd);
+
+                    verbose_timing_phase!("Apply linker scripts");
+
+                    for script in linker_scripts {
+                        index.apply_linker_script(script);
+                    }
+                }
+            },
+        );
 
         Ok((index, per_symbol_flags))
     }
