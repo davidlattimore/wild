@@ -549,7 +549,7 @@ fn get_glibc_version() -> Option<Vec<u32>> {
 
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                let version_str = stdout.trim().split_whitespace().last()?;
+                let version_str = stdout.split_whitespace().last()?;
                 Some(
                     version_str
                         .split('.')
@@ -571,17 +571,13 @@ impl Config {
                 && (self.compiler == "clang" || !self.cross_enabled))
             || (self.test_config.rustc_channel != RustcChannel::Nightly
                 && self.requires_nightly_rustc)
-            || self
-                .requires_glibc_version
-                .as_ref()
-                .map_or(false, |version| {
-                    let req_version: Vec<u32> = version
-                        .split('.')
-                        .filter_map(|s| s.parse::<u32>().ok())
-                        .collect();
-                    get_glibc_version()
-                        .map_or(false, |current_version| req_version > current_version)
-                })
+            || self.requires_glibc_version.as_ref().is_some_and(|version| {
+                let req_version: Vec<u32> = version
+                    .split('.')
+                    .filter_map(|s| s.parse::<u32>().ok())
+                    .collect();
+                get_glibc_version().is_some_and(|current_version| req_version > current_version)
+            })
     }
 
     fn is_linker_enabled(&self, linker: &Linker) -> bool {
