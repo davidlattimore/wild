@@ -236,11 +236,7 @@ impl AtomicValueFlags {
     }
 
     pub(crate) fn remove(&self, flags_to_remove: ValueFlags) {
-        let mut res = self.get();
-        res.remove(flags_to_remove);
-        if res != flags_to_remove {
-            self.0.store(res.bits(), Ordering::Relaxed);
-        }
+        self.0.fetch_and(!flags_to_remove.bits(), Ordering::Relaxed);
     }
 }
 
