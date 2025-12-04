@@ -411,13 +411,6 @@ impl<'data> VersionScript<'data> {
         }
     }
 
-    pub(crate) fn version_iter(&self) -> impl Iterator<Item = &Version<'data>> {
-        match self {
-            VersionScript::Regular(script) => script.version_iter(),
-            VersionScript::Rust(_) => todo!(),
-        }
-    }
-
     pub(crate) fn parent_count(&self) -> u16 {
         match self {
             VersionScript::Regular(script) => script.parent_count(),
