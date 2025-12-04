@@ -16,6 +16,7 @@
 //#CompArgs:-O0 -fomit-frame-pointer -Wa,--gsframe
 //#RemoveSection:.eh_frame
 //#RemoveSection:.eh_frame_hdr
+//#RequiresGlibcVersion:2.42
 
 #define _GNU_SOURCE
 #include <execinfo.h>
