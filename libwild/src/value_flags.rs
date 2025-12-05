@@ -268,6 +268,10 @@ impl PerSymbolFlags {
     pub(crate) fn set_flag(&mut self, symbol_id: SymbolId, extra: ValueFlags) {
         self.flags[symbol_id.as_usize()].0 |= extra.raw().0;
     }
+
+    pub(crate) fn flags_mut(&mut self) -> &mut [RawFlags] {
+        &mut self.flags
+    }
 }
 
 impl<'a> AtomicPerSymbolFlags<'a> {

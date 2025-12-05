@@ -390,6 +390,19 @@ impl<'data> SymbolDb<'data> {
                             symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
                         }
                     });
+
+                    // Don't forget to add the non-interposable flag the local symbols.
+                    // We coudn't do this earlier as we didn't know which symbols would remain
+                    // local.
+                    per_symbol_flags
+                        .flags_mut()
+                        .par_iter_mut()
+                        .for_each(|flags| {
+                            let flags_val = flags.get();
+                            if flags_val.is_downgraded_to_local() {
+                                *flags = (flags_val | ValueFlags::NON_INTERPOSABLE).raw();
+                            }
+                        });
                 }
 
                 {
@@ -1329,8 +1342,10 @@ trait SymbolLoader<'data> {
             if self.should_downgrade_to_local(&name) {
                 flags |= ValueFlags::DOWNGRADE_TO_LOCAL;
                 // If we're downgrading to a local, then we're writing a shared object. Shared
-                // objects should never bypass the GOT for TLS variables.
-                if symbol.st_type() != object::elf::STT_TLS {
+                // objects should never bypass the GOT for TLS variables. However, if we're
+                // downgrading all symbols by default, that'd add the flag to all symbols, so we
+                // have to do this later.
+                if !self.downgrades_all() && symbol.st_type() != object::elf::STT_TLS {
                     flags |= ValueFlags::NON_INTERPOSABLE;
                 }
             }
@@ -1357,6 +1372,11 @@ trait SymbolLoader<'data> {
 
     /// Returns whether we should downgrade a symbol with the specified name to be a local.
     fn should_downgrade_to_local(&self, _name: &PreHashed<UnversionedSymbolName>) -> bool {
+        false
+    }
+
+    /// Returns whether we will downgrade all symbols by default and later upgrade some to global.
+    fn downgrades_all(&self) -> bool {
         false
     }
 
@@ -1502,6 +1522,10 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
             VersionScript::Rust(_) => true,
             VersionScript::Regular(version_script) => version_script.is_local(name),
         }
+    }
+
+    fn downgrades_all(&self) -> bool {
+        matches!(self.version_script, VersionScript::Rust(_))
     }
 
     fn get_symbol_name_and_version(
