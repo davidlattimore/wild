@@ -381,12 +381,12 @@ impl<'data> SymbolDb<'data> {
                 // We previously downgraded all symbols to local visibility.
                 if let VersionScript::Rust(rust_vscript) = &index.version_script {
                     verbose_timing_phase!("Upgrade locals for export");
-                    let atomic_per_system_flags = per_symbol_flags.borrow_atomic();
+                    let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
 
                     rust_vscript.global.par_iter().for_each(|symbol| {
                         let prehashed = UnversionedSymbolName::prehashed(symbol);
                         if let Some(symbol_id) = index.get_unversioned(&prehashed) {
-                            let symbol_atomic_flags = atomic_per_system_flags.get_atomic(symbol_id);
+                            let symbol_atomic_flags = atomic_per_symbol_flags.get_atomic(symbol_id);
                             symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
                         }
                     });
