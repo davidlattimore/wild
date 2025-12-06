@@ -1,7 +1,6 @@
 use crate::bail;
 use crate::error::Context as _;
 use crate::error::Result;
-use std::cmp;
 use std::convert::TryFrom;
 use std::convert::TryInto;
 
@@ -11,15 +10,9 @@ const SFRAME_MAGIC: u16 = 0xdee2;
 const SFRAME_VERSION_2: u8 = 2;
 
 const FLAG_FDE_SORTED: u8 = 0x1;
+const FLAG_FRAME_POINTER: u8 = 0x2;
 const FLAG_FUNC_START_PCREL: u8 = 0x4;
-
-const SFRAME_FRE_TYPE_ADDR1: u32 = 0;
-const SFRAME_FRE_TYPE_ADDR2: u32 = 1;
-const SFRAME_FRE_TYPE_ADDR4: u32 = 2;
-
-const SFRAME_FRE_OFFSET_1B: u32 = 0;
-const SFRAME_FRE_OFFSET_2B: u32 = 1;
-const SFRAME_FRE_OFFSET_4B: u32 = 2;
+const FLAG_AARCH64_PAUTH: u8 = 0x8;
 
 const HEADER_SIZE: usize = 0x1c;
 const FDE_SIZE: usize = 20;
@@ -27,10 +20,13 @@ const FDE_SIZE: usize = 20;
 // Field offsets in the SFrame header
 const VERSION_FIELD: usize = 0x02;
 const FLAGS_FIELD: usize = 0x03;
+const ABI_ARCH_FIELD: usize = 0x04;
+const CFA_FIXED_FP_OFFSET_FIELD: usize = 0x05;
+const CFA_FIXED_RA_OFFSET_FIELD: usize = 0x06;
 const AUX_LENGTH_FIELD: usize = 0x07;
 const NUM_FDES_FIELD: usize = 0x08;
 const NUM_FRES_FIELD: usize = 0x0c;
-const FRE_TYPE_FIELD: usize = 0x10;
+const FRE_LEN_FIELD: usize = 0x10;
 const FDE_START_OFFSET_FIELD: usize = 0x14;
 const FRE_START_OFFSET_FIELD: usize = 0x18;
 
@@ -44,10 +40,13 @@ struct Header {
     magic: u16,
     version: u8,
     flags: u8,
+    abi_arch: u8,
+    cfa_fixed_fp_offset: i8,
+    cfa_fixed_ra_offset: i8,
     aux_len: u8,
     num_fdes: u32,
     num_fres: u32,
-    fre_type: u32,
+    fre_len: u32,
     fde_start_offset: u32,
     fre_start_offset: u32,
 }
@@ -72,10 +71,13 @@ impl Header {
             magic,
             version,
             flags: data[FLAGS_FIELD],
+            abi_arch: data[ABI_ARCH_FIELD],
+            cfa_fixed_fp_offset: data[CFA_FIXED_FP_OFFSET_FIELD] as i8,
+            cfa_fixed_ra_offset: data[CFA_FIXED_RA_OFFSET_FIELD] as i8,
             aux_len: data[AUX_LENGTH_FIELD],
             num_fdes: read_u32(data, NUM_FDES_FIELD),
             num_fres: read_u32(data, NUM_FRES_FIELD),
-            fre_type: read_u32(data, FRE_TYPE_FIELD),
+            fre_len: read_u32(data, FRE_LEN_FIELD),
             fde_start_offset: read_u32(data, FDE_START_OFFSET_FIELD),
             fre_start_offset: read_u32(data, FRE_START_OFFSET_FIELD),
         })
@@ -85,10 +87,13 @@ impl Header {
         data[0..2].copy_from_slice(&self.magic.to_le_bytes());
         data[VERSION_FIELD] = self.version;
         data[FLAGS_FIELD] = self.flags;
+        data[ABI_ARCH_FIELD] = self.abi_arch;
+        data[CFA_FIXED_FP_OFFSET_FIELD] = self.cfa_fixed_fp_offset as u8;
+        data[CFA_FIXED_RA_OFFSET_FIELD] = self.cfa_fixed_ra_offset as u8;
         data[AUX_LENGTH_FIELD] = self.aux_len;
         data[NUM_FDES_FIELD..NUM_FDES_FIELD + 4].copy_from_slice(&self.num_fdes.to_le_bytes());
         data[NUM_FRES_FIELD..NUM_FRES_FIELD + 4].copy_from_slice(&self.num_fres.to_le_bytes());
-        data[FRE_TYPE_FIELD..FRE_TYPE_FIELD + 4].copy_from_slice(&self.fre_type.to_le_bytes());
+        data[FRE_LEN_FIELD..FRE_LEN_FIELD + 4].copy_from_slice(&self.fre_len.to_le_bytes());
         data[FDE_START_OFFSET_FIELD..FDE_START_OFFSET_FIELD + 4]
             .copy_from_slice(&self.fde_start_offset.to_le_bytes());
         data[FRE_START_OFFSET_FIELD..FRE_START_OFFSET_FIELD + 4]
@@ -112,40 +117,6 @@ fn write_i32(data: &mut [u8], offset: usize, value: i32) {
     data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-fn get_fre_type(addr_size: usize, offset_size: usize) -> u32 {
-    let addr_type = match addr_size {
-        1 => SFRAME_FRE_TYPE_ADDR1,
-        2 => SFRAME_FRE_TYPE_ADDR2,
-        4 => SFRAME_FRE_TYPE_ADDR4,
-        _ => panic!("Invalid address size"),
-    };
-    let offset_type = match offset_size {
-        1 => SFRAME_FRE_OFFSET_1B,
-        2 => SFRAME_FRE_OFFSET_2B,
-        4 => SFRAME_FRE_OFFSET_4B,
-        _ => panic!("Invalid offset size"),
-    };
-    (addr_type << 4) | offset_type
-}
-
-fn get_fre_addr_size(fre_type: u32) -> usize {
-    match (fre_type >> 4) & 0xF {
-        SFRAME_FRE_TYPE_ADDR1 => 1,
-        SFRAME_FRE_TYPE_ADDR2 => 2,
-        SFRAME_FRE_TYPE_ADDR4 => 4,
-        _ => 1,
-    }
-}
-
-fn get_fre_offset_size(fre_type: u32) -> usize {
-    match fre_type & 0xF {
-        SFRAME_FRE_OFFSET_1B => 1,
-        SFRAME_FRE_OFFSET_2B => 2,
-        SFRAME_FRE_OFFSET_4B => 4,
-        _ => 1,
-    }
-}
-
 /// Sort the SFrame FDE array in-place by the functions' start addresses.
 ///
 /// The SFrame header will be updated to mark the array as sorted. The FRE data is left untouched
@@ -163,9 +134,10 @@ pub(crate) fn sort_sframe_section(
     let section_base = i128::from(section_base_address);
 
     let mut output_flags = 0u8;
+    let mut output_abi_arch = 0;
+    let mut output_cfa_fixed_fp_offset = 0;
+    let mut output_cfa_fixed_ra_offset = 0;
     let mut output_aux_len = 0;
-    let mut max_addr_size = 1;
-    let mut max_offset_size = 1;
     let mut total_num_fres = 0;
     let mut first_section = true;
 
@@ -189,13 +161,20 @@ pub(crate) fn sort_sframe_section(
         let pc_rel = header.flags & FLAG_FUNC_START_PCREL != 0;
         let aux_len = header.aux_len as usize;
 
-        max_addr_size = cmp::max(max_addr_size, get_fre_addr_size(header.fre_type));
-        max_offset_size = cmp::max(max_offset_size, get_fre_offset_size(header.fre_type));
-
         if first_section {
             output_flags = header.flags;
+            output_abi_arch = header.abi_arch;
+            output_cfa_fixed_fp_offset = header.cfa_fixed_fp_offset;
+            output_cfa_fixed_ra_offset = header.cfa_fixed_ra_offset;
             output_aux_len = aux_len;
             first_section = false;
+        } else {
+            if (header.flags & FLAG_FRAME_POINTER) == 0 {
+                output_flags &= !FLAG_FRAME_POINTER;
+            }
+            if (header.flags & FLAG_AARCH64_PAUTH) != 0 {
+                output_flags |= FLAG_AARCH64_PAUTH;
+            }
         }
 
         total_num_fres += header.num_fres as usize;
@@ -283,8 +262,6 @@ pub(crate) fn sort_sframe_section(
 
     entries.sort_by(|a, b| a.func_addr.cmp(&b.func_addr));
 
-    let output_fre_type = get_fre_type(max_addr_size, max_offset_size);
-
     let num_fdes = entries.len();
     let header_end_offset = HEADER_SIZE + output_aux_len;
 
@@ -303,10 +280,13 @@ pub(crate) fn sort_sframe_section(
         magic: SFRAME_MAGIC,
         version: SFRAME_VERSION_2,
         flags: output_flags | FLAG_FDE_SORTED,
+        abi_arch: output_abi_arch,
+        cfa_fixed_fp_offset: output_cfa_fixed_fp_offset,
+        cfa_fixed_ra_offset: output_cfa_fixed_ra_offset,
         aux_len: output_aux_len as u8,
         num_fdes: num_fdes as u32,
         num_fres: total_num_fres as u32,
-        fre_type: output_fre_type,
+        fre_len: total_fre_size as u32,
         fde_start_offset: fde_offset as u32,
         fre_start_offset: fre_offset as u32,
     };
