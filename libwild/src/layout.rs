@@ -81,6 +81,7 @@ use crate::value_flags::FlagsForSymbol as _;
 use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
+use crate::version_script::VersionScript;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
@@ -4120,13 +4121,18 @@ impl<'data> EpilogueLayoutState<'data> {
                 parent_index: None,
             });
 
-            // Take all but the base version
-            for version in symbol_db.version_script.version_iter().skip(1) {
-                verdefs.push(VersionDef {
-                    name: version.name.to_vec(),
-                    parent_index: version.parent_index,
-                });
-                common.allocate(part_id::DYNSTR, version.name.len() as u64 + 1);
+            match &symbol_db.version_script {
+                VersionScript::Regular(version_script) => {
+                    // Take all but the base version
+                    for version in version_script.version_iter().skip(1) {
+                        verdefs.push(VersionDef {
+                            name: version.name.to_vec(),
+                            parent_index: version.parent_index,
+                        });
+                        common.allocate(part_id::DYNSTR, version.name.len() as u64 + 1);
+                    }
+                }
+                VersionScript::Rust(_) => {}
             }
 
             let dependencies_count = symbol_db.version_script.parent_count();

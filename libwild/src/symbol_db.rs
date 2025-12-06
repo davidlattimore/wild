@@ -37,6 +37,7 @@ use crate::value_flags::PerSymbolFlags;
 use crate::value_flags::RawFlags;
 use crate::value_flags::ValueFlags;
 use crate::verbose_timing_phase;
+use crate::version_script::RustVersionScript;
 use crate::version_script::VersionScript;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
@@ -47,6 +48,7 @@ use linker_utils::elf::shf;
 use object::LittleEndian;
 use object::read::elf::Sym as _;
 use rayon::iter::IndexedParallelIterator as _;
+use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::IntoParallelRefMutIterator as _;
 use rayon::iter::ParallelIterator;
 use std::fmt::Display;
@@ -280,6 +282,39 @@ struct PendingSymbolHashBucket<'data> {
 }
 
 impl<'data> SymbolDb<'data> {
+    /// If the version script is optimized fur rust, we downgraded all symbols to local visibility.
+    /// This promotes symbols marked for global visibility in a Rust version script back to global.
+    /// Also adds the non-interposable flag to all local symbols.
+    fn handle_rust_version_script(
+        &self,
+        rust_vscript: &RustVersionScript<'data>,
+        per_symbol_flags: &mut PerSymbolFlags,
+    ) {
+        verbose_timing_phase!("Upgrade locals for export");
+        let atomic_per_symbol_flags = per_symbol_flags.borrow_atomic();
+
+        rust_vscript.global.par_iter().for_each(|symbol| {
+            let prehashed = UnversionedSymbolName::prehashed(symbol);
+            if let Some(symbol_id) = self.get_unversioned(&prehashed) {
+                let symbol_atomic_flags = atomic_per_symbol_flags.get_atomic(symbol_id);
+                symbol_atomic_flags.remove(ValueFlags::DOWNGRADE_TO_LOCAL);
+            }
+        });
+
+        // Don't forget to add the non-interposable flag the local symbols.
+        // We coudn't do this earlier as we didn't know which symbols would remain
+        // local.
+        per_symbol_flags
+            .flags_mut()
+            .par_iter_mut()
+            .for_each(|flags| {
+                let flags_val = flags.get();
+                if flags_val.is_downgraded_to_local() {
+                    *flags = (flags_val | ValueFlags::NON_INTERPOSABLE).raw();
+                }
+            });
+    }
+
     pub fn build(
         groups: Vec<Group<'data>>,
         version_script_data: Option<ScriptData<'data>>,
@@ -329,33 +364,26 @@ impl<'data> SymbolDb<'data> {
             alternative_versioned_definitions: HashMap::new(),
         });
 
+        let mut per_group_shards = groups
+            .iter()
+            .map(|group| writers.new_shard(group))
+            .collect_vec();
+
+        let per_group_outputs = read_symbols(
+            &version_script,
+            &mut per_group_shards,
+            args,
+            &export_list,
+            output_kind,
+        )?;
+
+        populate_symbol_db(&mut buckets, &per_group_outputs);
+
         {
-            let mut per_group_shards = groups
-                .iter()
-                .map(|group| writers.new_shard(group))
-                .collect_vec();
+            verbose_timing_phase!("Return shards");
 
-            let per_group_outputs = read_symbols(
-                &version_script,
-                &mut per_group_shards,
-                args,
-                &export_list,
-                output_kind,
-            )?;
-
-            populate_symbol_db(&mut buckets, &per_group_outputs);
-
-            {
-                verbose_timing_phase!("Return shards");
-
-                for shard in per_group_shards {
-                    writers.return_shard(shard);
-                }
-            }
-            {
-                // TODO: Do this on a separate thread.
-                verbose_timing_phase!("Drop per-group outputs");
-                drop(per_group_outputs);
+            for shard in per_group_shards {
+                writers.return_shard(shard);
             }
         }
 
@@ -374,15 +402,32 @@ impl<'data> SymbolDb<'data> {
             output_kind,
         };
 
-        index.apply_wrapped_symbol_overrides(args, herd);
+        let mut per_symbol_flags = PerSymbolFlags::new(per_symbol_flags);
 
-        verbose_timing_phase!("Apply linker scripts");
+        rayon::join(
+            || {
+                // This can take a while, so do it in parallel with other work.
+                verbose_timing_phase!("Drop per-group outputs");
+                drop(per_group_outputs);
+            },
+            || {
+                // If it's a rust version script, apply the global symbol visibility now.
+                // We previously downgraded all symbols to local visibility.
+                if let VersionScript::Rust(rust_vscript) = &index.version_script {
+                    index.handle_rust_version_script(rust_vscript, &mut per_symbol_flags);
+                }
 
-        for script in linker_scripts {
-            index.apply_linker_script(script);
-        }
+                index.apply_wrapped_symbol_overrides(args, herd);
 
-        Ok((index, PerSymbolFlags::new(per_symbol_flags)))
+                verbose_timing_phase!("Apply linker scripts");
+
+                for script in linker_scripts {
+                    index.apply_linker_script(script);
+                }
+            },
+        );
+
+        Ok((index, per_symbol_flags))
     }
 
     pub(crate) fn add_start_stop_symbol(
@@ -1307,8 +1352,10 @@ trait SymbolLoader<'data> {
             if self.should_downgrade_to_local(&name) {
                 flags |= ValueFlags::DOWNGRADE_TO_LOCAL;
                 // If we're downgrading to a local, then we're writing a shared object. Shared
-                // objects should never bypass the GOT for TLS variables.
-                if symbol.st_type() != object::elf::STT_TLS {
+                // objects should never bypass the GOT for TLS variables. However, if we're
+                // downgrading all symbols by default, that'd add the flag to all symbols, so we
+                // have to do this later.
+                if !self.downgrades_all() && symbol.st_type() != object::elf::STT_TLS {
                     flags |= ValueFlags::NON_INTERPOSABLE;
                 }
             }
@@ -1335,6 +1382,11 @@ trait SymbolLoader<'data> {
 
     /// Returns whether we should downgrade a symbol with the specified name to be a local.
     fn should_downgrade_to_local(&self, _name: &PreHashed<UnversionedSymbolName>) -> bool {
+        false
+    }
+
+    /// Returns whether we will downgrade all symbols by default and later upgrade some to global.
+    fn downgrades_all(&self) -> bool {
         false
     }
 
@@ -1474,7 +1526,16 @@ impl<'data> SymbolLoader<'data> for RegularObjectSymbolLoader<'_, 'data> {
     }
 
     fn should_downgrade_to_local(&self, name: &PreHashed<UnversionedSymbolName>) -> bool {
-        self.version_script.is_local(name)
+        match self.version_script {
+            // We first downgrade all symbols when using a Rust version script.
+            // We're gonna set the ones that are exported back to global later.
+            VersionScript::Rust(_) => true,
+            VersionScript::Regular(version_script) => version_script.is_local(name),
+        }
+    }
+
+    fn downgrades_all(&self) -> bool {
+        matches!(self.version_script, VersionScript::Rust(_))
     }
 
     fn get_symbol_name_and_version(
