@@ -68,6 +68,7 @@ use crate::output_trace::HexU64;
 use crate::output_trace::TraceOutput;
 use crate::part_id;
 use crate::resolution::SectionSlot;
+use crate::sframe;
 use crate::sharding::ShardKey;
 use crate::string_merging::get_merged_string_output_address;
 use crate::symbol_db::RawSymbolName;
@@ -133,9 +134,37 @@ pub(crate) fn write<A: Arch>(sized_output: &mut SizedOutput, layout: &Layout) ->
         crate::validation::validate_bytes(layout, &sized_output.out)?;
     }
 
+    let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
+
     if layout.args().should_write_eh_frame_hdr {
-        let mut section_buffers = split_output_into_sections(layout, &mut sized_output.out);
         sort_eh_frame_hdr_entries(section_buffers.get_mut(output_section_id::EH_FRAME_HDR));
+    }
+
+    let sframe_buffer = section_buffers.get_mut(output_section_id::SFRAME);
+    if !sframe_buffer.is_empty() {
+        let sframe_start_address = layout.mem_address_of_built_in(output_section_id::SFRAME);
+        let mut sframe_ranges = Vec::new();
+
+        for group in &layout.group_layouts {
+            for file in &group.files {
+                if let FileLayout::Object(object) = file {
+                    for (section_slot, resolution) in
+                        object.sections.iter().zip(&object.section_resolutions)
+                    {
+                        if let SectionSlot::Loaded(section) = section_slot
+                            && section.part_id.output_section_id() == output_section_id::SFRAME
+                        {
+                            let offset =
+                                (resolution.address().unwrap() - sframe_start_address) as usize;
+                            let len = section.size as usize;
+                            sframe_ranges.push(offset..offset + len);
+                        }
+                    }
+                }
+            }
+        }
+
+        sframe::sort_sframe_section(sframe_buffer, sframe_start_address, &sframe_ranges)?;
     }
 
     write_gnu_build_id_note(sized_output, &layout.args().build_id, layout)?;
